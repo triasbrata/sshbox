@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is permitted to loopback and nowhere else.
+
+  The Files page talks to code-server over http://127.0.0.1:<port>, which is
+  the near end of an SSH port forward. The bytes never touch the network in
+  the clear — SSH encrypts the hop — so the usual reason to forbid cleartext
+  does not apply here. Everything else stays blocked, which is why this is a
+  domain-config rather than android:usesCleartextTraffic on the application.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

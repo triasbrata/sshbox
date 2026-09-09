@@ -1,0 +1,31 @@
+# Opens a host and checks the accessory key bar is actually there.
+#
+# The key bar only renders once the session reports connected, so asserting on
+# its keys doubles as an assertion that SSH authentication succeeded — no
+# separate "did it connect" check needed.
+#
+# Requires a reachable host with a stored credential. On a device where the
+# password has never been entered this fails at the key bar, which is the
+# correct result rather than a flaky one.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+- tapOn: "(?s)${HOST_LABEL}.*"
+
+# Generous: this is a real SSH handshake over the network.
+- extendedWaitUntil:
+    visible: "ESC"
+    timeout: 30000
+
+- assertVisible: "CTRL"
+- assertVisible: "ALT"
+- assertVisible: "PGUP"

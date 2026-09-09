@@ -1,0 +1,36 @@
+# The Tailscale auth mode is selectable and explains itself.
+#
+# Only the UI is covered here. Tailscale SSH itself cannot be exercised from an
+# emulator — its NAT does not route to the host's tailscale interface — so the
+# connection half is verified on a real tailnet device instead.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+- tapOn: "Show menu"
+- tapOn: "Edit"
+
+- extendedWaitUntil:
+    visible: "Edit host"
+    timeout: 10000
+
+# All three modes are offered.
+- assertVisible: "Password"
+- assertVisible: "Key"
+- assertVisible: "Tailscale"
+
+- tapOn: "Tailscale"
+
+# Choosing it replaces the credential fields with an explanation, because
+# there is nothing for the user to enter.
+- extendedWaitUntil:
+    visible: "(?s).*No credential is stored.*"
+    timeout: 10000

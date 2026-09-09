@@ -1,0 +1,26 @@
+# Does the app start and show the host list?
+#
+# HOST_LABEL is parameterised so one suite serves every device — an emulator
+# reaches the host at 10.0.2.2, a phone on the tailnet at its 100.x address,
+# and each has its own host entry. Override with:
+#   maestro test -e HOST_LABEL="WSL via emulator" .maestro/
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+# launchApp on a running app only brings it forward, leaving whatever route
+# the previous flow ended on. Stopping first is what makes these flows
+# independent of the order they run in.
+- stopApp
+- launchApp:
+    clearState: false
+
+- assertVisible: "sshbox"
+
+# Flutter merges a ListTile's title and subtitle into one accessibility node,
+# so the row reads as "WSL via …\ntriasbrata@… · password". Maestro
+# regex-matches the whole string, hence the (?s) for DOTALL and the wildcard.
+# The host list also loads asynchronously, so this needs a timeout.
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "44172713850",
+    "project_id": "terminal-app-10685",
+    "storage_bucket": "terminal-app-10685.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:44172713850:android:5b80666f9a2de446c940c3",
+        "android_client_info": {
+          "package_name": "cloud.brata.terminal"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAdMv79dR8nmRqaa4zXjGLshvhdvFPxxMY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

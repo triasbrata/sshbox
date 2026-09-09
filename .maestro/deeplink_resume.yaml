@@ -1,0 +1,32 @@
+# The behaviour a notification tap depends on: `sshbox://host/<id>` opens that
+# host's terminal page. This is exactly the payload a notification carries, so
+# it covers the tap path without needing a push to arrive first.
+#
+# Deliberately asserts only on navigation, not on the shell coming up, so it
+# stays meaningful on a device that cannot reach the host — routing is what is
+# under test here, not connectivity.
+appId: cloud.brata.terminal
+env:
+  HOST_ID: "wsl-emu"
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+- openLink: "sshbox://host/${HOST_ID}"
+
+# The terminal page titles itself with the host label until the remote shell
+# reports one of its own.
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 20000
+
+# These two buttons only exist on the terminal page, so their presence
+# distinguishes it from the host list, whose rows carry the same label text.
+- assertVisible: "Upload a file to /tmp"
+- assertVisible: "Browse files"
