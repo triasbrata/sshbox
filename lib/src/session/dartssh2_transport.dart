@@ -7,12 +7,17 @@ import 'package:flutter/foundation.dart';
 
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
+import '../files/sftp_file_browser.dart';
 import '../models/host_profile.dart';
 import 'terminal_session.dart';
 
-/// The SSH implementation of [SessionTransport], and the only file in the app
-/// that imports `dartssh2`. Keeping it that way is what makes a future mosh
-/// transport a drop-in rather than a rewrite.
+/// The SSH implementation of [SessionTransport].
+///
+/// `dartssh2` is imported here and in `files/sftp_file_browser.dart`, and
+/// nowhere else. Both are SSH implementations of an interface the rest of the
+/// app is written against, which is what makes a future mosh transport — or a
+/// daemon behind a port forward — a drop-in rather than a rewrite.
 class Dartssh2Transport implements SessionTransport {
   Dartssh2Transport({
     KnownHostStore? knownHosts,
@@ -50,7 +55,11 @@ class Dartssh2Transport implements SessionTransport {
 }
 
 class _Dartssh2Session
-    implements TerminalSession, FileUploadCapable, PortForwardCapable {
+    implements
+        TerminalSession,
+        FileUploadCapable,
+        PortForwardCapable,
+        FileBrowseCapable {
   _Dartssh2Session(
     this._knownHosts,
     this._onHostKeyPinned,
@@ -278,6 +287,15 @@ class _Dartssh2Session
         await server.close();
       },
     );
+  }
+
+  @override
+  FileBrowser openFileBrowser() {
+    final client = _client;
+    if (client == null || _status.value != SessionStatus.connected) {
+      throw const SshSessionException('Not connected.');
+    }
+    return SftpFileBrowser(client);
   }
 
   /// Everything lands in `/tmp`, named after the file the user picked.

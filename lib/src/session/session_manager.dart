@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import 'dartssh2_transport.dart';
 import 'terminal_session.dart';
@@ -175,6 +176,19 @@ class LiveSession extends ChangeNotifier {
 
   /// Whether this session can tunnel a remote port to the device.
   bool get canForwardPorts => _session is PortForwardCapable;
+
+  /// Whether this session's transport exposes a browsable filesystem.
+  bool get canBrowseFiles => _session is FileBrowseCapable;
+
+  /// Opens a file browser on this session. The caller closes it.
+  FileBrowser openFileBrowser() {
+    final session = _session;
+    if (session is! FileBrowseCapable) {
+      throw const SshSessionException('This session cannot browse files.');
+    }
+    final browsable = session as FileBrowseCapable;
+    return browsable.openFileBrowser();
+  }
 
   /// Tunnels [remoteHost]:[remotePort] to a loopback port on the device.
   Future<LocalPortForward> forwardLocalPort({

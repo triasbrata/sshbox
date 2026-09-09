@@ -5,6 +5,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
 import '../session/session_manager.dart';
+import 'file_browser_page.dart';
 import 'files_page.dart';
 import 'key_bar.dart';
 
@@ -89,8 +90,41 @@ class _TerminalPageState extends State<TerminalPage> {
     if (mounted) Navigator.of(context).maybePop();
   }
 
-  /// Opens code-server through a tunnel over this session.
+  /// Opens the remote filesystem as a native listing.
+  ///
+  /// The browser is built here and handed over; the page it goes to closes it
+  /// when the user leaves. Which transport is behind it is decided by
+  /// [LiveSession.openFileBrowser] and is not this page's business.
   Future<void> _openFiles() async {
+    final browser = _session.openFileBrowser();
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FileBrowserPage(
+          browser: browser,
+          title: _session.host.displayName,
+          onInsertPath: _typePath,
+        ),
+      ),
+    );
+  }
+
+  /// Puts a path at the prompt, ready for a command to be written around it.
+  ///
+  /// Quoted, because a path picked out of a listing can hold spaces or any
+  /// other character the shell would otherwise act on rather than pass along.
+  void _typePath(String path) {
+    final quoted = RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
+        ? path
+        : "'${path.replaceAll("'", r"'\''")}'";
+    _session.sendRaw('$quoted ');
+  }
+
+  /// Opens code-server through a tunnel over this session.
+  ///
+  /// Kept alongside the native browser rather than replaced by it: this is a
+  /// full editor with a language server behind it, which is a different thing
+  /// from reading a config file on a phone.
+  Future<void> _openCodeServer() async {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => FilesPage(session: _session)),
     );
@@ -153,7 +187,7 @@ class _TerminalPageState extends State<TerminalPage> {
         actions: [
           IconButton(
             tooltip: 'Browse files',
-            onPressed: (_session.isConnected && _session.canForwardPorts)
+            onPressed: (_session.isConnected && _session.canBrowseFiles)
                 ? _openFiles
                 : null,
             icon: const Icon(Icons.folder_outlined),
@@ -167,15 +201,37 @@ class _TerminalPageState extends State<TerminalPage> {
                 : null,
             icon: const Icon(Icons.attach_file),
           ),
-          IconButton(
-            tooltip: 'Reconnect',
-            onPressed: _session.connecting ? null : _reconnect,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: 'Disconnect',
-            onPressed: _session.isConnected ? _disconnect : null,
-            icon: const Icon(Icons.link_off),
+          // The rest live in a menu: four icons plus a title do not fit across
+          // a phone, and these are the three used least often.
+          PopupMenuButton<String>(
+            tooltip: 'Session',
+            onSelected: (choice) {
+              switch (choice) {
+                case 'code-server':
+                  _openCodeServer();
+                case 'reconnect':
+                  _reconnect();
+                case 'disconnect':
+                  _disconnect();
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'code-server',
+                enabled: _session.isConnected && _session.canForwardPorts,
+                child: const Text('Open code-server'),
+              ),
+              PopupMenuItem(
+                value: 'reconnect',
+                enabled: !_session.connecting,
+                child: const Text('Reconnect'),
+              ),
+              PopupMenuItem(
+                value: 'disconnect',
+                enabled: _session.isConnected,
+                child: const Text('Disconnect'),
+              ),
+            ],
           ),
         ],
       ),
