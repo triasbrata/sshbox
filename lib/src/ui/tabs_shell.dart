@@ -278,6 +278,9 @@ class _TabStripState extends State<TabStrip> {
           label: tab.kind == TabKind.file
               ? tab.session.fileTabTitle(tab.path!)
               : tab.session.title,
+          cutFirst: tab.kind == TabKind.file
+              ? tab.session.host.displayName
+              : null,
           selected: index + 1 == widget.activeIndex,
           connected: tab.kind == TabKind.terminal && tab.session.isConnected,
           expand: single,
@@ -348,6 +351,7 @@ class _TabChip extends StatelessWidget {
     this.expand = false,
     this.onClose,
     this.onReconnect,
+    this.cutFirst,
   });
 
   /// null shows the icon alone — the chip still answers to [tooltip], so it
@@ -369,10 +373,16 @@ class _TabChip extends StatelessWidget {
   /// that used to offer this is gone, so the tab is where it lives.
   final VoidCallback? onReconnect;
 
+  /// The start of [label] that gives way first when the chip is too narrow
+  /// for all of it: a file tab's host. The ` · main.dart` after it is what
+  /// tells two files on one host apart, so that keeps its room. null cuts the
+  /// end, as a shell's name is cut.
+  final String? cutFirst;
+
   /// How much of a name a tab may show.
   ///
   /// A phone strip fits roughly one and a half tabs, so the room goes where
-  /// it is read: the tab you are on gets enough for `host > file.dart`, the
+  /// it is read: the tab you are on gets enough for `host · file.dart`, the
   /// rest get enough to be recognised and are ellipsised. Anything longer
   /// scrolls into view when selected rather than shrinking every other tab.
   static const double _selectedText = 180;
@@ -393,16 +403,33 @@ class _TabChip extends StatelessWidget {
         ? theme.colorScheme.onSurface
         : theme.colorScheme.onSurfaceVariant;
     final name = label;
+    final cut = cutFirst;
+    final room = selected ? _selectedText : _idleText;
     final reconnect = onReconnect != null;
     final onEnd = onReconnect ?? onClose;
+    Text text(String data) => Text(
+      data,
+      overflow: TextOverflow.ellipsis,
+      maxLines: 1,
+      softWrap: false,
+      style: theme.textTheme.labelLarge?.copyWith(color: foreground),
+    );
     final title = name == null
         ? null
-        : Text(
-            name,
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
-            softWrap: false,
-            style: theme.textTheme.labelLarge?.copyWith(color: foreground),
+        : cut == null || !name.startsWith(cut)
+        ? text(name)
+        : Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(child: text(cut)),
+              // Capped on its own: a Row lays out what does not flex without
+              // a limit, so a file name wider than the chip would run past it
+              // instead of being cut in its turn.
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: room),
+                child: text(name.substring(cut.length)),
+              ),
+            ],
           );
 
     final chip = Material(
@@ -436,9 +463,7 @@ class _TabChip extends StatelessWidget {
                   Expanded(child: title)
                 else
                   ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: selected ? _selectedText : _idleText,
-                    ),
+                    constraints: BoxConstraints(maxWidth: room),
                     child: title,
                   ),
               ],

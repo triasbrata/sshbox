@@ -314,10 +314,11 @@ which means typed commands going to the wrong host.
 
 **Files get tabs too.** The folder button opens the files drawer over the
 shell; tapping a file there gives it a tab of its own, named
-`<host> > <file>`, next to the session it was read over. Picking the same file
-again returns to its tab rather than opening a second one, and closing a
-session takes its file tabs with it — they are read over that session and
-cannot outlive it.
+`<host> · <file>` — the host as the host list names it, so
+`WSL via tailnet · main.dart` — next to the session it was read over. Picking
+the same file again returns to its tab rather than opening a second one, and
+closing a session takes its file tabs with it — they are read over that
+session and cannot outlive it.
 
 **A tab whose shell has ended** — closed by the host, dropped, or never
 reached — trades its close button for a reconnect one, a cable. The terminal
@@ -328,10 +329,11 @@ rather than flashing the other.
 
 **Room on the strip.** A phone fits about one and a half tabs, so the space
 goes where it is read: the selected tab gets 180dp of name — enough for
-`host > file.dart` — and the rest get 110dp and an ellipsis. The pinned host
-list drops to its icon while you are on a session, and selecting a tab scrolls
-it into view, so a notification tap never lands on a tab that is off the
-right-hand edge.
+`host · file.dart` — and the rest get 110dp and an ellipsis. A file tab too
+narrow for its name cuts the host rather than the file, which is what tells two
+files on one host apart. The pinned host list drops to its icon while you are
+on a session, and selecting a tab scrolls it into view, so a notification tap
+never lands on a tab that is off the right-hand edge.
 
 **Deep link:** `sshbox://host/<hostId>` opens that host, resuming its terminal
 if one is still open. Test it without any push infrastructure:
@@ -530,11 +532,11 @@ off by default, because it types into a live shell and a shell is not always at
 a prompt: with an editor or a build running, a `cd` lands as input to that
 instead.
 
-**A picked file opens as a tab**, named `<host> > <file>`, beside the session
+**A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:
 
 ```
-files drawer ──tap──▶ tab `<host> > <file>`
+files drawer ──tap──▶ tab `<host> · <file>`
    └── SFTP, over the session already open
 ```
 

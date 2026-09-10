@@ -170,9 +170,9 @@ class LiveSession extends ChangeNotifier {
     if (_openFiles.remove(path)) _notify();
   }
 
-  /// A file tab's name: the host, then the file.
+  /// A file tab's name: the host as the host list shows it, then the file.
   String fileTabTitle(String path) =>
-      '${host.displayName} > ${path.split('/').last}';
+      '${host.displayName} · ${RemotePath.basename(path)}';
 
   void _wireTerminal() {
     if (_wired) return;

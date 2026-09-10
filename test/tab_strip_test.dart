@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
@@ -118,5 +119,23 @@ void main() {
 
     await tester.tap(find.byTooltip('Reconnect'));
     expect(reconnected, same(tab.session));
+  });
+
+  testWidgets('a file tab reads host · file, and gives up the host for room', (
+    tester,
+  ) async {
+    final shell = _shell(tester, 'host-1', 'box');
+    await _pump(tester, [
+      shell,
+      (session: shell.session, kind: TabKind.file, path: '/etc/a.c'),
+    ]);
+
+    expect(find.byTooltip('Close box · a.c'), findsOneWidget);
+
+    // Not selected, so 110dp of name: too little for both at the test font's
+    // size. The host is cut, the file is not.
+    RenderParagraph paragraph(Finder text) => tester.renderObject(text);
+    expect(paragraph(find.text(' · a.c')).didExceedMaxLines, isFalse);
+    expect(paragraph(find.text('box').last).didExceedMaxLines, isTrue);
   });
 }

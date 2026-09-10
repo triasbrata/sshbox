@@ -232,12 +232,12 @@ void main() {
       expect(session.openFiles, ['/etc/hosts', '/var/log/syslog']);
     });
 
-    test('a file tab is named host > file', () {
+    test('a file tab is named host · file', () {
       final session = manager.openOrCreate(_host);
 
       expect(
         session.fileTabTitle('/etc/nginx/nginx.conf'),
-        'box > nginx.conf',
+        'box · nginx.conf',
       );
     });
 
