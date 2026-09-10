@@ -369,6 +369,27 @@ void main() {
       expect(tester.getRect(box).center.dx, moreOrLessEquals(screen.right));
     });
 
+    testWidgets('left alone it fades, and a touch brings it straight back',
+        (tester) async {
+      await pumpKey(tester);
+      double opacity() => tester
+          .widget<FadeTransition>(
+            find.descendant(of: box, matching: find.byType(FadeTransition)),
+          )
+          .opacity
+          .value;
+
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(opacity(), moreOrLessEquals(0.6));
+
+      final gesture = await tester.startGesture(tester.getCenter(button));
+      await tester.pump();
+      expect(opacity(), 1);
+      await gesture.up();
+      expect(sent, ['\r'], reason: 'faded, it is still the Enter key');
+    });
+
     testWidgets('it is named for what a tap does', (tester) async {
       await pumpKey(tester);
       expect(find.bySemanticsLabel('Send Enter'), findsOneWidget);

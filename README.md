@@ -127,7 +127,8 @@ there is no text selection by touch.
 
 `ui/magic_key.dart` floats a round Enter key over the terminal, for when the
 keyboard is down. Tap it for Enter. Drag it to move it; throw it at a side and
-it tucks in half off the screen.
+it tucks in half off the screen. Left alone for a few seconds it fades to 60%
+so the output under it shows through; a touch brings it straight back.
 
 Hold it and two rings of keys open round it, each on its own band. The inner
 ring has the arrows where they point, with ESC, TAB, `^C` and `^D` between.

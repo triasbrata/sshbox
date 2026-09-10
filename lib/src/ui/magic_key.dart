@@ -287,7 +287,9 @@ int? petalFor(Offset offset, List<double> angles, {double deadZone = 18}) {
 /// Drag it straight away, without holding first, to move it: wherever it sits
 /// by default is over the thing someone wants to read. Throw it at a side, or
 /// push it flat against one, and it tucks in there half off the screen; a tap
-/// on what is left brings it back out, a little clear of the edge.
+/// on what is left brings it back out, a little clear of the edge. Left alone,
+/// it fades part way so the output under it shows through; a touch brings it
+/// straight back.
 ///
 /// Give it the whole terminal area with [Positioned.fill]: it is a layer, and
 /// only the button inside it takes touches.
@@ -318,6 +320,12 @@ class _MagicKeyState extends State<MagicKey> {
 
   static const _glideTime = Duration(milliseconds: 220);
 
+  /// Left alone this long, the button fades to [_idleOpacity] over [_fadeTime]
+  /// so it hides less of the output under it.
+  static const _idleAfter = Duration(seconds: 3);
+  static const _idleOpacity = 0.6;
+  static const _fadeTime = Duration(milliseconds: 1800);
+
   /// Where the button sits, as a fraction of the room it has to move in, so it
   /// keeps its corner across a rotation and when the keyboard resizes the page.
   Offset _spot = const Offset(0.95, 0.92);
@@ -343,6 +351,11 @@ class _MagicKeyState extends State<MagicKey> {
   /// has gone on to; null while it is on [_aim] itself.
   int? _child;
 
+  /// Faded for want of a touch. The clock starts whenever a finger leaves the
+  /// button, and stops when one lands.
+  bool _idle = false;
+  Timer? _idleClock;
+
   /// The ring is up, and only for as long as the finger that opened it is.
   bool _picking = false;
 
@@ -365,6 +378,13 @@ class _MagicKeyState extends State<MagicKey> {
   void initState() {
     super.initState();
     unawaited(_restore());
+    _doze();
+  }
+
+  @override
+  void dispose() {
+    _idleClock?.cancel();
+    super.dispose();
   }
 
   Future<void> _restore() async {
@@ -383,6 +403,23 @@ class _MagicKeyState extends State<MagicKey> {
     await prefs.setDouble(_prefsX, _spot.dx);
     await prefs.setDouble(_prefsY, _spot.dy);
     await prefs.setBool(_prefsDocked, _docked);
+  }
+
+  /// A finger on the button: it is back at full strength, and stays so while
+  /// the finger is down.
+  void _wake() {
+    _idleClock?.cancel();
+    if (_idle) setState(() => _idle = false);
+  }
+
+  /// A finger off it: the clock to fade it starts. The rings and a move each
+  /// hold a finger down, so they keep it awake anyway; checking again is for a
+  /// second finger that lifts while the first is still at it.
+  void _doze() {
+    _idleClock?.cancel();
+    _idleClock = Timer(_idleAfter, () {
+      if (!_picking && !_moving) setState(() => _idle = true);
+    });
   }
 
   /// Direction picks the key of ring 1; past halfway out to ring 2 the same
@@ -578,10 +615,24 @@ class _MagicKeyState extends State<MagicKey> {
                   onPanUpdate: (details) => _keepMoving(details, room),
                   onPanEnd: (details) => _stopMoving(details.velocity),
                   onPanCancel: _stopMoving,
-                  child: _Button(
-                    picking: _picking,
-                    moving: _moving,
-                    tuckedLeft: _docked ? _onLeft : null,
+                  // Any touch wakes a faded key, whatever the gesture turns
+                  // out to be; a Listener hears it without joining the arena.
+                  child: Listener(
+                    onPointerDown: (_) => _wake(),
+                    onPointerUp: (_) => _doze(),
+                    onPointerCancel: (_) => _doze(),
+                    child: AnimatedOpacity(
+                      opacity: _idle ? _idleOpacity : 1,
+                      // Slow to fade, back at once: the touch that wakes it
+                      // is already on it.
+                      duration: _idle ? _fadeTime : Duration.zero,
+                      curve: Curves.easeOut,
+                      child: _Button(
+                        picking: _picking,
+                        moving: _moving,
+                        tuckedLeft: _docked ? _onLeft : null,
+                      ),
+                    ),
                   ),
                 ),
               ),
