@@ -55,7 +55,11 @@ class Dartssh2Transport implements SessionTransport {
 }
 
 class _Dartssh2Session
-    implements TerminalSession, FileUploadCapable, FileBrowseCapable {
+    implements
+        TerminalSession,
+        FileUploadCapable,
+        FileBrowseCapable,
+        CommandCapable {
   _Dartssh2Session(
     this._knownHosts,
     this._onHostKeyPinned,
@@ -242,6 +246,29 @@ class _Dartssh2Session
       throw const SshSessionException('Not connected.');
     }
     return SftpFileBrowser(client);
+  }
+
+  /// One exec channel per command, on the connection the shell already holds.
+  @override
+  Stream<String> run(String command, {bool pty = false}) async* {
+    final client = _client;
+    if (client == null || _status.value != SessionStatus.connected) {
+      throw const SshSessionException('Not connected.');
+    }
+    final session = await client.execute(
+      command,
+      pty: pty ? const SSHPtyConfig() : null,
+    );
+    try {
+      const decoder = Utf8Decoder(allowMalformed: true);
+      yield* const LineSplitter().bind(decoder.bind(session.stdout));
+    } finally {
+      // Reached on cancellation too. `destroy` rather than `close`: dartssh2's
+      // close only sends EOF and waits for the far end to finish, which a
+      // command that never reads its stdin never does. Destroying sends the
+      // close outright, and sshd hangs up what it was running.
+      session.channel.destroy();
+    }
   }
 
   /// Everything lands in `/tmp`, named after the file the user picked.

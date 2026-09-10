@@ -34,6 +34,7 @@ lib/
     session/
       terminal_session.dart         protocol-agnostic session interface
       dartssh2_transport.dart       the SSH implementation of it
+      tailnet_forwarder.dart        servers started in a session, onto the tailnet
     files/
       file_browser.dart             protocol-agnostic filesystem interface
       sftp_file_browser.dart        the SFTP implementation of it
@@ -197,6 +198,59 @@ expires — which is why this mode ends up being the least friction of the three
 the tailnet at all (its NAT does not route to the host's tailscale interface),
 so it has to use `10.0.2.2` and the system sshd. Only real devices on the
 tailnet can use Tailscale SSH.
+
+### Forwarding ports to the tailnet
+
+With **Forward ports to the tailnet** on in the host editor, a server started
+in a session goes on the tailnet by itself. Run `vite` on the host, it listens
+on `localhost:3000`, and a moment later the app says **Port 3000 is on
+`<host>.<tailnet>.ts.net:3001`**, with a button that opens it. The session
+menu lists what is forwarded; the server stopping, or the tab closing, takes
+it off again.
+
+```
+vite ── localhost:3000 ◀── tailscale serve --tcp 3001 ◀── <host>.ts.net:3001
+                           (run on the host, over the session's SSH)
+```
+
+A phone cannot make a port appear under the server's MagicDNS name, so the
+work happens on the host, over the connection the shell already holds:
+
+- **Watching.** A loop on its own exec channel reads `/proc/net/tcp` every two
+  seconds and sends back only the listening sockets. A port counts when it is
+  the user's own, on loopback or every address, below the ephemeral range
+  (32768), and was not already listening when the session connected — a
+  session forwards what it started, not everything the box runs.
+- **Forwarding.** One `tailscale serve --tcp <public> tcp://localhost:<port>`
+  per server, in the foreground on a pty channel. Foreground rather than
+  `--bg` because tailscaled drops a foreground config the moment its process
+  goes, however it goes — `kill -9` included — so a phone that vanishes
+  mid-session leaves nothing behind on the host.
+- **The public port** is the first one above the server's that nothing on the
+  host listens on, so 3000 goes to 3001. The tab remembers it: after a dropped
+  connection the same server comes back at the same address.
+- **Two tabs on one host** forward a server once. If the tab that forwarded it
+  closes while the server keeps running, the other one takes it over.
+
+The channels are closed with dartssh2's `destroy`, not `close`: `close` only
+sends EOF and waits for the far end to finish, and neither the loop nor
+`tailscale serve` reads stdin, so both would run on until the connection
+dropped.
+
+**What the host needs:** Linux, Tailscale, and permission to change the serve
+config without root — `sudo tailscale set --operator=$USER`, once. Without it
+the forward is refused and the app shows tailscale's own error. A refused
+forward is not retried until its server restarts. Each forward holds a
+channel, and OpenSSH allows ten per connection by default (`MaxSessions`), so
+about seven fit beside the shell, the watch and the file browser.
+
+**Recent Vite refuses hostnames it does not know.** Opened at `…ts.net:3001`
+it answers "Blocked request. This host is not allowed"; add
+`server: { allowedHosts: ['.ts.net'] }` to `vite.config.js`.
+
+**It opens the port to the whole tailnet**, not only this phone — every device
+the tailnet's ACLs let reach the host. That is why it is off by default, and
+set per host.
 
 ## Sessions and resuming
 

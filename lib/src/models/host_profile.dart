@@ -21,6 +21,7 @@ class HostProfile {
     this.port = 22,
     this.authMethod = SshAuthMethod.password,
     this.fileRoot = '',
+    this.forwardPorts = false,
   });
 
   final String id;
@@ -33,6 +34,11 @@ class HostProfile {
   /// Where the file tree opens on this host. Blank means the login home, and
   /// a path that is not absolute is taken from there — see `RemotePath.resolve`.
   final String fileRoot;
+
+  /// Whether a server started in a session goes on the tailnet by itself —
+  /// see `TailnetForwarder`. Off by default: it opens a port to every device
+  /// the tailnet lets in.
+  final bool forwardPorts;
 
   /// What we show under the label, e.g. `root@10.0.2.2` or `me@box:2222`.
   String get target =>
@@ -48,6 +54,7 @@ class HostProfile {
     int? port,
     SshAuthMethod? authMethod,
     String? fileRoot,
+    bool? forwardPorts,
   }) {
     return HostProfile(
       id: id,
@@ -57,6 +64,7 @@ class HostProfile {
       port: port ?? this.port,
       authMethod: authMethod ?? this.authMethod,
       fileRoot: fileRoot ?? this.fileRoot,
+      forwardPorts: forwardPorts ?? this.forwardPorts,
     );
   }
 
@@ -68,6 +76,7 @@ class HostProfile {
         'port': port,
         'authMethod': authMethod.name,
         'fileRoot': fileRoot,
+        'forwardPorts': forwardPorts,
       };
 
   factory HostProfile.fromJson(Map<String, dynamic> json) {
@@ -82,6 +91,7 @@ class HostProfile {
         orElse: () => SshAuthMethod.password,
       ),
       fileRoot: json['fileRoot'] as String? ?? '',
+      forwardPorts: json['forwardPorts'] as bool? ?? false,
     );
   }
 }

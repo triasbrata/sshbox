@@ -69,6 +69,7 @@ class _HostEditPageState extends State<HostEditPage> {
   final _passphrase = TextEditingController();
 
   late SshAuthMethod _authMethod;
+  late bool _forwardPorts;
   bool _saving = false;
 
   bool get _isEditing => widget.existing != null;
@@ -83,6 +84,7 @@ class _HostEditPageState extends State<HostEditPage> {
     _username = TextEditingController(text: existing?.username ?? '');
     _fileRoot = TextEditingController(text: existing?.fileRoot ?? '');
     _authMethod = existing?.authMethod ?? SshAuthMethod.password;
+    _forwardPorts = existing?.forwardPorts ?? false;
   }
 
   @override
@@ -118,6 +120,7 @@ class _HostEditPageState extends State<HostEditPage> {
       port: int.parse(_port.text.trim()),
       authMethod: _authMethod,
       fileRoot: _fileRoot.text.trim(),
+      forwardPorts: _forwardPorts,
     );
 
     await widget.repository.upsert(profile);
@@ -212,6 +215,20 @@ class _HostEditPageState extends State<HostEditPage> {
               autocorrect: false,
               keyboardType: TextInputType.url,
               textInputAction: TextInputAction.next,
+            ),
+            const SizedBox(height: 12),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _forwardPorts,
+              onChanged: (value) => setState(() => _forwardPorts = value),
+              title: const Text('Forward ports to the tailnet'),
+              subtitle: const Text(
+                'A server you start in a session goes on the tailnet by '
+                'itself: vite on port 3000 shows up at this host\'s MagicDNS '
+                'name on 3001. Needs Tailscale on a Linux host, and leave to '
+                'serve without root there (sudo tailscale set '
+                '--operator=\$USER, once).',
+              ),
             ),
             const SizedBox(height: 24),
             SegmentedButton<SshAuthMethod>(

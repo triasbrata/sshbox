@@ -68,6 +68,22 @@ abstract class FileBrowseCapable {
   FileBrowser openFileBrowser();
 }
 
+/// Optional capability: running a command on the host beside the shell,
+/// without typing it into the shell.
+///
+/// What putting ports on the tailnet needs — see `TailnetForwarder`. A
+/// transport that carries only a terminal, as mosh does, cannot offer it.
+abstract class CommandCapable {
+  /// Starts [command] when listened to and hands back its output a line at a
+  /// time; the stream ends when the command does. Cancelling the subscription
+  /// ends the command.
+  ///
+  /// [pty] gives it a terminal, which is what makes cancelling hang up a
+  /// command that never writes: without one the host only closes its pipes,
+  /// and a process that is not writing never notices.
+  Stream<String> run(String command, {bool pty = false});
+}
+
 abstract class SessionTransport {
   Future<TerminalSession> connect({
     required HostProfile host,

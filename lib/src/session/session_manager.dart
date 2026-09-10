@@ -7,6 +7,7 @@ import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import 'dartssh2_transport.dart';
+import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 
 /// A local file waiting to go to the host — from the picker, or handed to us
@@ -20,7 +21,14 @@ typedef SharedFile = ({String path, String name});
 /// and threw the session away — which is precisely what "return me to my
 /// session" has to avoid.
 class LiveSession extends ChangeNotifier {
-  LiveSession({required this._host}) {
+  LiveSession({
+    required this._host,
+    bool Function(int port)? forwardedElsewhere,
+  }) {
+    forwarder = TailnetForwarder(
+      onChanged: _notify,
+      forwardedElsewhere: forwardedElsewhere,
+    );
     // Wired up front, not at connect time: the view reports its size during
     // the first layout, which happens before the shell exists.
     _wireTerminal();
@@ -34,7 +42,24 @@ class LiveSession extends ChangeNotifier {
   /// see [SessionManager.updateHost].
   set host(HostProfile value) {
     _host = value;
+    _syncForwarding();
     _notify();
+  }
+
+  /// Puts servers started in this session on the tailnet, when the host is
+  /// set to. Outlives reconnects, so a server keeps its address across a
+  /// dropped connection.
+  late final TailnetForwarder forwarder;
+
+  /// Forwarding follows the host's switch while connected, so turning it off
+  /// takes the ports off the tailnet now rather than at the next connect.
+  void _syncForwarding() {
+    final session = _session;
+    if (host.forwardPorts && isConnected && session is CommandCapable) {
+      forwarder.start(session as CommandCapable);
+    } else {
+      forwarder.stop();
+    }
   }
 
   /// Names this session among the others on the same host — a host can have
@@ -183,6 +208,7 @@ class LiveSession extends ChangeNotifier {
       _outputSubscription = session.output.listen(terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
+      _syncForwarding();
     } on SshSessionException catch (error) {
       _error = error.message;
     } catch (error) {
@@ -194,6 +220,7 @@ class LiveSession extends ChangeNotifier {
   }
 
   void _onStatusChanged() {
+    _syncForwarding();
     final status = _session?.status.value;
     if (status == SessionStatus.closed) {
       terminal.write('\r\n\x1b[2m[session closed]\x1b[0m\r\n');
@@ -282,6 +309,7 @@ class LiveSession extends ChangeNotifier {
   }
 
   Future<void> _teardown() async {
+    forwarder.stop();
     final session = _session;
     _session = null;
     final browser = _fileBrowser;
@@ -404,7 +432,12 @@ class SessionManager extends ChangeNotifier {
   /// Opens another terminal on this host, whatever it already has open, and
   /// shows it.
   LiveSession open(HostProfile host) {
-    final created = LiveSession(host: host);
+    late final LiveSession created;
+    created = LiveSession(
+      host: host,
+      forwardedElsewhere: (port) => sessionsFor(created.host.id)
+          .any((s) => s != created && s.forwarder.isForwarding(port)),
+    );
     created.addListener(notifyListeners);
     _sessions[created.id] = created;
     _active = created;

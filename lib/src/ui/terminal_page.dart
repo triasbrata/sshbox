@@ -74,6 +74,10 @@ class _TerminalPageState extends State<TerminalPage> {
 
   LiveSession get _session => widget.session;
 
+  /// Forwards and problems already announced, so each gets one snack bar.
+  /// Held by identity: a server that restarts is a new forward, and says so.
+  final _announced = <Object>{};
+
   @override
   void initState() {
     super.initState();
@@ -113,10 +117,78 @@ class _TerminalPageState extends State<TerminalPage> {
       _browseExpanded = const {};
     }
     setState(() {});
+    _announceForwards();
     // A file shared from another app may have been queued before this page
     // existed, or before the shell came up. Either way the session notifies,
     // and this is where it lands.
     unawaited(_drainShared());
+  }
+
+  /// Says so when a server lands on the tailnet, or cannot, with a way
+  /// straight to it — whichever tab is showing, because the moment it lands
+  /// is when the address is wanted.
+  void _announceForwards() {
+    final messenger = ScaffoldMessenger.of(context);
+    final forwarder = _session.forwarder;
+    for (final forward in forwarder.forwards) {
+      final address = forward.address;
+      if (address == null && forward.error == null) continue;
+      if (!_announced.add(forward)) continue;
+      messenger.showSnackBar(
+        address != null
+            ? SnackBar(
+                duration: const Duration(seconds: 8),
+                content: Text('Port ${forward.port} is on $address'),
+                action: SnackBarAction(
+                  label: 'Open',
+                  onPressed: () => _openForward(address),
+                ),
+              )
+            : SnackBar(
+                content: Text(
+                  'Port ${forward.port} not forwarded: ${forward.error}',
+                ),
+              ),
+      );
+    }
+    final problem = forwarder.problem;
+    if (problem != null && _announced.add(problem)) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Not forwarding ports: $problem')),
+      );
+    }
+  }
+
+  void _openForward(String address) => launchUrl(
+        Uri.parse('http://$address'),
+        mode: LaunchMode.externalApplication,
+      );
+
+  /// The session menu's tail: what this session has on the tailnet, each
+  /// opening in the browser.
+  List<PopupMenuEntry<String>> _forwardItems() {
+    final forwarder = _session.forwarder;
+    final problem = forwarder.problem;
+    if (!_session.isConnected ||
+        (forwarder.forwards.isEmpty && problem == null)) {
+      return const [];
+    }
+    PopupMenuItem<String> item(String text, {String? address}) =>
+        PopupMenuItem(
+          enabled: address != null,
+          onTap: address == null ? null : () => _openForward(address),
+          child: Text(text, maxLines: 3, overflow: TextOverflow.ellipsis),
+        );
+    return [
+      const PopupMenuDivider(),
+      for (final forward in forwarder.forwards)
+        item(
+          '${forward.port} → '
+          '${forward.address ?? forward.error ?? 'starting…'}',
+          address: forward.address,
+        ),
+      if (problem != null) item('Not forwarding ports: $problem'),
+    ];
   }
 
   /// Uploads anything handed to the session from outside the terminal page.
@@ -350,6 +422,7 @@ class _TerminalPageState extends State<TerminalPage> {
                 enabled: _session.isConnected,
                 child: const Text('Disconnect'),
               ),
+              ..._forwardItems(),
             ],
           ),
         ],
