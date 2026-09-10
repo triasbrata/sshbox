@@ -9,7 +9,7 @@ import 'terminal_page.dart';
 
 /// One tab, named by what it shows rather than by an index — indices shift
 /// every time a tab opens or closes. [path] is set only for a file tab.
-typedef _TabRef = ({LiveSession session, TabKind kind, String? path});
+typedef TabRef = ({LiveSession session, TabKind kind, String? path});
 
 /// The app's one screen: a pinned host list on the left, then a tab per open
 /// session, and beside each session a tab for every file opened from its
@@ -63,7 +63,7 @@ class _TabsShellState extends State<TabsShell> {
   /// Left to right: each session's shell, then the files opened from it. A
   /// file tab sits next to its session because it is that session it is read
   /// over — closing the shell takes them with it.
-  List<_TabRef> _tabs() => [
+  List<TabRef> _tabs() => [
     for (final session in widget.sessions.sessions) ...[
       (session: session, kind: TabKind.terminal, path: null),
       for (final path in session.openFiles)
@@ -71,7 +71,7 @@ class _TabsShellState extends State<TabsShell> {
     ],
   ];
 
-  Widget _pageFor(_TabRef tab) => switch (tab.kind) {
+  Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
       // Keyed by what the tab shows so closing one carries the
       // remaining pages' state along with them instead of leaving it
@@ -87,8 +87,7 @@ class _TabsShellState extends State<TabsShell> {
       path: tab.path!,
       // Non-null tells the editor it is embedded rather than a route: leaving
       // it closes this tab instead of popping the whole shell.
-      onClose: () =>
-          widget.sessions.closeFile(tab.session.host.id, tab.path!),
+      onClose: () => widget.sessions.closeFile(tab.session.host.id, tab.path!),
     ),
   };
 
@@ -114,7 +113,7 @@ class _TabsShellState extends State<TabsShell> {
         bottom: false,
         child: Column(
           children: [
-            _TabStrip(
+            TabStrip(
               tabs: tabs,
               activeIndex: activeIndex,
               onSelect: widget.sessions.select,
@@ -157,33 +156,37 @@ class _TabsShellState extends State<TabsShell> {
   }
 }
 
-class _TabStrip extends StatefulWidget {
-  const _TabStrip({
+/// Public only so a test can lay the strip out without the pages under it —
+/// a terminal page connects over SSH as soon as it is built.
+@visibleForTesting
+class TabStrip extends StatefulWidget {
+  const TabStrip({
+    super.key,
     required this.tabs,
     required this.activeIndex,
     required this.onSelect,
     required this.onClose,
   });
 
-  final List<_TabRef> tabs;
+  final List<TabRef> tabs;
   final int activeIndex;
   final void Function(String? hostId, {TabKind kind, String? path}) onSelect;
-  final void Function(_TabRef tab) onClose;
+  final void Function(TabRef tab) onClose;
 
   @override
-  State<_TabStrip> createState() => _TabStripState();
+  State<TabStrip> createState() => _TabStripState();
 }
 
-class _TabStripState extends State<_TabStrip> {
+class _TabStripState extends State<TabStrip> {
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
   String? _shown;
 
-  static String _idOf(_TabRef tab) =>
+  static String _idOf(TabRef tab) =>
       '${tab.kind.name}:${tab.session.host.id}:${tab.path ?? ''}';
 
   @override
-  void didUpdateWidget(covariant _TabStrip oldWidget) {
+  void didUpdateWidget(covariant TabStrip oldWidget) {
     super.didUpdateWidget(oldWidget);
     _revealActive();
   }
@@ -227,12 +230,40 @@ class _TabStripState extends State<_TabStrip> {
     final ids = tabs.map(_idOf).toSet();
     _keys.removeWhere((id, _) => !ids.contains(id));
 
-    final addTab = IconButton(
+    // A lone tab takes the whole strip, the way Terminus lays it out: there
+    // is nothing to scroll to or to make room for, so capping it would only
+    // cut short the one name on the strip.
+    final single = tabs.length == 1;
+
+    final addTab = _TabChip(
+      icon: Icons.add,
+      label: null,
       tooltip: 'New tab',
-      visualDensity: VisualDensity.compact,
-      onPressed: () => widget.onSelect(null),
-      icon: const Icon(Icons.add, size: 20),
+      selected: false,
+      onTap: () => widget.onSelect(null),
     );
+
+    final chips = [
+      for (final (index, tab) in tabs.indexed)
+        _TabChip(
+          key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
+          icon: tab.kind == TabKind.file
+              ? Icons.description_outlined
+              : Icons.terminal,
+          label: tab.kind == TabKind.file
+              ? tab.session.fileTabTitle(tab.path!)
+              : tab.session.title,
+          selected: index + 1 == widget.activeIndex,
+          connected: tab.kind == TabKind.terminal && tab.session.isConnected,
+          expand: single,
+          onTap: () => widget.onSelect(
+            tab.session.host.id,
+            kind: tab.kind,
+            path: tab.path,
+          ),
+          onClose: () => widget.onClose(tab),
+        ),
+    ];
 
     return Container(
       height: 44,
@@ -242,8 +273,9 @@ class _TabStripState extends State<_TabStrip> {
         builder: (context, constraints) {
           // Wide: the button follows the last tab, the way a desktop browser
           // puts it. Narrow: it stays parked on the right, where a thumb can
-          // find it without hunting for the end of a strip that scrolls.
-          final wide = constraints.maxWidth >= _wideStrip;
+          // find it without hunting for the end of a strip that scrolls. A
+          // lone tab stretches up to it, so there it is parked either way.
+          final followsTabs = !single && constraints.maxWidth >= _wideStrip;
 
           return Row(
             children: [
@@ -258,36 +290,16 @@ class _TabStripState extends State<_TabStrip> {
                 onTap: () => widget.onSelect(null),
               ),
               Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      for (final (index, tab) in tabs.indexed)
-                        _TabChip(
-                          key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
-                          icon: tab.kind == TabKind.file
-                              ? Icons.description_outlined
-                              : Icons.terminal,
-                          label: tab.kind == TabKind.file
-                              ? tab.session.fileTabTitle(tab.path!)
-                              : tab.session.title,
-                          selected: index + 1 == widget.activeIndex,
-                          connected:
-                              tab.kind == TabKind.terminal &&
-                              tab.session.isConnected,
-                          onTap: () => widget.onSelect(
-                            tab.session.host.id,
-                            kind: tab.kind,
-                            path: tab.path,
-                          ),
-                          onClose: () => widget.onClose(tab),
+                child: single
+                    ? chips.single
+                    : SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [...chips, if (followsTabs) addTab],
                         ),
-                      if (wide) addTab,
-                    ],
-                  ),
-                ),
+                      ),
               ),
-              if (!wide) addTab,
+              if (!followsTabs) addTab,
             ],
           );
         },
@@ -305,6 +317,7 @@ class _TabChip extends StatelessWidget {
     required this.onTap,
     this.tooltip,
     this.connected = false,
+    this.expand = false,
     this.onClose,
   });
 
@@ -315,6 +328,10 @@ class _TabChip extends StatelessWidget {
   final IconData icon;
   final bool selected;
   final bool connected;
+
+  /// Fill the width the chip is given instead of fitting its name: the name
+  /// takes the room and the close button lands at the far end of the pill.
+  final bool expand;
   final VoidCallback onTap;
   final VoidCallback? onClose;
 
@@ -327,6 +344,14 @@ class _TabChip extends StatelessWidget {
   static const double _selectedText = 180;
   static const double _idleText = 110;
 
+  /// Every chip on the strip — the host list, each tab, new tab — is this
+  /// tall, and an icon alone gets as much room across as up. The end buttons
+  /// come out square and level with the tabs rather than as loose icons of a
+  /// different weight beside them.
+  static const double _height = 34;
+  static const double _iconSize = 16;
+  static const double _inset = (_height - _iconSize) / 2;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -334,38 +359,52 @@ class _TabChip extends StatelessWidget {
         ? theme.colorScheme.onSurface
         : theme.colorScheme.onSurfaceVariant;
     final name = label;
+    final title = name == null
+        ? null
+        : Text(
+            name,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+            softWrap: false,
+            style: theme.textTheme.labelLarge?.copyWith(color: foreground),
+          );
 
     final chip = Material(
-      color: selected ? theme.colorScheme.surface : Colors.transparent,
+      // The page's own colour marks where you are. Everything else wears the
+      // same faint fill, so it reads as a button — without one, the host list
+      // collapses to a bare icon the moment a session is showing.
+      color: selected
+          ? theme.colorScheme.surface
+          : theme.colorScheme.onSurface.withValues(alpha: 0.08),
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: EdgeInsets.fromLTRB(10, 0, onClose == null ? 10 : 2, 0),
+          padding: EdgeInsets.fromLTRB(
+            _inset,
+            0,
+            onClose == null ? _inset : 2,
+            0,
+          ),
           child: Row(
             children: [
               Icon(
                 icon,
-                size: 16,
+                size: _iconSize,
                 color: connected ? theme.colorScheme.primary : foreground,
               ),
-              if (name != null) ...[
+              if (title != null) ...[
                 const SizedBox(width: 6),
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: selected ? _selectedText : _idleText,
-                  ),
-                  child: Text(
-                    name,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    softWrap: false,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: foreground,
+                if (expand)
+                  Expanded(child: title)
+                else
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: selected ? _selectedText : _idleText,
                     ),
+                    child: title,
                   ),
-                ),
               ],
               if (onClose != null)
                 IconButton(
@@ -386,8 +425,11 @@ class _TabChip extends StatelessWidget {
     );
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
-      child: tooltip == null ? chip : Tooltip(message: tooltip!, child: chip),
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: SizedBox(
+        height: _height,
+        child: tooltip == null ? chip : Tooltip(message: tooltip!, child: chip),
+      ),
     );
   }
 }
