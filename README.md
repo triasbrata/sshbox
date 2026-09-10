@@ -294,6 +294,21 @@ offers no streaming write, and loading a video into memory is not something a
 phone forgives. Filenames are scrubbed to `[A-Za-z0-9._-]`, since they arrive
 from Android's picker and end up on a command line.
 
+### Sharing into a session
+
+Any app's share sheet lists sshbox. The file lands in `/tmp` on the session you
+were last in, and its path is typed at the prompt — the same path the paperclip
+takes, so there is one upload routine and not two.
+
+A share usually starts the app from dead, which means there is nothing to
+upload to yet: the file waits until a host is opened, then goes. Android hands
+over a `content://` URI owned by the sending app, which SFTP cannot read, so
+`MainActivity` copies it into our cache first and passes only the path across
+the method channel.
+
+Android only. iOS needs a separate Share Extension target to appear in its
+share sheet.
+
 ## Browsing files (code-server)
 
 The folder button in a terminal opens

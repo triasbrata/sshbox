@@ -49,6 +49,15 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="sshbox"/>
             </intent-filter>
+            <!-- "Share with sshbox" from any other app: the file goes to /tmp
+                 on the session you were last in. singleTop again — sharing into
+                 a running app must resume the session, not restart it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="*/*"/>
+            </intent-filter>
         </activity>
         <!-- Declared here rather than left to manifest merging: from Android 14
              the service must carry a foregroundServiceType, and it has to match
