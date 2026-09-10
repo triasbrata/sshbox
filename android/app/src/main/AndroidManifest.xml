@@ -14,6 +14,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
+    <!-- Split-screen and the OEM floating/pop-up window are the same system
+         feature: the app only has to say it can be resized. Declared rather
+         than left to the targetSdk default so a future targetSdk bump cannot
+         silently turn it off. The freeform hint is what Samsung DeX and the
+         Android desktop windowing shell look for; required="false" keeps the
+         app installable on phones that have no freeform mode. -->
+    <uses-feature
+        android:name="android.software.freeform_window_management"
+        android:required="false"/>
+
     <application
         android:label="sshbox"
         android:name="${applicationName}"
@@ -23,10 +33,20 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""
+            android:resizeableActivity="true"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
+            <!-- Floating-window bounds. The minimums leave room for the app bar
+                 (56dp), the key bar (48dp) and still ~10 terminal rows — below
+                 that the app bar actions start colliding with the title. -->
+            <layout
+                android:defaultWidth="480dp"
+                android:defaultHeight="640dp"
+                android:gravity="end|top"
+                android:minWidth="320dp"
+                android:minHeight="280dp"/>
             <!-- Specifies an Android theme to apply to this Activity as soon as
                  the Android process has started. This theme is visible to the user
                  while the Flutter UI initializes. After that, this theme continues
