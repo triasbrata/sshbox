@@ -29,9 +29,8 @@ final List<MagicKeyAction> magicKeys = [
 ];
 
 /// Ring 2: the keys behind each of ring 1's, keyed by its label, reached by
-/// sliding past it further the same way. Two at most, the first a little
-/// counter-clockwise of it and the second a little clockwise, or a lone one
-/// right behind it; a key with nothing here answers all the way out.
+/// sliding past it further the same way. Two at most: the first right behind
+/// it, the second one step clockwise of that.
 ///
 /// Each is a key that goes with its parent — further the same way, or the same
 /// key for another job — so the hand is already nearly there. ESC ESC is
@@ -115,8 +114,8 @@ double _angleBetween(double a, double b) {
 
 /// Where the petals sit around a button at [centre] inside [bounds]: an angle
 /// per key, clockwise from north in radians, with ring 1 at [radius] and ring
-/// 2 at [outer] — the keys behind each one [spread] either side of its angle,
-/// or on it for a lone one.
+/// 2 at [outer] — the keys behind each one [spread] apart, the first on its
+/// own angle and the next clockwise.
 ///
 /// With room all round they take the compass points in [magicKeys] order, so
 /// the arrows sit where they point. Against an edge there is no room on that
@@ -159,20 +158,13 @@ double _angleBetween(double a, double b) {
   // Room all round — or, on a screen too small for any of it, no better idea
   // than the plain ring.
   if (arc.sweep <= 0 || arc.sweep >= 2 * math.pi) {
-    return (
-      angles: compass,
-      radius: inner,
-      outer: r,
-      spread: math.pi / count / 2,
-    );
+    return (angles: compass, radius: inner, outer: r, spread: math.pi / count);
   }
 
-  // Each key keeps a quarter of a spacing clear either side for the keys
-  // behind it, so those behind the ends of the fan stay on the arc too.
+  // The second key behind a key sits half a spacing clockwise of it, so the
+  // last slot stops half a spacing short of the end of the arc.
   final spacing = arc.sweep / (count - 0.5);
-  final slots = [
-    for (var j = 0; j < count; j++) arc.start + spacing * (j + 0.25),
-  ];
+  final slots = [for (var j = 0; j < count; j++) arc.start + spacing * j];
   // A key whose own direction is still on screen has a right answer, so it
   // outranks every key whose direction the edge has taken away — otherwise →
   // gets parked at the top of a corner fan because that is "only" 86° wrong
@@ -198,7 +190,7 @@ double _angleBetween(double a, double b) {
     angles: [for (final j in slotOf) slots[j] % (2 * math.pi)],
     radius: inner,
     outer: r,
-    spread: spacing / 4,
+    spread: spacing / 2,
   );
 }
 
@@ -347,8 +339,8 @@ class _MagicKeyState extends State<MagicKey> {
 
   int? _aim;
 
-  /// Past halfway out to ring 2, which of the keys behind [_aim] the finger
-  /// has gone on to; null while it is on [_aim] itself.
+  /// Past halfway out to ring 2, which of the keys behind [_aim] is aimed at;
+  /// null while ring 1's [_aim] itself is.
   int? _child;
 
   /// Faded for want of a touch. The clock starts whenever a finger leaves the
@@ -422,15 +414,29 @@ class _MagicKeyState extends State<MagicKey> {
     });
   }
 
-  /// Direction picks the key of ring 1; past halfway out to ring 2 the same
-  /// way means one of the keys behind it. A key with nothing behind it answers
-  /// all the way out.
+  /// Direction picks the key of ring 1. Past halfway out to ring 2 it picks
+  /// ring 2's petal nearest that direction instead, so straight on is the key
+  /// right behind — whichever key of ring 1 that petal hangs off. Where ring 1
+  /// has nothing, the middle or the gap a fan leaves, ring 2 has nothing too.
   void _aimAt(Offset drag) {
-    final aim = petalFor(drag, _ring.angles);
-    final behind = aim == null ? const <double>[] : _subAnglesOf(aim);
-    final child = behind.isNotEmpty && drag.distance >= _halfway
-        ? petalFor(drag, behind)
-        : null;
+    var aim = petalFor(drag, _ring.angles);
+    int? child;
+    if (aim != null && drag.distance >= _halfway) {
+      // North, clockwise, as in [petalFor].
+      final pointing = math.atan2(drag.dx, -drag.dy);
+      var nearest = double.infinity;
+      for (var i = 0; i < magicKeys.length; i++) {
+        final angles = _subAnglesOf(i);
+        for (var j = 0; j < angles.length; j++) {
+          final gap = _angleBetween(pointing, angles[j]);
+          if (gap < nearest) {
+            nearest = gap;
+            aim = i;
+            child = j;
+          }
+        }
+      }
+    }
     if (aim == _aim && child == _child) return;
     // The finger is covering the button, so this is the only signal that the
     // selection moved.
@@ -444,15 +450,12 @@ class _MagicKeyState extends State<MagicKey> {
   List<MagicKeyAction> _subKeysOf(int index) =>
       magicSubKeys[magicKeys[index].label] ?? const [];
 
-  /// Where ring 2 has the keys behind [index]: either side of its angle, or
-  /// right on it for a lone one, so going further the same way reaches them.
-  List<double> _subAnglesOf(int index) {
-    final n = _subKeysOf(index).length;
-    return [
-      for (var j = 0; j < n; j++)
-        _ring.angles[index] + (2 * j - n + 1) * _ring.spread,
-    ];
-  }
+  /// Where ring 2 has the keys behind [index]: the first straight behind it,
+  /// so going further the same way reaches it, and the next clockwise.
+  List<double> _subAnglesOf(int index) => [
+    for (var j = 0; j < _subKeysOf(index).length; j++)
+      _ring.angles[index] + j * _ring.spread,
+  ];
 
   void _openRing(LongPressStartDetails _) {
     _ring = ringLayout(

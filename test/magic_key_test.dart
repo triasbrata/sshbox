@@ -55,7 +55,7 @@ void main() {
       return [
         for (final a in ring.angles) ...[
           petalCentre(centre, a, ring.radius),
-          petalCentre(centre, a - ring.spread, ring.outer),
+          petalCentre(centre, a, ring.outer),
           petalCentre(centre, a + ring.spread, ring.outer),
         ],
       ];
@@ -270,13 +270,14 @@ void main() {
     testWidgets('sliding further the same way sends the key behind',
         (tester) async {
       // A little way up is ↑; past halfway out to ring 2, PgUp behind it.
-      // Dead straight is as near Home as PgUp, and the first behind wins.
-      await slideFromMiddle(tester, const Offset(0, -135));
+      // Straight up as a thumb does it, a few degrees off, is still PgUp.
+      await slideFromMiddle(tester, const Offset(8, -135));
       expect(sent, ['\x1b[5~']);
     });
 
     testWidgets('clockwise of that is the second key behind', (tester) async {
-      await slideFromMiddle(tester, const Offset(25, -135));
+      // About 20° clockwise of straight up.
+      await slideFromMiddle(tester, const Offset(46, -127));
       expect(sent, ['\x1b[H'], reason: 'Home, the other key behind ↑');
     });
 

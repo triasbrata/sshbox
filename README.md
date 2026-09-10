@@ -135,11 +135,12 @@ ring has the arrows where they point, with ESC, TAB, `^C` and `^D` between.
 The outer ring holds, behind each of those, one or two keys that go with it
 (`magicSubKeys`): PgUp and Home behind ↑, PgDn and End behind ↓, Home or End
 and a word jump behind ← and →, Shift+Tab behind TAB, a double ESC behind ESC,
-`^Z` and `^\` behind `^C`, `^L` and `^R` behind `^D`. Slide toward a key and
-lift to send it. How far you slide picks the ring: a little way up is ↑,
-further up is PgUp, and Home is just clockwise of it. Lifting in the middle
-sends nothing. Near an edge both rings fan into the room that is left, each
-outer key still behind its inner one.
+`^Z` and `^\` behind `^C`, `^L` and `^R` behind `^D`. The first of each pair
+sits right behind its key and the second one step clockwise. Slide toward a
+key and lift to send it. How far you slide picks the ring: a little way up is
+↑, straight on further is PgUp, and leaning clockwise out there is Home.
+Lifting in the middle sends nothing. Near an edge both rings fan into the room
+that is left, each outer key still behind its inner one.
 
 ## Running it
 
