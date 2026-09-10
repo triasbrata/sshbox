@@ -179,17 +179,29 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(child: _buildBody()),
-          if (_session.isConnected)
-            TerminalKeyBar(
+      body: _buildBody(),
+      // In the Scaffold's own slot rather than the body so it rides above the
+      // soft keyboard and the button below floats clear of it.
+      bottomNavigationBar: _session.isConnected
+          ? TerminalKeyBar(
               controller: _keyBar,
               terminal: _session.terminal,
               onEmit: _session.sendRaw,
-            ),
-        ],
-      ),
+            )
+          : null,
+      // Enter is the one key you reach for with the keyboard down — reading
+      // output, answering a prompt, waking a dozing shell. ExcludeFocus keeps
+      // the tap from pulling focus off the terminal, which would close the
+      // keyboard for anyone who did have it open.
+      floatingActionButton: _session.isConnected
+          ? ExcludeFocus(
+              child: FloatingActionButton.small(
+                tooltip: 'Enter',
+                onPressed: () => _session.sendRaw('\r'),
+                child: const Icon(Icons.keyboard_return),
+              ),
+            )
+          : null,
     );
   }
 
@@ -201,11 +213,15 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Stack(
       children: [
-        TerminalView(
-          _session.terminal,
-          autofocus: true,
-          padding: const EdgeInsets.all(6),
-          textStyle: const TerminalStyle(fontSize: 13),
+        SwipeKeyPad(
+          terminal: _session.terminal,
+          onEmit: _session.sendRaw,
+          child: TerminalView(
+            _session.terminal,
+            autofocus: true,
+            padding: const EdgeInsets.all(6),
+            textStyle: const TerminalStyle(fontSize: 13),
+          ),
         ),
         if (_session.connecting)
           ColoredBox(

@@ -54,4 +54,26 @@ void main() {
       expect(controller.applyModifiers('?'), '\x7f');
     });
   });
+
+  group('swipe gestures', () {
+    test('ignores a wobble inside the deadzone', () {
+      expect(swipeArrow(const Offset(12, 9)), isNull);
+    });
+
+    test('picks the arrow from the dominant axis', () {
+      expect(swipeArrow(const Offset(60, 10)), 'C');
+      expect(swipeArrow(const Offset(-60, 10)), 'D');
+      expect(swipeArrow(const Offset(10, 60)), 'B');
+      expect(swipeArrow(const Offset(10, -60)), 'A');
+    });
+
+    test('repeats faster the further the drag reaches', () {
+      final near = swipeIntervalMs(30);
+      final far = swipeIntervalMs(150);
+      expect(far, lessThan(near));
+      expect(swipeIntervalMs(0), 320);
+      // A drag longer than the screen must not run away to zero.
+      expect(swipeIntervalMs(5000), 40);
+    });
+  });
 }

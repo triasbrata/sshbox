@@ -1,5 +1,33 @@
+import 'dart:async';
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:xterm2/xterm.dart';
+
+/// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
+/// form; sending CSI there produces stray characters instead of movement.
+String cursorKey(Terminal terminal, String finalChar) =>
+    terminal.cursorKeysMode ? '\x1bO$finalChar' : '\x1b[$finalChar';
+
+/// How far a drag must travel before it counts as a direction rather than a
+/// wobble during a tap.
+const _swipeDeadzone = 20.0;
+
+/// The cursor key a drag of [offset] from where the finger landed stands for,
+/// or null while it is still inside the deadzone.
+String? swipeArrow(Offset offset) {
+  if (offset.distance < _swipeDeadzone) return null;
+  if (offset.dx.abs() > offset.dy.abs()) return offset.dx > 0 ? 'C' : 'D';
+  return offset.dy > 0 ? 'B' : 'A';
+}
+
+/// Milliseconds between repeats for a drag [distance] from the origin, so a
+/// longer drag runs the cursor faster — the further you reach, the more of the
+/// line or the history you are asking to cross.
+int swipeIntervalMs(double distance) {
+  final past = (distance - _swipeDeadzone).clamp(0.0, 200.0);
+  return (320 - past * 1.4).round().clamp(40, 320);
+}
 
 /// Holds the sticky modifier state shared by the key bar and the terminal's
 /// outgoing data path.
@@ -80,10 +108,7 @@ class TerminalKeyBar extends StatelessWidget {
 
   final void Function(String data) onEmit;
 
-  /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
-  /// form; sending CSI there produces stray characters instead of movement.
-  String _cursor(String finalChar) =>
-      terminal.cursorKeysMode ? '\x1bO$finalChar' : '\x1b[$finalChar';
+  String _cursor(String finalChar) => cursorKey(terminal, finalChar);
 
   @override
   Widget build(BuildContext context) {
@@ -204,6 +229,115 @@ class _KeyDivider extends StatelessWidget {
         thickness: 1,
         color: Theme.of(context).colorScheme.outlineVariant,
       ),
+    );
+  }
+}
+
+/// Wraps the terminal so a drag across it holds down an arrow key: the
+/// direction picks the key, and how far the finger has travelled sets how fast
+/// it repeats. A double tap sends Tab, which is what a shell wants far more
+/// often than it wants a word selected.
+///
+/// Only touch drags are claimed. xterm2 selects text on touch with a long
+/// press — its own pan recogniser is mouse-only — so holding still before you
+/// move still selects, and a single tap still raises the keyboard.
+class SwipeKeyPad extends StatefulWidget {
+  const SwipeKeyPad({
+    super.key,
+    required this.terminal,
+    required this.onEmit,
+    required this.child,
+  });
+
+  /// Read at emit time so cursor keys follow the application's current mode.
+  final Terminal terminal;
+
+  final void Function(String data) onEmit;
+
+  final Widget child;
+
+  @override
+  State<SwipeKeyPad> createState() => _SwipeKeyPadState();
+}
+
+class _SwipeKeyPadState extends State<SwipeKeyPad> {
+  Timer? _repeat;
+  Offset _travelled = Offset.zero;
+  String? _arrow;
+
+  @override
+  void dispose() {
+    _repeat?.cancel();
+    super.dispose();
+  }
+
+  void _onUpdate(DragUpdateDetails details) {
+    _travelled += details.delta;
+
+    final arrow = swipeArrow(_travelled);
+    if (arrow == _arrow) return;
+
+    // A new direction starts over: fire once immediately so a quick flick
+    // moves the cursor at all, then let the timer take over.
+    _arrow = arrow;
+    _repeat?.cancel();
+    if (arrow != null) _fire();
+  }
+
+  void _fire() {
+    final arrow = _arrow;
+    if (arrow == null) return;
+
+    widget.onEmit(cursorKey(widget.terminal, arrow));
+    // Rescheduled rather than periodic so reaching further mid-drag speeds the
+    // repeat up without waiting out the interval already in flight.
+    _repeat = Timer(
+      Duration(milliseconds: swipeIntervalMs(_travelled.distance)),
+      _fire,
+    );
+  }
+
+  void _stop() {
+    _repeat?.cancel();
+    _repeat = null;
+    _arrow = null;
+    _travelled = Offset.zero;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RawGestureDetector(
+      excludeFromSemantics: true,
+      gestures: {
+        PanGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<PanGestureRecognizer>(
+          () => PanGestureRecognizer(
+            debugOwner: this,
+            supportedDevices: const {PointerDeviceKind.touch},
+          ),
+          (instance) {
+            instance
+              ..onStart = (_) {
+                _stop();
+              }
+              ..onUpdate = _onUpdate
+              ..onEnd = (_) {
+                _stop();
+              }
+              ..onCancel = _stop;
+          },
+        ),
+        // ponytail: this holds the arena for kDoubleTapTimeout, so a single tap
+        // raises the keyboard ~300ms later than it used to. Detect the second
+        // tap from a plain Listener instead if that lag ever grates — at the
+        // cost of xterm2 also selecting a word under the double tap.
+        DoubleTapGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<DoubleTapGestureRecognizer>(
+          () => DoubleTapGestureRecognizer(debugOwner: this),
+          (instance) => instance.onDoubleTap = () => widget.onEmit('\t'),
+        ),
+      },
+      child: widget.child,
     );
   }
 }
