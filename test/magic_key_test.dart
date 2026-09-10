@@ -277,6 +277,54 @@ void main() {
       expect(prefs.getDouble('sshbox.magickey.y'), isNotNull);
     });
 
+    final box = find.byKey(const ValueKey('magic-key-button'));
+
+    testWidgets('thrown at a side, it tucks in half off the screen',
+        (tester) async {
+      await pumpKey(tester);
+
+      await tester.fling(button, const Offset(-200, 0), 1500);
+      await tester.pumpAndSettle();
+
+      expect(tester.getRect(box).center.dx, moreOrLessEquals(0),
+          reason: 'its middle sits on the left edge');
+      expect(sent, isEmpty, reason: 'throwing it must not send a key');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool('sshbox.magickey.docked'), isTrue);
+    });
+
+    testWidgets('a tap brings a tucked key back out, clear of the edge',
+        (tester) async {
+      await pumpKey(tester);
+      await tester.fling(button, const Offset(-200, 0), 1500);
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Show Enter key'), findsOneWidget);
+
+      // On the half that is still showing.
+      await tester.tapAt(Offset(10, tester.getRect(box).center.dy));
+      await tester.pumpAndSettle();
+
+      expect(tester.getRect(box).left, moreOrLessEquals(16));
+      expect(sent, isEmpty, reason: 'fetching it is not a keystroke');
+
+      await tester.tap(button);
+      expect(sent, ['\r'], reason: 'once out, it is the Enter key again');
+    });
+
+    testWidgets('pushed flat against a side, it tucks in there too',
+        (tester) async {
+      await pumpKey(tester);
+      final screen = tester.getRect(find.byType(MagicKey));
+
+      // A drag with no speed behind it: the edge is what tucks it in, not a
+      // throw.
+      await tester.drag(button, const Offset(300, 0));
+      await tester.pumpAndSettle();
+
+      expect(tester.getRect(box).center.dx, moreOrLessEquals(screen.right));
+    });
+
     testWidgets('it is named for what a tap does', (tester) async {
       await pumpKey(tester);
       expect(find.bySemanticsLabel('Send Enter'), findsOneWidget);

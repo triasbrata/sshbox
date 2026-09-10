@@ -232,7 +232,9 @@ int? petalFor(Offset offset, List<double> angles, {double deadZone = 18}) {
 /// so the ring only ever exists while the finger that asked for it is down.
 ///
 /// Drag it straight away, without holding first, to move it: wherever it sits
-/// by default is over the thing someone wants to read.
+/// by default is over the thing someone wants to read. Throw it at a side, or
+/// push it flat against one, and it tucks in there half off the screen; a tap
+/// on what is left brings it back out, a little clear of the edge.
 ///
 /// Give it the whole terminal area with [Positioned.fill]: it is a layer, and
 /// only the button inside it takes touches.
@@ -249,13 +251,33 @@ class MagicKey extends StatefulWidget {
 class _MagicKeyState extends State<MagicKey> {
   static const _prefsX = 'sshbox.magickey.x';
   static const _prefsY = 'sshbox.magickey.y';
+  static const _prefsDocked = 'sshbox.magickey.docked';
 
   static const _size = 52.0;
   static const _petal = 40.0;
 
+  /// Sideways speed, in logical pixels a second, at which letting go counts as
+  /// a throw rather than a move that happened to end moving. Tuned by thumb.
+  static const _throwSpeed = 700.0;
+
+  /// How far short of the edge a button coming out of its side stops.
+  static const _inset = 16.0;
+
+  static const _glideTime = Duration(milliseconds: 220);
+
   /// Where the button sits, as a fraction of the room it has to move in, so it
   /// keeps its corner across a rotation and when the keyboard resizes the page.
   Offset _spot = const Offset(0.95, 0.92);
+
+  /// Tucked into a side, half off the screen. The side is whichever edge
+  /// [_spot] is against.
+  bool _docked = false;
+
+  bool get _onLeft => _spot.dx < 0.5;
+
+  /// Zero whenever a finger is moving the button, so it stays under the
+  /// finger; set only when it tucks in or comes back out, so those glide.
+  Duration _glide = Duration.zero;
 
   /// [_spot] and the finger's position when the current move began. Measuring
   /// from where the finger landed is drift-free where summing deltas is not.
@@ -292,13 +314,17 @@ class _MagicKeyState extends State<MagicKey> {
     final x = prefs.getDouble(_prefsX);
     final y = prefs.getDouble(_prefsY);
     if (!mounted || x == null || y == null) return;
-    setState(() => _spot = Offset(x, y));
+    setState(() {
+      _spot = Offset(x, y);
+      _docked = prefs.getBool(_prefsDocked) ?? false;
+    });
   }
 
   Future<void> _remember() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_prefsX, _spot.dx);
     await prefs.setDouble(_prefsY, _spot.dy);
+    await prefs.setBool(_prefsDocked, _docked);
   }
 
   void _aimAt(Offset drag) {
@@ -344,6 +370,8 @@ class _MagicKeyState extends State<MagicKey> {
     _grab = details.globalPosition;
     setState(() {
       _moving = true;
+      _docked = false;
+      _glide = Duration.zero;
       _picking = false;
       _aim = null;
     });
@@ -359,9 +387,33 @@ class _MagicKeyState extends State<MagicKey> {
     });
   }
 
-  void _stopMoving() {
+  /// Let go while moving fast sideways, or pushed flat against a side, and the
+  /// button tucks into that side — out of the way of the output, and still one
+  /// tap from coming back.
+  void _stopMoving([Velocity velocity = Velocity.zero]) {
     if (!_moving) return;
-    setState(() => _moving = false);
+    final v = velocity.pixelsPerSecond;
+    final thrown = v.dx.abs() > _throwSpeed && v.dx.abs() > v.dy.abs();
+    final againstSide = _spot.dx <= 0 || _spot.dx >= 1;
+    setState(() {
+      _moving = false;
+      if (thrown || againstSide) {
+        _docked = true;
+        _glide = _glideTime;
+        if (thrown) _spot = Offset(v.dx > 0 ? 1 : 0, _spot.dy);
+      }
+    });
+    unawaited(_remember());
+  }
+
+  /// Out of its side, stopping [_inset] short of the edge it was tucked into.
+  void _reveal(Size room) {
+    final inset = (_inset / room.width).clamp(0.0, 1.0);
+    setState(() {
+      _docked = false;
+      _glide = _glideTime;
+      _spot = Offset(_onLeft ? inset : 1 - inset, _spot.dy);
+    });
     unawaited(_remember());
   }
 
@@ -373,7 +425,13 @@ class _MagicKeyState extends State<MagicKey> {
           math.max(1, constraints.maxWidth - _size),
           math.max(1, constraints.maxHeight - _size),
         );
-        final origin = Offset(_spot.dx * room.width, _spot.dy * room.height);
+        final origin = Offset(
+          // Tucked in, its middle sits on the edge: half on screen, half off.
+          _docked
+              ? (_onLeft ? 0 : constraints.maxWidth) - _size / 2
+              : _spot.dx * room.width,
+          _spot.dy * room.height,
+        );
         _centre = origin + const Offset(_size / 2, _size / 2);
         _bounds = constraints.biggest;
 
@@ -381,12 +439,14 @@ class _MagicKeyState extends State<MagicKey> {
           children: [
             if (_picking)
               for (var i = 0; i < magicKeys.length; i++) _petalAt(i),
-            Positioned(
+            AnimatedPositioned(
               // Keyed because the ring is inserted ahead of it mid-gesture.
               // Unkeyed, Flutter would reuse this element for the first petal
               // and throw away the detector holding the finger, so the hold
               // that opened the ring could never end.
               key: const ValueKey('magic-key-button'),
+              duration: _glide,
+              curve: Curves.easeOutCubic,
               left: origin.dx,
               top: origin.dy,
               width: _size,
@@ -394,10 +454,14 @@ class _MagicKeyState extends State<MagicKey> {
               child: Semantics(
                 // Named for what a tap does. Screen readers need it, and so
                 // does anything driving the app by its accessibility tree.
-                label: 'Send Enter',
+                label: _docked ? 'Show Enter key' : 'Send Enter',
                 button: true,
                 child: GestureDetector(
-                  onTap: () => widget.onEmit('\r'),
+                  // A tucked-away key is out of the way on purpose; the first
+                  // tap only fetches it, and never lands in the shell.
+                  onTap: _docked
+                      ? () => _reveal(room)
+                      : () => widget.onEmit('\r'),
                   // Pan and long press share the gesture arena, which is what
                   // splits the two: hold still until the long press fires and
                   // the ring opens, move first and the button comes loose.
@@ -408,9 +472,13 @@ class _MagicKeyState extends State<MagicKey> {
                   onLongPressCancel: _closeRing,
                   onPanStart: _startMoving,
                   onPanUpdate: (details) => _keepMoving(details, room),
-                  onPanEnd: (_) => _stopMoving(),
+                  onPanEnd: (details) => _stopMoving(details.velocity),
                   onPanCancel: _stopMoving,
-                  child: _Button(picking: _picking, moving: _moving),
+                  child: _Button(
+                    picking: _picking,
+                    moving: _moving,
+                    tuckedLeft: _docked ? _onLeft : null,
+                  ),
                 ),
               ),
             ),
@@ -437,14 +505,22 @@ class _MagicKeyState extends State<MagicKey> {
 }
 
 class _Button extends StatelessWidget {
-  const _Button({required this.picking, required this.moving});
+  const _Button({
+    required this.picking,
+    required this.moving,
+    this.tuckedLeft,
+  });
 
   final bool picking;
   final bool moving;
 
+  /// Which side it is tucked into, or null while it floats free.
+  final bool? tuckedLeft;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final tucked = tuckedLeft;
 
     return Material(
       // Lifted while it is loose, so it reads as picked up rather than stuck.
@@ -453,10 +529,18 @@ class _Button extends StatelessWidget {
       color: moving
           ? theme.colorScheme.tertiaryContainer
           : theme.colorScheme.primaryContainer,
-      child: Center(
+      // Tucked in, only half of it is on screen: the icon moves into that half
+      // and points the way the button comes out, where a centred Enter would
+      // be cut down the middle.
+      child: Align(
+        alignment: tucked == null
+            ? Alignment.center
+            : Alignment(tucked ? 0.8 : -0.8, 0),
         child: Icon(
           moving
               ? Icons.open_with
+              : tucked != null
+              ? (tucked ? Icons.chevron_right : Icons.chevron_left)
               : picking
               ? Icons.radio_button_unchecked
               : Icons.keyboard_return,
