@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm2/xterm.dart';
 
+/// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
+/// form; sending CSI there produces stray characters instead of movement.
+String cursorKey(Terminal terminal, String finalChar) =>
+    terminal.cursorKeysMode ? '\x1bO$finalChar' : '\x1b[$finalChar';
+
 /// Holds the sticky modifier state shared by the key bar and the terminal's
 /// outgoing data path.
 class KeyBarController extends ChangeNotifier {
@@ -133,10 +138,7 @@ class TerminalKeyBar extends StatelessWidget {
 
   final void Function(String data) onEmit;
 
-  /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
-  /// form; sending CSI there produces stray characters instead of movement.
-  String _cursor(String finalChar) =>
-      terminal.cursorKeysMode ? '\x1bO$finalChar' : '\x1b[$finalChar';
+  String _cursor(String finalChar) => cursorKey(terminal, finalChar);
 
   @override
   Widget build(BuildContext context) {
