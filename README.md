@@ -127,17 +127,19 @@ there is no text selection by touch.
 
 `ui/magic_key.dart` floats a round Enter key over the terminal, for when the
 keyboard is down. Tap it for Enter. Drag it to move it; throw it at a side and
-it tucks in half off the screen. Hold it and a ring of keys opens round it —
-the arrows where they point, ESC, TAB, `^C` and `^D` between — and sliding
-toward one and lifting sends it. Near an edge the ring fans into the room that
-is left.
+it tucks in half off the screen. Left alone for a few seconds it fades to 60%
+so the output under it shows through; a touch brings it straight back.
 
-Rest on a petal as long as the hold took and, if it has keys behind it, a
-second ring opens round that petal: slide to one and lift, or lift where you
-are for the petal itself. Back in the middle still cancels. `magicSubKeys`
-holds what is behind each petal: PgUp and Home behind ↑, PgDn and End behind ↓,
-Home or End and a word jump behind ← and →, Shift+Tab behind TAB, a double ESC
-behind ESC, `^Z` and `^\` behind `^C`, `^L` and `^R` behind `^D`.
+Hold it and two rings of keys open round it, each on its own band. The inner
+ring has the arrows where they point, with ESC, TAB, `^C` and `^D` between.
+The outer ring holds, behind each of those, one or two keys that go with it
+(`magicSubKeys`): PgUp and Home behind ↑, PgDn and End behind ↓, Home or End
+and a word jump behind ← and →, Shift+Tab behind TAB, a double ESC behind ESC,
+`^Z` and `^\` behind `^C`, `^L` and `^R` behind `^D`. Slide toward a key and
+lift to send it. How far you slide picks the ring: a little way up is ↑,
+further up is PgUp, and Home is just clockwise of it. Lifting in the middle
+sends nothing. Near an edge both rings fan into the room that is left, each
+outer key still behind its inner one.
 
 ## Running it
 
