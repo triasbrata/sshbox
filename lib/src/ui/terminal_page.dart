@@ -149,7 +149,7 @@ class _TerminalPageState extends State<TerminalPage> {
   /// own could not do.
   Future<void> _openFiles() async {
     setState(() => _browser ??= _session.openFileBrowser());
-    _scaffoldKey.currentState?.openDrawer();
+    _scaffoldKey.currentState?.openEndDrawer();
   }
 
   Widget _buildFilesDrawer() {
@@ -174,7 +174,7 @@ class _TerminalPageState extends State<TerminalPage> {
     );
   }
 
-  void _closeFilesDrawer() => _scaffoldKey.currentState?.closeDrawer();
+  void _closeFilesDrawer() => _scaffoldKey.currentState?.closeEndDrawer();
 
   /// Opens [path]: beside the terminal where there is room for both, and as a
   /// screen of its own where there is not.
@@ -306,18 +306,11 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Scaffold(
       key: _scaffoldKey,
-      drawer: _buildFilesDrawer(),
+      endDrawer: _buildFilesDrawer(),
       // Never by edge swipe: the terminal owns horizontal gestures, and having
       // the file list slide over the shell mid-command would be maddening.
-      drawerEnableOpenDragGesture: false,
+      endDrawerEnableOpenDragGesture: false,
       appBar: AppBar(
-        // Set by hand, because attaching a drawer otherwise replaces the back
-        // button with a hamburger. The drawer opens from "Browse files".
-        leading: IconButton(
-          tooltip: 'Back',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.of(context).maybePop(),
-        ),
         title: Text(_session.title, overflow: TextOverflow.ellipsis),
         bottom: _uploading
             ? PreferredSize(
