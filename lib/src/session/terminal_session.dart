@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 
 enum SessionStatus { connecting, connected, closed, failed }
@@ -51,6 +52,20 @@ abstract class FileUploadCapable {
     required String fileName,
     void Function(int sent, int total)? onProgress,
   });
+}
+
+/// Optional capability: reading and writing files on the remote host.
+///
+/// Kept apart from [FileUploadCapable] because they are different promises.
+/// Uploading is one shot into `/tmp` and any transport that can move bytes can
+/// do it; browsing is a filesystem the user navigates, and a transport either
+/// exposes one or does not.
+abstract class FileBrowseCapable {
+  /// Opens a browser bound to this session.
+  ///
+  /// The caller owns the result and must [FileBrowser.close] it — one browser
+  /// per page, closed when that page goes away.
+  FileBrowser openFileBrowser();
 }
 
 /// A listener on the device that tunnels to a port on the remote host.

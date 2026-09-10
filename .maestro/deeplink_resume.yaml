@@ -5,6 +5,13 @@
 # Deliberately asserts only on navigation, not on the shell coming up, so it
 # stays meaningful on a device that cannot reach the host — routing is what is
 # under test here, not connectivity.
+#
+# HOST_ID below is per device, not per project: ids are generated when a host
+# is added, so the emulator's entry and the phone's are different rows with
+# different ids. Pointed at an id the device does not have, this lands on the
+# host list and fails at the assertions — which looks like a regression in the
+# terminal page and is not one. Set it to an id that exists on the device
+# under test.
 appId: cloud.brata.terminal
 env:
   HOST_ID: "wsl-emu"

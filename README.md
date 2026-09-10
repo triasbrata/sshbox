@@ -33,13 +33,25 @@ lib/
       known_host_store.dart         trust-on-first-use host key pinning
     session/
       terminal_session.dart         protocol-agnostic session interface
-      dartssh2_transport.dart       the only file that imports dartssh2
+      dartssh2_transport.dart       the SSH implementation of it
+    files/
+      file_browser.dart             protocol-agnostic filesystem interface
+      sftp_file_browser.dart        the SFTP implementation of it
     ui/
       hosts_page.dart               host list
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
       key_bar.dart                  the accessory keyboard row
+      workbench.dart                the tablet split and its draggable seam
+      file_browser_page.dart        native directory listing
+      file_editor_page.dart         read and edit one remote file
+      file_search_page.dart         find text under a directory
+      files_page.dart               code-server in a WebView
 ```
+
+`dartssh2` is imported in exactly two files, `dartssh2_transport.dart` and
+`sftp_file_browser.dart`. Both are SSH implementations of an interface that
+mentions no protocol; everything else is written against the interface.
 
 ### The one structural decision that matters
 
@@ -53,6 +65,18 @@ Mosh survives suspension and IP changes, and it is the single biggest reason
 Termius and Blink feel better than a plain SSH client. Adding it here means
 writing one more `SessionTransport` and changing the line that picks it; no
 widget has to learn that anything changed.
+
+`FileBrowser` in `files/file_browser.dart` is the same move made twice. Today
+the only implementation is SFTP over the session already open. Later a daemon
+on the host, reached through the same kind of port forward code-server uses,
+could replace it — HTTP for the CRUD, and a WebSocket only where streaming
+actually pays: search results arriving as they are found, transfer progress,
+file watching. None of that is decided yet, and the interface does not care
+which arrives.
+
+The interface is deliberately shaped by what the pages need rather than by
+what SFTP offers. Modelling it on SFTP would force a daemon into a
+round-trip-per-entry shape and throw away the one advantage it has.
 
 ### Security decisions already made
 
@@ -108,6 +132,7 @@ maestro --device <serial> test .maestro/
 | `smoke` | app starts, host list renders | nothing |
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
+| `file_browser` | the native browser opens and shows a listing rather than an error | a reachable host with a stored credential |
 
 Two things worth knowing before editing these:
 
@@ -120,7 +145,15 @@ app.
 
 **Device choice matters.** Maestro installs a driver APK, and MIUI/HyperOS
 refuses new-package installs over adb, so flows cannot run on a Xiaomi device
-without lifting that restriction. `connect_and_keybar` additionally fails on
+without lifting that restriction.
+
+**Check the device's ABI before building for it.** The Galaxy A13 (SM-A135F)
+here is `armeabi-v7a` only — arm64 hardware shipped with a 32-bit userspace.
+An APK built `--target-platform android-arm64` installs onto it perfectly
+happily and then dies at launch with `Could not find 'libflutter.so'`, which
+reads like an app bug and is not one. `adb shell getprop ro.product.cpu.abilist`
+settles it; a plain `flutter build apk --debug` covers every ABI and sidesteps
+the question. `connect_and_keybar` additionally fails on
 any device that cannot reach the host — that failure is the assertion doing
 its job, since the key bar only renders on a live session.
 
@@ -337,11 +370,80 @@ the method channel.
 Android only. iOS needs a separate Share Extension target to appear in its
 share sheet.
 
-## Browsing files (code-server)
+## Browsing files
 
-The folder button in a terminal opens
-[code-server](https://github.com/coder/code-server) — VS Code running on the
-host — giving a file tree, search and an editor without building any of it.
+The folder button in a terminal slides the remote filesystem in as a drawer
+from the right, the side that button sits on:
+tap a folder to descend, tap a file to read or edit it, and save back to the
+host. A drawer rather than a screen because tapping outside it returns you to
+the terminal in one gesture, from however deep in the tree you had wandered. Rename, delete, new file and new folder are on each row's menu,
+and "type path in terminal" drops a path at the prompt, shell-quoted, so the
+next thing you write is a command that uses it.
+
+The row menu also types a path at the prompt, and sends the shell to a folder
+with `cd`. **Follow in terminal** in the overflow menu does that on every
+navigation instead of on request — off by default, because it types into a live
+shell and a shell is not always at a prompt: with an editor or a build running,
+a `cd` lands as input to that instead.
+
+Everything the pages touch goes through `FileBrowser`. They import no SSH, no
+SFTP and no HTTP, which is what makes the transport swappable later.
+
+**Errors are normalised in the adapter, not the pages.** SFTP status codes and
+a daemon's HTTP responses look nothing alike, and letting either leak would
+make the UI fluent in two error languages. `FileBrowserException` carries one
+readable line plus a `fault` for the handful of cases a user can act on
+differently — too large, not text, permission denied, gone.
+
+**Refusing beats guessing.** A file over 1 MiB is not truncated into the
+editor, it is refused with its size; a file with a NUL byte in it is refused as
+binary; a file that is not valid UTF-8 is refused rather than decoded loosely,
+because showing mojibake means saving mojibake back over the original.
+
+### On a tablet
+
+Past 840dp choosing a file splits the screen instead of covering it — terminal
+on the left, editor on the right, with a seam you can drag between a quarter
+and three quarters. Below that width the same tap opens the editor as a screen
+of its own, because two columns on a phone are two columns too narrow to read.
+
+The terminal keeps the whole width until there is something to put beside it.
+
+That ordering is the point. A permanent side panel would cost the terminal half
+its width for the whole session, when most of a session has no file open at
+all. The split appears when it earns its place and folds away when the editor
+is closed.
+
+Nothing forks into a tablet copy of the UI. `FileBrowserPage` and
+`FileEditorPage` are the same widgets a phone shows; each takes a callback that
+says who owns what happens next — hand the tapped file over rather than push a
+screen, close the pane rather than pop a route. `Workbench` holds the geometry
+and knows about neither of them, which is what lets the split be tested without
+an SSH session.
+
+840dp is Material's "expanded" breakpoint and it is the right line here: a
+phone in landscape is 800dp, and splitting that would leave two columns too
+narrow to read.
+
+### Search
+
+Search is an optional capability (`FileSearchCapable`), probed for the same way
+file upload is. Over SFTP it shells out to `grep -rnIF` on the session's own
+connection — literal string, binaries skipped, capped at 500 hits — and runs on
+submit rather than per keystroke, because each run is a process walking a tree
+on the far end.
+
+That is honestly the weaker half of the promise: a daemon could stream ranked
+hits as it finds them. Having two implementations of unequal quality is exactly
+why search is stated as a separate capability rather than folded into
+`FileBrowser`.
+
+## Editing files with code-server
+
+The session menu opens [code-server](https://github.com/coder/code-server) —
+VS Code running on the host. It stays alongside the native browser rather than
+being replaced by it: this is a full editor with a language server behind it,
+which is a different thing from reading a config file on a phone.
 
 code-server is a web application rather than a file API, so the way to use it
 is to display it. `ui/files_page.dart` is a WebView; everything interesting is
@@ -383,9 +485,9 @@ launching it:
 env -u VSCODE_IPC_HOOK_CLI code-server ~/dev
 ```
 
-**On a phone** VS Code's web UI is cramped; on a tablet it is comfortable. A
-native file browser over SFTP would suit small screens better, but it is a
-different piece of work and not a "VS Code feel".
+**On a phone** VS Code's web UI is cramped; on a tablet it is comfortable.
+That is what the native browser above is for — on a small screen it is the
+better of the two, and it needs nothing installed on the host.
 
 ## Not done yet
 
@@ -395,6 +497,9 @@ different piece of work and not a "VS Code feel".
   implementation exists in Dart, so this is real work, not a wiring job.
 - **A tab switcher.** Several sessions can be open at once and the host list
   marks them, but there is no UI for moving between them directly.
-- **SFTP.** `dartssh2` already implements SFTPv3; only UI is missing.
+- **Downloading a file to the phone.** The browser reads and writes text in
+  place; pulling a binary down to local storage is not wired.
+- **A daemon on the host** behind a port forward, to replace SFTP where it is
+  slow. `FileBrowser` is the seam; nothing has been written against it yet.
 - **Biometric unlock**, port forwarding, key generation and import from file,
   and a landscape-aware font size control.
