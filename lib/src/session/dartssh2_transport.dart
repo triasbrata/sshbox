@@ -7,12 +7,17 @@ import 'package:flutter/foundation.dart';
 
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
+import '../files/sftp_file_browser.dart';
 import '../models/host_profile.dart';
 import 'terminal_session.dart';
 
-/// The SSH implementation of [SessionTransport], and the only file in the app
-/// that imports `dartssh2`. Keeping it that way is what makes a future mosh
-/// transport a drop-in rather than a rewrite.
+/// The SSH implementation of [SessionTransport].
+///
+/// `dartssh2` is imported here and in `files/sftp_file_browser.dart`, and
+/// nowhere else. Both are SSH implementations of an interface the rest of the
+/// app is written against, which is what makes a future mosh transport — or a
+/// daemon behind a port forward — a drop-in rather than a rewrite.
 class Dartssh2Transport implements SessionTransport {
   Dartssh2Transport({
     KnownHostStore? knownHosts,
@@ -230,85 +235,14 @@ class _Dartssh2Session
     shell.resizeTerminal(columns, rows, pixelWidth, pixelHeight);
   }
 
-  /// A fresh SFTP channel per operation.
-  ///
-  /// Browsing is bursty — a listing, then nothing while the user reads — and
-  /// dartssh2 keeps a channel open for as long as the client is held, so the
-  /// alternative is a channel idling on the server for the life of the
-  /// session.
-  Future<SftpClient> _sftp() async {
+  @override
+  FileBrowser openFileBrowser() {
     final client = _client;
     if (client == null || _status.value != SessionStatus.connected) {
       throw const SshSessionException('Not connected.');
     }
-    return client.sftp();
+    return SftpFileBrowser(client);
   }
-
-  @override
-  Future<String> homeDirectory() async {
-    final sftp = await _sftp();
-    try {
-      // SFTP starts in the login directory, so this resolves to it.
-      return await sftp.absolute('.');
-    } finally {
-      sftp.close();
-    }
-  }
-
-  @override
-  Future<List<RemoteEntry>> listDirectory(String path) async {
-    final sftp = await _sftp();
-    try {
-      final names = await sftp.listdir(path);
-      final entries = <RemoteEntry>[];
-
-      for (final name in names) {
-        if (name.filename == '.' || name.filename == '..') continue;
-        entries.add(
-          RemoteEntry(
-            name: name.filename,
-            path: _join(path, name.filename),
-            // A symlink reports as neither, so it lands under files and opens
-            // as one. Following it would mean a stat per entry on every
-            // listing.
-            isDirectory: name.attr.isDirectory,
-            size: name.attr.size,
-          ),
-        );
-      }
-
-      // Directories first, then by name — the order every file browser uses,
-      // and the one that makes a deep tree walkable with a thumb.
-      entries.sort((a, b) {
-        if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
-        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      });
-      return entries;
-    } finally {
-      sftp.close();
-    }
-  }
-
-  @override
-  Future<Uint8List> readFile(String path, {required int maxBytes}) async {
-    final sftp = await _sftp();
-    try {
-      final file = await sftp.open(path, mode: SftpFileOpenMode.read);
-      try {
-        // One byte past the cap, so the caller can tell "exactly at the cap"
-        // from "there is more we did not fetch".
-        return await file.readBytes(length: maxBytes + 1);
-      } finally {
-        await file.close();
-      }
-    } finally {
-      sftp.close();
-    }
-  }
-
-  /// Joins a directory and a name without doubling the separator at the root.
-  static String _join(String directory, String name) =>
-      directory.endsWith('/') ? '$directory$name' : '$directory/$name';
 
   /// Everything lands in `/tmp`, named after the file the user picked.
   ///

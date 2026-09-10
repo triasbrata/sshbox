@@ -1,15 +1,19 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
 import '../session/session_manager.dart';
-import 'files_drawer.dart';
+import 'file_browser_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'terminal_link.dart';
 import 'terminal_text_input.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
@@ -36,19 +40,31 @@ class TerminalPage extends StatefulWidget {
 
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// What the file browser is allowed to do to this shell. Owned here so the
+  /// "follow" switch survives the drawer being torn down and rebuilt.
+  late final _terminalLink = TerminalLink(
+    typePath: _typePath,
+    changeDirectory: _cdTo,
+  );
 
   /// Shared with the terminal view below it, which is what holds focus.
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
   final _inputKey = GlobalKey<TerminalTextInputState>();
 
-  /// The drawer is opened from an action in this page's own AppBar, which
-  /// sits above the Scaffold that owns it — hence the key rather than
-  /// `Scaffold.of`.
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
-
   bool _uploading = false;
   double? _uploadProgress;
+
+  /// Kept for the width of a tablet session rather than per visit, because the
+  /// drawer holding it is rebuilt every time it opens and reconnecting SFTP on
+  /// each open would be felt.
+  FileBrowser? _browser;
+
+  /// Where the drawer was last looking, so reopening it does not throw the
+  /// user back to their home directory.
+  String? _browsePath;
 
   LiveSession get _session => widget.session;
 
@@ -78,6 +94,14 @@ class _TerminalPageState extends State<TerminalPage> {
 
   void _onSessionChanged() {
     if (!mounted) return;
+    // A browser is carried by the connection that made it, so when the session
+    // goes, so does the browser and anything opened through it. Holding on
+    // would leave the pane showing a file nothing can save.
+    if (!_session.isConnected && _browser != null) {
+      _browser!.close();
+      _browser = null;
+      _browsePath = null;
+    }
     setState(() {});
     // A file shared from another app may have been queued before this page
     // existed, or before the shell came up. Either way the session notifies,
@@ -108,6 +132,10 @@ class _TerminalPageState extends State<TerminalPage> {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
+    _terminalLink.dispose();
+    // Ours to close: the drawer and the editor pane are handed this rather
+    // than owning it.
+    _browser?.close();
     // The session itself is intentionally left running.
     super.dispose();
   }
@@ -138,6 +166,71 @@ class _TerminalPageState extends State<TerminalPage> {
   // reading, and reconnecting is one button away. Closing the tab is what
   // throws the session away.
   Future<void> _disconnect() => _session.disconnect();
+
+  /// Opens the remote filesystem as a native listing.
+  ///
+  /// The browser is built here and handed over; the page it goes to closes it
+  /// when the user leaves. Which transport is behind it is decided by
+  /// [LiveSession.openFileBrowser] and is not this page's business.
+  /// The listing is a drawer on every size.
+  ///
+  /// Tapping outside it puts you back in the terminal in one gesture, from
+  /// however deep in the tree you had wandered — which a full screen of its
+  /// own could not do.
+  Future<void> _openFiles() async {
+    setState(() => _browser ??= _session.openFileBrowser());
+    _scaffoldKey.currentState?.openEndDrawer();
+  }
+
+  Widget _buildFilesDrawer() {
+    final browser = _browser;
+    if (browser == null) return const Drawer(child: SizedBox.shrink());
+
+    return Drawer(
+      // Wider than Material's 304dp default, because every row here is a path
+      // and the default truncates most of them — but never so wide on a phone
+      // that there is no terminal left to tap back onto.
+      width: math.min(360, MediaQuery.sizeOf(context).width * 0.85),
+      child: FileBrowserPage(
+        browser: browser,
+        title: _session.host.displayName,
+        initialPath: _browsePath,
+        ownsBrowser: false,
+        onPathChanged: (path) => _browsePath = path,
+        terminal: _terminalLink,
+        onClose: _closeFilesDrawer,
+        onFileSelected: _openFileTab,
+      ),
+    );
+  }
+
+  void _closeFilesDrawer() => _scaffoldKey.currentState?.closeEndDrawer();
+
+  /// A picked file becomes a tab of its own, beside this session's — the same
+  /// answer on every size, so there is one place a file is ever opened.
+  void _openFileTab(String path) {
+    _closeFilesDrawer();
+    widget.onOpenFile(path);
+  }
+
+  /// Wraps a path so the shell sees exactly these characters.
+  ///
+  /// A path picked out of a listing can hold spaces, or anything else the
+  /// shell would act on rather than pass along.
+  static String _shellQuote(String path) =>
+      RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
+          ? path
+          : "'${path.replaceAll("'", r"'\''")}'";
+
+  /// Puts a path at the prompt, ready for a command to be written around it.
+  void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
+
+  /// Sends the shell to a directory.
+  ///
+  /// The newline is what separates this from [_typePath]: it runs something.
+  /// That is why the browser only does it when told to, never as a side effect
+  /// of tapping a folder.
+  void _cdTo(String path) => _session.sendRaw('cd ${_shellQuote(path)}\n');
 
   /// Pick a file, send it to `/tmp` on the host, then type the remote path at
   /// the prompt — so the next thing you write is a command that uses it.
@@ -188,21 +281,14 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
-  /// The drawer is a detour, so it closes behind the file it opened.
-  void _openFile(String path) {
-    _scaffoldKey.currentState?.closeEndDrawer();
-    widget.onOpenFile(path);
-  }
-
   @override
   Widget build(BuildContext context) {
-    final canBrowse = _session.isConnected && _session.canBrowseFiles;
-
     return Scaffold(
       key: _scaffoldKey,
-      endDrawer: canBrowse
-          ? FilesDrawer(session: _session, onOpenFile: _openFile)
-          : null,
+      endDrawer: _buildFilesDrawer(),
+      // Never by edge swipe: the terminal owns horizontal gestures, and having
+      // the file list slide over the shell mid-command would be maddening.
+      endDrawerEnableOpenDragGesture: false,
       appBar: AppBar(
         title: Text(_session.title, overflow: TextOverflow.ellipsis),
         bottom: _uploading
@@ -214,8 +300,8 @@ class _TerminalPageState extends State<TerminalPage> {
         actions: [
           IconButton(
             tooltip: 'Browse files',
-            onPressed: canBrowse
-                ? () => _scaffoldKey.currentState?.openEndDrawer()
+            onPressed: (_session.isConnected && _session.canBrowseFiles)
+                ? _openFiles
                 : null,
             icon: const Icon(Icons.folder_outlined),
           ),
@@ -228,15 +314,30 @@ class _TerminalPageState extends State<TerminalPage> {
                 : null,
             icon: const Icon(Icons.attach_file),
           ),
-          IconButton(
-            tooltip: 'Reconnect',
-            onPressed: _session.connecting ? null : _reconnect,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: 'Disconnect',
-            onPressed: _session.isConnected ? _disconnect : null,
-            icon: const Icon(Icons.link_off),
+          // The rest live in a menu: four icons plus a title do not fit across
+          // a phone, and these are the three used least often.
+          PopupMenuButton<String>(
+            tooltip: 'Session',
+            onSelected: (choice) {
+              switch (choice) {
+                case 'reconnect':
+                  _reconnect();
+                case 'disconnect':
+                  _disconnect();
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'reconnect',
+                enabled: !_session.connecting,
+                child: const Text('Reconnect'),
+              ),
+              PopupMenuItem(
+                value: 'disconnect',
+                enabled: _session.isConnected,
+                child: const Text('Disconnect'),
+              ),
+            ],
           ),
         ],
       ),

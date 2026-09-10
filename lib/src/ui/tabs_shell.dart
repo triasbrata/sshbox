@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../session/session_manager.dart';
-import 'file_page.dart';
+import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
 
@@ -81,10 +81,14 @@ class _TabsShellState extends State<TabsShell> {
       secrets: widget.secrets,
       onOpenFile: (path) => widget.sessions.openFile(tab.session.host.id, path),
     ),
-    TabKind.file => FilePage(
+    TabKind.file => FileEditorPage(
       key: ValueKey('file:${tab.session.host.id}:${tab.path}'),
-      session: tab.session,
+      browser: tab.session.fileBrowser,
       path: tab.path!,
+      // Non-null tells the editor it is embedded rather than a route: leaving
+      // it closes this tab instead of popping the whole shell.
+      onClose: () =>
+          widget.sessions.closeFile(tab.session.host.id, tab.path!),
     ),
   };
 

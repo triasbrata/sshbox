@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 
 enum SessionStatus { connecting, connected, closed, failed }
@@ -53,40 +54,18 @@ abstract class FileUploadCapable {
   });
 }
 
-/// One entry in a remote directory.
-class RemoteEntry {
-  const RemoteEntry({
-    required this.name,
-    required this.path,
-    required this.isDirectory,
-    this.size,
-  });
-
-  final String name;
-
-  /// Absolute, so opening an entry never depends on where the browser happens
-  /// to be standing.
-  final String path;
-
-  final bool isDirectory;
-  final int? size;
-}
-
-/// Optional capability: reading the remote filesystem.
+/// Optional capability: reading and writing files on the remote host.
 ///
-/// This is what the files drawer lists and what a file tab shows. Like
-/// uploading, it rides the session that has already authenticated — there is
-/// no second connection.
+/// Kept apart from [FileUploadCapable] because they are different promises.
+/// Uploading is one shot into `/tmp` and any transport that can move bytes can
+/// do it; browsing is a filesystem the user navigates, and a transport either
+/// exposes one or does not.
 abstract class FileBrowseCapable {
-  /// Where browsing starts: the directory the user lands in on login.
-  Future<String> homeDirectory();
-
-  Future<List<RemoteEntry>> listDirectory(String path);
-
-  /// Reads at most [maxBytes]. A phone has no business pulling a
-  /// multi-gigabyte log into memory, so the caller says how much it will hold
-  /// and the rest stays on the server.
-  Future<Uint8List> readFile(String path, {required int maxBytes});
+  /// Opens a browser bound to this session.
+  ///
+  /// The caller owns the result and must [FileBrowser.close] it — one browser
+  /// per page, closed when that page goes away.
+  FileBrowser openFileBrowser();
 }
 
 abstract class SessionTransport {

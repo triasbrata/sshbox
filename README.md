@@ -33,16 +33,24 @@ lib/
       known_host_store.dart         trust-on-first-use host key pinning
     session/
       terminal_session.dart         protocol-agnostic session interface
-      dartssh2_transport.dart       the only file that imports dartssh2
+      dartssh2_transport.dart       the SSH implementation of it
+    files/
+      file_browser.dart             protocol-agnostic filesystem interface
+      sftp_file_browser.dart        the SFTP implementation of it
     ui/
       tabs_shell.dart               pinned host list + a tab per session/file
       hosts_page.dart               host list
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
-      files_drawer.dart             SFTP browser over the open session
-      file_page.dart                one remote file, read-only
       key_bar.dart                  the accessory keyboard row
+      file_browser_page.dart        native directory listing, as a drawer
+      file_editor_page.dart         read and edit one remote file, in a tab
+      file_search_page.dart         find text under a directory
 ```
+
+`dartssh2` is imported in exactly two files, `dartssh2_transport.dart` and
+`sftp_file_browser.dart`. Both are SSH implementations of an interface that
+mentions no protocol; everything else is written against the interface.
 
 ### The one structural decision that matters
 
@@ -56,6 +64,17 @@ Mosh survives suspension and IP changes, and it is the single biggest reason
 Termius and Blink feel better than a plain SSH client. Adding it here means
 writing one more `SessionTransport` and changing the line that picks it; no
 widget has to learn that anything changed.
+
+`FileBrowser` in `files/file_browser.dart` is the same move made twice. Today
+the only implementation is SFTP over the session already open. Later a daemon
+on the host could replace it — HTTP for the CRUD, and a WebSocket only where streaming
+actually pays: search results arriving as they are found, transfer progress,
+file watching. None of that is decided yet, and the interface does not care
+which arrives.
+
+The interface is deliberately shaped by what the pages need rather than by
+what SFTP offers. Modelling it on SFTP would force a daemon into a
+round-trip-per-entry shape and throw away the one advantage it has.
 
 ### Security decisions already made
 
@@ -111,8 +130,8 @@ maestro --device <serial> test .maestro/
 | `smoke` | app starts, host list renders | nothing |
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | nothing |
-| `files_drawer` | the folder button opens the remote filesystem in a drawer | a reachable host with a stored credential |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
+| `file_browser` | the native browser opens and shows a listing rather than an error | a reachable host with a stored credential |
 
 Two things worth knowing before editing these:
 
@@ -125,7 +144,15 @@ app.
 
 **Device choice matters.** Maestro installs a driver APK, and MIUI/HyperOS
 refuses new-package installs over adb, so flows cannot run on a Xiaomi device
-without lifting that restriction. `connect_and_keybar` additionally fails on
+without lifting that restriction.
+
+**Check the device's ABI before building for it.** The Galaxy A13 (SM-A135F)
+here is `armeabi-v7a` only — arm64 hardware shipped with a 32-bit userspace.
+An APK built `--target-platform android-arm64` installs onto it perfectly
+happily and then dies at launch with `Could not find 'libflutter.so'`, which
+reads like an app bug and is not one. `adb shell getprop ro.product.cpu.abilist`
+settles it; a plain `flutter build apk --debug` covers every ABI and sidesteps
+the question. `connect_and_keybar` additionally fails on
 any device that cannot reach the host — that failure is the assertion doing
 its job, since the key bar only renders on a live session.
 
@@ -373,35 +400,63 @@ share sheet.
 
 ## Browsing files
 
-The folder button in a terminal opens a drawer listing the remote filesystem
-over SFTP — over the session that is already authenticated, so there is no
-second connection and nothing is exposed to the network. It starts in the
-login directory, walks in and out of folders, and hands a tapped file's path
-back to the shell that opened it, which turns it into a tab.
+The folder button in a terminal slides the remote filesystem in as a drawer
+from the right, the side that button sits on: tap a folder to descend, tap a
+file to open it. A drawer rather than a screen because tapping outside it
+returns you to the terminal in one gesture, from however deep in the tree you
+had wandered. Rename, delete, new file and new folder are on each row's menu,
+and "type path in terminal" drops a path at the prompt, shell-quoted, so the
+next thing you write is a command that uses it.
+
+The row menu also sends the shell to a folder with `cd`. **Follow in terminal**
+in the overflow menu does that on every navigation instead of on request — off
+by default, because it types into a live shell and a shell is not always at a
+prompt: with an editor or a build running, a `cd` lands as input to that
+instead.
+
+**A picked file opens as a tab**, named `<host> > <file>`, beside the session
+it was read over:
 
 ```
 files drawer ──tap──▶ tab `<host> > <file>`
    └── SFTP, over the session already open
 ```
 
-`ui/files_drawer.dart` browses, `ui/file_page.dart` shows one file. Reading is
-an optional capability (`FileBrowseCapable`) for the same reason upload is —
-a future mosh transport could not offer it.
+One answer on every screen size, rather than a pane on a tablet and a pushed
+screen on a phone — the tab strip is already the app's way of holding more
+than one thing at once, and a file is one more thing. Picking a file that is
+already open returns to its tab rather than stacking a second copy, and
+closing a session takes its file tabs with it: they are read over that
+session's own browser, which cannot outlive it. Every file tab on a session
+shares that one browser, because a browser per tab is a channel per tab
+sitting idle on the server.
 
-Three deliberate limits in the reader:
+Everything the pages touch goes through `FileBrowser`. They import no SSH, no
+SFTP and no HTTP, which is what makes the transport swappable later.
 
-- **512 KB.** A log can be gigabytes; the transport reads one byte past the
-  cap so the page can say it is showing the first 512 KB rather than pretend
-  it has the whole file.
-- **Read-only.** Editing on a phone is what the shell in the next tab is for.
-- **Binary is not rendered.** A NUL byte in the content is the same signal
-  `file` and `grep` use, and rendering the rest as text is noise.
+**Errors are normalised in the adapter, not the pages.** SFTP status codes and
+a daemon's HTTP responses look nothing alike, and letting either leak would
+make the UI fluent in two error languages. `FileBrowserException` carries one
+readable line plus a `fault` for the handful of cases a user can act on
+differently — too large, not text, permission denied, gone.
 
-A directory listing is one SFTP channel, opened and closed per operation:
-browsing is bursty, and dartssh2 holds a channel for as long as the client
-does, so the alternative is a channel idling on the server for the life of the
-session. Symlinks list as files, since following one would mean a stat per
-entry on every listing.
+**Refusing beats guessing.** A file over 1 MiB is not truncated into the
+editor, it is refused with its size; a file with a NUL byte in it is refused as
+binary; a file that is not valid UTF-8 is refused rather than decoded loosely,
+because showing mojibake means saving mojibake back over the original.
+
+### Search
+
+Search is an optional capability (`FileSearchCapable`), probed for the same way
+file upload is. Over SFTP it shells out to `grep -rnIF` on the session's own
+connection — literal string, binaries skipped, capped at 500 hits — and runs on
+submit rather than per keystroke, because each run is a process walking a tree
+on the far end.
+
+That is honestly the weaker half of the promise: a daemon could stream ranked
+hits as it finds them. Having two implementations of unequal quality is exactly
+why search is stated as a separate capability rather than folded into
+`FileBrowser`.
 
 ## Not done yet
 
@@ -409,7 +464,9 @@ entry on every listing.
 - **A relay**, so servers hold a token rather than a service-account JSON.
 - **mosh.** The seam is in place, the transport is not. No mature mosh
   implementation exists in Dart, so this is real work, not a wiring job.
-- **Editing a file** you opened from the drawer. It is read-only; the shell
-  in the next tab is the editor for now.
+- **Downloading a file to the phone.** The browser reads and writes text in
+  place; pulling a binary down to local storage is not wired.
+- **A daemon on the host**, to replace SFTP where it is slow. `FileBrowser` is
+  the seam; nothing has been written against it yet.
 - **Biometric unlock**, key generation and import from file, and a
   landscape-aware font size control.

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import 'dartssh2_transport.dart';
 import 'terminal_session.dart';
@@ -200,16 +201,28 @@ class LiveSession extends ChangeNotifier {
   /// Whether this session's transport can move files at all.
   bool get canUploadFiles => _session is FileUploadCapable;
 
-  /// Whether this session's transport can read the remote filesystem.
+  /// Whether this session's transport exposes a browsable filesystem.
   bool get canBrowseFiles => _session is FileBrowseCapable;
 
-  FileBrowseCapable get _browser {
+  /// Opens a file browser on this session. The caller closes it.
+  FileBrowser openFileBrowser() {
     final session = _session;
     if (session is! FileBrowseCapable) {
       throw const SshSessionException('This session cannot browse files.');
     }
-    return session as FileBrowseCapable;
+    final browsable = session as FileBrowseCapable;
+    return browsable.openFileBrowser();
   }
+
+  FileBrowser? _fileBrowser;
+
+  /// The browser every file tab on this session reads through.
+  ///
+  /// Shared rather than one per tab: the tabs are all reading the same host
+  /// over the same shell, and a browser per tab is a channel per tab sitting
+  /// idle on the server. It is closed with the session, and dropped on a
+  /// reconnect because it is bound to the client that went away.
+  FileBrowser get fileBrowser => _fileBrowser ??= openFileBrowser();
 
   /// Files handed to this session from outside the terminal page, waiting for
   /// the page to be on screen and the shell to be up.
@@ -232,14 +245,6 @@ class LiveSession extends ChangeNotifier {
     _pendingUploads.clear();
     return taken;
   }
-
-  Future<String> homeDirectory() => _browser.homeDirectory();
-
-  Future<List<RemoteEntry>> listDirectory(String path) =>
-      _browser.listDirectory(path);
-
-  Future<Uint8List> readFile(String path, {required int maxBytes}) =>
-      _browser.readFile(path, maxBytes: maxBytes);
 
   /// Uploads into `/tmp` on the remote host and returns the path to type.
   Future<String> uploadToTmp({
@@ -265,6 +270,9 @@ class LiveSession extends ChangeNotifier {
   Future<void> _teardown() async {
     final session = _session;
     _session = null;
+    final browser = _fileBrowser;
+    _fileBrowser = null;
+    await browser?.close();
     await _outputSubscription?.cancel();
     _outputSubscription = null;
     session?.status.removeListener(_onStatusChanged);

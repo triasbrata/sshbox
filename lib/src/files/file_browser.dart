@@ -1,0 +1,215 @@
+/// The shape of a remote filesystem, described without naming a protocol.
+///
+/// This is the seam that keeps a future daemon reachable. Today the only
+/// implementation talks SFTP over the session that is already open; later one
+/// can talk HTTP or WebSocket to something listening on the host, reached
+/// through the same port forward code-server uses. The pages in `ui/` are
+/// written against this file and nothing else, so swapping the transport means
+/// writing one more [FileBrowser] and changing the line that picks it.
+///
+/// The methods here follow what the UI needs, deliberately, rather than what
+/// SFTP happens to offer. Modelling them on SFTP would force a daemon into a
+/// chatty round-trip-per-entry shape and throw away the one advantage it has.
+library;
+
+/// What kind of thing a listing row is.
+///
+/// An enum rather than a pair of booleans, because a symlink is not a third
+/// boolean: it is a kind of its own whose target may be either, and a file
+/// browser has to be able to show that difference.
+enum RemoteEntryKind { directory, file, symlink, other }
+
+/// One row in a directory listing.
+class RemoteEntry {
+  const RemoteEntry({
+    required this.name,
+    required this.path,
+    required this.kind,
+    this.size,
+    this.modified,
+    this.targetIsDirectory,
+  });
+
+  final String name;
+
+  /// Absolute, so a row can be acted on without the widget holding it having
+  /// to remember which directory the listing came from.
+  final String path;
+
+  final RemoteEntryKind kind;
+
+  /// Null for entries the server did not report a size for — directories
+  /// mostly, where the number would be meaningless anyway.
+  final int? size;
+
+  final DateTime? modified;
+
+  /// For [RemoteEntryKind.symlink] only: whether following the link lands on a
+  /// directory. Null when the link is broken, or when it was not followed.
+  final bool? targetIsDirectory;
+
+  /// Whether tapping this row should descend into it.
+  bool get isTraversable =>
+      kind == RemoteEntryKind.directory ||
+      (kind == RemoteEntryKind.symlink && targetIsDirectory == true);
+
+  bool get isHidden => name.startsWith('.');
+}
+
+/// One match from a content search.
+class SearchHit {
+  const SearchHit({
+    required this.path,
+    required this.line,
+    required this.preview,
+  });
+
+  final String path;
+
+  /// 1-based, matching what every tool that prints line numbers does.
+  final int line;
+
+  /// The matching line, as the remote end rendered it.
+  final String preview;
+}
+
+/// The kinds of failure a caller might genuinely act on differently.
+///
+/// Everything else collapses into [unknown] with a readable message — the
+/// point is not to enumerate errno, it is to stop the UI having to parse
+/// somebody's error prose.
+enum FileBrowserFault {
+  notFound,
+  permissionDenied,
+  notEmpty,
+  tooLarge,
+  notText,
+  disconnected,
+  unsupported,
+  unknown,
+}
+
+/// The single error type every [FileBrowser] throws.
+///
+/// SFTP status codes and a daemon's HTTP responses look nothing alike. Letting
+/// either leak would make the UI fluent in two error languages and make
+/// swapping the transport expensive — the same reasoning that put
+/// `SshSessionException` in front of dartssh2's errors.
+class FileBrowserException implements Exception {
+  const FileBrowserException(
+    this.message, {
+    this.fault = FileBrowserFault.unknown,
+  });
+
+  /// One line, already fit to put in front of a user.
+  final String message;
+
+  final FileBrowserFault fault;
+
+  @override
+  String toString() => message;
+}
+
+/// Reading, writing and rearranging files on the remote host.
+///
+/// Implementations are cheap to create and own a resource — call [close] when
+/// the page holding one goes away.
+abstract class FileBrowser {
+  /// Where to open when the user has not said. Usually the login home.
+  Future<String> resolveHome();
+
+  /// Entries in [path], directories first and then case-insensitively by name.
+  ///
+  /// Ordering is fixed here rather than in the UI so every transport agrees on
+  /// it, and hidden entries are included — filtering them is the pages' call,
+  /// not the transport's.
+  Future<List<RemoteEntry>> list(String path);
+
+  /// The whole file as text.
+  ///
+  /// Throws [FileBrowserFault.tooLarge] rather than truncating, and
+  /// [FileBrowserFault.notText] for anything that is not, so the editor never
+  /// silently shows half a file or a screenful of mojibake.
+  Future<String> readText(String path, {int maxBytes = defaultReadLimit});
+
+  /// Replaces the contents of [path], creating it if it is not there.
+  Future<void> writeText(String path, String content);
+
+  Future<void> rename(String from, String to);
+
+  /// Removes [path]. A non-empty directory needs [recursive], and without it
+  /// raises [FileBrowserFault.notEmpty] rather than deleting anything.
+  Future<void> delete(String path, {bool recursive = false});
+
+  Future<void> makeDirectory(String path);
+
+  /// Releases whatever the implementation is holding open.
+  Future<void> close();
+
+  /// 1 MiB. Large enough for any config file or script somebody would edit on
+  /// a phone, small enough that a mistaken tap on a database dump does not
+  /// take the app down with it.
+  static const int defaultReadLimit = 1024 * 1024;
+}
+
+/// Optional capability, probed for rather than assumed.
+///
+/// Separate from [FileBrowser] because the quality on offer differs sharply:
+/// over SFTP this shells out to `grep` and arrives in one lump, while a daemon
+/// can stream ranked results as it finds them. Both are honest implementations
+/// of the same promise, which is exactly why the promise is stated separately.
+abstract class FileSearchCapable {
+  /// Lines under [root] containing [query], as a literal string rather than a
+  /// pattern. The stream closes when the search is done; cancel the
+  /// subscription to stop it early.
+  Stream<SearchHit> search({required String root, required String query});
+}
+
+/// POSIX path arithmetic.
+///
+/// Remote paths are POSIX no matter what the phone's own filesystem looks
+/// like, so this deliberately never touches `dart:io`'s separator.
+abstract final class RemotePath {
+  static String join(String parent, String name) {
+    if (name.startsWith('/')) return name;
+    if (parent.isEmpty || parent == '/') return '/$name';
+    return '${parent.endsWith('/') ? parent.substring(0, parent.length - 1) : parent}/$name';
+  }
+
+  static String parent(String path) {
+    final trimmed = _stripTrailingSlash(path);
+    final cut = trimmed.lastIndexOf('/');
+    if (cut <= 0) return '/';
+    return trimmed.substring(0, cut);
+  }
+
+  static String basename(String path) {
+    final trimmed = _stripTrailingSlash(path);
+    final cut = trimmed.lastIndexOf('/');
+    if (cut < 0) return trimmed;
+    final name = trimmed.substring(cut + 1);
+    return name.isEmpty ? '/' : name;
+  }
+
+  /// The directories leading to [path], root first, each with its full path —
+  /// what a breadcrumb bar is made of.
+  static List<({String name, String path})> crumbs(String path) {
+    final crumbs = <({String name, String path})>[
+      (name: '/', path: '/'),
+    ];
+    var walked = '';
+    for (final segment in _stripTrailingSlash(path).split('/')) {
+      if (segment.isEmpty) continue;
+      walked = '$walked/$segment';
+      crumbs.add((name: segment, path: walked));
+    }
+    return crumbs;
+  }
+
+  static String _stripTrailingSlash(String path) {
+    if (path.length > 1 && path.endsWith('/')) {
+      return path.substring(0, path.length - 1);
+    }
+    return path;
+  }
+}
