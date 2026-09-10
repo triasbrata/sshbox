@@ -1,0 +1,68 @@
+# Drives the swipe-to-arrow gesture and the Enter button against a live shell.
+#
+# The readout that comes up under a swipe only exists while a finger is down,
+# and a Maestro swipe is one atomic command, so there is no frame to assert on.
+# This checks the effect instead, which is the stronger claim anyway: a swipe
+# up on the terminal is Up, and Up at a shell prompt recalls a command. Getting
+# a command back that `clear` wiped off the screen can only have come from the
+# remote end's history, so the gesture reached it as a real cursor key.
+#
+# Requires a reachable host with a stored credential, same as the other flows.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "wsl"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+- tapOn: "(?s)${HOST_LABEL}.*"
+
+# The key bar only renders once the session reports connected, so waiting on it
+# doubles as the assertion that SSH authentication succeeded.
+- extendedWaitUntil:
+    visible: "ESC"
+    timeout: 30000
+
+# Focus the terminal so the soft keyboard is attached to it.
+- tapOn:
+    point: 50%, 40%
+
+- inputText: "echo sshbox-swipe-marker"
+
+# Submit with the floating button rather than the keyboard's own return key:
+# that is the button under test, and it has to work without stealing focus.
+- tapOn: "Enter"
+
+- extendedWaitUntil:
+    visible: "sshbox-swipe-marker"
+    timeout: 10000
+
+# Wipe the screen, so anything readable afterwards came back from history
+# rather than being left over from the run above.
+- inputText: "clear"
+- tapOn: "Enter"
+- assertNotVisible: "sshbox-swipe-marker"
+
+# Two swipes up: one recalls `clear`, the second the echo before it. Each swipe
+# is short and quick, which is the single press end of the gesture — long
+# enough to register a direction, too brief to start repeating.
+- swipe:
+    start: 50%, 55%
+    end: 50%, 50%
+    duration: 250
+- swipe:
+    start: 50%, 55%
+    end: 50%, 50%
+    duration: 250
+
+- extendedWaitUntil:
+    visible: "echo sshbox-swipe-marker"
+    timeout: 10000
+
+# Leave the prompt clean for whatever flow runs next.
+- eraseText
