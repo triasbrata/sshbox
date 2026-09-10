@@ -44,6 +44,29 @@ int? swipeRepeatMs(double distance) {
   return (2000 - reach * 1700).round();
 }
 
+/// How many chevrons the readout shows for a drag of [distance]: one for the
+/// nudge that will not repeat, then one more for each step up in speed.
+int swipeSpeedLevel(double distance) {
+  final interval = swipeRepeatMs(distance);
+  if (interval == null) return 1;
+  return interval > 1000 ? 2 : 3;
+}
+
+/// The idle arms of the readout, and the chevrons the live one is drawn with.
+const _swipeArmIcons = <String, IconData>{
+  'A': Icons.arrow_upward,
+  'B': Icons.arrow_downward,
+  'C': Icons.arrow_forward,
+  'D': Icons.arrow_back,
+};
+
+const _swipeChevronIcons = <String, IconData>{
+  'A': Icons.keyboard_arrow_up,
+  'B': Icons.keyboard_arrow_down,
+  'C': Icons.keyboard_arrow_right,
+  'D': Icons.keyboard_arrow_left,
+};
+
 /// Holds the sticky modifier state shared by the key bar and the terminal's
 /// outgoing data path.
 class KeyBarController extends ChangeNotifier {
@@ -292,6 +315,12 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// repeated.
   int _held = 0;
 
+  /// Drives the readout: whether it is up, how many chevrons it shows, and
+  /// which top corner it sits in.
+  bool _swiping = false;
+  int _level = 1;
+  bool _hudOnRight = true;
+
   @override
   void dispose() {
     _repeat?.cancel();
@@ -302,13 +331,22 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     _travelled += details.delta;
 
     final arrow = swipeArrow(_travelled);
-    if (arrow == _arrow) return;
+    final level = swipeSpeedLevel(_travelled.distance);
+    // Repaint when the readout would actually differ, not on every pixel the
+    // finger crosses — the terminal underneath is expensive to rebuild.
+    if (arrow == _arrow && level == _level) return;
 
     // A new direction is one press straight away, so a short drag does
     // something without being held at all.
-    _arrow = arrow;
-    _held = 0;
-    if (arrow != null) widget.onEmit(cursorKey(widget.terminal, arrow));
+    if (arrow != _arrow) {
+      _held = 0;
+      if (arrow != null) widget.onEmit(cursorKey(widget.terminal, arrow));
+    }
+
+    setState(() {
+      _arrow = arrow;
+      _level = level;
+    });
   }
 
   /// Reads the reach afresh every tick rather than scheduling one repeat at a
@@ -331,15 +369,38 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     widget.onEmit(cursorKey(widget.terminal, arrow!));
   }
 
-  void _start() {
-    _stop();
+  void _start(DragStartDetails details) {
+    // Never leave an earlier tick running: two of them would race the same
+    // key out at twice the rate the reach asked for.
+    _repeat?.cancel();
+
+    final width = context.size?.width;
+
+    setState(() {
+      _reset();
+      _swiping = true;
+      // Sit on the far side from the finger. The hand comes in over the side
+      // it started on, and a readout under your own palm tells you nothing.
+      _hudOnRight = width == null || details.localPosition.dx < width / 2;
+    });
+
     _repeat = Timer.periodic(_swipeTick, _onTick);
   }
 
   void _stop() {
     _repeat?.cancel();
     _repeat = null;
+    // The recogniser can cancel us on its way out, after we are already gone.
+    if (!mounted) return;
+    setState(() {
+      _reset();
+      _swiping = false;
+    });
+  }
+
+  void _reset() {
     _arrow = null;
+    _level = 1;
     _held = 0;
     _travelled = Offset.zero;
   }
@@ -357,9 +418,12 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
           ),
           (instance) {
             instance
-              ..onStart = (_) {
-                _start();
-              }
+              // Measure the reach from where the finger actually landed. The
+              // default hands the slop it took to recognise the drag to
+              // onStart and never reports it, which would quietly cost every
+              // reach the first ~18 pixels of the distance it is judged on.
+              ..dragStartBehavior = DragStartBehavior.down
+              ..onStart = _start
               ..onUpdate = _onUpdate
               ..onEnd = (_) {
                 _stop();
@@ -377,7 +441,101 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
           (instance) => instance.onDoubleTap = () => widget.onEmit('\t'),
         ),
       },
-      child: widget.child,
+      child: Stack(
+        children: [
+          widget.child,
+          if (_swiping)
+            Positioned(
+              top: 12,
+              left: _hudOnRight ? null : 12,
+              right: _hudOnRight ? 12 : null,
+              // Never in the way of the drag it is reporting on.
+              child: IgnorePointer(
+                child: _SwipeReadout(arrow: _arrow, level: _level),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The compass that comes up under a swipe: four idle arms, and the one being
+/// held drawn as a stack of chevrons — one for a nudge, three when the cursor
+/// is running as fast as the gesture goes.
+class _SwipeReadout extends StatelessWidget {
+  const _SwipeReadout({required this.arrow, required this.level});
+
+  final String? arrow;
+  final int level;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 108,
+      height: 108,
+      decoration: BoxDecoration(
+        // Lifted off the background rather than frosted: a BackdropFilter over
+        // a terminal repaints the blur on every line of output, which is a lot
+        // to pay for a hint. Tinted light because it has to read over the near
+        // black a terminal usually is.
+        color: Colors.white.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+      ),
+      child: Stack(
+        children: [
+          _arm('A', Alignment.topCenter),
+          _arm('D', Alignment.centerLeft),
+          _arm('C', Alignment.centerRight),
+          _arm('B', Alignment.bottomCenter),
+        ],
+      ),
+    );
+  }
+
+  Widget _arm(String direction, Alignment at) {
+    final live = direction == arrow;
+
+    return Align(
+      alignment: at,
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: live
+            ? _chevrons(direction)
+            : Icon(
+                _swipeArmIcons[direction],
+                size: 22,
+                color: Colors.white.withValues(alpha: 0.45),
+              ),
+      ),
+    );
+  }
+
+  /// Overlapped rather than spaced out, so three of them still fit the arm.
+  Widget _chevrons(String direction) {
+    const icon = 24.0;
+    const step = 9.0;
+    final sideways = direction == 'C' || direction == 'D';
+    final run = icon + step * (level - 1);
+
+    return SizedBox(
+      width: sideways ? run : icon,
+      height: sideways ? icon : run,
+      child: Stack(
+        children: [
+          for (var i = 0; i < level; i++)
+            Positioned(
+              left: sideways ? i * step : 0,
+              top: sideways ? 0 : i * step,
+              child: Icon(
+                _swipeChevronIcons[direction],
+                size: icon,
+                color: Colors.white,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

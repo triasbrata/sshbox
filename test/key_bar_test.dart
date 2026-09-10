@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:xterm2/xterm.dart';
 
 void main() {
   group('KeyBarController.applyModifiers', () {
@@ -82,6 +84,51 @@ void main() {
 
     test('a drag longer than the screen does not run away', () {
       expect(swipeRepeatMs(5000), 300);
+    });
+
+    test('the readout gains a chevron with every step up in speed', () {
+      expect(swipeSpeedLevel(30), 1);
+      expect(swipeSpeedLevel(60), 2);
+      expect(swipeSpeedLevel(200), 3);
+      // Three chevrons is the whole readout; a longer reach cannot add a
+      // fourth the arm has no room for.
+      expect(swipeSpeedLevel(5000), 3);
+    });
+  });
+
+  group('SwipeKeyPad readout', () {
+    /// Drags down from [fromFraction] across the width and reports which half
+    /// of the screen the readout chose to sit in.
+    Future<double> readoutCentre(WidgetTester tester, double fromFraction) async {
+      await tester.pumpWidget(MaterialApp(
+        home: SwipeKeyPad(
+          terminal: Terminal(),
+          onEmit: (_) {},
+          // Opaque, so it takes part in the hit test the way a terminal does.
+          child: const ColoredBox(color: Colors.black, child: SizedBox.expand()),
+        ),
+      ));
+
+      final width = tester.getSize(find.byType(SwipeKeyPad)).width;
+      final gesture =
+          await tester.startGesture(Offset(width * fromFraction, 300));
+      // Past the touch slop, so the pan is recognised and the readout comes up.
+      await gesture.moveBy(const Offset(0, 40));
+      await tester.pump();
+
+      final centre = tester.getCenter(find.byIcon(Icons.arrow_upward)).dx;
+
+      // Release, or the repeat timer outlives the test. The wait runs out the
+      // double-tap recogniser's own countdown, which is not ours to cancel.
+      await gesture.up();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      return centre - width / 2;
+    }
+
+    testWidgets('sits opposite the hand that is dragging', (tester) async {
+      expect(await readoutCentre(tester, 0.2), greaterThan(0));
+      expect(await readoutCentre(tester, 0.8), lessThan(0));
     });
   });
 }
