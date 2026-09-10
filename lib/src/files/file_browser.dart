@@ -183,6 +183,23 @@ abstract final class RemotePath {
     return trimmed.substring(0, cut);
   }
 
+  /// [path] made absolute against [home]. Blank, `~` and `~/…` mean home, as
+  /// they would to a shell — SFTP itself expands none of them — and a bare
+  /// relative path is taken from home too.
+  static String resolve(String path, String home) {
+    final trimmed = path.trim();
+    if (trimmed.startsWith('/')) return _stripTrailingSlash(trimmed);
+    if (trimmed.isEmpty || trimmed == '~') return home;
+    return _stripTrailingSlash(
+      join(home, trimmed.startsWith('~/') ? trimmed.substring(2) : trimmed),
+    );
+  }
+
+  /// Whether [path] is [ancestor] itself or somewhere beneath it.
+  static bool isWithin(String path, String ancestor) =>
+      path == ancestor ||
+      path.startsWith(ancestor == '/' ? '/' : '$ancestor/');
+
   static String basename(String path) {
     final trimmed = _stripTrailingSlash(path);
     final cut = trimmed.lastIndexOf('/');

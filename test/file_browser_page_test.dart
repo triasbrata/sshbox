@@ -21,6 +21,17 @@ Future<void> _pumpBrowser(WidgetTester tester, FakeFileBrowser browser) async {
 
 Finder _row(String name) => find.widgetWithText(ListTile, name);
 
+/// Opens [name]'s row menu and picks [action] from it.
+Future<void> _rowAction(WidgetTester tester, String name, String action) async {
+  await tester.tap(find.descendant(
+    of: _row(name),
+    matching: find.byTooltip('Actions'),
+  ));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(action));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('lists a directory with folders before files', (tester) async {
     final browser = FakeFileBrowser();
@@ -49,24 +60,136 @@ void main() {
     expect(_row('.bashrc'), findsOneWidget);
   });
 
-  testWidgets('descends into a folder and comes back', (tester) async {
+  testWidgets('opens a folder in place and closes it again', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
 
+    // A tree, not a listing: the folder's contents join the rows around it
+    // rather than replacing them.
+    expect(_row('main.dart'), findsOneWidget);
+    expect(_row('notes.txt'), findsOneWidget);
+    expect(find.byIcon(Icons.folder_open_outlined), findsOneWidget);
+
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+
+    expect(_row('main.dart'), findsNothing);
+  });
+
+  testWidgets('set as root hangs the tree from a folder, and back undoes it',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    await _rowAction(tester, 'dev', 'Set as root');
+
     expect(_row('main.dart'), findsOneWidget);
     expect(_row('notes.txt'), findsNothing);
 
-    // Back retraces rather than climbing, which is what makes arriving from a
-    // search result behave the way a user expects.
+    // Back retraces the re-rooting rather than climbing, which is what makes
+    // the way out match the way in.
     final page = tester.state<NavigatorState>(find.byType(Navigator));
     await page.maybePop();
     await tester.pumpAndSettle();
 
     expect(_row('notes.txt'), findsOneWidget);
     expect(_row('main.dart'), findsNothing);
+  });
+
+  testWidgets('a crumb above the root climbs back out', (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+    await _rowAction(tester, 'dev', 'Set as root');
+
+    await tester.tap(find.text('me'));
+    await tester.pumpAndSettle();
+
+    expect(_row('notes.txt'), findsOneWidget);
+  });
+
+  testWidgets('starts at the root it is given, taking ~ from home',
+      (tester) async {
+    // A host's saved root is typed by hand, and `~/dev` is how people type it
+    // — SFTP would take that as a folder literally named `~`.
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: FakeFileBrowser(),
+        title: 'box',
+        initialRoot: '~/dev',
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(_row('main.dart'), findsOneWidget);
+    expect(_row('notes.txt'), findsNothing);
+  });
+
+  testWidgets('keeps folders open across a rebuild', (tester) async {
+    Set<String>? reported;
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: FakeFileBrowser(),
+        title: 'box',
+        onExpandedChanged: (expanded) => reported = expanded,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    expect(reported, {'/home/me/dev'});
+
+    // What a drawer does every time it is closed and opened again.
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        key: UniqueKey(),
+        browser: FakeFileBrowser(),
+        title: 'box',
+        initialExpanded: reported!,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(_row('main.dart'), findsOneWidget);
+  });
+
+  testWidgets('a folder that cannot be listed closes and says why',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    browser.failListWith = const FileBrowserException(
+      'Could not list /home/me/dev: permission denied.',
+      fault: FileBrowserFault.permissionDenied,
+    );
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Could not list /home/me/dev: permission denied.'),
+      findsOneWidget,
+    );
+    // The rest of the tree was fine, so it stays rather than turning into the
+    // whole-page error.
+    expect(_row('notes.txt'), findsOneWidget);
+    expect(find.byIcon(Icons.expand_more), findsNothing);
+  });
+
+  testWidgets('creates inside the folder whose menu it came from',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    await _rowAction(tester, 'dev', 'New folder here');
+    await tester.enterText(find.byType(TextFormField), 'lib');
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+
+    expect(browser.madeDirectories, ['/home/me/dev/lib']);
+    // Opened on the way, so what was just made is in sight.
+    expect(_row('lib'), findsOneWidget);
   });
 
   testWidgets('a broken symlink is not a folder to walk into', (tester) async {
@@ -93,6 +216,23 @@ void main() {
 
     expect(_row('notes.txt'), findsOneWidget);
     expect(_row('dev'), findsNothing);
+  });
+
+  testWidgets('the filter keeps the folders a match is inside',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Filter by name'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'main');
+    await tester.pumpAndSettle();
+
+    expect(_row('main.dart'), findsOneWidget);
+    expect(_row('dev'), findsOneWidget, reason: 'the way down to the match');
+    expect(_row('notes.txt'), findsNothing);
   });
 
   testWidgets('shows the adapter message when a listing fails', (tester) async {
@@ -281,8 +421,7 @@ void main() {
     expect(find.byTooltip('Close files'), findsOneWidget);
   });
 
-  testWidgets('drops the name filter when you change directory',
-      (tester) async {
+  testWidgets('drops the name filter when the root changes', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
@@ -292,10 +431,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(_row('dev'), findsOneWidget);
 
-    await tester.tap(_row('dev'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'dev', 'Set as root');
 
-    // The filter was about the listing it was typed against. Kept, it would
+    // The filter was about the tree it was typed against. Kept, it would
     // hide everything in here and read as an empty folder.
     expect(_row('main.dart'), findsOneWidget);
   });
@@ -316,16 +454,14 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await tester.tap(_row('dev'));
-    await tester.pumpAndSettle();
-    // Off by default: tapping a folder must not type into a live shell.
+    await _rowAction(tester, 'dev', 'Set as root');
+    // Off by default: moving the tree must not type into a live shell.
     expect(visited, isEmpty);
 
+    await tester.tap(find.text('me'));
+    await tester.pumpAndSettle();
     link.follow = true;
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Refresh'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'dev', 'Set as root');
 
     expect(visited, ['/home/me/dev']);
   });
@@ -345,12 +481,53 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await tester.tap(_row('dev'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'dev', 'Set as root');
     await tester.tap(find.byTooltip('Open in terminal'));
     await tester.pumpAndSettle();
 
     expect(visited, ['/home/me/dev']);
     expect(closed, isTrue, reason: 'the shell it just moved should be seen');
+  });
+
+  testWidgets('saving the root to the host config asks first', (tester) async {
+    final saved = <String>[];
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: FakeFileBrowser(),
+        title: 'box',
+        onSaveRoot: (root) async => saved.add(root),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await _rowAction(tester, 'dev', 'Set as root');
+
+    Future<void> pickSave() async {
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save root to host config'));
+      await tester.pumpAndSettle();
+    }
+
+    // It changes where every later connection opens, so backing out of the
+    // question has to leave the config alone.
+    await pickSave();
+    expect(find.text('Update SSH config?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(saved, isEmpty);
+
+    await pickSave();
+    await tester.tap(find.widgetWithText(FilledButton, 'Update'));
+    await tester.pumpAndSettle();
+    expect(saved, ['/home/me/dev']);
+  });
+
+  testWidgets('offers no config to save to without a host behind it',
+      (tester) async {
+    await _pumpBrowser(tester, FakeFileBrowser());
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Save root to host config'), findsNothing);
   });
 }

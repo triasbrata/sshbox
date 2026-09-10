@@ -77,6 +77,39 @@ void main() {
     });
   });
 
+  group('resolve', () {
+    // A host's saved file-tree root is typed by hand, and SFTP expands none of
+    // the shell's shorthand — `~/src` sent as-is is a directory named `~`.
+    test('blank and ~ mean home', () {
+      expect(RemotePath.resolve('', '/home/me'), '/home/me');
+      expect(RemotePath.resolve('  ', '/home/me'), '/home/me');
+      expect(RemotePath.resolve('~', '/home/me'), '/home/me');
+    });
+
+    test('~/ and a bare relative path are taken from home', () {
+      expect(RemotePath.resolve('~/src', '/home/me'), '/home/me/src');
+      expect(RemotePath.resolve('src/app/', '/home/me'), '/home/me/src/app');
+    });
+
+    test('an absolute path is kept', () {
+      expect(RemotePath.resolve('/var/www/', '/home/me'), '/var/www');
+      expect(RemotePath.resolve('/', '/home/me'), '/');
+    });
+  });
+
+  group('isWithin', () {
+    test('is the path itself or anything beneath it', () {
+      expect(RemotePath.isWithin('/home/me', '/home/me'), isTrue);
+      expect(RemotePath.isWithin('/home/me/dev/x', '/home/me'), isTrue);
+      expect(RemotePath.isWithin('/etc', '/'), isTrue);
+    });
+
+    test('a sibling sharing a prefix is not inside', () {
+      expect(RemotePath.isWithin('/home/meg', '/home/me'), isFalse);
+      expect(RemotePath.isWithin('/home', '/home/me'), isFalse);
+    });
+  });
+
   group('RemoteEntry', () {
     test('a directory is traversable', () {
       const entry = RemoteEntry(

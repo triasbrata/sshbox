@@ -20,13 +20,23 @@ typedef SharedFile = ({String path, String name});
 /// and threw the session away — which is precisely what "return me to my
 /// session" has to avoid.
 class LiveSession extends ChangeNotifier {
-  LiveSession({required this.host}) {
+  LiveSession({required this._host}) {
     // Wired up front, not at connect time: the view reports its size during
     // the first layout, which happens before the shell exists.
     _wireTerminal();
   }
 
-  final HostProfile host;
+  HostProfile _host;
+
+  HostProfile get host => _host;
+
+  /// Replaced when the saved profile changes while this session is open, so
+  /// the tab's name, the next reconnect and the file tree's root follow the
+  /// edit instead of the profile as it was when the tab opened.
+  set host(HostProfile value) {
+    _host = value;
+    _notify();
+  }
 
   /// 10k lines: enough to scroll back through a build log, small enough not to
   /// strain a phone's memory.
