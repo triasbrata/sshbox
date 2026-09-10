@@ -7,6 +7,7 @@ import '../data/secret_store.dart';
 import '../session/session_manager.dart';
 import 'files_page.dart';
 import 'key_bar.dart';
+import 'terminal_text_input.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -28,6 +29,11 @@ class TerminalPage extends StatefulWidget {
 
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
+
+  /// Shared with the terminal view below it, which is what holds focus.
+  final _focusNode = FocusNode();
+  final _scrollController = ScrollController();
+  final _inputKey = GlobalKey<TerminalTextInputState>();
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -61,12 +67,21 @@ class _TerminalPageState extends State<TerminalPage> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
+    _focusNode.dispose();
+    _scrollController.dispose();
     if (_session.outputTransform == _keyBar.applyModifiers) {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
     // The session itself is intentionally left running.
     super.dispose();
+  }
+
+  /// Typing anywhere in the scrollback should snap back to the prompt.
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    position.jumpTo(position.maxScrollExtent);
   }
 
   void _reportPinnedKey(String fingerprint) {
@@ -201,11 +216,25 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Stack(
       children: [
-        TerminalView(
-          _session.terminal,
-          autofocus: true,
-          padding: const EdgeInsets.all(6),
-          textStyle: const TerminalStyle(fontSize: 13),
+        TerminalTextInput(
+          key: _inputKey,
+          terminal: _session.terminal,
+          focusNode: _focusNode,
+          onInput: _scrollToBottom,
+          child: TerminalView(
+            _session.terminal,
+            focusNode: _focusNode,
+            scrollController: _scrollController,
+            autofocus: true,
+            // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+            // hardware keys, shortcuts and selection gestures.
+            hardwareKeyboardOnly: true,
+            // Tapping a terminal that already has focus is how you ask for the
+            // keyboard back, and focus alone will not raise it.
+            onTapUp: (_, _) => _inputKey.currentState?.requestKeyboard(),
+            padding: const EdgeInsets.all(6),
+            textStyle: const TerminalStyle(fontSize: 13),
+          ),
         ),
         if (_session.connecting)
           ColoredBox(
