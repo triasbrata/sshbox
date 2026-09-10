@@ -25,8 +25,8 @@ class HostsPage extends StatefulWidget {
   /// handed to whatever server should be able to notify this device.
   final String? Function() pushToken;
 
-  /// Routed through the app shell so a tap here and a notification tap take
-  /// the identical path.
+  /// Opens another session on the host, even one that already has some — the
+  /// tab strip is how you get back to those.
   final Future<void> Function(String hostId) onOpenHost;
 
   @override
@@ -74,7 +74,7 @@ class _HostsPageState extends State<HostsPage> {
     );
     // An open tab keeps the profile it was opened with; without this, a new
     // file tree root would wait for the tab to be closed and opened again.
-    if (saved != null) widget.sessions.find(saved.id)?.host = saved;
+    if (saved != null) widget.sessions.updateHost(saved);
     await _reload();
   }
 
@@ -101,7 +101,7 @@ class _HostsPageState extends State<HostsPage> {
       builder: (context) => AlertDialog(
         title: Text('Delete ${host.displayName}?'),
         content: const Text(
-          'Any open session for this host is closed, and its saved password '
+          'Every open session for this host is closed, and its saved password '
           'or private key is removed from the device keystore.',
         ),
         actions: [
@@ -118,7 +118,7 @@ class _HostsPageState extends State<HostsPage> {
     );
 
     if (confirmed != true) return;
-    await widget.sessions.close(host.id);
+    await widget.sessions.closeHost(host.id);
     await widget.repository.delete(host.id);
     await _reload();
   }
@@ -152,14 +152,15 @@ class _HostsPageState extends State<HostsPage> {
             separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final host = hosts[index];
+              final open = widget.sessions.sessionsFor(host.id);
               return _HostTile(
                 host: host,
-                connected: widget.sessions.isConnected(host.id),
-                hasSession: widget.sessions.hasSession(host.id),
+                sessionCount: open.length,
+                activeCount: open.where((s) => s.isConnected).length,
                 onOpen: () => widget.onOpenHost(host.id),
                 onEdit: () => _openEditor(existing: host),
                 onDelete: () => _confirmDelete(host),
-                onCloseSession: () => widget.sessions.close(host.id),
+                onCloseSessions: () => widget.sessions.closeHost(host.id),
               );
             },
           ),
@@ -171,21 +172,25 @@ class _HostsPageState extends State<HostsPage> {
 class _HostTile extends StatelessWidget {
   const _HostTile({
     required this.host,
-    required this.connected,
-    required this.hasSession,
+    required this.sessionCount,
+    required this.activeCount,
     required this.onOpen,
     required this.onEdit,
     required this.onDelete,
-    required this.onCloseSession,
+    required this.onCloseSessions,
   });
 
   final HostProfile host;
-  final bool connected;
-  final bool hasSession;
+
+  /// Every tab open on this host, connected or not.
+  final int sessionCount;
+
+  /// The ones with a shell actually attached.
+  final int activeCount;
   final VoidCallback onOpen;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
-  final VoidCallback onCloseSession;
+  final VoidCallback onCloseSessions;
 
   @override
   Widget build(BuildContext context) {
@@ -201,7 +206,7 @@ class _HostTile extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           const Icon(Icons.dns_outlined),
-          if (connected)
+          if (activeCount > 0)
             Positioned(
               right: -2,
               bottom: -2,
@@ -219,21 +224,30 @@ class _HostTile extends StatelessWidget {
       ),
       title: Text(host.displayName),
       subtitle: Text(
-        connected
-            ? '${host.target}  ·  session open'
-            : '${host.target}  ·  $authLabel',
+        '${host.target}  ·  ${switch (activeCount) {
+          0 => authLabel,
+          1 => 'active session',
+          _ => '$activeCount active sessions',
+        }}',
       ),
       onTap: onOpen,
       trailing: PopupMenuButton<String>(
         onSelected: (action) => switch (action) {
           'edit' => onEdit(),
           'delete' => onDelete(),
-          'close' => onCloseSession(),
+          'close' => onCloseSessions(),
           _ => null,
         },
         itemBuilder: (_) => [
-          if (hasSession)
-            const PopupMenuItem(value: 'close', child: Text('Close session')),
+          if (sessionCount > 0)
+            PopupMenuItem(
+              value: 'close',
+              child: Text(
+                sessionCount == 1
+                    ? 'Close session'
+                    : 'Close $sessionCount sessions',
+              ),
+            ),
           const PopupMenuItem(value: 'edit', child: Text('Edit')),
           const PopupMenuItem(value: 'delete', child: Text('Delete')),
         ],
