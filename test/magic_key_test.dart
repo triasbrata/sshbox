@@ -244,6 +244,75 @@ void main() {
       expect(find.text('ESC'), findsNothing);
     });
 
+    /// Holds, slides onto ↑ and rests there until ring 2 opens round it.
+    Future<TestGesture> restOnUp(WidgetTester tester) async {
+      final gesture = await hold(tester);
+      await gesture.moveBy(const Offset(0, -70));
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+      return gesture;
+    }
+
+    testWidgets('resting on a petal opens the keys behind it', (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await restOnUp(tester);
+      expect(find.text('PGUP'), findsOneWidget);
+      // Ring 2 is aimed from where the finger rested, so slide the way PgUp
+      // sits from ↑.
+      await gesture.moveBy(
+        tester.getCenter(find.text('PGUP')) - tester.getCenter(find.text('↑')),
+      );
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(sent, ['\x1b[5~']);
+      expect(find.text('PGUP'), findsNothing, reason: 'a pick closes both');
+    });
+
+    testWidgets('lifting where ring 2 opened sends the petal it hangs off',
+        (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await restOnUp(tester);
+      expect(find.text('PGUP'), findsOneWidget);
+      await gesture.up();
+      await tester.pump();
+
+      expect(sent, ['\x1b[A']);
+    });
+
+    testWidgets('backing out to the middle still cancels with ring 2 open',
+        (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await restOnUp(tester);
+      await gesture.moveBy(const Offset(0, 70));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(sent, isEmpty);
+    });
+
+    testWidgets('a quick slide and lift never opens ring 2', (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await hold(tester);
+      await gesture.moveBy(const Offset(0, -70));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('PGUP'), findsNothing);
+      await gesture.up();
+      await tester.pump(kLongPressTimeout);
+      expect(sent, ['\x1b[A']);
+
+      // A rest timer left running past the lift would leave ring 2 waiting
+      // for the next hold.
+      final again = await hold(tester);
+      expect(find.text('PGUP'), findsNothing);
+      await again.up();
+    });
+
     testWidgets('in its corner the ring fans out and stays on screen',
         (tester) async {
       await pumpKey(tester);

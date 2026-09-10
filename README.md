@@ -105,6 +105,22 @@ Cursor keys follow `terminal.cursorKeysMode`, emitting the SS3 form
 Sending the wrong one is why arrow keys produce garbage in vim in many
 hand-rolled terminals.
 
+### The magic key
+
+`ui/magic_key.dart` floats a round Enter key over the terminal, for when the
+keyboard is down. Tap it for Enter. Drag it to move it; throw it at a side and
+it tucks in half off the screen. Hold it and a ring of keys opens round it —
+the arrows where they point, ESC, TAB, `^C` and `^D` between — and sliding
+toward one and lifting sends it. Near an edge the ring fans into the room that
+is left.
+
+Rest on a petal as long as the hold took and, if it has keys behind it, a
+second ring opens round that petal: slide to one and lift, or lift where you
+are for the petal itself. Back in the middle still cancels. `magicSubKeys`
+holds what is behind each petal: PgUp and Home behind ↑, PgDn and End behind ↓,
+Home or End and a word jump behind ← and →, Shift+Tab behind TAB, a double ESC
+behind ESC, `^Z` and `^\` behind `^C`, `^L` and `^R` behind `^D`.
+
 ## Running it
 
 ```sh
