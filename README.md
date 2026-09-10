@@ -212,6 +212,34 @@ nothing to return to and the next open is a fresh connection. iOS has no
 equivalent to any of this — a suspended app there always reconnects, so the
 keep-alive is a no-op off Android.
 
+### Multi-window and floating windows
+
+Split screen on a tablet and the OEM floating window (Samsung's pop-up view,
+the Android desktop windowing shell) are one system feature, and the app only
+has to declare it can be resized: `android:resizeableActivity` plus a
+`<layout>` giving the window its minimum and default bounds. There is no
+Flutter-side code for it.
+
+Two things already in place are what make that declaration safe:
+
+- `android:configChanges` lists `screenSize|smallestScreenSize|screenLayout|
+  density`, so a resize reconfigures the activity instead of recreating it.
+  Without that, dragging the split-screen divider would restart `MainActivity`
+  and take every live shell with it.
+- `TerminalView` reports its new size on every layout pass, which reaches
+  `LiveSession.onResize` and then `shell.resizeTerminal` — so `vim` and `tmux`
+  on the far end reflow to the new window instead of drawing to a size that no
+  longer exists.
+
+The declared minimum is 320x280dp: the app bar (56dp) and key bar (48dp) leave
+roughly ten terminal rows below that, and the app bar's four actions start
+crowding the title.
+
+**One window, not two.** Dragging out a second sshbox window gives it a second
+Flutter engine, and therefore its own `SessionManager` — the two windows would
+not share sessions. Sharing them means moving sessions out of the isolate, so
+sshbox is meant to be one window beside another app, not beside itself.
+
 ## Notifications
 
 A notification carries a `sshbox://host/<hostId>` payload, so tapping one goes
