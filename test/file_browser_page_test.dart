@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/files/file_browser.dart';
@@ -19,16 +20,25 @@ Future<void> _pumpBrowser(WidgetTester tester, FakeFileBrowser browser) async {
   await tester.pumpAndSettle();
 }
 
-Finder _row(String name) => find.widgetWithText(ListTile, name);
+/// A row of the tree — inside the list, so a filter box holding the same
+/// text is not mistaken for one.
+Finder _row(String name) =>
+    find.descendant(of: find.byType(ListView), matching: find.text(name));
 
-/// Opens [name]'s row menu and picks [action] from it.
+/// Long-presses [name]'s row, the phone's right click, and picks [action]
+/// from the menu that opens.
 Future<void> _rowAction(WidgetTester tester, String name, String action) async {
-  await tester.tap(find.descendant(
-    of: _row(name),
-    matching: find.byTooltip('Actions'),
-  ));
+  await tester.longPress(_row(name));
   await tester.pumpAndSettle();
   await tester.tap(find.text(action));
+  await tester.pumpAndSettle();
+}
+
+/// Picks [path] from the menu behind the root's name.
+Future<void> _climbTo(WidgetTester tester, String path) async {
+  await tester.tap(find.byTooltip('Change root'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(path));
   await tester.pumpAndSettle();
 }
 
@@ -41,9 +51,10 @@ void main() {
     expect(_row('notes.txt'), findsOneWidget);
 
     // The interface promises this ordering so every transport agrees on it.
-    final tiles = tester.widgetList<ListTile>(find.byType(ListTile)).toList();
-    final names = [for (final tile in tiles) (tile.title! as Text).data];
-    expect(names.indexOf('dev'), lessThan(names.indexOf('notes.txt')));
+    expect(
+      tester.getTopLeft(_row('dev')).dy,
+      lessThan(tester.getTopLeft(_row('notes.txt')).dy),
+    );
   });
 
   testWidgets('hides dotfiles until asked for them', (tester) async {
@@ -71,7 +82,16 @@ void main() {
     // rather than replacing them.
     expect(_row('main.dart'), findsOneWidget);
     expect(_row('notes.txt'), findsOneWidget);
-    expect(find.byIcon(Icons.folder_open_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+    // Nested one level in: indented, with a guide line down from its folder.
+    expect(
+      tester.getTopLeft(_row('main.dart')).dx,
+      greaterThan(tester.getTopLeft(_row('notes.txt')).dx),
+    );
+    expect(find.byType(VerticalDivider), findsOneWidget);
+    // Each file carries its type's icon, the way VS Code's theme marks it.
+    expect(find.byIcon(Icons.flutter_dash), findsOneWidget);
+    expect(find.byIcon(Icons.notes), findsOneWidget);
 
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
@@ -99,15 +119,54 @@ void main() {
     expect(_row('main.dart'), findsNothing);
   });
 
-  testWidgets('a crumb above the root climbs back out', (tester) async {
+  testWidgets("the root's name lists the folders to climb back out to",
+      (tester) async {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
     await _rowAction(tester, 'dev', 'Set as root');
+    expect(find.text('DEV'), findsOneWidget);
 
-    await tester.tap(find.text('me'));
+    await _climbTo(tester, '/home/me');
+
+    expect(find.text('ME'), findsOneWidget);
+    expect(_row('notes.txt'), findsOneWidget);
+  });
+
+  testWidgets('a right click opens the same menu as a long press',
+      (tester) async {
+    await _pumpBrowser(tester, FakeFileBrowser());
+
+    await tester.tap(_row('dev'), buttons: kSecondaryButton);
     await tester.pumpAndSettle();
 
-    expect(_row('notes.txt'), findsOneWidget);
+    expect(find.text('Set as root'), findsOneWidget);
+    // A right click is not a tap: the folder stays shut.
+    expect(_row('main.dart'), findsNothing);
+  });
+
+  testWidgets("the root's header makes things in the root", (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    await tester.tap(find.byTooltip('New folder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), 'src');
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+
+    expect(browser.madeDirectories, ['/home/me/src']);
+  });
+
+  testWidgets('collapse all folds every open folder', (tester) async {
+    await _pumpBrowser(tester, FakeFileBrowser());
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    expect(_row('main.dart'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Collapse all'));
+    await tester.pumpAndSettle();
+
+    expect(_row('main.dart'), findsNothing);
   });
 
   testWidgets('starts at the root it is given, taking ~ from home',
@@ -182,7 +241,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
-    await _rowAction(tester, 'dev', 'New folder here');
+    await _rowAction(tester, 'dev', 'New folder…');
     await tester.enterText(find.byType(TextFormField), 'lib');
     await tester.tap(find.widgetWithText(FilledButton, 'Create'));
     await tester.pumpAndSettle();
@@ -256,13 +315,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
-    await tester.tap(find.descendant(
-      of: _row('notes.txt'),
-      matching: find.byTooltip('Actions'),
-    ));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Delete'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'notes.txt', 'Delete');
 
     expect(find.text('Delete notes.txt?'), findsOneWidget);
     expect(browser.deleted, isEmpty, reason: 'not until it is confirmed');
@@ -278,13 +331,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
-    await tester.tap(find.descendant(
-      of: _row('dev'),
-      matching: find.byTooltip('Actions'),
-    ));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Delete'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'dev', 'Delete');
     await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
     await tester.pumpAndSettle();
 
@@ -295,13 +342,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
-    await tester.tap(find.descendant(
-      of: _row('notes.txt'),
-      matching: find.byTooltip('Actions'),
-    ));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Rename'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'notes.txt', 'Rename…');
 
     await tester.enterText(find.byType(TextFormField), 'renamed.txt');
     await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
@@ -314,13 +355,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
-    await tester.tap(find.descendant(
-      of: _row('notes.txt'),
-      matching: find.byTooltip('Actions'),
-    ));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Rename'));
-    await tester.pumpAndSettle();
+    await _rowAction(tester, 'notes.txt', 'Rename…');
 
     await tester.enterText(find.byType(TextFormField), 'sub/dir.txt');
     await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
@@ -458,16 +493,15 @@ void main() {
     // Off by default: moving the tree must not type into a live shell.
     expect(visited, isEmpty);
 
-    await tester.tap(find.text('me'));
-    await tester.pumpAndSettle();
+    await _climbTo(tester, '/home/me');
     link.follow = true;
     await _rowAction(tester, 'dev', 'Set as root');
 
     expect(visited, ['/home/me/dev']);
   });
 
-  testWidgets('opens the folder on screen in the terminal, then gets out of '
-      'the way', (tester) async {
+  testWidgets('opens a folder in the terminal from its menu, then gets out '
+      'of the way', (tester) async {
     final visited = <String>[];
     var closed = false;
 
@@ -481,9 +515,9 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await _rowAction(tester, 'dev', 'Set as root');
-    await tester.tap(find.byTooltip('Open in terminal'));
-    await tester.pumpAndSettle();
+    // One way in, from the folder's own menu: the header does not repeat it.
+    expect(find.byTooltip('Open in terminal'), findsNothing);
+    await _rowAction(tester, 'dev', 'Open in terminal');
 
     expect(visited, ['/home/me/dev']);
     expect(closed, isTrue, reason: 'the shell it just moved should be seen');
