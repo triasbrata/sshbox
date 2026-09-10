@@ -91,16 +91,16 @@ class _SshboxAppState extends State<SshboxApp> {
     }
   }
 
-  /// The single rule behind "take me back to my session, or start a new one":
-  /// [SessionManager.openOrCreate] returns the terminal that is already open
-  /// for this host, and only builds a new one when there isn't any — then
-  /// makes it the showing tab either way.
+  /// "Take me back to my session, or start a new one":
+  /// [SessionManager.openOrCreate] returns a terminal already open on this
+  /// host, and only builds a new one when there isn't any — then makes it the
+  /// showing tab either way. That is what a notification tap wants.
   ///
-  /// Both a notification tap and a tap in the host list come through here, so
-  /// they cannot drift apart. Nothing is pushed on the navigator: the tab
-  /// strip is a view of the session registry, so selecting there is the whole
-  /// of "show me this session".
-  Future<void> openHost(String hostId) async {
+  /// [newSession] is the host list's tap instead: another shell on the host,
+  /// however many it already has. Nothing is pushed on the navigator either
+  /// way: the tab strip is a view of the session registry, so selecting there
+  /// is the whole of "show me this session".
+  Future<void> openHost(String hostId, {bool newSession = false}) async {
     final hosts = await _repository.load();
     HostProfile? host;
     for (final candidate in hosts) {
@@ -111,10 +111,12 @@ class _SshboxAppState extends State<SshboxApp> {
     }
     if (host == null) return;
 
-    final session = _sessions.openOrCreate(host);
+    final session = newSession
+        ? _sessions.open(host)
+        : _sessions.openOrCreate(host);
 
-    // Handed over after openOrCreate, which has just made this session the
-    // showing tab — so the upload runs on the page the user is looking at.
+    // Handed over after the session has just been made the showing tab — so
+    // the upload runs on the page the user is looking at.
     session.queueUploads(_pendingShares);
     _pendingShares.clear();
   }
@@ -190,7 +192,7 @@ class _SshboxAppState extends State<SshboxApp> {
         repository: _repository,
         secrets: _secrets,
         sessions: _sessions,
-        onOpenHost: openHost,
+        onOpenHost: (hostId) => openHost(hostId, newSession: true),
         pushToken: () => _push.token,
       ),
     );

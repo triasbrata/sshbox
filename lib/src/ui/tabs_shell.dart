@@ -76,25 +76,25 @@ class _TabsShellState extends State<TabsShell> {
       // Keyed by what the tab shows so closing one carries the
       // remaining pages' state along with them instead of leaving it
       // behind at the old index.
-      key: ValueKey('terminal:${tab.session.host.id}'),
+      key: ValueKey('terminal:${tab.session.id}'),
       session: tab.session,
       secrets: widget.secrets,
-      onOpenFile: (path) => widget.sessions.openFile(tab.session.host.id, path),
+      onOpenFile: (path) => widget.sessions.openFile(tab.session.id, path),
     ),
     TabKind.file => FileEditorPage(
-      key: ValueKey('file:${tab.session.host.id}:${tab.path}'),
+      key: ValueKey('file:${tab.session.id}:${tab.path}'),
       browser: tab.session.fileBrowser,
       path: tab.path!,
       // Non-null tells the editor it is embedded rather than a route: leaving
       // it closes this tab instead of popping the whole shell.
-      onClose: () => widget.sessions.closeFile(tab.session.host.id, tab.path!),
+      onClose: () => widget.sessions.closeFile(tab.session.id, tab.path!),
     ),
   };
 
   @override
   Widget build(BuildContext context) {
     final tabs = _tabs();
-    final activeId = widget.sessions.activeHostId;
+    final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
     final activePath = widget.sessions.activePath;
     // A tab that no longer exists falls back to the host list rather than an
@@ -102,7 +102,7 @@ class _TabsShellState extends State<TabsShell> {
     final activeIndex =
         tabs.indexWhere(
           (tab) =>
-              tab.session.host.id == activeId &&
+              tab.session.id == activeId &&
               tab.kind == activeKind &&
               tab.path == activePath,
         ) +
@@ -118,9 +118,9 @@ class _TabsShellState extends State<TabsShell> {
               activeIndex: activeIndex,
               onSelect: widget.sessions.select,
               onClose: (tab) => switch (tab.kind) {
-                TabKind.terminal => widget.sessions.close(tab.session.host.id),
+                TabKind.terminal => widget.sessions.close(tab.session.id),
                 TabKind.file => widget.sessions.closeFile(
-                  tab.session.host.id,
+                  tab.session.id,
                   tab.path!,
                 ),
               },
@@ -170,7 +170,7 @@ class TabStrip extends StatefulWidget {
 
   final List<TabRef> tabs;
   final int activeIndex;
-  final void Function(String? hostId, {TabKind kind, String? path}) onSelect;
+  final void Function(int? id, {TabKind kind, String? path}) onSelect;
   final void Function(TabRef tab) onClose;
 
   @override
@@ -183,7 +183,7 @@ class _TabStripState extends State<TabStrip> {
   String? _shown;
 
   static String _idOf(TabRef tab) =>
-      '${tab.kind.name}:${tab.session.host.id}:${tab.path ?? ''}';
+      '${tab.kind.name}:${tab.session.id}:${tab.path ?? ''}';
 
   @override
   void didUpdateWidget(covariant TabStrip oldWidget) {
@@ -257,7 +257,7 @@ class _TabStripState extends State<TabStrip> {
           connected: tab.kind == TabKind.terminal && tab.session.isConnected,
           expand: single,
           onTap: () => widget.onSelect(
-            tab.session.host.id,
+            tab.session.id,
             kind: tab.kind,
             path: tab.path,
           ),

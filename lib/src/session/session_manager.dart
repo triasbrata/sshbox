@@ -28,6 +28,11 @@ class LiveSession extends ChangeNotifier {
 
   final HostProfile host;
 
+  /// Names this session among the others on the same host — a host can have
+  /// several shells open at once, so its own id cannot tell their tabs apart.
+  final int id = _nextId++;
+  static int _nextId = 0;
+
   /// 10k lines: enough to scroll back through a build log, small enough not to
   /// strain a phone's memory.
   final Terminal terminal = Terminal(maxLines: 10000);
@@ -307,11 +312,11 @@ class LiveSession extends ChangeNotifier {
 /// What a tab shows: the shell on a host, or a file opened over that shell.
 enum TabKind { terminal, file }
 
-/// Registry of open terminals, keyed by host id.
+/// Registry of open terminals, keyed by session id. A host can have any number
+/// of them: each tap in the host list opens another.
 ///
-/// This is where "take me back to my session, or start a new one" is decided,
-/// in one place, so a notification tap and a tap in the host list follow the
-/// exact same rule.
+/// This is also where "take me back to my session" is decided, in one place,
+/// so a notification tap and a shared file land on the same terminal.
 ///
 /// Sessions live only as long as the app process. If Android kills the app
 /// there is nothing to return to, and the next open is a fresh connection —
@@ -319,7 +324,7 @@ enum TabKind { terminal, file }
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
   /// Insertion-ordered, and that order is the tab order.
-  final Map<String, LiveSession> _sessions = {};
+  final Map<int, LiveSession> _sessions = {};
 
   /// The session the user is in: the one whose tab is showing, or the last
   /// one shown while the host list is up. What a file shared from another app
@@ -328,8 +333,8 @@ class SessionManager extends ChangeNotifier {
 
   LiveSession? get active => _active;
 
-  /// Which tab is showing: a host id, or null for the pinned host list.
-  String? _activeHostId;
+  /// Which tab is showing: a session id, or null for the pinned host list.
+  int? _activeId;
   TabKind _activeKind = TabKind.terminal;
 
   /// Which file, when the showing tab is a file tab.
@@ -337,103 +342,112 @@ class SessionManager extends ChangeNotifier {
 
   List<LiveSession> get sessions => List.unmodifiable(_sessions.values);
 
-  String? get activeHostId => _activeHostId;
+  int? get activeId => _activeId;
 
-  /// Which kind of tab is showing. Meaningless while [activeHostId] is null.
+  /// Which kind of tab is showing. Meaningless while [activeId] is null.
   TabKind get activeKind => _activeKind;
 
   /// The file the showing tab holds, when [activeKind] is [TabKind.file].
   String? get activePath => _activePath;
 
   /// null selects the pinned host list.
-  void select(String? hostId, {TabKind kind = TabKind.terminal, String? path}) {
-    if (_activeHostId == hostId &&
-        _activeKind == kind &&
-        _activePath == path) {
+  void select(int? id, {TabKind kind = TabKind.terminal, String? path}) {
+    if (_activeId == id && _activeKind == kind && _activePath == path) {
       return;
     }
-    _activeHostId = hostId;
+    _activeId = id;
     _activeKind = kind;
     _activePath = kind == TabKind.file ? path : null;
     // Going back to the host list leaves the last session standing as the
     // active one: a file shared from another app still has somewhere to go.
-    if (hostId != null) _active = _sessions[hostId];
+    if (id != null) _active = _sessions[id];
     notifyListeners();
   }
 
   /// Opens a file picked in the drawer as a tab of its own, and shows it.
   /// Picking a file that already has a tab just goes back to it.
-  void openFile(String hostId, String path) {
-    final session = _sessions[hostId];
+  void openFile(int id, String path) {
+    final session = _sessions[id];
     if (session == null) return;
     session.openFile(path);
-    select(hostId, kind: TabKind.file, path: path);
+    select(id, kind: TabKind.file, path: path);
   }
 
   /// Closing a file tab lands on the shell it was opened from — the session
   /// itself keeps running.
-  void closeFile(String hostId, String path) {
-    final session = _sessions[hostId];
+  void closeFile(int id, String path) {
+    final session = _sessions[id];
     if (session == null) return;
     session.closeFile(path);
-    if (_activeHostId == hostId &&
+    if (_activeId == id &&
         _activeKind == TabKind.file &&
         _activePath == path) {
-      select(hostId);
+      select(id);
     }
   }
 
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
 
-  LiveSession? find(String hostId) => _sessions[hostId];
+  /// Every session open on this host, in tab order.
+  List<LiveSession> sessionsFor(String hostId) =>
+      _sessions.values.where((s) => s.host.id == hostId).toList();
 
-  bool hasSession(String hostId) => _sessions.containsKey(hostId);
-
-  bool isConnected(String hostId) => _sessions[hostId]?.isConnected ?? false;
-
-  /// Returns the existing terminal for this host, or opens a new one.
-  LiveSession openOrCreate(HostProfile host) {
-    final existing = _sessions[host.id];
-    if (existing != null) {
-      select(host.id);
-      return existing;
-    }
-
+  /// Opens another terminal on this host, whatever it already has open, and
+  /// shows it.
+  LiveSession open(HostProfile host) {
     final created = LiveSession(host: host);
-    _active = created;
     created.addListener(notifyListeners);
-    _sessions[host.id] = created;
-    _activeHostId = host.id;
+    _sessions[created.id] = created;
+    _active = created;
+    _activeId = created.id;
     _activeKind = TabKind.terminal;
     _activePath = null;
     notifyListeners();
     return created;
   }
 
-  Future<void> close(String hostId) async {
+  /// Takes the user back to a terminal on this host — the one they were last
+  /// in, else its newest — and opens one only when it has none.
+  LiveSession openOrCreate(HostProfile host) {
+    final existing = _active?.host.id == host.id
+        ? _active
+        : sessionsFor(host.id).lastOrNull;
+    if (existing == null) return open(host);
+    select(existing.id);
+    return existing;
+  }
+
+  Future<void> close(int id) async {
     final ids = _sessions.keys.toList();
-    final index = ids.indexOf(hostId);
-    final session = _sessions.remove(hostId);
+    final index = ids.indexOf(id);
+    final session = _sessions.remove(id);
     if (session == null) return;
     session.removeListener(notifyListeners);
     session.dispose();
 
     // Closing the tab you are looking at lands on its left-hand neighbour,
     // falling back to the host list — the same move every tabbed UI makes.
-    if (_activeHostId == hostId) {
-      _activeHostId = index > 0 ? ids[index - 1] : null;
+    if (_activeId == id) {
+      _activeId = index > 0 ? ids[index - 1] : null;
       _activeKind = TabKind.terminal;
       _activePath = null;
     }
     if (identical(_active, session)) {
-      _active = _activeHostId == null ? null : _sessions[_activeHostId];
+      _active = _activeId == null ? null : _sessions[_activeId];
     }
     notifyListeners();
   }
 
+  /// Closes every session on this host — what deleting the host needs.
+  Future<void> closeHost(String hostId) async {
+    for (final session in sessionsFor(hostId)) {
+      await close(session.id);
+    }
+  }
+
   Future<void> closeAll() async {
-    for (final hostId in _sessions.keys.toList()) {
-      await close(hostId);
+    for (final id in _sessions.keys.toList()) {
+      await close(id);
     }
   }
 }
