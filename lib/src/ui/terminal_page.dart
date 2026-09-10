@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -57,11 +59,34 @@ class _TerminalPageState extends State<TerminalPage> {
         secrets: widget.secrets,
         onHostKeyPinned: _reportPinnedKey,
       );
+      // Files queued before this page existed. Connecting to an already-live
+      // session is a no-op and notifies nothing, so the drain cannot rely on
+      // the listener alone.
+      unawaited(_drainShared());
     });
   }
 
   void _onSessionChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    // A file shared from another app may have been queued before this page
+    // existed, or before the shell came up. Either way the session notifies,
+    // and this is where it lands.
+    unawaited(_drainShared());
+  }
+
+  /// Uploads anything handed to the session from outside the terminal page.
+  Future<void> _drainShared() async {
+    if (_uploading || !_session.isConnected || !_session.hasPendingUploads) {
+      return;
+    }
+    // Opening a session replaces this page with a fresh one; only whichever is
+    // actually on screen takes the queue, so the progress bar is visible and
+    // no file is uploaded twice.
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    for (final file in _session.takePendingUploads()) {
+      await _upload(file);
+    }
   }
 
   @override
@@ -119,6 +144,12 @@ class _TerminalPageState extends State<TerminalPage> {
     // Something picked from a cloud provider has no filesystem path, and so
     // nothing for SFTP to read.
     if (file == null || localPath == null) return;
+    await _upload((path: localPath, name: file.name));
+  }
+
+  /// The one upload path: the paperclip and the share sheet both end here, so
+  /// progress, the typed remote path and the error message cannot drift apart.
+  Future<void> _upload(SharedFile file) async {
     if (!mounted) return;
 
     final messenger = ScaffoldMessenger.of(context);
@@ -126,7 +157,7 @@ class _TerminalPageState extends State<TerminalPage> {
 
     try {
       final remotePath = await _session.uploadToTmp(
-        localPath: localPath,
+        localPath: file.path,
         fileName: file.name,
         onProgress: (sent, total) {
           if (!mounted || total == 0) return;

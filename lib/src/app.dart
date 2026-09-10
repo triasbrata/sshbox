@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
@@ -21,7 +22,11 @@ class SshboxApp extends StatefulWidget {
 }
 
 class _SshboxAppState extends State<SshboxApp> {
+  /// Files another app handed us, waiting for a session to send them to.
+  static const _shareChannel = MethodChannel('sshbox/share');
+
   final _navigatorKey = GlobalKey<NavigatorState>();
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
   final SecretStore _secrets = KeystoreSecretStore();
   final SessionManager _sessions = SessionManager();
   late final HostRepository _repository = HostRepository(_secrets);
@@ -43,6 +48,7 @@ class _SshboxAppState extends State<SshboxApp> {
     _keepAlive.attach();
     unawaited(_startNotifications());
     unawaited(_listenForLinks());
+    unawaited(_listenForShares());
   }
 
   Future<void> _startNotifications() async {
@@ -93,6 +99,48 @@ class _SshboxAppState extends State<SshboxApp> {
   ///
   /// Both a notification tap and a tap in the host list come through here, so
   /// they cannot drift apart.
+  /// Files shared into the app before there was anywhere to put them.
+  final List<SharedFile> _pendingShares = [];
+
+  /// "Share with sshbox" from another app.
+  ///
+  /// Same two arrival paths as a link: a cold start leaves the files waiting on
+  /// the Android side until we ask, a warm one pushes them at us.
+  Future<void> _listenForShares() async {
+    _shareChannel.setMethodCallHandler((call) async {
+      if (call.method == 'shared') _handleShared(call.arguments);
+    });
+    _handleShared(await _shareChannel.invokeMethod<List<dynamic>>('takeShared'));
+  }
+
+  void _handleShared(Object? payload) {
+    if (payload is! List) return;
+    _pendingShares.addAll(
+      payload.cast<Map<dynamic, dynamic>>().map(
+            (file) => (
+              path: file['path'] as String,
+              name: file['name'] as String,
+            ),
+          ),
+    );
+    if (_pendingShares.isEmpty) return;
+
+    // Straight to the session the user was last in. With no session there is
+    // nowhere to upload to yet, so the files wait for the next host they open.
+    final active = _sessions.active;
+    if (active != null) {
+      unawaited(openHost(active.host.id));
+      return;
+    }
+    _messengerKey.currentState?.showSnackBar(
+      SnackBar(
+        content: Text(
+          'Open a host to upload ${_pendingShares.length} shared file(s)',
+        ),
+      ),
+    );
+  }
+
   Future<void> openHost(String hostId) async {
     final hosts = await _repository.load();
     HostProfile? host;
@@ -118,6 +166,11 @@ class _SshboxAppState extends State<SshboxApp> {
         ),
       ),
     );
+
+    // Handed over only once the new page is the current route, so the upload
+    // runs on the page that is on screen rather than on the one animating away.
+    session.queueUploads(_pendingShares);
+    _pendingShares.clear();
   }
 
   @override
@@ -135,6 +188,7 @@ class _SshboxAppState extends State<SshboxApp> {
       title: 'sshbox',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
+      scaffoldMessengerKey: _messengerKey,
       // A terminal is a dark surface; forcing dark keeps the app chrome from
       // fighting the terminal's own palette.
       themeMode: ThemeMode.dark,

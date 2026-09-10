@@ -8,6 +8,10 @@ import '../models/host_profile.dart';
 import 'dartssh2_transport.dart';
 import 'terminal_session.dart';
 
+/// A local file waiting to go to the host — from the picker, or handed to us
+/// by another app through the share sheet.
+typedef SharedFile = ({String path, String name});
+
 /// One terminal that outlives the widget showing it.
 ///
 /// The [Terminal] holds the scrollback, so it must be owned here rather than
@@ -192,6 +196,28 @@ class LiveSession extends ChangeNotifier {
     );
   }
 
+  /// Files handed to this session from outside the terminal page, waiting for
+  /// the page to be on screen and the shell to be up.
+  ///
+  /// A share can arrive while the app is dead, so the file has to wait
+  /// somewhere that outlives the widget — same reason the terminal does.
+  final List<SharedFile> _pendingUploads = [];
+
+  bool get hasPendingUploads => _pendingUploads.isNotEmpty;
+
+  void queueUploads(Iterable<SharedFile> files) {
+    if (files.isEmpty) return;
+    _pendingUploads.addAll(files);
+    _notify();
+  }
+
+  /// Hands the queue over and empties it, so a redraw cannot upload twice.
+  List<SharedFile> takePendingUploads() {
+    final taken = List<SharedFile>.of(_pendingUploads);
+    _pendingUploads.clear();
+    return taken;
+  }
+
   /// Uploads into `/tmp` on the remote host and returns the path to type.
   Future<String> uploadToTmp({
     required String localPath,
@@ -260,6 +286,12 @@ class LiveSession extends ChangeNotifier {
 class SessionManager extends ChangeNotifier {
   final Map<String, LiveSession> _sessions = {};
 
+  LiveSession? _active;
+
+  /// The session the user is in — the last one opened. What a file shared
+  /// from another app is sent to.
+  LiveSession? get active => _active;
+
   List<LiveSession> get sessions => List.unmodifiable(_sessions.values);
 
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
@@ -273,9 +305,13 @@ class SessionManager extends ChangeNotifier {
   /// Returns the existing terminal for this host, or opens a new one.
   LiveSession openOrCreate(HostProfile host) {
     final existing = _sessions[host.id];
-    if (existing != null) return existing;
+    if (existing != null) {
+      _active = existing;
+      return existing;
+    }
 
     final created = LiveSession(host: host);
+    _active = created;
     created.addListener(notifyListeners);
     _sessions[host.id] = created;
     notifyListeners();
@@ -285,6 +321,7 @@ class SessionManager extends ChangeNotifier {
   Future<void> close(String hostId) async {
     final session = _sessions.remove(hostId);
     if (session == null) return;
+    if (identical(_active, session)) _active = null;
     session.removeListener(notifyListeners);
     session.dispose();
     notifyListeners();
