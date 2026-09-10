@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
@@ -97,8 +98,8 @@ void main() {
   });
 
   group('SwipeKeyPad readout', () {
-    /// Drags down from [fromFraction] across the width and reports which half
-    /// of the screen the readout chose to sit in.
+    /// Holds, then drags down from [fromFraction] across the width, and reports
+    /// which half of the screen the readout chose to sit in.
     Future<double> readoutCentre(WidgetTester tester, double fromFraction) async {
       await tester.pumpWidget(MaterialApp(
         home: SwipeKeyPad(
@@ -112,7 +113,8 @@ void main() {
       final width = tester.getSize(find.byType(SwipeKeyPad)).width;
       final gesture =
           await tester.startGesture(Offset(width * fromFraction, 300));
-      // Past the touch slop, so the pan is recognised and the readout comes up.
+      // Held until the arrows arm, which is what brings the readout up.
+      await tester.pump(kLongPressTimeout);
       await gesture.moveBy(const Offset(0, 40));
       await tester.pump();
 
@@ -129,6 +131,91 @@ void main() {
     testWidgets('sits opposite the hand that is dragging', (tester) async {
       expect(await readoutCentre(tester, 0.2), greaterThan(0));
       expect(await readoutCentre(tester, 0.8), lessThan(0));
+    });
+  });
+
+  group('SwipeKeyPad over a terminal', () {
+    late List<String> sent;
+    late TerminalController selection;
+    late ScrollController scroll;
+    late int tapped;
+
+    /// A real TerminalView, because what is under test is how the pad shares
+    /// the gesture arena with xterm2's own scroll and long press. Returns the
+    /// middle of the terminal, where every gesture lands.
+    Future<Offset> pumpPad(WidgetTester tester) async {
+      final terminal = Terminal();
+      // Enough lines that there is scrollback to drag through.
+      terminal.write(List.generate(200, (i) => 'line $i').join('\r\n'));
+      sent = [];
+      tapped = 0;
+      selection = TerminalController();
+      scroll = ScrollController();
+      addTearDown(selection.dispose);
+      addTearDown(scroll.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: SwipeKeyPad(
+          terminal: terminal,
+          onEmit: sent.add,
+          child: TerminalView(
+            terminal,
+            controller: selection,
+            scrollController: scroll,
+            hardwareKeyboardOnly: true,
+            onTapUp: (_, _) => tapped++,
+          ),
+        ),
+      ));
+      return tester.getCenter(find.byType(TerminalView));
+    }
+
+    testWidgets('a plain drag scrolls and sends nothing', (tester) async {
+      final centre = await pumpPad(tester);
+      final before = scroll.offset;
+
+      final gesture = await tester.startGesture(centre);
+      // Sideways first, the way a thumb often sets off: that alone used to be
+      // enough for the pad to take the drag for arrows.
+      await gesture.moveBy(const Offset(40, 0));
+      await gesture.moveBy(const Offset(0, 200));
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(sent, isEmpty);
+      expect(scroll.offset, lessThan(before));
+    });
+
+    testWidgets('a long press then a drag sends the arrow, and selects nothing',
+        (tester) async {
+      final centre = await pumpPad(tester);
+
+      final gesture = await tester.startGesture(centre);
+      await tester.pump(kLongPressTimeout);
+      await gesture.moveBy(const Offset(40, 0));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(sent, ['\x1b[C']);
+      expect(selection.selection, isNull);
+    });
+
+    testWidgets('a tap still reaches the terminal, and a double tap sends Tab',
+        (tester) async {
+      final centre = await pumpPad(tester);
+
+      await tester.tapAt(centre);
+      // A lone tap lands once the double-tap window has run out.
+      await tester.pump(kDoubleTapTimeout);
+      expect(tapped, 1);
+
+      await tester.tapAt(centre);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tapAt(centre);
+      await tester.pump(kDoubleTapTimeout);
+      expect(sent, ['\t']);
+      expect(tapped, 1);
     });
   });
 

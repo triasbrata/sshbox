@@ -105,6 +105,12 @@ Cursor keys follow `terminal.cursorKeysMode`, emitting the SS3 form
 Sending the wrong one is why arrow keys produce garbage in vim in many
 hand-rolled terminals.
 
+The terminal itself doubles as an arrow pad (`SwipeKeyPad`). Long-press it
+until it buzzes, then, still holding, drag towards the arrow you want; reach
+further and it repeats faster. A plain drag scrolls the scrollback, and a
+double tap sends Tab. That long press is the one xterm2 selects text with, so
+there is no text selection by touch.
+
 ## Running it
 
 ```sh

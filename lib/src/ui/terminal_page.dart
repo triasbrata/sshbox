@@ -451,8 +451,9 @@ class _TerminalPageState extends State<TerminalPage> {
         // Two wrappers, because they take different things: the input owns
         // the keyboard connection, the pad owns the swipe. The pad sits
         // inside so its gestures land on the terminal itself — it claims
-        // only pans and double taps, so a plain tap still falls through to
-        // xterm2 below and asks for the keyboard back.
+        // only long presses and double taps, so a plain tap still falls
+        // through to xterm2 below and asks for the keyboard back, and a
+        // plain drag scrolls the scrollback.
         TerminalTextInput(
           key: _inputKey,
           terminal: _session.terminal,
@@ -467,7 +468,7 @@ class _TerminalPageState extends State<TerminalPage> {
               scrollController: _scrollController,
               autofocus: true,
               // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
-              // hardware keys, shortcuts and selection gestures.
+              // hardware keys, shortcuts and mouse selection.
               hardwareKeyboardOnly: true,
               // Tapping a terminal that already has focus is how you ask for
               // the keyboard back, and focus alone will not raise it.
