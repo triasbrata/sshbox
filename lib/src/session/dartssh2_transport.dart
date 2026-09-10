@@ -50,7 +50,7 @@ class Dartssh2Transport implements SessionTransport {
 }
 
 class _Dartssh2Session
-    implements TerminalSession, FileUploadCapable, PortForwardCapable {
+    implements TerminalSession, FileUploadCapable, FileBrowseCapable {
   _Dartssh2Session(
     this._knownHosts,
     this._onHostKeyPinned,
@@ -230,55 +230,85 @@ class _Dartssh2Session
     shell.resizeTerminal(columns, rows, pixelWidth, pixelHeight);
   }
 
-  @override
-  Future<LocalPortForward> forwardLocalPort({
-    required String remoteHost,
-    required int remotePort,
-  }) async {
+  /// A fresh SFTP channel per operation.
+  ///
+  /// Browsing is bursty — a listing, then nothing while the user reads — and
+  /// dartssh2 keeps a channel open for as long as the client is held, so the
+  /// alternative is a channel idling on the server for the life of the
+  /// session.
+  Future<SftpClient> _sftp() async {
     final client = _client;
     if (client == null || _status.value != SessionStatus.connected) {
       throw const SshSessionException('Not connected.');
     }
-
-    // Port 0 lets the OS pick a free one — hardcoding invites a clash with
-    // whatever else the phone is running.
-    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    final sockets = <Socket>[];
-
-    server.listen((socket) async {
-      sockets.add(socket);
-      try {
-        final channel = await client.forwardLocal(remoteHost, remotePort);
-
-        // Remote to device.
-        channel.stream.listen(
-          socket.add,
-          onDone: () => unawaited(socket.close()),
-          onError: (_) => unawaited(socket.close()),
-        );
-
-        // Device to remote.
-        socket.listen(
-          channel.sink.add,
-          onDone: () => unawaited(channel.sink.close()),
-          onError: (_) => unawaited(channel.sink.close()),
-        );
-      } catch (_) {
-        // One failed tunnel should not take the listener down with it.
-        await socket.close();
-      }
-    });
-
-    return LocalPortForward(
-      localPort: server.port,
-      close: () async {
-        for (final socket in sockets) {
-          socket.destroy();
-        }
-        await server.close();
-      },
-    );
+    return client.sftp();
   }
+
+  @override
+  Future<String> homeDirectory() async {
+    final sftp = await _sftp();
+    try {
+      // SFTP starts in the login directory, so this resolves to it.
+      return await sftp.absolute('.');
+    } finally {
+      sftp.close();
+    }
+  }
+
+  @override
+  Future<List<RemoteEntry>> listDirectory(String path) async {
+    final sftp = await _sftp();
+    try {
+      final names = await sftp.listdir(path);
+      final entries = <RemoteEntry>[];
+
+      for (final name in names) {
+        if (name.filename == '.' || name.filename == '..') continue;
+        entries.add(
+          RemoteEntry(
+            name: name.filename,
+            path: _join(path, name.filename),
+            // A symlink reports as neither, so it lands under files and opens
+            // as one. Following it would mean a stat per entry on every
+            // listing.
+            isDirectory: name.attr.isDirectory,
+            size: name.attr.size,
+          ),
+        );
+      }
+
+      // Directories first, then by name — the order every file browser uses,
+      // and the one that makes a deep tree walkable with a thumb.
+      entries.sort((a, b) {
+        if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+      return entries;
+    } finally {
+      sftp.close();
+    }
+  }
+
+  @override
+  Future<Uint8List> readFile(String path, {required int maxBytes}) async {
+    final sftp = await _sftp();
+    try {
+      final file = await sftp.open(path, mode: SftpFileOpenMode.read);
+      try {
+        // One byte past the cap, so the caller can tell "exactly at the cap"
+        // from "there is more we did not fetch".
+        return await file.readBytes(length: maxBytes + 1);
+      } finally {
+        await file.close();
+      }
+    } finally {
+      sftp.close();
+    }
+  }
+
+  /// Joins a directory and a name without doubling the separator at the root.
+  static String _join(String directory, String name) =>
+      directory.endsWith('/') ? '$directory$name' : '$directory/$name';
 
   /// Everything lands in `/tmp`, named after the file the user picked.
   ///

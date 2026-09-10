@@ -120,7 +120,6 @@ class _HostsPageState extends State<HostsPage> {
   @override
   Widget build(BuildContext context) {
     final hosts = _hosts;
-    final liveCount = widget.sessions.liveCount;
 
     return Scaffold(
       appBar: AppBar(
@@ -132,21 +131,6 @@ class _HostsPageState extends State<HostsPage> {
             icon: const Icon(Icons.key_outlined),
           ),
         ],
-        bottom: liveCount == 0
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(28),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: Text(
-                      '$liveCount session${liveCount == 1 ? '' : 's'} open',
-                      style: Theme.of(context).textTheme.labelMedium,
-                    ),
-                  ),
-                ),
-              ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(),

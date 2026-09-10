@@ -35,9 +35,12 @@ lib/
       terminal_session.dart         protocol-agnostic session interface
       dartssh2_transport.dart       the only file that imports dartssh2
     ui/
+      tabs_shell.dart               pinned host list + a tab per session/file
       hosts_page.dart               host list
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
+      files_drawer.dart             SFTP browser over the open session
+      file_page.dart                one remote file, read-only
       key_bar.dart                  the accessory keyboard row
 ```
 
@@ -107,6 +110,8 @@ maestro --device <serial> test .maestro/
 | --- | --- | --- |
 | `smoke` | app starts, host list renders | nothing |
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
+| `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | nothing |
+| `files_drawer` | the folder button opens the remote filesystem in a drawer | a reachable host with a stored credential |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
 
 Two things worth knowing before editing these:
@@ -177,6 +182,35 @@ threw the session away.
 or start a new one" rule, in one place. A tap in the host list and a tap on a
 notification both route through `SshboxApp.openHost`, so they cannot drift
 apart.
+
+## Tabs
+
+`ui/tabs_shell.dart` is the app's one screen: the host list pinned on the left,
+then one tab per open session. Nothing is pushed on the navigator — the tab
+strip is a *view* of `SessionManager`, so which tabs exist, in what order, and
+which one is showing all come from the registry that already owned the
+sessions. Opening a host selects its tab; closing a tab is the only thing that
+ends a session.
+
+The pages sit in an `IndexedStack`, so every terminal keeps its scrollback,
+key bar and connection while another one is on screen. Only the visible page
+may hold focus (`ExcludeFocus`), because hidden terminals still have focus
+nodes — without it keystrokes land in whichever terminal grabbed focus last,
+which means typed commands going to the wrong host.
+
+**Files get tabs too.** The folder button opens the files drawer over the
+shell; tapping a file there gives it a tab of its own, named
+`<host> > <file>`, next to the session it was read over. Picking the same file
+again returns to its tab rather than opening a second one, and closing a
+session takes its file tabs with it — they are read over that session and
+cannot outlive it.
+
+**Room on the strip.** A phone fits about one and a half tabs, so the space
+goes where it is read: the selected tab gets 180dp of name — enough for
+`host > file.dart` — and the rest get 110dp and an ellipsis. The pinned host
+list drops to its icon while you are on a session, and selecting a tab scrolls
+it into view, so a notification tap never lands on a tab that is off the
+right-hand edge.
 
 **Deep link:** `sshbox://host/<hostId>` opens that host, resuming its terminal
 if one is still open. Test it without any push infrastructure:
@@ -337,55 +371,37 @@ the method channel.
 Android only. iOS needs a separate Share Extension target to appear in its
 share sheet.
 
-## Browsing files (code-server)
+## Browsing files
 
-The folder button in a terminal opens
-[code-server](https://github.com/coder/code-server) — VS Code running on the
-host — giving a file tree, search and an editor without building any of it.
-
-code-server is a web application rather than a file API, so the way to use it
-is to display it. `ui/files_page.dart` is a WebView; everything interesting is
-in how it is reached:
+The folder button in a terminal opens a drawer listing the remote filesystem
+over SFTP — over the session that is already authenticated, so there is no
+second connection and nothing is exposed to the network. It starts in the
+login directory, walks in and out of folders, and hands a tapped file's path
+back to the shell that opened it, which turns it into a tab.
 
 ```
-WebView → http://127.0.0.1:<device port>
-            └── SSH local forward, over the session already open
-                  └── host 127.0.0.1:8080 ← code-server
+files drawer ──tap──▶ tab `<host> > <file>`
+   └── SFTP, over the session already open
 ```
 
-code-server stays bound to loopback **on the host**. It is never published to
-the LAN or the tailnet, so there is no port for anyone to scan for, and the
-only route in is a session that has already authenticated. No second
-connection, no second credential for the network hop.
+`ui/files_drawer.dart` browses, `ui/file_page.dart` shows one file. Reading is
+an optional capability (`FileBrowseCapable`) for the same reason upload is —
+a future mosh transport could not offer it.
 
-Port forwarding is an optional capability (`PortForwardCapable`) for the same
-reason file upload is — a future mosh transport could not offer it.
+Three deliberate limits in the reader:
 
-### Running code-server on the host
+- **512 KB.** A log can be gigabytes; the transport reads one byte past the
+  cap so the page can say it is showing the first 512 KB rather than pretend
+  it has the whole file.
+- **Read-only.** Editing on a phone is what the shell in the next tab is for.
+- **Binary is not rendered.** A NUL byte in the content is the same signal
+  `file` and `grep` use, and rendering the rest as text is noise.
 
-```sh
-curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=~/.local
-code-server ~/dev
-```
-
-Its config lives at `~/.config/code-server/config.yaml`. Keep
-`bind-addr: 127.0.0.1:8080`, and keep `auth: password` — loopback is still
-reachable by every other process and user on that machine, so the password is
-what stops them; the SSH tunnel only protects the network hop. You log in once
-in the WebView and the cookie persists.
-
-**Gotcha worth knowing:** started from a terminal inside VS Code, code-server
-sees `VSCODE_IPC_HOOK_CLI`, decides it is a CLI talking to a running VS Code,
-and exits 0 with no output and no server. Unset the `VSCODE_*` variables when
-launching it:
-
-```sh
-env -u VSCODE_IPC_HOOK_CLI code-server ~/dev
-```
-
-**On a phone** VS Code's web UI is cramped; on a tablet it is comfortable. A
-native file browser over SFTP would suit small screens better, but it is a
-different piece of work and not a "VS Code feel".
+A directory listing is one SFTP channel, opened and closed per operation:
+browsing is bursty, and dartssh2 holds a channel for as long as the client
+does, so the alternative is a channel idling on the server for the life of the
+session. Symlinks list as files, since following one would mean a stat per
+entry on every listing.
 
 ## Not done yet
 
@@ -393,8 +409,7 @@ different piece of work and not a "VS Code feel".
 - **A relay**, so servers hold a token rather than a service-account JSON.
 - **mosh.** The seam is in place, the transport is not. No mature mosh
   implementation exists in Dart, so this is real work, not a wiring job.
-- **A tab switcher.** Several sessions can be open at once and the host list
-  marks them, but there is no UI for moving between them directly.
-- **SFTP.** `dartssh2` already implements SFTPv3; only UI is missing.
-- **Biometric unlock**, port forwarding, key generation and import from file,
-  and a landscape-aware font size control.
+- **Editing a file** you opened from the drawer. It is read-only; the shell
+  in the next tab is the editor for now.
+- **Biometric unlock**, key generation and import from file, and a
+  landscape-aware font size control.

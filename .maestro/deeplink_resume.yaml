@@ -20,13 +20,13 @@ env:
 
 - openLink: "sshbox://host/${HOST_ID}"
 
-# The terminal page titles itself with the host label until the remote shell
-# reports one of its own.
+# Not asserted on the label: the tab and the app bar both take the title the
+# remote reports as soon as the shell is up, so the host's own name is gone
+# from the screen the moment the link works.
+#
+# These two buttons only exist on the terminal page, so their presence is what
+# distinguishes it from the host list.
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "Upload a file to /tmp"
     timeout: 20000
-
-# These two buttons only exist on the terminal page, so their presence
-# distinguishes it from the host list, whose rows carry the same label text.
-- assertVisible: "Upload a file to /tmp"
 - assertVisible: "Browse files"

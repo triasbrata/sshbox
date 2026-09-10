@@ -1,0 +1,42 @@
+# Tabs: the host list is pinned and never closes, each open session gets its
+# own tab beside it, and switching between them keeps every session running.
+#
+# The point of the flow is that a session survives being switched away from —
+# which is why it closes the tab explicitly at the end rather than trusting
+# navigation to have thrown it away.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+# Tapping a host opens its tab and shows it. These two buttons only exist on
+# the terminal page, so they are what distinguishes it from the host list.
+- tapOn: "(?s)${HOST_LABEL}.*"
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 20000
+
+# The strip stays put, with a closable tab for the session on it. The tab
+# takes the title the remote reports once it connects, so it is matched on the
+# close button rather than on the host label.
+- assertVisible: "Hosts"
+- assertVisible: "(?s)Close .*"
+
+# Back to the pinned host list — the session tab is still there, so nothing
+# was torn down by looking away from it.
+- tapOn: "Hosts"
+- assertVisible: "Host"
+- assertVisible: "(?s)Close .*"
+
+# Closing the tab is the only thing that ends the session, and lands on the
+# host list because there is no tab to its left.
+- tapOn: "(?s)Close .*"
+- assertNotVisible: "(?s)Close .*"
+- assertVisible: "Host"

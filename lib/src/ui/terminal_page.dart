@@ -7,7 +7,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
 import '../session/session_manager.dart';
-import 'files_page.dart';
+import 'files_drawer.dart';
 import 'key_bar.dart';
 import 'terminal_text_input.dart';
 
@@ -20,10 +20,14 @@ class TerminalPage extends StatefulWidget {
     super.key,
     required this.session,
     required this.secrets,
+    required this.onOpenFile,
   });
 
   final LiveSession session;
   final SecretStore secrets;
+
+  /// Opens a file picked in the drawer as a tab of its own, next to this one.
+  final void Function(String path) onOpenFile;
 
   @override
   State<TerminalPage> createState() => _TerminalPageState();
@@ -36,6 +40,11 @@ class _TerminalPageState extends State<TerminalPage> {
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
   final _inputKey = GlobalKey<TerminalTextInputState>();
+
+  /// The drawer is opened from an action in this page's own AppBar, which
+  /// sits above the Scaffold that owns it — hence the key rather than
+  /// `Scaffold.of`.
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -124,17 +133,10 @@ class _TerminalPageState extends State<TerminalPage> {
         onHostKeyPinned: _reportPinnedKey,
       );
 
-  Future<void> _disconnect() async {
-    await _session.disconnect();
-    if (mounted) Navigator.of(context).maybePop();
-  }
-
-  /// Opens code-server through a tunnel over this session.
-  Future<void> _openFiles() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => FilesPage(session: _session)),
-    );
-  }
+  // Leaves the tab open on a closed session: the scrollback is still worth
+  // reading, and reconnecting is one button away. Closing the tab is what
+  // throws the session away.
+  Future<void> _disconnect() => _session.disconnect();
 
   /// Pick a file, send it to `/tmp` on the host, then type the remote path at
   /// the prompt — so the next thing you write is a command that uses it.
@@ -185,9 +187,21 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
+  /// The drawer is a detour, so it closes behind the file it opened.
+  void _openFile(String path) {
+    _scaffoldKey.currentState?.closeEndDrawer();
+    widget.onOpenFile(path);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final canBrowse = _session.isConnected && _session.canBrowseFiles;
+
     return Scaffold(
+      key: _scaffoldKey,
+      endDrawer: canBrowse
+          ? FilesDrawer(session: _session, onOpenFile: _openFile)
+          : null,
       appBar: AppBar(
         title: Text(_session.title, overflow: TextOverflow.ellipsis),
         bottom: _uploading
@@ -199,8 +213,8 @@ class _TerminalPageState extends State<TerminalPage> {
         actions: [
           IconButton(
             tooltip: 'Browse files',
-            onPressed: (_session.isConnected && _session.canForwardPorts)
-                ? _openFiles
+            onPressed: canBrowse
+                ? () => _scaffoldKey.currentState?.openEndDrawer()
                 : null,
             icon: const Icon(Icons.folder_outlined),
           ),

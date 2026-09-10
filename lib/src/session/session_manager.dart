@@ -92,6 +92,29 @@ class LiveSession extends ChangeNotifier {
   bool get isConnected =>
       _session?.status.value == SessionStatus.connected;
 
+  final List<String> _openFiles = [];
+
+  /// Absolute paths of the files opened from the drawer, in tab order. They
+  /// are read over this session, so they cannot outlive it — closing the
+  /// shell takes its file tabs with it.
+  List<String> get openFiles => List.unmodifiable(_openFiles);
+
+  /// Opening a file already on the strip is a no-op: it selects the tab that
+  /// is already there rather than stacking a second copy of the same file.
+  void openFile(String path) {
+    if (_openFiles.contains(path)) return;
+    _openFiles.add(path);
+    _notify();
+  }
+
+  void closeFile(String path) {
+    if (_openFiles.remove(path)) _notify();
+  }
+
+  /// A file tab's name: the host, then the file.
+  String fileTabTitle(String path) =>
+      '${host.displayName} > ${path.split('/').last}';
+
   void _wireTerminal() {
     if (_wired) return;
     _wired = true;
@@ -177,23 +200,15 @@ class LiveSession extends ChangeNotifier {
   /// Whether this session's transport can move files at all.
   bool get canUploadFiles => _session is FileUploadCapable;
 
-  /// Whether this session can tunnel a remote port to the device.
-  bool get canForwardPorts => _session is PortForwardCapable;
+  /// Whether this session's transport can read the remote filesystem.
+  bool get canBrowseFiles => _session is FileBrowseCapable;
 
-  /// Tunnels [remoteHost]:[remotePort] to a loopback port on the device.
-  Future<LocalPortForward> forwardLocalPort({
-    required String remoteHost,
-    required int remotePort,
-  }) async {
+  FileBrowseCapable get _browser {
     final session = _session;
-    if (session is! PortForwardCapable) {
-      throw const SshSessionException('This session cannot forward ports.');
+    if (session is! FileBrowseCapable) {
+      throw const SshSessionException('This session cannot browse files.');
     }
-    final forwarder = session as PortForwardCapable;
-    return forwarder.forwardLocalPort(
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-    );
+    return session as FileBrowseCapable;
   }
 
   /// Files handed to this session from outside the terminal page, waiting for
@@ -217,6 +232,14 @@ class LiveSession extends ChangeNotifier {
     _pendingUploads.clear();
     return taken;
   }
+
+  Future<String> homeDirectory() => _browser.homeDirectory();
+
+  Future<List<RemoteEntry>> listDirectory(String path) =>
+      _browser.listDirectory(path);
+
+  Future<Uint8List> readFile(String path, {required int maxBytes}) =>
+      _browser.readFile(path, maxBytes: maxBytes);
 
   /// Uploads into `/tmp` on the remote host and returns the path to type.
   Future<String> uploadToTmp({
@@ -273,6 +296,9 @@ class LiveSession extends ChangeNotifier {
   }
 }
 
+/// What a tab shows: the shell on a host, or a file opened over that shell.
+enum TabKind { terminal, file }
+
 /// Registry of open terminals, keyed by host id.
 ///
 /// This is where "take me back to my session, or start a new one" is decided,
@@ -284,15 +310,70 @@ class LiveSession extends ChangeNotifier {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
+  /// Insertion-ordered, and that order is the tab order.
   final Map<String, LiveSession> _sessions = {};
 
+  /// The session the user is in: the one whose tab is showing, or the last
+  /// one shown while the host list is up. What a file shared from another app
+  /// is sent to.
   LiveSession? _active;
 
-  /// The session the user is in — the last one opened. What a file shared
-  /// from another app is sent to.
   LiveSession? get active => _active;
 
+  /// Which tab is showing: a host id, or null for the pinned host list.
+  String? _activeHostId;
+  TabKind _activeKind = TabKind.terminal;
+
+  /// Which file, when the showing tab is a file tab.
+  String? _activePath;
+
   List<LiveSession> get sessions => List.unmodifiable(_sessions.values);
+
+  String? get activeHostId => _activeHostId;
+
+  /// Which kind of tab is showing. Meaningless while [activeHostId] is null.
+  TabKind get activeKind => _activeKind;
+
+  /// The file the showing tab holds, when [activeKind] is [TabKind.file].
+  String? get activePath => _activePath;
+
+  /// null selects the pinned host list.
+  void select(String? hostId, {TabKind kind = TabKind.terminal, String? path}) {
+    if (_activeHostId == hostId &&
+        _activeKind == kind &&
+        _activePath == path) {
+      return;
+    }
+    _activeHostId = hostId;
+    _activeKind = kind;
+    _activePath = kind == TabKind.file ? path : null;
+    // Going back to the host list leaves the last session standing as the
+    // active one: a file shared from another app still has somewhere to go.
+    if (hostId != null) _active = _sessions[hostId];
+    notifyListeners();
+  }
+
+  /// Opens a file picked in the drawer as a tab of its own, and shows it.
+  /// Picking a file that already has a tab just goes back to it.
+  void openFile(String hostId, String path) {
+    final session = _sessions[hostId];
+    if (session == null) return;
+    session.openFile(path);
+    select(hostId, kind: TabKind.file, path: path);
+  }
+
+  /// Closing a file tab lands on the shell it was opened from — the session
+  /// itself keeps running.
+  void closeFile(String hostId, String path) {
+    final session = _sessions[hostId];
+    if (session == null) return;
+    session.closeFile(path);
+    if (_activeHostId == hostId &&
+        _activeKind == TabKind.file &&
+        _activePath == path) {
+      select(hostId);
+    }
+  }
 
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
 
@@ -306,7 +387,7 @@ class SessionManager extends ChangeNotifier {
   LiveSession openOrCreate(HostProfile host) {
     final existing = _sessions[host.id];
     if (existing != null) {
-      _active = existing;
+      select(host.id);
       return existing;
     }
 
@@ -314,16 +395,31 @@ class SessionManager extends ChangeNotifier {
     _active = created;
     created.addListener(notifyListeners);
     _sessions[host.id] = created;
+    _activeHostId = host.id;
+    _activeKind = TabKind.terminal;
+    _activePath = null;
     notifyListeners();
     return created;
   }
 
   Future<void> close(String hostId) async {
+    final ids = _sessions.keys.toList();
+    final index = ids.indexOf(hostId);
     final session = _sessions.remove(hostId);
     if (session == null) return;
-    if (identical(_active, session)) _active = null;
     session.removeListener(notifyListeners);
     session.dispose();
+
+    // Closing the tab you are looking at lands on its left-hand neighbour,
+    // falling back to the host list — the same move every tabbed UI makes.
+    if (_activeHostId == hostId) {
+      _activeHostId = index > 0 ? ids[index - 1] : null;
+      _activeKind = TabKind.terminal;
+      _activePath = null;
+    }
+    if (identical(_active, session)) {
+      _active = _activeHostId == null ? null : _sessions[_activeHostId];
+    }
     notifyListeners();
   }
 

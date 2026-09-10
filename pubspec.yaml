@@ -44,7 +44,6 @@ dependencies:
   firebase_core: ^4.14.0
   firebase_messaging: ^16.6.0
   flutter_foreground_task: ^11.0.3
-  webview_flutter: ^4.14.1
   url_launcher: ^6.3.2
 
 dev_dependencies:

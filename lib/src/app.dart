@@ -11,8 +11,7 @@ import 'notifications/notification_gateway.dart';
 import 'notifications/push_messaging.dart';
 import 'session/session_keepalive.dart';
 import 'session/session_manager.dart';
-import 'ui/hosts_page.dart';
-import 'ui/terminal_page.dart';
+import 'ui/tabs_shell.dart';
 
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key});
@@ -25,7 +24,6 @@ class _SshboxAppState extends State<SshboxApp> {
   /// Files another app handed us, waiting for a session to send them to.
   static const _shareChannel = MethodChannel('sshbox/share');
 
-  final _navigatorKey = GlobalKey<NavigatorState>();
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
   final SecretStore _secrets = KeystoreSecretStore();
   final SessionManager _sessions = SessionManager();
@@ -95,10 +93,32 @@ class _SshboxAppState extends State<SshboxApp> {
 
   /// The single rule behind "take me back to my session, or start a new one":
   /// [SessionManager.openOrCreate] returns the terminal that is already open
-  /// for this host, and only builds a new one when there isn't any.
+  /// for this host, and only builds a new one when there isn't any — then
+  /// makes it the showing tab either way.
   ///
   /// Both a notification tap and a tap in the host list come through here, so
-  /// they cannot drift apart.
+  /// they cannot drift apart. Nothing is pushed on the navigator: the tab
+  /// strip is a view of the session registry, so selecting there is the whole
+  /// of "show me this session".
+  Future<void> openHost(String hostId) async {
+    final hosts = await _repository.load();
+    HostProfile? host;
+    for (final candidate in hosts) {
+      if (candidate.id == hostId) {
+        host = candidate;
+        break;
+      }
+    }
+    if (host == null) return;
+
+    final session = _sessions.openOrCreate(host);
+
+    // Handed over after openOrCreate, which has just made this session the
+    // showing tab — so the upload runs on the page the user is looking at.
+    session.queueUploads(_pendingShares);
+    _pendingShares.clear();
+  }
+
   /// Files shared into the app before there was anywhere to put them.
   final List<SharedFile> _pendingShares = [];
 
@@ -141,38 +161,6 @@ class _SshboxAppState extends State<SshboxApp> {
     );
   }
 
-  Future<void> openHost(String hostId) async {
-    final hosts = await _repository.load();
-    HostProfile? host;
-    for (final candidate in hosts) {
-      if (candidate.id == hostId) {
-        host = candidate;
-        break;
-      }
-    }
-    if (host == null) return;
-
-    final session = _sessions.openOrCreate(host);
-    final navigator = _navigatorKey.currentState;
-    if (navigator == null) return;
-
-    // Keep at most one terminal page on the stack. The sessions themselves are
-    // untouched by this — they live in the manager, not in the routes.
-    navigator.popUntil((route) => route.isFirst);
-    unawaited(
-      navigator.push(
-        MaterialPageRoute(
-          builder: (_) => TerminalPage(session: session, secrets: _secrets),
-        ),
-      ),
-    );
-
-    // Handed over only once the new page is the current route, so the upload
-    // runs on the page that is on screen rather than on the one animating away.
-    session.queueUploads(_pendingShares);
-    _pendingShares.clear();
-  }
-
   @override
   void dispose() {
     unawaited(_linkSubscription?.cancel());
@@ -187,7 +175,6 @@ class _SshboxAppState extends State<SshboxApp> {
     return MaterialApp(
       title: 'sshbox',
       debugShowCheckedModeBanner: false,
-      navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,
       // A terminal is a dark surface; forcing dark keeps the app chrome from
       // fighting the terminal's own palette.
@@ -199,7 +186,7 @@ class _SshboxAppState extends State<SshboxApp> {
           brightness: Brightness.dark,
         ),
       ),
-      home: HostsPage(
+      home: TabsShell(
         repository: _repository,
         secrets: _secrets,
         sessions: _sessions,

@@ -53,28 +53,40 @@ abstract class FileUploadCapable {
   });
 }
 
-/// A listener on the device that tunnels to a port on the remote host.
-class LocalPortForward {
-  LocalPortForward({required this.localPort, required this.close});
+/// One entry in a remote directory.
+class RemoteEntry {
+  const RemoteEntry({
+    required this.name,
+    required this.path,
+    required this.isDirectory,
+    this.size,
+  });
 
-  /// Port on the device. Point a WebView or HTTP client at
-  /// `http://127.0.0.1:<localPort>`.
-  final int localPort;
+  final String name;
 
-  /// Tears the listener down and drops any sockets still open through it.
-  final Future<void> Function() close;
+  /// Absolute, so opening an entry never depends on where the browser happens
+  /// to be standing.
+  final String path;
+
+  final bool isDirectory;
+  final int? size;
 }
 
-/// Optional capability: tunnelling a remote port to the device.
+/// Optional capability: reading the remote filesystem.
 ///
-/// This is what lets code-server stay bound to loopback on the server. Nothing
-/// is exposed to the network; the only route in is a session that has already
-/// authenticated.
-abstract class PortForwardCapable {
-  Future<LocalPortForward> forwardLocalPort({
-    required String remoteHost,
-    required int remotePort,
-  });
+/// This is what the files drawer lists and what a file tab shows. Like
+/// uploading, it rides the session that has already authenticated — there is
+/// no second connection.
+abstract class FileBrowseCapable {
+  /// Where browsing starts: the directory the user lands in on login.
+  Future<String> homeDirectory();
+
+  Future<List<RemoteEntry>> listDirectory(String path);
+
+  /// Reads at most [maxBytes]. A phone has no business pulling a
+  /// multi-gigabyte log into memory, so the caller says how much it will hold
+  /// and the rest stays on the server.
+  Future<Uint8List> readFile(String path, {required int maxBytes});
 }
 
 abstract class SessionTransport {
