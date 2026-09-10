@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,6 +28,35 @@ final List<MagicKeyAction> magicKeys = [
   (label: '←', send: (t) => cursorKey(t, 'D')),
   (label: '^D', send: (_) => '\x04'),
 ];
+
+/// What resting on a petal opens: a second ring round it, keyed by the label
+/// of the petal it hangs off. A petal with nothing here only ever sends.
+///
+/// Each is a key that goes with its parent — further the same way, or the same
+/// key for another job — so the hand is already nearly there. ESC ESC is
+/// Claude Code's double Esc, and Shift+Tab cycles its modes.
+final Map<String, List<MagicKeyAction>> magicSubKeys = {
+  '↑': [(label: 'PGUP', send: (_) => '\x1b[5~'), _home],
+  'ESC': [(label: 'ESC²', send: (_) => '\x1b\x1b')],
+  '→': [_end, (label: 'W→', send: (_) => '\x1bf')],
+  'TAB': [(label: '⇧TAB', send: (_) => '\x1b[Z')],
+  '↓': [(label: 'PGDN', send: (_) => '\x1b[6~'), _end],
+  '^C': [
+    (label: '^Z', send: (_) => '\x1a'),
+    (label: '^\\', send: (_) => '\x1c'),
+  ],
+  '←': [_home, (label: 'W←', send: (_) => '\x1bb')],
+  '^D': [
+    (label: '^L', send: (_) => '\x0c'),
+    (label: '^R', send: (_) => '\x12'),
+  ],
+};
+
+/// Home and End follow DECCKM the way the arrows do: xterm sends them as
+/// `ESC O H` / `ESC O F` in application mode and `ESC [ H` / `ESC [ F` outside
+/// it.
+final MagicKeyAction _home = (label: 'HOME', send: (t) => cursorKey(t, 'H'));
+final MagicKeyAction _end = (label: 'END', send: (t) => cursorKey(t, 'F'));
 
 /// The shorter way round between two angles, in radians.
 double _angleBetween(double a, double b) {
@@ -192,12 +222,18 @@ List<int> _closestAssignment(
   return best;
 }
 
+const _deadZone = 18.0;
+
 /// Which petal a drag of [offset] from where the finger landed points at.
 ///
 /// Null inside the dead zone, where a wobble must not send a key, and when it
 /// points further than half a spacing from every petal — into the gap a fan
 /// leaves against an edge, where any guess would be the wrong key.
-int? petalFor(Offset offset, List<double> angles, {double deadZone = 18}) {
+int? petalFor(
+  Offset offset,
+  List<double> angles, {
+  double deadZone = _deadZone,
+}) {
   if (offset.distance < deadZone) return null;
   // atan2 is measured from east, counter-clockwise; swapping and negating its
   // arguments turns it into north, clockwise — the frame [angles] is in.
@@ -230,6 +266,10 @@ int? petalFor(Offset offset, List<double> angles, {double deadZone = 18}) {
 /// Hold it and [magicKeys] open as a ring around it. Still holding, slide to
 /// one and lift to send it. Lifting always closes the ring — on a key or not —
 /// so the ring only ever exists while the finger that asked for it is down.
+///
+/// Rest on a petal as long as it took to open the ring and, if [magicSubKeys]
+/// has anything behind it, a second ring opens round that petal the same way:
+/// slide to one of those and lift, or lift where you are for the petal itself.
 ///
 /// Drag it straight away, without holding first, to move it: wherever it sits
 /// by default is over the thing someone wants to read. Throw it at a side, or
@@ -286,6 +326,25 @@ class _MagicKeyState extends State<MagicKey> {
 
   int? _aim;
 
+  /// Ring 2's aim, into the keys behind [_parent]. While it is set [_aim] is
+  /// not, so there is only ever one thing that lifting would send.
+  int? _child;
+
+  /// The petal ring 2 is open round, or null while only ring 1 is.
+  int? _parent;
+
+  /// Ring 2, and the drag at which it opened. It is aimed from where the finger
+  /// rested to open it, as ring 1 is from where the finger landed: the finger
+  /// is rarely on the petal itself, only pointing at it.
+  late ({List<double> angles, double radius}) _subRing;
+  Offset _subOrigin = Offset.zero;
+
+  /// The finger's drag from where it landed, as of its last move.
+  Offset _drag = Offset.zero;
+
+  /// Runs while the finger rests on a petal with keys behind it.
+  Timer? _dwell;
+
   /// The ring is up, and only for as long as the finger that opened it is.
   bool _picking = false;
 
@@ -309,6 +368,12 @@ class _MagicKeyState extends State<MagicKey> {
     unawaited(_restore());
   }
 
+  @override
+  void dispose() {
+    _dwell?.cancel();
+    super.dispose();
+  }
+
   Future<void> _restore() async {
     final prefs = await SharedPreferences.getInstance();
     final x = prefs.getDouble(_prefsX);
@@ -328,12 +393,62 @@ class _MagicKeyState extends State<MagicKey> {
   }
 
   void _aimAt(Offset drag) {
-    final aim = petalFor(drag, _ring.angles);
-    if (aim == _aim) return;
+    _drag = drag;
+    final parent = _parent;
+    int? aim, child;
+    if (parent == null) {
+      aim = petalFor(drag, _ring.angles);
+    } else if (drag.distance >= _deadZone) {
+      // Pointing at no child is still the parent. Only the middle of ring 1
+      // lets go of it, so backing all the way out cancels here as it does
+      // there.
+      child = petalFor(drag - _subOrigin, _subRing.angles);
+      if (child == null) aim = parent;
+    }
+    if (aim == _aim && child == _child) return;
     // The finger is covering the button, so this is the only signal that the
     // selection moved.
-    if (aim != null) HapticFeedback.selectionClick();
-    setState(() => _aim = aim);
+    if (aim != null || child != null) HapticFeedback.selectionClick();
+    setState(() {
+      _aim = aim;
+      _child = child;
+    });
+
+    // Resting on a petal with keys behind it opens them, the way resting on
+    // the button opened this ring. The clock starts when the finger arrives,
+    // so a slide that passes over a petal, or lifts off it, opens nothing.
+    _dwell?.cancel();
+    if (parent == null && aim != null && _subKeysOf(aim).isNotEmpty) {
+      _dwell = Timer(kLongPressTimeout, () => _openSubRing(aim!));
+    }
+  }
+
+  List<MagicKeyAction> _subKeysOf(int index) =>
+      magicSubKeys[magicKeys[index].label] ?? const [];
+
+  /// Ring 2 is fitted like ring 1: a full compass round the parent petal,
+  /// fanned against an edge. Its keys take the slots either side of the
+  /// parent's own compass point, so they open outward, clear of ring 1 and the
+  /// button; a lone key takes the parent's point itself.
+  void _openSubRing(int parent) {
+    final keys = _subKeysOf(parent);
+    final ring = ringLayout(
+      centre: _out(_centre, _ring.angles[parent], _ring.radius),
+      bounds: _bounds,
+      count: magicKeys.length,
+      radius: 56,
+      petal: _petal,
+    );
+    _subRing = (
+      angles: [
+        for (var j = 0; j < keys.length; j++)
+          ring.angles[(parent + 2 * j - keys.length + 1) % magicKeys.length],
+      ],
+      radius: ring.radius,
+    );
+    _subOrigin = _drag;
+    HapticFeedback.mediumImpact();
+    setState(() => _parent = parent);
   }
 
   void _openRing(LongPressStartDetails _) {
@@ -352,16 +467,23 @@ class _MagicKeyState extends State<MagicKey> {
 
   /// Lifting sends whatever is aimed at, and closes the ring either way.
   void _releaseRing() {
-    final aim = _aim;
+    final aim = _aim, child = _child, parent = _parent;
     _closeRing();
-    if (aim != null) widget.onEmit(magicKeys[aim].send(widget.terminal));
+    if (child != null) {
+      widget.onEmit(_subKeysOf(parent!)[child].send(widget.terminal));
+    } else if (aim != null) {
+      widget.onEmit(magicKeys[aim].send(widget.terminal));
+    }
   }
 
   void _closeRing() {
+    _dwell?.cancel();
     if (!_picking && _aim == null) return;
     setState(() {
       _picking = false;
       _aim = null;
+      _child = null;
+      _parent = null;
     });
   }
 
@@ -434,11 +556,31 @@ class _MagicKeyState extends State<MagicKey> {
         );
         _centre = origin + const Offset(_size / 2, _size / 2);
         _bounds = constraints.biggest;
+        final parent = _parent;
 
         return Stack(
           children: [
             if (_picking)
-              for (var i = 0; i < magicKeys.length; i++) _petalAt(i),
+              for (var i = 0; i < magicKeys.length; i++)
+                _petalAt(
+                  _out(_centre, _ring.angles[i], _ring.radius),
+                  magicKeys[i].label,
+                  aimed: i == _aim,
+                  // Ring 1 recedes behind ring 2, all but the petal ring 2
+                  // hangs off, so it is plain which ring the finger is in.
+                  dimmed: parent != null && i != parent,
+                ),
+            if (_picking && parent != null)
+              for (var j = 0; j < _subRing.angles.length; j++)
+                _petalAt(
+                  _out(
+                    _out(_centre, _ring.angles[parent], _ring.radius),
+                    _subRing.angles[j],
+                    _subRing.radius,
+                  ),
+                  _subKeysOf(parent)[j].label,
+                  aimed: j == _child,
+                ),
             AnimatedPositioned(
               // Keyed because the ring is inserted ahead of it mid-gesture.
               // Unkeyed, Flutter would reuse this element for the first petal
@@ -488,17 +630,28 @@ class _MagicKeyState extends State<MagicKey> {
     );
   }
 
-  Widget _petalAt(int index) {
-    final angle = _ring.angles[index];
+  /// [distance] out from [from] at [angle], clockwise from north.
+  static Offset _out(Offset from, double angle, double distance) =>
+      from + Offset(math.sin(angle), -math.cos(angle)) * distance;
+
+  Widget _petalAt(
+    Offset at,
+    String label, {
+    required bool aimed,
+    bool dimmed = false,
+  }) {
     return Positioned(
-      left: _centre.dx + _ring.radius * math.sin(angle) - _petal / 2,
-      top: _centre.dy - _ring.radius * math.cos(angle) - _petal / 2,
+      left: at.dx - _petal / 2,
+      top: at.dy - _petal / 2,
       width: _petal,
       height: _petal,
       // A picture of what the finger is aiming at, not a set of buttons: the
       // ring is gone the moment that finger lifts.
       child: IgnorePointer(
-        child: _Petal(label: magicKeys[index].label, aimed: index == _aim),
+        child: Opacity(
+          opacity: dimmed ? 0.3 : 1,
+          child: _Petal(label: label, aimed: aimed),
+        ),
       ),
     );
   }

@@ -69,7 +69,19 @@ class LiveSession extends ChangeNotifier {
 
   /// 10k lines: enough to scroll back through a build log, small enough not to
   /// strain a phone's memory.
-  final Terminal terminal = Terminal(maxLines: 10000);
+  ///
+  /// Every key a hardware keyboard sends is turned into bytes by this input
+  /// handler, which makes it the one place to change what a key means. The
+  /// kitty handler goes first so a program that has switched that protocol on
+  /// still gets the protocol's own encoding.
+  final Terminal terminal = Terminal(
+    maxLines: 10000,
+    inputHandler: const CascadeInputHandler([
+      KittyKeyboardInputHandler(),
+      _ShiftEnterInputHandler(),
+      defaultInputHandler,
+    ]),
+  );
 
   /// Set by the page while it is on screen, so armed key-bar modifiers can be
   /// folded into outgoing keystrokes. Lives here as a hook rather than a
@@ -507,5 +519,24 @@ class SessionManager extends ChangeNotifier {
     for (final id in _sessions.keys.toList()) {
       await close(id);
     }
+  }
+}
+
+/// Sends Shift+Enter from a hardware keyboard as ESC CR — Alt+Enter.
+///
+/// A terminal has no byte of its own for Shift+Enter, and xterm2 sends the
+/// same CR as for Enter, so Claude Code submits a message you meant to break
+/// onto a new line. ESC CR is what it reads as "new line, don't send", as do
+/// zsh and fish — and what Claude Code's own `/terminal-setup` binds
+/// Shift+Enter to in terminals that lack it.
+class _ShiftEnterInputHandler implements TerminalInputHandler {
+  const _ShiftEnterInputHandler();
+
+  @override
+  String? call(TerminalKeyboardEvent event) {
+    if (event.type == TerminalKeyEventType.release) return null;
+    if (event.key != TerminalKey.enter || !event.shift) return null;
+    if (event.ctrl || event.alt || event.superKey) return null;
+    return '\x1b\r';
   }
 }

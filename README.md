@@ -110,6 +110,35 @@ two buttons open the bar instead, dressed as keys — the files drawer, then
 upload, then `ESC` and the rest. Without a shell the keys go and those two
 stay, greyed out, the way the header used to show them.
 
+A hardware keyboard's Shift+Enter goes out as `ESC CR`, what Alt+Enter sends,
+rather than the bare `CR` a terminal otherwise has for it — so Claude Code,
+zsh and fish start a new line instead of submitting. It is decided once,
+in the input handler of the session's `Terminal` (`session_manager.dart`); a
+program that switches on the kitty keyboard protocol gets `CSI 13;2u` instead.
+`test/hardware_keyboard_test.dart` holds it there.
+
+The terminal itself doubles as an arrow pad (`SwipeKeyPad`). Long-press it
+until it buzzes, then, still holding, drag towards the arrow you want; reach
+further and it repeats faster. A plain drag scrolls the scrollback, and a
+double tap sends Tab. That long press is the one xterm2 selects text with, so
+there is no text selection by touch.
+
+### The magic key
+
+`ui/magic_key.dart` floats a round Enter key over the terminal, for when the
+keyboard is down. Tap it for Enter. Drag it to move it; throw it at a side and
+it tucks in half off the screen. Hold it and a ring of keys opens round it —
+the arrows where they point, ESC, TAB, `^C` and `^D` between — and sliding
+toward one and lifting sends it. Near an edge the ring fans into the room that
+is left.
+
+Rest on a petal as long as the hold took and, if it has keys behind it, a
+second ring opens round that petal: slide to one and lift, or lift where you
+are for the petal itself. Back in the middle still cancels. `magicSubKeys`
+holds what is behind each petal: PgUp and Home behind ↑, PgDn and End behind ↓,
+Home or End and a word jump behind ← and →, Shift+Tab behind TAB, a double ESC
+behind ESC, `^Z` and `^\` behind `^C`, `^L` and `^R` behind `^D`.
+
 ## Running it
 
 ```sh

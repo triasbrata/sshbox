@@ -1,4 +1,4 @@
-# Drives the swipe-to-arrow gesture, the double tap and the Enter button
+# Drives the hold-and-swipe arrows, the double tap and the Enter button
 # against a live shell.
 #
 # Nothing here reads the terminal. xterm2 paints its cells itself, so not one
@@ -67,18 +67,20 @@ env:
     visible: "(?s).*:~.*"
     timeout: 10000
 
-# Two swipes up. Each is short and quick — far enough to register a direction,
-# too brief to start repeating — so each one is a single Up: the first recalls
-# `cd ~`, the second the `cd /tmp` before it. Running what comes back is the
-# proof it arrived as a cursor key rather than as anything local.
+# Two held swipes up. Maestro cannot hold and then drag, so each one creeps:
+# slow enough that its first half second stays inside the touch slop, which is
+# what arms the arrows instead of scrolling, then far enough to register a
+# direction and too short to start repeating. So each one is a single Up: the
+# first recalls `cd ~`, the second the `cd /tmp` before it. Running what comes
+# back is the proof it arrived as a cursor key rather than as anything local.
 - swipe:
     start: 50%, 55%
     end: 50%, 50%
-    duration: 250
+    duration: 4000
 - swipe:
     start: 50%, 55%
     end: 50%, 50%
-    duration: 250
+    duration: 4000
 - tapOn: "Send Enter"
 - extendedWaitUntil:
     visible: "(?s).*:/tmp.*"
