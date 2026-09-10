@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../files/file_browser.dart';
 import 'file_editor_page.dart';
@@ -9,12 +10,18 @@ import 'terminal_link.dart';
 /// sits below the root.
 typedef _Row = ({RemoteEntry entry, int depth});
 
-/// The remote filesystem as a tree, drawn natively.
+/// The remote filesystem as a tree, laid out the way VS Code's Explorer is.
 ///
-/// Folders open in place rather than replacing the listing, so a file three
-/// levels down is reached without losing sight of where it lives. The tree
-/// hangs from one root — the host's saved file tree root, or home — and any
-/// folder can be made the root instead, with the breadcrumbs climbing back out.
+/// Dense one-line rows, a chevron on each folder, a file-type icon on each
+/// file and a guide line down every open folder. Folders open in place, so a
+/// file three levels down is reached without losing sight of where it lives,
+/// and the actions live where VS Code keeps them: new file, new folder,
+/// refresh and collapse on the root's header, everything else in a context
+/// menu — a long press here, the right button with a mouse.
+///
+/// The tree hangs from one root — the host's saved file tree root, or home.
+/// Any folder can be made the root instead, and the root's name opens a menu
+/// of the folders above it to climb back out.
 ///
 /// It talks to [FileBrowser] and to nothing else — no SSH, no SFTP, no HTTP
 /// anywhere in this file. That is the whole point of the interface: when a
@@ -92,6 +99,14 @@ class FileBrowserPage extends StatefulWidget {
 }
 
 class _FileBrowserPageState extends State<FileBrowserPage> {
+  /// VS Code's rows are 22px, which a finger cannot hit reliably; this keeps
+  /// the density while staying a comfortable tap.
+  static const double _rowHeight = 32;
+
+  /// One level of nesting — also the width of the chevron column, so each
+  /// guide line lands under the chevron of the folder it belongs to.
+  static const double _indent = 16;
+
   /// Roots the tree hung from before this one, for the back gesture. Setting a
   /// folder as root is the one move here that replaces the view, so it is the
   /// one move back undoes.
@@ -107,6 +122,14 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   /// Folders whose listing has been asked for and not yet arrived.
   final Set<String> _loadingFolders = {};
+
+  /// The row last tapped, drawn highlighted the way VS Code marks its
+  /// selection.
+  String? _selected;
+
+  /// Where the last press on a row went down. A long press reports no
+  /// position of its own, and the context menu opens under the finger.
+  Offset _pressedAt = Offset.zero;
 
   String? _error;
   bool _loading = true;
@@ -166,7 +189,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
     try {
       final entries = await widget.browser.list(root);
-      // A crumb tapped while this was loading has moved the tree elsewhere.
+      // A root picked while this was loading has moved the tree elsewhere.
       if (!mounted || _root != root) return;
       setState(() {
         _listings[root] = entries;
@@ -231,6 +254,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     if (error != null && mounted) _say(error);
   }
 
+  void _collapseAll() {
+    setState(_expanded.clear);
+    _reportExpanded();
+  }
+
   void _reportExpanded() => widget.onExpandedChanged?.call(Set.of(_expanded));
 
   Future<void> _refresh() async {
@@ -286,6 +314,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Future<void> _openEntry(RemoteEntry entry) async {
+    setState(() => _selected = entry.path);
     if (entry.isTraversable) {
       await _toggle(entry);
       return;
@@ -316,7 +345,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         builder: (_) => FileEditorPage(browser: widget.browser, path: path),
       ),
     );
-    // A save changes the size and timestamp on the row behind us.
+    // A save can change what is listed; re-read rather than guess.
     if (changed == true) await _refresh();
   }
 
@@ -342,8 +371,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     await _openEditor(hit);
   }
 
-  /// Opens every folder between the root and [path], so a file found by search
-  /// sits in the tree with its surroundings rather than appearing from nowhere.
+  /// Opens every folder between the root and [path] and selects it, so a file
+  /// found by search sits in the tree with its surroundings rather than
+  /// appearing from nowhere.
   Future<void> _reveal(String path) async {
     final root = _root;
     if (root == null) return;
@@ -352,7 +382,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         if (crumb.path != root && RemotePath.isWithin(crumb.path, root))
           crumb.path,
     ];
-    setState(() => _expanded.addAll(folders));
+    setState(() {
+      _expanded.addAll(folders);
+      _selected = path;
+    });
     _reportExpanded();
     await Future.wait(folders.map(_loadFolder));
   }
@@ -476,6 +509,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       if (!mounted) return;
       await _refresh();
       if (!mounted) return;
+      setState(() => _selected = target);
       // Creating an empty file and leaving the user staring at it would be a
       // half-finished action; what they wanted was to write something in it.
       await _openEditor(target);
@@ -533,96 +567,60 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     );
   }
 
-  void _showEntryActions(RemoteEntry entry) {
+  /// VS Code's right-click menu, opened where the finger or the pointer went
+  /// down.
+  Future<void> _showContextMenu(RemoteEntry entry, Offset pressedAt) async {
+    setState(() => _selected = entry.path);
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final at = overlay.globalToLocal(pressedAt);
     final terminal = widget.terminal;
-    final details = _subtitleFor(entry);
+    final isFolder = entry.isTraversable;
 
-    // Closes the sheet before [action] runs, so a dialog it opens is not
-    // stacked on a sheet that is still on its way out.
-    VoidCallback closing(BuildContext sheet, VoidCallback action) => () {
-          Navigator.of(sheet).pop();
-          action();
-        };
+    PopupMenuItem<VoidCallback> item(String label, VoidCallback action) =>
+        PopupMenuItem(value: action, child: Text(label));
 
-    showModalBottomSheet<void>(
+    final action = await showMenu<VoidCallback>(
       context: context,
-      showDragHandle: true,
-      // A folder's list is long enough to pass the default nine-sixteenths cap
-      // on a short phone, so the sheet sizes to it and scrolls past the screen.
-      isScrollControlled: true,
-      builder: (sheet) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: Icon(_iconFor(entry)),
-                title: Text(entry.name, overflow: TextOverflow.ellipsis),
-                // The row itself is one line to keep the tree dense, so the
-                // size and date it no longer shows are here instead.
-                subtitle: Text(
-                  details.isEmpty ? entry.path : '${entry.path}\n$details',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                isThreeLine: details.isNotEmpty,
-              ),
-              const Divider(height: 1),
-              if (entry.isTraversable) ...[
-                ListTile(
-                  leading: const Icon(Icons.account_tree_outlined),
-                  title: const Text('Set as root'),
-                  onTap: closing(sheet, () => _setRoot(entry.path)),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.note_add_outlined),
-                  title: const Text('New file here'),
-                  onTap: closing(sheet, () => _promptNewFile(entry.path)),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.create_new_folder_outlined),
-                  title: const Text('New folder here'),
-                  onTap: closing(sheet, () => _promptNewDirectory(entry.path)),
-                ),
-              ],
-              if (terminal != null) ...[
-                ListTile(
-                  leading: const Icon(Icons.keyboard_outlined),
-                  title: const Text('Type path in terminal'),
-                  onTap: closing(sheet, () {
-                    terminal.typePath(entry.path);
-                    _showTerminal();
-                  }),
-                ),
-                if (entry.isTraversable)
-                  ListTile(
-                    leading: const Icon(Icons.terminal_outlined),
-                    title: const Text('Open in terminal'),
-                    onTap: closing(sheet, () {
-                      terminal.changeDirectory(entry.path);
-                      _showTerminal();
-                    }),
-                  ),
-              ],
-              ListTile(
-                leading: const Icon(Icons.drive_file_rename_outline),
-                title: const Text('Rename'),
-                onTap: closing(sheet, () => _promptRename(entry)),
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('Delete'),
-                onTap: closing(sheet, () => _confirmDelete(entry)),
-              ),
-            ],
-          ),
-        ),
+      position: RelativeRect.fromRect(
+        at & Size.zero,
+        Offset.zero & overlay.size,
       ),
+      items: [
+        if (isFolder) ...[
+          item('New file…', () => _promptNewFile(entry.path)),
+          item('New folder…', () => _promptNewDirectory(entry.path)),
+          item('Set as root', () => _setRoot(entry.path)),
+          const PopupMenuDivider(),
+        ],
+        if (terminal != null) ...[
+          if (isFolder)
+            item('Open in terminal', () {
+              terminal.changeDirectory(entry.path);
+              _showTerminal();
+            }),
+          item('Type path in terminal', () {
+            terminal.typePath(entry.path);
+            _showTerminal();
+          }),
+        ],
+        item('Copy path', () {
+          Clipboard.setData(ClipboardData(text: entry.path));
+          _say('Path copied');
+        }),
+        const PopupMenuDivider(),
+        item('Rename…', () => _promptRename(entry)),
+        item('Delete', () => _confirmDelete(entry)),
+      ],
     );
+    // Run once the menu is gone, so a dialog the action opens is not stacked
+    // on a menu that is still on its way out.
+    action?.call();
   }
 
   @override
   Widget build(BuildContext context) {
+    final root = _root;
     return PopScope(
       canPop: _history.isEmpty && !_filtering,
       onPopInvokedWithResult: (didPop, _) {
@@ -632,35 +630,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         appBar: _buildAppBar(),
         body: Column(
           children: [
-            if (_root != null)
-              Row(
-                children: [
-                  Expanded(
-                    // Keyed on the root so each move rebuilds it, which is
-                    // what re-pins the trail to its deepest crumb. A crumb
-                    // hangs the tree from that folder — the way back out of a
-                    // "set as root".
-                    child: _Breadcrumbs(
-                      key: ValueKey(_root),
-                      path: _root!,
-                      onTap: _setRoot,
-                    ),
-                  ),
-                  // Out of the menu and beside the path it acts on: taking the
-                  // shell to where you are looking is what the drawer is most
-                  // often opened for.
-                  if (widget.terminal case final link?)
-                    IconButton(
-                      tooltip: 'Open in terminal',
-                      icon: const Icon(Icons.terminal_outlined),
-                      onPressed: () {
-                        link.changeDirectory(_root!);
-                        _showTerminal();
-                      },
-                    ),
-                ],
-              ),
-            const Divider(height: 1),
+            if (root != null) _buildRootHeader(root),
             Expanded(child: _buildBody()),
           ],
         ),
@@ -669,11 +639,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   PreferredSizeWidget _buildAppBar() {
+    final theme = Theme.of(context);
     final canSearch = widget.browser is FileSearchCapable;
-
     final onClose = widget.onClose;
 
     return AppBar(
+      toolbarHeight: 44,
+      titleSpacing: onClose == null ? null : 0,
       // Inside a drawer there is no route of our own to pop, and the implied
       // button would pop the page behind it instead.
       automaticallyImplyLeading: onClose == null,
@@ -682,37 +654,42 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           : IconButton(
               tooltip: 'Close files',
               onPressed: onClose,
-              icon: const Icon(Icons.close),
+              icon: const Icon(Icons.close, size: 20),
             ),
       title: _filtering
           ? TextField(
               controller: _filterController,
               autofocus: true,
+              style: theme.textTheme.bodyMedium,
               decoration: const InputDecoration(
                 hintText: 'Filter the tree',
                 border: InputBorder.none,
               ),
               onChanged: (_) => setState(() {}),
             )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _root == null ? 'Files' : RemotePath.basename(_root!),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  widget.title,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
+          // VS Code's view title, with the host after it: several sessions
+          // can each have a tree open, and this says whose this is.
+          : Text.rich(
+              TextSpan(
+                text: 'EXPLORER',
+                children: [
+                  TextSpan(
+                    text: '   ${widget.title}',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      letterSpacing: 0,
+                    ),
+                  ),
+                ],
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelLarge?.copyWith(letterSpacing: 1.2),
             ),
       bottom: (_loading || _busy)
           ? const PreferredSize(
-              preferredSize: Size.fromHeight(3),
-              child: LinearProgressIndicator(),
+              preferredSize: Size.fromHeight(2),
+              child: LinearProgressIndicator(minHeight: 2),
             )
           : null,
       actions: [
@@ -720,7 +697,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           IconButton(
             tooltip: 'Search file contents',
             onPressed: _openSearch,
-            icon: const Icon(Icons.travel_explore_outlined),
+            icon: const Icon(Icons.travel_explore_outlined, size: 20),
           ),
         IconButton(
           tooltip: _filtering ? 'Clear filter' : 'Filter by name',
@@ -731,24 +708,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               setState(() => _filtering = true);
             }
           },
-          icon: Icon(_filtering ? Icons.close : Icons.search),
+          icon: Icon(_filtering ? Icons.close : Icons.search, size: 20),
         ),
         PopupMenuButton<String>(
           tooltip: 'More',
+          icon: const Icon(Icons.more_horiz, size: 20),
           onSelected: (choice) {
-            final root = _root;
             switch (choice) {
-              case 'folder' when root != null:
-                _promptNewDirectory(root);
-              case 'file' when root != null:
-                _promptNewFile(root);
               case 'hidden':
                 setState(() => _showHidden = !_showHidden);
-              case 'refresh':
-                _refresh();
-              case 'collapse':
-                setState(_expanded.clear);
-                _reportExpanded();
               case 'saveRoot':
                 _confirmSaveRoot();
               case 'follow':
@@ -757,22 +725,16 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             }
           },
           itemBuilder: (context) => [
-            const PopupMenuItem(value: 'folder', child: Text('New folder')),
-            const PopupMenuItem(value: 'file', child: Text('New file')),
             PopupMenuItem(
               value: 'hidden',
               child: Text(_showHidden ? 'Hide dotfiles' : 'Show dotfiles'),
             ),
-            const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
-            const PopupMenuItem(value: 'collapse', child: Text('Collapse all')),
-            if (widget.onSaveRoot != null) ...[
-              const PopupMenuDivider(),
+            if (widget.onSaveRoot != null)
               PopupMenuItem(
                 value: 'saveRoot',
                 enabled: _root != null,
                 child: const Text('Save root to host config'),
               ),
-            ],
             if (widget.terminal case final link?) ...[
               const PopupMenuDivider(),
               CheckedPopupMenuItem(
@@ -784,6 +746,74 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           ],
         ),
       ],
+    );
+  }
+
+  /// The root as VS Code heads a workspace folder: its name in capitals, and
+  /// beside it the actions that act on the whole tree.
+  Widget _buildRootHeader(String root) {
+    final theme = Theme.of(context);
+    final isTop = root == '/';
+
+    Widget action(String tooltip, IconData icon, VoidCallback onPressed) =>
+        IconButton(
+          tooltip: tooltip,
+          onPressed: _busy ? null : onPressed,
+          icon: Icon(icon, size: 18),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+        );
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerHigh,
+      child: SizedBox(
+        height: 36,
+        child: Row(
+          children: [
+            Expanded(
+              // The name is also the way back up: it lists the folders above
+              // the root, any of which the tree can be hung from instead.
+              child: PopupMenuButton<String>(
+                tooltip: 'Change root',
+                enabled: !isTop && !_busy,
+                onSelected: _setRoot,
+                itemBuilder: (_) => [
+                  for (final crumb in RemotePath.crumbs(root).reversed.skip(1))
+                    PopupMenuItem(value: crumb.path, child: Text(crumb.path)),
+                ],
+                child: Padding(
+                  padding: const EdgeInsetsDirectional.only(start: 12),
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          RemotePath.basename(root).toUpperCase(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                      ),
+                      if (!isTop) const Icon(Icons.arrow_drop_down, size: 18),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            action('New file', Icons.note_add_outlined, () {
+              _promptNewFile(root);
+            }),
+            action('New folder', Icons.create_new_folder_outlined, () {
+              _promptNewDirectory(root);
+            }),
+            action('Refresh', Icons.refresh, _refresh),
+            action('Collapse all', Icons.unfold_less, _collapseAll),
+            const SizedBox(width: 4),
+          ],
+        ),
+      ),
     );
   }
 
@@ -821,6 +851,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       child: ListView.builder(
         // Always scrollable so pull-to-refresh works on a short listing too.
         physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        itemExtent: _rowHeight,
         itemCount: rows.length,
         itemBuilder: (context, index) => _buildRow(rows[index]),
       ),
@@ -828,49 +860,71 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Widget _buildRow(_Row row) {
+    final theme = Theme.of(context);
     final entry = row.entry;
-    final isFolder = entry.isTraversable;
-    final isOpen = _expanded.contains(entry.path);
+    final dim = theme.colorScheme.onSurfaceVariant;
 
-    final Widget? disclosure;
-    if (!isFolder) {
-      disclosure = null;
+    // One column per level: a folder's chevron, or a file's icon in the same
+    // place, so every name at a level starts at the same x.
+    final Widget lead;
+    if (!entry.isTraversable) {
+      final (icon, color) = _fileIcon(entry);
+      lead = Icon(icon, size: 16, color: color ?? dim);
     } else if (_loadingFolders.contains(entry.path)) {
-      disclosure = const Center(
+      lead = const Center(
         child: SizedBox.square(
-          dimension: 14,
-          child: CircularProgressIndicator(strokeWidth: 2),
+          dimension: 12,
+          child: CircularProgressIndicator(strokeWidth: 1.5),
         ),
       );
     } else {
-      disclosure = Icon(isOpen ? Icons.expand_more : Icons.chevron_right);
+      final isOpen = _expanded.contains(entry.path);
+      lead = Icon(isOpen ? Icons.expand_more : Icons.chevron_right, size: 18);
     }
 
-    return ListTile(
+    return Ink(
       key: ValueKey(entry.path),
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      // The indent is the tree: each open folder pushes its contents one step
-      // right, which is all that says what is inside what.
-      contentPadding: EdgeInsetsDirectional.only(start: 4.0 + row.depth * 16),
-      horizontalTitleGap: 8,
-      minLeadingWidth: 0,
-      leading: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(width: 24, child: disclosure),
-          Icon(_iconFor(entry, open: isOpen)),
-        ],
+      color: entry.path == _selected
+          ? theme.colorScheme.primary.withValues(alpha: 0.16)
+          : null,
+      child: InkWell(
+        onTap: _busy ? null : () => _openEntry(entry),
+        onTapDown: _busy
+            ? null
+            : (details) => _pressedAt = details.globalPosition,
+        onLongPress: _busy ? null : () => _showContextMenu(entry, _pressedAt),
+        onSecondaryTapDown: _busy
+            ? null
+            : (details) => _showContextMenu(entry, details.globalPosition),
+        child: Row(
+          children: [
+            const SizedBox(width: 8),
+            // Indent guides: a line down each open folder above this row,
+            // under that folder's chevron.
+            for (var level = 0; level < row.depth; level++)
+              VerticalDivider(
+                width: _indent,
+                thickness: 1,
+                color: theme.colorScheme.outlineVariant,
+              ),
+            SizedBox(width: _indent, child: Center(child: lead)),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                entry.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+            if (entry.kind == RemoteEntryKind.symlink)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Icon(Icons.link, size: 14, color: dim),
+              ),
+          ],
+        ),
       ),
-      title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: IconButton(
-        tooltip: 'Actions',
-        visualDensity: VisualDensity.compact,
-        icon: const Icon(Icons.more_vert),
-        onPressed: _busy ? null : () => _showEntryActions(entry),
-      ),
-      onTap: _busy ? null : () => _openEntry(entry),
-      onLongPress: _busy ? null : () => _showEntryActions(entry),
     );
   }
 }
@@ -947,110 +1001,63 @@ class _NamePromptState extends State<_NamePrompt> {
   }
 }
 
-IconData _iconFor(RemoteEntry entry, {bool open = false}) =>
-    switch (entry.kind) {
-      RemoteEntryKind.directory =>
-        open ? Icons.folder_open_outlined : Icons.folder_outlined,
-      RemoteEntryKind.symlink => Icons.link,
-      RemoteEntryKind.file => Icons.description_outlined,
-      RemoteEntryKind.other => Icons.help_outline,
-    };
-
-String _subtitleFor(RemoteEntry entry) {
-  final parts = <String>[];
-  // Nothing for a directory: the icon already says so.
-  if (entry.kind == RemoteEntryKind.symlink) {
-    parts.add(entry.targetIsDirectory == null
-        ? 'Link'
-        : entry.targetIsDirectory!
-            ? 'Link to folder'
-            : 'Link to file');
-  } else if (entry.size != null) {
-    parts.add(formatBytes(entry.size!));
-  }
-  final modified = entry.modified;
-  if (modified != null) parts.add(formatTimestamp(modified));
-  return parts.join('  ·  ');
-}
-
-/// Where the tree hangs from, and a way to hang it from any folder above.
+/// File-type icons in the colours VS Code's default theme gives them, by
+/// extension.
 ///
-/// A phone has no room for a full path in the title bar, and truncating one is
-/// worse than useless — it hides the end, which is the part that identifies
-/// where you are. Scrolling crumbs keep the whole path reachable.
-class _Breadcrumbs extends StatefulWidget {
-  const _Breadcrumbs({super.key, required this.path, required this.onTap});
+/// ponytail: Material glyphs stand in for the real icon theme — a few dozen
+/// types, and most languages share the generic code glyph. Bundle an icon
+/// font (vscode-icons, Seti) if per-language glyphs are wanted.
+final Map<String, (IconData, Color)> _fileIcons = {
+  for (final (extensions, icon, color) in const [
+    (['dart'], Icons.flutter_dash, Color(0xFF40C4FF)),
+    (['js', 'mjs', 'cjs', 'jsx'], Icons.javascript, Color(0xFFCBCB41)),
+    (['ts', 'tsx', 'mts'], Icons.javascript, Color(0xFF519ABA)),
+    (['html', 'htm'], Icons.html, Color(0xFFE37933)),
+    (['css', 'scss', 'sass', 'less'], Icons.css, Color(0xFF519ABA)),
+    (['php'], Icons.php, Color(0xFFA074C4)),
+    (['json', 'jsonc'], Icons.data_object, Color(0xFFCBCB41)),
+    (
+      ['yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'env', 'properties'],
+      Icons.settings_outlined,
+      Color(0xFFA074C4),
+    ),
+    (['md', 'markdown', 'rst'], Icons.article_outlined, Color(0xFF519ABA)),
+    (['txt', 'log'], Icons.notes, Color(0xFF9DA5B4)),
+    (['sh', 'bash', 'zsh', 'fish'], Icons.terminal, Color(0xFF8DC149)),
+    (
+      [
+        'py', 'go', 'rs', 'rb', 'java', 'kt', 'kts', 'swift', //
+        'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'lua', 'sql', 'gradle',
+      ],
+      Icons.code,
+      Color(0xFF519ABA),
+    ),
+    (
+      ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'],
+      Icons.image_outlined,
+      Color(0xFFA074C4),
+    ),
+    (
+      ['zip', 'tar', 'gz', 'tgz', 'xz', 'bz2', '7z', 'rar', 'deb', 'apk'],
+      Icons.folder_zip_outlined,
+      Color(0xFFE37933),
+    ),
+    (['lock'], Icons.lock_outline, Color(0xFF9DA5B4)),
+  ])
+    for (final extension in extensions) extension: (icon, color),
+};
 
-  final String path;
-  final void Function(String path) onTap;
-
-  @override
-  State<_Breadcrumbs> createState() => _BreadcrumbsState();
-}
-
-class _BreadcrumbsState extends State<_Breadcrumbs> {
-  final _controller = ScrollController();
-
-  @override
-  void initState() {
-    super.initState();
-    // Reads left to right like a path, but a trail longer than the bar starts
-    // scrolled to its end: the deepest crumb is the one that says where you
-    // are, and the ancestors are one swipe away.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_controller.hasClients) return;
-      _controller.jumpTo(_controller.position.maxScrollExtent);
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final crumbs = RemotePath.crumbs(widget.path);
-
-    return SizedBox(
-      height: 44,
-      child: ListView.separated(
-        controller: _controller,
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: crumbs.length,
-        separatorBuilder: (_, _) => const Center(
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 2),
-            child: Icon(Icons.chevron_right, size: 16),
-          ),
-        ),
-        itemBuilder: (context, index) {
-          final crumb = crumbs[index];
-          final isCurrent = index == crumbs.length - 1;
-          return Center(
-            child: InkWell(
-              onTap: isCurrent ? null : () => widget.onTap(crumb.path),
-              borderRadius: BorderRadius.circular(6),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-                child: Text(
-                  crumb.name,
-                  style: isCurrent
-                      ? theme.textTheme.labelLarge
-                      : theme.textTheme.labelLarge?.copyWith(
-                          color: theme.colorScheme.primary,
-                        ),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
+/// The icon for anything that is not a folder. Null colour means the muted
+/// default, for types the table does not know. A link to a file gets its
+/// target's icon — the row marks it as a link on its other end.
+(IconData, Color?) _fileIcon(RemoteEntry entry) {
+  final broken = entry.kind == RemoteEntryKind.symlink &&
+      entry.targetIsDirectory == null;
+  if (broken) return (Icons.link_off, null);
+  if (entry.kind == RemoteEntryKind.other) return (Icons.help_outline, null);
+  final dot = entry.name.lastIndexOf('.');
+  final extension = dot < 0 ? '' : entry.name.substring(dot + 1).toLowerCase();
+  return _fileIcons[extension] ?? (Icons.insert_drive_file_outlined, null);
 }
 
 class _BrowserMessage extends StatelessWidget {
@@ -1093,37 +1100,4 @@ class _BrowserMessage extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Sizes as a person reads them, not as the server counts them.
-String formatBytes(int bytes) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  var value = bytes.toDouble();
-  var unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  final rounded = unit == 0 || value >= 100
-      ? value.toStringAsFixed(0)
-      : value.toStringAsFixed(1);
-  return '$rounded ${units[unit]}';
-}
-
-const _months = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-];
-
-/// Day and time for this year, day and year for anything older — which is the
-/// distinction that actually matters when you are looking for what changed.
-String formatTimestamp(DateTime time) {
-  final local = time.toLocal();
-  final month = _months[local.month - 1];
-  if (local.year == DateTime.now().year) {
-    final hour = local.hour.toString().padLeft(2, '0');
-    final minute = local.minute.toString().padLeft(2, '0');
-    return '${local.day} $month $hour:$minute';
-  }
-  return '${local.day} $month ${local.year}';
 }

@@ -37,11 +37,12 @@ env:
 
 - tapOn: "Browse files"
 
-# Only the browser page has these, so they distinguish it from the terminal.
+# Only the file tree has these, so they distinguish it from the terminal:
+# the filter in its title bar, and collapse on the root's header.
 - extendedWaitUntil:
     visible: "Filter by name"
     timeout: 20000
-- assertVisible: "Actions"
+- assertVisible: "Collapse all"
 
 # The error state offers this button. Its absence is how we assert the listing
 # loaded rather than failing — an empty home directory would still pass, which
@@ -53,8 +54,7 @@ env:
 # terminal from however deep in the tree you had wandered.
 - assertVisible: "Close files"
 
-# Creating and deleting are one menu away, and the menu opening proves the page
-# is interactive rather than stuck behind a spinner.
+# The overflow menu opening proves the page is interactive rather than stuck
+# behind a spinner.
 - tapOn: "More"
-- assertVisible: "New folder"
 - assertVisible: "Show dotfiles"

@@ -43,7 +43,7 @@ lib/
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
       key_bar.dart                  the accessory keyboard row
-      file_browser_page.dart        native file tree, as a drawer
+      file_browser_page.dart        a VS Code-style file tree, as a drawer
       file_editor_page.dart         read and edit one remote file, in a tab
       file_search_page.dart         find text under a directory
 ```
@@ -131,7 +131,7 @@ maestro --device <serial> test .maestro/
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | nothing |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
-| `file_browser` | the native file tree opens and shows a listing rather than an error | a reachable host with a stored credential |
+| `file_browser` | the file tree opens and shows a listing rather than an error | a reachable host with a stored credential |
 
 Two things worth knowing before editing these:
 
@@ -401,20 +401,26 @@ share sheet.
 ## Browsing files
 
 The folder button in a terminal slides the remote filesystem in as a drawer
-from the right, the side that button sits on. It is a tree: tap a folder to
-open it in place, tap it again to close it, tap a file to open it. A drawer
-rather than a screen because tapping outside it returns you to the terminal in
-one gesture, from however deep in the tree you had wandered. Rename, delete,
-and new file or folder inside a folder are on each row's menu, and "type path
-in terminal" drops a path at the prompt, shell-quoted, so the next thing you
-write is a command that uses it.
+from the right, the side that button sits on. A drawer rather than a screen
+because tapping outside it returns you to the terminal in one gesture, from
+however deep in the tree you had wandered.
 
-**The tree hangs from one root.** A folder's menu has **Set as root**, which
-re-hangs the tree from that folder; the breadcrumbs above it show the root,
-and tapping any crumb re-roots at that ancestor, which is the way back out.
-Back undoes the last re-rooting. The root and the open folders survive the
-drawer closing, so picking a file and coming back does not fold everything
-shut.
+**It is laid out like VS Code's Explorer.** Dense one-line rows, a chevron on
+each folder, a file-type icon on each file in the colours VS Code's default
+theme uses, and a guide line down every open folder. Tap a folder to open it
+in place, tap a file to open it as a tab. The root's header carries VS Code's
+four actions — new file, new folder, refresh, collapse all. Everything else
+is a context menu: long-press a row, or
+right-click it with a mouse, for new file or folder inside it, set as root,
+open in terminal, type path in terminal (shell-quoted, so the next thing you
+write is a command that uses it), copy path, rename and delete. Rows are 32dp
+rather than VS Code's 22px, which a finger cannot hit reliably.
+
+**The tree hangs from one root.** **Set as root** re-hangs the tree from a
+folder; the root's name on its header opens a menu of the folders above it,
+which is the way back out. Back undoes the last re-rooting. The root and the
+open folders survive the drawer closing, so picking a file and coming back
+does not fold everything shut.
 
 **Where the tree starts is part of the host's config.** The host editor has a
 **File tree root** field — blank is the login home, and `~/…` or a bare
