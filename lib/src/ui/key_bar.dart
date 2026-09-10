@@ -477,9 +477,10 @@ class _SwipeReadout extends StatelessWidget {
       decoration: BoxDecoration(
         // Lifted off the background rather than frosted: a BackdropFilter over
         // a terminal repaints the blur on every line of output, which is a lot
-        // to pay for a hint. Tinted light because it has to read over the near
-        // black a terminal usually is.
-        color: Colors.white.withValues(alpha: 0.13),
+        // to pay for a hint. Opaque enough to knock back whatever it lands on —
+        // it sits in a corner where the prompt usually is, and a bright line of
+        // shell output showing through drowns the arms out.
+        color: const Color(0xD8262626),
         borderRadius: BorderRadius.circular(26),
         border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
       ),

@@ -196,7 +196,10 @@ class _TerminalPageState extends State<TerminalPage> {
       floatingActionButton: _session.isConnected
           ? ExcludeFocus(
               child: FloatingActionButton.small(
-                tooltip: 'Enter',
+                // Not just "Enter": the soft keyboard puts a key of that name
+                // in the accessibility tree too, and a test reaching for this
+                // button finds that one first.
+                tooltip: 'Send Enter',
                 onPressed: () => _session.sendRaw('\r'),
                 child: const Icon(Icons.keyboard_return),
               ),
