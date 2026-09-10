@@ -351,22 +351,6 @@ class _TerminalPageState extends State<TerminalPage> {
               onEmit: _session.sendRaw,
             )
           : null,
-      // Enter is the one key you reach for with the keyboard down — reading
-      // output, answering a prompt, waking a dozing shell. ExcludeFocus keeps
-      // the tap from pulling focus off the terminal, which would close the
-      // keyboard for anyone who did have it open.
-      floatingActionButton: _session.isConnected
-          ? ExcludeFocus(
-              child: FloatingActionButton.small(
-                // Not just "Enter": the soft keyboard puts a key of that name
-                // in the accessibility tree too, and a test reaching for this
-                // button finds that one first.
-                tooltip: 'Send Enter',
-                onPressed: () => _session.sendRaw('\r'),
-                child: const Icon(Icons.keyboard_return),
-              ),
-            )
-          : null,
     );
   }
 

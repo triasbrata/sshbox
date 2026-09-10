@@ -45,10 +45,16 @@ int? sectorFor(Offset offset, int count, {double deadZone = 18}) {
 /// anywhere over the terminal.
 ///
 /// Enter is the one key you reach for with the keyboard down — reading output,
-/// answering a prompt, waking a dozing shell. Dragging out of it picks from
-/// [magicKeys] by direction, which puts the keys that matter one gesture away
-/// without spending any of the screen on them. Holding it picks the button up,
-/// because wherever it sits by default is over the thing someone wants to read.
+/// answering a prompt, waking a dozing shell. Tap it for Enter.
+///
+/// Hold it and [magicKeys] open as a ring of buttons around it. Still holding,
+/// slide towards one and let go to send it — the fast way, once the ring is in
+/// the hand's memory. Let go without sliding and the ring stays open to be
+/// tapped instead — the way that needs no memory at all. Tapping anywhere else
+/// closes it.
+///
+/// Drag it straight away, without holding first, to move it: wherever it sits
+/// by default is over the thing someone wants to read.
 ///
 /// Give it the whole terminal area with [Positioned.fill]: it is a layer, and
 /// only the button inside it takes touches.
@@ -74,14 +80,23 @@ class _MagicKeyState extends State<MagicKey> {
   /// keeps its corner across a rotation and when the keyboard resizes the page.
   Offset _spot = const Offset(0.95, 0.92);
 
-  /// [_spot] when the current move began. The gesture reports its offset from
-  /// where the finger landed, which is drift-free where summing deltas is not.
+  /// [_spot] and the finger's position when the current move began. Measuring
+  /// from where the finger landed is drift-free where summing deltas is not.
   Offset _anchor = Offset.zero;
+  Offset _grab = Offset.zero;
 
-  Offset _drag = Offset.zero;
   int? _aim;
+
+  /// The ring is up and the finger that opened it is still down: sliding aims,
+  /// letting go sends whatever is aimed at.
   bool _picking = false;
+
+  /// The ring is up and the finger has left: the petals are buttons now.
+  bool _open = false;
+
   bool _moving = false;
+
+  bool get _ringShown => _picking || _open;
 
   @override
   void initState() {
@@ -112,31 +127,76 @@ class _MagicKeyState extends State<MagicKey> {
     setState(() => _aim = aim);
   }
 
-  void _startPicking(DragStartDetails _) {
-    _drag = Offset.zero;
+  void _openRing(LongPressStartDetails _) {
+    HapticFeedback.mediumImpact();
     setState(() {
       _picking = true;
+      _open = false;
       _aim = null;
     });
   }
 
-  void _endPicking() {
+  /// Letting go on an aimed petal sends it. Letting go without aiming is not a
+  /// cancel: it leaves the ring open to be tapped, for anyone who held it only
+  /// to see what was there.
+  void _releaseRing() {
     final aim = _aim;
-    if (aim != null) widget.onEmit(magicKeys[aim].send(widget.terminal));
+    if (aim != null) {
+      _send(aim);
+      return;
+    }
     setState(() {
       _picking = false;
+      _open = true;
+    });
+  }
+
+  void _send(int index) {
+    widget.onEmit(magicKeys[index].send(widget.terminal));
+    _closeRing();
+  }
+
+  void _closeRing() {
+    setState(() {
+      _picking = false;
+      _open = false;
       _aim = null;
     });
   }
 
-  void _startMoving(LongPressStartDetails _) {
-    _anchor = _spot;
-    HapticFeedback.selectionClick();
-    setState(() => _moving = true);
+  /// A long press that never became one — or one the system took away.
+  ///
+  /// Every plain tap lands here too, because the long press loses the arena
+  /// to the tap and is told so before the tap is. So this may only undo a ring
+  /// its own hold opened: closing an open ring here would leave the tap that
+  /// follows no ring to close, and it would send Enter instead.
+  void _abandonHold() {
+    if (_picking) _closeRing();
   }
 
-  void _keepMoving(LongPressMoveUpdateDetails details, Size room) {
-    final moved = details.offsetFromOrigin;
+  void _tapButton() {
+    // With the ring open the button is its close control. Sending Enter there
+    // would turn "never mind" into a keystroke in a live shell.
+    if (_open) {
+      _closeRing();
+      return;
+    }
+    widget.onEmit('\r');
+  }
+
+  void _startMoving(DragStartDetails details) {
+    _anchor = _spot;
+    _grab = details.globalPosition;
+    setState(() {
+      _moving = true;
+      _picking = false;
+      _open = false;
+      _aim = null;
+    });
+  }
+
+  void _keepMoving(DragUpdateDetails details, Size room) {
+    final moved = details.globalPosition - _grab;
     setState(() {
       _spot = Offset(
         (_anchor.dx + moved.dx / room.width).clamp(0.0, 1.0),
@@ -176,28 +236,52 @@ class _MagicKeyState extends State<MagicKey> {
 
         return Stack(
           children: [
-            if (_picking)
+            // Only while the ring is open for tapping: a tap anywhere that is
+            // not a petal closes it, the way any menu dismisses.
+            if (_open)
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _closeRing,
+                ),
+              ),
+            if (_ringShown)
               for (var i = 0; i < magicKeys.length; i++) _petalAt(centre, i),
             Positioned(
+              // Keyed because the ring and its barrier are inserted ahead of
+              // it mid-gesture. Unkeyed, Flutter would reuse this element for
+              // the first petal and throw away the detector holding the
+              // finger, so the hold that opened the ring could never end.
+              key: const ValueKey('magic-key-button'),
               left: origin.dx,
               top: origin.dy,
               width: _size,
               height: _size,
-              child: GestureDetector(
-                onTap: () => widget.onEmit('\r'),
-                // Pan and long press share the gesture arena: move the finger
-                // and the ring opens, hold it still and the button comes
-                // loose. The same bargain the space key strikes, so the habit
-                // carries over.
-                onPanStart: _startPicking,
-                onPanUpdate: (details) => _aimAt(_drag += details.delta),
-                onPanEnd: (_) => _endPicking(),
-                onPanCancel: _endPicking,
-                onLongPressStart: _startMoving,
-                onLongPressMoveUpdate: (details) => _keepMoving(details, room),
-                onLongPressEnd: (_) => _stopMoving(),
-                onLongPressCancel: _stopMoving,
-                child: _Button(picking: _picking, moving: _moving),
+              child: Semantics(
+                // Named for what a tap does. Screen readers need it, and so
+                // does anything driving the app by its accessibility tree.
+                label: 'Send Enter',
+                button: true,
+                child: GestureDetector(
+                  onTap: _tapButton,
+                  // Pan and long press share the gesture arena, which is what
+                  // splits the two: hold still until the long press fires and
+                  // the ring opens, move first and the button comes loose.
+                  onLongPressStart: _openRing,
+                  onLongPressMoveUpdate: (details) =>
+                      _aimAt(details.offsetFromOrigin),
+                  onLongPressEnd: (_) => _releaseRing(),
+                  onLongPressCancel: _abandonHold,
+                  onPanStart: _startMoving,
+                  onPanUpdate: (details) => _keepMoving(details, room),
+                  onPanEnd: (_) => _stopMoving(),
+                  onPanCancel: _stopMoving,
+                  child: _Button(
+                    picking: _picking,
+                    open: _open,
+                    moving: _moving,
+                  ),
+                ),
               ),
             ),
           ],
@@ -208,22 +292,31 @@ class _MagicKeyState extends State<MagicKey> {
 
   Widget _petalAt(Offset centre, int index) {
     final angle = 2 * math.pi * index / magicKeys.length;
+    final petal = _Petal(label: magicKeys[index].label, aimed: index == _aim);
     return Positioned(
       left: centre.dx + _ring * math.sin(angle) - _petal / 2,
       top: centre.dy - _ring * math.cos(angle) - _petal / 2,
       width: _petal,
       height: _petal,
-      child: IgnorePointer(
-        child: _Petal(label: magicKeys[index].label, aimed: index == _aim),
-      ),
+      // While the finger that opened the ring is still down, the petals are
+      // only a picture of what it is aiming at; they become buttons once it
+      // lets go.
+      child: _open
+          ? GestureDetector(onTap: () => _send(index), child: petal)
+          : IgnorePointer(child: petal),
     );
   }
 }
 
 class _Button extends StatelessWidget {
-  const _Button({required this.picking, required this.moving});
+  const _Button({
+    required this.picking,
+    required this.open,
+    required this.moving,
+  });
 
   final bool picking;
+  final bool open;
   final bool moving;
 
   @override
@@ -241,9 +334,11 @@ class _Button extends StatelessWidget {
         child: Icon(
           moving
               ? Icons.open_with
-              : picking
-                  ? Icons.radio_button_unchecked
-                  : Icons.keyboard_return,
+              : open
+                  ? Icons.close
+                  : picking
+                      ? Icons.radio_button_unchecked
+                      : Icons.keyboard_return,
           size: 22,
           color: moving
               ? theme.colorScheme.onTertiaryContainer

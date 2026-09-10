@@ -81,28 +81,61 @@ void main() {
       expect(sent, ['\r']);
     });
 
-    testWidgets('a drag sends the key it pointed at', (tester) async {
-      await pumpKey(tester);
-      await tester.drag(button, const Offset(0, -70));
-      await tester.pump();
-      expect(sent, ['\x1b[A']);
-    });
-
-    testWidgets('a slip too small to be a drag still sends Enter',
-        (tester) async {
-      await pumpKey(tester);
-      // Nobody taps a phone without moving a little, and the tap is what they
-      // meant.
-      await tester.drag(button, const Offset(0, -8));
-      await tester.pump();
-      expect(sent, ['\r']);
-    });
-
-    testWidgets('a drag brought back to the middle sends nothing',
-        (tester) async {
-      await pumpKey(tester);
-
+    /// Puts a finger on the button and keeps it there until the ring opens.
+    Future<TestGesture> hold(WidgetTester tester) async {
       final gesture = await tester.startGesture(tester.getCenter(button));
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+      return gesture;
+    }
+
+    testWidgets('holding it opens the ring', (tester) async {
+      await pumpKey(tester);
+      expect(find.text('ESC'), findsNothing);
+
+      final gesture = await hold(tester);
+      expect(find.text('ESC'), findsOneWidget);
+
+      await gesture.up();
+      await tester.pump();
+      expect(sent, isEmpty, reason: 'opening the ring must not send a key');
+    });
+
+    testWidgets('holding and sliding sends the key it points at',
+        (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await hold(tester);
+      await gesture.moveBy(const Offset(0, -70));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(sent, ['\x1b[A']);
+      expect(find.text('ESC'), findsNothing, reason: 'a pick closes the ring');
+    });
+
+    testWidgets('let go without sliding and the ring waits to be tapped',
+        (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await hold(tester);
+      await gesture.up();
+      await tester.pump();
+
+      // Still open, and now its petals are buttons.
+      expect(find.text('TAB'), findsOneWidget);
+      await tester.tap(find.text('TAB'));
+      await tester.pump();
+
+      expect(sent, ['\t']);
+      expect(find.text('TAB'), findsNothing);
+    });
+
+    testWidgets('a slide brought back to the middle picks nothing',
+        (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await hold(tester);
       await gesture.moveBy(const Offset(0, -50));
       await tester.pump();
       // Changed their mind: back inside the dead zone is how you cancel.
@@ -114,24 +147,57 @@ void main() {
       expect(sent, isEmpty);
     });
 
-    testWidgets('holding it moves the button and remembers where', (tester) async {
+    testWidgets('tapping away from the open ring closes it, sending nothing',
+        (tester) async {
       await pumpKey(tester);
-      final before = tester.getCenter(button);
 
-      final gesture = await tester.startGesture(before);
-      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
-      await gesture.moveBy(const Offset(-120, -200));
+      final gesture = await hold(tester);
+      await gesture.up();
       await tester.pump();
+      expect(find.text('ESC'), findsOneWidget);
+
+      await tester.tapAt(const Offset(20, 20));
+      await tester.pump();
+
+      expect(find.text('ESC'), findsNothing);
+      expect(sent, isEmpty);
+    });
+
+    testWidgets('tapping the button on an open ring closes it, not Enter',
+        (tester) async {
+      await pumpKey(tester);
+
+      final gesture = await hold(tester);
       await gesture.up();
       await tester.pump();
 
+      await tester.tap(find.byIcon(Icons.close));
+      await tester.pump();
+
+      expect(find.text('ESC'), findsNothing);
+      expect(sent, isEmpty, reason: '"never mind" must not type into a shell');
+    });
+
+    testWidgets('dragging it moves the button and remembers where',
+        (tester) async {
+      await pumpKey(tester);
+      final before = tester.getCenter(button);
+
+      await tester.drag(button, const Offset(-120, -200));
+      await tester.pump();
+
       expect(tester.getCenter(button), isNot(before));
-      expect(sent, isEmpty, reason: 'picking it up must not send a key');
+      expect(sent, isEmpty, reason: 'moving it must not send a key');
 
       // The move is only finished when it survives a rebuild from storage.
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getDouble('sshbox.magickey.x'), isNotNull);
       expect(prefs.getDouble('sshbox.magickey.y'), isNotNull);
+    });
+
+    testWidgets('it is named for what a tap does', (tester) async {
+      await pumpKey(tester);
+      expect(find.bySemanticsLabel('Send Enter'), findsOneWidget);
     });
   });
 }
