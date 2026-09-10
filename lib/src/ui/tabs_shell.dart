@@ -71,6 +71,20 @@ class _TabsShellState extends State<TabsShell> {
     ],
   ];
 
+  /// Writes a file tree root into the host's saved profile, and hands the
+  /// result to the sessions open on it so their next reconnect starts there.
+  ///
+  /// The profile is read back from storage rather than taken from a session:
+  /// writing the session's copy would undo anything edited since.
+  Future<void> _saveFileRoot(String hostId, String root) async {
+    final hosts = await widget.repository.load();
+    final saved = hosts.where((host) => host.id == hostId).firstOrNull;
+    if (saved == null) throw StateError('This host is no longer saved.');
+    final updated = saved.copyWith(fileRoot: root);
+    await widget.repository.upsert(updated);
+    widget.sessions.updateHost(updated);
+  }
+
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
       // Keyed by what the tab shows so closing one carries the
@@ -80,6 +94,7 @@ class _TabsShellState extends State<TabsShell> {
       session: tab.session,
       secrets: widget.secrets,
       onOpenFile: (path) => widget.sessions.openFile(tab.session.id, path),
+      onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
       key: ValueKey('file:${tab.session.id}:${tab.path}'),

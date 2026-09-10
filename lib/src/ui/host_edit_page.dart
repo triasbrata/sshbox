@@ -63,6 +63,7 @@ class _HostEditPageState extends State<HostEditPage> {
   late final TextEditingController _host;
   late final TextEditingController _port;
   late final TextEditingController _username;
+  late final TextEditingController _fileRoot;
   final _password = TextEditingController();
   final _privateKey = TextEditingController();
   final _passphrase = TextEditingController();
@@ -80,6 +81,7 @@ class _HostEditPageState extends State<HostEditPage> {
     _host = TextEditingController(text: existing?.host ?? '');
     _port = TextEditingController(text: '${existing?.port ?? 22}');
     _username = TextEditingController(text: existing?.username ?? '');
+    _fileRoot = TextEditingController(text: existing?.fileRoot ?? '');
     _authMethod = existing?.authMethod ?? SshAuthMethod.password;
   }
 
@@ -90,6 +92,7 @@ class _HostEditPageState extends State<HostEditPage> {
       _host,
       _port,
       _username,
+      _fileRoot,
       _password,
       _privateKey,
       _passphrase,
@@ -114,6 +117,7 @@ class _HostEditPageState extends State<HostEditPage> {
       username: _username.text.trim(),
       port: int.parse(_port.text.trim()),
       authMethod: _authMethod,
+      fileRoot: _fileRoot.text.trim(),
     );
 
     await widget.repository.upsert(profile);
@@ -194,6 +198,20 @@ class _HostEditPageState extends State<HostEditPage> {
               validator: (value) => (value == null || value.trim().isEmpty)
                   ? 'A username is required'
                   : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _fileRoot,
+              decoration: const InputDecoration(
+                labelText: 'File tree root',
+                hintText: '~/projects or /var/www',
+                helperText: 'Optional. Where the file tree opens after you '
+                    'connect. Blank is your home directory.',
+                helperMaxLines: 2,
+              ),
+              autocorrect: false,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 24),
             SegmentedButton<SshAuthMethod>(

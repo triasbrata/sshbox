@@ -20,13 +20,22 @@ typedef SharedFile = ({String path, String name});
 /// and threw the session away — which is precisely what "return me to my
 /// session" has to avoid.
 class LiveSession extends ChangeNotifier {
-  LiveSession({required this.host}) {
+  LiveSession({required this._host}) {
     // Wired up front, not at connect time: the view reports its size during
     // the first layout, which happens before the shell exists.
     _wireTerminal();
   }
 
-  final HostProfile host;
+  HostProfile _host;
+
+  HostProfile get host => _host;
+
+  /// Replaced when the saved profile changes while this session is open —
+  /// see [SessionManager.updateHost].
+  set host(HostProfile value) {
+    _host = value;
+    _notify();
+  }
 
   /// Names this session among the others on the same host — a host can have
   /// several shells open at once, so its own id cannot tell their tabs apart.
@@ -436,6 +445,15 @@ class SessionManager extends ChangeNotifier {
       _active = _activeId == null ? null : _sessions[_activeId];
     }
     notifyListeners();
+  }
+
+  /// Hands an edited profile to every session open on its host, so their
+  /// tab names, next reconnects and file tree roots follow the edit instead
+  /// of the profile as it was when each tab opened.
+  void updateHost(HostProfile host) {
+    for (final session in sessionsFor(host.id)) {
+      session.host = host;
+    }
   }
 
   /// Closes every session on this host — what deleting the host needs.

@@ -20,6 +20,7 @@ class HostProfile {
     required this.username,
     this.port = 22,
     this.authMethod = SshAuthMethod.password,
+    this.fileRoot = '',
   });
 
   final String id;
@@ -28,6 +29,10 @@ class HostProfile {
   final String username;
   final int port;
   final SshAuthMethod authMethod;
+
+  /// Where the file tree opens on this host. Blank means the login home, and
+  /// a path that is not absolute is taken from there — see `RemotePath.resolve`.
+  final String fileRoot;
 
   /// What we show under the label, e.g. `root@10.0.2.2` or `me@box:2222`.
   String get target =>
@@ -42,6 +47,7 @@ class HostProfile {
     String? username,
     int? port,
     SshAuthMethod? authMethod,
+    String? fileRoot,
   }) {
     return HostProfile(
       id: id,
@@ -50,6 +56,7 @@ class HostProfile {
       username: username ?? this.username,
       port: port ?? this.port,
       authMethod: authMethod ?? this.authMethod,
+      fileRoot: fileRoot ?? this.fileRoot,
     );
   }
 
@@ -60,6 +67,7 @@ class HostProfile {
         'username': username,
         'port': port,
         'authMethod': authMethod.name,
+        'fileRoot': fileRoot,
       };
 
   factory HostProfile.fromJson(Map<String, dynamic> json) {
@@ -73,6 +81,7 @@ class HostProfile {
         (method) => method.name == json['authMethod'],
         orElse: () => SshAuthMethod.password,
       ),
+      fileRoot: json['fileRoot'] as String? ?? '',
     );
   }
 }

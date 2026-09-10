@@ -176,6 +176,23 @@ void main() {
       expect(manager.sessions, [other]);
     });
 
+    test('an edited host reaches every session open on it, and no other',
+        () {
+      manager.open(_host);
+      manager.open(_host);
+      final other = manager.open(_otherHost);
+
+      // A file tree root saved from one tab is where the next reconnect of
+      // any tab on that host should open.
+      manager.updateHost(_host.copyWith(fileRoot: '/srv'));
+
+      expect(
+        manager.sessionsFor(_host.id).map((s) => s.host.fileRoot),
+        ['/srv', '/srv'],
+      );
+      expect(other.host.fileRoot, isEmpty);
+    });
+
     test('a file picked in the drawer gets its own tab', () {
       final session = manager.openOrCreate(_host);
 

@@ -26,6 +26,7 @@ class TerminalPage extends StatefulWidget {
     required this.session,
     required this.secrets,
     required this.onOpenFile,
+    required this.onSaveFileRoot,
   });
 
   final LiveSession session;
@@ -33,6 +34,9 @@ class TerminalPage extends StatefulWidget {
 
   /// Opens a file picked in the drawer as a tab of its own, next to this one.
   final void Function(String path) onOpenFile;
+
+  /// Writes the file tree's root into this host's saved config.
+  final Future<void> Function(String root) onSaveFileRoot;
 
   @override
   State<TerminalPage> createState() => _TerminalPageState();
@@ -62,9 +66,11 @@ class _TerminalPageState extends State<TerminalPage> {
   /// each open would be felt.
   FileBrowser? _browser;
 
-  /// Where the drawer was last looking, so reopening it does not throw the
-  /// user back to their home directory.
-  String? _browsePath;
+  /// Where the drawer's tree was last rooted and which folders were open in
+  /// it, so reopening it does not fold the tree shut and throw the user back
+  /// to the host's root.
+  String? _browseRoot;
+  Set<String> _browseExpanded = const {};
 
   LiveSession get _session => widget.session;
 
@@ -100,7 +106,11 @@ class _TerminalPageState extends State<TerminalPage> {
     if (!_session.isConnected && _browser != null) {
       _browser!.close();
       _browser = null;
-      _browsePath = null;
+      // Forgotten with the connection, so the first tree after logging in
+      // again opens where the host's config says rather than where the last
+      // session wandered off to.
+      _browseRoot = null;
+      _browseExpanded = const {};
     }
     setState(() {});
     // A file shared from another app may have been queued before this page
@@ -194,9 +204,12 @@ class _TerminalPageState extends State<TerminalPage> {
       child: FileBrowserPage(
         browser: browser,
         title: _session.host.displayName,
-        initialPath: _browsePath,
+        initialRoot: _browseRoot ?? _session.host.fileRoot,
+        initialExpanded: _browseExpanded,
         ownsBrowser: false,
-        onPathChanged: (path) => _browsePath = path,
+        onRootChanged: (root) => _browseRoot = root,
+        onExpandedChanged: (expanded) => _browseExpanded = expanded,
+        onSaveRoot: widget.onSaveFileRoot,
         terminal: _terminalLink,
         onClose: _closeFilesDrawer,
         onFileSelected: _openFileTab,

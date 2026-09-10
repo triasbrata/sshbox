@@ -43,7 +43,7 @@ lib/
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
       key_bar.dart                  the accessory keyboard row
-      file_browser_page.dart        native directory listing, as a drawer
+      file_browser_page.dart        native file tree, as a drawer
       file_editor_page.dart         read and edit one remote file, in a tab
       file_search_page.dart         find text under a directory
 ```
@@ -131,7 +131,7 @@ maestro --device <serial> test .maestro/
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | nothing |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
-| `file_browser` | the native browser opens and shows a listing rather than an error | a reachable host with a stored credential |
+| `file_browser` | the native file tree opens and shows a listing rather than an error | a reachable host with a stored credential |
 
 Two things worth knowing before editing these:
 
@@ -401,17 +401,34 @@ share sheet.
 ## Browsing files
 
 The folder button in a terminal slides the remote filesystem in as a drawer
-from the right, the side that button sits on: tap a folder to descend, tap a
-file to open it. A drawer rather than a screen because tapping outside it
-returns you to the terminal in one gesture, from however deep in the tree you
-had wandered. Rename, delete, new file and new folder are on each row's menu,
-and "type path in terminal" drops a path at the prompt, shell-quoted, so the
-next thing you write is a command that uses it.
+from the right, the side that button sits on. It is a tree: tap a folder to
+open it in place, tap it again to close it, tap a file to open it. A drawer
+rather than a screen because tapping outside it returns you to the terminal in
+one gesture, from however deep in the tree you had wandered. Rename, delete,
+and new file or folder inside a folder are on each row's menu, and "type path
+in terminal" drops a path at the prompt, shell-quoted, so the next thing you
+write is a command that uses it.
+
+**The tree hangs from one root.** A folder's menu has **Set as root**, which
+re-hangs the tree from that folder; the breadcrumbs above it show the root,
+and tapping any crumb re-roots at that ancestor, which is the way back out.
+Back undoes the last re-rooting. The root and the open folders survive the
+drawer closing, so picking a file and coming back does not fold everything
+shut.
+
+**Where the tree starts is part of the host's config.** The host editor has a
+**File tree root** field — blank is the login home, and `~/…` or a bare
+relative path is taken from home, because SFTP expands neither itself. Each
+new connection opens the tree there. **Save root to host config** in the
+drawer's overflow menu writes the current root into that field, after a
+dialog confirming it: unlike everything else in the drawer it outlives the
+session. The saved profile is re-read before writing, so saving a root never
+reverts an edit made to the host since the session opened.
 
 The row menu also sends the shell to a folder with `cd`. **Follow in terminal**
-in the overflow menu does that on every navigation instead of on request — off
-by default, because it types into a live shell and a shell is not always at a
-prompt: with an editor or a build running, a `cd` lands as input to that
+in the overflow menu does that on every change of root instead of on request —
+off by default, because it types into a live shell and a shell is not always at
+a prompt: with an editor or a build running, a `cd` lands as input to that
 instead.
 
 **A picked file opens as a tab**, named `<host> > <file>`, beside the session

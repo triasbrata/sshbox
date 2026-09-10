@@ -49,8 +49,11 @@ class _HostsPageState extends State<HostsPage> {
     super.dispose();
   }
 
+  /// Re-read rather than just redrawn: a session can write into a saved host
+  /// — the file tree saves its root there — and an Edit opened on the copy
+  /// held here would then save the old root straight back.
   void _onSessionsChanged() {
-    if (mounted) setState(() {});
+    if (mounted) _reload();
   }
 
   Future<void> _reload() async {
@@ -60,7 +63,7 @@ class _HostsPageState extends State<HostsPage> {
   }
 
   Future<void> _openEditor({HostProfile? existing}) async {
-    await Navigator.of(context).push<HostProfile>(
+    final saved = await Navigator.of(context).push<HostProfile>(
       MaterialPageRoute(
         builder: (_) => HostEditPage(
           repository: widget.repository,
@@ -69,6 +72,9 @@ class _HostsPageState extends State<HostsPage> {
         ),
       ),
     );
+    // An open tab keeps the profile it was opened with; without this, a new
+    // file tree root would wait for the tab to be closed and opened again.
+    if (saved != null) widget.sessions.updateHost(saved);
     await _reload();
   }
 

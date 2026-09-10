@@ -5,7 +5,16 @@ import 'file_editor_page.dart';
 import 'file_search_page.dart';
 import 'terminal_link.dart';
 
-/// The remote filesystem, drawn natively.
+/// One visible line of the tree: an entry, and how many open folders deep it
+/// sits below the root.
+typedef _Row = ({RemoteEntry entry, int depth});
+
+/// The remote filesystem as a tree, drawn natively.
+///
+/// Folders open in place rather than replacing the listing, so a file three
+/// levels down is reached without losing sight of where it lives. The tree
+/// hangs from one root — the host's saved file tree root, or home — and any
+/// folder can be made the root instead, with the breadcrumbs climbing back out.
 ///
 /// It talks to [FileBrowser] and to nothing else — no SSH, no SFTP, no HTTP
 /// anywhere in this file. That is the whole point of the interface: when a
@@ -18,10 +27,13 @@ class FileBrowserPage extends StatefulWidget {
     super.key,
     required this.browser,
     required this.title,
-    this.initialPath,
+    this.initialRoot,
+    this.initialExpanded = const {},
     this.terminal,
     this.onFileSelected,
-    this.onPathChanged,
+    this.onRootChanged,
+    this.onExpandedChanged,
+    this.onSaveRoot,
     this.onClose,
     this.ownsBrowser = true,
   });
@@ -32,8 +44,13 @@ class FileBrowserPage extends StatefulWidget {
   /// open can tell which one they are looking at.
   final String title;
 
-  /// Where to start. Defaults to whatever the transport calls home.
-  final String? initialPath;
+  /// Where the tree hangs from. Null or blank is whatever the transport calls
+  /// home, and a relative path or `~/…` is taken from there.
+  final String? initialRoot;
+
+  /// Folders to show open, so a drawer rebuilt on every visit does not fold
+  /// the whole tree shut each time it is closed.
+  final Set<String> initialExpanded;
 
   /// The terminal this listing belongs to, when there is one.
   ///
@@ -49,10 +66,16 @@ class FileBrowserPage extends StatefulWidget {
   /// terminal — so this page hands the path over instead of navigating.
   final void Function(String path)? onFileSelected;
 
-  /// Reports the directory being shown, so a host that tears this widget down
-  /// and rebuilds it later — a drawer does exactly that — can put the user
-  /// back where they were rather than at home.
-  final void Function(String path)? onPathChanged;
+  /// Reports the root being shown, and [onExpandedChanged] the folders open
+  /// under it, so a host that tears this widget down and rebuilds it later —
+  /// a drawer does exactly that — can put the tree back the way it was.
+  final void Function(String root)? onRootChanged;
+  final void Function(Set<String> expanded)? onExpandedChanged;
+
+  /// Writes the root into the host's saved config, so the next connection
+  /// opens the tree there. Null hides the option — a page with no saved host
+  /// behind it has nothing to write to.
+  final Future<void> Function(String root)? onSaveRoot;
 
   /// Dismisses this view. Null when it is a route and can simply be popped.
   final VoidCallback? onClose;
@@ -69,13 +92,22 @@ class FileBrowserPage extends StatefulWidget {
 }
 
 class _FileBrowserPageState extends State<FileBrowserPage> {
-  /// Where the back gesture goes. A stack rather than "up one directory",
-  /// because a user who arrived somewhere deep by tapping a search result
-  /// expects back to retrace that, not to climb.
+  /// Roots the tree hung from before this one, for the back gesture. Setting a
+  /// folder as root is the one move here that replaces the view, so it is the
+  /// one move back undoes.
   final List<String> _history = [];
 
-  String? _path;
-  List<RemoteEntry> _entries = const [];
+  String? _root;
+
+  /// Every listing fetched so far, by folder. A folder closed and opened again
+  /// shows this at once while its fresh listing is on its way.
+  final Map<String, List<RemoteEntry>> _listings = {};
+
+  late final Set<String> _expanded = {...widget.initialExpanded};
+
+  /// Folders whose listing has been asked for and not yet arrived.
+  final Set<String> _loadingFolders = {};
+
   String? _error;
   bool _loading = true;
   bool _busy = false;
@@ -99,8 +131,12 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   Future<void> _start() async {
     try {
-      final start = widget.initialPath ?? await widget.browser.resolveHome();
-      await _open(start, push: false);
+      final wanted = (widget.initialRoot ?? '').trim();
+      // Home costs a round trip, so it is only asked for when the root is
+      // written relative to it.
+      final home =
+          wanted.startsWith('/') ? '/' : await widget.browser.resolveHome();
+      await _setRoot(RemotePath.resolve(wanted, home), push: false);
     } on FileBrowserException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -110,48 +146,96 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
-  Future<void> _open(String path, {bool push = true}) async {
-    final previous = _path;
+  /// Hangs the tree from [root], and fetches it along with every folder left
+  /// open beneath it.
+  Future<void> _setRoot(String root, {bool push = true}) async {
+    final previous = _root;
     setState(() {
       _loading = true;
       _error = null;
-      if (push && previous != null) _history.add(previous);
-      // A name filter belongs to the listing it was typed against. Carried
-      // into the next directory it makes that one look empty for no reason,
-      // and an emptied box left open is just a keyboard in the way.
-      if (previous != path) {
+      if (push && previous != null && previous != root) _history.add(previous);
+      // A name filter belongs to the tree it was typed against. Carried under
+      // a new root it makes that one look empty for no reason, and an emptied
+      // box left open is just a keyboard in the way.
+      if (previous != root) {
         _filtering = false;
         _filterController.clear();
       }
-      _path = path;
+      _root = root;
     });
 
     try {
-      final entries = await widget.browser.list(path);
-      if (!mounted) return;
+      final entries = await widget.browser.list(root);
+      // A crumb tapped while this was loading has moved the tree elsewhere.
+      if (!mounted || _root != root) return;
       setState(() {
-        _entries = entries;
+        _listings[root] = entries;
         _loading = false;
       });
-      widget.onPathChanged?.call(path);
+      widget.onRootChanged?.call(root);
 
       // Only when asked: this types into a live shell, so it is opt-in rather
-      // than a surprise waiting on the first folder tap.
+      // than a surprise waiting on the first "set as root".
       final link = widget.terminal;
-      if (link != null && link.follow) link.changeDirectory(path);
+      if (link != null && link.follow) link.changeDirectory(root);
+
+      // All at once: over SFTP each is a round trip, and waiting for them one
+      // after another is what makes a deep tree slow to come back.
+      await Future.wait([
+        for (final folder in _expanded.toList())
+          if (folder != root && RemotePath.isWithin(folder, root))
+            _loadFolder(folder),
+      ]);
     } on FileBrowserException catch (error) {
-      if (!mounted) return;
+      if (!mounted || _root != root) return;
       setState(() {
         _error = error.message;
-        _entries = const [];
+        _listings.remove(root);
         _loading = false;
       });
     }
   }
 
+  /// Fetches one open folder. A folder that cannot be listed — renamed,
+  /// deleted, or never readable — is closed, and the reason returned.
+  Future<String?> _loadFolder(String folder) async {
+    setState(() => _loadingFolders.add(folder));
+    try {
+      final entries = await widget.browser.list(folder);
+      if (mounted) setState(() => _listings[folder] = entries);
+      return null;
+    } on FileBrowserException catch (error) {
+      if (mounted) {
+        setState(() {
+          _expanded.remove(folder);
+          _listings.remove(folder);
+        });
+        _reportExpanded();
+      }
+      return error.message;
+    } finally {
+      if (mounted) setState(() => _loadingFolders.remove(folder));
+    }
+  }
+
+  Future<void> _toggle(RemoteEntry folder) async {
+    final path = folder.path;
+    if (_expanded.contains(path)) {
+      setState(() => _expanded.remove(path));
+      _reportExpanded();
+      return;
+    }
+    setState(() => _expanded.add(path));
+    _reportExpanded();
+    final error = await _loadFolder(path);
+    if (error != null && mounted) _say(error);
+  }
+
+  void _reportExpanded() => widget.onExpandedChanged?.call(Set.of(_expanded));
+
   Future<void> _refresh() async {
-    final path = _path;
-    if (path != null) await _open(path, push: false);
+    final root = _root;
+    if (root != null) await _setRoot(root, push: false);
   }
 
   /// True when the gesture was handled here and the page should stay.
@@ -161,7 +245,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       return true;
     }
     if (_history.isEmpty) return false;
-    _open(_history.removeLast(), push: false);
+    _setRoot(_history.removeLast(), push: false);
     return true;
   }
 
@@ -172,19 +256,38 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     });
   }
 
-  List<RemoteEntry> get _visible {
-    final needle = _filterController.text.trim().toLowerCase();
-    return [
-      for (final entry in _entries)
-        if ((_showHidden || !entry.isHidden) &&
-            (needle.isEmpty || entry.name.toLowerCase().contains(needle)))
-          entry,
-    ];
+  List<_Row> _rows() {
+    final root = _root;
+    if (root == null) return const [];
+    return _rowsUnder(root, 0, _filterController.text.trim().toLowerCase());
+  }
+
+  /// The tree flattened the way the list shows it: each entry, then — if it
+  /// is an open folder — everything inside it, one level deeper.
+  List<_Row> _rowsUnder(String folder, int depth, String needle) {
+    final rows = <_Row>[];
+    for (final entry in _listings[folder] ?? const <RemoteEntry>[]) {
+      if (entry.isHidden && !_showHidden) continue;
+      final below = _expanded.contains(entry.path)
+          ? _rowsUnder(entry.path, depth + 1, needle)
+          : const <_Row>[];
+      // A folder stays while something inside it matches, so the way down to
+      // a match is never filtered out from above it.
+      if (needle.isNotEmpty &&
+          below.isEmpty &&
+          !entry.name.toLowerCase().contains(needle)) {
+        continue;
+      }
+      rows
+        ..add((entry: entry, depth: depth))
+        ..addAll(below);
+    }
+    return rows;
   }
 
   Future<void> _openEntry(RemoteEntry entry) async {
     if (entry.isTraversable) {
-      await _open(entry.path);
+      await _toggle(entry);
       return;
     }
     if (entry.kind == RemoteEntryKind.other) {
@@ -218,26 +321,40 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Future<void> _openSearch() async {
-    final path = _path;
+    final root = _root;
     final browser = widget.browser;
-    if (path == null || browser is! FileSearchCapable) return;
+    if (root == null || browser is! FileSearchCapable) return;
 
     final hit = await Navigator.of(context).push<String>(
       MaterialPageRoute(
         builder: (_) => FileSearchPage(
           searcher: browser as FileSearchCapable,
-          root: path,
+          root: root,
           initialQuery: _filterController.text.trim(),
         ),
       ),
     );
     if (hit == null || !mounted) return;
 
-    // Land in the directory that holds the hit, so the file has context around
-    // it rather than appearing out of nowhere.
-    await _open(RemotePath.parent(hit));
+    _clearFilter();
+    await _reveal(hit);
     if (!mounted) return;
     await _openEditor(hit);
+  }
+
+  /// Opens every folder between the root and [path], so a file found by search
+  /// sits in the tree with its surroundings rather than appearing from nowhere.
+  Future<void> _reveal(String path) async {
+    final root = _root;
+    if (root == null) return;
+    final folders = [
+      for (final crumb in RemotePath.crumbs(RemotePath.parent(path)))
+        if (crumb.path != root && RemotePath.isWithin(crumb.path, root))
+          crumb.path,
+    ];
+    setState(() => _expanded.addAll(folders));
+    _reportExpanded();
+    await Future.wait(folders.map(_loadFolder));
   }
 
   /// Runs a mutation, then reloads. Everything that changes the remote side
@@ -274,6 +391,45 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     );
   }
 
+  /// Asks before writing the root into the host's config: unlike everything
+  /// else in this drawer it outlives the session, and changes where every
+  /// later connection opens.
+  Future<void> _confirmSaveRoot() async {
+    final root = _root;
+    final save = widget.onSaveRoot;
+    if (root == null || save == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update SSH config?'),
+        content: Text(
+          'The file tree for ${widget.title} will open at\n\n$root\n\n'
+          'every time you connect. This changes the saved host, not just '
+          'this session.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await save(root);
+      if (mounted) _say('${widget.title} now opens its files at $root');
+    } catch (error) {
+      if (mounted) _say('Could not update the host config: $error');
+    }
+  }
+
   Future<void> _promptRename(RemoteEntry entry) async {
     final name = await _promptForName(
       title: 'Rename',
@@ -290,24 +446,30 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     );
   }
 
-  Future<void> _promptNewDirectory() async {
-    final path = _path;
-    if (path == null) return;
+  /// Opens [folder] first when it is not the root, so what was just made
+  /// inside it is in sight rather than behind a closed folder.
+  void _openForNew(String folder) {
+    if (folder == _root || _expanded.contains(folder)) return;
+    setState(() => _expanded.add(folder));
+    _reportExpanded();
+  }
+
+  Future<void> _promptNewDirectory(String folder) async {
     final name = await _promptForName(title: 'New folder', action: 'Create');
     if (name == null) return;
+    _openForNew(folder);
     await _mutate(
       'Created $name',
-      () => widget.browser.makeDirectory(RemotePath.join(path, name)),
+      () => widget.browser.makeDirectory(RemotePath.join(folder, name)),
     );
   }
 
-  Future<void> _promptNewFile() async {
-    final path = _path;
-    if (path == null) return;
+  Future<void> _promptNewFile(String folder) async {
     final name = await _promptForName(title: 'New file', action: 'Create');
     if (name == null) return;
+    _openForNew(folder);
 
-    final target = RemotePath.join(path, name);
+    final target = RemotePath.join(folder, name);
     setState(() => _busy = true);
     try {
       await widget.browser.writeText(target, '');
@@ -373,58 +535,87 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   void _showEntryActions(RemoteEntry entry) {
     final terminal = widget.terminal;
+    final details = _subtitleFor(entry);
+
+    // Closes the sheet before [action] runs, so a dialog it opens is not
+    // stacked on a sheet that is still on its way out.
+    VoidCallback closing(BuildContext sheet, VoidCallback action) => () {
+          Navigator.of(sheet).pop();
+          action();
+        };
 
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: Icon(_iconFor(entry)),
-              title: Text(entry.name, overflow: TextOverflow.ellipsis),
-              subtitle: Text(entry.path, overflow: TextOverflow.ellipsis),
-            ),
-            const Divider(height: 1),
-            if (terminal != null) ...[
+      // A folder's list is long enough to pass the default nine-sixteenths cap
+      // on a short phone, so the sheet sizes to it and scrolls past the screen.
+      isScrollControlled: true,
+      builder: (sheet) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                leading: const Icon(Icons.keyboard_outlined),
-                title: const Text('Type path in terminal'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  terminal.typePath(entry.path);
-                  _showTerminal();
-                },
-              ),
-              if (entry.isTraversable)
-                ListTile(
-                  leading: const Icon(Icons.terminal_outlined),
-                  title: const Text('Open in terminal'),
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    terminal.changeDirectory(entry.path);
-                    _showTerminal();
-                  },
+                leading: Icon(_iconFor(entry)),
+                title: Text(entry.name, overflow: TextOverflow.ellipsis),
+                // The row itself is one line to keep the tree dense, so the
+                // size and date it no longer shows are here instead.
+                subtitle: Text(
+                  details.isEmpty ? entry.path : '${entry.path}\n$details',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
+                isThreeLine: details.isNotEmpty,
+              ),
+              const Divider(height: 1),
+              if (entry.isTraversable) ...[
+                ListTile(
+                  leading: const Icon(Icons.account_tree_outlined),
+                  title: const Text('Set as root'),
+                  onTap: closing(sheet, () => _setRoot(entry.path)),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.note_add_outlined),
+                  title: const Text('New file here'),
+                  onTap: closing(sheet, () => _promptNewFile(entry.path)),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.create_new_folder_outlined),
+                  title: const Text('New folder here'),
+                  onTap: closing(sheet, () => _promptNewDirectory(entry.path)),
+                ),
+              ],
+              if (terminal != null) ...[
+                ListTile(
+                  leading: const Icon(Icons.keyboard_outlined),
+                  title: const Text('Type path in terminal'),
+                  onTap: closing(sheet, () {
+                    terminal.typePath(entry.path);
+                    _showTerminal();
+                  }),
+                ),
+                if (entry.isTraversable)
+                  ListTile(
+                    leading: const Icon(Icons.terminal_outlined),
+                    title: const Text('Open in terminal'),
+                    onTap: closing(sheet, () {
+                      terminal.changeDirectory(entry.path);
+                      _showTerminal();
+                    }),
+                  ),
+              ],
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('Rename'),
+                onTap: closing(sheet, () => _promptRename(entry)),
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Delete'),
+                onTap: closing(sheet, () => _confirmDelete(entry)),
+              ),
             ],
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline),
-              title: const Text('Rename'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _promptRename(entry);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _confirmDelete(entry);
-              },
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -441,16 +632,18 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         appBar: _buildAppBar(),
         body: Column(
           children: [
-            if (_path != null)
+            if (_root != null)
               Row(
                 children: [
                   Expanded(
-                    // Keyed on the path so each move rebuilds it, which is
-                    // what re-pins the trail to its deepest crumb.
+                    // Keyed on the root so each move rebuilds it, which is
+                    // what re-pins the trail to its deepest crumb. A crumb
+                    // hangs the tree from that folder — the way back out of a
+                    // "set as root".
                     child: _Breadcrumbs(
-                      key: ValueKey(_path),
-                      path: _path!,
-                      onTap: _open,
+                      key: ValueKey(_root),
+                      path: _root!,
+                      onTap: _setRoot,
                     ),
                   ),
                   // Out of the menu and beside the path it acts on: taking the
@@ -461,7 +654,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                       tooltip: 'Open in terminal',
                       icon: const Icon(Icons.terminal_outlined),
                       onPressed: () {
-                        link.changeDirectory(_path!);
+                        link.changeDirectory(_root!);
                         _showTerminal();
                       },
                     ),
@@ -496,7 +689,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               controller: _filterController,
               autofocus: true,
               decoration: const InputDecoration(
-                hintText: 'Filter this folder',
+                hintText: 'Filter the tree',
                 border: InputBorder.none,
               ),
               onChanged: (_) => setState(() {}),
@@ -506,7 +699,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _path == null ? 'Files' : RemotePath.basename(_path!),
+                  _root == null ? 'Files' : RemotePath.basename(_root!),
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
@@ -543,15 +736,21 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         PopupMenuButton<String>(
           tooltip: 'More',
           onSelected: (choice) {
+            final root = _root;
             switch (choice) {
-              case 'folder':
-                _promptNewDirectory();
-              case 'file':
-                _promptNewFile();
+              case 'folder' when root != null:
+                _promptNewDirectory(root);
+              case 'file' when root != null:
+                _promptNewFile(root);
               case 'hidden':
                 setState(() => _showHidden = !_showHidden);
               case 'refresh':
                 _refresh();
+              case 'collapse':
+                setState(_expanded.clear);
+                _reportExpanded();
+              case 'saveRoot':
+                _confirmSaveRoot();
               case 'follow':
                 final link = widget.terminal;
                 if (link != null) setState(() => link.follow = !link.follow);
@@ -565,6 +764,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               child: Text(_showHidden ? 'Hide dotfiles' : 'Show dotfiles'),
             ),
             const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
+            const PopupMenuItem(value: 'collapse', child: Text('Collapse all')),
+            if (widget.onSaveRoot != null) ...[
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'saveRoot',
+                enabled: _root != null,
+                child: const Text('Save root to host config'),
+              ),
+            ],
             if (widget.terminal case final link?) ...[
               const PopupMenuDivider(),
               CheckedPopupMenuItem(
@@ -589,14 +797,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       );
     }
 
-    if (_loading && _entries.isEmpty) {
+    final listing = _listings[_root];
+    if (_loading && listing == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final visible = _visible;
-    if (visible.isEmpty) {
+    final rows = _rows();
+    if (rows.isEmpty) {
       final filtered = _filterController.text.trim().isNotEmpty;
-      final hiddenOnly = _entries.isNotEmpty && !_showHidden;
+      final hiddenOnly = (listing?.isNotEmpty ?? false) && !_showHidden;
       return _BrowserMessage(
         icon: filtered ? Icons.search_off : Icons.inbox_outlined,
         message: filtered
@@ -612,29 +821,56 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       child: ListView.builder(
         // Always scrollable so pull-to-refresh works on a short listing too.
         physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: visible.length,
-        itemBuilder: (context, index) {
-          final entry = visible[index];
-          return ListTile(
-            leading: Icon(_iconFor(entry)),
-            title: Text(entry.name, overflow: TextOverflow.ellipsis),
-            // One line: in a drawer this wraps, and rows of different heights
-            // make a listing much harder to scan.
-            subtitle: Text(
-              _subtitleFor(entry),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: IconButton(
-              tooltip: 'Actions',
-              icon: const Icon(Icons.more_vert),
-              onPressed: _busy ? null : () => _showEntryActions(entry),
-            ),
-            onTap: _busy ? null : () => _openEntry(entry),
-            onLongPress: _busy ? null : () => _showEntryActions(entry),
-          );
-        },
+        itemCount: rows.length,
+        itemBuilder: (context, index) => _buildRow(rows[index]),
       ),
+    );
+  }
+
+  Widget _buildRow(_Row row) {
+    final entry = row.entry;
+    final isFolder = entry.isTraversable;
+    final isOpen = _expanded.contains(entry.path);
+
+    final Widget? disclosure;
+    if (!isFolder) {
+      disclosure = null;
+    } else if (_loadingFolders.contains(entry.path)) {
+      disclosure = const Center(
+        child: SizedBox.square(
+          dimension: 14,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    } else {
+      disclosure = Icon(isOpen ? Icons.expand_more : Icons.chevron_right);
+    }
+
+    return ListTile(
+      key: ValueKey(entry.path),
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      // The indent is the tree: each open folder pushes its contents one step
+      // right, which is all that says what is inside what.
+      contentPadding: EdgeInsetsDirectional.only(start: 4.0 + row.depth * 16),
+      horizontalTitleGap: 8,
+      minLeadingWidth: 0,
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(width: 24, child: disclosure),
+          Icon(_iconFor(entry, open: isOpen)),
+        ],
+      ),
+      title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: IconButton(
+        tooltip: 'Actions',
+        visualDensity: VisualDensity.compact,
+        icon: const Icon(Icons.more_vert),
+        onPressed: _busy ? null : () => _showEntryActions(entry),
+      ),
+      onTap: _busy ? null : () => _openEntry(entry),
+      onLongPress: _busy ? null : () => _showEntryActions(entry),
     );
   }
 }
@@ -711,8 +947,10 @@ class _NamePromptState extends State<_NamePrompt> {
   }
 }
 
-IconData _iconFor(RemoteEntry entry) => switch (entry.kind) {
-      RemoteEntryKind.directory => Icons.folder_outlined,
+IconData _iconFor(RemoteEntry entry, {bool open = false}) =>
+    switch (entry.kind) {
+      RemoteEntryKind.directory =>
+        open ? Icons.folder_open_outlined : Icons.folder_outlined,
       RemoteEntryKind.symlink => Icons.link,
       RemoteEntryKind.file => Icons.description_outlined,
       RemoteEntryKind.other => Icons.help_outline,
@@ -720,8 +958,7 @@ IconData _iconFor(RemoteEntry entry) => switch (entry.kind) {
 
 String _subtitleFor(RemoteEntry entry) {
   final parts = <String>[];
-  // Nothing for a directory: the icon already says so, and the word costs the
-  // timestamp its last characters in a drawer.
+  // Nothing for a directory: the icon already says so.
   if (entry.kind == RemoteEntryKind.symlink) {
     parts.add(entry.targetIsDirectory == null
         ? 'Link'
@@ -736,7 +973,7 @@ String _subtitleFor(RemoteEntry entry) {
   return parts.join('  ·  ');
 }
 
-/// Where in the tree we are, and a way back to any of it.
+/// Where the tree hangs from, and a way to hang it from any folder above.
 ///
 /// A phone has no room for a full path in the title bar, and truncating one is
 /// worse than useless — it hides the end, which is the part that identifies
