@@ -4,10 +4,13 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
 import '../session/session_manager.dart';
 import 'file_browser_page.dart';
+import 'file_editor_page.dart';
 import 'files_page.dart';
 import 'key_bar.dart';
+import 'workbench.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -27,11 +30,31 @@ class TerminalPage extends StatefulWidget {
   State<TerminalPage> createState() => _TerminalPageState();
 }
 
+/// Material's "expanded" breakpoint.
+///
+/// Below it a split leaves both halves too narrow to work in: a phone in
+/// landscape is 800dp and stays one pane, which is the right answer for it.
+const double _tabletWidth = 840;
+
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   bool _uploading = false;
   double? _uploadProgress;
+
+  /// Kept for the width of a tablet session rather than per visit, because the
+  /// drawer holding it is rebuilt every time it opens and reconnecting SFTP on
+  /// each open would be felt.
+  FileBrowser? _browser;
+
+  /// The file showing beside the terminal, if any. Null means the terminal has
+  /// the whole width, which is how a session starts.
+  String? _openFile;
+
+  /// Where the drawer was last looking, so reopening it does not throw the
+  /// user back to their home directory.
+  String? _browsePath;
 
   LiveSession get _session => widget.session;
 
@@ -56,7 +79,17 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   void _onSessionChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // A browser is carried by the connection that made it, so when the session
+    // goes, so does the browser and anything opened through it. Holding on
+    // would leave the pane showing a file nothing can save.
+    if (!_session.isConnected && _browser != null) {
+      _browser!.close();
+      _browser = null;
+      _openFile = null;
+      _browsePath = null;
+    }
+    setState(() {});
   }
 
   @override
@@ -66,6 +99,9 @@ class _TerminalPageState extends State<TerminalPage> {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
+    // Ours to close: the drawer and the editor pane are handed this rather
+    // than owning it.
+    _browser?.close();
     // The session itself is intentionally left running.
     super.dispose();
   }
@@ -96,15 +132,87 @@ class _TerminalPageState extends State<TerminalPage> {
   /// when the user leaves. Which transport is behind it is decided by
   /// [LiveSession.openFileBrowser] and is not this page's business.
   Future<void> _openFiles() async {
-    final browser = _session.openFileBrowser();
+    if (MediaQuery.sizeOf(context).width >= _tabletWidth) {
+      // Tablet: the listing is a drawer over the terminal, and choosing a file
+      // splits the screen rather than replacing it.
+      setState(() => _browser ??= _session.openFileBrowser());
+      _scaffoldKey.currentState?.openDrawer();
+      return;
+    }
+
+    // Phone: one browser per visit, owned and closed by the page it opens.
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => FileBrowserPage(
-          browser: browser,
+          browser: _session.openFileBrowser(),
           title: _session.host.displayName,
+          initialPath: _browsePath,
+          onPathChanged: (path) => _browsePath = path,
           onInsertPath: _typePath,
         ),
       ),
+    );
+  }
+
+  Widget _buildFilesDrawer() {
+    final browser = _browser;
+    if (browser == null) return const Drawer(child: SizedBox.shrink());
+
+    return Drawer(
+      // Wider than Material's 304dp default, because every row here is a path
+      // and the default truncates most of them.
+      width: 360,
+      child: FileBrowserPage(
+        browser: browser,
+        title: _session.host.displayName,
+        initialPath: _browsePath,
+        ownsBrowser: false,
+        onPathChanged: (path) => _browsePath = path,
+        onInsertPath: _typePath,
+        onClose: _closeFilesDrawer,
+        onFileSelected: _openFileBeside,
+      ),
+    );
+  }
+
+  void _closeFilesDrawer() => _scaffoldKey.currentState?.closeDrawer();
+
+  /// Puts [path] in the pane beside the terminal, and gets the drawer out of
+  /// the way so both are visible at once.
+  void _openFileBeside(String path) {
+    _closeFilesDrawer();
+    setState(() => _openFile = path);
+  }
+
+  Widget _buildWorkbench(bool wide) {
+    final terminal = Column(
+      children: [
+        Expanded(child: _buildBody()),
+        if (_session.isConnected)
+          TerminalKeyBar(
+            controller: _keyBar,
+            terminal: _session.terminal,
+            onEmit: _session.sendRaw,
+          ),
+      ],
+    );
+
+    final openFile = _openFile;
+    final browser = _browser;
+    final showEditor = wide && openFile != null && browser != null;
+
+    return Workbench(
+      primary: terminal,
+      secondary: !showEditor
+          ? null
+          : FileEditorPage(
+              // Keyed on the path, so picking a second file loads it instead
+              // of leaving the first one's text sitting in the field.
+              key: ValueKey(openFile),
+              browser: browser,
+              path: openFile,
+              onClose: () => setState(() => _openFile = null),
+            ),
     );
   }
 
@@ -175,8 +283,24 @@ class _TerminalPageState extends State<TerminalPage> {
 
   @override
   Widget build(BuildContext context) {
+    final wide = MediaQuery.sizeOf(context).width >= _tabletWidth;
+
     return Scaffold(
+      key: _scaffoldKey,
+      drawer: wide ? _buildFilesDrawer() : null,
+      // Never by edge swipe: the terminal owns horizontal gestures, and having
+      // the file list slide over the shell mid-command would be maddening.
+      drawerEnableOpenDragGesture: false,
       appBar: AppBar(
+        // Set by hand, because attaching a drawer otherwise replaces the back
+        // button with a hamburger. The drawer opens from "Browse files".
+        leading: wide
+            ? IconButton(
+                tooltip: 'Back',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         title: Text(_session.title, overflow: TextOverflow.ellipsis),
         bottom: _uploading
             ? PreferredSize(
@@ -235,17 +359,7 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(child: _buildBody()),
-          if (_session.isConnected)
-            TerminalKeyBar(
-              controller: _keyBar,
-              terminal: _session.terminal,
-              onEmit: _session.sendRaw,
-            ),
-        ],
-      ),
+      body: _buildWorkbench(wide),
     );
   }
 

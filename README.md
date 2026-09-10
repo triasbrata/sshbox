@@ -42,6 +42,7 @@ lib/
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
       key_bar.dart                  the accessory keyboard row
+      workbench.dart                the tablet split and its draggable seam
       file_browser_page.dart        native directory listing
       file_editor_page.dart         read and edit one remote file
       file_search_page.dart         find text under a directory
@@ -132,6 +133,7 @@ maestro --device <serial> test .maestro/
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
 | `file_browser` | the native browser opens and shows a listing rather than an error | a reachable host with a stored credential |
+| `tablet_files` | the listing opens as a drawer rather than a screen | the same, on a device at least 840dp wide |
 
 Two things worth knowing before editing these:
 
@@ -347,6 +349,30 @@ differently — too large, not text, permission denied, gone.
 editor, it is refused with its size; a file with a NUL byte in it is refused as
 binary; a file that is not valid UTF-8 is refused rather than decoded loosely,
 because showing mojibake means saving mojibake back over the original.
+
+### On a tablet
+
+Past 840dp the same two pages are arranged rather than stacked. The terminal
+keeps the whole width until there is something to put beside it; "Browse files"
+opens the listing as a **drawer** over it, and choosing a file closes the
+drawer and splits the screen — terminal on the left, editor on the right, with
+a seam you can drag between a quarter and three quarters.
+
+That ordering is the point. A permanent side panel would cost the terminal half
+its width for the whole session, when most of a session has no file open at
+all. The split appears when it earns its place and folds away when the editor
+is closed.
+
+Nothing forks into a tablet copy of the UI. `FileBrowserPage` and
+`FileEditorPage` are the same widgets a phone shows; each takes a callback that
+says who owns what happens next — hand the tapped file over rather than push a
+screen, close the pane rather than pop a route. `Workbench` holds the geometry
+and knows about neither of them, which is what lets the split be tested without
+an SSH session.
+
+840dp is Material's "expanded" breakpoint and it is the right line here: a
+phone in landscape is 800dp, and splitting that would leave two columns too
+narrow to read.
 
 ### Search
 

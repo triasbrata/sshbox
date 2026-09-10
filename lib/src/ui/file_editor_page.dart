@@ -11,10 +11,18 @@ class FileEditorPage extends StatefulWidget {
     super.key,
     required this.browser,
     required this.path,
+    this.onClose,
   });
 
   final FileBrowser browser;
   final String path;
+
+  /// Dismisses the editor when it is a pane rather than a screen.
+  ///
+  /// Null on a phone, where leaving means popping this route. Set on a tablet,
+  /// where the editor sits beside the terminal and closing it just gives the
+  /// terminal the width back.
+  final VoidCallback? onClose;
 
   @override
   State<FileEditorPage> createState() => _FileEditorPageState();
@@ -35,6 +43,19 @@ class _FileEditorPageState extends State<FileEditorPage> {
   bool _saved = false;
 
   bool get _dirty => _controller.text != _original;
+
+  bool get _embedded => widget.onClose != null;
+
+  /// Leaves the editor: closes the pane when embedded, pops the route when it
+  /// is one. Everywhere that gives up on the file goes through here.
+  void _leave() {
+    final close = widget.onClose;
+    if (close != null) {
+      close();
+      return;
+    }
+    Navigator.of(context).pop(_saved);
+  }
 
   @override
   void initState() {
@@ -129,7 +150,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
         ],
       ),
     );
-    if (discard == true && mounted) Navigator.of(context).pop(_saved);
+    if (discard == true && mounted) _leave();
   }
 
   @override
@@ -138,17 +159,24 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
     return PopScope<bool>(
       // An unsaved edit on a phone is one stray back-swipe from being gone,
-      // and there is no undo on the far end.
-      canPop: !_dirty,
+      // and there is no undo on the far end. Embedded, back always has work to
+      // do here first: close the pane rather than leave the terminal behind it.
+      canPop: !_embedded && !_dirty,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _confirmDiscard();
+        if (didPop) return;
+        if (_dirty) {
+          _confirmDiscard();
+        } else {
+          _leave();
+        }
       },
       child: Scaffold(
         appBar: AppBar(
+          automaticallyImplyLeading: false,
           leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () =>
-                _dirty ? _confirmDiscard() : Navigator.of(context).pop(_saved),
+            tooltip: _embedded ? 'Close file' : 'Back',
+            icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
+            onPressed: () => _dirty ? _confirmDiscard() : _leave(),
           ),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

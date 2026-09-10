@@ -108,4 +108,48 @@ void main() {
     expect(find.text('This looks like a binary file.'), findsOneWidget);
     expect(find.byType(TextField), findsNothing);
   });
+
+  testWidgets('closes the pane instead of popping when embedded',
+      (tester) async {
+    var closed = false;
+    await tester.pumpWidget(MaterialApp(
+      home: FileEditorPage(
+        browser: FakeFileBrowser(),
+        path: '/home/me/notes.txt',
+        onClose: () => closed = true,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+
+    expect(closed, isTrue);
+  });
+
+  testWidgets('still guards unsaved work when embedded', (tester) async {
+    var closed = false;
+    await tester.pumpWidget(MaterialApp(
+      home: FileEditorPage(
+        browser: FakeFileBrowser(),
+        path: '/home/me/notes.txt',
+        onClose: () => closed = true,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'half typed');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+
+    // Closing a pane is as final as leaving a screen: the edits are gone
+    // either way, so the question is the same.
+    expect(find.text('Discard changes?'), findsOneWidget);
+    expect(closed, isFalse);
+
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+    expect(closed, isTrue);
+  });
 }

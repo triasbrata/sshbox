@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
+import 'package:sshbox/src/ui/file_editor_page.dart';
 
 import 'fake_file_browser.dart';
 
@@ -220,5 +221,81 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(browser.closed, isTrue);
+  });
+
+  testWidgets('hands a file over instead of navigating when embedded',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    String? handed;
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: browser,
+        title: 'box',
+        ownsBrowser: false,
+        onClose: () {},
+        onFileSelected: (path) => handed = path,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(_row('notes.txt'));
+    await tester.pumpAndSettle();
+
+    expect(handed, '/home/me/notes.txt');
+    // On a tablet the editor belongs to the pane beside the terminal, so this
+    // page must hand the path over rather than push a screen over everything.
+    expect(find.byType(FileEditorPage), findsNothing);
+  });
+
+  testWidgets('leaves a browser it does not own open', (tester) async {
+    final browser = FakeFileBrowser();
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(browser: browser, title: 'box', ownsBrowser: false),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    await tester.pumpAndSettle();
+
+    // A drawer is torn down every time it closes. Closing the SFTP channel
+    // with it would turn every reopen into a reconnect.
+    expect(browser.closed, isFalse);
+  });
+
+  testWidgets('offers close rather than back when it is not a route',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: browser,
+        title: 'box',
+        ownsBrowser: false,
+        onClose: () {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Inside a drawer there is no route of our own; an implied back button
+    // would pop the terminal underneath instead.
+    expect(find.byTooltip('Close files'), findsOneWidget);
+  });
+
+  testWidgets('drops the name filter when you change directory',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    await tester.tap(find.byTooltip('Filter by name'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'dev');
+    await tester.pumpAndSettle();
+    expect(_row('dev'), findsOneWidget);
+
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+
+    // The filter was about the listing it was typed against. Kept, it would
+    // hide everything in here and read as an empty folder.
+    expect(_row('main.dart'), findsOneWidget);
   });
 }

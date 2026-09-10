@@ -19,6 +19,10 @@ class FileBrowserPage extends StatefulWidget {
     required this.title,
     this.initialPath,
     this.onInsertPath,
+    this.onFileSelected,
+    this.onPathChanged,
+    this.onClose,
+    this.ownsBrowser = true,
   });
 
   final FileBrowser browser;
@@ -33,6 +37,28 @@ class FileBrowserPage extends StatefulWidget {
   /// Hands a path back to whoever opened this page — the terminal, so far.
   /// Absent when there is nowhere to send it.
   final void Function(String path)? onInsertPath;
+
+  /// Where a tapped file should be opened.
+  ///
+  /// Null on a phone, where this page pushes the editor as its own screen.
+  /// Set when something else owns the editor — a tablet showing it beside the
+  /// terminal — so this page hands the path over instead of navigating.
+  final void Function(String path)? onFileSelected;
+
+  /// Reports the directory being shown, so a host that tears this widget down
+  /// and rebuilds it later — a drawer does exactly that — can put the user
+  /// back where they were rather than at home.
+  final void Function(String path)? onPathChanged;
+
+  /// Dismisses this view. Null when it is a route and can simply be popped.
+  final VoidCallback? onClose;
+
+  /// Whether closing this page should close the browser it was given.
+  ///
+  /// False when the browser outlives the page: a drawer is rebuilt every time
+  /// it opens, and closing the SFTP channel each time would make reopening it
+  /// a reconnect.
+  final bool ownsBrowser;
 
   @override
   State<FileBrowserPage> createState() => _FileBrowserPageState();
@@ -63,8 +89,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   @override
   void dispose() {
     _filterController.dispose();
-    // The page was handed this; nothing else is going to close it.
-    widget.browser.close();
+    if (widget.ownsBrowser) widget.browser.close();
     super.dispose();
   }
 
@@ -87,6 +112,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       _loading = true;
       _error = null;
       if (push && previous != null) _history.add(previous);
+      // A name filter belongs to the listing it was typed against. Carried
+      // into the next directory it makes that one look empty for no reason,
+      // and an emptied box left open is just a keyboard in the way.
+      if (previous != path) {
+        _filtering = false;
+        _filterController.clear();
+      }
       _path = path;
     });
 
@@ -97,6 +129,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         _entries = entries;
         _loading = false;
       });
+      widget.onPathChanged?.call(path);
     } on FileBrowserException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -160,6 +193,12 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Future<void> _openEditor(String path) async {
+    final handOver = widget.onFileSelected;
+    if (handOver != null) {
+      handOver(path);
+      return;
+    }
+
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => FileEditorPage(browser: widget.browser, path: path),
@@ -333,7 +372,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   widget.onInsertPath!(entry.path);
-                  Navigator.of(context).pop();
+                  // Get out of the way so the path can be typed at. As a
+                  // drawer that means closing; popping instead would take the
+                  // terminal underneath with it.
+                  final close = widget.onClose;
+                  if (close != null) {
+                    close();
+                  } else {
+                    Navigator.of(context).pop();
+                  }
                 },
               ),
             ListTile(
@@ -381,7 +428,19 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   PreferredSizeWidget _buildAppBar() {
     final canSearch = widget.browser is FileSearchCapable;
 
+    final onClose = widget.onClose;
+
     return AppBar(
+      // Inside a drawer there is no route of our own to pop, and the implied
+      // button would pop the page behind it instead.
+      automaticallyImplyLeading: onClose == null,
+      leading: onClose == null
+          ? null
+          : IconButton(
+              tooltip: 'Close files',
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+            ),
       title: _filtering
           ? TextField(
               controller: _filterController,
@@ -629,6 +688,10 @@ class _Breadcrumbs extends StatelessWidget {
     return SizedBox(
       height: 44,
       child: ListView.separated(
+        // Keyed on the path so each navigation starts scrolled to the deepest
+        // crumb. Without it the offset carries over, and walking into a deep
+        // tree can land you looking at the middle of the trail.
+        key: ValueKey(path),
         scrollDirection: Axis.horizontal,
         reverse: true,
         padding: const EdgeInsets.symmetric(horizontal: 12),
