@@ -132,6 +132,13 @@ class LiveSession extends ChangeNotifier {
   bool get isConnected =>
       _session?.status.value == SessionStatus.connected;
 
+  /// True once the shell has gone — closed by the far end, dropped, or never
+  /// reached — as opposed to not having been asked for yet. A new tab is not
+  /// connecting for the one frame before its page asks, and must not flash a
+  /// reconnect button in that frame.
+  bool get ended =>
+      !isConnected && !_connecting && (_session != null || _error != null);
+
   final List<String> _openFiles = [];
 
   /// Absolute paths of the files opened from the drawer, in tab order. They

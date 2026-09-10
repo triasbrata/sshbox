@@ -105,6 +105,11 @@ Cursor keys follow `terminal.cursorKeysMode`, emitting the SS3 form
 Sending the wrong one is why arrow keys produce garbage in vim in many
 hand-rolled terminals.
 
+The terminal page has no header: the tab strip already names the session. Its
+two buttons open the bar instead, dressed as keys — the files drawer, then
+upload, then `ESC` and the rest. Without a shell the keys go and those two
+stay, greyed out, the way the header used to show them.
+
 ## Running it
 
 ```sh
@@ -130,7 +135,7 @@ maestro --device <serial> test .maestro/
 | --- | --- | --- |
 | `smoke` | app starts, host list renders | nothing |
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
-| `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | nothing |
+| `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | a reachable host with a stored credential — a tab that cannot connect offers reconnect in place of its close button |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
 | `file_browser` | the file tree opens and shows a listing rather than an error | a reachable host with a stored credential |
 
@@ -155,7 +160,7 @@ reads like an app bug and is not one. `adb shell getprop ro.product.cpu.abilist`
 settles it; a plain `flutter build apk --debug` covers every ABI and sidesteps
 the question. `connect_and_keybar` additionally fails on
 any device that cannot reach the host — that failure is the assertion doing
-its job, since the key bar only renders on a live session.
+its job, since the keys only render on a live session.
 
 `test/ssh_transport_live_test.dart` performs a real handshake against an sshd
 on `127.0.0.1:22` using a deliberately wrong credential — reaching a clean
@@ -204,9 +209,8 @@ tailnet can use Tailscale SSH.
 With **Forward ports to the tailnet** on in the host editor, a server started
 in a session goes on the tailnet by itself. Run `vite` on the host, it listens
 on `localhost:3000`, and a moment later the app says **Port 3000 is on
-`<host>.<tailnet>.ts.net:3001`**, with a button that opens it. The session
-menu lists what is forwarded; the server stopping, or the tab closing, takes
-it off again.
+`<host>.<tailnet>.ts.net:3001`**, with a button that opens it. The server
+stopping, or the tab closing, takes it off again.
 
 ```
 vite ── localhost:3000 ◀── tailscale serve --tcp 3001 ◀── <host>.ts.net:3001
@@ -286,6 +290,13 @@ again returns to its tab rather than opening a second one, and closing a
 session takes its file tabs with it — they are read over that session and
 cannot outlive it.
 
+**A tab whose shell has ended** — closed by the host, dropped, or never
+reached — trades its close button for a reconnect one, a cable. The terminal
+page has no header left to hold it. Closing such a tab instead is **Close
+session** in the host's menu on the host list. A tab that has not been asked
+to connect yet, for the one frame before its page does, keeps its close button
+rather than flashing the other.
+
 **Room on the strip.** A phone fits about one and a half tabs, so the space
 goes where it is read: the selected tab gets 180dp of name — enough for
 `host > file.dart` — and the rest get 110dp and an ellipsis. The pinned host
@@ -346,9 +357,8 @@ Two things already in place are what make that declaration safe:
   on the far end reflow to the new window instead of drawing to a size that no
   longer exists.
 
-The declared minimum is 320x280dp: the app bar (56dp) and key bar (48dp) leave
-roughly ten terminal rows below that, and the app bar's four actions start
-crowding the title.
+The declared minimum is 320x280dp: the tab strip (44dp) and key bar (48dp)
+leave roughly eleven terminal rows between them.
 
 **One window, not two.** Dragging out a second sshbox window gives it a second
 Flutter engine, and therefore its own `SessionManager` — the two windows would
@@ -426,7 +436,7 @@ Running with no config prints the exact commands to create one.
 
 ## Uploading files
 
-The paperclip in the terminal's app bar picks a local file, sends it to `/tmp`
+The paperclip at the front of the key bar picks a local file, sends it to `/tmp`
 on the host over SFTP, and types the resulting remote path at the prompt — so
 the next thing you write is a command that uses it.
 
@@ -454,8 +464,8 @@ share sheet.
 
 ## Browsing files
 
-The folder button in a terminal slides the remote filesystem in as a drawer
-from the right, the side that button sits on. A drawer rather than a screen
+The folder button that opens the key bar slides the remote filesystem in as a
+drawer from the right. A drawer rather than a screen
 because tapping outside it returns you to the terminal in one gesture, from
 however deep in the tree you had wandered.
 

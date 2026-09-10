@@ -25,13 +25,13 @@ env:
 
 - tapOn: "(?s)${HOST_LABEL}.*"
 
-# The key bar only renders on a live session, so this is the "connected" gate.
+# The keys only render on a live session, so this is the "connected" gate.
 - extendedWaitUntil:
     visible: "ESC"
     timeout: 30000
 
-# The terminal's own app bar, checked before leaving it: these two are the
-# icons that survived the move of reconnect and disconnect into a menu.
+# The terminal's own buttons, at the front of the key bar, checked before
+# leaving it.
 - assertVisible: "Upload a file to /tmp"
 - assertVisible: "Browse files"
 

@@ -164,33 +164,6 @@ class _TerminalPageState extends State<TerminalPage> {
         mode: LaunchMode.externalApplication,
       );
 
-  /// The session menu's tail: what this session has on the tailnet, each
-  /// opening in the browser.
-  List<PopupMenuEntry<String>> _forwardItems() {
-    final forwarder = _session.forwarder;
-    final problem = forwarder.problem;
-    if (!_session.isConnected ||
-        (forwarder.forwards.isEmpty && problem == null)) {
-      return const [];
-    }
-    PopupMenuItem<String> item(String text, {String? address}) =>
-        PopupMenuItem(
-          enabled: address != null,
-          onTap: address == null ? null : () => _openForward(address),
-          child: Text(text, maxLines: 3, overflow: TextOverflow.ellipsis),
-        );
-    return [
-      const PopupMenuDivider(),
-      for (final forward in forwarder.forwards)
-        item(
-          '${forward.port} → '
-          '${forward.address ?? forward.error ?? 'starting…'}',
-          address: forward.address,
-        ),
-      if (problem != null) item('Not forwarding ports: $problem'),
-    ];
-  }
-
   /// Uploads anything handed to the session from outside the terminal page.
   Future<void> _drainShared() async {
     if (_uploading || !_session.isConnected || !_session.hasPendingUploads) {
@@ -230,24 +203,13 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   void _reportPinnedKey(String fingerprint) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 6),
-        content: Text('Pinned new host key\n$fingerprint'),
-      ),
-    );
+    if (mounted) reportPinnedKey(context, fingerprint);
   }
 
   Future<void> _reconnect() => _session.reconnect(
         secrets: widget.secrets,
         onHostKeyPinned: _reportPinnedKey,
       );
-
-  // Leaves the tab open on a closed session: the scrollback is still worth
-  // reading, and reconnecting is one button away. Closing the tab is what
-  // throws the session away.
-  Future<void> _disconnect() => _session.disconnect();
 
   /// Opens the remote filesystem as a native listing.
   ///
@@ -374,15 +336,17 @@ class _TerminalPageState extends State<TerminalPage> {
       // Never by edge swipe: the terminal owns horizontal gestures, and having
       // the file list slide over the shell mid-command would be maddening.
       endDrawerEnableOpenDragGesture: false,
-      appBar: AppBar(
-        title: Text(_session.title, overflow: TextOverflow.ellipsis),
-        bottom: _uploading
-            ? PreferredSize(
-                preferredSize: const Size.fromHeight(3),
-                child: LinearProgressIndicator(value: _uploadProgress),
-              )
-            : null,
-        actions: [
+      // No app bar: the tab strip above already names the session, and the
+      // page's two buttons ride in the key bar, where the thumb already is.
+      body: _buildBody(),
+      // In the Scaffold's own slot rather than the body so it rides above the
+      // soft keyboard and the button below floats clear of it.
+      bottomNavigationBar: TerminalKeyBar(
+        controller: _keyBar,
+        terminal: _session.terminal,
+        onEmit: _session.sendRaw,
+        showKeys: _session.isConnected,
+        leading: [
           IconButton(
             tooltip: 'Browse files',
             onPressed: (_session.isConnected && _session.canBrowseFiles)
@@ -399,44 +363,8 @@ class _TerminalPageState extends State<TerminalPage> {
                 : null,
             icon: const Icon(Icons.attach_file),
           ),
-          // The rest live in a menu: four icons plus a title do not fit across
-          // a phone, and these are the three used least often.
-          PopupMenuButton<String>(
-            tooltip: 'Session',
-            onSelected: (choice) {
-              switch (choice) {
-                case 'reconnect':
-                  _reconnect();
-                case 'disconnect':
-                  _disconnect();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'reconnect',
-                enabled: !_session.connecting,
-                child: const Text('Reconnect'),
-              ),
-              PopupMenuItem(
-                value: 'disconnect',
-                enabled: _session.isConnected,
-                child: const Text('Disconnect'),
-              ),
-              ..._forwardItems(),
-            ],
-          ),
         ],
       ),
-      body: _buildBody(),
-      // In the Scaffold's own slot rather than the body so it rides above the
-      // soft keyboard and the button below floats clear of it.
-      bottomNavigationBar: _session.isConnected
-          ? TerminalKeyBar(
-              controller: _keyBar,
-              terminal: _session.terminal,
-              onEmit: _session.sendRaw,
-            )
-          : null,
     );
   }
 
@@ -486,6 +414,17 @@ class _TerminalPageState extends State<TerminalPage> {
                   : _AuthCheckPrompt(url: _session.authUrl!),
             ),
           ),
+        // Along the terminal's bottom edge, just above the key bar, rather
+        // than in the bar's slot: growing the slot would shrink the terminal,
+        // and resize the shell once when an upload starts and again when it
+        // ends.
+        if (_uploading)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: LinearProgressIndicator(value: _uploadProgress),
+          ),
         // In the body rather than the Scaffold's button slot so it can be
         // parked anywhere, and so its ring is free to open over the terminal.
         if (_session.isConnected)
@@ -498,6 +437,18 @@ class _TerminalPageState extends State<TerminalPage> {
       ],
     );
   }
+}
+
+/// Says out loud that a host key was trusted on first sight, rather than
+/// trusting a stranger silently. Shared by everything that connects a
+/// session: this page, and the reconnect on a tab whose shell has ended.
+void reportPinnedKey(BuildContext context, String fingerprint) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      duration: const Duration(seconds: 6),
+      content: Text('Pinned new host key\n$fingerprint'),
+    ),
+  );
 }
 
 /// Shown while a server is waiting for the user to prove who they are

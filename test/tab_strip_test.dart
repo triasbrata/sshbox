@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
@@ -13,7 +14,11 @@ TabRef _shell(WidgetTester tester, String id, String label) {
   return (session: session, kind: TabKind.terminal, path: null);
 }
 
-Future<void> _pump(WidgetTester tester, List<TabRef> tabs) => tester.pumpWidget(
+Future<void> _pump(
+  WidgetTester tester,
+  List<TabRef> tabs, {
+  void Function(LiveSession session)? onReconnect,
+}) => tester.pumpWidget(
   MaterialApp(
     home: Scaffold(
       body: Column(
@@ -23,12 +28,26 @@ Future<void> _pump(WidgetTester tester, List<TabRef> tabs) => tester.pumpWidget(
             activeIndex: 1,
             onSelect: (_, {TabKind kind = TabKind.terminal, String? path}) {},
             onClose: (_) {},
+            onReconnect: onReconnect ?? (_) {},
           ),
         ],
       ),
     ),
   ),
 );
+
+/// Holds nothing, so a password host fails to connect before a socket is
+/// ever opened: an ended session without a network.
+class _NoSecrets implements SecretStore {
+  @override
+  Future<String?> read(String key) async => null;
+
+  @override
+  Future<void> write(String key, String? value) async {}
+
+  @override
+  Future<void> purgeHost(String hostId) async {}
+}
 
 Rect _pill(WidgetTester tester, String label) => tester.getRect(
   find.ancestor(of: find.text(label), matching: find.byType(Material)).first,
@@ -78,5 +97,26 @@ void main() {
     expect(first.width, lessThan(strip.width / 3));
     expect(add.left - last.right, lessThan(8));
     expect(strip.right - add.right, greaterThan(strip.width / 2));
+  });
+
+  testWidgets('a shell that has ended offers to reconnect instead of close', (
+    tester,
+  ) async {
+    final tab = _shell(tester, 'host-1', 'box');
+    LiveSession? reconnected;
+    void onReconnect(LiveSession session) => reconnected = session;
+
+    // Not asked to connect yet — the page does that after its first frame —
+    // so there is nothing to come back from.
+    await _pump(tester, [tab], onReconnect: onReconnect);
+    expect(find.byTooltip('Close box'), findsOneWidget);
+    expect(find.byTooltip('Reconnect'), findsNothing);
+
+    await tab.session.connect(secrets: _NoSecrets());
+    await _pump(tester, [tab], onReconnect: onReconnect);
+    expect(find.byTooltip('Close box'), findsNothing);
+
+    await tester.tap(find.byTooltip('Reconnect'));
+    expect(reconnected, same(tab.session));
   });
 }

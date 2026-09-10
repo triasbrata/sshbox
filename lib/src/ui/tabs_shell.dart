@@ -139,6 +139,14 @@ class _TabsShellState extends State<TabsShell> {
                   tab.path!,
                 ),
               },
+              // What the terminal page's own "Try again" does, host key
+              // notice and all.
+              onReconnect: (session) => session.reconnect(
+                secrets: widget.secrets,
+                onHostKeyPinned: (fingerprint) {
+                  if (mounted) reportPinnedKey(context, fingerprint);
+                },
+              ),
             ),
             Expanded(
               child: IndexedStack(
@@ -181,12 +189,14 @@ class TabStrip extends StatefulWidget {
     required this.activeIndex,
     required this.onSelect,
     required this.onClose,
+    required this.onReconnect,
   });
 
   final List<TabRef> tabs;
   final int activeIndex;
   final void Function(int? id, {TabKind kind, String? path}) onSelect;
   final void Function(TabRef tab) onClose;
+  final void Function(LiveSession session) onReconnect;
 
   @override
   State<TabStrip> createState() => _TabStripState();
@@ -277,6 +287,9 @@ class _TabStripState extends State<TabStrip> {
             path: tab.path,
           ),
           onClose: () => widget.onClose(tab),
+          onReconnect: tab.kind == TabKind.terminal && tab.session.ended
+              ? () => widget.onReconnect(tab.session)
+              : null,
         ),
     ];
 
@@ -334,6 +347,7 @@ class _TabChip extends StatelessWidget {
     this.connected = false,
     this.expand = false,
     this.onClose,
+    this.onReconnect,
   });
 
   /// null shows the icon alone — the chip still answers to [tooltip], so it
@@ -349,6 +363,11 @@ class _TabChip extends StatelessWidget {
   final bool expand;
   final VoidCallback onTap;
   final VoidCallback? onClose;
+
+  /// Takes the close button's place once a session's shell has ended, which
+  /// is when the tab is more use brought back than thrown away. The header
+  /// that used to offer this is gone, so the tab is where it lives.
+  final VoidCallback? onReconnect;
 
   /// How much of a name a tab may show.
   ///
@@ -374,6 +393,8 @@ class _TabChip extends StatelessWidget {
         ? theme.colorScheme.onSurface
         : theme.colorScheme.onSurfaceVariant;
     final name = label;
+    final reconnect = onReconnect != null;
+    final onEnd = onReconnect ?? onClose;
     final title = name == null
         ? null
         : Text(
@@ -399,7 +420,7 @@ class _TabChip extends StatelessWidget {
           padding: EdgeInsets.fromLTRB(
             _inset,
             0,
-            onClose == null ? _inset : 2,
+            onEnd == null ? _inset : 2,
             0,
           ),
           child: Row(
@@ -421,17 +442,21 @@ class _TabChip extends StatelessWidget {
                     child: title,
                   ),
               ],
-              if (onClose != null)
+              if (onEnd != null)
                 IconButton(
-                  tooltip: 'Close ${name ?? tooltip}',
-                  onPressed: onClose,
+                  tooltip: reconnect ? 'Reconnect' : 'Close ${name ?? tooltip}',
+                  onPressed: onEnd,
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(
                     minWidth: 32,
                     minHeight: 32,
                   ),
-                  icon: Icon(Icons.close, size: 14, color: foreground),
+                  icon: Icon(
+                    reconnect ? Icons.cable : Icons.close,
+                    size: 14,
+                    color: foreground,
+                  ),
                 ),
             ],
           ),

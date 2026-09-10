@@ -132,6 +132,52 @@ void main() {
     });
   });
 
+  testWidgets('the session buttons come first, ahead of ESC, sized as keys',
+      (tester) async {
+    // Stand-ins for the buttons the terminal page hands the bar.
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        bottomNavigationBar: TerminalKeyBar(
+          controller: KeyBarController(),
+          terminal: Terminal(),
+          onEmit: (_) {},
+          leading: [
+            IconButton(
+              tooltip: 'Browse files',
+              onPressed: () {},
+              icon: const Icon(Icons.folder_outlined),
+            ),
+            // Disabled, as it is mid-upload: it must still look like a key.
+            const IconButton(
+              tooltip: 'Upload a file to /tmp',
+              onPressed: null,
+              icon: Icon(Icons.attach_file),
+            ),
+          ],
+        ),
+      ),
+    ));
+
+    final xs = [
+      find.byTooltip('Browse files'),
+      find.byTooltip('Upload a file to /tmp'),
+      find.text('ESC'),
+      find.text('TAB'),
+    ].map((key) => tester.getCenter(key).dx).toList();
+    expect(xs, [...xs]..sort());
+
+    // Level with the keys beside them, not the height of the app bar they
+    // came from. Width is left alone: it follows the test font's label.
+    final esc = find.ancestor(
+      of: find.text('ESC'),
+      matching: find.byType(Material),
+    );
+    final keyHeight = tester.getSize(esc.first).height;
+    for (final tooltip in ['Browse files', 'Upload a file to /tmp']) {
+      expect(tester.getSize(find.byTooltip(tooltip)).height, keyHeight);
+    }
+  });
+
   group('CursorPad', () {
     late CursorPad pad;
 

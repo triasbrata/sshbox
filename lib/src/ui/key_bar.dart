@@ -190,6 +190,8 @@ class TerminalKeyBar extends StatelessWidget {
     required this.controller,
     required this.terminal,
     required this.onEmit,
+    this.leading = const [],
+    this.showKeys = true,
   });
 
   final KeyBarController controller;
@@ -198,6 +200,15 @@ class TerminalKeyBar extends StatelessWidget {
   final Terminal terminal;
 
   final void Function(String data) onEmit;
+
+  /// The session's own buttons, ahead of ESC. Plain [IconButton]s: the bar
+  /// dresses them as keys.
+  final List<Widget> leading;
+
+  /// False while there is no shell, when the keys would have nothing to talk
+  /// to. [leading] stays either way, the way the header it replaced always
+  /// showed its buttons, greyed out until there was something to reach.
+  final bool showKeys;
 
   String _cursor(String finalChar) => cursorKey(terminal, finalChar);
 
@@ -218,40 +229,50 @@ class TerminalKeyBar extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 children: [
-                  _KeyButton(label: 'ESC', onTap: () => onEmit('\x1b')),
-                  _KeyButton(label: 'TAB', onTap: () => onEmit('\t')),
-                  _KeyButton(
-                    label: 'CTRL',
-                    active: controller.ctrl,
-                    onTap: controller.toggleCtrl,
-                  ),
-                  _KeyButton(
-                    label: 'ALT',
-                    active: controller.alt,
-                    onTap: controller.toggleAlt,
-                  ),
-                  const _KeyDivider(),
-                  _KeyButton(label: '←', onTap: () => onEmit(_cursor('D'))),
-                  _KeyButton(label: '↓', onTap: () => onEmit(_cursor('B'))),
-                  _KeyButton(label: '↑', onTap: () => onEmit(_cursor('A'))),
-                  _KeyButton(label: '→', onTap: () => onEmit(_cursor('C'))),
-                  _SpacePad(
-                    onSpace: () => onEmit(' '),
-                    onCursor: (finalChar) => onEmit(_cursor(finalChar)),
-                  ),
-                  const _KeyDivider(),
-                  _KeyButton(label: '^C', onTap: () => onEmit('\x03')),
-                  _KeyButton(label: '^D', onTap: () => onEmit('\x04')),
-                  _KeyButton(label: '^Z', onTap: () => onEmit('\x1a')),
-                  const _KeyDivider(),
-                  _KeyButton(label: 'HOME', onTap: () => onEmit(_cursor('H'))),
-                  _KeyButton(label: 'END', onTap: () => onEmit(_cursor('F'))),
-                  _KeyButton(label: 'PGUP', onTap: () => onEmit('\x1b[5~')),
-                  _KeyButton(label: 'PGDN', onTap: () => onEmit('\x1b[6~')),
-                  const _KeyDivider(),
-                  // Symbols the stock keyboard buries two layers deep.
-                  for (final symbol in const ['-', '/', '|', '~', ':', '*'])
-                    _KeyButton(label: symbol, onTap: () => onEmit(symbol)),
+                  for (final button in leading) _IconKey(button),
+                  if (showKeys) ...[
+                    const _KeyDivider(),
+                    _KeyButton(label: 'ESC', onTap: () => onEmit('\x1b')),
+                    _KeyButton(label: 'TAB', onTap: () => onEmit('\t')),
+                    _KeyButton(
+                      label: 'CTRL',
+                      active: controller.ctrl,
+                      onTap: controller.toggleCtrl,
+                    ),
+                    _KeyButton(
+                      label: 'ALT',
+                      active: controller.alt,
+                      onTap: controller.toggleAlt,
+                    ),
+                    const _KeyDivider(),
+                    _KeyButton(label: '←', onTap: () => onEmit(_cursor('D'))),
+                    _KeyButton(label: '↓', onTap: () => onEmit(_cursor('B'))),
+                    _KeyButton(label: '↑', onTap: () => onEmit(_cursor('A'))),
+                    _KeyButton(label: '→', onTap: () => onEmit(_cursor('C'))),
+                    _SpacePad(
+                      onSpace: () => onEmit(' '),
+                      onCursor: (finalChar) => onEmit(_cursor(finalChar)),
+                    ),
+                    const _KeyDivider(),
+                    _KeyButton(label: '^C', onTap: () => onEmit('\x03')),
+                    _KeyButton(label: '^D', onTap: () => onEmit('\x04')),
+                    _KeyButton(label: '^Z', onTap: () => onEmit('\x1a')),
+                    const _KeyDivider(),
+                    _KeyButton(
+                      label: 'HOME',
+                      onTap: () => onEmit(_cursor('H')),
+                    ),
+                    _KeyButton(
+                      label: 'END',
+                      onTap: () => onEmit(_cursor('F')),
+                    ),
+                    _KeyButton(label: 'PGUP', onTap: () => onEmit('\x1b[5~')),
+                    _KeyButton(label: 'PGDN', onTap: () => onEmit('\x1b[6~')),
+                    const _KeyDivider(),
+                    // Symbols the stock keyboard buries two layers deep.
+                    for (final symbol in const ['-', '/', '|', '~', ':', '*'])
+                      _KeyButton(label: symbol, onTap: () => onEmit(symbol)),
+                  ],
                 ],
               );
             },
@@ -366,6 +387,40 @@ class _SpacePadState extends State<_SpacePad> {
         active: _moving,
         minWidth: 96,
         onTap: widget.onSpace,
+      ),
+    );
+  }
+}
+
+/// An [IconButton] the page hands in, given the face of the keys around it so
+/// the header it came from does not show.
+class _IconKey extends StatelessWidget {
+  const _IconKey(this.child);
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
+      child: IconButtonTheme(
+        data: IconButtonThemeData(
+          style: IconButton.styleFrom(
+            foregroundColor: colors.onSurface,
+            backgroundColor: colors.surfaceContainerHigh,
+            // Greyed out rather than gone: still a key, just not one to press.
+            disabledBackgroundColor: colors.surfaceContainerHigh,
+            iconSize: 20,
+            minimumSize: const Size(44, 36),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+            ),
+          ),
+        ),
+        child: child,
       ),
     );
   }

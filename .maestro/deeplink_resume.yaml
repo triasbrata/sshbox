@@ -27,12 +27,13 @@ env:
 
 - openLink: "sshbox://host/${HOST_ID}"
 
-# Not asserted on the label: the tab and the app bar both take the title the
-# remote reports as soon as the shell is up, so the host's own name is gone
-# from the screen the moment the link works.
+# Not asserted on the label: the tab takes the title the remote reports as
+# soon as the shell is up, so the host's own name is gone from the screen the
+# moment the link works.
 #
-# These two buttons only exist on the terminal page, so their presence is what
-# distinguishes it from the host list.
+# These two buttons only exist on the terminal page, where they open the key
+# bar whether or not the shell is up, so their presence is what distinguishes
+# it from the host list.
 - extendedWaitUntil:
     visible: "Upload a file to /tmp"
     timeout: 20000

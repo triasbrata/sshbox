@@ -3,8 +3,8 @@
 #
 # Nothing here reads the terminal. xterm2 paints its cells itself, so not one
 # character of the session reaches the accessibility tree and no assertion can
-# see them. What does reach it is the app bar, which follows the title the
-# shell sets — and that title carries the working directory. So every check
+# see them. What does reach it is the session's tab, which follows the title
+# the shell sets — and that title carries the working directory. So every check
 # below is a `cd` whose arrival is read off the title:
 #
 #   - Enter is proved by a typed `cd` running at all,
@@ -26,7 +26,7 @@ env:
 
 - tapOn: "(?s)${HOST_LABEL}.*"
 
-# The key bar only renders once the session reports connected, so waiting on it
+# The keys only render once the session reports connected, so waiting on one
 # doubles as the assertion that SSH authentication succeeded.
 - extendedWaitUntil:
     visible: "ESC"
