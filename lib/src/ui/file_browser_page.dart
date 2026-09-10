@@ -442,9 +442,31 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         body: Column(
           children: [
             if (_path != null)
-              // Keyed on the path so each move rebuilds it, which is what
-              // re-pins the trail to its deepest crumb.
-              _Breadcrumbs(key: ValueKey(_path), path: _path!, onTap: _open),
+              Row(
+                children: [
+                  Expanded(
+                    // Keyed on the path so each move rebuilds it, which is
+                    // what re-pins the trail to its deepest crumb.
+                    child: _Breadcrumbs(
+                      key: ValueKey(_path),
+                      path: _path!,
+                      onTap: _open,
+                    ),
+                  ),
+                  // Out of the menu and beside the path it acts on: taking the
+                  // shell to where you are looking is what the drawer is most
+                  // often opened for.
+                  if (widget.terminal case final link?)
+                    IconButton(
+                      tooltip: 'Open in terminal',
+                      icon: const Icon(Icons.terminal_outlined),
+                      onPressed: () {
+                        link.changeDirectory(_path!);
+                        _showTerminal();
+                      },
+                    ),
+                ],
+              ),
             const Divider(height: 1),
             Expanded(child: _buildBody()),
           ],
@@ -530,12 +552,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 setState(() => _showHidden = !_showHidden);
               case 'refresh':
                 _refresh();
-              case 'cd':
-                final path = _path;
-                if (path != null) {
-                  widget.terminal?.changeDirectory(path);
-                  _showTerminal();
-                }
               case 'follow':
                 final link = widget.terminal;
                 if (link != null) setState(() => link.follow = !link.follow);
@@ -551,10 +567,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
             if (widget.terminal case final link?) ...[
               const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'cd',
-                child: Text('Open in terminal'),
-              ),
               CheckedPopupMenuItem(
                 value: 'follow',
                 checked: link.follow,

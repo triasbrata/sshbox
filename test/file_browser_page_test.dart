@@ -329,4 +329,28 @@ void main() {
 
     expect(visited, ['/home/me/dev']);
   });
+
+  testWidgets('opens the folder on screen in the terminal, then gets out of '
+      'the way', (tester) async {
+    final visited = <String>[];
+    var closed = false;
+
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: FakeFileBrowser(),
+        title: 'box',
+        onClose: () => closed = true,
+        terminal: TerminalLink(typePath: (_) {}, changeDirectory: visited.add),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await tester.pumpAndSettle();
+
+    expect(visited, ['/home/me/dev']);
+    expect(closed, isTrue, reason: 'the shell it just moved should be seen');
+  });
 }

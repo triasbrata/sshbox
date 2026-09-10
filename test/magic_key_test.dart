@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,32 +8,117 @@ import 'package:sshbox/src/ui/magic_key.dart';
 import 'package:xterm2/xterm.dart';
 
 void main() {
-  group('sectorFor', () {
+  final compass = [for (var i = 0; i < 8; i++) 2 * math.pi * i / 8];
+
+  group('petalFor on the full ring', () {
     test('ignores a wobble inside the dead zone', () {
-      expect(sectorFor(const Offset(6, -6), 8), isNull);
+      expect(petalFor(const Offset(6, -6), compass), isNull);
     });
 
     test('reads the compass points', () {
-      expect(sectorFor(const Offset(0, -60), 8), 0);
-      expect(sectorFor(const Offset(60, 0), 8), 2);
-      expect(sectorFor(const Offset(0, 60), 8), 4);
-      expect(sectorFor(const Offset(-60, 0), 8), 6);
+      expect(petalFor(const Offset(0, -60), compass), 0);
+      expect(petalFor(const Offset(60, 0), compass), 2);
+      expect(petalFor(const Offset(0, 60), compass), 4);
+      expect(petalFor(const Offset(-60, 0), compass), 6);
     });
 
     test('reads the diagonals', () {
-      expect(sectorFor(const Offset(60, -60), 8), 1);
-      expect(sectorFor(const Offset(60, 60), 8), 3);
-      expect(sectorFor(const Offset(-60, 60), 8), 5);
-      expect(sectorFor(const Offset(-60, -60), 8), 7);
+      expect(petalFor(const Offset(60, -60), compass), 1);
+      expect(petalFor(const Offset(60, 60), compass), 3);
+      expect(petalFor(const Offset(-60, 60), compass), 5);
+      expect(petalFor(const Offset(-60, -60), compass), 7);
     });
 
-    test('snaps a sloppy drag to the nearest sector', () {
-      expect(sectorFor(const Offset(12, -60), 8), 0);
+    test('snaps a sloppy drag to the nearest petal', () {
+      expect(petalFor(const Offset(12, -60), compass), 0);
     });
 
     test('wraps round the north seam instead of falling off the end', () {
-      // Just west of straight up is still up, not sector 8.
-      expect(sectorFor(const Offset(-12, -60), 8), 0);
+      // Just west of straight up is still up.
+      expect(petalFor(const Offset(-12, -60), compass), 0);
+    });
+  });
+
+  group('ringLayout', () {
+    const petal = 40.0;
+    const screen = Size(800, 1200);
+
+    Offset petalCentre(Offset centre, double angle, double radius) => Offset(
+          centre.dx + radius * math.sin(angle),
+          centre.dy - radius * math.cos(angle),
+        );
+
+    void expectAllOnScreen(Offset centre, Size bounds) {
+      final ring = ringLayout(centre: centre, bounds: bounds);
+      for (final angle in ring.angles) {
+        final p = petalCentre(centre, angle, ring.radius);
+        expect(p.dx - petal / 2, greaterThanOrEqualTo(0), reason: 'left');
+        expect(p.dy - petal / 2, greaterThanOrEqualTo(0), reason: 'top');
+        expect(p.dx + petal / 2, lessThanOrEqualTo(bounds.width),
+            reason: 'right');
+        expect(p.dy + petal / 2, lessThanOrEqualTo(bounds.height),
+            reason: 'bottom');
+      }
+    }
+
+    test('takes the compass points when there is room all round', () {
+      final ring = ringLayout(centre: const Offset(400, 600), bounds: screen);
+      for (var i = 0; i < 8; i++) {
+        expect(ring.angles[i], closeTo(compass[i], 1e-9));
+      }
+      expect(ring.radius, 80);
+    });
+
+    test('fans away from the right edge, no petal past it', () {
+      expectAllOnScreen(const Offset(770, 600), screen);
+    });
+
+    test('fans out of a corner, every petal on screen', () {
+      // The default spot for the key is the bottom-right corner.
+      expectAllOnScreen(const Offset(760, 1160), screen);
+      expectAllOnScreen(const Offset(30, 30), screen);
+    });
+
+    test('pushes a fanned ring out so its petals do not overlap', () {
+      final centre = const Offset(770, 600);
+      final ring = ringLayout(centre: centre, bounds: screen);
+      final points = [
+        for (final a in ring.angles) petalCentre(centre, a, ring.radius),
+      ];
+      for (var i = 0; i < points.length; i++) {
+        for (var j = i + 1; j < points.length; j++) {
+          expect((points[i] - points[j]).distance,
+              greaterThanOrEqualTo(petal - 1e-6));
+        }
+      }
+    });
+
+    test('keeps the arrows on their own sides of a fan', () {
+      // Against the right edge the ring opens to the left: down stays below
+      // up, and left points left.
+      final centre = const Offset(770, 600);
+      final ring = ringLayout(centre: centre, bounds: screen);
+      final up = petalCentre(centre, ring.angles[0], ring.radius);
+      final down = petalCentre(centre, ring.angles[4], ring.radius);
+      final left = petalCentre(centre, ring.angles[6], ring.radius);
+      expect(up.dy, lessThan(down.dy));
+      expect(left.dx, lessThan(centre.dx));
+    });
+
+    test('in the corner, up is still up and left is still left', () {
+      // The key starts in the bottom-right corner, so this is the fan most
+      // people see first — and sliding up must not send ESC.
+      final centre = const Offset(760, 1160);
+      final ring = ringLayout(centre: centre, bounds: screen);
+      expect(petalFor(const Offset(0, -60), ring.angles), 0, reason: 'up');
+      expect(petalFor(const Offset(-60, 0), ring.angles), 6, reason: 'left');
+    });
+
+    test('pointing into the gap a fan leaves picks nothing', () {
+      final centre = const Offset(770, 600);
+      final ring = ringLayout(centre: centre, bounds: screen);
+      // Straight at the edge, where no petal could fit.
+      expect(petalFor(const Offset(60, 0), ring.angles), isNull);
     });
   });
 
@@ -88,6 +175,18 @@ void main() {
       return gesture;
     }
 
+    testWidgets('a slip too small to be a drag still sends Enter',
+        (tester) async {
+      await pumpKey(tester);
+      // Nobody taps a phone without moving a little, and the tap is what they
+      // meant — not a move of the button.
+      final before = tester.getCenter(button);
+      await tester.drag(button, const Offset(0, -8));
+      await tester.pump();
+      expect(sent, ['\r']);
+      expect(tester.getCenter(button), before);
+    });
+
     testWidgets('holding it opens the ring', (tester) async {
       await pumpKey(tester);
       expect(find.text('ESC'), findsNothing);
@@ -114,21 +213,18 @@ void main() {
       expect(find.text('ESC'), findsNothing, reason: 'a pick closes the ring');
     });
 
-    testWidgets('let go without sliding and the ring waits to be tapped',
+    testWidgets('lifting without aiming closes the ring and sends nothing',
         (tester) async {
       await pumpKey(tester);
 
       final gesture = await hold(tester);
+      expect(find.text('ESC'), findsOneWidget);
       await gesture.up();
       await tester.pump();
 
-      // Still open, and now its petals are buttons.
-      expect(find.text('TAB'), findsOneWidget);
-      await tester.tap(find.text('TAB'));
-      await tester.pump();
-
-      expect(sent, ['\t']);
-      expect(find.text('TAB'), findsNothing);
+      expect(find.text('ESC'), findsNothing,
+          reason: 'the ring only lives while the finger does');
+      expect(sent, isEmpty);
     });
 
     testWidgets('a slide brought back to the middle picks nothing',
@@ -145,37 +241,23 @@ void main() {
       await tester.pump();
 
       expect(sent, isEmpty);
+      expect(find.text('ESC'), findsNothing);
     });
 
-    testWidgets('tapping away from the open ring closes it, sending nothing',
+    testWidgets('in its corner the ring fans out and stays on screen',
         (tester) async {
       await pumpKey(tester);
+      // Pumped at the default spot, the bottom-right corner.
+      final screen = tester.getRect(find.byType(MagicKey));
 
       final gesture = await hold(tester);
+      for (final label in magicKeys.map((k) => k.label)) {
+        final petal = tester.getRect(find.text(label));
+        expect(screen.contains(petal.topLeft), isTrue, reason: label);
+        expect(screen.contains(petal.bottomRight), isTrue, reason: label);
+      }
       await gesture.up();
       await tester.pump();
-      expect(find.text('ESC'), findsOneWidget);
-
-      await tester.tapAt(const Offset(20, 20));
-      await tester.pump();
-
-      expect(find.text('ESC'), findsNothing);
-      expect(sent, isEmpty);
-    });
-
-    testWidgets('tapping the button on an open ring closes it, not Enter',
-        (tester) async {
-      await pumpKey(tester);
-
-      final gesture = await hold(tester);
-      await gesture.up();
-      await tester.pump();
-
-      await tester.tap(find.byIcon(Icons.close));
-      await tester.pump();
-
-      expect(find.text('ESC'), findsNothing);
-      expect(sent, isEmpty, reason: '"never mind" must not type into a shell');
     });
 
     testWidgets('dragging it moves the button and remembers where',
