@@ -318,7 +318,11 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
       // does not implement. Sending it also leaves a request waiting for a
       // reply that the closing channel then fails, and that failure arrives
       // with nothing to catch it.
-      session.close();
+      //
+      // `destroy` rather than `close`, which in dartssh2 only sends EOF and
+      // waits for the far end to finish — and grep reads no stdin, so it would
+      // run the whole tree anyway, sending every hit to be thrown away.
+      session.channel.destroy();
     }
   }
 
