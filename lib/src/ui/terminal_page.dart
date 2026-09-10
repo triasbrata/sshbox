@@ -14,6 +14,7 @@ import 'file_browser_page.dart';
 import 'file_editor_page.dart';
 import 'files_page.dart';
 import 'key_bar.dart';
+import 'magic_key.dart';
 import 'terminal_link.dart';
 import 'terminal_text_input.dart';
 import 'workbench.dart';
@@ -475,6 +476,15 @@ class _TerminalPageState extends State<TerminalPage> {
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()
                   : _AuthCheckPrompt(url: _session.authUrl!),
+            ),
+          ),
+        // In the body rather than the Scaffold's button slot so it can be
+        // parked anywhere, and so its ring is free to open over the terminal.
+        if (_session.isConnected)
+          Positioned.fill(
+            child: MagicKey(
+              terminal: _session.terminal,
+              onEmit: _session.sendRaw,
             ),
           ),
       ],
