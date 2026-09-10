@@ -1,5 +1,100 @@
 package dev.triasbrata.sshbox
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
-class MainActivity : FlutterActivity()
+// Receives files handed to us by another app's share sheet and puts them
+// somewhere Dart can read.
+//
+// A share arrives as a content:// URI owned by the sending app, which SFTP
+// cannot open — so it is copied into our own cache first, and only the path
+// crosses the channel.
+class MainActivity : FlutterActivity() {
+    private var channel: MethodChannel? = null
+
+    // A cold start is the common case: the app was dead, so the share is what
+    // launched us and Dart is not listening yet. The files wait here until Dart
+    // asks — the same shape as app_links' getInitialLink.
+    private var pending: List<Map<String, String>>? = null
+
+    override fun configureFlutterEngine(engine: FlutterEngine) {
+        super.configureFlutterEngine(engine)
+        channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).apply {
+            setMethodCallHandler { call, result ->
+                if (call.method == "takeShared") {
+                    result.success(pending)
+                    pending = null
+                } else {
+                    result.notImplemented()
+                }
+            }
+        }
+        pending = filesIn(intent)
+    }
+
+    // launchMode is singleTop, so a share while we are already running lands
+    // here rather than restarting the app — and Dart is listening by now.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val files = filesIn(intent) ?: return
+        channel?.invokeMethod("shared", files)
+    }
+
+    private fun filesIn(intent: Intent?): List<Map<String, String>>? {
+        val uris: List<Uri> = when (intent?.action) {
+            Intent.ACTION_SEND -> listOfNotNull(intent.streamExtra())
+            Intent.ACTION_SEND_MULTIPLE -> intent.streamExtras()
+            else -> emptyList()
+        }
+        // Text-only shares carry no stream: nothing to upload, and nothing to
+        // report either.
+        return uris.mapNotNull(::copyToCache).ifEmpty { null }
+    }
+
+    private fun copyToCache(uri: Uri): Map<String, String>? {
+        // The display name comes from another app, so strip path separators
+        // before it is used to build a path of ours.
+        val name = (displayName(uri) ?: uri.lastPathSegment ?: "shared")
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .ifEmpty { "shared" }
+
+        val target = File(File(cacheDir, "shared"), "${System.nanoTime()}-$name")
+        target.parentFile?.mkdirs()
+
+        return try {
+            val input = contentResolver.openInputStream(uri) ?: return null
+            input.use { source ->
+                target.outputStream().use { sink -> source.copyTo(sink) }
+            }
+            mapOf("path" to target.absolutePath, "name" to name)
+        } catch (error: Exception) {
+            // A revoked or dead content URI is the sender's problem, not a
+            // reason to take the app down.
+            null
+        }
+    }
+
+    private fun displayName(uri: Uri): String? =
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+        }
+
+    @Suppress("DEPRECATION")
+    private fun Intent.streamExtra(): Uri? = getParcelableExtra(Intent.EXTRA_STREAM)
+
+    @Suppress("DEPRECATION")
+    private fun Intent.streamExtras(): List<Uri> =
+        getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
+
+    private companion object {
+        const val CHANNEL = "sshbox/share"
+    }
+}

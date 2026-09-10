@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:xterm2/xterm.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -126,6 +127,58 @@ class KeyBarController extends ChangeNotifier {
   }
 }
 
+/// Turns a drag into cursor-key steps.
+///
+/// Holding the space bar on iOS and Android turns the on-screen keyboard into
+/// a trackpad for moving the caret. The OS runs that gesture against its own
+/// text field and reports it as a floating cursor, which never reaches us —
+/// so the key bar grows a space key that behaves the same way.
+class CursorPad {
+  CursorPad({this.stepX = 20, this.stepY = 28});
+
+  /// Distance to travel per cursor key. Vertical is deliberately coarser: in a
+  /// shell an accidental up is a recalled command, not just a moved caret.
+  final double stepX;
+  final double stepY;
+
+  int _x = 0;
+  int _y = 0;
+
+  void reset() {
+    _x = 0;
+    _y = 0;
+  }
+
+  /// [offset] is measured from where the drag began, so what comes back is
+  /// whatever movement the distance travelled so far still owes — nothing if
+  /// the finger has not crossed the next threshold, and the reverse key if it
+  /// has come back.
+  List<String> advance(Offset offset) {
+    final steps = <String>[];
+    final x = offset.dx ~/ stepX;
+    final y = offset.dy ~/ stepY;
+
+    while (_x < x) {
+      _x++;
+      steps.add('C');
+    }
+    while (_x > x) {
+      _x--;
+      steps.add('D');
+    }
+    while (_y < y) {
+      _y++;
+      steps.add('B');
+    }
+    while (_y > y) {
+      _y--;
+      steps.add('A');
+    }
+
+    return steps;
+  }
+}
+
 /// The accessory row that sits directly above the soft keyboard.
 ///
 /// Without this the app cannot send Esc, Tab, Ctrl or arrows at all, which
@@ -182,6 +235,10 @@ class TerminalKeyBar extends StatelessWidget {
                   _KeyButton(label: '↓', onTap: () => onEmit(_cursor('B'))),
                   _KeyButton(label: '↑', onTap: () => onEmit(_cursor('A'))),
                   _KeyButton(label: '→', onTap: () => onEmit(_cursor('C'))),
+                  _SpacePad(
+                    onSpace: () => onEmit(' '),
+                    onCursor: (finalChar) => onEmit(_cursor(finalChar)),
+                  ),
                   const _KeyDivider(),
                   _KeyButton(label: '^C', onTap: () => onEmit('\x03')),
                   _KeyButton(label: '^D', onTap: () => onEmit('\x04')),
@@ -210,6 +267,7 @@ class _KeyButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.active = false,
+    this.minWidth = 44,
   });
 
   final String label;
@@ -218,6 +276,8 @@ class _KeyButton extends StatelessWidget {
   /// Armed sticky modifiers stay lit so the user can see what the next
   /// keystroke will do.
   final bool active;
+
+  final double minWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -236,7 +296,7 @@ class _KeyButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(6),
           onTap: onTap,
           child: Container(
-            constraints: const BoxConstraints(minWidth: 44),
+            constraints: BoxConstraints(minWidth: minWidth),
             alignment: Alignment.center,
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(
@@ -250,6 +310,62 @@ class _KeyButton extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A space key that doubles as a cursor trackpad: tap for a space, hold and
+/// slide to move.
+///
+/// Long press is what claims the gesture — the bar scrolls horizontally, and a
+/// plain drag belongs to the scroll. Holding first is also the gesture the
+/// stock keyboards teach, so the muscle memory carries over.
+class _SpacePad extends StatefulWidget {
+  const _SpacePad({required this.onSpace, required this.onCursor});
+
+  final VoidCallback onSpace;
+
+  /// Receives the final character of a cursor sequence: A, B, C or D.
+  final void Function(String finalChar) onCursor;
+
+  @override
+  State<_SpacePad> createState() => _SpacePadState();
+}
+
+class _SpacePadState extends State<_SpacePad> {
+  final _pad = CursorPad();
+
+  bool _moving = false;
+
+  void _startMoving(LongPressStartDetails _) {
+    _pad.reset();
+    // The only signal that the key changed meaning, since the finger is
+    // covering it.
+    HapticFeedback.selectionClick();
+    setState(() => _moving = true);
+  }
+
+  void _stopMoving() {
+    if (_moving) setState(() => _moving = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onLongPressStart: _startMoving,
+      onLongPressMoveUpdate: (details) {
+        for (final finalChar in _pad.advance(details.localOffsetFromOrigin)) {
+          widget.onCursor(finalChar);
+        }
+      },
+      onLongPressEnd: (_) => _stopMoving(),
+      onLongPressCancel: _stopMoving,
+      child: _KeyButton(
+        label: _moving ? '↔ MOVE' : 'SPACE',
+        active: _moving,
+        minWidth: 96,
+        onTap: widget.onSpace,
       ),
     );
   }
