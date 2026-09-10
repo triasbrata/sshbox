@@ -48,10 +48,21 @@ void main() {
           centre.dy - radius * math.cos(angle),
         );
 
-    void expectAllOnScreen(Offset centre, Size bounds) {
+    /// Both rings' petals, as if every key had two behind it: the most ring 2
+    /// ever holds.
+    List<Offset> petalsOf(Offset centre, Size bounds) {
       final ring = ringLayout(centre: centre, bounds: bounds);
-      for (final angle in ring.angles) {
-        final p = petalCentre(centre, angle, ring.radius);
+      return [
+        for (final a in ring.angles) ...[
+          petalCentre(centre, a, ring.radius),
+          petalCentre(centre, a - ring.spread, ring.outer),
+          petalCentre(centre, a + ring.spread, ring.outer),
+        ],
+      ];
+    }
+
+    void expectAllOnScreen(Offset centre, Size bounds) {
+      for (final p in petalsOf(centre, bounds)) {
         expect(p.dx - petal / 2, greaterThanOrEqualTo(0), reason: 'left');
         expect(p.dy - petal / 2, greaterThanOrEqualTo(0), reason: 'top');
         expect(p.dx + petal / 2, lessThanOrEqualTo(bounds.width),
@@ -80,11 +91,7 @@ void main() {
     });
 
     test('pushes a fanned ring out so its petals do not overlap', () {
-      final centre = const Offset(770, 600);
-      final ring = ringLayout(centre: centre, bounds: screen);
-      final points = [
-        for (final a in ring.angles) petalCentre(centre, a, ring.radius),
-      ];
+      final points = petalsOf(const Offset(770, 600), screen);
       for (var i = 0; i < points.length; i++) {
         for (var j = i + 1; j < points.length; j++) {
           expect((points[i] - points[j]).distance,
@@ -244,84 +251,52 @@ void main() {
       expect(find.text('ESC'), findsNothing);
     });
 
-    /// Holds, slides onto ↑ and rests there until ring 2 opens round it.
-    Future<TestGesture> restOnUp(WidgetTester tester) async {
+    /// Slides [by] from where a held finger landed on the key in the middle
+    /// of the screen, where both rings are whole, and lifts.
+    Future<void> slideFromMiddle(WidgetTester tester, Offset by) async {
+      SharedPreferences.setMockInitialValues(
+        {'sshbox.magickey.x': 0.5, 'sshbox.magickey.y': 0.5},
+      );
+      await pumpKey(tester);
+      await tester.pump();
+
       final gesture = await hold(tester);
-      await gesture.moveBy(const Offset(0, -70));
-      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
-      return gesture;
+      await gesture.moveBy(by);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
     }
 
-    testWidgets('resting on a petal opens the keys behind it', (tester) async {
-      await pumpKey(tester);
-
-      final gesture = await restOnUp(tester);
-      expect(find.text('PGUP'), findsOneWidget);
-      // Ring 2 is aimed from where the finger rested, so slide the way PgUp
-      // sits from ↑.
-      await gesture.moveBy(
-        tester.getCenter(find.text('PGUP')) - tester.getCenter(find.text('↑')),
-      );
-      await tester.pump();
-      await gesture.up();
-      await tester.pump();
-
+    testWidgets('sliding further the same way sends the key behind',
+        (tester) async {
+      // A little way up is ↑; past halfway out to ring 2, PgUp behind it.
+      // Dead straight is as near Home as PgUp, and the first behind wins.
+      await slideFromMiddle(tester, const Offset(0, -135));
       expect(sent, ['\x1b[5~']);
-      expect(find.text('PGUP'), findsNothing, reason: 'a pick closes both');
     });
 
-    testWidgets('lifting where ring 2 opened sends the petal it hangs off',
-        (tester) async {
-      await pumpKey(tester);
-
-      final gesture = await restOnUp(tester);
-      expect(find.text('PGUP'), findsOneWidget);
-      await gesture.up();
-      await tester.pump();
-
-      expect(sent, ['\x1b[A']);
+    testWidgets('clockwise of that is the second key behind', (tester) async {
+      await slideFromMiddle(tester, const Offset(25, -135));
+      expect(sent, ['\x1b[H'], reason: 'Home, the other key behind ↑');
     });
 
-    testWidgets('backing out to the middle still cancels with ring 2 open',
-        (tester) async {
-      await pumpKey(tester);
-
-      final gesture = await restOnUp(tester);
-      await gesture.moveBy(const Offset(0, 70));
-      await tester.pump();
-      await gesture.up();
-      await tester.pump();
-
-      expect(sent, isEmpty);
-    });
-
-    testWidgets('a quick slide and lift never opens ring 2', (tester) async {
-      await pumpKey(tester);
-
-      final gesture = await hold(tester);
-      await gesture.moveBy(const Offset(0, -70));
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(find.text('PGUP'), findsNothing);
-      await gesture.up();
-      await tester.pump(kLongPressTimeout);
-      expect(sent, ['\x1b[A']);
-
-      // A rest timer left running past the lift would leave ring 2 waiting
-      // for the next hold.
-      final again = await hold(tester);
-      expect(find.text('PGUP'), findsNothing);
-      await again.up();
-    });
-
-    testWidgets('in its corner the ring fans out and stays on screen',
+    testWidgets('in its corner both rings fan out and stay on screen',
         (tester) async {
       await pumpKey(tester);
       // Pumped at the default spot, the bottom-right corner.
       final screen = tester.getRect(find.byType(MagicKey));
 
       final gesture = await hold(tester);
-      for (final label in magicKeys.map((k) => k.label)) {
-        final petal = tester.getRect(find.text(label));
+      final labels = find.descendant(
+        of: find.byType(MagicKey),
+        matching: find.byType(Text),
+      );
+      final count = magicKeys.length +
+          magicSubKeys.values.expand((keys) => keys).length;
+      expect(labels, findsNWidgets(count), reason: 'both rings are up');
+      for (var i = 0; i < count; i++) {
+        final petal = tester.getRect(labels.at(i));
+        final label = tester.widget<Text>(labels.at(i)).data;
         expect(screen.contains(petal.topLeft), isTrue, reason: label);
         expect(screen.contains(petal.bottomRight), isTrue, reason: label);
       }
