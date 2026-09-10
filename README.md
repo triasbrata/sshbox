@@ -245,6 +245,34 @@ nothing to return to and the next open is a fresh connection. iOS has no
 equivalent to any of this — a suspended app there always reconnects, so the
 keep-alive is a no-op off Android.
 
+### Multi-window and floating windows
+
+Split screen on a tablet and the OEM floating window (Samsung's pop-up view,
+the Android desktop windowing shell) are one system feature, and the app only
+has to declare it can be resized: `android:resizeableActivity` plus a
+`<layout>` giving the window its minimum and default bounds. There is no
+Flutter-side code for it.
+
+Two things already in place are what make that declaration safe:
+
+- `android:configChanges` lists `screenSize|smallestScreenSize|screenLayout|
+  density`, so a resize reconfigures the activity instead of recreating it.
+  Without that, dragging the split-screen divider would restart `MainActivity`
+  and take every live shell with it.
+- `TerminalView` reports its new size on every layout pass, which reaches
+  `LiveSession.onResize` and then `shell.resizeTerminal` — so `vim` and `tmux`
+  on the far end reflow to the new window instead of drawing to a size that no
+  longer exists.
+
+The declared minimum is 320x280dp: the app bar (56dp) and key bar (48dp) leave
+roughly ten terminal rows below that, and the app bar's four actions start
+crowding the title.
+
+**One window, not two.** Dragging out a second sshbox window gives it a second
+Flutter engine, and therefore its own `SessionManager` — the two windows would
+not share sessions. Sharing them means moving sessions out of the isolate, so
+sshbox is meant to be one window beside another app, not beside itself.
+
 ## Notifications
 
 A notification carries a `sshbox://host/<hostId>` payload, so tapping one goes
@@ -327,9 +355,25 @@ offers no streaming write, and loading a video into memory is not something a
 phone forgives. Filenames are scrubbed to `[A-Za-z0-9._-]`, since they arrive
 from Android's picker and end up on a command line.
 
+### Sharing into a session
+
+Any app's share sheet lists sshbox. The file lands in `/tmp` on the session you
+were last in, and its path is typed at the prompt — the same path the paperclip
+takes, so there is one upload routine and not two.
+
+A share usually starts the app from dead, which means there is nothing to
+upload to yet: the file waits until a host is opened, then goes. Android hands
+over a `content://` URI owned by the sending app, which SFTP cannot read, so
+`MainActivity` copies it into our cache first and passes only the path across
+the method channel.
+
+Android only. iOS needs a separate Share Extension target to appear in its
+share sheet.
+
 ## Browsing files
 
-The folder button in a terminal slides the remote filesystem in as a drawer:
+The folder button in a terminal slides the remote filesystem in as a drawer
+from the right, the side that button sits on:
 tap a folder to descend, tap a file to read or edit it, and save back to the
 host. A drawer rather than a screen because tapping outside it returns you to
 the terminal in one gesture, from however deep in the tree you had wandered. Rename, delete, new file and new folder are on each row's menu,

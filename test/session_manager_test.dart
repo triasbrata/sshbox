@@ -66,6 +66,36 @@ void main() {
       expect(manager.liveCount, 0);
     });
 
+    test('tracks the session a shared file should go to', () async {
+      expect(manager.active, isNull);
+
+      final first = manager.openOrCreate(_host);
+      expect(identical(manager.active, first), isTrue);
+
+      final second = manager.openOrCreate(_otherHost);
+      expect(identical(manager.active, second), isTrue);
+
+      // Resuming an older session makes it the active one again.
+      manager.openOrCreate(_host);
+      expect(identical(manager.active, first), isTrue);
+
+      await manager.close(_host.id);
+      expect(manager.active, isNull);
+    });
+
+    test('hands queued shares over exactly once', () {
+      final session = manager.openOrCreate(_host);
+      expect(session.hasPendingUploads, isFalse);
+
+      session.queueUploads([(path: '/cache/a.txt', name: 'a.txt')]);
+      expect(session.hasPendingUploads, isTrue);
+
+      // Taking drains the queue: a rebuild must not upload the same file twice.
+      expect(session.takePendingUploads(), hasLength(1));
+      expect(session.hasPendingUploads, isFalse);
+      expect(session.takePendingUploads(), isEmpty);
+    });
+
     test('notifies listeners when a session opens and closes', () async {
       var notifications = 0;
       manager.addListener(() => notifications++);

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'dart:math' as math;
 
@@ -13,6 +15,7 @@ import 'file_editor_page.dart';
 import 'files_page.dart';
 import 'key_bar.dart';
 import 'terminal_link.dart';
+import 'terminal_text_input.dart';
 import 'workbench.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
@@ -50,6 +53,11 @@ class _TerminalPageState extends State<TerminalPage> {
     changeDirectory: _cdTo,
   );
 
+  /// Shared with the terminal view below it, which is what holds focus.
+  final _focusNode = FocusNode();
+  final _scrollController = ScrollController();
+  final _inputKey = GlobalKey<TerminalTextInputState>();
+
   bool _uploading = false;
   double? _uploadProgress;
 
@@ -85,6 +93,10 @@ class _TerminalPageState extends State<TerminalPage> {
         secrets: widget.secrets,
         onHostKeyPinned: _reportPinnedKey,
       );
+      // Files queued before this page existed. Connecting to an already-live
+      // session is a no-op and notifies nothing, so the drain cannot rely on
+      // the listener alone.
+      unawaited(_drainShared());
     });
   }
 
@@ -100,11 +112,31 @@ class _TerminalPageState extends State<TerminalPage> {
       _browsePath = null;
     }
     setState(() {});
+    // A file shared from another app may have been queued before this page
+    // existed, or before the shell came up. Either way the session notifies,
+    // and this is where it lands.
+    unawaited(_drainShared());
+  }
+
+  /// Uploads anything handed to the session from outside the terminal page.
+  Future<void> _drainShared() async {
+    if (_uploading || !_session.isConnected || !_session.hasPendingUploads) {
+      return;
+    }
+    // Opening a session replaces this page with a fresh one; only whichever is
+    // actually on screen takes the queue, so the progress bar is visible and
+    // no file is uploaded twice.
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    for (final file in _session.takePendingUploads()) {
+      await _upload(file);
+    }
   }
 
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
+    _focusNode.dispose();
+    _scrollController.dispose();
     if (_session.outputTransform == _keyBar.applyModifiers) {
       _session.outputTransform = null;
     }
@@ -115,6 +147,13 @@ class _TerminalPageState extends State<TerminalPage> {
     _browser?.close();
     // The session itself is intentionally left running.
     super.dispose();
+  }
+
+  /// Typing anywhere in the scrollback should snap back to the prompt.
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    position.jumpTo(position.maxScrollExtent);
   }
 
   void _reportPinnedKey(String fingerprint) {
@@ -196,24 +235,12 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   Widget _buildWorkbench(bool wide) {
-    final terminal = Column(
-      children: [
-        Expanded(child: _buildBody()),
-        if (_session.isConnected)
-          TerminalKeyBar(
-            controller: _keyBar,
-            terminal: _session.terminal,
-            onEmit: _session.sendRaw,
-          ),
-      ],
-    );
-
     final openFile = _openFile;
     final browser = _browser;
     final showEditor = wide && openFile != null && browser != null;
 
     return Workbench(
-      primary: terminal,
+      primary: _buildBody(),
       secondary: !showEditor
           ? null
           : FileEditorPage(
@@ -265,6 +292,12 @@ class _TerminalPageState extends State<TerminalPage> {
     // Something picked from a cloud provider has no filesystem path, and so
     // nothing for SFTP to read.
     if (file == null || localPath == null) return;
+    await _upload((path: localPath, name: file.name));
+  }
+
+  /// The one upload path: the paperclip and the share sheet both end here, so
+  /// progress, the typed remote path and the error message cannot drift apart.
+  Future<void> _upload(SharedFile file) async {
     if (!mounted) return;
 
     final messenger = ScaffoldMessenger.of(context);
@@ -272,7 +305,7 @@ class _TerminalPageState extends State<TerminalPage> {
 
     try {
       final remotePath = await _session.uploadToTmp(
-        localPath: localPath,
+        localPath: file.path,
         fileName: file.name,
         onProgress: (sent, total) {
           if (!mounted || total == 0) return;
@@ -370,6 +403,31 @@ class _TerminalPageState extends State<TerminalPage> {
         ],
       ),
       body: _buildWorkbench(wide),
+      // In the Scaffold's own slot rather than the body so it rides above the
+      // soft keyboard and the button below floats clear of it.
+      bottomNavigationBar: _session.isConnected
+          ? TerminalKeyBar(
+              controller: _keyBar,
+              terminal: _session.terminal,
+              onEmit: _session.sendRaw,
+            )
+          : null,
+      // Enter is the one key you reach for with the keyboard down — reading
+      // output, answering a prompt, waking a dozing shell. ExcludeFocus keeps
+      // the tap from pulling focus off the terminal, which would close the
+      // keyboard for anyone who did have it open.
+      floatingActionButton: _session.isConnected
+          ? ExcludeFocus(
+              child: FloatingActionButton.small(
+                // Not just "Enter": the soft keyboard puts a key of that name
+                // in the accessibility tree too, and a test reaching for this
+                // button finds that one first.
+                tooltip: 'Send Enter',
+                onPressed: () => _session.sendRaw('\r'),
+                child: const Icon(Icons.keyboard_return),
+              ),
+            )
+          : null,
     );
   }
 
@@ -381,11 +439,34 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Stack(
       children: [
-        TerminalView(
-          _session.terminal,
-          autofocus: true,
-          padding: const EdgeInsets.all(6),
-          textStyle: const TerminalStyle(fontSize: 13),
+        // Two wrappers, because they take different things: the input owns
+        // the keyboard connection, the pad owns the swipe. The pad sits
+        // inside so its gestures land on the terminal itself — it claims
+        // only pans and double taps, so a plain tap still falls through to
+        // xterm2 below and asks for the keyboard back.
+        TerminalTextInput(
+          key: _inputKey,
+          terminal: _session.terminal,
+          focusNode: _focusNode,
+          onInput: _scrollToBottom,
+          child: SwipeKeyPad(
+            terminal: _session.terminal,
+            onEmit: _session.sendRaw,
+            child: TerminalView(
+              _session.terminal,
+              focusNode: _focusNode,
+              scrollController: _scrollController,
+              autofocus: true,
+              // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+              // hardware keys, shortcuts and selection gestures.
+              hardwareKeyboardOnly: true,
+              // Tapping a terminal that already has focus is how you ask for
+              // the keyboard back, and focus alone will not raise it.
+              onTapUp: (_, _) => _inputKey.currentState?.requestKeyboard(),
+              padding: const EdgeInsets.all(6),
+              textStyle: const TerminalStyle(fontSize: 13),
+            ),
+          ),
         ),
         if (_session.connecting)
           ColoredBox(

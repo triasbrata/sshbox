@@ -1,0 +1,89 @@
+# Drives the swipe-to-arrow gesture, the double tap and the Enter button
+# against a live shell.
+#
+# Nothing here reads the terminal. xterm2 paints its cells itself, so not one
+# character of the session reaches the accessibility tree and no assertion can
+# see them. What does reach it is the app bar, which follows the title the
+# shell sets — and that title carries the working directory. So every check
+# below is a `cd` whose arrival is read off the title:
+#
+#   - Enter is proved by a typed `cd` running at all,
+#   - Tab by a half-typed path completing into one that exists,
+#   - Up by a command coming back that was never typed again.
+#
+# Requires a reachable host with a stored credential, same as the other flows.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "wsl"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+- tapOn: "(?s)${HOST_LABEL}.*"
+
+# The key bar only renders once the session reports connected, so waiting on it
+# doubles as the assertion that SSH authentication succeeded.
+- extendedWaitUntil:
+    visible: "ESC"
+    timeout: 30000
+
+# Focus the terminal so the soft keyboard is attached to it.
+- tapOn:
+    point: 50%, 40%
+
+# "Send Enter", not "Enter": the soft keyboard contributes a key of that name
+# to the tree as well, and the bare word finds that one instead.
+- inputText: "cd /tmp"
+- tapOn: "Send Enter"
+- extendedWaitUntil:
+    visible: "(?s).*:/tmp.*"
+    timeout: 10000
+
+- inputText: "cd ~"
+- tapOn: "Send Enter"
+- extendedWaitUntil:
+    visible: "(?s).*:~.*"
+    timeout: 10000
+
+# Double tap sends Tab, so a path that is one keystroke short of existing
+# becomes one that exists. If the tap were reaching xterm2 instead it would
+# select a word and `/tm` would stay `/tm`, which is not a directory.
+- inputText: "cd /tm"
+- doubleTapOn:
+    point: 50%, 40%
+- tapOn: "Send Enter"
+- extendedWaitUntil:
+    visible: "(?s).*:/tmp.*"
+    timeout: 10000
+
+- inputText: "cd ~"
+- tapOn: "Send Enter"
+- extendedWaitUntil:
+    visible: "(?s).*:~.*"
+    timeout: 10000
+
+# Two swipes up. Each is short and quick — far enough to register a direction,
+# too brief to start repeating — so each one is a single Up: the first recalls
+# `cd ~`, the second the `cd /tmp` before it. Running what comes back is the
+# proof it arrived as a cursor key rather than as anything local.
+- swipe:
+    start: 50%, 55%
+    end: 50%, 50%
+    duration: 250
+- swipe:
+    start: 50%, 55%
+    end: 50%, 50%
+    duration: 250
+- tapOn: "Send Enter"
+- extendedWaitUntil:
+    visible: "(?s).*:/tmp.*"
+    timeout: 10000
+
+# Leave the shell where it was found.
+- inputText: "cd ~"
+- tapOn: "Send Enter"
