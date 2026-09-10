@@ -1,4 +1,6 @@
 import 'package:file_picker/file_picker.dart';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
@@ -140,27 +142,14 @@ class _TerminalPageState extends State<TerminalPage> {
   /// The browser is built here and handed over; the page it goes to closes it
   /// when the user leaves. Which transport is behind it is decided by
   /// [LiveSession.openFileBrowser] and is not this page's business.
+  /// The listing is a drawer on every size.
+  ///
+  /// Tapping outside it puts you back in the terminal in one gesture, from
+  /// however deep in the tree you had wandered — which a full screen of its
+  /// own could not do.
   Future<void> _openFiles() async {
-    if (MediaQuery.sizeOf(context).width >= _tabletWidth) {
-      // Tablet: the listing is a drawer over the terminal, and choosing a file
-      // splits the screen rather than replacing it.
-      setState(() => _browser ??= _session.openFileBrowser());
-      _scaffoldKey.currentState?.openDrawer();
-      return;
-    }
-
-    // Phone: one browser per visit, owned and closed by the page it opens.
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => FileBrowserPage(
-          browser: _session.openFileBrowser(),
-          title: _session.host.displayName,
-          initialPath: _browsePath,
-          onPathChanged: (path) => _browsePath = path,
-          terminal: _terminalLink,
-        ),
-      ),
-    );
+    setState(() => _browser ??= _session.openFileBrowser());
+    _scaffoldKey.currentState?.openDrawer();
   }
 
   Widget _buildFilesDrawer() {
@@ -169,8 +158,9 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Drawer(
       // Wider than Material's 304dp default, because every row here is a path
-      // and the default truncates most of them.
-      width: 360,
+      // and the default truncates most of them — but never so wide on a phone
+      // that there is no terminal left to tap back onto.
+      width: math.min(360, MediaQuery.sizeOf(context).width * 0.85),
       child: FileBrowserPage(
         browser: browser,
         title: _session.host.displayName,
@@ -186,11 +176,23 @@ class _TerminalPageState extends State<TerminalPage> {
 
   void _closeFilesDrawer() => _scaffoldKey.currentState?.closeDrawer();
 
-  /// Puts [path] in the pane beside the terminal, and gets the drawer out of
-  /// the way so both are visible at once.
-  void _openFileBeside(String path) {
+  /// Opens [path]: beside the terminal where there is room for both, and as a
+  /// screen of its own where there is not.
+  Future<void> _openFileBeside(String path) async {
     _closeFilesDrawer();
-    setState(() => _openFile = path);
+    final browser = _browser;
+    if (browser == null) return;
+
+    if (MediaQuery.sizeOf(context).width >= _tabletWidth) {
+      setState(() => _openFile = path);
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FileEditorPage(browser: browser, path: path),
+      ),
+    );
   }
 
   Widget _buildWorkbench(bool wide) {
@@ -304,20 +306,18 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Scaffold(
       key: _scaffoldKey,
-      drawer: wide ? _buildFilesDrawer() : null,
+      drawer: _buildFilesDrawer(),
       // Never by edge swipe: the terminal owns horizontal gestures, and having
       // the file list slide over the shell mid-command would be maddening.
       drawerEnableOpenDragGesture: false,
       appBar: AppBar(
         // Set by hand, because attaching a drawer otherwise replaces the back
         // button with a hamburger. The drawer opens from "Browse files".
-        leading: wide
-            ? IconButton(
-                tooltip: 'Back',
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => Navigator.of(context).maybePop(),
-              )
-            : null,
+        leading: IconButton(
+          tooltip: 'Back',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
         title: Text(_session.title, overflow: TextOverflow.ellipsis),
         bottom: _uploading
             ? PreferredSize(

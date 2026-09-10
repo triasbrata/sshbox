@@ -133,7 +133,6 @@ maestro --device <serial> test .maestro/
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
 | `file_browser` | the native browser opens and shows a listing rather than an error | a reachable host with a stored credential |
-| `tablet_files` | the listing opens as a drawer rather than a screen | the same, on a device at least 840dp wide |
 
 Two things worth knowing before editing these:
 
@@ -330,9 +329,10 @@ from Android's picker and end up on a command line.
 
 ## Browsing files
 
-The folder button in a terminal opens the remote filesystem as a native
-listing: tap a folder to descend, tap a file to read or edit it, and save back
-to the host. Rename, delete, new file and new folder are on each row's menu,
+The folder button in a terminal slides the remote filesystem in as a drawer:
+tap a folder to descend, tap a file to read or edit it, and save back to the
+host. A drawer rather than a screen because tapping outside it returns you to
+the terminal in one gesture, from however deep in the tree you had wandered. Rename, delete, new file and new folder are on each row's menu,
 and "type path in terminal" drops a path at the prompt, shell-quoted, so the
 next thing you write is a command that uses it.
 
@@ -358,11 +358,12 @@ because showing mojibake means saving mojibake back over the original.
 
 ### On a tablet
 
-Past 840dp the same two pages are arranged rather than stacked. The terminal
-keeps the whole width until there is something to put beside it; "Browse files"
-opens the listing as a **drawer** over it, and choosing a file closes the
-drawer and splits the screen — terminal on the left, editor on the right, with
-a seam you can drag between a quarter and three quarters.
+Past 840dp choosing a file splits the screen instead of covering it — terminal
+on the left, editor on the right, with a seam you can drag between a quarter
+and three quarters. Below that width the same tap opens the editor as a screen
+of its own, because two columns on a phone are two columns too narrow to read.
+
+The terminal keeps the whole width until there is something to put beside it.
 
 That ordering is the point. A permanent side panel would cost the terminal half
 its width for the whole session, when most of a session has no file open at

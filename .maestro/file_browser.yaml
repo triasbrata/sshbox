@@ -1,4 +1,4 @@
-# Opens the native file browser and checks a listing actually came back.
+# Opens the file drawer and checks a listing actually came back.
 #
 # Reaching this screen at all means the session connected, SFTP opened and a
 # directory was read, so the assertions below are deliberately about the page's
@@ -48,10 +48,10 @@ env:
 # is correct: that is a listing too.
 - assertNotVisible: "Try again"
 
-# And this is a screen of its own, not the tablet's drawer: the embedded
-# listing carries a close button where this one has an implied back arrow.
-# Guards against a breakpoint change quietly giving a phone the split.
-- assertNotVisible: "Close files"
+# The listing is a drawer at every size, so it carries a close button rather
+# than a back arrow. Tapping outside it is the one-gesture way back to the
+# terminal from however deep in the tree you had wandered.
+- assertVisible: "Close files"
 
 # Creating and deleting are one menu away, and the menu opening proves the page
 # is interactive rather than stuck behind a spinner.

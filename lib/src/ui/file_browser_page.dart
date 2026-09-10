@@ -441,7 +441,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         appBar: _buildAppBar(),
         body: Column(
           children: [
-            if (_path != null) _Breadcrumbs(path: _path!, onTap: _open),
+            if (_path != null)
+              // Keyed on the path so each move rebuilds it, which is what
+              // re-pins the trail to its deepest crumb.
+              _Breadcrumbs(key: ValueKey(_path), path: _path!, onTap: _open),
             const Divider(height: 1),
             Expanded(child: _buildBody()),
           ],
@@ -603,7 +606,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           return ListTile(
             leading: Icon(_iconFor(entry)),
             title: Text(entry.name, overflow: TextOverflow.ellipsis),
-            subtitle: Text(_subtitleFor(entry)),
+            // One line: in a drawer this wraps, and rows of different heights
+            // make a listing much harder to scan.
+            subtitle: Text(
+              _subtitleFor(entry),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             trailing: IconButton(
               tooltip: 'Actions',
               icon: const Icon(Icons.more_vert),
@@ -699,9 +708,9 @@ IconData _iconFor(RemoteEntry entry) => switch (entry.kind) {
 
 String _subtitleFor(RemoteEntry entry) {
   final parts = <String>[];
-  if (entry.kind == RemoteEntryKind.directory) {
-    parts.add('Folder');
-  } else if (entry.kind == RemoteEntryKind.symlink) {
+  // Nothing for a directory: the icon already says so, and the word costs the
+  // timestamp its last characters in a drawer.
+  if (entry.kind == RemoteEntryKind.symlink) {
     parts.add(entry.targetIsDirectory == null
         ? 'Link'
         : entry.targetIsDirectory!
@@ -720,26 +729,47 @@ String _subtitleFor(RemoteEntry entry) {
 /// A phone has no room for a full path in the title bar, and truncating one is
 /// worse than useless — it hides the end, which is the part that identifies
 /// where you are. Scrolling crumbs keep the whole path reachable.
-class _Breadcrumbs extends StatelessWidget {
-  const _Breadcrumbs({required this.path, required this.onTap});
+class _Breadcrumbs extends StatefulWidget {
+  const _Breadcrumbs({super.key, required this.path, required this.onTap});
 
   final String path;
   final void Function(String path) onTap;
 
   @override
+  State<_Breadcrumbs> createState() => _BreadcrumbsState();
+}
+
+class _BreadcrumbsState extends State<_Breadcrumbs> {
+  final _controller = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Reads left to right like a path, but a trail longer than the bar starts
+    // scrolled to its end: the deepest crumb is the one that says where you
+    // are, and the ancestors are one swipe away.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_controller.hasClients) return;
+      _controller.jumpTo(_controller.position.maxScrollExtent);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final crumbs = RemotePath.crumbs(path);
+    final crumbs = RemotePath.crumbs(widget.path);
 
     return SizedBox(
       height: 44,
       child: ListView.separated(
-        // Keyed on the path so each navigation starts scrolled to the deepest
-        // crumb. Without it the offset carries over, and walking into a deep
-        // tree can land you looking at the middle of the trail.
-        key: ValueKey(path),
+        controller: _controller,
         scrollDirection: Axis.horizontal,
-        reverse: true,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         itemCount: crumbs.length,
         separatorBuilder: (_, _) => const Center(
@@ -749,13 +779,11 @@ class _Breadcrumbs extends StatelessWidget {
           ),
         ),
         itemBuilder: (context, index) {
-          // Reversed, so the deepest crumb is the one pinned in view: that is
-          // the one you need to read, and the one you scroll away from.
-          final crumb = crumbs[crumbs.length - 1 - index];
-          final isCurrent = index == 0;
+          final crumb = crumbs[index];
+          final isCurrent = index == crumbs.length - 1;
           return Center(
             child: InkWell(
-              onTap: isCurrent ? null : () => onTap(crumb.path),
+              onTap: isCurrent ? null : () => widget.onTap(crumb.path),
               borderRadius: BorderRadius.circular(6),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
