@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
+import 'package:sshbox/src/ui/terminal_link.dart';
 
 import 'fake_file_browser.dart';
 
@@ -297,5 +298,35 @@ void main() {
     // The filter was about the listing it was typed against. Kept, it would
     // hide everything in here and read as an empty folder.
     expect(_row('main.dart'), findsOneWidget);
+  });
+
+  testWidgets('takes the shell along only when told to', (tester) async {
+    final visited = <String>[];
+    final link = TerminalLink(
+      typePath: (_) {},
+      changeDirectory: visited.add,
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: FakeFileBrowser(),
+        title: 'box',
+        terminal: link,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    // Off by default: tapping a folder must not type into a live shell.
+    expect(visited, isEmpty);
+
+    link.follow = true;
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Refresh'));
+    await tester.pumpAndSettle();
+
+    expect(visited, ['/home/me/dev']);
   });
 }

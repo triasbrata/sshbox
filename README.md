@@ -336,6 +336,12 @@ to the host. Rename, delete, new file and new folder are on each row's menu,
 and "type path in terminal" drops a path at the prompt, shell-quoted, so the
 next thing you write is a command that uses it.
 
+The row menu also types a path at the prompt, and sends the shell to a folder
+with `cd`. **Follow in terminal** in the overflow menu does that on every
+navigation instead of on request — off by default, because it types into a live
+shell and a shell is not always at a prompt: with an editor or a build running,
+a `cd` lands as input to that instead.
+
 Everything the pages touch goes through `FileBrowser`. They import no SSH, no
 SFTP and no HTTP, which is what makes the transport swappable later.
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../files/file_browser.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
+import 'terminal_link.dart';
 
 /// The remote filesystem, drawn natively.
 ///
@@ -18,7 +19,7 @@ class FileBrowserPage extends StatefulWidget {
     required this.browser,
     required this.title,
     this.initialPath,
-    this.onInsertPath,
+    this.terminal,
     this.onFileSelected,
     this.onPathChanged,
     this.onClose,
@@ -34,9 +35,12 @@ class FileBrowserPage extends StatefulWidget {
   /// Where to start. Defaults to whatever the transport calls home.
   final String? initialPath;
 
-  /// Hands a path back to whoever opened this page — the terminal, so far.
-  /// Absent when there is nowhere to send it.
-  final void Function(String path)? onInsertPath;
+  /// The terminal this listing belongs to, when there is one.
+  ///
+  /// Null when nothing is listening — the actions that reach into a shell then
+  /// simply are not offered, the same way search is not offered by a transport
+  /// that cannot do it.
+  final TerminalLink? terminal;
 
   /// Where a tapped file should be opened.
   ///
@@ -130,6 +134,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         _loading = false;
       });
       widget.onPathChanged?.call(path);
+
+      // Only when asked: this types into a live shell, so it is opt-in rather
+      // than a surprise waiting on the first folder tap.
+      final link = widget.terminal;
+      if (link != null && link.follow) link.changeDirectory(path);
     } on FileBrowserException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -248,6 +257,17 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
+  /// Steps out of the way so the terminal can be seen. As a drawer that means
+  /// closing; popping instead would take the terminal underneath with it.
+  void _showTerminal() {
+    final close = widget.onClose;
+    if (close != null) {
+      close();
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
   void _say(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
@@ -352,6 +372,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   void _showEntryActions(RemoteEntry entry) {
+    final terminal = widget.terminal;
+
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -365,24 +387,27 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               subtitle: Text(entry.path, overflow: TextOverflow.ellipsis),
             ),
             const Divider(height: 1),
-            if (widget.onInsertPath != null)
+            if (terminal != null) ...[
               ListTile(
                 leading: const Icon(Icons.keyboard_outlined),
                 title: const Text('Type path in terminal'),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
-                  widget.onInsertPath!(entry.path);
-                  // Get out of the way so the path can be typed at. As a
-                  // drawer that means closing; popping instead would take the
-                  // terminal underneath with it.
-                  final close = widget.onClose;
-                  if (close != null) {
-                    close();
-                  } else {
-                    Navigator.of(context).pop();
-                  }
+                  terminal.typePath(entry.path);
+                  _showTerminal();
                 },
               ),
+              if (entry.isTraversable)
+                ListTile(
+                  leading: const Icon(Icons.terminal_outlined),
+                  title: const Text('Open in terminal'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    terminal.changeDirectory(entry.path);
+                    _showTerminal();
+                  },
+                ),
+            ],
             ListTile(
               leading: const Icon(Icons.drive_file_rename_outline),
               title: const Text('Rename'),
@@ -502,6 +527,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 setState(() => _showHidden = !_showHidden);
               case 'refresh':
                 _refresh();
+              case 'cd':
+                final path = _path;
+                if (path != null) {
+                  widget.terminal?.changeDirectory(path);
+                  _showTerminal();
+                }
+              case 'follow':
+                final link = widget.terminal;
+                if (link != null) setState(() => link.follow = !link.follow);
             }
           },
           itemBuilder: (context) => [
@@ -512,6 +546,18 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               child: Text(_showHidden ? 'Hide dotfiles' : 'Show dotfiles'),
             ),
             const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
+            if (widget.terminal case final link?) ...[
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'cd',
+                child: Text('Open in terminal'),
+              ),
+              CheckedPopupMenuItem(
+                value: 'follow',
+                checked: link.follow,
+                child: const Text('Follow in terminal'),
+              ),
+            ],
           ],
         ),
       ],

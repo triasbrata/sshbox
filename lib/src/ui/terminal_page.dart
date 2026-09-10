@@ -10,6 +10,7 @@ import 'file_browser_page.dart';
 import 'file_editor_page.dart';
 import 'files_page.dart';
 import 'key_bar.dart';
+import 'terminal_link.dart';
 import 'workbench.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
@@ -39,6 +40,13 @@ const double _tabletWidth = 840;
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// What the file browser is allowed to do to this shell. Owned here so the
+  /// "follow" switch survives the drawer being torn down and rebuilt.
+  late final _terminalLink = TerminalLink(
+    typePath: _typePath,
+    changeDirectory: _cdTo,
+  );
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -99,6 +107,7 @@ class _TerminalPageState extends State<TerminalPage> {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
+    _terminalLink.dispose();
     // Ours to close: the drawer and the editor pane are handed this rather
     // than owning it.
     _browser?.close();
@@ -148,7 +157,7 @@ class _TerminalPageState extends State<TerminalPage> {
           title: _session.host.displayName,
           initialPath: _browsePath,
           onPathChanged: (path) => _browsePath = path,
-          onInsertPath: _typePath,
+          terminal: _terminalLink,
         ),
       ),
     );
@@ -168,7 +177,7 @@ class _TerminalPageState extends State<TerminalPage> {
         initialPath: _browsePath,
         ownsBrowser: false,
         onPathChanged: (path) => _browsePath = path,
-        onInsertPath: _typePath,
+        terminal: _terminalLink,
         onClose: _closeFilesDrawer,
         onFileSelected: _openFileBeside,
       ),
@@ -216,16 +225,24 @@ class _TerminalPageState extends State<TerminalPage> {
     );
   }
 
-  /// Puts a path at the prompt, ready for a command to be written around it.
+  /// Wraps a path so the shell sees exactly these characters.
   ///
-  /// Quoted, because a path picked out of a listing can hold spaces or any
-  /// other character the shell would otherwise act on rather than pass along.
-  void _typePath(String path) {
-    final quoted = RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
-        ? path
-        : "'${path.replaceAll("'", r"'\''")}'";
-    _session.sendRaw('$quoted ');
-  }
+  /// A path picked out of a listing can hold spaces, or anything else the
+  /// shell would act on rather than pass along.
+  static String _shellQuote(String path) =>
+      RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
+          ? path
+          : "'${path.replaceAll("'", r"'\''")}'";
+
+  /// Puts a path at the prompt, ready for a command to be written around it.
+  void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
+
+  /// Sends the shell to a directory.
+  ///
+  /// The newline is what separates this from [_typePath]: it runs something.
+  /// That is why the browser only does it when told to, never as a side effect
+  /// of tapping a folder.
+  void _cdTo(String path) => _session.sendRaw('cd ${_shellQuote(path)}\n');
 
   /// Opens code-server through a tunnel over this session.
   ///

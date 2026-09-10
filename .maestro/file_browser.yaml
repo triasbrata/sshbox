@@ -30,6 +30,11 @@ env:
     visible: "ESC"
     timeout: 30000
 
+# The terminal's own app bar, checked before leaving it: these two are the
+# icons that survived the move of reconnect and disconnect into a menu.
+- assertVisible: "Upload a file to /tmp"
+- assertVisible: "Browse files"
+
 - tapOn: "Browse files"
 
 # Only the browser page has these, so they distinguish it from the terminal.
@@ -42,6 +47,11 @@ env:
 # loaded rather than failing — an empty home directory would still pass, which
 # is correct: that is a listing too.
 - assertNotVisible: "Try again"
+
+# And this is a screen of its own, not the tablet's drawer: the embedded
+# listing carries a close button where this one has an implied back arrow.
+# Guards against a breakpoint change quietly giving a phone the split.
+- assertNotVisible: "Close files"
 
 # Creating and deleting are one menu away, and the menu opening proves the page
 # is interactive rather than stuck behind a spinner.
