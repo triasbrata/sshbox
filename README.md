@@ -105,6 +105,19 @@ Cursor keys follow `terminal.cursorKeysMode`, emitting the SS3 form
 Sending the wrong one is why arrow keys produce garbage in vim in many
 hand-rolled terminals.
 
+A hardware keyboard's Shift+Enter goes out as `ESC CR`, what Alt+Enter sends,
+rather than the bare `CR` a terminal otherwise has for it — so Claude Code,
+zsh and fish start a new line instead of submitting. It is decided once,
+in the input handler of the session's `Terminal` (`session_manager.dart`); a
+program that switches on the kitty keyboard protocol gets `CSI 13;2u` instead.
+`test/hardware_keyboard_test.dart` holds it there.
+
+The terminal itself doubles as an arrow pad (`SwipeKeyPad`). Long-press it
+until it buzzes, then, still holding, drag towards the arrow you want; reach
+further and it repeats faster. A plain drag scrolls the scrollback, and a
+double tap sends Tab. That long press is the one xterm2 selects text with, so
+there is no text selection by touch.
+
 ### The magic key
 
 `ui/magic_key.dart` floats a round Enter key over the terminal, for when the

@@ -387,18 +387,23 @@ class _KeyDivider extends StatelessWidget {
   }
 }
 
-/// Wraps the terminal so a held drag across it holds down an arrow key: the
-/// direction picks the key, and how far the finger has reached sets how fast
-/// it repeats for as long as it stays down. A short reach is one press however
-/// long you hold it; further out it ticks about once every two seconds, and
-/// further still every 300ms. Lifting the finger stops it.
+/// Wraps the terminal so a long press arms the arrow keys and the drag that
+/// follows holds one down: the direction picks the key, and how far the finger
+/// has reached sets how fast it repeats for as long as it stays down. A short
+/// reach is one press however long you hold it; further out it ticks about
+/// once every two seconds, and further still every 300ms. Lifting the finger
+/// stops it.
+///
+/// Holding first is what claims the gesture, the same split the space key
+/// makes with the bar's own scroll: a plain drag is left to the terminal, and
+/// scrolls the scrollback the way it would in any other app.
 ///
 /// A double tap sends Tab, which is what a shell wants far more often than it
-/// wants a word selected.
+/// wants a word selected, and a single tap still raises the keyboard.
 ///
-/// Only touch drags are claimed. xterm2 selects text on touch with a long
-/// press — its own pan recogniser is mouse-only — so holding still before you
-/// move still selects, and a single tap still raises the keyboard.
+/// That long press is also the one xterm2 selects text with on touch, and here
+/// it always goes to the arrows, so there is no touch selection. A mouse still
+/// selects with a drag; xterm2's pan recogniser for that is mouse-only.
 class SwipeKeyPad extends StatefulWidget {
   const SwipeKeyPad({
     super.key,
@@ -443,8 +448,11 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     super.dispose();
   }
 
-  void _onUpdate(DragUpdateDetails details) {
-    _travelled += details.delta;
+  void _onUpdate(LongPressMoveUpdateDetails details) {
+    // Measured from where the finger landed, not from where the hold was
+    // recognised, so a finger that crept a little while holding still is not
+    // judged short of where it actually is.
+    _travelled = details.localOffsetFromOrigin;
 
     final arrow = swipeArrow(_travelled);
     final level = swipeSpeedLevel(_travelled.distance);
@@ -485,10 +493,14 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     widget.onEmit(cursorKey(widget.terminal, arrow!));
   }
 
-  void _start(DragStartDetails details) {
+  void _start(LongPressStartDetails details) {
     // Never leave an earlier tick running: two of them would race the same
     // key out at twice the rate the reach asked for.
     _repeat?.cancel();
+    // The finger is still, and covering the spot; nothing else says the drag
+    // that follows will steer instead of scroll. The same bump the magic key
+    // gives when its ring opens, since it is the same kind of hold.
+    HapticFeedback.mediumImpact();
 
     final width = context.size?.width;
 
@@ -523,55 +535,65 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
 
   @override
   Widget build(BuildContext context) {
-    return RawGestureDetector(
-      excludeFromSemantics: true,
-      gestures: {
-        PanGestureRecognizer:
-            GestureRecognizerFactoryWithHandlers<PanGestureRecognizer>(
-          () => PanGestureRecognizer(
-            debugOwner: this,
-            supportedDevices: const {PointerDeviceKind.touch},
-          ),
-          (instance) {
-            instance
-              // Measure the reach from where the finger actually landed. The
-              // default hands the slop it took to recognise the drag to
-              // onStart and never reports it, which would quietly cost every
-              // reach the first ~18 pixels of the distance it is judged on.
-              ..dragStartBehavior = DragStartBehavior.down
-              ..onStart = _start
-              ..onUpdate = _onUpdate
-              ..onEnd = (_) {
-                _stop();
-              }
-              ..onCancel = _stop;
-          },
-        ),
-        // ponytail: this holds the arena for kDoubleTapTimeout, so a single tap
-        // raises the keyboard ~300ms later than it used to. Detect the second
-        // tap from a plain Listener instead if that lag ever grates — at the
-        // cost of xterm2 also selecting a word under the double tap.
-        DoubleTapGestureRecognizer:
-            GestureRecognizerFactoryWithHandlers<DoubleTapGestureRecognizer>(
-          () => DoubleTapGestureRecognizer(debugOwner: this),
-          (instance) => instance.onDoubleTap = () => widget.onEmit('\t'),
-        ),
-      },
-      child: Stack(
-        children: [
-          widget.child,
-          if (_swiping)
-            Positioned(
-              top: 12,
-              left: _hudOnRight ? null : 12,
-              right: _hudOnRight ? 12 : null,
-              // Never in the way of the drag it is reporting on.
-              child: IgnorePointer(
-                child: _SwipeReadout(arrow: _arrow, level: _level),
+    return Stack(
+      children: [
+        widget.child,
+        // A layer over the terminal rather than a wrapper round it, so it
+        // meets every touch before xterm2 does. That order is what decides the
+        // long press: xterm2 holds one too, for selecting text, both wait out
+        // the same platform timeout, and of two timers due together the one
+        // started first fires first and wins. Wrapped, that would be xterm2's,
+        // and every hold would select a word instead of arming the arrows.
+        // Translucent, so the touch still reaches the terminal underneath for
+        // the taps and drags this lets go of.
+        Positioned.fill(
+          child: RawGestureDetector(
+            behavior: HitTestBehavior.translucent,
+            excludeFromSemantics: true,
+            gestures: {
+              // ponytail: costs touch selection, as above. If it is missed, a
+              // hold that lifts without leaving the deadzone could hand the
+              // word under it to xterm2 through a TerminalController.
+              LongPressGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                  LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(
+                  debugOwner: this,
+                  supportedDevices: const {PointerDeviceKind.touch},
+                ),
+                (instance) {
+                  instance
+                    ..onLongPressStart = _start
+                    ..onLongPressMoveUpdate = _onUpdate
+                    ..onLongPressEnd = (_) {
+                      _stop();
+                    }
+                    ..onLongPressCancel = _stop;
+                },
               ),
+              // ponytail: this holds the arena for kDoubleTapTimeout, so a
+              // single tap raises the keyboard ~300ms later than it used to.
+              // Detect the second tap from a plain Listener instead if that
+              // lag ever grates — at the cost of xterm2 also selecting a word
+              // under the double tap.
+              DoubleTapGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                  DoubleTapGestureRecognizer>(
+                () => DoubleTapGestureRecognizer(debugOwner: this),
+                (instance) => instance.onDoubleTap = () => widget.onEmit('\t'),
+              ),
+            },
+          ),
+        ),
+        if (_swiping)
+          Positioned(
+            top: 12,
+            left: _hudOnRight ? null : 12,
+            right: _hudOnRight ? 12 : null,
+            // Never in the way of the drag it is reporting on.
+            child: IgnorePointer(
+              child: _SwipeReadout(arrow: _arrow, level: _level),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }
