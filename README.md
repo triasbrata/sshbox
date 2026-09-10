@@ -327,6 +327,12 @@ session** in the host's menu on the host list. A tab that has not been asked
 to connect yet, for the one frame before its page does, keeps its close button
 rather than flashing the other.
 
+**Long-press a shell's tab** for **Duplicate session**: another shell on the
+same host, opened the way a tap in the host list opens one — at the end of the
+strip, and shown. It starts where any new shell on the host starts; the app
+never learns a shell's working directory (**Follow in terminal** only sends
+`cd` the other way), so there is none to carry over. A file tab has no menu.
+
 **Room on the strip.** A phone fits about one and a half tabs, so the space
 goes where it is read: the selected tab gets 180dp of name — enough for
 `host · file.dart` — and the rest get 110dp and an ellipsis. A file tab too

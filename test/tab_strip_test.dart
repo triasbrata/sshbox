@@ -19,6 +19,7 @@ Future<void> _pump(
   WidgetTester tester,
   List<TabRef> tabs, {
   void Function(LiveSession session)? onReconnect,
+  void Function(String hostId)? onDuplicate,
 }) => tester.pumpWidget(
   MaterialApp(
     home: Scaffold(
@@ -30,6 +31,7 @@ Future<void> _pump(
             onSelect: (_, {TabKind kind = TabKind.terminal, String? path}) {},
             onClose: (_) {},
             onReconnect: onReconnect ?? (_) {},
+            onDuplicate: onDuplicate ?? (_) {},
           ),
         ],
       ),
@@ -137,5 +139,28 @@ void main() {
     RenderParagraph paragraph(Finder text) => tester.renderObject(text);
     expect(paragraph(find.text(' · a.c')).didExceedMaxLines, isFalse);
     expect(paragraph(find.text('box').last).didExceedMaxLines, isTrue);
+  });
+
+  testWidgets('long-pressing a shell offers another session on its host', (
+    tester,
+  ) async {
+    final shell = _shell(tester, 'host-1', 'box');
+    String? duplicated;
+    await _pump(tester, [
+      shell,
+      (session: shell.session, kind: TabKind.file, path: '/etc/a.c'),
+    ], onDuplicate: (hostId) => duplicated = hostId);
+
+    // A file tab has nothing of its own to duplicate.
+    await tester.longPress(find.text(' · a.c'));
+    await tester.pumpAndSettle();
+    expect(find.text('Duplicate session'), findsNothing);
+
+    await tester.longPress(find.text('box').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate session'));
+    await tester.pumpAndSettle();
+
+    expect(duplicated, 'host-1');
   });
 }

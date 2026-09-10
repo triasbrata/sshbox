@@ -147,6 +147,9 @@ class _TabsShellState extends State<TabsShell> {
                   if (mounted) reportPinnedKey(context, fingerprint);
                 },
               ),
+              // What a tap in the host list does: another shell on the host,
+              // added at the end of the strip and shown.
+              onDuplicate: widget.onOpenHost,
             ),
             Expanded(
               child: IndexedStack(
@@ -190,6 +193,7 @@ class TabStrip extends StatefulWidget {
     required this.onSelect,
     required this.onClose,
     required this.onReconnect,
+    required this.onDuplicate,
   });
 
   final List<TabRef> tabs;
@@ -197,6 +201,7 @@ class TabStrip extends StatefulWidget {
   final void Function(int? id, {TabKind kind, String? path}) onSelect;
   final void Function(TabRef tab) onClose;
   final void Function(LiveSession session) onReconnect;
+  final void Function(String hostId) onDuplicate;
 
   @override
   State<TabStrip> createState() => _TabStripState();
@@ -293,6 +298,9 @@ class _TabStripState extends State<TabStrip> {
           onReconnect: tab.kind == TabKind.terminal && tab.session.ended
               ? () => widget.onReconnect(tab.session)
               : null,
+          onDuplicate: tab.kind == TabKind.terminal
+              ? () => widget.onDuplicate(tab.session.host.id)
+              : null,
         ),
     ];
 
@@ -352,6 +360,7 @@ class _TabChip extends StatelessWidget {
     this.onClose,
     this.onReconnect,
     this.cutFirst,
+    this.onDuplicate,
   });
 
   /// null shows the icon alone — the chip still answers to [tooltip], so it
@@ -378,6 +387,11 @@ class _TabChip extends StatelessWidget {
   /// tells two files on one host apart, so that keeps its room. null cuts the
   /// end, as a shell's name is cut.
   final String? cutFirst;
+
+  /// Another session on a shell's host, offered from a long press on its
+  /// tab — a press the tab had no other use for. null on a file tab: it is
+  /// read over its shell and has nothing of its own to duplicate.
+  final VoidCallback? onDuplicate;
 
   /// How much of a name a tab may show.
   ///
@@ -442,6 +456,7 @@ class _TabChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onDuplicate == null ? null : () => _showMenu(context),
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
@@ -495,6 +510,31 @@ class _TabChip extends StatelessWidget {
         height: _height,
         child: tooltip == null ? chip : Tooltip(message: tooltip!, child: chip),
       ),
+    );
+  }
+
+  /// Dropped from the chip's own lower edge rather than from the finger, so
+  /// it reads as the pressed tab's menu and leaves the tab itself in view.
+  void _showMenu(BuildContext context) {
+    final chip = context.findRenderObject()! as RenderBox;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final corner = chip.localToGlobal(
+      chip.size.bottomLeft(Offset.zero),
+      ancestor: overlay,
+    );
+    showMenu<void>(
+      context: context,
+      position: RelativeRect.fromRect(
+        corner & Size.zero,
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        PopupMenuItem(
+          onTap: onDuplicate,
+          child: const Text('Duplicate session'),
+        ),
+      ],
     );
   }
 }
