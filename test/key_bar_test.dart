@@ -67,13 +67,21 @@ void main() {
       expect(swipeArrow(const Offset(10, -60)), 'A');
     });
 
+    test('a short reach is one press, not a repeat', () {
+      expect(swipeRepeatMs(0), isNull);
+      expect(swipeRepeatMs(30), isNull);
+      expect(swipeRepeatMs(59), isNull);
+    });
+
     test('repeats faster the further the drag reaches', () {
-      final near = swipeIntervalMs(30);
-      final far = swipeIntervalMs(150);
-      expect(far, lessThan(near));
-      expect(swipeIntervalMs(0), 320);
-      // A drag longer than the screen must not run away to zero.
-      expect(swipeIntervalMs(5000), 40);
+      expect(swipeRepeatMs(60), 2000);
+      expect(swipeRepeatMs(130), lessThan(2000));
+      expect(swipeRepeatMs(130), greaterThan(300));
+      expect(swipeRepeatMs(200), 300);
+    });
+
+    test('a drag longer than the screen does not run away', () {
+      expect(swipeRepeatMs(5000), 300);
     });
   });
 }

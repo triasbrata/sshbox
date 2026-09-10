@@ -21,12 +21,27 @@ String? swipeArrow(Offset offset) {
   return offset.dy > 0 ? 'B' : 'A';
 }
 
-/// Milliseconds between repeats for a drag [distance] from the origin, so a
-/// longer drag runs the cursor faster — the further you reach, the more of the
-/// line or the history you are asking to cross.
-int swipeIntervalMs(double distance) {
-  final past = (distance - _swipeDeadzone).clamp(0.0, 200.0);
-  return (320 - past * 1.4).round().clamp(40, 320);
+/// Reach this far and holding still starts repeating; short of it the drag is
+/// a single press however long you hold it, which is what you want when you
+/// only meant to step one line.
+const _swipeRepeatFrom = 60.0;
+
+/// Reach this far and the repeat is as fast as it gets.
+const _swipeFullSpeedFrom = 200.0;
+
+/// Milliseconds between repeats while a drag of [distance] is held, or null
+/// when the drag is still short enough to mean one press and no more.
+///
+/// The far end is deliberately unhurried: a held finger that runs away at
+/// keyboard speed overshoots the line you were aiming for, and on a terminal
+/// an overshoot costs you a trip back.
+int? swipeRepeatMs(double distance) {
+  if (distance < _swipeRepeatFrom) return null;
+
+  final reach = ((distance - _swipeRepeatFrom) /
+          (_swipeFullSpeedFrom - _swipeRepeatFrom))
+      .clamp(0.0, 1.0);
+  return (2000 - reach * 1700).round();
 }
 
 /// Holds the sticky modifier state shared by the key bar and the terminal's
@@ -233,10 +248,14 @@ class _KeyDivider extends StatelessWidget {
   }
 }
 
-/// Wraps the terminal so a drag across it holds down an arrow key: the
-/// direction picks the key, and how far the finger has travelled sets how fast
-/// it repeats. A double tap sends Tab, which is what a shell wants far more
-/// often than it wants a word selected.
+/// Wraps the terminal so a held drag across it holds down an arrow key: the
+/// direction picks the key, and how far the finger has reached sets how fast
+/// it repeats for as long as it stays down. A short reach is one press however
+/// long you hold it; further out it ticks about once every two seconds, and
+/// further still every 300ms. Lifting the finger stops it.
+///
+/// A double tap sends Tab, which is what a shell wants far more often than it
+/// wants a word selected.
 ///
 /// Only touch drags are claimed. xterm2 selects text on touch with a long
 /// press — its own pan recogniser is mouse-only — so holding still before you
@@ -260,10 +279,18 @@ class SwipeKeyPad extends StatefulWidget {
   State<SwipeKeyPad> createState() => _SwipeKeyPadState();
 }
 
+/// How often the held drag is re-examined. Short enough that reaching further
+/// speeds the repeat up under the finger, long enough to be free.
+const _swipeTick = Duration(milliseconds: 50);
+
 class _SwipeKeyPadState extends State<SwipeKeyPad> {
   Timer? _repeat;
   Offset _travelled = Offset.zero;
   String? _arrow;
+
+  /// Milliseconds the current key has been held down for since it last
+  /// repeated.
+  int _held = 0;
 
   @override
   void dispose() {
@@ -277,30 +304,43 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     final arrow = swipeArrow(_travelled);
     if (arrow == _arrow) return;
 
-    // A new direction starts over: fire once immediately so a quick flick
-    // moves the cursor at all, then let the timer take over.
+    // A new direction is one press straight away, so a short drag does
+    // something without being held at all.
     _arrow = arrow;
-    _repeat?.cancel();
-    if (arrow != null) _fire();
+    _held = 0;
+    if (arrow != null) widget.onEmit(cursorKey(widget.terminal, arrow));
   }
 
-  void _fire() {
+  /// Reads the reach afresh every tick rather than scheduling one repeat at a
+  /// time, so a finger that reaches further mid-hold speeds up immediately
+  /// instead of waiting out the two seconds already in flight.
+  void _onTick(Timer _) {
     final arrow = _arrow;
-    if (arrow == null) return;
+    final interval = arrow == null ? null : swipeRepeatMs(_travelled.distance);
 
-    widget.onEmit(cursorKey(widget.terminal, arrow));
-    // Rescheduled rather than periodic so reaching further mid-drag speeds the
-    // repeat up without waiting out the interval already in flight.
-    _repeat = Timer(
-      Duration(milliseconds: swipeIntervalMs(_travelled.distance)),
-      _fire,
-    );
+    // Pulled back to a nudge: stop repeating, and do not bank the wait.
+    if (interval == null) {
+      _held = 0;
+      return;
+    }
+
+    _held += _swipeTick.inMilliseconds;
+    if (_held < interval) return;
+
+    _held = 0;
+    widget.onEmit(cursorKey(widget.terminal, arrow!));
+  }
+
+  void _start() {
+    _stop();
+    _repeat = Timer.periodic(_swipeTick, _onTick);
   }
 
   void _stop() {
     _repeat?.cancel();
     _repeat = null;
     _arrow = null;
+    _held = 0;
     _travelled = Offset.zero;
   }
 
@@ -318,7 +358,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
           (instance) {
             instance
               ..onStart = (_) {
-                _stop();
+                _start();
               }
               ..onUpdate = _onUpdate
               ..onEnd = (_) {
