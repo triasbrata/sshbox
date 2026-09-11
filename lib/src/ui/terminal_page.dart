@@ -58,6 +58,10 @@ class _TerminalPageState extends State<TerminalPage> {
   final _scrollController = ScrollController();
   final _inputKey = GlobalKey<TerminalTextInputState>();
 
+  /// Shared by the terminal view, which paints the selection, and the pad,
+  /// which makes it by touch.
+  final _selection = TerminalController();
+
   bool _uploading = false;
   double? _uploadProgress;
 
@@ -84,7 +88,7 @@ class _TerminalPageState extends State<TerminalPage> {
 
     // Only meaningful while this page is on screen, so it is installed and
     // removed with the widget rather than held by the session.
-    _session.outputTransform = _keyBar.applyModifiers;
+    _session.outputTransform = _outgoing;
     _session.addListener(_onSessionChanged);
 
     // Connect after first layout so the PTY opens at the real on-screen size.
@@ -183,7 +187,8 @@ class _TerminalPageState extends State<TerminalPage> {
     _session.removeListener(_onSessionChanged);
     _focusNode.dispose();
     _scrollController.dispose();
-    if (_session.outputTransform == _keyBar.applyModifiers) {
+    _selection.dispose();
+    if (_session.outputTransform == _outgoing) {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
@@ -193,6 +198,20 @@ class _TerminalPageState extends State<TerminalPage> {
     _browser?.close();
     // The session itself is intentionally left running.
     super.dispose();
+  }
+
+  /// Typing, from either keyboard, on its way out: armed key-bar modifiers are
+  /// folded in, and a selection is let go, since a key sent means you are done
+  /// reading it.
+  String _outgoing(String data) {
+    _selection.clearSelection();
+    return _keyBar.applyModifiers(data);
+  }
+
+  /// The same for the keys the bar, the pad and the magic key send.
+  void _send(String data) {
+    _selection.clearSelection();
+    _session.sendRaw(data);
   }
 
   /// Typing anywhere in the scrollback should snap back to the prompt.
@@ -344,7 +363,7 @@ class _TerminalPageState extends State<TerminalPage> {
       bottomNavigationBar: TerminalKeyBar(
         controller: _keyBar,
         terminal: _session.terminal,
-        onEmit: _session.sendRaw,
+        onEmit: _send,
         showKeys: _session.isConnected,
         leading: [
           IconButton(
@@ -381,7 +400,8 @@ class _TerminalPageState extends State<TerminalPage> {
         // inside so its gestures land on the terminal itself — it claims
         // only long presses and double taps, so a plain tap still falls
         // through to xterm2 below and asks for the keyboard back, and a
-        // plain drag scrolls the scrollback.
+        // plain drag scrolls the scrollback. Only while a hold has text
+        // selected does it take every touch, until the selection goes.
         TerminalTextInput(
           key: _inputKey,
           terminal: _session.terminal,
@@ -389,9 +409,11 @@ class _TerminalPageState extends State<TerminalPage> {
           onInput: _scrollToBottom,
           child: SwipeKeyPad(
             terminal: _session.terminal,
-            onEmit: _session.sendRaw,
+            controller: _selection,
+            onEmit: _send,
             child: TerminalView(
               _session.terminal,
+              controller: _selection,
               focusNode: _focusNode,
               scrollController: _scrollController,
               autofocus: true,
@@ -432,7 +454,7 @@ class _TerminalPageState extends State<TerminalPage> {
           Positioned.fill(
             child: MagicKey(
               terminal: _session.terminal,
-              onEmit: _session.sendRaw,
+              onEmit: _send,
             ),
           ),
       ],
