@@ -355,6 +355,8 @@ void main() {
         find.text('claude is running — not moving the shell'),
         findsOneWidget,
       );
+      // Said in a toast, not a snack bar.
+      expect(find.byType(SnackBar), findsNothing);
     });
 
     testWidgets('a host that cannot say gets nothing typed either', (
@@ -368,6 +370,7 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(find.byType(SnackBar), findsNothing);
     });
   });
 }

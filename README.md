@@ -594,9 +594,11 @@ running, through the `LiveSession.foreground()` a Ctrl+tap uses. Only a shell
 sitting at its prompt gets the `cd` — and not even then when it is already in
 that folder, so opening and shutting one types a single `cd`. With a program
 in the foreground, where a `cd` would land as input to it, nothing is typed
-and a snack bar names it: `claude is running — not moving the shell`. A host
-that cannot say (not Linux, the probe failed) or does not answer within 1.5s
-gets nothing typed either, and the snack bar says which. Inside tmux the probe
+and a toast names it: `claude is running — not moving the shell`. A host that
+cannot say (not Linux, the probe failed) or does not answer within 1.5s gets
+nothing typed either, and the toast says which. The toast sits above the key
+bar for two seconds, takes no touches, and a new one replaces it rather than
+queueing behind it. Inside tmux the probe
 sees tmux rather than the pane's shell, so every `cd` is refused there for
 now.
 
