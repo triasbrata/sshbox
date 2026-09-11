@@ -275,8 +275,8 @@ class _TerminalPageState extends State<TerminalPage> {
   /// Sends the shell to a directory.
   ///
   /// The newline is what separates this from [_typePath]: it runs something.
-  /// That is why the browser only does it when told to, never as a side effect
-  /// of tapping a folder.
+  /// That is why the browser only does it when told to: from a folder's menu,
+  /// or on every folder tapped once follow is switched on, never by default.
   void _cdTo(String path) => _session.sendRaw('cd ${_shellQuote(path)}\n');
 
   /// Pick a file, send it to `/tmp` on the host, then type the remote path at

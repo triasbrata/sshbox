@@ -536,10 +536,12 @@ session. The saved profile is re-read before writing, so saving a root never
 reverts an edit made to the host since the session opened.
 
 The row menu also sends the shell to a folder with `cd`. **Follow in terminal**
-in the overflow menu does that on every change of root instead of on request —
-off by default, because it types into a live shell and a shell is not always at
-a prompt: with an editor or a build running, a `cd` lands as input to that
-instead.
+in the overflow menu does that without being asked: every folder tapped, to
+open it or to shut it, and every new root. Never twice in a row to the same
+folder, so opening and shutting one types a single `cd`; tapping a file only
+opens it, and opening the drawer or refreshing moves nothing. Off by default,
+because it types into a live shell and a shell is not always at a prompt: with
+an editor or a build running, a `cd` lands as input to that instead.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:
