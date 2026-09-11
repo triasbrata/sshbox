@@ -1,6 +1,62 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
+import 'package:sshbox/src/session/terminal_session.dart';
+
+class _NoSecrets implements SecretStore {
+  @override
+  Future<String?> read(String key) async => null;
+
+  @override
+  Future<void> write(String key, String? value) async {}
+
+  @override
+  Future<void> purgeHost(String hostId) async {}
+}
+
+/// A shell that is up the moment it is asked for, on a host that answers
+/// every command with [reply], whenever the test completes it.
+class _Host implements SessionTransport, TerminalSession, CommandCapable {
+  final commands = <String>[];
+  final reply = Completer<List<String>>();
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+  }) async => this;
+
+  @override
+  final status = ValueNotifier(SessionStatus.connected);
+
+  @override
+  Stream<String> get output => const Stream.empty();
+
+  @override
+  String? get failure => null;
+
+  @override
+  void send(String data) {}
+
+  @override
+  void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
+
+  @override
+  Future<void> dispose() async {}
+
+  @override
+  Stream<String> run(String command, {bool pty = false}) {
+    commands.add(command);
+    return Stream.fromFuture(reply.future).expand((lines) => lines);
+  }
+}
 
 const _host = HostProfile(
   id: 'host-1',
@@ -232,7 +288,8 @@ void main() {
       expect(session.openFiles, ['/etc/hosts', '/var/log/syslog']);
     });
 
-    test('a file tab is named host · file', () {
+    test('a file tab is named host · file, by the host list until connected',
+        () {
       final session = manager.openOrCreate(_host);
 
       expect(
@@ -264,6 +321,58 @@ void main() {
       final afterOpen = notifications;
       await manager.close(session.id);
       expect(notifications, greaterThan(afterOpen));
+    });
+  });
+
+  group("a file tab names the host by the host's own name", () {
+    late _Host host;
+    late LiveSession session;
+
+    setUp(() async {
+      host = _Host();
+      session = LiveSession(host: _host, transport: host);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+    });
+
+    test('once the host has said it, redrawing an open tab', () async {
+      var notified = 0;
+      session.addListener(() => notified++);
+
+      // Asked on connect, not when a tab is drawn; the host list's name holds
+      // the place until the answer comes.
+      expect(host.commands, ['uname -n']);
+      expect(session.fileTabTitle('/home/me/main.dart'), 'box · main.dart');
+
+      host.reply.complete(['DESKTOP-L2EPDPG']);
+      await pumpEventQueue();
+
+      expect(
+        session.fileTabTitle('/home/me/main.dart'),
+        'DESKTOP-L2EPDPG · main.dart',
+      );
+      expect(notified, greaterThan(0));
+    });
+
+    test('cut at the first dot, as a prompt cuts it', () async {
+      host.reply.complete(['build.example.com']);
+      await pumpEventQueue();
+
+      expect(session.fileTabTitle('/srv/app.py'), 'build · app.py');
+    });
+
+    test('keeps the host list name when the host prints nothing', () async {
+      host.reply.complete([]);
+      await pumpEventQueue();
+
+      expect(session.fileTabTitle('/srv/app.py'), 'box · app.py');
+    });
+
+    test('keeps the host list name when the command fails', () async {
+      host.reply.completeError(const SshSessionException('Not connected.'));
+      await pumpEventQueue();
+
+      expect(session.fileTabTitle('/srv/app.py'), 'box · app.py');
     });
   });
 }
