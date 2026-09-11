@@ -64,7 +64,7 @@ through its sub-agents.
 | Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | de465b5, 6452ba6 | UAT failed: it opens a separate screen; links should open as a tab in sshbox's own tab strip (fix in development) |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
 | Terminal selection with the platform's start/end handles and toolbar | Coordinator | — | in development |
-| Follow's busy-check messages as a toast | Coordinator | b984c8e | on tablet, UAT pending |
+| Follow's busy-check messages as a toast | Coordinator | b984c8e | UAT passed |
 | Files drawer reopens at its last scroll position | Coordinator | 039ca21, 5dc262e | UAT passed |
 | Long press on text selects it; on blank space it arms the arrows | Coordinator | ce6223c | UAT failed: no start/end handles like built-in selection (fix in development above) |
 | Ctrl+tap a path or link to open it | Coordinator | dd981a7 | UAT passed |
@@ -75,9 +75,9 @@ through its sub-agents.
 | Magic key: two concentric rings, and it fades to 60% while idle | Coordinator | e3e7387, 30a4171, 29259ab | UAT passed |
 | Magic key: throw it at a side to tuck it away | Coordinator | 7156040 | UAT passed |
 | Terminal arrows only after a long press; a plain drag scrolls | Coordinator | 50e2107 | UAT passed |
-| Shift+Enter on a hardware keyboard starts a new line | Coordinator | 02ef3c2 | on tablet, UAT pending |
-| Terminal page without its header: files and upload in the key bar, reconnect on the tab | Coordinator | 853997f | on tablet, UAT pending |
-| Forward servers started in a session to the tailnet | tailscale magic dns integration | 43e234d, fa53e25 | on tablet, UAT pending |
-| Files drawer is a VS Code-style tree, with a root saved in the host config | file tree redesign ssh root | 640461b, 8fe5a96 | on tablet, UAT pending |
-| Several sessions per host; the host list counts the active ones | config multi-session display | 7c84d2b | on tablet, UAT pending |
-| "Open in terminal" from the files drawer | file drawer open directory button | 30fda9b | on tablet, UAT pending |
+| Shift+Enter on a hardware keyboard starts a new line | Coordinator | 02ef3c2 | UAT passed |
+| Terminal page without its header: files and upload in the key bar, reconnect on the tab | Coordinator | 853997f | UAT passed |
+| Forward servers started in a session to the tailnet | tailscale magic dns integration | 43e234d, fa53e25 | UAT passed |
+| Files drawer is a VS Code-style tree, with a root saved in the host config | file tree redesign ssh root | 640461b, 8fe5a96 | UAT passed |
+| Several sessions per host; the host list counts the active ones | config multi-session display | 7c84d2b | UAT passed |
+| "Open in terminal" from the files drawer | file drawer open directory button | 30fda9b | UAT passed |
