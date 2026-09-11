@@ -11,6 +11,7 @@ import 'package:xterm2/xterm.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../session/session_manager.dart';
+import '../session/tailnet_forwarder.dart';
 import 'ctrl_click.dart';
 import 'file_browser_page.dart';
 import 'key_bar.dart';
@@ -192,6 +193,14 @@ class _TerminalPageState extends State<TerminalPage> {
       } else {
         failed('Port ${forward.port} not forwarded', forward.error!);
       }
+    }
+    // One that goes — its server stopped, or forwarding did — says so in
+    // passing, if it was ever on the tailnet to go from.
+    final current = forwarder.forwards.toSet();
+    for (final gone in _announced.whereType<PortForward>().toList()) {
+      if (current.contains(gone)) continue;
+      _announced.remove(gone);
+      if (gone.address != null) showToast(context, 'Port ${gone.port} closed');
     }
     final problem = forwarder.problem;
     if (problem != null && _announced.add(problem)) {

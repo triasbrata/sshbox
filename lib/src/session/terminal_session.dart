@@ -76,11 +76,13 @@ abstract class FileBrowseCapable {
 abstract class CommandCapable {
   /// Starts [command] when listened to and hands back its output a line at a
   /// time; the stream ends when the command does. Cancelling the subscription
-  /// ends the command.
+  /// closes its channel.
   ///
-  /// [pty] gives it a terminal, which is what makes cancelling hang up a
-  /// command that never writes: without one the host only closes its pipes,
-  /// and a process that is not writing never notices.
+  /// [pty] gives it a terminal, which is what makes that hang up a command
+  /// that never writes, under OpenSSH: without one the host only closes its
+  /// pipes, and a process that is not writing never notices. Tailscale SSH
+  /// hangs up neither until the connection goes, so such a command has to be
+  /// ended some other way.
   Stream<String> run(String command, {bool pty = false});
 }
 

@@ -371,7 +371,8 @@ With **Forward ports to the tailnet** on in the host editor, a server started
 in a session goes on the tailnet by itself. Run `vite` on the host, it listens
 on `localhost:3000`, and a moment later a blue toast at the top says **Port
 3000 is on `<host>.<tailnet>.ts.net:3001`**, with **Open**, for five seconds.
-The server stopping, or the tab closing, takes it off again.
+The server stopping takes it off again, and a toast says **Port 3000 closed**;
+so does the tab closing.
 
 ```
 vite ── localhost:3000 ◀── tailscale serve --tcp 3001 ◀── <host>.ts.net:3001
@@ -384,8 +385,18 @@ work happens on the host, over the connection the shell already holds:
 - **Watching.** A loop on its own exec channel reads `/proc/net/tcp` every two
   seconds and sends back only the listening sockets. A port counts when it is
   the user's own, on loopback or every address, below the ephemeral range
-  (32768), and was not already listening when the session connected — a
-  session forwards what it started, not everything the box runs.
+  (32768), not a debugger's, and was not already listening when the session
+  connected — a session forwards what it started, not everything the box
+  runs. A server listening on IPv4 and IPv6 both is one forward.
+- **Debuggers never.** Some ports are not forwarded whoever opened them: V8's
+  inspector on 9229, and 9230–9239 where more than one runs (node, deno, and
+  workerd under miniflare, wrangler and vite's Cloudflare plugin); Chrome's
+  DevTools on 9222; Bun's inspector on 6499; node's old `--debug` on 5858; and
+  vite's old HMR port, 24678. They come up beside a dev server rather than
+  being one — `vite dev` with Cloudflare's plugin opens workerd's inspector on
+  9229 next to vite — and an inspector runs whatever code whoever connects
+  sends it. On the tailnet it would be remote code execution on the host, for
+  every device the tailnet lets in.
 - **Forwarding.** One `tailscale serve --tcp <public> tcp://localhost:<port>`
   per server, in the foreground on a pty channel. Foreground rather than
   `--bg` because tailscaled drops a foreground config the moment its process
@@ -401,6 +412,17 @@ The channels are closed with dartssh2's `destroy`, not `close`: `close` only
 sends EOF and waits for the far end to finish, and neither the loop nor
 `tailscale serve` reads stdin, so both would run on until the connection
 dropped.
+
+Closing the channel hangs up `tailscale serve` under OpenSSH, whose pty goes
+with it. Tailscale SSH keeps the pty until the whole connection goes, and a
+`serve` with nothing to write never notices: it kept serving and kept its
+public port, so each restart of a server was forwarded one port further up —
+3001, then 3002, 3003 — beside forwards that never went. So a forward that ends,
+when its server stops, the tab closes or forwarding is switched off, is also
+killed by its exact command line (`pkill -xf 'tailscale serve --tcp 3001
+tcp://localhost:3000'`) on a channel of its own, and the server's next start
+gets the same public port back. Without a connection there is nothing to send
+that on, and no need: the host ends what the connection was running.
 
 **What the host needs:** Linux, Tailscale, and permission to change the serve
 config without root — `sudo tailscale set --operator=$USER`, once. Without it
