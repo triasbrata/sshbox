@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
@@ -567,9 +568,10 @@ class _KeyDivider extends StatelessWidget {
 /// follows widens it word by word; on a space, an empty cell or the padding it
 /// arms the arrows. Once the finger lifts, the selection wears Flutter's own
 /// handles and toolbar, the way selected text does anywhere else on the
-/// phone: drag a handle to move that end, drag anywhere else to scroll, tap to
-/// let go. A mouse still selects with a drag; xterm2's pan recogniser for that
-/// is mouse-only.
+/// phone: drag a handle to move that end, and hold it at the top or bottom
+/// edge to scroll on to text out of sight; drag anywhere else to scroll, tap
+/// to let go. A mouse still selects with a drag; xterm2's pan recogniser for
+/// that is mouse-only.
 class SwipeKeyPad extends StatefulWidget {
   const SwipeKeyPad({
     super.key,
@@ -599,7 +601,20 @@ class SwipeKeyPad extends StatefulWidget {
 /// speeds the repeat up under the finger, long enough to be free.
 const _swipeTick = Duration(milliseconds: 50);
 
-class _SwipeKeyPadState extends State<SwipeKeyPad> {
+/// Lines a second a handle held at an edge scrolls the terminal on by, for a
+/// finger [reach] strips deep: 0 at the inner edge of the strip along the
+/// terminal's edge, 1 at the edge itself, more past it. A line every 100ms at
+/// first, slow enough to stop on the one you want; four a frame at 60Hz two
+/// strips past the edge, for the far end of the scrollback. Squared, so the
+/// strip itself, where a finger brought to the edge comes to rest, stays near
+/// the slow end.
+double _edgeLines(double reach) {
+  final r = math.min(reach / 3, 1.0);
+  return 10 + 230 * r * r;
+}
+
+class _SwipeKeyPadState extends State<SwipeKeyPad>
+    with SingleTickerProviderStateMixin {
   Timer? _repeat;
   Offset _travelled = Offset.zero;
   String? _arrow;
@@ -632,6 +647,17 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// The terminal's scroll, while a drag that missed the handles drives it.
   Drag? _scroll;
 
+  /// Scrolls the terminal on while a held handle sits at its top or bottom
+  /// edge: every frame rather than on a timer, so the text glides under the
+  /// finger instead of jumping at it.
+  late final Ticker _edge;
+
+  /// How fast [_edge] scrolls, in pixels a second, negative for up; and how
+  /// far into its run the last frame came, so each frame moves by the time it
+  /// took, whatever the screen's refresh rate.
+  double _edgeSpeed = 0;
+  Duration _edgeLast = Duration.zero;
+
   /// How the selection sits in this pad, worked out from xterm2's cells each
   /// time it or the text under it moves: the feet its two handles hang from,
   /// null for one out of sight, the height of a row, and where the toolbar
@@ -649,6 +675,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   @override
   void initState() {
     super.initState();
+    _edge = createTicker(_edgeTick);
     widget.controller.addListener(_onSelectionChanged);
     widget.terminal.addListener(_onOutput);
   }
@@ -669,6 +696,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   @override
   void dispose() {
     _repeat?.cancel();
+    _edge.dispose();
     widget.controller.removeListener(_onSelectionChanged);
     widget.terminal.removeListener(_onOutput);
     super.dispose();
@@ -787,8 +815,13 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     final start = foot(range.begin);
     final end = foot(range.end);
     final size = box.size;
+    // Both kept, clipped, while a handle is held: with the ends crossed the
+    // finger is on the one at the far end, which the edge scroll can take out
+    // of sight, and a handle that leaves the tree takes its drag with it.
     Offset? inSight(Offset foot) =>
-        foot.dy >= 0 && foot.dy <= size.height ? foot : null;
+        _pinned != null || (foot.dy >= 0 && foot.dy <= size.height)
+            ? foot
+            : null;
     final x = start.dy == end.dy ? (start.dx + end.dx) / 2 : size.width / 2;
     // Held inside the pad, as a text field holds them inside itself. The
     // lower one is held a toolbar short of the bottom, because this pad clips
@@ -831,18 +864,53 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// wherever it is read, so the handles trade places, as they do in a text
   /// field.
   ///
-  /// ponytail: a handle held at the top or bottom edge does not scroll the
-  /// terminal on. Scroll there first; nudge the scroll from the handle's
-  /// distance past the edge if reaching far selections grates.
+  /// Held in the strip along the top or bottom edge — a row deep, or 32dp
+  /// when a row is less, the least a fingertip can aim at — or past it, the
+  /// finger scrolls the terminal on towards that edge, as a text field's
+  /// handle does, and faster the deeper it goes: see [_edgeLines].
   void _drag(DragUpdateDetails details) {
+    final render = _view()?.renderTerminal;
+    if (_pinned == null || render == null) return;
+
+    _dragAt += details.delta;
+    _follow();
+
+    final line = render.cellSize.height;
+    final height = render.size.height;
+    final y = render.globalToLocal(details.globalPosition).dy;
+    // Never so deep that a short tmux pane is all edge.
+    final strip = math.min(math.max(line, 32.0), height / 3);
+    // How far into a strip the finger is: negative along the top, nothing
+    // between the two.
+    final into = y < strip ? y - strip : math.max(0.0, y - height + strip);
+    _edgeSpeed = into.sign * _edgeLines(into.abs() / strip) * line;
+    if (into == 0) {
+      _edge.stop();
+    } else if (!_edge.isActive) {
+      _edgeLast = Duration.zero;
+      _edge.start();
+    }
+  }
+
+  /// Puts the dragged end in the gap between cells nearest [_dragAt], held to
+  /// the rows in sight: a finger past the edge takes the end to the row along
+  /// it, and the edge scroll brings the rest to it, rather than the end
+  /// running on out of sight with its handle.
+  void _follow() {
     final pinned = _pinned;
     final render = _view()?.renderTerminal;
     if (pinned == null || render == null) return;
 
-    _dragAt += details.delta;
-    final cell = render.getCellOffset(_dragAt);
-    final pastMiddle = _dragAt.dx - render.getOffset(cell).dx >
-        render.cellSize.width / 2;
+    final at = Offset(
+      _dragAt.dx,
+      _dragAt.dy.clamp(
+        0.0,
+        math.max(0.0, render.size.height - render.cellSize.height),
+      ),
+    );
+    final cell = render.getCellOffset(at);
+    final pastMiddle =
+        at.dx - render.getOffset(cell).dx > render.cellSize.width / 2;
     final gap = pastMiddle ? CellOffset(cell.x + 1, cell.y) : cell;
     // Nothing selected is no selection, and the same end twice is no move.
     if (gap == pinned || gap == widget.controller.selection?.end) return;
@@ -854,12 +922,41 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     );
   }
 
+  /// A frame's worth of the scroll a handle held at an edge asks for, then the
+  /// dragged end put under the finger again: it has not moved, but the text
+  /// under it has. The handles and toolbar follow the scroll as they do any
+  /// other. Stops at the end of the scrollback, where there is nothing left to
+  /// bring into sight.
+  void _edgeTick(Duration elapsed) {
+    final position = _find<ScrollableState>()?.position;
+    if (_pinned == null || position == null) {
+      _edge.stop();
+      return;
+    }
+
+    final seconds = (elapsed - _edgeLast).inMicroseconds /
+        Duration.microsecondsPerSecond;
+    _edgeLast = elapsed;
+    final to = (position.pixels + _edgeSpeed * seconds)
+        .clamp(position.minScrollExtent, position.maxScrollExtent);
+    position.jumpTo(to);
+    _follow();
+    final extent =
+        _edgeSpeed < 0 ? position.minScrollExtent : position.maxScrollExtent;
+    if (to == extent) _edge.stop();
+  }
+
   /// A finger that was shaping the selection has lifted, so the toolbar can
-  /// come back without being under it.
-  void _settle() => setState(() {
-        _wordFrom = null;
-        _pinned = null;
-      });
+  /// come back without being under it, the edge scroll ends, and a handle
+  /// kept while held goes if it is out of sight.
+  void _settle() {
+    _edge.stop();
+    setState(() {
+      _wordFrom = null;
+      _pinned = null;
+      if (_selecting) _place();
+    });
+  }
 
   /// While a selection is up the pad takes every touch, so a drag that missed
   /// the handles is handed to the scroll position of the terminal's own
