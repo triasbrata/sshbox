@@ -44,6 +44,7 @@ lib/
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
       key_bar.dart                  the accessory keyboard row
+      ctrl_click.dart               the URLs and paths a Ctrl+tap opens
       file_browser_page.dart        a VS Code-style file tree, as a drawer
       file_editor_page.dart         read and edit one remote file, in a tab
       file_search_page.dart         find text under a directory
@@ -147,6 +148,47 @@ key and lift to send it. How far you slide picks the ring: a little way up is
 ↑, straight on further is PgUp, and leaning clockwise out there is Home.
 Lifting in the middle sends nothing. Near an edge both rings fan into the room
 that is left, each outer key still behind its inner one.
+
+### Ctrl+tap
+
+VS Code's Ctrl+click, for a touch screen. With CTRL armed on the bar — or Ctrl
+held on a hardware keyboard, which covers a mouse click with Ctrl — every URL
+and path on screen gets a thin underline, and a tap on one opens it instead of
+raising the keyboard: a URL in the browser, a folder as the root of the files
+drawer, a file in a tab of its own, the way one picked in the drawer opens. The
+tap types nothing, a program reading the mouse does not see it, and it uses
+CTRL up whether it hit anything or not. A path that is not there says
+**Not found:** and the path.
+
+The text is read back from the terminal's own buffer (`ui/ctrl_click.dart`),
+rows the terminal wrapped joined up again, and quotes, brackets and the full
+stop of a sentence taken off. A `:12` or `:12:3` after a path is read and
+dropped — the editor cannot open at a line yet — and grep's `path:3:text`
+works too. A bare `README.md` is tried when tapped but never underlined: it
+could as easily be a word with a dot in it, and asking the host about every
+one would be a round trip each.
+
+**A relative path starts where the program that printed it is.** When Claude
+Code prints `lib/src/ui/magic_key.dart`, that is relative to Claude Code's
+project, not to wherever the shell was. `LiveSession.foreground()` asks the
+host which process has the terminal and where it is, from `/proc`, on an exec
+channel beside the shell:
+
+- The shell is the oldest process with a terminal whose environment carries
+  this connection's `SSH_CONNECTION` — the phone's address and port, which no
+  two connections share — and whose parent's does not. sshd and tailscaled
+  set it only in what they start, and everything else on the connection
+  comes later. A marker variable sent with the shell would be simpler, but
+  dartssh2 fails the shell when sshd refuses one, and Tailscale SSH drops them
+  unless the tailnet policy lists them.
+- Field 8 of `/proc/<shell>/stat` is the terminal's foreground process group,
+  and its `cwd` is the answer. Its name, and whether it is the shell itself,
+  come back with it.
+- The shell's pid is kept until the connection goes.
+
+On a host without `/proc` — anything but Linux — a relative path is taken from
+home, and the snack bar says so when that misses. Inside tmux or screen, what
+it finds is the multiplexer's client rather than the pane.
 
 ## Running it
 
@@ -338,9 +380,8 @@ rather than flashing the other.
 
 **Long-press a shell's tab** for **Duplicate session**: another shell on the
 same host, opened the way a tap in the host list opens one — at the end of the
-strip, and shown. It starts where any new shell on the host starts; the app
-never learns a shell's working directory (**Follow in terminal** only sends
-`cd` the other way), so there is none to carry over. A file tab has no menu.
+strip, and shown. It starts where any new shell on the host starts, not in
+the folder the first one had reached. A file tab has no menu.
 
 **Room on the strip.** A phone fits about one and a half tabs, so the space
 goes where it is read: the selected tab gets 180dp of name — enough for
@@ -544,11 +585,20 @@ reverts an edit made to the host since the session opened.
 
 The row menu also sends the shell to a folder with `cd`. **Follow in terminal**
 in the overflow menu does that without being asked: every folder tapped, to
-open it or to shut it, and every new root. Never twice in a row to the same
-folder, so opening and shutting one types a single `cd`; tapping a file only
-opens it, and opening the drawer or refreshing moves nothing. Off by default,
-because it types into a live shell and a shell is not always at a prompt: with
-an editor or a build running, a `cd` lands as input to that instead.
+open it or to shut it, and every new root. Tapping a file only opens it, and
+opening the drawer or refreshing moves nothing. Off by default, because it
+types into a live shell on every tap.
+
+Every `cd`, asked for or followed, first asks the host what the terminal is
+running, through the `LiveSession.foreground()` a Ctrl+tap uses. Only a shell
+sitting at its prompt gets the `cd` — and not even then when it is already in
+that folder, so opening and shutting one types a single `cd`. With a program
+in the foreground, where a `cd` would land as input to it, nothing is typed
+and a snack bar names it: `claude is running — not moving the shell`. A host
+that cannot say (not Linux, the probe failed) or does not answer within 1.5s
+gets nothing typed either, and the snack bar says which. Inside tmux the probe
+sees tmux rather than the pane's shell, so every `cd` is refused there for
+now.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:
