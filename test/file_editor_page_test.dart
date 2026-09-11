@@ -4,6 +4,7 @@ import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
+import 'package:sshbox/src/ui/key_bar.dart';
 
 import 'fake_file_browser.dart';
 
@@ -186,6 +187,83 @@ void main() {
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
     expect(text(), 'first line\nsecond line\n');
+  });
+
+  group('key bar', () {
+    // Wide enough for every key at once, so none has to be scrolled to.
+    setUp(() {
+      final view = TestWidgetsFlutterBinding.instance.platformDispatcher.views
+          .single;
+      view.physicalSize = const Size(3200, 800);
+      view.devicePixelRatio = 1;
+    });
+    tearDown(() => TestWidgetsFlutterBinding.instance.platformDispatcher.views
+        .single
+        .reset());
+
+    Future<void> press(WidgetTester tester, String key) async {
+      await tester.tap(find.text(key));
+      await tester.pumpAndSettle();
+    }
+
+    (int, int) caret(WidgetTester tester) => (
+          _editor(tester).selection.extentIndex,
+          _editor(tester).selection.extentOffset,
+        );
+
+    testWidgets('moves the cursor and types where it is', (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+      final editor = _editor(tester);
+      bool canUndo() => tester
+              .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo))
+              .onPressed !=
+          null;
+      expect(canUndo(), isFalse);
+
+      editor.selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
+      await tester.pumpAndSettle();
+
+      await press(tester, '→');
+      expect(caret(tester), (0, 1));
+      await press(tester, '↓');
+      expect(caret(tester).$1, 1);
+      await press(tester, 'END');
+      expect(caret(tester), (1, 'second line'.length));
+
+      await press(tester, '{');
+      await press(tester, 'TAB');
+      expect(editor.text, 'first line\nsecond line{  \n');
+      expect(canUndo(), isTrue);
+
+      final typed = editor.text;
+      await tester.tap(find.byTooltip('Undo'));
+      await tester.pumpAndSettle();
+      expect(editor.text, isNot(typed));
+      await tester.tap(find.byTooltip('Redo'));
+      await tester.pumpAndSettle();
+      expect(editor.text, typed);
+    });
+
+    testWidgets('Tab types a real tab in a Makefile', (tester) async {
+      final browser = FakeFileBrowser()..contents['/srv/Makefile'] = 'all:\n';
+      await _pumpEditor(tester, browser, path: '/srv/Makefile');
+      _editor(tester).selection =
+          const CodeLineSelection.collapsed(index: 1, offset: 0);
+      await tester.pumpAndSettle();
+
+      await press(tester, 'TAB');
+      expect(_editor(tester).text, 'all:\n\t');
+    });
+
+    testWidgets('is not there without a file to act on', (tester) async {
+      final browser = FakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          'This looks like a binary file.',
+          fault: FileBrowserFault.notText,
+        );
+      await _pumpEditor(tester, browser);
+      expect(find.byType(EditorKeyBar), findsNothing);
+    });
   });
 
   group('sudo', () {
