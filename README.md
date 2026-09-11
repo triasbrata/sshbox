@@ -369,8 +369,12 @@ which means typed commands going to the wrong host.
 
 **Files get tabs too.** The folder button opens the files drawer over the
 shell; tapping a file there gives it a tab of its own, named
-`<host> · <file>` — the host as the host list names it, so
-`WSL via tailnet · main.dart` — next to the session it was read over. Picking
+`<host> · <file>` — the host by its own name, the one its prompt shows, so
+`DESKTOP-L2EPDPG · main.dart` rather than `WSL via tailnet · main.dart` — next
+to the session it was read over. The session asks the host once per
+connection, as it comes up (`uname -n`, cut at the first dot the way bash's
+`\h` and zsh's `%m` cut it); until the answer arrives, or on a host that cannot
+give one, the tab carries the host list's name instead. Picking
 the same file again returns to its tab rather than opening a second one, and
 closing a session takes its file tabs with it — they are read over that
 session and cannot outlive it.

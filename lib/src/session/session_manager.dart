@@ -215,9 +215,21 @@ class LiveSession extends ChangeNotifier {
     if (_openFiles.remove(path)) _notify();
   }
 
-  /// A file tab's name: the host as the host list shows it, then the file.
+  /// The host's own name for itself, cut at the first dot: what a default
+  /// bash `\h` or zsh `%m` prompt shows, so `DESKTOP-L2EPDPG` where the host
+  /// list says "WSL via tailnet". Asked for when the connection comes up
+  /// rather than when a tab is drawn, so a file opened straight away already
+  /// has it. Forgotten with the connection: an edited profile's next one may
+  /// reach another machine.
+  String? _hostname;
+
+  /// A file tab's host: the machine's own name once it has said it, and the
+  /// host list's until then, or for good on a host that cannot say.
+  String get fileTabHost => _hostname ?? host.displayName;
+
+  /// A file tab's name: [fileTabHost], then the file.
   String fileTabTitle(String path) =>
-      '${host.displayName} · ${RemotePath.basename(path)}';
+      '$fileTabHost · ${RemotePath.basename(path)}';
 
   void _wireTerminal() {
     if (_wired) return;
@@ -282,6 +294,7 @@ class LiveSession extends ChangeNotifier {
       session.status.addListener(_onStatusChanged);
       _session = session;
       _syncForwarding();
+      unawaited(_fetchHostname());
     } on SshSessionException catch (error) {
       _error = error.message;
     } catch (error) {
@@ -442,6 +455,34 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
+  /// Asks the host for [_hostname], on an exec channel beside the shell the
+  /// way [foreground] asks. tmux mode asks the same way: it is the same
+  /// machine.
+  ///
+  /// `uname -n` rather than `hostname -s`: it is the name `\h` and `%m` are
+  /// cut from, every Unix has it, and it never waits on DNS the way an older
+  /// `hostname -s` does. A host without it, Windows say, prints nothing on
+  /// stdout and keeps the host list's name.
+  Future<void> _fetchHostname() async {
+    final session = _session;
+    if (session is! CommandCapable) return;
+    try {
+      final lines = await (session as CommandCapable).run('uname -n').toList();
+      // The last line: anything before it is the login shell's own chatter.
+      final name = lines
+          .lastWhere((line) => line.trim().isNotEmpty, orElse: () => '')
+          .trim()
+          .split('.')
+          .first;
+      // A reconnect since asking has its own answer coming.
+      if (name.isEmpty || !identical(_session, session)) return;
+      _hostname = name;
+      _notify();
+    } catch (_) {
+      // Only a tab's name rides on it, and that has its fallback.
+    }
+  }
+
   /// Finds the shell as [foreground] describes, unless its pid comes in `$1`,
   /// and prints one line: `sshbox`, the pid, 1 when the terminal's foreground
   /// group (field 8 of `/proc/<pid>/stat`) is the shell's own (field 5), that
@@ -521,6 +562,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     final session = _session;
     _session = null;
     _shellPid = null;
+    _hostname = null;
     final browser = _fileBrowser;
     _fileBrowser = null;
     await browser?.close();

@@ -319,9 +319,7 @@ class _TabStripState extends State<TabStrip> {
           label: tab.kind == TabKind.file
               ? tab.session.fileTabTitle(tab.path!)
               : tab.session.title,
-          cutFirst: tab.kind == TabKind.file
-              ? tab.session.host.displayName
-              : null,
+          cutFirst: tab.kind == TabKind.file ? tab.session.fileTabHost : null,
           selected: index + 1 == widget.activeIndex,
           connected: tab.kind == TabKind.terminal && tab.session.isConnected,
           expand: single,
