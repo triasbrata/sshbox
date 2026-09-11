@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Cleartext is permitted to loopback and nowhere else.
+  Cleartext HTTP is allowed, for the web tabs.
 
-  The Files page talks to code-server over http://127.0.0.1:<port>, which is
-  the near end of an SSH port forward. The bytes never touch the network in
-  the clear — SSH encrypts the hop — so the usual reason to forbid cleartext
-  does not apply here. Everything else stays blocked, which is why this is a
-  domain-config rather than android:usesCleartextTraffic on the application.
+  A dev server on a host, or one forwarded to the tailnet
+  (http://<host>.<tailnet>.ts.net:3001), speaks plain http, and without this
+  the WebView refuses it outright (net::ERR_CLEARTEXT_NOT_PERMITTED) where a
+  browser would open it. On the tailnet the bytes travel inside WireGuard
+  anyway. A domain-config cannot do it instead: the hosts are whatever a
+  terminal prints.
+
+  Nothing else in the app speaks HTTP — SSH is its own socket, which this does
+  not touch, and push goes through Google Play services — so this decides what
+  the WebView may load and nothing more.
 -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

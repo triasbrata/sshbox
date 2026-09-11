@@ -311,6 +311,72 @@ void main() {
       expect(manager.activePath, isNull);
     });
 
+    test('a link opens as a web tab beside its shell', () {
+      final session = manager.openOrCreate(_host);
+      final url = Uri.parse('http://box.ts.net:3001/');
+
+      manager.openWeb(session.id, url);
+      final page = session.webTabs.single;
+      expect(page.url, url);
+      expect(manager.activeKind, TabKind.web);
+      expect(manager.activeWeb, same(page));
+
+      // The same link again goes back to its tab rather than stacking another.
+      manager.select(session.id);
+      manager.openWeb(session.id, url);
+      expect(session.webTabs, [page]);
+      expect(manager.activeWeb, same(page));
+
+      // Closing it lands on the shell that opened it, which keeps running.
+      manager.closeWeb(session.id, page);
+      expect(session.webTabs, isEmpty);
+      expect(manager.activeKind, TabKind.terminal);
+      expect(manager.activeWeb, isNull);
+      expect(manager.sessionsFor(_host.id), [session]);
+    });
+
+    test('a web tab is named by its page title, and by its host till then',
+        () {
+      final session = manager.openOrCreate(_host);
+      final page = session.openWeb(Uri.parse('https://vitejs.dev/guide/'));
+      expect(page.title, 'vitejs.dev');
+
+      session.updateWeb(page, url: page.url, title: 'Getting Started | Vite');
+      expect(page.title, 'Getting Started | Vite');
+
+      // A new page is named by its host until it has loaded a title of its
+      // own, and a page with none keeps it.
+      final next = Uri.parse('https://github.com/vitejs/vite');
+      session.updateWeb(page, url: next);
+      expect(page.title, 'github.com');
+      session.updateWeb(page, url: next, title: '  ');
+      expect(page.title, 'github.com');
+    });
+
+    test('a web tab stays open while its shell reconnects', () async {
+      final session = manager.openOrCreate(_host);
+      final page = session.openWeb(Uri.parse('https://dart.dev'));
+
+      // No password saved, so this fails before a socket is opened — but the
+      // page never needed the connection, and is left where it was.
+      await session.reconnect(secrets: _NoSecrets());
+
+      expect(session.webTabs, [page]);
+    });
+
+    test('closing a session takes its web tabs with it', () async {
+      final session = manager.openOrCreate(_host);
+      manager.openWeb(session.id, Uri.parse('https://dart.dev'));
+
+      await manager.close(session.id);
+
+      expect(manager.sessionsFor(_host.id), isEmpty);
+      // Not left pointing at a web tab whose session is gone.
+      expect(manager.activeId, isNull);
+      expect(manager.activeKind, TabKind.terminal);
+      expect(manager.activeWeb, isNull);
+    });
+
     test('notifies listeners when a session opens and closes', () async {
       var notifications = 0;
       manager.addListener(() => notifications++);
