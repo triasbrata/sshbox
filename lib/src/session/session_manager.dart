@@ -782,13 +782,14 @@ class SessionManager extends ChangeNotifier {
       _sessions.values.where((s) => s.host.id == hostId).toList();
 
   /// Opens another terminal on this host, whatever it already has open, and
-  /// shows it.
-  LiveSession open(HostProfile host) {
+  /// shows it. [transport] is a test's, as [LiveSession] takes one.
+  LiveSession open(HostProfile host, {SessionTransport? transport}) {
     late final LiveSession created;
     created = LiveSession(
       host: host,
       forwardedElsewhere: (port) => sessionsFor(created.host.id)
           .any((s) => s != created && s.forwarder.isForwarding(port)),
+      transport: transport,
     );
     created.addListener(notifyListeners);
     _sessions[created.id] = created;
