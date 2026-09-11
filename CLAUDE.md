@@ -70,6 +70,7 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
+| Proxy jump: a host can connect through another saved host ("Jump host" in its edit page, like `ssh -J`; a jump host may have its own) | proxy jump settings | b8484f5 | in development (merged, needs a hot restart on the tablet) |
 | Tailnet forwarding: never forward debugger ports (9229 etc.), stop a forward as soon as its server stops, reuse the same tailnet port when it comes back (restarting `bun dev` stacked 3002–3005 and exposed the inspector) | Coordinator | — | in development |
 | Settings page (⚙ on the host list) with a terminal font picker (Cascadia Mono, Cascadia Code, CaskaydiaCove Nerd Font, JetBrains Mono, Fira Code) and font size, live everywhere | Coordinator | 09ced89 | UAT passed |
 | App renamed to Clode (visible name only; package id, settings keys, tmux names and the sshbox:// scheme keep "sshbox") | Coordinator | 66d22e3 | UAT passed |
