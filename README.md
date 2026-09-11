@@ -175,14 +175,15 @@ the drawer opens. The tap types nothing, a program reading the mouse does not se
 it uses CTRL up whether it hit anything or not. A path that is not there says
 **Not found:** and the path.
 
-**Every link opens in a tab.** A Ctrl+tapped URL, a forwarded port's **Open**
-and a Tailscale sign-in all go through `openUrl` in `ui/terminal_page.dart`,
-which opens a web page in a tab of its own beside the shell it came from — see
-[Tabs](#tabs). With no shell to put it beside — the web tab's own **Open in
-browser**, or a port's snack bar still up after its tab closed — the page goes
-to a Custom Tab instead: the phone's default browser — Chrome, Firefox, Edge —
-draws it over the app with its own engine, cookies and sign-ins, and Back
-comes back to the app. A browser that cannot do Custom Tabs gets the link as
+**Links open in a tab.** A Ctrl+tapped URL, a forwarded port's **Open** and a
+Tailscale sign-in all go through `openUrl` in `ui/terminal_page.dart`, which
+opens a web page in a tab of its own beside the shell it came from — see
+[Tabs](#tabs). The sign-in is the exception: identity providers, Google above
+all, refuse to sign in inside an embedded web view. It goes to a Custom Tab
+instead, as does a link with no shell to put it beside — the web tab's own
+**Open in browser**, or a port's snack bar still up after its tab closed. The
+phone's default browser — Chrome, Firefox, Edge — draws a Custom Tab over the
+app with its own engine, cookies and sign-ins, and Back comes back to the app. A browser that cannot do Custom Tabs gets the link as
 an ordinary page; `mailto:` and the like go wherever Android sends them; and
 when nothing takes it a toast says **No app can open** and the link.
 No `<queries>` is needed for this: url_launcher fires the Custom Tabs intent
@@ -406,9 +407,10 @@ the same file again returns to its tab rather than opening a second one, and
 closing a session takes its file tabs with it — they are read over that
 session and cannot outlive it.
 
-**So do links.** A web link from a session — Ctrl+tapped, a forwarded port's
-**Open**, a sign-in check — gets a tab beside that session's shell, after its
-files, under a globe. It is named by the page's own title once one has
+**So do links.** A web link from a session — Ctrl+tapped, or a forwarded
+port's **Open** — gets a tab beside that session's shell, after its files,
+under a globe; a sign-in check goes to a Custom Tab, for the reason
+[Ctrl+tap](#ctrltap) gives. It is named by the page's own title once one has
 loaded, and by the host until then: `box.ts.net` while
 `http://box.ts.net:3001` loads. Android System WebView draws it, Chrome's
 engine, through `webview_flutter`. A link already showing in one of the
@@ -779,5 +781,5 @@ why search is stated as a separate capability rather than folded into
 - **More of a browser in a web tab:** downloads (handed to the phone's browser
   for now), `<input type=file>`, popups as tabs of their own, Back stepping
   back through a page's history, and HTTP auth prompts. Google refuses to sign
-  in inside any embedded web view, so a Google login — a Tailscale check that
-  goes through Google included — needs **Open in browser**.
+  in inside any embedded web view, so a Google login on a page in a web tab
+  needs **Open in browser**; the Tailscale check skips the web tabs for it.
