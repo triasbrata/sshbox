@@ -255,6 +255,25 @@ void main() {
       expect(find.text('No app can open https://dart.dev'), findsOneWidget);
       expect(find.byType(SnackBar), findsNothing);
     });
+
+    testWidgets('a sign-in check opens in-app, never in a web tab', (
+      tester,
+    ) async {
+      final launcher = _Launcher({inApp});
+      UrlLauncherPlatform.instance = launcher;
+      const link = 'https://login.tailscale.com/a/1a2b3c';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: AuthCheckPrompt(url: Uri.parse(link))),
+        ),
+      );
+
+      await tester.tap(find.text('Open link'));
+      await tester.pump();
+
+      // Google, for one, refuses to sign in inside an embedded web view.
+      expect(launcher.tried, [(link, inApp)]);
+    });
   });
 
   group('Ctrl+tap', () {

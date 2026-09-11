@@ -581,10 +581,7 @@ class _TerminalPageState extends State<TerminalPage> {
             child: Center(
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()
-                  : _AuthCheckPrompt(
-                      url: _session.authUrl!,
-                      inTab: widget.onOpenWeb,
-                    ),
+                  : AuthCheckPrompt(url: _session.authUrl!),
             ),
           ),
         // Along the terminal's bottom edge, just above the key bar, rather
@@ -799,10 +796,10 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
 /// through here — a Ctrl+tap, a forwarded port, a sign-in check.
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
-/// [inTab] puts it there. With no shell to put it beside — the web tab's own
-/// Open in browser, or a snack bar that outlived its page — it goes to a
-/// Custom Tab instead, which the phone's default browser draws over this app
-/// with its own engine, cookies and sign-ins, and Back returns from.
+/// [inTab] puts it there. Without one — the web tab's own Open in browser, a
+/// sign-in check, or a snack bar that outlived its page — it goes to a Custom
+/// Tab instead, which the phone's default browser draws over this app with
+/// its own engine, cookies and sign-ins, and Back returns from.
 ///
 /// A browser that cannot draw a Custom Tab takes the link as a page of its
 /// own instead; a `mailto:` or `tel:` goes wherever the phone sends it. When
@@ -838,11 +835,17 @@ Future<void> openUrl(
 ///
 /// The connection is still open behind this; finishing in the browser is what
 /// releases it, so there is nothing to submit here.
-class _AuthCheckPrompt extends StatelessWidget {
-  const _AuthCheckPrompt({required this.url, required this.inTab});
+///
+/// Its link skips the web tabs: identity providers, Google above all, refuse
+/// to sign in inside an embedded web view.
+///
+/// Public only so a test can press that link without a server holding a
+/// session at its sign-in.
+@visibleForTesting
+class AuthCheckPrompt extends StatelessWidget {
+  const AuthCheckPrompt({super.key, required this.url});
 
   final Uri url;
-  final void Function(Uri url) inTab;
 
   @override
   Widget build(BuildContext context) {
@@ -872,7 +875,7 @@ class _AuthCheckPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: () => openUrl(context, url, inTab: inTab),
+            onPressed: () => openUrl(context, url),
             icon: const Icon(Icons.open_in_new),
             label: const Text('Open link'),
           ),
