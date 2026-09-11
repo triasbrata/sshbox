@@ -87,6 +87,11 @@ class _TerminalPageState extends State<TerminalPage> {
   String? _browseRoot;
   Set<String> _browseExpanded = const {};
 
+  /// And how far down it was scrolled, kept with the root it was scrolled
+  /// under: a drawer sent to open at another folder starts at the top of it,
+  /// not at an offset measured in a different tree.
+  ({String? root, double offset}) _browseScroll = (root: null, offset: 0);
+
   LiveSession get _session => widget.session;
 
   /// Forwards and problems already announced, so each gets one snack bar.
@@ -132,6 +137,7 @@ class _TerminalPageState extends State<TerminalPage> {
       // session wandered off to.
       _browseRoot = null;
       _browseExpanded = const {};
+      _browseScroll = (root: null, offset: 0);
     }
     setState(() {});
     _announceForwards();
@@ -275,9 +281,13 @@ class _TerminalPageState extends State<TerminalPage> {
         title: _session.host.displayName,
         initialRoot: _browseRoot ?? _session.host.fileRoot,
         initialExpanded: _browseExpanded,
+        initialScrollOffset:
+            _browseScroll.root == _browseRoot ? _browseScroll.offset : 0,
         ownsBrowser: false,
         onRootChanged: (root) => _browseRoot = root,
         onExpandedChanged: (expanded) => _browseExpanded = expanded,
+        onScrollChanged: (offset) =>
+            _browseScroll = (root: _browseRoot, offset: offset),
         onSaveRoot: widget.onSaveFileRoot,
         terminal: _terminalLink,
         onClose: _closeFilesDrawer,
@@ -406,12 +416,47 @@ class _TerminalPageState extends State<TerminalPage> {
   /// Puts a path at the prompt, ready for a command to be written around it.
   void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
 
-  /// Sends the shell to a directory.
+  /// Sends the shell to a directory — the one way anything does, so every
+  /// `cd` is checked here.
   ///
   /// The newline is what separates this from [_typePath]: it runs something.
-  /// That is why the browser only does it when told to: from a folder's menu,
-  /// or on every folder tapped once follow is switched on, never by default.
-  void _cdTo(String path) => _session.sendRaw('cd ${_shellQuote(path)}\n');
+  /// With a program in the foreground, that something is the program's input
+  /// — `cd` sent to Claude Code is a message to it — so the host is asked
+  /// first, and anything short of "the shell is at its prompt" types nothing
+  /// and says why. A shell already there types nothing either: opening a
+  /// folder and shutting it again is two taps on one place.
+  ///
+  /// In a tab set to use tmux, tmux answers for the focused pane, and the
+  /// `cd` goes there.
+  ///
+  /// ponytail: inside a tmux started by hand the probe sees tmux, not the
+  /// pane's shell, so every `cd` is refused as "tmux is running".
+  Future<void> _cdTo(String path) async {
+    final messenger = ScaffoldMessenger.of(context);
+    // Replacing rather than queueing: following, every folder tapped on the
+    // way down to a file can be refused, and each would wait its turn.
+    void refuse(String why) => messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(why)));
+
+    var slow = false;
+    final now = await _session.foreground().timeout(
+      const Duration(milliseconds: 1500),
+      onTimeout: () {
+        slow = true;
+        return null;
+      },
+    );
+    if (now == null) {
+      refuse(slow
+          ? 'No answer from the host in time — not moving the shell'
+          : 'The host cannot say what the shell is running — not moving it');
+    } else if (!now.shellInForeground) {
+      refuse('${now.program} is running — not moving the shell');
+    } else if (now.cwd != path) {
+      _session.sendRaw('cd ${_shellQuote(path)}\n');
+    }
+  }
 
   /// Pick a file, send it to `/tmp` on the host, then type the remote path at
   /// the prompt — so the next thing you write is a command that uses it.

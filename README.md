@@ -631,9 +631,10 @@ rather than VS Code's 22px, which a finger cannot hit reliably.
 
 **The tree hangs from one root.** **Set as root** re-hangs the tree from a
 folder; the root's name on its header opens a menu of the folders above it,
-which is the way back out. Back undoes the last re-rooting. The root and the
-open folders survive the drawer closing, so picking a file and coming back
-does not fold everything shut.
+which is the way back out. Back undoes the last re-rooting. The root, the
+open folders and the scroll position survive the drawer closing, so picking a
+file and coming back does not fold everything shut or jump back to the top;
+a new root starts at its top.
 
 **Where the tree starts is part of the host's config.** The host editor has a
 **File tree root** field — blank is the login home, and `~/…` or a bare
@@ -646,11 +647,21 @@ reverts an edit made to the host since the session opened.
 
 The row menu also sends the shell to a folder with `cd`. **Follow in terminal**
 in the overflow menu does that without being asked: every folder tapped, to
-open it or to shut it, and every new root. Never twice in a row to the same
-folder, so opening and shutting one types a single `cd`; tapping a file only
-opens it, and opening the drawer or refreshing moves nothing. Off by default,
-because it types into a live shell and a shell is not always at a prompt: with
-an editor or a build running, a `cd` lands as input to that instead.
+open it or to shut it, and every new root. Tapping a file only opens it, and
+opening the drawer or refreshing moves nothing. Off by default, because it
+types into a live shell on every tap.
+
+Every `cd`, asked for or followed, first asks the host what the terminal is
+running, through the `LiveSession.foreground()` a Ctrl+tap uses. Only a shell
+sitting at its prompt gets the `cd` — and not even then when it is already in
+that folder, so opening and shutting one types a single `cd`. With a program
+in the foreground, where a `cd` would land as input to it, nothing is typed
+and a snack bar names it: `claude is running — not moving the shell`. A host
+that cannot say (not Linux, the probe failed) or does not answer within 1.5s
+gets nothing typed either, and the snack bar says which. In a tab set to use
+tmux, tmux answers for the focused pane and the `cd` goes to it; inside a tmux
+started by hand the probe sees tmux rather than the pane's shell, so every
+`cd` is refused there.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:
