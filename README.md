@@ -131,10 +131,12 @@ still holding, drag to widen it word by word. Once you lift, it looks and
 works like selected text anywhere else on Android: Flutter's own handles at
 each end, which you drag a cell at a time (they may cross), and the platform's
 toolbar above it with Copy, Paste and Select all. The toolbar steps aside while
-a handle is held. A drag anywhere else scrolls, and the handles and toolbar
-follow the text as it scrolls or as output pushes it up. Copy (which says so),
-Paste (xterm2's own, as Ctrl+V), a tap on the terminal or any key sent to the
-shell ends it. A mouse selects with a drag as before.
+a handle is held. Hold a handle at the top or bottom edge, or past it, and the
+terminal scrolls on under it, taking the selection with it: a line every 100ms
+at first, several a frame further out. A drag anywhere else scrolls, and the
+handles and toolbar follow the text as it scrolls or as output pushes it up.
+Copy (which says so), Paste (xterm2's own, as Ctrl+V), a tap on the terminal or
+any key sent to the shell ends it. A mouse selects with a drag as before.
 
 ### The magic key
 
