@@ -144,7 +144,8 @@ void main() {
       // A save is a swap, and the swap must keep what the old file was:
       // its permissions, and a link staying a link. Only checkable when the
       // host's filesystem is this machine's.
-      if (_host == '127.0.0.1' || _host == 'localhost') {
+      final local = _host == '127.0.0.1' || _host == 'localhost';
+      if (local) {
         final local = File(file);
         await Process.run('chmod', ['600', file]);
         final link = Link(RemotePath.join(root, 'tautan.txt'))
@@ -166,6 +167,66 @@ void main() {
         (await browser.list(root)).map((entry) => entry.name),
         ['catatan.txt'],
       );
+
+      // A file only root may touch: sudo has to get through both ways and
+      // leave it root's own. Needs this machine to be the host, and a sudo
+      // here that does not ask.
+      if (local && (await Process.run('sudo', ['-n', 'true'])).exitCode == 0) {
+        List<String> temps() => Directory('/tmp')
+            .listSync()
+            .map((entry) => entry.path)
+            .where((path) => path.startsWith('/tmp/.sshbox-'))
+            .toList();
+        final tempsBefore = temps();
+
+        final secret = RemotePath.join(root, 'rahasia.conf');
+        await Process.run('sudo', [
+          '-n',
+          'sh',
+          '-c',
+          r'printf "a=1\n" > "$1" && chmod 600 "$1"',
+          'sh',
+          secret,
+        ]);
+        await expectLater(
+          browser.readText(secret),
+          throwsA(
+            isA<FileBrowserException>().having(
+              (error) => error.fault,
+              'fault',
+              FileBrowserFault.permissionDenied,
+            ),
+          ),
+        );
+
+        expect(browser, isA<SudoCapable>());
+        final sudo = browser as SudoCapable;
+        final before = await sudo.sudoReadText(secret);
+        expect(before.text, 'a=1\n');
+
+        // A different length, so the stale stamp below is told apart even
+        // when both saves land inside the same second.
+        await sudo.sudoWriteText(secret, 'a=22\n', expected: before.stamp);
+        expect((await sudo.sudoReadText(secret)).text, 'a=22\n');
+        final owner = await Process.run(
+          'sudo',
+          ['-n', 'stat', '-c', '%U %a', secret],
+        );
+        expect((owner.stdout as String).trim(), 'root 600');
+
+        await expectLater(
+          sudo.sudoWriteText(secret, 'a=3\n', expected: before.stamp),
+          throwsA(
+            isA<FileBrowserException>().having(
+              (error) => error.fault,
+              'fault',
+              FileBrowserFault.changed,
+            ),
+          ),
+        );
+        expect(temps(), tempsBefore);
+        await Process.run('sudo', ['-n', 'rm', '-f', secret]);
+      }
 
       final renamed = RemotePath.join(root, 'catatan-lama.txt');
       await browser.rename(file, renamed);

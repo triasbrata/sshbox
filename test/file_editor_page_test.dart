@@ -136,6 +136,119 @@ void main() {
     expect(text(), 'first line\nsecond line\n');
   });
 
+  group('sudo', () {
+    const denied = FileBrowserException(
+      'Could not open: permission denied.',
+      fault: FileBrowserFault.permissionDenied,
+    );
+    final passwordField = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    String text(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    // The page's spinner keeps turning behind the password dialog, so nothing
+    // settles while it is up: pump just long enough for it to open.
+    Future<void> untilPrompted(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    testWidgets('opens a file the login may not read', (tester) async {
+      final browser = SudoFakeFileBrowser()..failReadWith = denied;
+      await _pumpEditor(tester, browser);
+
+      await tester.tap(find.text('Open with sudo'));
+      await untilPrompted(tester);
+      expect(find.text('sudo password'), findsOneWidget);
+      await tester.enterText(passwordField, 'hunter2');
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      expect(text(tester), 'first line\nsecond line\n');
+      expect(find.textContaining('as root'), findsOneWidget);
+
+      // The save goes the same way, on the password already given.
+      await tester.enterText(find.byType(TextField), 'root edit\n');
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+      await tester.pumpAndSettle();
+      expect(browser.contents['/home/me/notes.txt'], 'root edit\n');
+      expect(browser.sudoWrites, ['/home/me/notes.txt']);
+      // Tried without one first, for a sudo that might not have asked.
+      expect(browser.passwordsTried, [null, 'hunter2', 'hunter2']);
+    });
+
+    testWidgets('asks for no password where sudo does not', (tester) async {
+      final browser = SudoFakeFileBrowser()
+        ..failReadWith = denied
+        ..sudoPassword = null;
+      await _pumpEditor(tester, browser);
+
+      await tester.tap(find.text('Open with sudo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('sudo password'), findsNothing);
+      expect(text(tester), 'first line\nsecond line\n');
+    });
+
+    testWidgets('a wrong password is turned down and asked for again',
+        (tester) async {
+      final browser = SudoFakeFileBrowser()..failReadWith = denied;
+      await _pumpEditor(tester, browser);
+
+      await tester.tap(find.text('Open with sudo'));
+      await untilPrompted(tester);
+      await tester.enterText(passwordField, 'wrong');
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      expect(find.text('sudo did not accept that password.'), findsOneWidget);
+
+      await tester.tap(find.text('Open with sudo'));
+      await untilPrompted(tester);
+      await tester.enterText(passwordField, 'hunter2');
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      expect(text(tester), 'first line\nsecond line\n');
+    });
+
+    testWidgets('a save the login is refused can go through sudo',
+        (tester) async {
+      final browser = SudoFakeFileBrowser()
+        ..failWriteWith = const FileBrowserException(
+          'Could not save: permission denied.',
+          fault: FileBrowserFault.permissionDenied,
+        );
+      await _pumpEditor(tester, browser);
+
+      await tester.enterText(find.byType(TextField), 'edited\n');
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+      await tester.pumpAndSettle();
+      expect(browser.contents['/home/me/notes.txt'], 'first line\nsecond line\n');
+
+      await tester.tap(find.text('Save with sudo'));
+      await untilPrompted(tester);
+      await tester.enterText(passwordField, 'hunter2');
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      expect(browser.contents['/home/me/notes.txt'], 'edited\n');
+      expect(_canSave(tester), isFalse);
+      expect(find.textContaining('as root'), findsOneWidget);
+    });
+
+    testWidgets('offers nothing where the transport has no sudo',
+        (tester) async {
+      final browser = FakeFileBrowser()..failReadWith = denied;
+      await _pumpEditor(tester, browser);
+
+      expect(find.text('Could not open: permission denied.'), findsOneWidget);
+      expect(find.text('Open with sudo'), findsNothing);
+    });
+  });
+
   testWidgets('offers back an edit the app never got to save',
       (tester) async {
     SharedPreferences.setMockInitialValues({});
