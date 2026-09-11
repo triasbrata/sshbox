@@ -239,6 +239,37 @@ void main() {
       );
     }
 
+    /// The foot of the gap before cell [x] on that row: where a handle at
+    /// that end of a selection points.
+    Offset foot(WidgetTester tester, int x) {
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      return render.localToGlobal(
+        render.getOffset(CellOffset(x, row())) +
+            Offset(0, render.cellSize.height),
+      );
+    }
+
+    /// Where the handle on [side] points: the corner of Flutter's own handle
+    /// that its anchor names.
+    Offset handlePoint(WidgetTester tester, TextSelectionHandleType side) {
+      final handle = find.descendant(
+        of: find.byKey(ValueKey(side)),
+        matching: find.byType(CustomPaint),
+      );
+      return tester.getRect(handle).topLeft +
+          materialTextSelectionControls.getHandleAnchor(side, 0);
+    }
+
+    /// Long-presses `line` on that row and lifts, which selects the word.
+    Future<void> selectWord(WidgetTester tester) async {
+      final hold = await tester.startGesture(cell(tester, 1));
+      await tester.pump(kLongPressTimeout);
+      await hold.up();
+      await tester.pump();
+    }
+
     String? selected() {
       final range = selection.selection;
       return range == null ? null : terminal.buffer.getText(range);
@@ -261,34 +292,75 @@ void main() {
       expect(sent, isEmpty);
     });
 
-    testWidgets('once lifted, a drag moves the nearer end and does not scroll',
-        (tester) async {
+    testWidgets(
+        "once lifted, Flutter's own handles point at the word's first cell "
+        'and the gap after its last', (tester) async {
       await pumpPad(tester);
-      final hold = await tester.startGesture(cell(tester, 1));
-      await tester.pump(kLongPressTimeout);
-      await hold.up();
-      await tester.pump();
-      final before = scroll.offset;
+      await selectWord(tester);
 
-      // From the tail of `line` to two rows down: the head stays put. In
-      // small steps, as a finger goes, which is what lets a scroll's shorter
-      // slop claim the drag first if it can get at it.
-      final drag = await tester.startGesture(cell(tester, 3));
-      for (var i = 0; i < 4; i++) {
-        await drag.moveBy(const Offset(0, 10));
-      }
-      await drag.moveTo(cell(tester, 6, 2));
-      await drag.up();
-      await tester.pump();
-
-      final range = selection.selection!.normalized;
-      expect(range.begin.isEqual(CellOffset(0, row())), isTrue);
-      expect(range.end.isEqual(CellOffset(7, row() + 2)), isTrue);
-      expect(scroll.offset, before);
+      expect(selected(), 'line');
+      expect(
+        handlePoint(tester, TextSelectionHandleType.left),
+        offsetMoreOrLessEquals(foot(tester, 0)),
+      );
+      expect(
+        handlePoint(tester, TextSelectionHandleType.right),
+        offsetMoreOrLessEquals(foot(tester, 4)),
+      );
     });
 
-    testWidgets('Copy puts the selection on the clipboard and lets it go',
+    testWidgets('dragging the end handle right takes in the cells it passes',
         (tester) async {
+      await pumpPad(tester);
+      await selectWord(tester);
+      final width = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal
+          .cellSize
+          .width;
+
+      final drag = await tester.startGesture(
+        tester.getCenter(
+          find.byKey(const ValueKey(TextSelectionHandleType.right)),
+        ),
+      );
+      await drag.moveBy(Offset(width * 3, 0));
+      await tester.pump();
+      // Kept out from under the finger while it drags.
+      expect(find.text('Copy'), findsNothing);
+
+      await drag.up();
+      await tester.pump();
+      expect(selected(), 'line 19');
+      expect(find.text('Copy'), findsOneWidget);
+    });
+
+    testWidgets(
+        'a drag that misses the handles scrolls, keeps the selection, and the '
+        'handles go with the text', (tester) async {
+      final centre = await pumpPad(tester);
+      await selectWord(tester);
+      final before = scroll.offset;
+
+      // Short enough that the selected row stays on screen.
+      final drag = await tester.startGesture(centre);
+      for (var i = 0; i < 3; i++) {
+        await drag.moveBy(const Offset(0, 20));
+      }
+      await drag.up();
+      await tester.pumpAndSettle();
+
+      expect(scroll.offset, lessThan(before));
+      expect(selected(), 'line');
+      expect(
+        handlePoint(tester, TextSelectionHandleType.left),
+        offsetMoreOrLessEquals(foot(tester, 0)),
+      );
+    });
+
+    testWidgets(
+        'the toolbar offers Copy and Select all, and Copy puts the selection '
+        'on the clipboard and lets it go', (tester) async {
       final copied = <Object?>[];
       final platform = tester.binding.defaultBinaryMessenger;
       platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
@@ -299,10 +371,8 @@ void main() {
         () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
       );
       await pumpPad(tester);
-      final hold = await tester.startGesture(cell(tester, 1));
-      await tester.pump(kLongPressTimeout);
-      await hold.up();
-      await tester.pump();
+      await selectWord(tester);
+      expect(find.text('Select all'), findsOneWidget);
 
       await tester.tap(find.text('Copy'));
       await tester.pump();

@@ -1,0 +1,59 @@
+# Opens a file only root may read, through sudo, and saves it back as root.
+#
+# Needs FILE in the root of the host's file tree, owned by root and private,
+# and a sudo that will have the login, e.g. on the host:
+#   printf 'root only\n' > /tmp/f && sudo install -o root -m 600 /tmp/f ~/sshbox-maestro-root.txt
+# A sudo that asks for a password gets PASSWORD; one that does not, nothing.
+# That the file is still root's and 0600 afterwards is for the host to check.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: ${HOST_LABEL || 'WSL via'}
+  FILE: ${FILE || 'sshbox-maestro-root.txt'}
+  PASSWORD: ${PASSWORD || ''}
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+- tapOn: "(?s)${HOST_LABEL}.*"
+
+- extendedWaitUntil:
+    visible: "Browse files"
+    timeout: 20000
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: "Filter by name"
+    timeout: 30000
+- tapOn: "Filter by name"
+- inputText: "sshbox-maestro"
+- tapOn: "${FILE}"
+
+# Refused as the login, with sudo offered instead of a dead end.
+- extendedWaitUntil:
+    visible: "Open with sudo"
+    timeout: 20000
+- tapOn: "Open with sudo"
+- runFlow:
+    when:
+      visible: "sudo password"
+    commands:
+      - inputText: "${PASSWORD}"
+      - tapOn: "Continue"
+- extendedWaitUntil:
+    visible: "(?s).*as root.*"
+    timeout: 20000
+
+- tapOn:
+    point: "50%,70%"
+- inputText: "sudo"
+- extendedWaitUntil:
+    visible: "(?s).*Unsaved changes.*"
+    timeout: 5000
+- tapOn: "Save to host"
+- extendedWaitUntil:
+    visible: "Saved ${FILE}"
+    timeout: 20000
+- assertVisible: "(?s).*as root.*"

@@ -134,10 +134,14 @@ repeats faster. A plain drag scrolls the scrollback, and a double tap sends
 Tab.
 
 Long-press a character instead and it selects the word, with a lighter tick;
-still holding, drag to widen it word by word. Once you lift, a drag moves
-whichever end of the selection is nearer, instead of scrolling, and a small bar
-over it offers Copy and ✕. Copy, ✕, a tap on the terminal or any key sent to
-the shell ends it. A mouse selects with a drag as before.
+still holding, drag to widen it word by word. Once you lift, it looks and
+works like selected text anywhere else on Android: Flutter's own handles at
+each end, which you drag a cell at a time (they may cross), and the platform's
+toolbar above it with Copy, Paste and Select all. The toolbar steps aside while
+a handle is held. A drag anywhere else scrolls, and the handles and toolbar
+follow the text as it scrolls or as output pushes it up. Copy (which says so),
+Paste (xterm2's own, as Ctrl+V), a tap on the terminal or any key sent to the
+shell ends it. A mouse selects with a drag as before.
 
 ### The magic key
 

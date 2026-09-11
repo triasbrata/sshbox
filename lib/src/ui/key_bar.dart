@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -283,6 +285,109 @@ class TerminalKeyBar extends StatelessWidget {
   }
 }
 
+/// The accessory row under the code editor: the keys a touch keyboard lacks,
+/// acting on the editor's own cursor rather than sending bytes to a shell.
+///
+/// ponytail: no PgUp/PgDn, which re_editor 0.10 leaves unimplemented; the
+/// space bar's trackpad and scrolling cover long moves until it has them.
+class EditorKeyBar extends StatelessWidget {
+  const EditorKeyBar({
+    super.key,
+    required this.controller,
+    this.useTabs = false,
+  });
+
+  final CodeLineEditingController controller;
+
+  /// Tab types a real tab instead of spaces: for a Makefile, where a recipe
+  /// indented with spaces does not run, and for any file already indented
+  /// with tabs.
+  final bool useTabs;
+
+  static const _arrows = {
+    'A': AxisDirection.up,
+    'B': AxisDirection.down,
+    'C': AxisDirection.right,
+    'D': AxisDirection.left,
+  };
+
+  /// What config files and scripts are made of, and the stock keyboard buries
+  /// a layer or two down.
+  static const _symbols = [
+    '{', '}', '[', ']', '(', ')', '<', '>', '"', "'", ';', ':', //
+    '/', r'\', '|', r'$', '=', '-', '_', '#', '&', '*', '~',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget arrow(String label, String key) => _KeyButton(
+          label: label,
+          onTap: () => controller.moveCursor(_arrows[key]!),
+        );
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 48,
+          // Only undo and redo change with the text, but they change on the
+          // first keystroke and the last undo, so they are watched.
+          child: ListenableBuilder(
+            listenable: controller,
+            builder: (context, _) => ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              children: [
+                _IconKey(IconButton(
+                  tooltip: 'Undo',
+                  onPressed: controller.canUndo ? controller.undo : null,
+                  icon: const Icon(Icons.undo),
+                )),
+                _IconKey(IconButton(
+                  tooltip: 'Redo',
+                  onPressed: controller.canRedo ? controller.redo : null,
+                  icon: const Icon(Icons.redo),
+                )),
+                const _KeyDivider(),
+                _KeyButton(
+                  label: 'TAB',
+                  onTap: useTabs
+                      ? () => controller.replaceSelection('\t')
+                      : controller.applyIndent,
+                ),
+                _KeyButton(label: '⇤', onTap: controller.applyOutdent),
+                const _KeyDivider(),
+                arrow('←', 'D'),
+                arrow('↓', 'B'),
+                arrow('↑', 'A'),
+                arrow('→', 'C'),
+                _SpacePad(
+                  onSpace: () => controller.replaceSelection(' '),
+                  onCursor: (key) => controller.moveCursor(_arrows[key]!),
+                ),
+                const _KeyDivider(),
+                _KeyButton(
+                  label: 'HOME',
+                  onTap: controller.moveCursorToLineStart,
+                ),
+                _KeyButton(label: 'END', onTap: controller.moveCursorToLineEnd),
+                const _KeyDivider(),
+                for (final symbol in _symbols)
+                  _KeyButton(
+                    label: symbol,
+                    onTap: () => controller.replaceSelection(symbol),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _KeyButton extends StatelessWidget {
   const _KeyButton({
     required this.label,
@@ -460,10 +565,11 @@ class _KeyDivider extends StatelessWidget {
 /// a hold means is settled by what is under the finger when it fires. On a
 /// character it selects the word, the way xterm2 would, and the drag that
 /// follows widens it word by word; on a space, an empty cell or the padding it
-/// arms the arrows. Once the finger lifts the pad takes every touch until the
-/// selection goes: a drag moves the nearer end instead of scrolling, a tap
-/// lets go, and a small bar over the selection copies it. A mouse still
-/// selects with a drag; xterm2's pan recogniser for that is mouse-only.
+/// arms the arrows. Once the finger lifts, the selection wears Flutter's own
+/// handles and toolbar, the way selected text does anywhere else on the
+/// phone: drag a handle to move that end, drag anywhere else to scroll, tap to
+/// let go. A mouse still selects with a drag; xterm2's pan recogniser for that
+/// is mouse-only.
 class SwipeKeyPad extends StatefulWidget {
   const SwipeKeyPad({
     super.key,
@@ -515,59 +621,108 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// the finger stays down and the drag is still widening the first word.
   Offset? _wordFrom;
 
-  /// The end of the selection a later drag leaves alone, while it lasts.
+  /// The end of the selection a handle drag leaves alone, while one lasts.
   CellOffset? _pinned;
 
-  /// Where the Copy bar sits, or null while it is hidden: whenever a finger is
-  /// shaping the selection, so it is never under one.
-  ({double? top, double? bottom, double x})? _bar;
+  /// Where the end being dragged has got to, in the terminal's own
+  /// coordinates: where its handle pointed, plus however far the finger has
+  /// moved since.
+  Offset _dragAt = Offset.zero;
+
+  /// The terminal's scroll, while a drag that missed the handles drives it.
+  Drag? _scroll;
+
+  /// How the selection sits in this pad, worked out from xterm2's cells each
+  /// time it or the text under it moves: the feet its two handles hang from,
+  /// null for one out of sight, the height of a row, and where the toolbar
+  /// goes. Null while there is no selection to show.
+  ({
+    Offset? start,
+    Offset? end,
+    double line,
+    TextSelectionToolbarAnchors toolbar,
+  })? _shown;
+
+  /// Set while a re-placing waits for the frame to be out.
+  bool _placing = false;
 
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_onSelectionChanged);
+    widget.terminal.addListener(_onOutput);
   }
 
   @override
   void didUpdateWidget(SwipeKeyPad oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller == widget.controller) return;
-    oldWidget.controller.removeListener(_onSelectionChanged);
-    widget.controller.addListener(_onSelectionChanged);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onSelectionChanged);
+      widget.controller.addListener(_onSelectionChanged);
+    }
+    if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.removeListener(_onOutput);
+      widget.terminal.addListener(_onOutput);
+    }
   }
 
   @override
   void dispose() {
     _repeat?.cancel();
     widget.controller.removeListener(_onSelectionChanged);
+    widget.terminal.removeListener(_onOutput);
     super.dispose();
   }
 
   void _onSelectionChanged() {
-    if (!_selecting || widget.controller.selection != null) return;
+    if (!_selecting) return;
+    if (widget.controller.selection != null) {
+      setState(_place);
+      return;
+    }
+
+    // The drag recogniser goes with the selection, and would leave the scroll
+    // hanging mid-drag.
+    _scroll?.cancel();
     setState(() {
       _selecting = false;
       _wordFrom = null;
       _pinned = null;
-      _bar = null;
+      _shown = null;
     });
   }
 
-  /// The TerminalView inside [SwipeKeyPad.child], found rather than handed in
-  /// so a pad needs nothing beyond the controller its view was already given.
-  TerminalViewState? _view() {
-    TerminalViewState? view;
+  /// New output can move the selected text, so the handles and the toolbar
+  /// are placed again — once the frame is out, because a terminal sitting on
+  /// its last line takes the scroll that brings new output up while it lays
+  /// out, and tells nobody.
+  void _onOutput() {
+    if (!_selecting || _placing) return;
+    _placing = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _placing = false;
+      if (mounted && _selecting) setState(_place);
+    });
+  }
+
+  /// The first [T] inside [SwipeKeyPad.child] — its TerminalView, or the
+  /// Scrollable that scrolls it — found rather than handed in so a pad needs
+  /// nothing beyond the controller its view was already given.
+  T? _find<T extends State>() {
+    T? found;
     void look(Element element) {
-      if (element is StatefulElement && element.state is TerminalViewState) {
-        view ??= element.state as TerminalViewState;
+      if (element is StatefulElement && element.state is T) {
+        found ??= element.state as T;
       } else {
         element.visitChildren(look);
       }
     }
 
     context.visitChildElements(look);
-    return view;
+    return found;
   }
+
+  TerminalViewState? _view() => _find<TerminalViewState>();
 
   /// Whether [global] is on a character rather than a space, an empty cell,
   /// an empty row or the padding round the grid.
@@ -603,74 +758,114 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     setState(() {
       _selecting = true;
       _wordFrom = at;
-      _bar = null;
+      _place();
     });
   }
 
-  /// Puts the bar just above the selection, or just below it when it starts
-  /// too near the top, and across from its middle.
+  /// Works out [_shown] from xterm2's cell geometry: a cell's offset in the
+  /// terminal, which already takes the scroll into account, and the cell
+  /// size, brought into this pad's coordinates.
   ///
-  /// ponytail: placed as the finger lifts, so output that scrolls the
-  /// selection away leaves the bar where it was. Re-place it on the
-  /// terminal's own notifications if that grates.
-  void _placeBar() {
+  /// The handles hang from the foot of the first cell and of the gap after
+  /// the last, which is the text's baseline as near as a terminal has one.
+  /// The toolbar goes over the middle of a selection on one row and over the
+  /// middle of the pad for one across rows, above the selection, or below it
+  /// when there is no room above — the anchors a text field would give it.
+  void _place() {
     final range = widget.controller.selection?.normalized;
     final render = _view()?.renderTerminal;
     final box = context.findRenderObject() as RenderBox?;
-    if (range == null || render == null || box == null) return;
+    if (range == null || render == null || box == null) {
+      _shown = null;
+      return;
+    }
 
-    Offset at(CellOffset cell) =>
-        box.globalToLocal(render.localToGlobal(render.getOffset(cell)));
-    final begin = at(range.begin);
-    final end = at(range.end);
-    final above = begin.dy > 64;
-    _bar = (
-      top: above ? null : end.dy + render.cellSize.height + 8,
-      bottom: above ? box.size.height - begin.dy + 8 : null,
-      x: ((begin.dx + end.dx) / box.size.width - 1).clamp(-1.0, 1.0),
+    final line = render.cellSize.height;
+    Offset foot(CellOffset cell) => box.globalToLocal(
+          render.localToGlobal(render.getOffset(cell) + Offset(0, line)),
+        );
+    final start = foot(range.begin);
+    final end = foot(range.end);
+    final size = box.size;
+    Offset? inSight(Offset foot) =>
+        foot.dy >= 0 && foot.dy <= size.height ? foot : null;
+    final x = start.dy == end.dy ? (start.dx + end.dx) / 2 : size.width / 2;
+    // Held inside the pad, as a text field holds them inside itself. The
+    // lower one is held a toolbar short of the bottom, because this pad clips
+    // where an overlay would not, and a selection running off both edges —
+    // Select all, say — would otherwise put Copy out of reach.
+    final lowest = math.max(
+      0.0,
+      size.height -
+          kMinInteractiveDimension -
+          TextSelectionToolbar.kToolbarContentDistanceBelow,
+    );
+    _shown = (
+      start: inSight(start),
+      end: inSight(end),
+      line: line,
+      toolbar: TextSelectionToolbarAnchors(
+        primaryAnchor: Offset(x, (start.dy - line).clamp(0.0, size.height)),
+        secondaryAnchor: Offset(x, end.dy.clamp(0.0, lowest)),
+      ),
     );
   }
 
-  /// Once the finger has lifted, a drag moves whichever end of the selection
-  /// is nearer where it lands and leaves the other where it was.
-  void _grab(DragStartDetails details) {
+  /// A handle is picked up: the other end stays where it is, and this one
+  /// follows the finger from where the handle points rather than from where
+  /// the finger landed, a line or so lower, so picking it up moves nothing.
+  void _grab(bool start) {
     final range = widget.controller.selection?.normalized;
     final render = _view()?.renderTerminal;
     if (range == null || render == null) return;
 
-    final at = render.globalToLocal(details.globalPosition);
-    double reach(CellOffset end) => (render.getOffset(end) - at).distance;
     setState(() {
-      _pinned = reach(range.begin) < reach(range.end) ? range.end : range.begin;
-      _bar = null;
+      _pinned = start ? range.end : range.begin;
+      _dragAt = render.getOffset(start ? range.begin : range.end) +
+          Offset(0, render.cellSize.height / 2);
     });
   }
 
+  /// Moves the dragged end, a cell at a time, to the gap between cells
+  /// nearest the finger. The ends may cross: the range is normalised
+  /// wherever it is read, so the handles trade places, as they do in a text
+  /// field.
+  ///
+  /// ponytail: a handle held at the top or bottom edge does not scroll the
+  /// terminal on. Scroll there first; nudge the scroll from the handle's
+  /// distance past the edge if reaching far selections grates.
   void _drag(DragUpdateDetails details) {
     final pinned = _pinned;
     final render = _view()?.renderTerminal;
     if (pinned == null || render == null) return;
 
-    final cell =
-        render.getCellOffset(render.globalToLocal(details.globalPosition));
+    _dragAt += details.delta;
+    final cell = render.getCellOffset(_dragAt);
+    final pastMiddle = _dragAt.dx - render.getOffset(cell).dx >
+        render.cellSize.width / 2;
+    final gap = pastMiddle ? CellOffset(cell.x + 1, cell.y) : cell;
+    // Nothing selected is no selection, and the same end twice is no move.
+    if (gap == pinned || gap == widget.controller.selection?.end) return;
+
     final buffer = widget.terminal.buffer;
     widget.controller.setSelection(
       buffer.createAnchorFromOffset(pinned),
-      // The end is exclusive, so reaching past the pinned end takes in the
-      // cell under the finger, as reaching before it does.
-      buffer.createAnchorFromOffset(
-        cell.isBefore(pinned) ? cell : CellOffset(cell.x + 1, cell.y),
-      ),
+      buffer.createAnchorFromOffset(gap),
     );
   }
 
-  /// A finger that was shaping the selection has lifted, so the bar can come
-  /// back without being under it.
+  /// A finger that was shaping the selection has lifted, so the toolbar can
+  /// come back without being under it.
   void _settle() => setState(() {
         _wordFrom = null;
         _pinned = null;
-        _placeBar();
       });
+
+  /// While a selection is up the pad takes every touch, so a drag that missed
+  /// the handles is handed to the scroll position of the terminal's own
+  /// Scrollable — the one it would have driven itself, fling and all.
+  void _scrollStart(DragStartDetails details) => _scroll =
+      _find<ScrollableState>()?.position.drag(details, () => _scroll = null);
 
   void _copy() {
     final range = widget.controller.selection;
@@ -683,6 +878,29 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
       );
     }
     widget.controller.clearSelection();
+  }
+
+  /// The clipboard goes to the shell through xterm2's own paste, the one a
+  /// hardware Ctrl+V takes, so it arrives bracketed when the shell asked for
+  /// that.
+  ///
+  /// ponytail: offered whether or not the clipboard holds any text. A
+  /// ClipboardStatusNotifier would hide it when empty, as a text field does.
+  Future<void> _paste() async {
+    widget.controller.clearSelection();
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    if (text != null) widget.terminal.paste(text);
+  }
+
+  /// Everything the terminal holds, scrollback and all, as xterm2's own
+  /// Ctrl+A takes it.
+  void _selectAll() {
+    final buffer = widget.terminal.buffer;
+    widget.controller.setSelection(
+      buffer.createAnchor(0, 0),
+      buffer.createAnchor(widget.terminal.viewWidth, buffer.height - 1),
+      mode: SelectionMode.line,
+    );
   }
 
   void _onUpdate(LongPressMoveUpdateDetails details) {
@@ -785,11 +1003,54 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     _travelled = Offset.zero;
   }
 
+  /// One of Flutter's own selection handles, hung by its anchor from [foot]
+  /// the way a text field hangs it from the baseline, in a touch target as
+  /// big as the one Flutter's own overlay gives it. Keyed by its side, so a
+  /// handle keeps its drag while the other one comes and goes.
+  Widget _handle(TextSelectionHandleType type, Offset foot, double line) {
+    final controls = materialTextSelectionControls;
+    final size = controls.getHandleSize(line);
+    final at = foot -
+        controls.getHandleAnchor(type, line) -
+        Offset(
+          (kMinInteractiveDimension - size.width) / 2,
+          (kMinInteractiveDimension - size.height) / 2,
+        );
+
+    return Positioned(
+      key: ValueKey(type),
+      left: at.dx,
+      top: at.dy,
+      child: GestureDetector(
+        // Opaque, and above the pad, so a touch on it goes nowhere else and
+        // the drag starts the moment the finger lands.
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => _grab(type == TextSelectionHandleType.left),
+        onPanUpdate: _drag,
+        onPanEnd: (_) => _settle(),
+        child: SizedBox.square(
+          dimension: kMinInteractiveDimension,
+          child: Center(child: controls.buildHandle(context, type, line)),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final shown = _shown;
+
     return Stack(
       children: [
-        widget.child,
+        // The terminal's scrolling, heard on its way up, so the handles and
+        // the toolbar go where the text goes.
+        NotificationListener<ScrollUpdateNotification>(
+          onNotification: (_) {
+            if (_selecting) setState(_place);
+            return false;
+          },
+          child: widget.child,
+        ),
         // A layer over the terminal rather than a wrapper round it, so it
         // meets every touch before xterm2 does. That order is what decides the
         // long press: xterm2 holds one too, for selecting text, both wait out
@@ -798,7 +1059,10 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
         // and every hold would select, even on the blank the arrows want.
         // Translucent, so the touch still reaches the terminal underneath for
         // the taps and drags this lets go of — except while a selection is
-        // up, when a drag has to shape it rather than scroll.
+        // up. xterm2 lets go of a selection once a touch has lasted 100ms,
+        // which a slow drag does well before it counts as a scroll, so while
+        // one is up the pad keeps every touch and hands a drag on to the
+        // terminal's scroll itself.
         Positioned.fill(
           child: RawGestureDetector(
             behavior: _selecting
@@ -809,24 +1073,23 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
               // ponytail: the one cell under the finger decides, so a hold on
               // the space between two words steers rather than selects. Look
               // a cell either side too if people keep missing the letter.
-              if (!_selecting || _wordFrom != null)
-                LongPressGestureRecognizer:
-                    GestureRecognizerFactoryWithHandlers<
-                        LongPressGestureRecognizer>(
-                  () => LongPressGestureRecognizer(
-                    debugOwner: this,
-                    supportedDevices: const {PointerDeviceKind.touch},
-                  ),
-                  (instance) {
-                    instance
-                      ..onLongPressStart = _start
-                      ..onLongPressMoveUpdate = _onUpdate
-                      ..onLongPressEnd = (_) {
-                        _swiping ? _stop() : _settle();
-                      }
-                      ..onLongPressCancel = _stop;
-                  },
+              LongPressGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<
+                      LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(
+                  debugOwner: this,
+                  supportedDevices: const {PointerDeviceKind.touch},
                 ),
+                (instance) {
+                  instance
+                    ..onLongPressStart = _start
+                    ..onLongPressMoveUpdate = _onUpdate
+                    ..onLongPressEnd = (_) {
+                      _swiping ? _stop() : _settle();
+                    }
+                    ..onLongPressCancel = _stop;
+                },
+              ),
               // ponytail: this holds the arena for kDoubleTapTimeout, so a
               // single tap raises the keyboard ~300ms later than it used to.
               // Detect the second tap from a plain Listener instead if that
@@ -841,17 +1104,19 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
                       instance.onDoubleTap = () => widget.onEmit('\t'),
                 ),
               if (_selecting) ...{
-                PanGestureRecognizer:
-                    GestureRecognizerFactoryWithHandlers<PanGestureRecognizer>(
-                  () => PanGestureRecognizer(debugOwner: this),
+                VerticalDragGestureRecognizer:
+                    GestureRecognizerFactoryWithHandlers<
+                        VerticalDragGestureRecognizer>(
+                  () => VerticalDragGestureRecognizer(debugOwner: this),
                   (instance) {
                     instance
-                      // Nearer to where the finger landed, not to where it
-                      // had got to by the time it counted as a drag.
-                      ..dragStartBehavior = DragStartBehavior.down
-                      ..onStart = _grab
-                      ..onUpdate = _drag
-                      ..onEnd = (_) => _settle();
+                      ..onStart = _scrollStart
+                      ..onUpdate = (details) {
+                        _scroll?.update(details);
+                      }
+                      ..onEnd = (details) {
+                        _scroll?.end(details);
+                      };
                   },
                 ),
                 TapGestureRecognizer:
@@ -874,31 +1139,35 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
               child: _SwipeReadout(arrow: _arrow, level: _level),
             ),
           ),
-        if (_bar case final bar?)
-          Positioned(
-            top: bar.top,
-            bottom: bar.bottom,
-            left: 8,
-            right: 8,
-            child: Align(
-              alignment: Alignment(bar.x, 0),
-              child: Material(
-                elevation: 3,
-                borderRadius: BorderRadius.circular(20),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextButton(onPressed: _copy, child: const Text('Copy')),
-                    IconButton(
-                      tooltip: 'Clear selection',
-                      onPressed: widget.controller.clearSelection,
-                      icon: const Icon(Icons.close, size: 20),
-                    ),
-                  ],
-                ),
+        if (shown != null) ...[
+          if (shown.start case final foot?)
+            _handle(TextSelectionHandleType.left, foot, shown.line),
+          if (shown.end case final foot?)
+            _handle(TextSelectionHandleType.right, foot, shown.line),
+          // Over the handles, where Flutter's own overlay puts it, and gone
+          // whenever a finger is shaping the selection, so it is never under
+          // one.
+          if (_wordFrom == null && _pinned == null)
+            Positioned.fill(
+              child: AdaptiveTextSelectionToolbar.buttonItems(
+                anchors: shown.toolbar,
+                buttonItems: [
+                  ContextMenuButtonItem(
+                    type: ContextMenuButtonType.copy,
+                    onPressed: _copy,
+                  ),
+                  ContextMenuButtonItem(
+                    type: ContextMenuButtonType.paste,
+                    onPressed: _paste,
+                  ),
+                  ContextMenuButtonItem(
+                    type: ContextMenuButtonType.selectAll,
+                    onPressed: _selectAll,
+                  ),
+                ],
               ),
             ),
-          ),
+        ],
       ],
     );
   }
