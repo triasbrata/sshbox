@@ -130,7 +130,7 @@ class _HostsPageState extends State<HostsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('sshbox'),
+        title: const Text('Clode'),
         actions: [
           IconButton(
             tooltip: 'Copy FCM token',
