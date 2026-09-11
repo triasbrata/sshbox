@@ -45,6 +45,8 @@ dependencies:
   firebase_messaging: ^16.6.0
   flutter_foreground_task: ^11.0.3
   url_launcher: ^6.3.2
+  re_editor: ^0.10.0
+  re_highlight: ^0.0.3
 
 dev_dependencies:
   flutter_test:
