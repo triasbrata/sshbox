@@ -61,7 +61,7 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
-| Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | — | in development |
+| Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | de465b5, 6452ba6 | on tablet, UAT pending |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
 | Terminal selection with the platform's start/end handles and toolbar | Coordinator | — | in development |
 | Follow's busy-check messages as a toast | Coordinator | b984c8e | on tablet, UAT pending |
@@ -71,7 +71,7 @@ through its sub-agents.
 | Follow in terminal: every folder tapped in the tree, and never while a program runs | Coordinator | 47c3301, 3403407 | UAT passed |
 | Code editor: line numbers, syntax colour, whole-file saves, drafts, sudo open/save | text editor enhancement | e20b9fe, 6bd0c2a, b418d69 | UAT passed |
 | Long-press a shell tab → Duplicate session | Coordinator | 24c826a | UAT passed |
-| File tab reads `host · file` | Coordinator | e2b66eb | on tablet, UAT pending |
+| File tab reads `<hostname> · file` | Coordinator | e2b66eb, a168f3a | on tablet, UAT pending (first try failed: it showed the profile label "WSL via tailnet", not the machine's hostname "DESKTOP-L2EPDPG"; fixed in a168f3a) |
 | Magic key: two concentric rings, and it fades to 60% while idle | Coordinator | e3e7387, 30a4171, 29259ab | on tablet, UAT pending |
 | Magic key: throw it at a side to tuck it away | Coordinator | 7156040 | on tablet, UAT pending |
 | Terminal arrows only after a long press; a plain drag scrolls | Coordinator | 50e2107 | on tablet, UAT pending |
