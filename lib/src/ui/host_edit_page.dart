@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
@@ -71,6 +73,10 @@ class _HostEditPageState extends State<HostEditPage> {
   late SshAuthMethod _authMethod;
   late bool _forwardPorts;
   late bool _useTmux;
+  late String _jumpHostId;
+
+  /// The hosts this one can jump through: every other saved host, once read.
+  List<HostProfile>? _jumpHosts;
   bool _saving = false;
 
   bool get _isEditing => widget.existing != null;
@@ -87,6 +93,21 @@ class _HostEditPageState extends State<HostEditPage> {
     _authMethod = existing?.authMethod ?? SshAuthMethod.password;
     _forwardPorts = existing?.forwardPorts ?? false;
     _useTmux = existing?.useTmux ?? false;
+    _jumpHostId = existing?.jumpHostId ?? '';
+    unawaited(_loadJumpHosts());
+  }
+
+  Future<void> _loadJumpHosts() async {
+    final hosts = [
+      for (final host in await widget.repository.load())
+        if (host.id != widget.existing?.id) host,
+    ];
+    if (!mounted) return;
+    setState(() {
+      _jumpHosts = hosts;
+      // A jump host deleted since is no jump host at all.
+      if (!hosts.any((host) => host.id == _jumpHostId)) _jumpHostId = '';
+    });
   }
 
   @override
@@ -124,6 +145,7 @@ class _HostEditPageState extends State<HostEditPage> {
       fileRoot: _fileRoot.text.trim(),
       forwardPorts: _forwardPorts,
       useTmux: _useTmux,
+      jumpHostId: _jumpHostId,
     );
 
     await widget.repository.upsert(profile);
@@ -206,6 +228,39 @@ class _HostEditPageState extends State<HostEditPage> {
                   : null,
             ),
             const SizedBox(height: 12),
+            if (_jumpHosts case final jumpHosts?) ...[
+              DropdownButtonFormField<String>(
+                initialValue: _jumpHostId,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: 'Jump host',
+                  helperText: jumpHosts.isEmpty
+                      ? 'To connect through another host, like ssh -J, add '
+                            'that host first.'
+                      : 'Optional. Connects through another saved host '
+                            'first, like ssh -J, signing in there with its own '
+                            'login. Host above is then the address that host '
+                            'reaches this one at.',
+                  helperMaxLines: 3,
+                ),
+                items: [
+                  const DropdownMenuItem(
+                    value: '',
+                    child: Text('None, connect directly'),
+                  ),
+                  for (final host in jumpHosts)
+                    DropdownMenuItem(
+                      value: host.id,
+                      child: Text(
+                        host.displayName,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (id) => setState(() => _jumpHostId = id ?? ''),
+              ),
+              const SizedBox(height: 12),
+            ],
             TextFormField(
               controller: _fileRoot,
               decoration: const InputDecoration(
