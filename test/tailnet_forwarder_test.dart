@@ -48,6 +48,10 @@ const _postgres = '0100007F:1538 1000';
 const _sshd = '00000000:0016 0';
 const _tailscaleServe = '137F5764:0050 0';
 
+/// The user's server on 127.0.0.1:[port].
+String _listening(int port) =>
+    '0100007F:${port.toRadixString(16).toUpperCase().padLeft(4, '0')} 1000';
+
 void main() {
   group('parseListener', () {
     test('reads /proc/net/tcp addresses the way the kernel writes them', () {
@@ -133,6 +137,74 @@ void main() {
       expect(forwarder.forwards, isEmpty);
       expect(host.cancelled, contains(host.serves.single));
       expect(changes, greaterThan(0));
+    });
+
+    test("forwards vite's port and not the inspector Cloudflare's plugin "
+        'opens beside it', () async {
+      await connect([]);
+      // `vite dev --port 3001` with @cloudflare/vite-plugin: vite, and
+      // workerd's V8 inspector.
+      await host.sweep([_listening(3001), _listening(9229)]);
+      expect(host.serves, ['tailscale serve --tcp 3002 tcp://localhost:3001']);
+      expect(forwarder.forwards.single.port, 3001);
+    });
+
+    test('never forwards a debugger or dev tool', () async {
+      await connect([]);
+      await host.sweep([
+        for (var port = 9229; port <= 9239; port++) _listening(port),
+        for (final port in [9222, 6499, 5858, 24678]) _listening(port),
+        _vite,
+      ]);
+      expect(host.serves, ['tailscale serve --tcp 3001 tcp://localhost:3000']);
+    });
+
+    test('a server on IPv4 and IPv6 both is one forward', () async {
+      await connect([]);
+      // 0.0.0.0:3000 in /proc/net/tcp and [::]:3000 in tcp6.
+      const both = [
+        '00000000:0BB8 1000',
+        '00000000000000000000000000000000:0BB8 1000',
+      ];
+      await host.sweep(both);
+      await host.sweep(both);
+      expect(host.serves, hasLength(1));
+      expect(forwarder.forwards, hasLength(1));
+    });
+
+    test('a server that stops has its serve ended on the host, and restarted '
+        'it is forwarded once more at the same port', () async {
+      const serve = 'tailscale serve --tcp 3001 tcp://localhost:3000';
+      await connect([]);
+      await host.sweep([_vite]);
+      expect(host.serves, [serve]);
+
+      // Ctrl-C. Its serve is still up on the tailnet address when the sweep
+      // is read; closing the channel does not end it under Tailscale SSH, so
+      // it is killed by name too.
+      await host.sweep(['137F5764:0BB9 0']);
+      expect(forwarder.forwards, isEmpty);
+      expect(host.cancelled, [serve]);
+      expect(host.commands.last, "pkill -xf '$serve'");
+
+      // `bun dev` again, with the old serve gone.
+      await host.sweep([_vite]);
+      expect(host.serves, [serve, serve]);
+      expect(forwarder.forwards.single.publicPort, 3001);
+    });
+
+    test('stopping ends every serve on the host', () async {
+      await connect([]);
+      await host.sweep([_vite, _postgres]);
+      final serves = host.serves;
+      expect(serves, hasLength(2));
+
+      forwarder.stop();
+      expect(forwarder.forwards, isEmpty);
+      for (final serve in serves) {
+        expect(host.cancelled, contains(serve));
+        expect(host.commands, contains("pkill -xf '$serve'"));
+      }
     });
 
     test('skips a public port something already listens on', () async {
@@ -233,8 +305,11 @@ void main() {
     expect(firstHost.serves, hasLength(1));
     expect(secondHost.serves, isEmpty);
 
-    // The tab that forwarded it closes: the other one takes over.
+    // The tab that forwarded it closes, ending its serve on the host, and
+    // the other one takes over.
     await manager.close(first.id);
+    expect(firstHost.cancelled, contains(firstHost.serves.single));
+    expect(firstHost.commands, contains("pkill -xf '${firstHost.serves.single}'"));
     await secondHost.sweep([_vite]);
     expect(secondHost.serves, hasLength(1));
   });

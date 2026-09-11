@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
+import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
@@ -57,6 +58,32 @@ class Dartssh2Transport implements SessionTransport {
   }
 }
 
+/// The jump hosts [host] is reached through, from [hosts], the one dialled
+/// directly first. Empty when [host] has none.
+@visibleForTesting
+List<HostProfile> jumpChain(HostProfile host, List<HostProfile> hosts) {
+  final chain = <HostProfile>[];
+  var hop = host;
+  while (hop.jumpHostId.isNotEmpty) {
+    final jump = hosts.where((saved) => saved.id == hop.jumpHostId).firstOrNull;
+    if (jump == null) {
+      throw SshSessionException(
+        'The jump host of ${hop.displayName} was deleted. Edit it and pick '
+        'another.',
+      );
+    }
+    if (jump.id == host.id || chain.any((seen) => seen.id == jump.id)) {
+      throw SshSessionException(
+        'The jump hosts go round in a loop at ${jump.displayName}. Edit one '
+        'of them and pick another.',
+      );
+    }
+    chain.insert(0, jump);
+    hop = jump;
+  }
+  return chain;
+}
+
 class _Dartssh2Session
     implements
         TerminalSession,
@@ -79,6 +106,9 @@ class _Dartssh2Session
   final _subscriptions = <StreamSubscription<Object?>>[];
 
   SSHClient? _client;
+
+  /// The jump hosts [_client] is tunnelled through, first dialled first.
+  final _jumps = <SSHClient>[];
   SSHSession? _shell;
   String? _failure;
   bool _disposed = false;
@@ -103,34 +133,39 @@ class _Dartssh2Session
     required int rows,
     required bool shell,
   }) async {
+    // The host being signed in to, so a failure on a jump host says so.
+    var hop = host;
     try {
-      final identities = await _loadIdentities(host, secrets);
-      final password = await _loadPassword(host, secrets);
+      final chain = [
+        if (host.jumpHostId.isNotEmpty)
+          ...jumpChain(host, await HostRepository(secrets).load()),
+        host,
+      ];
 
-      final socket = await SSHSocket.connect(
-        host.host,
-        host.port,
-        timeout: const Duration(seconds: 15),
+      hop = chain.first;
+      var client = await _login(
+        hop,
+        secrets,
+        () => SSHSocket.connect(
+          hop.host,
+          hop.port,
+          timeout: const Duration(seconds: 15),
+        ),
       );
-
-      final isTailscale = host.authMethod == SshAuthMethod.tailscale;
-
-      _client = SSHClient(
-        socket,
-        username: host.username,
-        identities: identities,
-        // Offer nothing for Tailscale SSH. dartssh2 always appends `none` as
-        // the last method to try, so with no others configured that is the
-        // only one attempted — which is what tailscaled expects. Anything else
-        // would be tried first and rejected before we ever got there.
-        onPasswordRequest: isTailscale ? null : () => password,
-        onUserauthBanner: _onAuthBanner,
-        // The check is completed in a browser by a human, so the usual auth
-        // deadline is far too short.
-        authTimeout: isTailscale ? const Duration(minutes: 5) : null,
-        onVerifyHostKey: (type, fingerprint) =>
-            _verifyHostKey(host, utf8.decode(fingerprint)),
-      );
+      for (final next in chain.skip(1)) {
+        final jump = client;
+        _jumps.add(jump);
+        await jump.authenticated;
+        hop = next;
+        client = await _login(
+          next,
+          secrets,
+          () => jump
+              .forwardLocal(next.host, next.port)
+              .timeout(const Duration(seconds: 15)),
+        );
+      }
+      _client = client;
 
       if (!shell) {
         // What opening a shell would otherwise wait out, and fail on.
@@ -160,11 +195,43 @@ class _Dartssh2Session
 
       _status.value = SessionStatus.connected;
     } catch (error) {
-      _failure = _describe(error);
+      final problem = _describe(error);
+      _failure = hop == host ? problem : 'Through ${hop.displayName}: $problem';
       await _teardown();
       _status.value = SessionStatus.failed;
       throw SshSessionException(_failure!);
     }
+  }
+
+  /// Signs in to [host] over the connection [dial] opens: straight to it, or
+  /// through the jump host before it. Its credentials are read before
+  /// dialling, so a host with nothing stored fails without a connection
+  /// left open.
+  Future<SSHClient> _login(
+    HostProfile host,
+    SecretStore secrets,
+    Future<SSHSocket> Function() dial,
+  ) async {
+    final identities = await _loadIdentities(host, secrets);
+    final password = await _loadPassword(host, secrets);
+    final isTailscale = host.authMethod == SshAuthMethod.tailscale;
+
+    return SSHClient(
+      await dial(),
+      username: host.username,
+      identities: identities,
+      // Offer nothing for Tailscale SSH. dartssh2 always appends `none` as
+      // the last method to try, so with no others configured that is the
+      // only one attempted — which is what tailscaled expects. Anything else
+      // would be tried first and rejected before we ever got there.
+      onPasswordRequest: isTailscale ? null : () => password,
+      onUserauthBanner: _onAuthBanner,
+      // The check is completed in a browser by a human, so the usual auth
+      // deadline is far too short.
+      authTimeout: isTailscale ? const Duration(minutes: 5) : null,
+      onVerifyHostKey: (type, fingerprint) =>
+          _verifyHostKey(host, utf8.decode(fingerprint)),
+    );
   }
 
   /// Servers can send text during authentication. Tailscale SSH uses it to
@@ -382,6 +449,10 @@ class _Dartssh2Session
     _subscriptions.clear();
     _shell?.close();
     _client?.close();
+    for (final jump in _jumps) {
+      jump.close();
+    }
+    _jumps.clear();
     _shell = null;
     _client = null;
   }
@@ -413,6 +484,9 @@ class _Dartssh2Session
     }
     if (error is SSHKeyDecodeError) {
       return 'Could not read the private key. It must be an OpenSSH or PEM key.';
+    }
+    if (error is SSHChannelOpenError) {
+      return 'The jump host cannot reach this host: ${error.description}';
     }
     if (error is TimeoutException) {
       return 'Timed out reaching the host.';

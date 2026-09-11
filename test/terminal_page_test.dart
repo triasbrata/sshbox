@@ -769,21 +769,23 @@ void main() {
       await tester.pump();
     }
 
-    /// A while into the session vite starts on 3000, and tailscale answers
-    /// for it with [tailscale]; with [exits], and then gives up.
+    /// A while into the session vite starts on 3000, with anything [beside]
+    /// it, and tailscale answers for it with [tailscale]; with [exits], and
+    /// then gives up.
     Future<void> viteStarts(
       WidgetTester tester,
       List<String> tailscale, {
       bool exits = false,
+      List<String> beside = const [],
     }) async {
       // The uid, and a sweep with nothing new up.
       watch
         ..add('1000')
         ..add('');
       await tester.pump(const Duration(seconds: 2));
-      watch
-        ..add('0100007F:0BB8 1000')
-        ..add('');
+      watch.add('0100007F:0BB8 1000');
+      beside.forEach(watch.add);
+      watch.add('');
       await tester.pump();
       tailscale.forEach(serving.add);
       if (exits) unawaited(serving.close());
@@ -829,6 +831,34 @@ void main() {
 
       await viteStarts(tester, ['|-- tcp://a.tail1.ts.net:3001']);
       expect(_toast(said, ToastificationType.info), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets("vite with Cloudflare's plugin is one toast: workerd's "
+        'inspector beside it stays off the tailnet', (tester) async {
+      await pumpApp(tester);
+      await viteStarts(
+        tester,
+        ['|-- tcp://a.tail1.ts.net:3001'],
+        beside: ['0100007F:240D 1000'], // 127.0.0.1:9229
+      );
+      expect(_toast(said, ToastificationType.info), findsOneWidget);
+      expect(find.byType(BuiltInToastBuilder), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a server that stops says its port closed', (tester) async {
+      await pumpApp(tester);
+      await viteStarts(tester, ['|-- tcp://a.tail1.ts.net:3001']);
+      // A sweep without vite.
+      watch.add('');
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        _toast('Port 3000 closed', ToastificationType.info),
+        findsOneWidget,
+      );
       await tester.pumpAndSettle();
     });
 

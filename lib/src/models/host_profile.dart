@@ -23,6 +23,7 @@ class HostProfile {
     this.fileRoot = '',
     this.forwardPorts = false,
     this.useTmux = false,
+    this.jumpHostId = '',
   });
 
   final String id;
@@ -46,6 +47,11 @@ class HostProfile {
   /// host, and changes what a tab is.
   final bool useTmux;
 
+  /// The saved host this one is reached through, as OpenSSH's ProxyJump does:
+  /// the app signs in there with that host's own login, and tunnels on from
+  /// it. Blank connects directly. A jump host may have one of its own.
+  final String jumpHostId;
+
   /// What we show under the label, e.g. `root@10.0.2.2` or `me@box:2222`.
   String get target =>
       '$username@$host${port == 22 ? '' : ':$port'}';
@@ -62,6 +68,7 @@ class HostProfile {
     String? fileRoot,
     bool? forwardPorts,
     bool? useTmux,
+    String? jumpHostId,
   }) {
     return HostProfile(
       id: id,
@@ -73,6 +80,7 @@ class HostProfile {
       fileRoot: fileRoot ?? this.fileRoot,
       forwardPorts: forwardPorts ?? this.forwardPorts,
       useTmux: useTmux ?? this.useTmux,
+      jumpHostId: jumpHostId ?? this.jumpHostId,
     );
   }
 
@@ -86,6 +94,7 @@ class HostProfile {
         'fileRoot': fileRoot,
         'forwardPorts': forwardPorts,
         'useTmux': useTmux,
+        'jumpHostId': jumpHostId,
       };
 
   factory HostProfile.fromJson(Map<String, dynamic> json) {
@@ -102,6 +111,7 @@ class HostProfile {
       fileRoot: json['fileRoot'] as String? ?? '',
       forwardPorts: json['forwardPorts'] as bool? ?? false,
       useTmux: json['useTmux'] as bool? ?? false,
+      jumpHostId: json['jumpHostId'] as String? ?? '',
     );
   }
 }

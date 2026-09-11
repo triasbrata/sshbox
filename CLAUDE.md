@@ -70,7 +70,8 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
-| Tailnet forwarding: never forward debugger ports (9229 etc.), stop a forward as soon as its server stops, reuse the same tailnet port when it comes back (restarting `bun dev` stacked 3002–3005 and exposed the inspector) | Coordinator | — | in development |
+| Proxy jump: a host can connect through another saved host ("Jump host" in its edit page, like `ssh -J`; a jump host may have its own) | proxy jump settings | b8484f5 | on tablet, UAT pending |
+| Tailnet forwarding: never forward debugger ports (9229 etc.), stop a forward as soon as its server stops, reuse the same tailnet port when it comes back (restarting `bun dev` stacked 3002–3005 and exposed the inspector) | Coordinator | 5ed4f74 | on tablet, UAT pending |
 | Settings page (⚙ on the host list) with a terminal font picker (Cascadia Mono, Cascadia Code, CaskaydiaCove Nerd Font, JetBrains Mono, Fira Code) and font size, live everywhere | Coordinator | 09ced89 | UAT passed |
 | App renamed to Clode (visible name only; package id, settings keys, tmux names and the sshbox:// scheme keep "sshbox") | Coordinator | 66d22e3 | UAT passed |
 | The Tailscale sign-in link opens in a web tab too (Google may refuse embedded sign-in; Open in browser is the fallback) | Coordinator | bf149c7 | on tablet, UAT pending (the user cannot trigger a Tailscale SSH sign-in to test it yet) |

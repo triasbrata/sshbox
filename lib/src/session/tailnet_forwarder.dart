@@ -21,6 +21,10 @@ class PortForward {
   String? error;
 
   StreamSubscription<String>? _serve;
+
+  /// What runs on the host for it, and, matched whole, what ends it there.
+  String get _command =>
+      'tailscale serve --tcp $publicPort tcp://localhost:$port';
 }
 
 /// A listening TCP socket on the host, as the watch reports it.
@@ -89,17 +93,33 @@ class TailnetForwarder {
     );
   }
 
-  /// Takes every forward down with the watch. Tailscale forgets a foreground
-  /// `serve` the moment its process goes, so nothing is left on the host.
+  /// Takes every forward down with the watch — the tab closing, the
+  /// connection going, or forwarding switched off. Tailscale forgets a
+  /// foreground `serve` the moment its process goes, so once [_release] has
+  /// ended it nothing is left on the host.
   void stop() {
     _watch?.cancel();
     _watch = null;
-    _host = null;
-    for (final forward in _forwards.values) {
-      forward._serve?.cancel();
-    }
+    _forwards.values.forEach(_release);
     _forwards.clear();
+    _host = null;
     problem = null;
+  }
+
+  /// Ends [forward]'s `tailscale serve`, and with it the port on the tailnet.
+  ///
+  /// Closing its channel is what hangs it up under OpenSSH, but Tailscale SSH
+  /// leaves a process that is not writing running for as long as the
+  /// connection lasts: still serving, and still holding its public port, so
+  /// each restart of `bun dev` put vite one port further up — 3002, 3003,
+  /// 3004 — beside the forwards that never went. So it is also killed by its
+  /// command line, on a channel of its own. With the connection gone there is
+  /// nothing to send that on, and no need: the host ends what it was running.
+  void _release(PortForward forward) {
+    forward._serve?.cancel();
+    _host
+        ?.run("pkill -xf '${forward._command}'")
+        .listen(null, onError: (_) {});
   }
 
   /// Says why and stops when the host cannot do this. Otherwise prints the
@@ -143,6 +163,24 @@ done''';
   // read that if a host moves it.
   static const _ephemeral = 32768;
 
+  /// Never forwarded, whoever started them: debuggers' and dev tools' own
+  /// ports, which come up beside a dev server rather than being one. `vite
+  /// dev` with Cloudflare's plugin opens workerd's inspector on 9229 next to
+  /// vite's 3001, and both are below the ephemeral range. An inspector runs
+  /// whatever code whoever connects sends it, so putting one on the tailnet
+  /// is remote code execution on the host, for every device the tailnet lets
+  /// in.
+  static const _debuggers = {
+    // V8's inspector: `node --inspect`, deno, and workerd under miniflare,
+    // wrangler and vite's Cloudflare plugin. A second inspector takes 9230,
+    // and so on up.
+    9229, 9230, 9231, 9232, 9233, 9234, 9235, 9236, 9237, 9238, 9239,
+    9222, // Chrome's DevTools, `--remote-debugging-port`: a browser's.
+    6499, // Bun's inspector, `bun --inspect`.
+    5858, // node's old `--debug`, from before the inspector.
+    24678, // vite's HMR websocket, from when it had a port of its own.
+  };
+
   void _onSweep(List<ListeningSocket> sockets) {
     // Anything listening, on any address and for anyone, is a port a forward
     // cannot take — tailscale's own listeners included.
@@ -150,9 +188,14 @@ done''';
       for (final socket in sockets) socket.port,
       for (final forward in _forwards.values) forward.publicPort,
     };
+    // A set of ports, so a server on both IPv4 and IPv6 — a row in
+    // /proc/net/tcp and another in tcp6 — is one forward.
     final mine = {
       for (final socket in sockets)
-        if (socket.uid == _uid && socket.local && socket.port < _ephemeral)
+        if (socket.uid == _uid &&
+            socket.local &&
+            socket.port < _ephemeral &&
+            !_debuggers.contains(socket.port))
           socket.port,
     };
     // A port that closes leaves the baseline, so restarting a server that
@@ -163,7 +206,10 @@ done''';
     var changed = false;
     for (final port in _forwards.keys.toList()) {
       if (mine.contains(port)) continue;
-      _forwards.remove(port)!._serve?.cancel();
+      // ponytail: a server back within one sweep of the kill can still find
+      // the old public port listening and move one up; a longer wait would
+      // need the kill's completion tracked.
+      _release(_forwards.remove(port)!);
       changed = true;
     }
     for (final port in mine) {
@@ -191,10 +237,7 @@ done''';
     // because tailscale dials it as written and so reaches a server that
     // bound only ::1.
     forward._serve = _host!
-        .run(
-          'tailscale serve --tcp $publicPort tcp://localhost:$port',
-          pty: true,
-        )
+        .run(forward._command, pty: true)
         .listen(
           (line) {
             final name = servedName(line, publicPort);
