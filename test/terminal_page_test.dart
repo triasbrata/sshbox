@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +12,7 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:toastification/toastification.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:xterm2/xterm.dart';
@@ -97,10 +100,22 @@ class _Shell
   /// `/proc` to read.
   String probe = 'sshbox\t42\t0\tclaude\t/home/me';
 
+  /// How the host answers a command, where a test says; anything else gets
+  /// [probe].
+  Stream<String>? Function(String command) answer = (_) => null;
+
   @override
   Stream<String> run(String command, {bool pty = false}) =>
-      Stream.value(probe);
+      answer(command) ?? Stream.value(probe);
 }
+
+/// The toast saying [message], if it is one of [type]'s.
+Finder _toast(String message, ToastificationType type) => find.ancestor(
+      of: find.text(message),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is BuiltInToastBuilder && widget.type == type,
+      ),
+    );
 
 void main() {
   testWidgets('no header: its buttons ride in the key bar, and no menu', (
@@ -252,8 +267,16 @@ void main() {
 
     testWidgets('says so when nothing can open it', (tester) async {
       await open(tester, 'https://dart.dev', {});
-      expect(find.text('No app can open https://dart.dev'), findsOneWidget);
+      // The toast's own frame, after the one that put its overlay in, and its
+      // slide in.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        _toast('No app can open https://dart.dev', ToastificationType.error),
+        findsOneWidget,
+      );
       expect(find.byType(SnackBar), findsNothing);
+      await tester.pumpAndSettle();
     });
 
     testWidgets('a sign-in check opens in-app, never in a web tab', (
@@ -486,7 +509,11 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(find.text('Open in terminal'));
-      await tester.pumpAndSettle();
+      // Not settled: that would sit out a refusal's toast as well. A frame for
+      // the toast's overlay, one for the toast, and its slide in.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
       return shell.sent;
     }
 
@@ -515,11 +542,15 @@ void main() {
       );
       expect(sent, isEmpty);
       expect(
-        find.text('claude is running — not moving the shell'),
+        _toast(
+          'claude is running — not moving the shell',
+          ToastificationType.warning,
+        ),
         findsOneWidget,
       );
       // Said in a toast, not a snack bar.
       expect(find.byType(SnackBar), findsNothing);
+      await tester.pumpAndSettle();
     });
 
     testWidgets('a host that cannot say gets nothing typed either', (
@@ -528,12 +559,90 @@ void main() {
       final sent = await openDevInTerminal(tester, '');
       expect(sent, isEmpty);
       expect(
-        find.text(
+        _toast(
           'The host cannot say what the shell is running — not moving it',
+          ToastificationType.warning,
         ),
         findsOneWidget,
       );
       expect(find.byType(SnackBar), findsNothing);
+      await tester.pumpAndSettle();
+    });
+  });
+
+  group('a server forwarded to the tailnet', () {
+    late List<Uri> openedWeb;
+    const said = 'Port 3000 is on a.tail1.ts.net:3001';
+
+    /// Brings up a shell on a host set to forward ports, where vite starts on
+    /// 3000 once the session is up and tailscale serves it on 3001.
+    Future<void> pumpPage(WidgetTester tester) async {
+      openedWeb = [];
+      final serving = StreamController<String>()
+        ..add('|-- tcp://a.tail1.ts.net:3001');
+      final shell = _Shell()
+        ..answer = (command) => command.startsWith('tailscale serve')
+            ? serving.stream
+            : command.contains('/proc/net/tcp')
+                // The uid, a sweep with nothing up, then one with vite in it.
+                ? Stream.fromIterable(['1000', '', '0100007F:0BB8 1000', ''])
+                : null;
+      final session = LiveSession(
+        host: const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+          forwardPorts: true,
+        ),
+        transport: shell,
+      );
+      addTearDown(session.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TerminalPage(
+            session: session,
+            secrets: _NoSecrets(),
+            onOpenFile: (_, {line}) {},
+            onOpenWeb: openedWeb.add,
+            onSaveFileRoot: (_) async {},
+          ),
+        ),
+      );
+      // Connects after the first frame, which is when the toast is asked
+      // for; then a frame for its overlay, one for it, and its slide in.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('says so in an info toast that stays five seconds', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      expect(_toast(said, ToastificationType.info), findsOneWidget);
+      expect(find.byType(SnackBar), findsNothing);
+
+      // Four seconds in, still up.
+      await tester.pump(const Duration(milliseconds: 3400));
+      expect(find.text(said), findsOneWidget);
+      // At five it goes. Not settled: that would wait out any countdown.
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump();
+      expect(find.text(said), findsNothing);
+    });
+
+    testWidgets('and its Open opens the port in a tab beside the shell', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(openedWeb, [Uri.parse('http://a.tail1.ts.net:3001')]);
+      expect(find.text(said), findsNothing);
     });
   });
 }

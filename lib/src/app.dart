@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:toastification/toastification.dart';
 
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
@@ -174,26 +175,31 @@ class _SshboxAppState extends State<SshboxApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'sshbox',
-      debugShowCheckedModeBanner: false,
-      scaffoldMessengerKey: _messengerKey,
-      // A terminal is a dark surface; forcing dark keeps the app chrome from
-      // fighting the terminal's own palette.
-      themeMode: ThemeMode.dark,
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF4CC38A),
-          brightness: Brightness.dark,
+    // Toasts (see `showToast`) stack under the status bar, three at most: a
+    // fourth pushes the oldest out rather than reaching down over the shell.
+    return ToastificationWrapper(
+      config: const ToastificationConfig(maxToastLimit: 3),
+      child: MaterialApp(
+        title: 'sshbox',
+        debugShowCheckedModeBanner: false,
+        scaffoldMessengerKey: _messengerKey,
+        // A terminal is a dark surface; forcing dark keeps the app chrome from
+        // fighting the terminal's own palette.
+        themeMode: ThemeMode.dark,
+        darkTheme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF4CC38A),
+            brightness: Brightness.dark,
+          ),
         ),
-      ),
-      home: TabsShell(
-        repository: _repository,
-        secrets: _secrets,
-        sessions: _sessions,
-        onOpenHost: (hostId) => openHost(hostId, newSession: true),
-        pushToken: () => _push.token,
+        home: TabsShell(
+          repository: _repository,
+          secrets: _secrets,
+          sessions: _sessions,
+          onOpenHost: (hostId) => openHost(hostId, newSession: true),
+          pushToken: () => _push.token,
+        ),
       ),
     );
   }

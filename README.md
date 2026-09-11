@@ -181,11 +181,11 @@ opens a web page in a tab of its own beside the shell it came from — see
 [Tabs](#tabs). The sign-in is the exception: identity providers, Google above
 all, refuse to sign in inside an embedded web view. It goes to a Custom Tab
 instead, as does a link with no shell to put it beside — the web tab's own
-**Open in browser**, or a port's snack bar still up after its tab closed. The
+**Open in browser**, or a port's toast still up after its tab closed. The
 phone's default browser — Chrome, Firefox, Edge — draws a Custom Tab over the
 app with its own engine, cookies and sign-ins, and Back comes back to the app. A browser that cannot do Custom Tabs gets the link as
 an ordinary page; `mailto:` and the like go wherever Android sends them; and
-when nothing takes it a toast says **No app can open** and the link.
+when nothing takes it a red toast says **No app can open** and the link.
 No `<queries>` is needed for this: url_launcher fires the Custom Tabs intent
 without asking the package manager first, which is the only thing Android 11's
 package visibility restricts.
@@ -320,9 +320,9 @@ tailnet can use Tailscale SSH.
 
 With **Forward ports to the tailnet** on in the host editor, a server started
 in a session goes on the tailnet by itself. Run `vite` on the host, it listens
-on `localhost:3000`, and a moment later the app says **Port 3000 is on
-`<host>.<tailnet>.ts.net:3001`**, with a button that opens it. The server
-stopping, or the tab closing, takes it off again.
+on `localhost:3000`, and a moment later a blue toast at the top says **Port
+3000 is on `<host>.<tailnet>.ts.net:3001`**, with **Open**, for five seconds.
+The server stopping, or the tab closing, takes it off again.
 
 ```
 vite ── localhost:3000 ◀── tailscale serve --tcp 3001 ◀── <host>.ts.net:3001
@@ -714,13 +714,20 @@ running, through the `LiveSession.foreground()` a Ctrl+tap uses. Only a shell
 sitting at its prompt gets the `cd` — and not even then when it is already in
 that folder, so opening and shutting one types a single `cd`. With a program
 in the foreground, where a `cd` would land as input to it, nothing is typed
-and a toast names it: `claude is running — not moving the shell`. A host that
-cannot say (not Linux, the probe failed) or does not answer within 1.5s gets
-nothing typed either, and the toast says which. The toast sits above the key
-bar for two seconds, takes no touches, and a new one replaces it rather than
-queueing behind it. In a tab set to use tmux, tmux answers for the focused
-pane and the `cd` goes to it; inside a tmux started by hand the probe sees
-tmux rather than the pane's shell, so every `cd` is refused there.
+and an amber toast names it: `claude is running — not moving the shell`. A
+host that cannot say (not Linux, the probe failed) or does not answer within
+1.5s gets nothing typed either, and the toast says which. In a tab set to use
+tmux, tmux answers for the focused pane and the `cd` goes to it; inside a tmux
+started by hand the probe sees tmux rather than the pane's shell, so every
+`cd` is refused there.
+
+**Toasts** (`ui/toast.dart`, on the `toastification` package) are cards in
+their kind's colour — blue info, green success, amber warning, red error —
+that slide in at the top, under the status bar. Each goes by itself after a
+second, counting down along its bottom edge; a touch holds it, a swipe or its
+× sends it off sooner. They stack rather than queue, three at most, so a
+refusal for every folder tapped is on screen at once instead of each waiting
+its turn, and words already showing are not said twice.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:

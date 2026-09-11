@@ -1,109 +1,72 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
+import 'package:toastification/toastification.dart';
 
-/// The toast on screen, if any, so the next one can take its place.
-OverlayEntry? _toast;
+/// What a toast is about — info, success, warning or error — which picks its
+/// colour and its icon. The package's own, so there is no second list to keep
+/// in step with it.
+export 'package:toastification/toastification.dart' show ToastificationType;
 
-/// Says something in passing: a line that fades in near the bottom of the
-/// screen, stays about two seconds and fades out.
+/// How long a toast stays unless its caller says otherwise: a second, enough
+/// to take in one line in passing.
+const toastDuration = Duration(seconds: 1);
+
+/// The toasts still counting down, by what they say.
+final _showing = <String, ToastificationItem>{};
+
+/// Says something in passing: a card in [type]'s colour and icon that slides
+/// in at the top of the screen, under the status bar, with the time it has
+/// left running out along its bottom. It goes by itself after [duration]; a
+/// touch holds it, and a swipe or its × sends it away sooner.
 ///
-/// For a remark that wants no answer, where a snack bar would be too much. It
-/// moves nothing and takes no touches, so the finger that caused it carries
-/// on through it, and a new one replaces the one still showing rather than
-/// waiting behind it.
-void showToast(BuildContext context, String message) {
-  _toast
-    ?..remove()
-    ..dispose();
-  late final OverlayEntry entry;
-  entry = _toast = OverlayEntry(
-    builder: (context) => _Toast(
-      message: message,
-      onDone: () {
-        // Replaced while it faded, and the one showing is not this one.
-        if (_toast != entry) return;
-        _toast = null;
-        entry
-          ..remove()
-          ..dispose();
-      },
-    ),
-  );
-  Overlay.of(context).insert(entry);
-}
+/// For a remark that wants no answer, where a snack bar would be too much.
+/// Toasts stack rather than queue, so a burst of them is on screen at once
+/// instead of each waiting its turn, and the app keeps at most three (see
+/// `SshboxApp`). One that says the same as a toast still counting down adds
+/// nothing: following, every folder tapped while `claude` runs is refused in
+/// the same words.
+///
+/// [action] puts a button on it, the way a snack bar's does, and pressing it
+/// closes the toast.
+///
+/// The one way into the toast package: only the wrapper around the app talks
+/// to it besides.
+void showToast(
+  BuildContext context,
+  String message, {
+  ToastificationType type = ToastificationType.info,
+  ({String label, VoidCallback onPressed})? action,
+  Duration duration = toastDuration,
+}) {
+  _showing.removeWhere((_, toast) => !toast.isRunning);
+  if (_showing.containsKey(message)) return;
 
-class _Toast extends StatefulWidget {
-  const _Toast({required this.message, required this.onDone});
-
-  final String message;
-  final VoidCallback onDone;
-
-  @override
-  State<_Toast> createState() => _ToastState();
-}
-
-class _ToastState extends State<_Toast> with SingleTickerProviderStateMixin {
-  late final _fade = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 150),
-  );
-  late final Timer _hold;
-
-  @override
-  void initState() {
-    super.initState();
-    _fade.forward();
-    // Never finishes if the toast is replaced first: disposing stops both.
-    _hold = Timer(const Duration(seconds: 2), () async {
-      await _fade.reverse();
-      widget.onDone();
-    });
-  }
-
-  @override
-  void dispose() {
-    _hold.cancel();
-    _fade.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final media = MediaQuery.of(context);
-
-    return Positioned(
-      left: 24,
-      right: 24,
-      // Clear of the soft keyboard or the system bar, and of the 48dp key bar
-      // that rides on top of them.
-      bottom: media.viewInsets.bottom + media.padding.bottom + 64,
-      child: IgnorePointer(
-        child: FadeTransition(
-          opacity: _fade,
-          child: Center(
-            child: Material(
-              color: theme.colorScheme.inverseSurface.withValues(alpha: 0.9),
-              // Round as a chip on one line, and still tidy on two.
-              borderRadius: BorderRadius.circular(20),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
-                ),
-                child: Text(
-                  widget.message,
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onInverseSurface,
-                  ),
-                ),
+  late final ToastificationItem toast;
+  toast = _showing[message] = toastification.show(
+    context: context,
+    // The top of the screen, not of whatever overlay the caller sits in.
+    overlayState: Overlay.of(context, rootOverlay: true),
+    alignment: Alignment.topCenter,
+    // Type colour and white whatever the theme, so it reads the same on a
+    // light screen as on this dark one.
+    style: ToastificationStyle.fillColored,
+    type: type,
+    autoCloseDuration: duration,
+    showProgressBar: true,
+    title: action == null
+        ? Text(message)
+        : Row(
+            children: [
+              Expanded(child: Text(message)),
+              TextButton(
+                // The filled style's own white, on the toast's colour.
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                onPressed: () {
+                  toastification.dismiss(toast);
+                  action.onPressed();
+                },
+                child: Text(action.label),
               ),
-            ),
+            ],
           ),
-        ),
-      ),
-    );
-  }
+  );
 }

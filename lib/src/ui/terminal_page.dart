@@ -93,8 +93,8 @@ class _TerminalPageState extends State<TerminalPage> {
 
   LiveSession get _session => widget.session;
 
-  /// Forwards and problems already announced, so each gets one snack bar.
-  /// Held by identity: a server that restarts is a new forward, and says so.
+  /// Forwards and problems already announced, so each is said once. Held by
+  /// identity: a server that restarts is a new forward, and says so.
   final _announced = <Object>{};
 
   @override
@@ -157,8 +157,8 @@ class _TerminalPageState extends State<TerminalPage> {
   /// is when the address is wanted.
   void _announceForwards() {
     final messenger = ScaffoldMessenger.of(context);
-    // Held now rather than read when Open is pressed: the snack bar can
-    // outlive this page, and a page that has gone has no context to read.
+    // Held now rather than read when Open is pressed: the toast can outlive
+    // this page, and a page that has gone has no context to read.
     final page = context;
     final inTab = widget.onOpenWeb;
     final forwarder = _session.forwarder;
@@ -166,26 +166,27 @@ class _TerminalPageState extends State<TerminalPage> {
       final address = forward.address;
       if (address == null && forward.error == null) continue;
       if (!_announced.add(forward)) continue;
-      messenger.showSnackBar(
-        address != null
-            ? SnackBar(
-                duration: const Duration(seconds: 8),
-                content: Text('Port ${forward.port} is on $address'),
-                action: SnackBarAction(
-                  label: 'Open',
-                  onPressed: () => openUrl(
-                    page,
-                    Uri.parse('http://$address'),
-                    inTab: inTab,
-                  ),
-                ),
-              )
-            : SnackBar(
-                content: Text(
-                  'Port ${forward.port} not forwarded: ${forward.error}',
-                ),
-              ),
-      );
+      if (address != null) {
+        showToast(
+          context,
+          'Port ${forward.port} is on $address',
+          // Five seconds rather than a remark's one: time to reach for Open.
+          duration: const Duration(seconds: 5),
+          action: (
+            label: 'Open',
+            onPressed: () =>
+                openUrl(page, Uri.parse('http://$address'), inTab: inTab),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              'Port ${forward.port} not forwarded: ${forward.error}',
+            ),
+          ),
+        );
+      }
     }
     final problem = forwarder.problem;
     if (problem != null && _announced.add(problem)) {
@@ -435,11 +436,11 @@ class _TerminalPageState extends State<TerminalPage> {
   /// ponytail: inside a tmux started by hand the probe sees tmux, not the
   /// pane's shell, so every `cd` is refused as "tmux is running".
   Future<void> _cdTo(String path) async {
-    // A toast, which replaces rather than queues: following, every folder
-    // tapped on the way down to a file can be refused, and each would wait its
-    // turn.
+    // A toast, which stacks rather than queues: following, every folder
+    // tapped on the way down to a file can be refused, and as snack bars each
+    // would wait its turn.
     void refuse(String why) {
-      if (mounted) showToast(context, why);
+      if (mounted) showToast(context, why, type: ToastificationType.warning);
     }
 
     var slow = false;
@@ -798,7 +799,7 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
 /// [inTab] puts it there. Without one — the web tab's own Open in browser, a
-/// sign-in check, or a snack bar that outlived its page — it goes to a Custom
+/// sign-in check, or a toast that outlived its page — it goes to a Custom
 /// Tab instead, which the phone's default browser draws over this app with
 /// its own engine, cookies and sign-ins, and Back returns from.
 ///
@@ -806,7 +807,7 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
 /// own instead; a `mailto:` or `tel:` goes wherever the phone sends it. When
 /// nothing takes it the user is told, rather than left tapping a dead link.
 ///
-/// [context] is only read while it is still mounted: a snack bar's Open can
+/// [context] is only read while it is still mounted: a toast's Open can
 /// outlive the page that showed it, and the session with it.
 Future<void> openUrl(
   BuildContext context,
@@ -828,7 +829,9 @@ Future<void> openUrl(
       // How Android says no app took it, rather than returning false.
     }
   }
-  if (context.mounted) showToast(context, 'No app can open $url');
+  if (context.mounted) {
+    showToast(context, 'No app can open $url', type: ToastificationType.error);
+  }
 }
 
 /// Shown while a server is waiting for the user to prove who they are
