@@ -118,11 +118,17 @@ in the input handler of the session's `Terminal` (`session_manager.dart`); a
 program that switches on the kitty keyboard protocol gets `CSI 13;2u` instead.
 `test/hardware_keyboard_test.dart` holds it there.
 
-The terminal itself doubles as an arrow pad (`SwipeKeyPad`). Long-press it
-until it buzzes, then, still holding, drag towards the arrow you want; reach
-further and it repeats faster. A plain drag scrolls the scrollback, and a
-double tap sends Tab. That long press is the one xterm2 selects text with, so
-there is no text selection by touch.
+The terminal itself doubles as an arrow pad (`SwipeKeyPad`). Long-press a
+blank spot (a space, past the end of a line, the padding) until it buzzes,
+then, still holding, drag towards the arrow you want; reach further and it
+repeats faster. A plain drag scrolls the scrollback, and a double tap sends
+Tab.
+
+Long-press a character instead and it selects the word, with a lighter tick;
+still holding, drag to widen it word by word. Once you lift, a drag moves
+whichever end of the selection is nearer, instead of scrolling, and a small bar
+over it offers Copy and ✕. Copy, ✕, a tap on the terminal or any key sent to
+the shell ends it. A mouse selects with a drag as before.
 
 ### The magic key
 

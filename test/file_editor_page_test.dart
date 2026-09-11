@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
@@ -22,13 +23,19 @@ bool _canSave(WidgetTester tester) => tester
         .onPressed !=
     null;
 
+CodeLineEditingController _editor(WidgetTester tester) =>
+    tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!;
+
 void main() {
+  // The editor reads its text size and wrap setting when it opens.
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   testWidgets('shows what the file holds', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
     expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      _editor(tester).text,
       'first line\nsecond line\n',
     );
   });
@@ -39,13 +46,13 @@ void main() {
 
     expect(_canSave(tester), isFalse);
 
-    await tester.enterText(find.byType(TextField), 'edited\n');
+    _editor(tester).text = 'edited\n';
     await tester.pumpAndSettle();
     expect(_canSave(tester), isTrue);
 
     // Typed back to what it was: there is nothing to send, so the button goes
     // quiet again rather than offering a write that changes nothing.
-    await tester.enterText(find.byType(TextField), 'first line\nsecond line\n');
+    _editor(tester).text = 'first line\nsecond line\n';
     await tester.pumpAndSettle();
     expect(_canSave(tester), isFalse);
   });
@@ -54,7 +61,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
-    await tester.enterText(find.byType(TextField), 'rewritten\n');
+    _editor(tester).text = 'rewritten\n';
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
     await tester.pumpAndSettle();
@@ -65,7 +72,7 @@ void main() {
 
     // The save moved the file on; the next one must start from there rather
     // than mistaking its own earlier save for somebody else's.
-    await tester.enterText(find.byType(TextField), 'again\n');
+    _editor(tester).text = 'again\n';
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
     await tester.pumpAndSettle();
@@ -78,7 +85,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
-    await tester.enterText(find.byType(TextField), 'mine\n');
+    _editor(tester).text = 'mine\n';
     await tester.pumpAndSettle();
     browser.externalEdit('/home/me/notes.txt', 'theirs\n');
 
@@ -97,7 +104,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
-    await tester.enterText(find.byType(TextField), 'mine\n');
+    _editor(tester).text = 'mine\n';
     await tester.pumpAndSettle();
     browser.externalEdit('/home/me/notes.txt', 'theirs\n');
 
@@ -107,7 +114,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      _editor(tester).text,
       'theirs\n',
     );
     expect(_canSave(tester), isFalse);
@@ -117,9 +124,9 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
     String text() =>
-        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+        _editor(tester).text;
 
-    await tester.enterText(find.byType(TextField), 'half typed');
+    _editor(tester).text = 'half typed';
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.refresh));
@@ -146,7 +153,7 @@ void main() {
       matching: find.byType(TextField),
     );
     String text(WidgetTester tester) =>
-        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+        _editor(tester).text;
 
     // The page's spinner keeps turning behind the password dialog, so nothing
     // settles while it is up: pump just long enough for it to open.
@@ -170,7 +177,7 @@ void main() {
       expect(find.textContaining('as root'), findsOneWidget);
 
       // The save goes the same way, on the password already given.
-      await tester.enterText(find.byType(TextField), 'root edit\n');
+      _editor(tester).text = 'root edit\n';
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
       await tester.pumpAndSettle();
@@ -222,7 +229,7 @@ void main() {
         );
       await _pumpEditor(tester, browser);
 
-      await tester.enterText(find.byType(TextField), 'edited\n');
+      _editor(tester).text = 'edited\n';
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
       await tester.pumpAndSettle();
@@ -261,11 +268,11 @@ void main() {
           ),
         );
     String text() =>
-        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+        _editor(tester).text;
 
     await tester.pumpWidget(editor());
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'draft\n');
+    _editor(tester).text = 'draft\n';
     await tester.pump(const Duration(seconds: 3));
 
     // The app goes away with the edit unsaved, and comes back to the file.
@@ -297,7 +304,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
-    await tester.enterText(find.byType(TextField), 'half typed');
+    _editor(tester).text = 'half typed';
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.arrow_back));
@@ -308,7 +315,7 @@ void main() {
 
     await tester.tap(find.text('Keep editing'));
     await tester.pumpAndSettle();
-    expect(find.byType(TextField), findsOneWidget);
+    expect(find.byType(CodeEditor), findsOneWidget);
   });
 
   testWidgets('refuses a file too large to edit, and says how large',
@@ -323,7 +330,7 @@ void main() {
 
     expect(find.textContaining('too large to open here'), findsOneWidget);
     // No field at all: a truncated edit saved back would destroy the rest.
-    expect(find.byType(TextField), findsNothing);
+    expect(find.byType(CodeEditor), findsNothing);
     expect(_canSave(tester), isFalse);
   });
 
@@ -336,7 +343,7 @@ void main() {
     await _pumpEditor(tester, browser);
 
     expect(find.text('This looks like a binary file.'), findsOneWidget);
-    expect(find.byType(TextField), findsNothing);
+    expect(find.byType(CodeEditor), findsNothing);
   });
 
   testWidgets('closes the pane instead of popping when embedded',
@@ -368,7 +375,7 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), 'half typed');
+    _editor(tester).text = 'half typed';
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.close));
     await tester.pumpAndSettle();

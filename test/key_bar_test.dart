@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:xterm2/xterm.dart';
@@ -101,9 +102,12 @@ void main() {
     /// Holds, then drags down from [fromFraction] across the width, and reports
     /// which half of the screen the readout chose to sit in.
     Future<double> readoutCentre(WidgetTester tester, double fromFraction) async {
+      final controller = TerminalController();
+      addTearDown(controller.dispose);
       await tester.pumpWidget(MaterialApp(
         home: SwipeKeyPad(
           terminal: Terminal(),
+          controller: controller,
           onEmit: (_) {},
           // Opaque, so it takes part in the hit test the way a terminal does.
           child: const ColoredBox(color: Colors.black, child: SizedBox.expand()),
@@ -181,6 +185,7 @@ void main() {
   });
 
   group('SwipeKeyPad over a terminal', () {
+    late Terminal terminal;
     late List<String> sent;
     late TerminalController selection;
     late ScrollController scroll;
@@ -188,9 +193,9 @@ void main() {
 
     /// A real TerminalView, because what is under test is how the pad shares
     /// the gesture arena with xterm2's own scroll and long press. Returns the
-    /// middle of the terminal, where every gesture lands.
+    /// middle of the terminal, which is blank: every line is short.
     Future<Offset> pumpPad(WidgetTester tester) async {
-      final terminal = Terminal();
+      terminal = Terminal();
       // Enough lines that there is scrollback to drag through.
       terminal.write(List.generate(200, (i) => 'line $i').join('\r\n'));
       sent = [];
@@ -201,20 +206,114 @@ void main() {
       addTearDown(scroll.dispose);
 
       await tester.pumpWidget(MaterialApp(
-        home: SwipeKeyPad(
-          terminal: terminal,
-          onEmit: sent.add,
-          child: TerminalView(
-            terminal,
+        // For the snack bar Copy puts up.
+        home: Scaffold(
+          body: SwipeKeyPad(
+            terminal: terminal,
             controller: selection,
-            scrollController: scroll,
-            hardwareKeyboardOnly: true,
-            onTapUp: (_, _) => tapped++,
+            onEmit: sent.add,
+            child: TerminalView(
+              terminal,
+              controller: selection,
+              scrollController: scroll,
+              hardwareKeyboardOnly: true,
+              onTapUp: (_, _) => tapped++,
+            ),
           ),
         ),
       ));
       return tester.getCenter(find.byType(TerminalView));
     }
+
+    /// The row five above the prompt, which reads `line 194`.
+    int row() => terminal.buffer.absoluteCursorY - 5;
+
+    /// The middle of cell [x] on that row, or [down] rows below it.
+    Offset cell(WidgetTester tester, int x, [int down = 0]) {
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      return render.localToGlobal(
+        render.getOffset(CellOffset(x, row() + down)) +
+            render.cellSize.center(Offset.zero),
+      );
+    }
+
+    String? selected() {
+      final range = selection.selection;
+      return range == null ? null : terminal.buffer.getText(range);
+    }
+
+    testWidgets('a long press on a word selects it, and a drag while held '
+        'widens it', (tester) async {
+      await pumpPad(tester);
+
+      final gesture = await tester.startGesture(cell(tester, 1));
+      await tester.pump(kLongPressTimeout);
+      expect(selected(), 'line');
+
+      await gesture.moveTo(cell(tester, 6));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(selected(), 'line 194');
+      expect(sent, isEmpty);
+    });
+
+    testWidgets('once lifted, a drag moves the nearer end and does not scroll',
+        (tester) async {
+      await pumpPad(tester);
+      final hold = await tester.startGesture(cell(tester, 1));
+      await tester.pump(kLongPressTimeout);
+      await hold.up();
+      await tester.pump();
+      final before = scroll.offset;
+
+      // From the tail of `line` to two rows down: the head stays put. In
+      // small steps, as a finger goes, which is what lets a scroll's shorter
+      // slop claim the drag first if it can get at it.
+      final drag = await tester.startGesture(cell(tester, 3));
+      for (var i = 0; i < 4; i++) {
+        await drag.moveBy(const Offset(0, 10));
+      }
+      await drag.moveTo(cell(tester, 6, 2));
+      await drag.up();
+      await tester.pump();
+
+      final range = selection.selection!.normalized;
+      expect(range.begin.isEqual(CellOffset(0, row())), isTrue);
+      expect(range.end.isEqual(CellOffset(7, row() + 2)), isTrue);
+      expect(scroll.offset, before);
+    });
+
+    testWidgets('Copy puts the selection on the clipboard and lets it go',
+        (tester) async {
+      final copied = <Object?>[];
+      final platform = tester.binding.defaultBinaryMessenger;
+      platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+        return null;
+      });
+      addTearDown(
+        () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await pumpPad(tester);
+      final hold = await tester.startGesture(cell(tester, 1));
+      await tester.pump(kLongPressTimeout);
+      await hold.up();
+      await tester.pump();
+
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+
+      expect(copied, [
+        {'text': 'line'},
+      ]);
+      expect(selection.selection, isNull);
+      expect(find.text('Copied'), findsOneWidget);
+      expect(find.text('Copy'), findsNothing);
+    });
 
     testWidgets('a plain drag scrolls and sends nothing', (tester) async {
       final centre = await pumpPad(tester);
@@ -232,8 +331,9 @@ void main() {
       expect(scroll.offset, lessThan(before));
     });
 
-    testWidgets('a long press then a drag sends the arrow, and selects nothing',
-        (tester) async {
+    testWidgets(
+        'a long press on blank space then a drag sends the arrow, and '
+        'selects nothing', (tester) async {
       final centre = await pumpPad(tester);
 
       final gesture = await tester.startGesture(centre);
