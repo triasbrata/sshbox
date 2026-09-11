@@ -97,6 +97,13 @@ void main() {
     });
   });
 
+  test('normalize walks . and .. so one file is spelled one way', () {
+    expect(RemotePath.normalize('/home/me/dev/./../notes.txt'),
+        '/home/me/notes.txt');
+    expect(RemotePath.normalize('/home//me/'), '/home/me');
+    expect(RemotePath.normalize('/../etc'), '/etc');
+  });
+
   group('isWithin', () {
     test('is the path itself or anything beneath it', () {
       expect(RemotePath.isWithin('/home/me', '/home/me'), isTrue);

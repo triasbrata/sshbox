@@ -61,6 +61,20 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         },
       );
 
+  @override
+  Future<RemoteEntryKind?> stat(String path) => _guard(
+        'look at $path',
+        () async {
+          final attrs = await _statOrNull(await _channel(), path);
+          if (attrs == null) return null;
+          return attrs.isDirectory
+              ? RemoteEntryKind.directory
+              : attrs.isFile
+                  ? RemoteEntryKind.file
+                  : RemoteEntryKind.other;
+        },
+      );
+
   /// `listdir` reports on the link itself, so a symlink to a directory would
   /// otherwise be untappable. One extra stat per link only — following every
   /// entry would double the cost of every listing for no gain.

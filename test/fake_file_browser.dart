@@ -74,6 +74,12 @@ class FakeFileBrowser implements FileBrowser {
     return List.of(_tree[path] ?? const []);
   }
 
+  @override
+  Future<RemoteEntryKind?> stat(String path) async {
+    if (_tree.containsKey(path)) return RemoteEntryKind.directory;
+    return contents.containsKey(path) ? RemoteEntryKind.file : null;
+  }
+
   /// Bumped by every write, standing in for the host's mtime.
   final Map<String, int> _versions = {};
 

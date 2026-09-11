@@ -4,12 +4,14 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../session/session_manager.dart';
+import 'ctrl_click.dart';
 import 'file_browser_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
@@ -27,6 +29,7 @@ class TerminalPage extends StatefulWidget {
     required this.secrets,
     required this.onOpenFile,
     required this.onSaveFileRoot,
+    this.openUrl = _openExternally,
   });
 
   final LiveSession session;
@@ -38,9 +41,16 @@ class TerminalPage extends StatefulWidget {
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
 
+  /// Opens a link Ctrl+tapped in the terminal. The browser, unless a test
+  /// hands in something else.
+  final Future<void> Function(Uri url) openUrl;
+
   @override
   State<TerminalPage> createState() => _TerminalPageState();
 }
+
+Future<void> _openExternally(Uri url) =>
+    launchUrl(url, mode: LaunchMode.externalApplication);
 
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
@@ -57,6 +67,13 @@ class _TerminalPageState extends State<TerminalPage> {
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
   final _inputKey = GlobalKey<TerminalTextInputState>();
+  final _viewKey = GlobalKey<TerminalViewState>();
+
+  /// The view's, handed in for the underlines Ctrl puts under every link, and
+  /// to keep a Ctrl+tap from reaching a program that reads the mouse.
+  final _links = TerminalController();
+  List<TerminalUnderline> _underlines = const [];
+  bool _ctrlShown = false;
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -86,6 +103,8 @@ class _TerminalPageState extends State<TerminalPage> {
     // removed with the widget rather than held by the session.
     _session.outputTransform = _keyBar.applyModifiers;
     _session.addListener(_onSessionChanged);
+    _keyBar.addListener(_syncCtrl);
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
 
     // Connect after first layout so the PTY opens at the real on-screen size.
     // A no-op when we are returning to a session that is already connected.
@@ -181,12 +200,15 @@ class _TerminalPageState extends State<TerminalPage> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _focusNode.dispose();
     _scrollController.dispose();
     if (_session.outputTransform == _keyBar.applyModifiers) {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
+    // Takes the underlines with it.
+    _links.dispose();
     _terminalLink.dispose();
     // Ours to close: the drawer and the editor pane are handed this rather
     // than owning it.
@@ -258,6 +280,122 @@ class _TerminalPageState extends State<TerminalPage> {
   void _openFileTab(String path) {
     _closeFilesDrawer();
     widget.onOpenFile(path);
+  }
+
+  /// Whether a tap now is a Ctrl+tap: CTRL latched on the bar, or held on a
+  /// hardware keyboard — which covers a mouse click with Ctrl too.
+  bool get _ctrl => _keyBar.ctrl || HardwareKeyboard.instance.isControlPressed;
+
+  /// Only watches. The key still goes wherever it was going.
+  bool _onHardwareKey(KeyEvent _) {
+    _syncCtrl();
+    return false;
+  }
+
+  /// Underlines every link on screen while Ctrl is down, and takes them away
+  /// when it lifts or is used up.
+  ///
+  /// ponytail: scanned once, as Ctrl goes down. Output that arrives while it
+  /// is held is not underlined until it comes down again, though a Ctrl+tap
+  /// on it still opens it — the tap reads the line afresh.
+  void _syncCtrl() {
+    final ctrl = _ctrl;
+    if (!mounted || ctrl == _ctrlShown) return;
+    _ctrlShown = ctrl;
+    // A program reading the mouse would otherwise take the tap as a click.
+    _links.setSuspendPointerInput(ctrl);
+    for (final underline in _underlines) {
+      underline.dispose();
+    }
+    _underlines = const [];
+
+    final view = _viewKey.currentState;
+    if (!ctrl || view == null) return;
+    final render = view.renderTerminal;
+    _underlines = underlineLinks(
+      _links,
+      _session.terminal.buffer,
+      from: render.getCellOffset(Offset.zero).y,
+      to: render.getCellOffset(render.size.bottomLeft(Offset.zero)).y,
+      color: Theme.of(context).colorScheme.primary,
+    );
+  }
+
+  /// With Ctrl, opens the link under the tap and types nothing; without, asks
+  /// for the keyboard back, the way a tap always has.
+  void _onTerminalTap(TapUpDetails _, CellOffset cell) {
+    if (!_ctrl) {
+      _inputKey.currentState?.requestKeyboard();
+      return;
+    }
+    // Used up by the tap, link or not, the way a key uses it up.
+    if (_keyBar.ctrl) _keyBar.toggleCtrl();
+    final link = linkAt(_session.terminal.buffer, cell);
+    if (link != null) unawaited(_openLink(link));
+  }
+
+  /// A URL goes to the browser, a folder becomes the files drawer's root, and
+  /// a file opens in a tab the way one picked in the drawer does.
+  ///
+  /// A relative path starts from the program that printed it, the terminal's
+  /// foreground process on the host, and from home when the host cannot say.
+  ///
+  /// ponytail: the line number is read and dropped; the editor cannot open at
+  /// a line yet.
+  Future<void> _openLink(LinkCandidate link) async {
+    final target = link.target;
+    if (link.kind == LinkKind.url) {
+      final url = Uri.tryParse(target);
+      if (url != null) await widget.openUrl(url);
+      return;
+    }
+    if (!_session.isConnected || !_session.canBrowseFiles) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final browser = _session.fileBrowser;
+    final relative = !target.startsWith('/') && !target.startsWith('~');
+    try {
+      final cwd = relative ? (await _session.foreground())?.cwd : null;
+      final path = RemotePath.normalize(
+        cwd != null
+            ? RemotePath.join(cwd, target)
+            : RemotePath.resolve(
+                target,
+                target.startsWith('/') ? '/' : await browser.resolveHome(),
+              ),
+      );
+      final kind = await browser.stat(path);
+      if (!mounted) return;
+      switch (kind) {
+        case RemoteEntryKind.directory:
+          _browseRoot = path;
+          await _openFiles();
+        case RemoteEntryKind.file:
+          _openFileTab(path);
+        case RemoteEntryKind.other || RemoteEntryKind.symlink:
+          messenger.showSnackBar(
+            SnackBar(content: Text('Not a file or a folder: $path')),
+          );
+        case null:
+          // A bare name only counted if it was there, so a miss on one is
+          // nothing under the tap.
+          if (link.kind == LinkKind.name) return;
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                relative && cwd == null
+                    ? 'Not found: $path\nTaken from home: the host did not '
+                          'say where the terminal is.'
+                    : 'Not found: $path',
+              ),
+            ),
+          );
+      }
+    } on FileBrowserException catch (error) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    }
   }
 
   /// Wraps a path so the shell sees exactly these characters.
@@ -392,6 +530,8 @@ class _TerminalPageState extends State<TerminalPage> {
             onEmit: _session.sendRaw,
             child: TerminalView(
               _session.terminal,
+              key: _viewKey,
+              controller: _links,
               focusNode: _focusNode,
               scrollController: _scrollController,
               autofocus: true,
@@ -400,7 +540,7 @@ class _TerminalPageState extends State<TerminalPage> {
               hardwareKeyboardOnly: true,
               // Tapping a terminal that already has focus is how you ask for
               // the keyboard back, and focus alone will not raise it.
-              onTapUp: (_, _) => _inputKey.currentState?.requestKeyboard(),
+              onTapUp: _onTerminalTap,
               padding: const EdgeInsets.all(6),
               textStyle: const TerminalStyle(fontSize: 13),
             ),
