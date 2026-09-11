@@ -61,6 +61,7 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
+| Tucked magic key: a short pull (~32 dp past the dead zone) switches the aim to ring 2, sliding back returns to ring 1 | Coordinator | — | in development |
 | Hidden tabs cannot take keyboard focus; switching tabs focuses the page shown (keys typed after a file tab opens no longer reach the hidden shell) | Coordinator | — | in development |
 | Toasts in the toastification style at the top, auto-closing (1s by default); the port-forward notice becomes a 5s toast with Open | Coordinator | — | in development |
 | Code editor: find and replace, go to line, and a search result opens at its line | text editor enhancement | bf404f2 | UAT passed |
