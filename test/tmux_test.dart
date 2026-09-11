@@ -176,7 +176,7 @@ void main() {
     tester,
   ) async {
     // Small enough that tmux's 80 columns fit the test's screen.
-    const style = TerminalStyle(fontSize: 8);
+    var style = const TerminalStyle(fontSize: 8);
     final fake = _FakeTmux('b25d,80x24,0,0{40x24,0,0,1,39x24,41,0,2}');
     late StateSetter rebuild;
     final tmux = TmuxSession(
@@ -237,5 +237,28 @@ void main() {
     await tester.pump();
     expect(tmux.focused?.id, 2);
     expect(fake.commands, contains('select-pane -t %2'));
+
+    // A bigger font from Settings: every pane re-measured in the new cells,
+    // and tmux told how many of them fit now.
+    rebuild(() => style = const TerminalStyle(fontSize: 10));
+    await tester.pump();
+    final cell = terminalCellSize(style, TextScaler.noScaling);
+    expect(
+      tester
+          .state<TerminalViewState>(find.byKey(const ValueKey('pane 1')))
+          .renderTerminal
+          .cellSize,
+      cell,
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('pane 1'))),
+      Size(40 * cell.width, 24 * cell.height),
+    );
+    final screen = tester.getSize(find.byType(TmuxPaneLayout));
+    expect(
+      fake.commands.last,
+      'refresh-client -C ${screen.width ~/ cell.width}x'
+      '${screen.height ~/ cell.height}',
+    );
   });
 }

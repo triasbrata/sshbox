@@ -24,6 +24,10 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
   final commands = <String>[];
   final reply = Completer<List<String>>();
 
+  /// What the host waits on before letting a connection through: nothing,
+  /// unless a test holds it at a sign-in.
+  Future<void> signIn = Future.value();
+
   @override
   Future<TerminalSession> connect({
     required HostProfile host,
@@ -31,7 +35,10 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
     required int columns,
     required int rows,
     bool shell = true,
-  }) async => this;
+  }) async {
+    await signIn;
+    return this;
+  }
 
   @override
   final status = ValueNotifier(SessionStatus.connected);
@@ -390,6 +397,35 @@ void main() {
       expect(manager.sessionsFor(_host.id), isEmpty);
       // Not left pointing at a web tab whose session is gone.
       expect(manager.activeId, isNull);
+      expect(manager.activeKind, TabKind.terminal);
+      expect(manager.activeWeb, isNull);
+    });
+
+    test("a sign-in's tab closes once the session is through it", () async {
+      final signedIn = Completer<void>();
+      final session = manager.open(
+        _host,
+        transport: _Host()..signIn = signedIn.future,
+      );
+      final page = session.openWeb(Uri.parse('https://dart.dev'));
+      final connecting = session.connect(secrets: _NoSecrets());
+      session.onAuthBanner(
+        'To authenticate, visit: https://login.tailscale.com/a/1a2b3c',
+      );
+
+      // The check prompt's Open link.
+      manager.openWeb(session.id, session.authUrl!);
+      expect(session.webTabs, hasLength(2));
+      expect(manager.activeWeb, same(session.webTabs.last));
+
+      signedIn.complete();
+      await connecting;
+
+      // Back in the shell the user was signing in for; any other page the
+      // session opened stays.
+      expect(session.isConnected, isTrue);
+      expect(session.webTabs, [page]);
+      expect(manager.activeId, session.id);
       expect(manager.activeKind, TabKind.terminal);
       expect(manager.activeWeb, isNull);
     });

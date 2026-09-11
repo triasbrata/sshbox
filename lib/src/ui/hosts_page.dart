@@ -6,6 +6,7 @@ import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/session_manager.dart';
 import 'host_edit_page.dart';
+import 'settings_page.dart';
 
 class HostsPage extends StatefulWidget {
   const HostsPage({
@@ -129,12 +130,19 @@ class _HostsPageState extends State<HostsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('sshbox'),
+        title: const Text('Clode'),
         actions: [
           IconButton(
             tooltip: 'Copy FCM token',
             onPressed: _copyPushToken,
             icon: const Icon(Icons.key_outlined),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+            ),
+            icon: const Icon(Icons.settings_outlined),
           ),
         ],
       ),

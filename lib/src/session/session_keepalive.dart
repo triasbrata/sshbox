@@ -84,7 +84,7 @@ class SessionKeepAlive {
 
     await FlutterForegroundTask.startService(
       serviceTypes: const [ForegroundServiceTypes.dataSync],
-      notificationTitle: 'sshbox',
+      notificationTitle: 'Clode',
       notificationText: text,
     );
   }

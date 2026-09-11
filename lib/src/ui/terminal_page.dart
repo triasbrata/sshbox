@@ -15,6 +15,7 @@ import 'ctrl_click.dart';
 import 'file_browser_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'settings_page.dart';
 import 'terminal_link.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
@@ -523,7 +524,12 @@ class _TerminalPageState extends State<TerminalPage> {
       endDrawerEnableOpenDragGesture: false,
       // No app bar: the tab strip above already names the session, and the
       // page's two buttons ride in the key bar, where the thumb already is.
-      body: _buildBody(),
+      // The font and size come from Settings, and a change there redraws
+      // every terminal here at once, tmux's panes re-measured with them.
+      body: ValueListenableBuilder(
+        valueListenable: terminalSettings,
+        builder: (context, style, _) => _buildBody(style),
+      ),
       // In the Scaffold's own slot rather than the body so it rides above the
       // soft keyboard and the button below floats clear of it.
       bottomNavigationBar: TerminalKeyBar(
@@ -553,7 +559,9 @@ class _TerminalPageState extends State<TerminalPage> {
     );
   }
 
-  Widget _buildBody() {
+  /// [style] is what every terminal on the page draws with. tmux's panes are
+  /// laid out in cells of it, so it is one value rather than one per view.
+  Widget _buildBody(TerminalStyle style) {
     final error = _session.error;
     if (error != null && !_session.isConnected) {
       return _ConnectionError(message: error, onRetry: _reconnect);
@@ -568,16 +576,25 @@ class _TerminalPageState extends State<TerminalPage> {
     return Stack(
       children: [
         if (tmux == null)
-          _paneView(_session.terminal, focused: true, padding: _padding)
+          _paneView(
+            _session.terminal,
+            style,
+            focused: true,
+            padding: _padding,
+          )
         else
           TmuxPaneLayout(
             tmux: tmux,
-            textStyle: _textStyle,
+            textStyle: style,
             padding: _padding,
             // Touching a pane is what focuses it, and the session sends the
             // bar's keys to the focused pane, so every pane sends through it.
-            pane: (pane, focused) =>
-                _paneView(pane.terminal, focused: focused, autoResize: false),
+            pane: (pane, focused) => _paneView(
+              pane.terminal,
+              style,
+              focused: focused,
+              autoResize: false,
+            ),
           ),
         if (_session.connecting)
           ColoredBox(
@@ -585,7 +602,10 @@ class _TerminalPageState extends State<TerminalPage> {
             child: Center(
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()
-                  : AuthCheckPrompt(url: _session.authUrl!),
+                  : AuthCheckPrompt(
+                      url: _session.authUrl!,
+                      inTab: widget.onOpenWeb,
+                    ),
             ),
           ),
         // Along the terminal's bottom edge, just above the key bar, rather
@@ -613,13 +633,15 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   Widget _paneView(
-    Terminal terminal, {
+    Terminal terminal,
+    TerminalStyle style, {
     required bool focused,
     bool autoResize = true,
     EdgeInsets? padding,
   }) => _PaneView(
     key: _views.putIfAbsent(terminal, GlobalKey.new),
     terminal: terminal,
+    textStyle: style,
     onEmit: _send,
     onTap: _onTerminalTap,
     focused: focused,
@@ -630,10 +652,6 @@ class _TerminalPageState extends State<TerminalPage> {
 
 const _padding = EdgeInsets.all(6);
 
-/// What every terminal on the page draws with. tmux's panes are laid out in
-/// cells of it, so it is one value rather than one per view.
-const _textStyle = TerminalStyle(fontSize: 13);
-
 /// One terminal on the page, and what makes it usable by touch: the soft
 /// keyboard's input, the swipe pad, and xterm2's view. A plain session shows
 /// one; tmux shows one per pane, each with its own focus, scroll position and
@@ -642,6 +660,7 @@ class _PaneView extends StatefulWidget {
   const _PaneView({
     super.key,
     required this.terminal,
+    required this.textStyle,
     required this.onEmit,
     required this.onTap,
     required this.focused,
@@ -650,6 +669,7 @@ class _PaneView extends StatefulWidget {
   });
 
   final Terminal terminal;
+  final TerminalStyle textStyle;
   final void Function(String data) onEmit;
   final void Function(_PaneViewState view, CellOffset cell) onTap;
 
@@ -801,7 +821,7 @@ class _PaneViewState extends State<_PaneView> {
           // keyboard back, and focus alone will not raise it.
           onTapUp: (_, cell) => widget.onTap(this, cell),
           padding: widget.padding,
-          textStyle: _textStyle,
+          textStyle: widget.textStyle,
         ),
       ),
     );
@@ -824,8 +844,8 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
 /// through here — a Ctrl+tap, a forwarded port, a sign-in check.
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
-/// [inTab] puts it there. Without one — the web tab's own Open in browser, a
-/// sign-in check, or a toast that outlived its page — it goes to a Custom
+/// [inTab] puts it there. With no shell to put it beside — the web tab's own
+/// Open in browser, or a toast that outlived its page — it goes to a Custom
 /// Tab instead, which the phone's default browser draws over this app with
 /// its own engine, cookies and sign-ins, and Back returns from.
 ///
@@ -863,19 +883,25 @@ Future<void> openUrl(
 /// Shown while a server is waiting for the user to prove who they are
 /// somewhere else — Tailscale SSH's check, for instance.
 ///
-/// The connection is still open behind this; finishing in the browser is what
+/// The connection is still open behind this; finishing the sign-in is what
 /// releases it, so there is nothing to submit here.
 ///
-/// Its link skips the web tabs: identity providers, Google above all, refuse
-/// to sign in inside an embedded web view.
+/// Its link opens in a web tab beside the shell, like every other link from a
+/// session, because that is where the user asked for it. Some identity
+/// providers, Google in particular, refuse to sign in inside an embedded web
+/// view; when one does, the tab's Open in browser is the way out. Nothing
+/// here passes the web view off as a browser to get past that refusal: the
+/// providers' policies forbid it. Once the session is through the check, the
+/// tab closes itself — see [LiveSession.openWeb].
 ///
 /// Public only so a test can press that link without a server holding a
 /// session at its sign-in.
 @visibleForTesting
 class AuthCheckPrompt extends StatelessWidget {
-  const AuthCheckPrompt({super.key, required this.url});
+  const AuthCheckPrompt({super.key, required this.url, required this.inTab});
 
   final Uri url;
+  final void Function(Uri url) inTab;
 
   @override
   Widget build(BuildContext context) {
@@ -905,7 +931,7 @@ class AuthCheckPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: () => openUrl(context, url),
+            onPressed: () => openUrl(context, url, inTab: inTab),
             icon: const Icon(Icons.open_in_new),
             label: const Text('Open link'),
           ),
