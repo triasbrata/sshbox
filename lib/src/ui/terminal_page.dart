@@ -18,6 +18,7 @@ import 'magic_key.dart';
 import 'terminal_link.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
+import 'toast.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -420,12 +421,12 @@ class _TerminalPageState extends State<TerminalPage> {
   /// ponytail: inside a tmux started by hand the probe sees tmux, not the
   /// pane's shell, so every `cd` is refused as "tmux is running".
   Future<void> _cdTo(String path) async {
-    final messenger = ScaffoldMessenger.of(context);
-    // Replacing rather than queueing: following, every folder tapped on the
-    // way down to a file can be refused, and each would wait its turn.
-    void refuse(String why) => messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(why)));
+    // A toast, which replaces rather than queues: following, every folder
+    // tapped on the way down to a file can be refused, and each would wait its
+    // turn.
+    void refuse(String why) {
+      if (mounted) showToast(context, why);
+    }
 
     var slow = false;
     final now = await _session.foreground().timeout(
