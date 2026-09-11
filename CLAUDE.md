@@ -61,10 +61,10 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
-| Code editor: find and replace, go to line, and a search result opens at its line | text editor enhancement | bf404f2 | on tablet, UAT pending |
+| Code editor: find and replace, go to line, and a search result opens at its line | text editor enhancement | bf404f2 | UAT passed |
 | Code editor key bar: arrows and a cursor pad, Tab, undo/redo, symbols (the user found no way to move the cursor in a file) | text editor enhancement | 13c7831 | UAT failed: physical-keyboard arrows still do not move the cursor in the editor (they work in the terminal); the caret vanishes on an arrow press. Sent back to text editor enhancement |
 | Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | 40bcdd9 | on tablet, UAT pending |
-| Links open as a web tab beside their shell (WebView); the Tailscale sign-in stays on a Custom Tab | Coordinator | de465b5, f54e12f, 0168e48 | on tablet, UAT pending (first try failed: the Custom Tab opened a separate screen, not a tab) |
+| Links open as a web tab beside their shell (WebView); the Tailscale sign-in stays on a Custom Tab | Coordinator | de465b5, f54e12f, 0168e48 | UAT passed (after a first failed try where the Custom Tab opened a separate screen) |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
 | Terminal selection with the platform's start/end handles and toolbar | Coordinator | dbd8375 | UAT passed |
 | Follow's busy-check messages as a toast | Coordinator | b984c8e | UAT passed |
