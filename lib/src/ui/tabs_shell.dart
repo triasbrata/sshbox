@@ -96,12 +96,17 @@ class _TabsShellState extends State<TabsShell> {
     widget.sessions.updateHost(updated);
   }
 
+  /// One per page, by what its tab shows, so a tab opened or closed before a
+  /// page carries its state along instead of leaving it behind at the old
+  /// index. Global, because every page sits under wrappers with no key, the
+  /// [IndexedStack]'s own and the [ExcludeFocus] below: a plain key under
+  /// them is only compared with whatever page now sits at the same index, so
+  /// the page was built afresh, its web page reloaded, its editor read again.
+  final Map<String, GlobalKey> _pageKeys = {};
+
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
-      // Keyed by what the tab shows so closing one carries the
-      // remaining pages' state along with them instead of leaving it
-      // behind at the old index.
-      key: ValueKey('terminal:${tab.session.id}'),
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       session: tab.session,
       secrets: widget.secrets,
       onOpenFile: (path, {line}) =>
@@ -110,7 +115,7 @@ class _TabsShellState extends State<TabsShell> {
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
-      key: ValueKey('file:${tab.session.id}:${tab.path}'),
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       browser: tab.session.fileBrowser,
       path: tab.path!,
       // Non-null tells the editor it is embedded rather than a route: leaving
@@ -125,7 +130,7 @@ class _TabsShellState extends State<TabsShell> {
           : null,
     ),
     TabKind.web => WebPage(
-      key: ValueKey('web:${tab.web!.id}'),
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       initialUrl: tab.web!.url,
       onChanged: (url, title) =>
           tab.session.updateWeb(tab.web!, url: url, title: title),
@@ -135,6 +140,8 @@ class _TabsShellState extends State<TabsShell> {
   @override
   Widget build(BuildContext context) {
     final tabs = _tabs();
+    final ids = tabs.map(_idOf).toSet();
+    _pageKeys.removeWhere((id, _) => !ids.contains(id));
     final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
     final activePath = widget.sessions.activePath;
@@ -202,7 +209,8 @@ class _TabsShellState extends State<TabsShell> {
                     // one may hold focus. Without this the hidden terminals
                     // still have focus nodes, and keystrokes land in whichever
                     // one grabbed focus last: typed commands going to the
-                    // wrong host.
+                    // wrong host. Shown again, each page puts the focus back
+                    // on its own terminal, text or web view.
                     ExcludeFocus(excluding: index != activeIndex, child: page),
                 ],
               ),
@@ -240,13 +248,14 @@ class TabStrip extends StatefulWidget {
   State<TabStrip> createState() => _TabStripState();
 }
 
+/// Names a tab for as long as it is open, whatever index it is at.
+String _idOf(TabRef tab) =>
+    '${tab.kind.name}:${tab.session.id}:${tab.path ?? tab.web?.id ?? ''}';
+
 class _TabStripState extends State<TabStrip> {
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
   String? _shown;
-
-  static String _idOf(TabRef tab) =>
-      '${tab.kind.name}:${tab.session.id}:${tab.path ?? tab.web?.id ?? ''}';
 
   @override
   void didUpdateWidget(covariant TabStrip oldWidget) {

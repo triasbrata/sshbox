@@ -107,11 +107,15 @@ class TerminalTextInputState extends State<TerminalTextInput>
     }
   }
 
+  /// Focus raises the keyboard only when it was asked for, the way a text
+  /// field decides: a tap, a new shell, a tmux pane taking over. A tab shown
+  /// again takes the keyboard token straight back, and gets focus alone,
+  /// which is all a hardware keyboard needs: xterm2 reads its keys itself.
   void _onFocusChange() {
-    if (widget.focusNode.hasFocus) {
-      _openConnection();
-    } else {
+    if (!widget.focusNode.hasFocus) {
       _closeConnection();
+    } else if (widget.focusNode.consumeKeyboardToken()) {
+      _openConnection();
     }
   }
 

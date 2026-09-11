@@ -164,6 +164,15 @@ key and lift to send it. How far you slide picks the ring: a little way up is
 Lifting in the middle sends nothing. Near an edge both rings fan into the room
 that is left, each outer key still behind its inner one.
 
+Tucked into a side, that fan reaches halfway across the screen, so there the
+outer ring is a short pull instead: slide toward a key until it lights up, go
+on about 30 dp and the key behind it lights up, ease back and the inner key
+has it again. The switch back sits a few dp inside the switch out, so a thumb
+resting on the line does not flicker between the two. Out there it only ever
+lights a key behind the one you pulled toward — straight on for the first,
+a lean clockwise for the second — never one hanging off its neighbour, however
+tightly a corner packs the fan.
+
 ### Ctrl+tap
 
 VS Code's Ctrl+click, for a touch screen. With CTRL armed on the bar — or Ctrl
@@ -393,7 +402,11 @@ The pages sit in an `IndexedStack`, so every terminal keeps its scrollback,
 key bar and connection while another one is on screen. Only the visible page
 may hold focus (`ExcludeFocus`), because hidden terminals still have focus
 nodes — without it keystrokes land in whichever terminal grabbed focus last,
-which means typed commands going to the wrong host.
+which means typed commands going to the wrong host. A tab shown again puts the
+focus back on its terminal (the focused pane, with tmux), its file's text or
+its web view, without raising the soft keyboard, so a hardware keyboard types
+into what is on screen; only letters in a file wait for a tap into the text,
+since re_editor takes them through the soft keyboard's connection.
 
 **Files get tabs too.** The folder button opens the files drawer over the
 shell; tapping a file there gives it a tab of its own, named

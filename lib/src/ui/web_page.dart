@@ -88,10 +88,41 @@ class _WebPageState extends State<WebPage> {
     _load(_url);
   }
 
+  /// On the [Focus] that hands keys on to the view. It takes no focus itself;
+  /// the platform view inside it does.
+  final _viewFocus = FocusNode();
+
+  /// Whether the tabs were showing this page when it last looked; null until
+  /// its first look.
+  bool? _shown;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Shown again after another tab, focus goes back into the page, as a
+    // shell's goes back to its terminal, rather than to nothing, where Tab or
+    // an arrow would move it onto the bar.
+    //
+    // ponytail: Flutter's focus only. Android gives the view its own focus on
+    // a tap, and keys reach the page once it has that.
+    final shown = Visibility.of(context);
+    if (shown && _shown == false) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _viewFocus.descendants
+            .where((node) => node.canRequestFocus)
+            .firstOrNull
+            ?.requestFocus();
+      });
+    }
+    _shown = shown;
+  }
+
   @override
   void dispose() {
     _address.dispose();
     _addressFocus.dispose();
+    _viewFocus.dispose();
     super.dispose();
   }
 
@@ -250,6 +281,7 @@ class _WebPageState extends State<WebPage> {
         ),
         Expanded(
           child: Focus(
+            focusNode: _viewFocus,
             // Hardware keys go to the page. The platform view has no key
             // handling of its own, so without this the app's shortcuts take
             // Tab and the arrows to move Flutter's focus — off the page and

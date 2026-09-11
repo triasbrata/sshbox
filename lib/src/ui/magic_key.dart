@@ -234,12 +234,19 @@ List<int> _closestAssignment(
   return best;
 }
 
+/// How far a finger has to slide before it aims at anything.
+const double _deadZone = 18;
+
 /// Which petal a drag of [offset] from where the finger landed points at.
 ///
 /// Null inside the dead zone, where a wobble must not send a key, and when it
 /// points further than half a spacing from every petal — into the gap a fan
 /// leaves against an edge, where any guess would be the wrong key.
-int? petalFor(Offset offset, List<double> angles, {double deadZone = 18}) {
+int? petalFor(
+  Offset offset,
+  List<double> angles, {
+  double deadZone = _deadZone,
+}) {
   if (offset.distance < deadZone) return null;
   // atan2 is measured from east, counter-clockwise; swapping and negating its
   // arguments turns it into north, clockwise — the frame [angles] is in.
@@ -272,9 +279,10 @@ int? petalFor(Offset offset, List<double> angles, {double deadZone = 18}) {
 /// Hold it and two rings open around it: [magicKeys] close in, and further out
 /// [magicSubKeys], each behind the key it goes with. Still holding, slide
 /// toward a key and lift to send it; how far you slide picks the ring, so a
-/// little way up is ↑ and further up is PgUp. Lifting always closes the rings
-/// — on a key or not — so they only ever exist while the finger that asked
-/// for them is down.
+/// little way up is ↑ and further up is PgUp — tucked into a side, where the
+/// rings fan out far, only a short pull further. Lifting always closes the
+/// rings — on a key or not — so they only ever exist while the finger that
+/// asked for them is down.
 ///
 /// Drag it straight away, without holding first, to move it: wherever it sits
 /// by default is over the thing someone wants to read. Throw it at a side, or
@@ -312,6 +320,16 @@ class _MagicKeyState extends State<MagicKey> {
 
   static const _glideTime = Duration(milliseconds: 220);
 
+  /// Tucked into a side, the rings fan out so far that halfway out to ring 2
+  /// is a slide across half the screen. There ring 2 takes over this far past
+  /// the dead zone instead, wherever it is drawn: a short thumb pull, tuned by
+  /// feel.
+  static const _tuckedRingStep = 32.0;
+
+  /// How far back inside that a finger in ring 2 has to come before ring 1
+  /// has it again, so one resting on the line does not flicker between them.
+  static const _tuckedRingSlack = 6.0;
+
   /// Left alone this long, the button fades to [_idleOpacity] over [_fadeTime]
   /// so it hides less of the output under it.
   static const _idleAfter = Duration(seconds: 3);
@@ -339,8 +357,8 @@ class _MagicKeyState extends State<MagicKey> {
 
   int? _aim;
 
-  /// Past halfway out to ring 2, which of the keys behind [_aim] is aimed at;
-  /// null while ring 1's [_aim] itself is.
+  /// Out in ring 2's reach, which of the keys behind [_aim] is aimed at; null
+  /// while ring 1's [_aim] itself is.
   int? _child;
 
   /// Faded for want of a touch. The clock starts whenever a finger leaves the
@@ -363,8 +381,16 @@ class _MagicKeyState extends State<MagicKey> {
   late ({List<double> angles, double radius, double outer, double spread})
   _ring;
 
-  /// Where aiming passes from ring 1 to ring 2, and where their bands meet.
+  /// Where the rings' bands meet, halfway between them.
   double get _halfway => (_ring.radius + _ring.outer) / 2;
+
+  /// How far out aiming passes from ring 1 to ring 2: where the bands meet
+  /// for a floating key, a short pull for a tucked one — and, once ring 2 has
+  /// the finger, [_tuckedRingSlack] short of that, so leaving takes a clear
+  /// move back.
+  double get _ringTwoFrom => !_docked
+      ? _halfway
+      : _deadZone + _tuckedRingStep - (_child != null ? _tuckedRingSlack : 0);
 
   @override
   void initState() {
@@ -414,21 +440,37 @@ class _MagicKeyState extends State<MagicKey> {
     });
   }
 
-  /// Direction picks the key of ring 1. Past halfway out to ring 2 it picks
-  /// ring 2's petal nearest that direction instead, so straight on is the key
-  /// right behind — whichever key of ring 1 that petal hangs off. Where ring 1
-  /// has nothing, the middle or the gap a fan leaves, ring 2 has nothing too.
+  /// Direction picks the key of ring 1. Past [_ringTwoFrom] it picks ring 2's
+  /// petal nearest that direction instead, so straight on is the key right
+  /// behind — whichever key of ring 1 that petal hangs off. Where ring 1 has
+  /// nothing, the middle or the gap a fan leaves, ring 2 has nothing too.
+  ///
+  /// Tucked, ring 2 keeps to the keys behind the one ring 1 picked. The fan
+  /// there packs ring 2 so tight that its nearest petal is often one hanging
+  /// off the next key along, and a pull that lit → must not send `^\`.
   void _aimAt(Offset drag) {
     var aim = petalFor(drag, _ring.angles);
     int? child;
-    if (aim != null && drag.distance >= _halfway) {
+    if (aim != null && drag.distance >= _ringTwoFrom) {
       // North, clockwise, as in [petalFor].
       final pointing = math.atan2(drag.dx, -drag.dy);
+      double off(double angle) => _angleBetween(pointing, angle);
+      // A key's second key behind sits on the line to the next key of ring 1,
+      // so once out in ring 2 the key holds for as long as one of its own
+      // keys behind is nearer than that next key is: a lean onto the second
+      // keeps it, and only a clear move on to the next key hands over.
+      if (_docked && _child != null) {
+        final held = _aim!;
+        final own = _subAnglesOf(held).map(off).reduce(math.min);
+        if (own <= off(_ring.angles[aim])) aim = held;
+      }
+      final parent = aim;
       var nearest = double.infinity;
       for (var i = 0; i < magicKeys.length; i++) {
+        if (_docked && i != parent) continue;
         final angles = _subAnglesOf(i);
         for (var j = 0; j < angles.length; j++) {
-          final gap = _angleBetween(pointing, angles[j]);
+          final gap = off(angles[j]);
           if (gap < nearest) {
             nearest = gap;
             aim = i;
@@ -566,7 +608,8 @@ class _MagicKeyState extends State<MagicKey> {
           children: [
             if (_picking) ...[
               // A band behind each ring, meeting halfway between them, so it
-              // shows there are two and how far out the second one starts.
+              // shows there are two and, floating, how far out the second one
+              // starts.
               _band(2 * _ring.outer - _halfway, scheme.tertiaryContainer),
               _band(_halfway, scheme.secondaryContainer),
               for (var i = 0; i < magicKeys.length; i++) ...[
