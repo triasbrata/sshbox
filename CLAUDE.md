@@ -70,6 +70,7 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
+| The Tailscale sign-in link opens in a web tab too (Google may refuse embedded sign-in; Open in browser is the fallback) | Coordinator | — | in development |
 | Tucked magic key: a short pull (~32 dp past the dead zone) switches the aim to ring 2, sliding back returns to ring 1 | Coordinator | b5d129c, 1da91aa | on tablet, UAT pending |
 | Hidden tabs cannot take keyboard focus; switching tabs focuses the page shown (keys typed after a file tab opens no longer reach the hidden shell) | Coordinator | b34a998, 6e112ce | on tablet, UAT pending (the keys-to-a-hidden-shell bug did not reproduce; this fixed focus on switching back to a tab, and pages rebuilt when a tab was inserted before them) |
 | Toasts in the toastification style at the top, auto-closing (1s by default); the port-forward notice becomes a 5s toast with Open | Coordinator | 6764896 | on tablet, UAT pending |
