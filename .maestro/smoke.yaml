@@ -15,7 +15,7 @@ env:
 - launchApp:
     clearState: false
 
-- assertVisible: "sshbox"
+- assertVisible: "Clode"
 
 # Flutter merges a ListTile's title and subtitle into one accessibility node,
 # so the row reads as "WSL via …\ntriasbrata@… · password". Maestro
