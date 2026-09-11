@@ -9,7 +9,7 @@ the user has tried it.
 - One **coordinator** session holds the only `flutter run` / `flutter attach` on
   the user's tablet: a Xiaomi Pad 8 on wireless adb over the tailnet,
   `100.101.228.69:<port>`. The port changes whenever wireless debugging restarts.
-  The coordinator is currently **fab enter magic key radial**.
+  The coordinator is currently **sshbox development center**.
 - Every other session and sub-agent is a worker. Workers never run `flutter run`,
   `flutter install` or `adb install`, and never launch or drive the app on any
   device or emulator. `flutter analyze` and `flutter test` are fine.
@@ -56,21 +56,21 @@ it on the tablet and said it is OK.
 
 ## Features
 
-Newest first. "Coordinator" means **fab enter magic key radial**, working
+Newest first. "Coordinator" means **sshbox development center**, working
 through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
 | Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | — | in development |
-| Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | on tablet, UAT pending |
+| Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
 | Terminal selection with the platform's start/end handles and toolbar | Coordinator | — | in development |
-| Follow's busy-check messages as a toast | Coordinator | — | in development |
-| Files drawer reopens at its last scroll position | Coordinator | 039ca21, 5dc262e | on tablet, UAT pending (the first try ran on an older build) |
+| Follow's busy-check messages as a toast | Coordinator | b984c8e | on tablet, UAT pending |
+| Files drawer reopens at its last scroll position | Coordinator | 039ca21, 5dc262e | UAT passed |
 | Long press on text selects it; on blank space it arms the arrows | Coordinator | ce6223c | UAT failed: no start/end handles like built-in selection (fix in development above) |
 | Ctrl+tap a path or link to open it | Coordinator | dd981a7 | UAT passed |
 | Follow in terminal: every folder tapped in the tree, and never while a program runs | Coordinator | 47c3301, 3403407 | UAT passed |
 | Code editor: line numbers, syntax colour, whole-file saves, drafts, sudo open/save | text editor enhancement | e20b9fe, 6bd0c2a, b418d69 | UAT passed |
-| Long-press a shell tab → Duplicate session | Coordinator | 24c826a | on tablet, UAT pending |
+| Long-press a shell tab → Duplicate session | Coordinator | 24c826a | UAT passed |
 | File tab reads `host · file` | Coordinator | e2b66eb | on tablet, UAT pending |
 | Magic key: two concentric rings, and it fades to 60% while idle | Coordinator | e3e7387, 30a4171, 29259ab | on tablet, UAT pending |
 | Magic key: throw it at a side to tuck it away | Coordinator | 7156040 | on tablet, UAT pending |
