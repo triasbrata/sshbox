@@ -60,6 +60,10 @@ class FakeFileBrowser implements FileBrowser {
   /// Set to make the next [readText] fail — too large, binary, and so on.
   FileBrowserException? failReadWith;
 
+  /// Set to make [writeText] fail, standing in for a file the login can read
+  /// but not write.
+  FileBrowserException? failWriteWith;
+
   @override
   Future<String> resolveHome() async => '/home/me';
 
@@ -93,6 +97,10 @@ class FakeFileBrowser implements FileBrowser {
   }) async {
     final failure = failReadWith;
     if (failure != null) throw failure;
+    return _read(path);
+  }
+
+  RemoteText _read(String path) {
     final text = contents[path];
     if (text == null) {
       throw const FileBrowserException(
@@ -109,6 +117,12 @@ class FakeFileBrowser implements FileBrowser {
     String content, {
     FileStamp? expected,
   }) async {
+    final failure = failWriteWith;
+    if (failure != null) throw failure;
+    return _write(path, content, expected);
+  }
+
+  FileStamp _write(String path, String content, FileStamp? expected) {
     if (expected != null &&
         (!contents.containsKey(path) || _stamp(path) != expected)) {
       throw const FileBrowserException(
@@ -171,6 +185,53 @@ class FakeFileBrowser implements FileBrowser {
 
   @override
   Future<void> close() async => closed = true;
+}
+
+/// The same filesystem, by a transport that can also go through sudo, which
+/// ignores [failReadWith] and [failWriteWith] the way root ignores the
+/// permissions they stand for.
+class SudoFakeFileBrowser extends FakeFileBrowser implements SudoCapable {
+  /// What sudo asks for. Null stands in for a NOPASSWD rule.
+  String? sudoPassword = 'hunter2';
+
+  /// Every password sudo was handed, null for an attempt without one.
+  final List<String?> passwordsTried = [];
+
+  final List<String> sudoWrites = [];
+
+  void _sudo(String? password) {
+    passwordsTried.add(password);
+    final wanted = sudoPassword;
+    if (wanted == null || password == wanted) return;
+    throw FileBrowserException(
+      password == null
+          ? 'sudo needs your password.'
+          : 'sudo did not accept that password.',
+      fault: FileBrowserFault.permissionDenied,
+    );
+  }
+
+  @override
+  Future<RemoteText> sudoReadText(
+    String path, {
+    String? password,
+    int maxBytes = FileBrowser.defaultReadLimit,
+  }) async {
+    _sudo(password);
+    return _read(path);
+  }
+
+  @override
+  Future<FileStamp> sudoWriteText(
+    String path,
+    String content, {
+    String? password,
+    FileStamp? expected,
+  }) async {
+    _sudo(password);
+    sudoWrites.add(path);
+    return _write(path, content, expected);
+  }
 }
 
 /// The same filesystem, by a transport that can also search it.

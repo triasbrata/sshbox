@@ -186,6 +186,31 @@ abstract class FileSearchCapable {
   Stream<SearchHit> search({required String root, required String query});
 }
 
+/// Optional capability: reading and saving a file as root, through sudo.
+///
+/// Separate from [FileBrowser] because SFTP alone cannot do it: it needs a
+/// shell, and a sudo that will have this login. A daemon may never need it,
+/// running as root already.
+abstract class SudoCapable {
+  /// [FileBrowser.readText], as root. A null [password] only gets past a sudo
+  /// that does not ask for one; every refusal is
+  /// [FileBrowserFault.permissionDenied].
+  Future<RemoteText> sudoReadText(
+    String path, {
+    String? password,
+    int maxBytes = FileBrowser.defaultReadLimit,
+  });
+
+  /// [FileBrowser.writeText], as root, keeping the file's owner and
+  /// permissions. [password] as for [sudoReadText].
+  Future<FileStamp> sudoWriteText(
+    String path,
+    String content, {
+    String? password,
+    FileStamp? expected,
+  });
+}
+
 /// POSIX path arithmetic.
 ///
 /// Remote paths are POSIX no matter what the phone's own filesystem looks

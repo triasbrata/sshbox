@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -13,7 +14,7 @@ import 'file_browser.dart';
 /// would be faster. It is also the reason the interface is shaped the way it
 /// is: everything here costs a round trip, so the UI was written to ask for
 /// whole directories rather than entry-by-entry detail.
-class SftpFileBrowser implements FileBrowser, FileSearchCapable {
+class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   SftpFileBrowser(this._client);
 
   final SSHClient _client;
@@ -163,48 +164,68 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
         // Size first, so a mistaken tap on a database dump costs one stat
         // rather than pulling the whole thing down a phone connection.
         final attrs = await sftp.stat(path);
-        if (attrs.isDirectory) {
-          throw const FileBrowserException(
-            'That is a directory, not a file.',
-            fault: FileBrowserFault.notText,
-          );
-        }
-        final size = attrs.size ?? 0;
-        if (size > maxBytes) {
-          throw FileBrowserException(
-            '${_formatBytes(size)} is too large to open here. '
-            'Use the terminal for a file this size.',
-            fault: FileBrowserFault.tooLarge,
-          );
-        }
+        _checkOpenable(attrs, maxBytes);
 
         final file = await sftp.open(path, mode: SftpFileOpenMode.read);
         try {
           final bytes = await file.readBytes();
-
-          // A NUL byte is the same signal `grep -I` uses, and it is right far
-          // more often than any charset guess would be.
-          if (bytes.contains(0)) {
-            throw const FileBrowserException(
-              'This looks like a binary file.',
-              fault: FileBrowserFault.notText,
-            );
-          }
-
-          try {
-            return (text: utf8.decode(bytes), stamp: _stampOf(attrs));
-          } on FormatException {
-            // Decoding it loosely would show mojibake and then save that
-            // mojibake back over the original, which is worse than refusing.
-            throw const FileBrowserException(
-              'This file is not UTF-8 text, so editing it here would corrupt it.',
-              fault: FileBrowserFault.notText,
-            );
-          }
+          return (text: _decodeText(bytes), stamp: _stampOf(attrs));
         } finally {
           await file.close();
         }
       });
+
+  static void _checkOpenable(SftpFileAttrs attrs, int maxBytes) {
+    if (attrs.isDirectory) {
+      throw const FileBrowserException(
+        'That is a directory, not a file.',
+        fault: FileBrowserFault.notText,
+      );
+    }
+    final size = attrs.size ?? 0;
+    if (size > maxBytes) {
+      throw FileBrowserException(
+        '${_formatBytes(size)} is too large to open here. '
+        'Use the terminal for a file this size.',
+        fault: FileBrowserFault.tooLarge,
+      );
+    }
+  }
+
+  static String _decodeText(Uint8List bytes) {
+    // A NUL byte is the same signal `grep -I` uses, and it is right far more
+    // often than any charset guess would be.
+    if (bytes.contains(0)) {
+      throw const FileBrowserException(
+        'This looks like a binary file.',
+        fault: FileBrowserFault.notText,
+      );
+    }
+
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      // Decoding it loosely would show mojibake and then save that mojibake
+      // back over the original, which is worse than refusing.
+      throw const FileBrowserException(
+        'This file is not UTF-8 text, so editing it here would corrupt it.',
+        fault: FileBrowserFault.notText,
+      );
+    }
+  }
+
+  static void _checkUnchanged(
+    String path,
+    SftpFileAttrs? current,
+    FileStamp? expected,
+  ) {
+    if (expected == null) return;
+    if (current != null && _stampOf(current) == expected) return;
+    throw FileBrowserException(
+      '${RemotePath.basename(path)} changed on the host since it was opened.',
+      fault: FileBrowserFault.changed,
+    );
+  }
 
   @override
   Future<FileStamp> writeText(
@@ -229,14 +250,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
           replaceable = target != path;
         }
 
-        if (expected != null &&
-            (current == null || _stampOf(current) != expected)) {
-          throw FileBrowserException(
-            '${RemotePath.basename(path)} changed on the host since it was '
-            'opened.',
-            fault: FileBrowserFault.changed,
-          );
-        }
+        _checkUnchanged(path, current, expected);
 
         final replaced = current != null &&
             replaceable &&
@@ -374,6 +388,228 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
       }
     }
     await sftp.rmdir(path);
+  }
+
+  /// Where the login may not even stat the file there is no stamp to compare,
+  /// so saves skip the check rather than fail every time.
+  static const FileStamp _unknownStamp = (modified: null, size: null);
+
+  /// What stat says about [path]: null attrs when nothing is there, and
+  /// `refused` when the login may not look — common for the files sudo is
+  /// for, under directories only root can enter.
+  static Future<({SftpFileAttrs? attrs, bool refused})> _lookAt(
+    SftpClient sftp,
+    String path,
+  ) async {
+    try {
+      return (attrs: await sftp.stat(path), refused: false);
+    } on SftpStatusError catch (error) {
+      if (error.code == 2) return (attrs: null, refused: false);
+      if (error.code == 3) return (attrs: null, refused: true);
+      rethrow;
+    }
+  }
+
+  @override
+  Future<RemoteText> sudoReadText(
+    String path, {
+    String? password,
+    int maxBytes = FileBrowser.defaultReadLimit,
+  }) =>
+      _guard('open $path', () async {
+        final sftp = await _channel();
+        final look = await _lookAt(sftp, path);
+        final attrs = look.attrs;
+        if (attrs == null && !look.refused) {
+          throw FileBrowserException(
+            'Could not open $path: it is no longer there.',
+            fault: FileBrowserFault.notFound,
+          );
+        }
+        if (attrs != null) _checkOpenable(attrs, maxBytes);
+
+        // One byte past the limit is enough to know, where stat could not say.
+        final bytes = await _sudo(
+          'head -c ${maxBytes + 1} -- ${_shellQuote(path)}',
+          password,
+          'open $path',
+        );
+        if (bytes.length > maxBytes) {
+          throw const FileBrowserException(
+            'This file is too large to open here. '
+            'Use the terminal for a file this size.',
+            fault: FileBrowserFault.tooLarge,
+          );
+        }
+        return (
+          text: _decodeText(bytes),
+          stamp: attrs == null ? _unknownStamp : _stampOf(attrs),
+        );
+      });
+
+  @override
+  Future<FileStamp> sudoWriteText(
+    String path,
+    String content, {
+    String? password,
+    FileStamp? expected,
+  }) =>
+      _guard('save $path', () async {
+        final sftp = await _channel();
+        final look = await _lookAt(sftp, path);
+        if (!look.refused) _checkUnchanged(path, look.attrs, expected);
+
+        // The bytes cross the network into a file of our own first, and only
+        // then does root copy them over the original, on the host itself. A
+        // dropped connection can cut the upload short, never the original.
+        //
+        // Not `sudo tee` fed on stdin: where sudo does not ask for a password
+        // (NOPASSWD, or credentials it still remembers) the password line
+        // would land in the file along with the rest.
+        //
+        // Exclusive, under a name nobody can guess: /tmp is shared, and a
+        // link planted there under a known name would aim this write
+        // somewhere else.
+        final temp = '/tmp/.sshbox-${_randomName()}';
+        final file = await sftp.open(
+          temp,
+          mode: SftpFileOpenMode.create |
+              SftpFileOpenMode.exclusive |
+              SftpFileOpenMode.write,
+        );
+        try {
+          try {
+            // 0600, before the bytes go in: /tmp is readable by everyone.
+            await file.setStat(
+              SftpFileAttrs(mode: const SftpFileMode.value(0x180)),
+            );
+            await file.writeBytes(Uint8List.fromList(utf8.encode(content)));
+          } finally {
+            await file.close();
+          }
+          // cp into an existing file writes through it: owner, permissions
+          // and inode stay the file's own, and a symlink stays a link.
+          await _sudo(
+            'cp -- ${_shellQuote(temp)} ${_shellQuote(path)}',
+            password,
+            'save $path',
+          );
+        } finally {
+          await _removeQuietly(sftp, temp);
+        }
+
+        final attrs = (await _lookAt(sftp, path)).attrs;
+        return attrs == null ? _unknownStamp : _stampOf(attrs);
+      });
+
+  static final _random = Random.secure();
+
+  static String _randomName() =>
+      List.generate(16, (_) => _random.nextInt(36).toRadixString(36)).join();
+
+  /// Runs [command] as root on the session's own connection and returns what
+  /// it printed.
+  ///
+  /// The password goes in on stdin, never onto the command line where `ps`
+  /// would show it to every other login on the host. Stdin closes right
+  /// behind it, so a wrong password fails at once instead of leaving sudo
+  /// waiting for another try.
+  Future<Uint8List> _sudo(
+    String command,
+    String? password,
+    String action,
+  ) async {
+    // -n: with no password to give, fail rather than ask. LC_ALL=C: sudo's
+    // refusals are read below, and a translated one would not be recognised.
+    final sudo = password == null ? 'sudo -n' : "sudo -S -p ''";
+    final SSHSession session;
+    try {
+      session = await _client.execute('env LC_ALL=C $sudo $command');
+    } catch (error) {
+      throw FileBrowserException(
+        'Could not start sudo on the host: $error',
+        fault: FileBrowserFault.disconnected,
+      );
+    }
+
+    try {
+      if (password != null) session.stdin.add(utf8.encode('$password\n'));
+      unawaited(session.stdin.close());
+
+      final out = BytesBuilder(copy: false);
+      final err = BytesBuilder(copy: false);
+      // A sudo waiting on something no phone can give it (a hardware key, a
+      // second factor) would otherwise hold the editor's spinner forever.
+      await Future.wait([
+        session.stdout.forEach(out.add),
+        session.stderr.forEach(err.add),
+      ]).timeout(
+        const Duration(minutes: 1),
+        onTimeout: () => throw const FileBrowserException(
+          'sudo on the host did not answer.',
+          fault: FileBrowserFault.disconnected,
+        ),
+      );
+      final code = await session.waitForExit(
+        timeout: const Duration(seconds: 5),
+      );
+      if (code == 0) return out.takeBytes();
+      throw _sudoFailure(
+        code,
+        utf8.decode(err.takeBytes(), allowMalformed: true),
+        action,
+      );
+    } finally {
+      session.channel.destroy();
+    }
+  }
+
+  /// What went wrong under sudo, as faults the editor can act on. Every
+  /// refusal by sudo itself is [FileBrowserFault.permissionDenied]: each is
+  /// answered the same way, by asking for a password or saying why not.
+  static FileBrowserException _sudoFailure(
+    int? code,
+    String stderr,
+    String action,
+  ) {
+    final said = stderr.trim();
+    if (code == 127) {
+      return const FileBrowserException(
+        'This host has no sudo.',
+        fault: FileBrowserFault.unsupported,
+      );
+    }
+    if (said.contains('password is required')) {
+      return const FileBrowserException(
+        'sudo needs your password.',
+        fault: FileBrowserFault.permissionDenied,
+      );
+    }
+    if (said.contains('incorrect password') ||
+        said.contains('try again') ||
+        said.contains('no password was provided')) {
+      return const FileBrowserException(
+        'sudo did not accept that password.',
+        fault: FileBrowserFault.permissionDenied,
+      );
+    }
+    if (said.contains('sudoers') || said.contains('may not run sudo')) {
+      return const FileBrowserException(
+        'This login is not allowed to use sudo here.',
+        fault: FileBrowserFault.permissionDenied,
+      );
+    }
+    if (said.contains('No such file')) {
+      return FileBrowserException(
+        'Could not $action: it is no longer there.',
+        fault: FileBrowserFault.notFound,
+      );
+    }
+    // What the command itself said last is the part worth reading.
+    final last = said.split('\n').last.trim();
+    return FileBrowserException(
+      'Could not $action as root: ${last.isEmpty ? 'exit $code' : last}',
+    );
   }
 
   /// Content search by shelling out to `grep` on the session's own connection.

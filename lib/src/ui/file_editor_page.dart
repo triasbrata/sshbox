@@ -67,6 +67,19 @@ class _FileEditorPageState extends State<FileEditorPage> {
   /// way out does not store it again.
   bool _dropDraft = false;
 
+  /// Whether the file was last read or saved through sudo. Reloads and saves
+  /// keep going that way until the editor closes.
+  bool _asRoot = false;
+
+  /// What sudo was last given and took. Held only here, never stored, and
+  /// gone with the editor.
+  String? _sudoPassword;
+
+  SudoCapable? get _sudo => switch (widget.browser) {
+        final SudoCapable sudo => sudo,
+        _ => null,
+      };
+
   String? _error;
   FileBrowserFault? _fault;
   bool _loading = true;
@@ -187,7 +200,10 @@ class _FileEditorPageState extends State<FileEditorPage> {
     unawaited(_clearDraft());
   }
 
-  Future<void> _load() async {
+  /// [root] reads through sudo. Left out, the file is read the way it was
+  /// last read.
+  Future<void> _load({bool? root}) async {
+    final asRoot = root ?? _asRoot;
     setState(() {
       _loading = true;
       _error = null;
@@ -195,7 +211,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
     });
 
     try {
-      final read = await widget.browser.readText(widget.path);
+      final read = await _read(root: asRoot);
       final draft = await _readDraft();
       if (!mounted) return;
       setState(() {
@@ -203,6 +219,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
         _stamp = read.stamp;
         _controller.text = read.text;
         _loading = false;
+        _asRoot = asRoot;
         // A draft that matches the host has nothing left to offer.
         _draft = draft != null && draft.text != read.text ? draft : null;
       });
@@ -216,31 +233,92 @@ class _FileEditorPageState extends State<FileEditorPage> {
     }
   }
 
+  Future<RemoteText> _read({required bool root}) async {
+    final sudo = _sudo;
+    if (!root || sudo == null) return widget.browser.readText(widget.path);
+    final read = await _asRootWith(
+      (password) => sudo.sudoReadText(widget.path, password: password),
+    );
+    return read ??
+        (throw const FileBrowserException(
+          'sudo needs your password to open this file.',
+          fault: FileBrowserFault.permissionDenied,
+        ));
+  }
+
+  /// Null when sudo wanted a password and the user would not give one.
+  Future<FileStamp?> _write(
+    String text, {
+    required bool root,
+    required bool overwrite,
+  }) {
+    final expected = overwrite ? null : _stamp;
+    final sudo = _sudo;
+    if (!root || sudo == null) {
+      return widget.browser.writeText(widget.path, text, expected: expected);
+    }
+    return _asRootWith(
+      (password) => sudo.sudoWriteText(
+        widget.path,
+        text,
+        password: password,
+        expected: expected,
+      ),
+    );
+  }
+
+  /// Runs [attempt] through sudo: with the password already given here, else
+  /// first without one (a sudo that does not ask needs none) and then with
+  /// one the user types. Null when they would not give one.
+  Future<T?> _asRootWith<T>(
+    Future<T> Function(String? password) attempt,
+  ) async {
+    final known = _sudoPassword;
+    try {
+      return await attempt(known);
+    } on FileBrowserException catch (error) {
+      if (error.fault != FileBrowserFault.permissionDenied) rethrow;
+      // A password that stopped working is asked for afresh next time.
+      if (known != null) {
+        _sudoPassword = null;
+        rethrow;
+      }
+    }
+    if (!mounted) return null;
+    final password = await showDialog<String>(
+      context: context,
+      builder: (_) => const _PasswordPrompt(),
+    );
+    if (password == null || !mounted) return null;
+    final result = await attempt(password);
+    _sudoPassword = password;
+    return result;
+  }
+
   Future<void> _reload() async {
     if (_dirty && !await _confirmDiscard()) return;
     await _load();
   }
 
   /// [overwrite] skips the check that the host still has the version this
-  /// edit started from — only ever set once the user has said so.
-  Future<void> _save({bool overwrite = false}) async {
+  /// edit started from — only ever set once the user has said so. [root]
+  /// saves through sudo; left out, the file is saved the way it was read.
+  Future<void> _save({bool overwrite = false, bool? root}) async {
+    final asRoot = root ?? _asRoot;
     setState(() => _saving = true);
     final text = _controller.text;
     var conflict = false;
 
     try {
-      final stamp = await widget.browser.writeText(
-        widget.path,
-        text,
-        expected: overwrite ? null : _stamp,
-      );
-      if (!mounted) return;
+      final stamp = await _write(text, root: asRoot, overwrite: overwrite);
+      if (stamp == null || !mounted) return;
       setState(() {
         // Not `_controller.text`: the user may have typed while the write was
         // in flight, and those keystrokes are genuinely still unsaved.
         _original = text;
         _stamp = stamp;
         _saved = true;
+        _asRoot = asRoot;
       });
       if (!_dirty) unawaited(_clearDraft());
       ScaffoldMessenger.of(context).showSnackBar(
@@ -251,18 +329,33 @@ class _FileEditorPageState extends State<FileEditorPage> {
       if (error.fault == FileBrowserFault.changed) {
         conflict = true;
       } else {
+        // Readable but not writable, like /etc/hosts: saving as root is the
+        // one way left to get the edit onto the host.
+        final offerSudo = error.fault == FileBrowserFault.permissionDenied &&
+            !asRoot &&
+            _sudo != null;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.message)),
+          SnackBar(
+            content: Text(error.message),
+            action: offerSudo
+                ? SnackBarAction(
+                    label: 'Save with sudo',
+                    onPressed: () {
+                      if (mounted) _save(root: true);
+                    },
+                  )
+                : null,
+          ),
         );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
 
-    if (conflict && mounted) await _resolveConflict();
+    if (conflict && mounted) await _resolveConflict(root: asRoot);
   }
 
-  Future<void> _resolveConflict() async {
+  Future<void> _resolveConflict({required bool root}) async {
     final choice = await showDialog<_Conflict>(
       context: context,
       builder: (context) => AlertDialog(
@@ -291,9 +384,9 @@ class _FileEditorPageState extends State<FileEditorPage> {
     if (!mounted) return;
     switch (choice) {
       case _Conflict.overwrite:
-        await _save(overwrite: true);
+        await _save(overwrite: true, root: root);
       case _Conflict.reload:
-        await _load();
+        await _load(root: root);
       case null:
         break;
     }
@@ -361,7 +454,10 @@ class _FileEditorPageState extends State<FileEditorPage> {
                 overflow: TextOverflow.ellipsis,
               ),
               Text(
-                _dirty ? 'Unsaved changes' : RemotePath.parent(widget.path),
+                [
+                  if (_asRoot) 'as root',
+                  _dirty ? 'Unsaved changes' : RemotePath.parent(widget.path),
+                ].join(' · '),
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -395,7 +491,15 @@ class _FileEditorPageState extends State<FileEditorPage> {
     if (_loading) return const Center(child: CircularProgressIndicator());
 
     final error = _error;
-    if (error != null) return _EditorError(message: error, fault: _fault);
+    if (error != null) {
+      return _EditorError(
+        message: error,
+        fault: _fault,
+        onSudo: _fault == FileBrowserFault.permissionDenied && _sudo != null
+            ? () => _load(root: true)
+            : null,
+      );
+    }
 
     return Column(
       children: [
@@ -443,10 +547,13 @@ class _FileEditorPageState extends State<FileEditorPage> {
 }
 
 class _EditorError extends StatelessWidget {
-  const _EditorError({required this.message, this.fault});
+  const _EditorError({required this.message, this.fault, this.onSudo});
 
   final String message;
   final FileBrowserFault? fault;
+
+  /// Set when the login was refused and sudo might still get the file open.
+  final VoidCallback? onSudo;
 
   @override
   Widget build(BuildContext context) {
@@ -471,9 +578,67 @@ class _EditorError extends StatelessWidget {
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium,
             ),
+            if (onSudo != null) ...[
+              const SizedBox(height: 16),
+              FilledButton.tonalIcon(
+                onPressed: onSudo,
+                icon: const Icon(Icons.admin_panel_settings_outlined),
+                label: const Text('Open with sudo'),
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Asks for the sudo password.
+///
+/// Owns its field's controller for the same reason the file browser's name
+/// prompt does: the dialog's future completes as the route starts leaving,
+/// while the field is still being built for the dismiss animation.
+class _PasswordPrompt extends StatefulWidget {
+  const _PasswordPrompt();
+
+  @override
+  State<_PasswordPrompt> createState() => _PasswordPromptState();
+}
+
+class _PasswordPromptState extends State<_PasswordPrompt> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.of(context).pop(_controller.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('sudo password'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        obscureText: true,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: const InputDecoration(
+          labelText: 'Password',
+          helperText: 'Kept only while this file is open.',
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Continue')),
+      ],
     );
   }
 }
