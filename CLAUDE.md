@@ -63,10 +63,10 @@ through its sub-agents.
 |---|---|---|---|
 | Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | de465b5, 6452ba6 | UAT failed: it opens a separate screen; links should open as a tab in sshbox's own tab strip (fix in development) |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
-| Terminal selection with the platform's start/end handles and toolbar | Coordinator | — | in development |
+| Terminal selection with the platform's start/end handles and toolbar | Coordinator | dbd8375 | on tablet, UAT pending |
 | Follow's busy-check messages as a toast | Coordinator | b984c8e | UAT passed |
 | Files drawer reopens at its last scroll position | Coordinator | 039ca21, 5dc262e | UAT passed |
-| Long press on text selects it; on blank space it arms the arrows | Coordinator | ce6223c | UAT failed: no start/end handles like built-in selection (fix in development above) |
+| Long press on text selects it; on blank space it arms the arrows | Coordinator | ce6223c | UAT failed: no start/end handles like built-in selection (fixed by the handles row above, awaiting its UAT) |
 | Ctrl+tap a path or link to open it | Coordinator | dd981a7 | UAT passed |
 | Follow in terminal: every folder tapped in the tree, and never while a program runs | Coordinator | 47c3301, 3403407 | UAT passed |
 | Code editor: line numbers, syntax colour, whole-file saves, drafts, sudo open/save | text editor enhancement | e20b9fe, 6bd0c2a, b418d69 | UAT passed |
