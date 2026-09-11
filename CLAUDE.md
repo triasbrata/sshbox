@@ -61,6 +61,7 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
+| Code editor key bar: arrows and a cursor pad, Tab, undo/redo, symbols (the user found no way to move the cursor in a file) | text editor enhancement | — | in development |
 | Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | — | in development |
 | Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | de465b5, 6452ba6 | UAT failed: it opens a separate screen; links should open as a tab in sshbox's own tab strip (fix in development) |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
