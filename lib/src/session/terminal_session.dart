@@ -84,11 +84,36 @@ abstract class CommandCapable {
   Stream<String> run(String command, {bool pty = false});
 }
 
+/// A command started by [ChannelCapable.open]: its output as the bytes it
+/// wrote, its stdin, and a way to end it.
+typedef CommandChannel = ({
+  Stream<Uint8List> output,
+  void Function(Uint8List data) write,
+  void Function() close,
+});
+
+/// Optional capability: a command on the host that is talked to as well as
+/// listened to, in raw bytes both ways.
+///
+/// What tmux's control mode needs — see `TmuxSession`. Apart from
+/// [CommandCapable], whose line-at-a-time decoded output would mangle a
+/// protocol that frames its own lines and carries UTF-8 split across them.
+abstract class ChannelCapable {
+  /// No pty: nothing on the way should turn `\n` into `\r\n` or read a
+  /// control byte as a signal. [CommandChannel.close] ends the command.
+  Future<CommandChannel> open(String command);
+}
+
 abstract class SessionTransport {
+  /// [shell] false connects without starting one, for a session whose
+  /// terminals come from somewhere else — tmux's panes, over
+  /// [ChannelCapable.open]. The session then stays up for as long as the
+  /// connection does, and its own output, input and size go nowhere.
   Future<TerminalSession> connect({
     required HostProfile host,
     required SecretStore secrets,
     required int columns,
     required int rows,
+    bool shell = true,
   });
 }
