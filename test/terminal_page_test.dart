@@ -62,8 +62,11 @@ class _Shell
   @override
   Future<void> dispose() async {}
 
+  /// One filesystem, whichever of the page's browsers asks for it.
+  final files = FakeFileBrowser();
+
   @override
-  FileBrowser openFileBrowser() => FakeFileBrowser();
+  FileBrowser openFileBrowser() => files;
 
   /// What the `/proc` probe prints on the host: nothing, where there is no
   /// `/proc` to read.
@@ -201,6 +204,41 @@ void main() {
       );
       expect(drawer.initialRoot, '/home/me/dev');
       expect(opened, isEmpty);
+    });
+
+    testWidgets('the drawer reopens scrolled where it was, but a folder '
+        'opened this way starts at its top', (tester) async {
+      await pumpPage(tester);
+      for (var i = 0; i < 60; i++) {
+        await shell.files.writeText('/home/me/file$i.txt', '');
+      }
+      Future<void> tapTooltip(String tooltip) async {
+        await tester.tap(find.byTooltip(tooltip));
+        await tester.pumpAndSettle();
+      }
+
+      final tree = find.descendant(
+        of: find.byType(FileBrowserPage),
+        matching: find.byType(Scrollable),
+      );
+      await tapTooltip('Browse files');
+      await tester.drag(tree, const Offset(0, -400));
+      await tester.pumpAndSettle();
+      final left = tester.state<ScrollableState>(tree).position.pixels;
+      expect(left, greaterThan(0));
+
+      await tapTooltip('Close files');
+      await tapTooltip('Browse files');
+      expect(tester.state<ScrollableState>(tree).position.pixels, left);
+
+      await tapTooltip('Close files');
+      await tester.tap(find.text('CTRL'));
+      await tester.pump();
+      await tapColumn(tester, 18);
+      final drawer = tester.widget<FileBrowserPage>(
+        find.byType(FileBrowserPage),
+      );
+      expect(drawer.initialScrollOffset, 0);
     });
 
     testWidgets('a file opens in a tab, taken from where claude is', (
