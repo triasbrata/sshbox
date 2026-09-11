@@ -500,6 +500,47 @@ void main() {
     expect(visited, ['/home/me/dev']);
   });
 
+  testWidgets('following, a tapped folder takes the shell there once',
+      (tester) async {
+    final visited = <String>[];
+    final link = TerminalLink(typePath: (_) {}, changeDirectory: visited.add);
+    // Built afresh each time, the way the drawer is on every open.
+    Future<void> openDrawer() async {
+      await tester.pumpWidget(MaterialApp(
+        home: FileBrowserPage(
+          key: UniqueKey(),
+          browser: FakeFileBrowser(),
+          title: 'box',
+          terminal: link,
+          onFileSelected: (_) {},
+        ),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    await openDrawer();
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    expect(visited, isEmpty, reason: 'off, a tap only opens the folder');
+
+    link.follow = true;
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    expect(visited, ['/home/me/dev'], reason: 'shutting it counts too');
+
+    // Open again: the shell was just sent here, so nothing more is typed.
+    await tester.tap(_row('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(_row('main.dart'));
+    await tester.pumpAndSettle();
+    expect(visited, ['/home/me/dev'], reason: 'and a file is no place to cd');
+
+    // Loading the root again is not the user going there, and following it
+    // would pull the shell back out of dev.
+    await openDrawer();
+    expect(visited, ['/home/me/dev']);
+  });
+
   testWidgets('opens a folder in the terminal from its menu, then gets out '
       'of the way', (tester) async {
     final visited = <String>[];

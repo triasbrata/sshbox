@@ -197,10 +197,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       });
       widget.onRootChanged?.call(root);
 
-      // Only when asked: this types into a live shell, so it is opt-in rather
-      // than a surprise waiting on the first "set as root".
-      final link = widget.terminal;
-      if (link != null && link.follow) link.changeDirectory(root);
+      // Only when the root moved. Opening the drawer or refreshing loads the
+      // same root again without the user going anywhere, and following that
+      // would drag a shell sent to a folder inside it back up to the top.
+      if (previous != null && previous != root) widget.terminal?.followTo(root);
 
       // All at once: over SFTP each is a round trip, and waiting for them one
       // after another is what makes a deep tree slow to come back.
@@ -316,6 +316,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   Future<void> _openEntry(RemoteEntry entry) async {
     setState(() => _selected = entry.path);
     if (entry.isTraversable) {
+      // Opened or shut, a tapped folder is where the user is looking, so a
+      // shell told to follow goes there too. A file is not somewhere a shell
+      // can be, and opening one moves nothing.
+      widget.terminal?.followTo(entry.path);
       await _toggle(entry);
       return;
     }
