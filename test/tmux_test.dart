@@ -149,6 +149,8 @@ void main() {
   testWidgets('two panes sit side by side, and touching one focuses it', (
     tester,
   ) async {
+    // Small enough that tmux's 80 columns fit the test's screen.
+    const style = TerminalStyle(fontSize: 8);
     final fake = _FakeTmux('b25d,80x24,0,0{40x24,0,0,1,39x24,41,0,2}');
     late StateSetter rebuild;
     final tmux = TmuxSession(
@@ -168,13 +170,13 @@ void main() {
             rebuild = setState;
             return TmuxPaneLayout(
               tmux: tmux,
-              // Small enough that tmux's 80 columns fit the test's screen.
-              textStyle: const TerminalStyle(fontSize: 8),
+              textStyle: style,
               padding: EdgeInsets.zero,
               pane: (pane, focused) => TerminalView(
                 pane.terminal,
                 key: ValueKey('pane ${pane.id}'),
                 autoResize: false,
+                textStyle: style,
               ),
             );
           },
@@ -196,6 +198,14 @@ void main() {
       [(40, 24), (39, 24)],
     );
     expect(tmux.focused?.id, 1);
+    // Laid out in cells measured as xterm2 measures them, or the panes drift.
+    expect(
+      tester
+          .state<TerminalViewState>(find.byKey(const ValueKey('pane 1')))
+          .renderTerminal
+          .cellSize,
+      terminalCellSize(style, TextScaler.noScaling),
+    );
 
     await tester.tap(find.byKey(const ValueKey('pane 2')));
     await tester.pump();

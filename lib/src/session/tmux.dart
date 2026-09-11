@@ -554,8 +554,10 @@ class TmuxSession {
         if (!_attached.isCompleted) _attached.complete(true);
       case '%session-window-changed':
         unawaited(_sync());
-      case '%layout-change' when words.length > 2 && words[1] == _window:
-        _applyLayout(words[2]);
+      // The visible layout rather than the whole one: a pane zoomed from
+      // another client is all there is to see.
+      case '%layout-change' when words.length > 3 && words[1] == _window:
+        _applyLayout(words[3]);
       case '%window-pane-changed' when words.length > 2 && words[1] == _window:
         _focused = _paneId(words[2]);
         onChanged();
@@ -583,7 +585,7 @@ class TmuxSession {
     }
     try {
       final reply = await _client.command(
-        'display -p "#{window_id}\t#{window_layout}\t#{pane_id}"',
+        'display -p "#{window_id}\t#{window_visible_layout}\t#{pane_id}"',
       );
       final fields = (reply.firstOrNull ?? '').split('\t');
       if (fields.length < 3 || _disposed) return;
