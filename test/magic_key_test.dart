@@ -175,9 +175,10 @@ void main() {
       expect(sent, ['\r']);
     });
 
-    /// Puts a finger on the button and keeps it there until the ring opens.
-    Future<TestGesture> hold(WidgetTester tester) async {
-      final gesture = await tester.startGesture(tester.getCenter(button));
+    /// Puts a finger on the button, or [at] a point on it, and keeps it there
+    /// until the ring opens.
+    Future<TestGesture> hold(WidgetTester tester, [Offset? at]) async {
+      final gesture = await tester.startGesture(at ?? tester.getCenter(button));
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
       return gesture;
     }
@@ -281,6 +282,87 @@ void main() {
       expect(sent, ['\x1b[H'], reason: 'Home, the other key behind ↑');
     });
 
+    testWidgets('floating, ring 2 is still out where it is drawn',
+        (tester) async {
+      // Far enough to reach ring 2 on a tucked key; not on this one.
+      await slideFromMiddle(tester, const Offset(0, -60));
+      expect(sent, ['\x1b[A']);
+    });
+
+    final box = find.byKey(const ValueKey('magic-key-button'));
+
+    /// The label on the petal lit up as aimed at, or null when none is.
+    String? aimed(WidgetTester tester) {
+      final lit = find.byWidgetPredicate(
+        (w) => w is Material && w.elevation == 8,
+      );
+      final label = find.descendant(of: lit, matching: find.byType(Text));
+      return label.evaluate().isEmpty ? null : tester.widget<Text>(label).data;
+    }
+
+    /// Holds a key tucked into the [left] or right side, on the half of it that
+    /// shows. Each pull then puts the finger that far out from where it landed
+    /// toward the [toward] petal, the way a thumb aims at one, and answers with
+    /// the petal lit up.
+    Future<(TestGesture, Future<String?> Function(double))> holdTucked(
+      WidgetTester tester, {
+      required bool left,
+      required String toward,
+    }) async {
+      SharedPreferences.setMockInitialValues({
+        'sshbox.magickey.x': left ? 0.0 : 1.0,
+        'sshbox.magickey.y': 0.5,
+        'sshbox.magickey.docked': true,
+      });
+      await pumpKey(tester);
+      await tester.pump();
+
+      final centre = tester.getRect(box).center;
+      final landed = centre + Offset(left ? 10 : -10, 0);
+      final finger = await hold(tester, landed);
+      final way = tester.getCenter(find.text(toward)) - centre;
+      Future<String?> pull(double distance) async {
+        await finger.moveTo(landed + way / way.distance * distance);
+        await tester.pump();
+        return aimed(tester);
+      }
+
+      return (finger, pull);
+    }
+
+    // Tucked, ring 2 takes over 50 out: the dead zone's 18 and a pull of 32.
+    testWidgets('tucked on the left, ring 2 is a short pull right',
+        (tester) async {
+      final (finger, pull) = await holdTucked(tester, left: true, toward: '→');
+      expect(await pull(24), '→', reason: 'just past the dead zone');
+      expect(await pull(60), 'END', reason: 'the key behind, nowhere near it');
+      expect(await pull(20), '→', reason: 'easing back is ring 1 again');
+      await finger.up();
+      await tester.pump();
+      expect(sent, ['\x1b[C'], reason: 'lifting sends what is lit');
+    });
+
+    testWidgets('tucked, a finger on the line keeps the ring it is in',
+        (tester) async {
+      final (finger, pull) = await holdTucked(tester, left: true, toward: '→');
+      expect(await pull(52), 'END');
+      expect(await pull(47), 'END', reason: 'ring 2 lets go only 6 inside');
+      expect(await pull(42), '→');
+      expect(await pull(47), '→', reason: 'and ring 1 holds up to the line');
+      await finger.up();
+      await tester.pump();
+    });
+
+    testWidgets('tucked on the right, it mirrors: ring 2 is a pull left',
+        (tester) async {
+      final (finger, pull) = await holdTucked(tester, left: false, toward: '←');
+      expect(await pull(24), '←');
+      expect(await pull(60), 'HOME');
+      await finger.up();
+      await tester.pump();
+      expect(sent, ['\x1b[H']);
+    });
+
     testWidgets('in its corner both rings fan out and stay on screen',
         (tester) async {
       await pumpKey(tester);
@@ -321,8 +403,6 @@ void main() {
       expect(prefs.getDouble('sshbox.magickey.x'), isNotNull);
       expect(prefs.getDouble('sshbox.magickey.y'), isNotNull);
     });
-
-    final box = find.byKey(const ValueKey('magic-key-button'));
 
     testWidgets('thrown at a side, it tucks in half off the screen',
         (tester) async {

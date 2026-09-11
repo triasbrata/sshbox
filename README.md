@@ -164,6 +164,12 @@ key and lift to send it. How far you slide picks the ring: a little way up is
 Lifting in the middle sends nothing. Near an edge both rings fan into the room
 that is left, each outer key still behind its inner one.
 
+Tucked into a side, that fan reaches halfway across the screen, so there the
+outer ring is a short pull instead: slide toward a key until it lights up, go
+on about 30 dp and the key behind it lights up, ease back and the inner key
+has it again. The switch back sits a few dp inside the switch out, so a thumb
+resting on the line does not flicker between the two.
+
 ### Ctrl+tap
 
 VS Code's Ctrl+click, for a touch screen. With CTRL armed on the bar — or Ctrl
