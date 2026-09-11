@@ -10,6 +10,10 @@ import 'package:xterm2/xterm.dart';
 /// Runs what a tab runs on its host, here, the way an SSH exec channel runs
 /// it: no tty, a bare environment, and a tmux server of its own under [dir]
 /// so the machine's own sessions are never touched.
+///
+/// `exec`, so the process is tmux's client itself and closing the channel
+/// ends it, as sshd closing a channel does. Killing a shell in front of it
+/// instead left the client running, attached, and the server with it.
 Future<(Process, CommandChannel)> _start(
   String name,
   Directory dir, {
@@ -17,7 +21,7 @@ Future<(Process, CommandChannel)> _start(
 }) async {
   final process = await Process.start(
     '/bin/sh',
-    ['-c', TmuxSession.command(name)],
+    ['-c', 'exec ${TmuxSession.command(name)}'],
     environment: {
       'HOME': Platform.environment['HOME'] ?? dir.path,
       'PATH': path,
