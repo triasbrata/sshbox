@@ -13,6 +13,7 @@ The name is a placeholder — rename freely, it appears in `pubspec.yaml`,
 | SSH | [`dartssh2`](https://pub.dev/packages/dartssh2) 4.1.0 | Pure Dart, so Android and iOS run identical code with no JNI or cinterop |
 | Secrets | `flutter_secure_storage` 11 | Android Keystore and iOS Keychain |
 | Host list | `shared_preferences` | Non-secret metadata only |
+| Web tabs | [`webview_flutter`](https://pub.dev/packages/webview_flutter) 4.14 | Android System WebView — Chrome's engine — inside a tab; a Custom Tab is an activity of its own and cannot be one |
 
 A local shell was never on the table: iOS forbids `fork`/`exec` outright, and
 on Android the W^X rules since API 29 stop an app executing binaries from its
@@ -49,6 +50,7 @@ lib/
       ctrl_click.dart               the URLs and paths a Ctrl+tap opens
       file_browser_page.dart        a VS Code-style file tree, as a drawer
       file_editor_page.dart         read and edit one remote file, in a tab
+      web_page.dart                 a web page opened from a link, in a tab
       file_search_page.dart         find text under a directory
 ```
 
@@ -92,6 +94,11 @@ round-trip-per-entry shape and throw away the one advantage it has.
   `secret_store.dart` — that is the entire change.
 - **`INTERNET` is declared in the main manifest.** Flutter only puts it in the
   debug manifest, so a release build would otherwise ship unable to connect.
+- **Cleartext HTTP is allowed** (`network_security_config.xml`), for the web
+  tabs: a dev server on a host, or one forwarded to the tailnet, is plain
+  `http`, which the WebView otherwise refuses outright. Nothing else in the
+  app speaks HTTP — SSH is its own socket — so it changes what a web tab may
+  load and nothing more.
 - **Editing a host leaves blank credential fields alone**, so changing a port
   cannot silently wipe a stored key.
 
@@ -162,19 +169,22 @@ that is left, each outer key still behind its inner one.
 VS Code's Ctrl+click, for a touch screen. With CTRL armed on the bar — or Ctrl
 held on a hardware keyboard, which covers a mouse click with Ctrl — every URL
 and path on screen gets a thin underline, and a tap on one opens it instead of
-raising the keyboard: a URL in an in-app browser, a folder as the root of the
-files drawer, a file in a tab of its own, the way one picked in the drawer
-opens. The tap types nothing, a program reading the mouse does not see it, and
+raising the keyboard: a URL in a web tab beside the shell, a folder as the
+root of the files drawer, a file in a tab of its own, the way one picked in
+the drawer opens. The tap types nothing, a program reading the mouse does not see it, and
 it uses CTRL up whether it hit anything or not. A path that is not there says
 **Not found:** and the path.
 
-**Every link opens in-app.** A Ctrl+tapped URL, a forwarded port's **Open** and
-a Tailscale sign-in all go through `openUrl` in `ui/terminal_page.dart`, which
-opens a web page in a Custom Tab: the phone's default browser — Chrome, Firefox,
-Edge — draws it over the app with its own engine, cookies and sign-ins, and
-Back comes back to the shell. A browser that cannot do Custom Tabs gets the
-link as an ordinary page; `mailto:` and the like go wherever Android sends
-them; and when nothing takes it a toast says **No app can open** and the link.
+**Every link opens in a tab.** A Ctrl+tapped URL, a forwarded port's **Open**
+and a Tailscale sign-in all go through `openUrl` in `ui/terminal_page.dart`,
+which opens a web page in a tab of its own beside the shell it came from — see
+[Tabs](#tabs). With no shell to put it beside — the web tab's own **Open in
+browser**, or a port's snack bar still up after its tab closed — the page goes
+to a Custom Tab instead: the phone's default browser — Chrome, Firefox, Edge —
+draws it over the app with its own engine, cookies and sign-ins, and Back
+comes back to the app. A browser that cannot do Custom Tabs gets the link as
+an ordinary page; `mailto:` and the like go wherever Android sends them; and
+when nothing takes it a toast says **No app can open** and the link.
 No `<queries>` is needed for this: url_launcher fires the Custom Tabs intent
 without asking the package manager first, which is the only thing Android 11's
 package visibility restricts.
@@ -396,6 +406,30 @@ the same file again returns to its tab rather than opening a second one, and
 closing a session takes its file tabs with it — they are read over that
 session and cannot outlive it.
 
+**So do links.** A web link from a session — Ctrl+tapped, a forwarded port's
+**Open**, a sign-in check — gets a tab beside that session's shell, after its
+files, under a globe. It is named by the page's own title once one has
+loaded, and by the host until then: `box.ts.net` while
+`http://box.ts.net:3001` loads. Android System WebView draws it, Chrome's
+engine, through `webview_flutter`. A link already showing in one of the
+session's tabs goes back to that tab. The tab closes with its ×, and with its
+shell, whose link it was; but it needs nothing of the connection — the phone
+fetches the page itself — so a shell reconnecting leaves it open.
+
+A slim bar over the page (`ui/web_page.dart`) has back, forward, reload — stop
+while a page loads, with a thin line under the bar for how far — the address,
+and **Open in browser**, which hands the page to the phone's browser the way a
+link with no shell opens. Tap the address to edit it and Go loads it; one
+typed without a scheme gets `https://`. JavaScript is on, as in any browser,
+and a popup opens in the same tab. What a page opens that is not for the web —
+`mailto:`, `tel:`, `intent:` — goes to Android, as it would from a browser.
+
+Keys typed in a web tab go to the page. The key bar and the magic key are the
+shell page's, so a web tab shows neither, and the hidden terminal cannot take
+focus back (`ExcludeFocus`, above). A hardware keyboard's Tab and arrows
+would still be taken by Flutter to move its own focus — a web view has no key
+handling of its own — so the page hands every key straight on to the view.
+
 **A tab whose shell has ended** — closed by the host, dropped, or never
 reached — trades its close button for a reconnect one, a cable. The terminal
 page has no header left to hold it. Closing such a tab instead is **Close
@@ -406,8 +440,9 @@ rather than flashing the other.
 **Long-press a shell's tab** for **Duplicate session**: another shell on the
 same host, opened the way a tap in the host list opens one — at the end of the
 strip, and shown. It starts where any new shell on the host starts, not in
-the folder the first one had reached. A file tab has no menu. On a host set to
-use tmux the menu also splits and closes panes — see [tmux](#tmux).
+the folder the first one had reached. A file or web tab has no menu. On a
+host set to use tmux the menu also splits and closes panes — see
+[tmux](#tmux).
 
 **Room on the strip.** A phone fits about one and a half tabs, so the space
 goes where it is read: the selected tab gets 180dp of name — enough for
@@ -741,3 +776,8 @@ why search is stated as a separate capability rather than folded into
   the seam; nothing has been written against it yet.
 - **Biometric unlock**, key generation and import from file, and a
   landscape-aware font size control.
+- **More of a browser in a web tab:** downloads (handed to the phone's browser
+  for now), `<input type=file>`, popups as tabs of their own, Back stepping
+  back through a page's history, and HTTP auth prompts. Google refuses to sign
+  in inside any embedded web view, so a Google login — a Tailscale check that
+  goes through Google included — needs **Open in browser**.

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart';
 import 'code_languages.dart';
+import 'key_bar.dart';
 
 /// Opens one remote file for reading and, if you want, changing.
 ///
@@ -72,6 +73,9 @@ class _FileEditorPageState extends State<FileEditorPage> {
   String _lineBreak = '\n';
 
   bool _dirty = false;
+
+  /// Whether the key bar's Tab types a tab rather than spaces.
+  bool _useTabs = false;
 
   double _fontSize = 13;
 
@@ -267,6 +271,11 @@ class _FileEditorPageState extends State<FileEditorPage> {
             : read.text.contains('\r')
                 ? '\r'
                 : '\n';
+        final name = RemotePath.basename(widget.path).toLowerCase();
+        _useTabs = RegExp(r'^\t', multiLine: true).hasMatch(text) ||
+            name == 'makefile' ||
+            name == 'gnumakefile' ||
+            name.endsWith('.mk');
         _original = text;
         _stamp = read.stamp;
         _controller.text = text;
@@ -562,6 +571,9 @@ class _FileEditorPageState extends State<FileEditorPage> {
           ],
         ),
         body: _buildBody(),
+        bottomNavigationBar: _loading || _error != null
+            ? null
+            : EditorKeyBar(controller: _controller, useTabs: _useTabs),
       ),
     );
   }

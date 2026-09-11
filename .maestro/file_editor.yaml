@@ -1,0 +1,92 @@
+# Opens a file from the drawer in the code editor, edits it through the soft
+# keyboard and saves it, walking the editor's own chrome on the way: the
+# reload guard, the view menu and the selection bar.
+#
+# The editor draws its text itself, so the file's content is not in the
+# accessibility tree Maestro reads. What this asserts on is the chrome around
+# it ("Unsaved changes", "Saved …", the dialogs); whether the bytes arrived,
+# and kept their CRLF, is for the host to check afterwards.
+#
+# Needs a reachable host with a stored credential, like file_browser.yaml,
+# and FILE in the root of its file tree, e.g. on the host:
+#   printf 'name: maestro\r\nitems:\r\n  - one\r\n' > ~/sshbox-maestro.yaml
+# Run with `-e HOST_LABEL=<label>` where the device's host is named otherwise.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: ${HOST_LABEL || 'WSL via'}
+  FILE: ${FILE || 'sshbox-maestro.yaml'}
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+- tapOn: "(?s)${HOST_LABEL}.*"
+
+- extendedWaitUntil:
+    visible: "Browse files"
+    timeout: 20000
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: "Filter by name"
+    timeout: 30000
+- tapOn: "Filter by name"
+- inputText: "sshbox-maestro"
+- tapOn: "${FILE}"
+
+- extendedWaitUntil:
+    visible: "Save to host"
+    timeout: 20000
+# Nothing typed yet: opening a CRLF file is not an edit.
+- assertVisible:
+    text: "Save to host"
+    enabled: false
+
+# Typing reaches the editor through the soft keyboard.
+- tapOn:
+    point: "50%,70%"
+- inputText: "maestro"
+- extendedWaitUntil:
+    visible: "(?s).*Unsaved changes.*"
+    timeout: 5000
+- assertVisible:
+    text: "Save to host"
+    enabled: true
+
+# Reload asks before it would drop the edit.
+- tapOn: "Reload from host"
+- assertVisible: "Discard changes?"
+- tapOn: "Keep editing"
+- assertVisible: "(?s).*Unsaved changes.*"
+
+# The view menu.
+- tapOn: "View"
+- assertVisible: "Word wrap"
+- assertVisible: "Smaller text"
+- tapOn: "Larger text"
+
+- tapOn: "Save to host"
+- extendedWaitUntil:
+    visible: "Saved ${FILE}"
+    timeout: 15000
+- assertVisible:
+    text: "Save to host"
+    enabled: false
+
+# A long press on the first word brings up the platform's selection bar,
+# which stays up over a select-all and goes away once something is picked.
+# The point is the first line on a tablet-sized screen.
+- longPressOn:
+    point: "4%,17%"
+- extendedWaitUntil:
+    visible: "Copy"
+    timeout: 5000
+- tapOn: "Select all"
+- extendedWaitUntil:
+    visible: "Copy"
+    timeout: 5000
+- assertNotVisible: "Select all"
+- tapOn: "Copy"
+- assertNotVisible: "Copy"

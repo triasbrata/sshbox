@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -278,6 +279,109 @@ class TerminalKeyBar extends StatelessWidget {
                 ],
               );
             },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The accessory row under the code editor: the keys a touch keyboard lacks,
+/// acting on the editor's own cursor rather than sending bytes to a shell.
+///
+/// ponytail: no PgUp/PgDn, which re_editor 0.10 leaves unimplemented; the
+/// space bar's trackpad and scrolling cover long moves until it has them.
+class EditorKeyBar extends StatelessWidget {
+  const EditorKeyBar({
+    super.key,
+    required this.controller,
+    this.useTabs = false,
+  });
+
+  final CodeLineEditingController controller;
+
+  /// Tab types a real tab instead of spaces: for a Makefile, where a recipe
+  /// indented with spaces does not run, and for any file already indented
+  /// with tabs.
+  final bool useTabs;
+
+  static const _arrows = {
+    'A': AxisDirection.up,
+    'B': AxisDirection.down,
+    'C': AxisDirection.right,
+    'D': AxisDirection.left,
+  };
+
+  /// What config files and scripts are made of, and the stock keyboard buries
+  /// a layer or two down.
+  static const _symbols = [
+    '{', '}', '[', ']', '(', ')', '<', '>', '"', "'", ';', ':', //
+    '/', r'\', '|', r'$', '=', '-', '_', '#', '&', '*', '~',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Widget arrow(String label, String key) => _KeyButton(
+          label: label,
+          onTap: () => controller.moveCursor(_arrows[key]!),
+        );
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 48,
+          // Only undo and redo change with the text, but they change on the
+          // first keystroke and the last undo, so they are watched.
+          child: ListenableBuilder(
+            listenable: controller,
+            builder: (context, _) => ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              children: [
+                _IconKey(IconButton(
+                  tooltip: 'Undo',
+                  onPressed: controller.canUndo ? controller.undo : null,
+                  icon: const Icon(Icons.undo),
+                )),
+                _IconKey(IconButton(
+                  tooltip: 'Redo',
+                  onPressed: controller.canRedo ? controller.redo : null,
+                  icon: const Icon(Icons.redo),
+                )),
+                const _KeyDivider(),
+                _KeyButton(
+                  label: 'TAB',
+                  onTap: useTabs
+                      ? () => controller.replaceSelection('\t')
+                      : controller.applyIndent,
+                ),
+                _KeyButton(label: '⇤', onTap: controller.applyOutdent),
+                const _KeyDivider(),
+                arrow('←', 'D'),
+                arrow('↓', 'B'),
+                arrow('↑', 'A'),
+                arrow('→', 'C'),
+                _SpacePad(
+                  onSpace: () => controller.replaceSelection(' '),
+                  onCursor: (key) => controller.moveCursor(_arrows[key]!),
+                ),
+                const _KeyDivider(),
+                _KeyButton(
+                  label: 'HOME',
+                  onTap: controller.moveCursorToLineStart,
+                ),
+                _KeyButton(label: 'END', onTap: controller.moveCursorToLineEnd),
+                const _KeyDivider(),
+                for (final symbol in _symbols)
+                  _KeyButton(
+                    label: symbol,
+                    onTap: () => controller.replaceSelection(symbol),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

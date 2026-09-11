@@ -215,6 +215,38 @@ class LiveSession extends ChangeNotifier {
     if (_openFiles.remove(path)) _notify();
   }
 
+  final List<WebTab> _webTabs = [];
+
+  /// The web pages opened from links in this session, in tab order. They sit
+  /// beside its shell and close with it, but need nothing of its connection
+  /// — the phone fetches them itself — so a reconnect leaves them open.
+  List<WebTab> get webTabs => List.unmodifiable(_webTabs);
+
+  /// A link already showing in one of this session's tabs returns that tab
+  /// rather than opening a second, as a file does.
+  WebTab openWeb(Uri url) {
+    final open = _webTabs.where((tab) => tab.url == url).firstOrNull;
+    if (open != null) return open;
+    final tab = WebTab._(url);
+    _webTabs.add(tab);
+    _notify();
+    return tab;
+  }
+
+  void closeWeb(WebTab tab) {
+    if (_webTabs.remove(tab)) _notify();
+  }
+
+  /// Where a web tab's page has got to, as its view reports it, so the strip
+  /// names the tab after it.
+  void updateWeb(WebTab tab, {required Uri url, String? title}) {
+    if (tab._url == url && tab._title == title) return;
+    tab
+      .._url = url
+      .._title = title;
+    _notify();
+  }
+
   /// The host's own name for itself, cut at the first dot: what a default
   /// bash `\h` or zsh `%m` prompt shows, so `DESKTOP-L2EPDPG` where the host
   /// list says "WSL via tailnet". Asked for when the connection comes up
@@ -597,8 +629,34 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
   }
 }
 
-/// What a tab shows: the shell on a host, or a file opened over that shell.
-enum TabKind { terminal, file }
+/// What a tab shows: the shell on a host, a file opened over that shell, or
+/// a web page a link in it opened.
+enum TabKind { terminal, file, web }
+
+/// A web page in a tab beside the shell whose link opened it.
+class WebTab {
+  WebTab._(this._url);
+
+  /// Names the tab for as long as it is open. Its address cannot: that
+  /// changes with every link followed on the page.
+  final int id = _nextId++;
+  static int _nextId = 0;
+
+  Uri _url;
+  String? _title;
+
+  /// Where the page is now: the link it opened at, until it moves on.
+  Uri get url => _url;
+
+  /// What the tab is called: the page's own title once it has loaded one,
+  /// and until then the host it is on — what a browser's tab shows while a
+  /// page loads.
+  String get title {
+    final title = _title?.trim() ?? '';
+    if (title.isNotEmpty) return title;
+    return _url.host.isNotEmpty ? _url.host : '$_url';
+  }
+}
 
 /// Registry of open terminals, keyed by session id. A host can have any number
 /// of them: each tap in the host list opens another.
@@ -628,6 +686,9 @@ class SessionManager extends ChangeNotifier {
   /// Which file, when the showing tab is a file tab.
   String? _activePath;
 
+  /// Which page, when the showing tab is a web tab.
+  WebTab? _activeWeb;
+
   List<LiveSession> get sessions => List.unmodifiable(_sessions.values);
 
   int? get activeId => _activeId;
@@ -638,14 +699,26 @@ class SessionManager extends ChangeNotifier {
   /// The file the showing tab holds, when [activeKind] is [TabKind.file].
   String? get activePath => _activePath;
 
+  /// The page the showing tab holds, when [activeKind] is [TabKind.web].
+  WebTab? get activeWeb => _activeWeb;
+
   /// null selects the pinned host list.
-  void select(int? id, {TabKind kind = TabKind.terminal, String? path}) {
-    if (_activeId == id && _activeKind == kind && _activePath == path) {
+  void select(
+    int? id, {
+    TabKind kind = TabKind.terminal,
+    String? path,
+    WebTab? web,
+  }) {
+    if (_activeId == id &&
+        _activeKind == kind &&
+        _activePath == path &&
+        _activeWeb == web) {
       return;
     }
     _activeId = id;
     _activeKind = kind;
     _activePath = kind == TabKind.file ? path : null;
+    _activeWeb = kind == TabKind.web ? web : null;
     // Going back to the host list leaves the last session standing as the
     // active one: a file shared from another app still has somewhere to go.
     if (id != null) _active = _sessions[id];
@@ -674,6 +747,22 @@ class SessionManager extends ChangeNotifier {
     }
   }
 
+  /// Opens a link as a web page in a tab beside the session's shell, and
+  /// shows it. A link already open there just goes back to its tab.
+  void openWeb(int id, Uri url) {
+    final session = _sessions[id];
+    if (session == null) return;
+    select(id, kind: TabKind.web, web: session.openWeb(url));
+  }
+
+  /// Closing a web tab lands on the shell whose link opened it.
+  void closeWeb(int id, WebTab web) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.closeWeb(web);
+    if (_activeWeb == web) select(id);
+  }
+
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
 
   /// Every session open on this host, in tab order.
@@ -695,6 +784,7 @@ class SessionManager extends ChangeNotifier {
     _activeId = created.id;
     _activeKind = TabKind.terminal;
     _activePath = null;
+    _activeWeb = null;
     notifyListeners();
     return created;
   }
@@ -724,6 +814,7 @@ class SessionManager extends ChangeNotifier {
       _activeId = index > 0 ? ids[index - 1] : null;
       _activeKind = TabKind.terminal;
       _activePath = null;
+      _activeWeb = null;
     }
     if (identical(_active, session)) {
       _active = _activeId == null ? null : _sessions[_activeId];
