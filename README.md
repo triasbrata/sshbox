@@ -528,9 +528,10 @@ rather than VS Code's 22px, which a finger cannot hit reliably.
 
 **The tree hangs from one root.** **Set as root** re-hangs the tree from a
 folder; the root's name on its header opens a menu of the folders above it,
-which is the way back out. Back undoes the last re-rooting. The root and the
-open folders survive the drawer closing, so picking a file and coming back
-does not fold everything shut.
+which is the way back out. Back undoes the last re-rooting. The root, the
+open folders and the scroll position survive the drawer closing, so picking a
+file and coming back does not fold everything shut or jump back to the top;
+a new root starts at its top.
 
 **Where the tree starts is part of the host's config.** The host editor has a
 **File tree root** field — blank is the login home, and `~/…` or a bare

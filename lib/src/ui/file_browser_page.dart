@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -36,10 +38,12 @@ class FileBrowserPage extends StatefulWidget {
     required this.title,
     this.initialRoot,
     this.initialExpanded = const {},
+    this.initialScrollOffset = 0,
     this.terminal,
     this.onFileSelected,
     this.onRootChanged,
     this.onExpandedChanged,
+    this.onScrollChanged,
     this.onSaveRoot,
     this.onClose,
     this.ownsBrowser = true,
@@ -59,6 +63,11 @@ class FileBrowserPage extends StatefulWidget {
   /// the whole tree shut each time it is closed.
   final Set<String> initialExpanded;
 
+  /// How far down the tree was scrolled, put back once the folders open in it
+  /// have loaded: it fills in a listing at a time, and jumped to any sooner
+  /// the offset would be cut down to fit a list still too short.
+  final double initialScrollOffset;
+
   /// The terminal this listing belongs to, when there is one.
   ///
   /// Null when nothing is listening — the actions that reach into a shell then
@@ -73,11 +82,13 @@ class FileBrowserPage extends StatefulWidget {
   /// terminal — so this page hands the path over instead of navigating.
   final void Function(String path)? onFileSelected;
 
-  /// Reports the root being shown, and [onExpandedChanged] the folders open
-  /// under it, so a host that tears this widget down and rebuilds it later —
-  /// a drawer does exactly that — can put the tree back the way it was.
+  /// Reports the root being shown, [onExpandedChanged] the folders open under
+  /// it and [onScrollChanged] how far down it is scrolled, so a host that
+  /// tears this widget down and rebuilds it later — a drawer does exactly
+  /// that — can put the tree back the way it was.
   final void Function(String root)? onRootChanged;
   final void Function(Set<String> expanded)? onExpandedChanged;
+  final void Function(double offset)? onScrollChanged;
 
   /// Writes the root into the host's saved config, so the next connection
   /// opens the tree there. Null hides the option — a page with no saved host
@@ -139,6 +150,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   final _filterController = TextEditingController();
   bool _filtering = false;
 
+  /// Reported on every move rather than read on the way out: by the time this
+  /// state is disposed, the list it belonged to has already let go of it.
+  late final ScrollController _scroll = ScrollController()
+    ..addListener(() => widget.onScrollChanged?.call(_scroll.offset));
+
   @override
   void initState() {
     super.initState();
@@ -148,6 +164,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   @override
   void dispose() {
     _filterController.dispose();
+    _scroll.dispose();
     if (widget.ownsBrowser) widget.browser.close();
     super.dispose();
   }
@@ -159,7 +176,18 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       // written relative to it.
       final home =
           wanted.startsWith('/') ? '/' : await widget.browser.resolveHome();
-      await _setRoot(RemotePath.resolve(wanted, home), push: false);
+      final root = RemotePath.resolve(wanted, home);
+      await _setRoot(root, push: false);
+
+      // Once every open folder is in and the list is laid out at its full
+      // height. Not over a root picked in the meantime, nor over a user who
+      // has already scrolled it themselves.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || _root != root || !_scroll.hasClients) return;
+      if (_scroll.offset != 0) return;
+      _scroll.jumpTo(
+        math.min(widget.initialScrollOffset, _scroll.position.maxScrollExtent),
+      );
     } on FileBrowserException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -186,6 +214,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       }
       _root = root;
     });
+    // A new root is a new list, read from its top — and the offset reported
+    // for the drawer's next visit goes back to the top with it.
+    if (previous != root && _scroll.hasClients) _scroll.jumpTo(0);
 
     try {
       final entries = await widget.browser.list(root);
@@ -853,6 +884,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView.builder(
+        controller: _scroll,
         // Always scrollable so pull-to-refresh works on a short listing too.
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.symmetric(vertical: 4),

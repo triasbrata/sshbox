@@ -76,6 +76,11 @@ class _TerminalPageState extends State<TerminalPage> {
   String? _browseRoot;
   Set<String> _browseExpanded = const {};
 
+  /// And how far down it was scrolled, kept with the root it was scrolled
+  /// under: a drawer sent to open at another folder starts at the top of it,
+  /// not at an offset measured in a different tree.
+  ({String? root, double offset}) _browseScroll = (root: null, offset: 0);
+
   LiveSession get _session => widget.session;
 
   /// Forwards and problems already announced, so each gets one snack bar.
@@ -119,6 +124,7 @@ class _TerminalPageState extends State<TerminalPage> {
       // session wandered off to.
       _browseRoot = null;
       _browseExpanded = const {};
+      _browseScroll = (root: null, offset: 0);
     }
     setState(() {});
     _announceForwards();
@@ -259,9 +265,13 @@ class _TerminalPageState extends State<TerminalPage> {
         title: _session.host.displayName,
         initialRoot: _browseRoot ?? _session.host.fileRoot,
         initialExpanded: _browseExpanded,
+        initialScrollOffset:
+            _browseScroll.root == _browseRoot ? _browseScroll.offset : 0,
         ownsBrowser: false,
         onRootChanged: (root) => _browseRoot = root,
         onExpandedChanged: (expanded) => _browseExpanded = expanded,
+        onScrollChanged: (offset) =>
+            _browseScroll = (root: _browseRoot, offset: offset),
         onSaveRoot: widget.onSaveFileRoot,
         terminal: _terminalLink,
         onClose: _closeFilesDrawer,

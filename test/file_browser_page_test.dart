@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -40,6 +42,21 @@ Future<void> _climbTo(WidgetTester tester, String path) async {
   await tester.pumpAndSettle();
   await tester.tap(find.text(path));
   await tester.pumpAndSettle();
+}
+
+/// Holds [folder]'s listing back while [held] is set, the way SFTP takes its
+/// time over a folder left open.
+class _SlowFolderBrowser extends FakeFileBrowser {
+  _SlowFolderBrowser(this.folder);
+
+  final String folder;
+  Completer<void>? held;
+
+  @override
+  Future<List<RemoteEntry>> list(String path) async {
+    if (path == folder) await held?.future;
+    return super.list(path);
+  }
 }
 
 void main() {
@@ -212,6 +229,52 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_row('main.dart'), findsOneWidget);
+  });
+
+  testWidgets('comes back scrolled where it was once the tree has loaded, '
+      'and a new root starts at the top', (tester) async {
+    final browser = _SlowFolderBrowser('/home/me/dev');
+    for (var i = 0; i < 60; i++) {
+      await browser.writeText('/home/me/dev/file$i.txt', '');
+    }
+    var offset = 0.0;
+    // What the drawer does on every open: a new page, handed what the last
+    // one reported.
+    Future<void> openDrawer() => tester.pumpWidget(MaterialApp(
+          home: FileBrowserPage(
+            key: UniqueKey(),
+            browser: browser,
+            title: 'box',
+            ownsBrowser: false,
+            initialExpanded: const {'/home/me/dev'},
+            initialScrollOffset: offset,
+            onScrollChanged: (value) => offset = value,
+          ),
+        ));
+    double scrolledTo() =>
+        tester.state<ScrollableState>(find.byType(Scrollable)).position.pixels;
+
+    await openDrawer();
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+    final left = offset;
+    expect(left, greaterThan(0));
+
+    // Only the root's three rows are in while dev's listing is on its way,
+    // far too few to scroll anywhere: jumped to now, the offset would be lost.
+    browser.held = Completer();
+    await openDrawer();
+    await tester.pump();
+    await tester.pump();
+    expect(scrolledTo(), 0);
+
+    browser.held!.complete();
+    await tester.pumpAndSettle();
+    expect(scrolledTo(), left);
+
+    await _climbTo(tester, '/home');
+    expect(offset, 0, reason: 'the next visit opens the new root at its top');
   });
 
   testWidgets('a folder that cannot be listed closes and says why',
