@@ -500,7 +500,7 @@ void main() {
     expect(visited, ['/home/me/dev']);
   });
 
-  testWidgets('following, a tapped folder takes the shell there once',
+  testWidgets('following, every folder tapped takes the shell there',
       (tester) async {
     final visited = <String>[];
     final link = TerminalLink(typePath: (_) {}, changeDirectory: visited.add);
@@ -528,17 +528,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(visited, ['/home/me/dev'], reason: 'shutting it counts too');
 
-    // Open again: the shell was just sent here, so nothing more is typed.
+    // Opened again, it asks again: whether the shell is already there is for
+    // the terminal to find out, not the tree to guess.
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
     await tester.tap(_row('main.dart'));
     await tester.pumpAndSettle();
-    expect(visited, ['/home/me/dev'], reason: 'and a file is no place to cd');
+    expect(
+      visited,
+      ['/home/me/dev', '/home/me/dev'],
+      reason: 'and a file is no place to cd',
+    );
 
     // Loading the root again is not the user going there, and following it
     // would pull the shell back out of dev.
     await openDrawer();
-    expect(visited, ['/home/me/dev']);
+    expect(visited, hasLength(2));
   });
 
   testWidgets('opens a folder in the terminal from its menu, then gets out '

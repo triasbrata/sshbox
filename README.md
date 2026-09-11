@@ -584,11 +584,20 @@ reverts an edit made to the host since the session opened.
 
 The row menu also sends the shell to a folder with `cd`. **Follow in terminal**
 in the overflow menu does that without being asked: every folder tapped, to
-open it or to shut it, and every new root. Never twice in a row to the same
-folder, so opening and shutting one types a single `cd`; tapping a file only
-opens it, and opening the drawer or refreshing moves nothing. Off by default,
-because it types into a live shell and a shell is not always at a prompt: with
-an editor or a build running, a `cd` lands as input to that instead.
+open it or to shut it, and every new root. Tapping a file only opens it, and
+opening the drawer or refreshing moves nothing. Off by default, because it
+types into a live shell on every tap.
+
+Every `cd`, asked for or followed, first asks the host what the terminal is
+running, through the `LiveSession.foreground()` a Ctrl+tap uses. Only a shell
+sitting at its prompt gets the `cd` — and not even then when it is already in
+that folder, so opening and shutting one types a single `cd`. With a program
+in the foreground, where a `cd` would land as input to it, nothing is typed
+and a snack bar names it: `claude is running — not moving the shell`. A host
+that cannot say (not Linux, the probe failed) or does not answer within 1.5s
+gets nothing typed either, and the snack bar says which. Inside tmux the probe
+sees tmux rather than the pane's shell, so every `cd` is refused there for
+now.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:

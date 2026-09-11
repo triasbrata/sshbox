@@ -425,12 +425,45 @@ class _TerminalPageState extends State<TerminalPage> {
   /// Puts a path at the prompt, ready for a command to be written around it.
   void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
 
-  /// Sends the shell to a directory.
+  /// Sends the shell to a directory — the one way anything does, so every
+  /// `cd` is checked here.
   ///
   /// The newline is what separates this from [_typePath]: it runs something.
-  /// That is why the browser only does it when told to: from a folder's menu,
-  /// or on every folder tapped once follow is switched on, never by default.
-  void _cdTo(String path) => _session.sendRaw('cd ${_shellQuote(path)}\n');
+  /// With a program in the foreground, that something is the program's input
+  /// — `cd` sent to Claude Code is a message to it — so the host is asked
+  /// first, and anything short of "the shell is at its prompt" types nothing
+  /// and says why. A shell already there types nothing either: opening a
+  /// folder and shutting it again is two taps on one place.
+  ///
+  /// ponytail: inside tmux the probe sees tmux, not the pane's shell, so
+  /// every `cd` is refused as "tmux is running". Asking tmux for the pane's
+  /// foreground would fix it.
+  Future<void> _cdTo(String path) async {
+    final messenger = ScaffoldMessenger.of(context);
+    // Replacing rather than queueing: following, every folder tapped on the
+    // way down to a file can be refused, and each would wait its turn.
+    void refuse(String why) => messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(why)));
+
+    var slow = false;
+    final now = await _session.foreground().timeout(
+      const Duration(milliseconds: 1500),
+      onTimeout: () {
+        slow = true;
+        return null;
+      },
+    );
+    if (now == null) {
+      refuse(slow
+          ? 'No answer from the host in time — not moving the shell'
+          : 'The host cannot say what the shell is running — not moving it');
+    } else if (!now.shellInForeground) {
+      refuse('${now.program} is running — not moving the shell');
+    } else if (now.cwd != path) {
+      _session.sendRaw('cd ${_shellQuote(path)}\n');
+    }
+  }
 
   /// Pick a file, send it to `/tmp` on the host, then type the remote path at
   /// the prompt — so the next thing you write is a command that uses it.

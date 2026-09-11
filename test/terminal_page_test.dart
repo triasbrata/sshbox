@@ -65,10 +65,13 @@ class _Shell
   @override
   FileBrowser openFileBrowser() => FakeFileBrowser();
 
-  /// What the `/proc` probe prints on the host.
+  /// What the `/proc` probe prints on the host: nothing, where there is no
+  /// `/proc` to read.
+  String probe = 'sshbox\t42\t0\tclaude\t/home/me';
+
   @override
   Stream<String> run(String command, {bool pty = false}) =>
-      Stream.value('sshbox\t42\t0\tclaude\t/home/me');
+      Stream.value(probe);
 }
 
 void main() {
@@ -236,6 +239,96 @@ void main() {
       expect(
         tester.testTextInput.log.map((call) => call.method),
         contains('TextInput.show'),
+      );
+    });
+  });
+
+  group('cd from the files drawer', () {
+    /// Picks "Open in terminal" on ~/dev with the host reporting [probe], and
+    /// returns what reached the shell.
+    Future<List<String>> openDevInTerminal(
+      WidgetTester tester,
+      String probe,
+    ) async {
+      final shell = _Shell()..probe = probe;
+      final session = LiveSession(
+        host: const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+        ),
+        transport: shell,
+      );
+      addTearDown(session.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TerminalPage(
+            session: session,
+            secrets: _NoSecrets(),
+            onOpenFile: (_) {},
+            onSaveFileRoot: (_) async {},
+          ),
+        ),
+      );
+      // Connects after the first frame, and the button waits for that.
+      await tester.pump();
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Browse files'));
+      await tester.pumpAndSettle();
+      await tester.longPress(
+        find.descendant(
+          of: find.byType(FileBrowserPage),
+          matching: find.text('dev'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open in terminal'));
+      await tester.pumpAndSettle();
+      return shell.sent;
+    }
+
+    testWidgets('a shell at its prompt goes', (tester) async {
+      final sent = await openDevInTerminal(
+        tester,
+        'sshbox\t42\t1\tbash\t/home/me',
+      );
+      expect(sent, ['cd /home/me/dev\n']);
+    });
+
+    testWidgets('a shell already there is left alone', (tester) async {
+      final sent = await openDevInTerminal(
+        tester,
+        'sshbox\t42\t1\tbash\t/home/me/dev',
+      );
+      expect(sent, isEmpty);
+    });
+
+    testWidgets('a running program is named and gets nothing typed into it', (
+      tester,
+    ) async {
+      final sent = await openDevInTerminal(
+        tester,
+        'sshbox\t42\t0\tclaude\t/home/me',
+      );
+      expect(sent, isEmpty);
+      expect(
+        find.text('claude is running — not moving the shell'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a host that cannot say gets nothing typed either', (
+      tester,
+    ) async {
+      final sent = await openDevInTerminal(tester, '');
+      expect(sent, isEmpty);
+      expect(
+        find.text(
+          'The host cannot say what the shell is running — not moving it',
+        ),
+        findsOneWidget,
       );
     });
   });
