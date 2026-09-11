@@ -30,6 +30,7 @@ class TerminalPage extends StatefulWidget {
     required this.session,
     required this.secrets,
     required this.onOpenFile,
+    required this.onOpenWeb,
     required this.onSaveFileRoot,
   });
 
@@ -39,6 +40,10 @@ class TerminalPage extends StatefulWidget {
   /// Opens a file picked in the drawer as a tab of its own, next to this one;
   /// with [line], a search result's, at that line.
   final void Function(String path, {int? line}) onOpenFile;
+
+  /// Opens a web link from this session in a tab of its own, next to this
+  /// one — see [openUrl].
+  final void Function(Uri url) onOpenWeb;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -152,6 +157,10 @@ class _TerminalPageState extends State<TerminalPage> {
   /// is when the address is wanted.
   void _announceForwards() {
     final messenger = ScaffoldMessenger.of(context);
+    // Held now rather than read when Open is pressed: the snack bar can
+    // outlive this page, and a page that has gone has no context to read.
+    final page = context;
+    final inTab = widget.onOpenWeb;
     final forwarder = _session.forwarder;
     for (final forward in forwarder.forwards) {
       final address = forward.address;
@@ -164,8 +173,11 @@ class _TerminalPageState extends State<TerminalPage> {
                 content: Text('Port ${forward.port} is on $address'),
                 action: SnackBarAction(
                   label: 'Open',
-                  onPressed: () =>
-                      openUrl(context, Uri.parse('http://$address')),
+                  onPressed: () => openUrl(
+                    page,
+                    Uri.parse('http://$address'),
+                    inTab: inTab,
+                  ),
                 ),
               )
             : SnackBar(
@@ -330,8 +342,9 @@ class _TerminalPageState extends State<TerminalPage> {
     if (link != null) unawaited(_openLink(link));
   }
 
-  /// A URL goes to the browser, a folder becomes the files drawer's root, and
-  /// a file opens in a tab the way one picked in the drawer does.
+  /// A URL opens in a web tab beside this one, a folder becomes the files
+  /// drawer's root, and a file opens in a tab the way one picked in the
+  /// drawer does.
   ///
   /// A relative path starts from the program that printed it, the terminal's
   /// foreground process on the host, and from home when the host cannot say.
@@ -342,7 +355,7 @@ class _TerminalPageState extends State<TerminalPage> {
     final target = link.target;
     if (link.kind == LinkKind.url) {
       final url = Uri.tryParse(target);
-      if (url != null) await openUrl(context, url);
+      if (url != null) await openUrl(context, url, inTab: widget.onOpenWeb);
       return;
     }
     if (!_session.isConnected || !_session.canBrowseFiles) return;
@@ -569,7 +582,10 @@ class _TerminalPageState extends State<TerminalPage> {
             child: Center(
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()
-                  : _AuthCheckPrompt(url: _session.authUrl!),
+                  : _AuthCheckPrompt(
+                      url: _session.authUrl!,
+                      inTab: widget.onOpenWeb,
+                    ),
             ),
           ),
         // Along the terminal's bottom edge, just above the key bar, rather
@@ -780,19 +796,31 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
   );
 }
 
-/// Opens a link without leaving the app: a web page in a Custom Tab, which
-/// the phone's default browser draws over this app with its own engine,
-/// cookies and sign-ins, and Back returns from. Every link the app opens goes
+/// Opens a link without leaving the app. Every link the app opens goes
 /// through here — a Ctrl+tap, a forwarded port, a sign-in check.
+///
+/// A web page opens in a tab of our own beside the shell it came from:
+/// [inTab] puts it there. With no shell to put it beside — the web tab's own
+/// Open in browser, or a snack bar that outlived its page — it goes to a
+/// Custom Tab instead, which the phone's default browser draws over this app
+/// with its own engine, cookies and sign-ins, and Back returns from.
 ///
 /// A browser that cannot draw a Custom Tab takes the link as a page of its
 /// own instead; a `mailto:` or `tel:` goes wherever the phone sends it. When
 /// nothing takes it the user is told, rather than left tapping a dead link.
 ///
-/// [context] is only read at the end, if it is still mounted: a snack bar's
-/// Open can outlive the page that showed it.
-Future<void> openUrl(BuildContext context, Uri url) async {
+/// [context] is only read while it is still mounted: a snack bar's Open can
+/// outlive the page that showed it, and the session with it.
+Future<void> openUrl(
+  BuildContext context,
+  Uri url, {
+  void Function(Uri url)? inTab,
+}) async {
   final web = url.isScheme('http') || url.isScheme('https');
+  if (web && inTab != null && context.mounted) {
+    inTab(url);
+    return;
+  }
   for (final mode in [
     if (web) LaunchMode.inAppBrowserView,
     web ? LaunchMode.externalApplication : LaunchMode.platformDefault,
@@ -812,9 +840,10 @@ Future<void> openUrl(BuildContext context, Uri url) async {
 /// The connection is still open behind this; finishing in the browser is what
 /// releases it, so there is nothing to submit here.
 class _AuthCheckPrompt extends StatelessWidget {
-  const _AuthCheckPrompt({required this.url});
+  const _AuthCheckPrompt({required this.url, required this.inTab});
 
   final Uri url;
+  final void Function(Uri url) inTab;
 
   @override
   Widget build(BuildContext context) {
@@ -844,7 +873,7 @@ class _AuthCheckPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: () => openUrl(context, url),
+            onPressed: () => openUrl(context, url, inTab: inTab),
             icon: const Icon(Icons.open_in_new),
             label: const Text('Open link'),
           ),

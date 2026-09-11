@@ -12,7 +12,7 @@ TabRef _shell(WidgetTester tester, String id, String label) {
     host: HostProfile(id: id, label: label, host: '10.0.2.2', username: 'me'),
   );
   addTearDown(session.dispose);
-  return (session: session, kind: TabKind.terminal, path: null);
+  return (session: session, kind: TabKind.terminal, path: null, web: null);
 }
 
 Future<void> _pump(
@@ -28,7 +28,7 @@ Future<void> _pump(
           TabStrip(
             tabs: tabs,
             activeIndex: 1,
-            onSelect: (_, {TabKind kind = TabKind.terminal, String? path}) {},
+            onSelect: (_, {kind = TabKind.terminal, path, web}) {},
             onClose: (_) {},
             onReconnect: onReconnect ?? (_) {},
             onDuplicate: onDuplicate ?? (_) {},
@@ -51,6 +51,9 @@ class _NoSecrets implements SecretStore {
   @override
   Future<void> purgeHost(String hostId) async {}
 }
+
+TabRef _file(TabRef shell, String path) =>
+    (session: shell.session, kind: TabKind.file, path: path, web: null);
 
 Rect _pill(WidgetTester tester, String label) => tester.getRect(
   find.ancestor(of: find.text(label), matching: find.byType(Material)).first,
@@ -127,10 +130,7 @@ void main() {
     tester,
   ) async {
     final shell = _shell(tester, 'host-1', 'box');
-    await _pump(tester, [
-      shell,
-      (session: shell.session, kind: TabKind.file, path: '/etc/a.c'),
-    ]);
+    await _pump(tester, [shell, _file(shell, '/etc/a.c')]);
 
     expect(find.byTooltip('Close box · a.c'), findsOneWidget);
 
@@ -148,7 +148,7 @@ void main() {
     String? duplicated;
     await _pump(tester, [
       shell,
-      (session: shell.session, kind: TabKind.file, path: '/etc/a.c'),
+      _file(shell, '/etc/a.c'),
     ], onDuplicate: (hostId) => duplicated = hostId);
 
     // A file tab has nothing of its own to duplicate.
@@ -162,5 +162,27 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(duplicated, 'host-1');
+  });
+
+  testWidgets('a web tab is a globe named by its page, or its host till then', (
+    tester,
+  ) async {
+    final shell = _shell(tester, 'host-1', 'box');
+    final page = shell.session.openWeb(Uri.parse('http://box.ts.net:3001/'));
+    TabRef web() =>
+        (session: shell.session, kind: TabKind.web, path: null, web: page);
+
+    await _pump(tester, [shell, web()]);
+    expect(find.byTooltip('Close box.ts.net'), findsOneWidget);
+    expect(find.byIcon(Icons.public), findsOneWidget);
+
+    shell.session.updateWeb(page, url: page.url, title: 'Vite + React');
+    await _pump(tester, [shell, web()]);
+    expect(find.byTooltip('Close Vite + React'), findsOneWidget);
+
+    // Nothing of the shell's: no menu to long-press for.
+    await tester.longPress(find.text('Vite + React'));
+    await tester.pumpAndSettle();
+    expect(find.text('Duplicate session'), findsNothing);
   });
 }

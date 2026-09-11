@@ -7,14 +7,21 @@ import '../session/tmux.dart';
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
+import 'web_page.dart';
 
 /// One tab, named by what it shows rather than by an index — indices shift
-/// every time a tab opens or closes. [path] is set only for a file tab.
-typedef TabRef = ({LiveSession session, TabKind kind, String? path});
+/// every time a tab opens or closes. [path] is set only for a file tab, and
+/// [web] only for a web tab.
+typedef TabRef = ({
+  LiveSession session,
+  TabKind kind,
+  String? path,
+  WebTab? web,
+});
 
 /// The app's one screen: a pinned host list on the left, then a tab per open
 /// session, and beside each session a tab for every file opened from its
-/// files drawer.
+/// files drawer and every web page opened from a link in it.
 ///
 /// Tabs are a view of [SessionManager] rather than a list of their own —
 /// which tab exists, in what order, and which one is showing all come from
@@ -61,14 +68,17 @@ class _TabsShellState extends State<TabsShell> {
     if (mounted) setState(() {});
   }
 
-  /// Left to right: each session's shell, then the files opened from it. A
-  /// file tab sits next to its session because it is that session it is read
-  /// over — closing the shell takes them with it.
+  /// Left to right: each session's shell, then the files and the web pages
+  /// opened from it. A file tab sits next to its session because it is that
+  /// session it is read over, a web tab because it was that session's link —
+  /// closing the shell takes them with it.
   List<TabRef> _tabs() => [
     for (final session in widget.sessions.sessions) ...[
-      (session: session, kind: TabKind.terminal, path: null),
+      (session: session, kind: TabKind.terminal, path: null, web: null),
       for (final path in session.openFiles)
-        (session: session, kind: TabKind.file, path: path),
+        (session: session, kind: TabKind.file, path: path, web: null),
+      for (final web in session.webTabs)
+        (session: session, kind: TabKind.web, path: null, web: web),
     ],
   ];
 
@@ -96,6 +106,7 @@ class _TabsShellState extends State<TabsShell> {
       secrets: widget.secrets,
       onOpenFile: (path, {line}) =>
           widget.sessions.openFile(tab.session.id, path, line: line),
+      onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
@@ -113,6 +124,12 @@ class _TabsShellState extends State<TabsShell> {
           ? widget.sessions.activeLine
           : null,
     ),
+    TabKind.web => WebPage(
+      key: ValueKey('web:${tab.web!.id}'),
+      initialUrl: tab.web!.url,
+      onChanged: (url, title) =>
+          tab.session.updateWeb(tab.web!, url: url, title: title),
+    ),
   };
 
   @override
@@ -121,6 +138,7 @@ class _TabsShellState extends State<TabsShell> {
     final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
     final activePath = widget.sessions.activePath;
+    final activeWeb = widget.sessions.activeWeb;
     // A tab that no longer exists falls back to the host list rather than an
     // out-of-range index.
     final activeIndex =
@@ -128,7 +146,8 @@ class _TabsShellState extends State<TabsShell> {
           (tab) =>
               tab.session.id == activeId &&
               tab.kind == activeKind &&
-              tab.path == activePath,
+              tab.path == activePath &&
+              tab.web == activeWeb,
         ) +
         1;
 
@@ -146,6 +165,10 @@ class _TabsShellState extends State<TabsShell> {
                 TabKind.file => widget.sessions.closeFile(
                   tab.session.id,
                   tab.path!,
+                ),
+                TabKind.web => widget.sessions.closeWeb(
+                  tab.session.id,
+                  tab.web!,
                 ),
               },
               // What the terminal page's own "Try again" does, host key
@@ -207,7 +230,8 @@ class TabStrip extends StatefulWidget {
 
   final List<TabRef> tabs;
   final int activeIndex;
-  final void Function(int? id, {TabKind kind, String? path}) onSelect;
+  final void Function(int? id, {TabKind kind, String? path, WebTab? web})
+  onSelect;
   final void Function(TabRef tab) onClose;
   final void Function(LiveSession session) onReconnect;
   final void Function(String hostId) onDuplicate;
@@ -222,7 +246,7 @@ class _TabStripState extends State<TabStrip> {
   String? _shown;
 
   static String _idOf(TabRef tab) =>
-      '${tab.kind.name}:${tab.session.id}:${tab.path ?? ''}';
+      '${tab.kind.name}:${tab.session.id}:${tab.path ?? tab.web?.id ?? ''}';
 
   @override
   void didUpdateWidget(covariant TabStrip oldWidget) {
@@ -315,15 +339,19 @@ class _TabStripState extends State<TabStrip> {
       for (final (index, tab) in tabs.indexed)
         _TabChip(
           key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
-          icon: tab.kind == TabKind.file
-              ? Icons.description_outlined
-              // tmux, said quietly: the same chip, split.
-              : tab.session.tmux != null
-              ? Icons.vertical_split_outlined
-              : Icons.terminal,
-          label: tab.kind == TabKind.file
-              ? tab.session.fileTabTitle(tab.path!)
-              : tab.session.title,
+          icon: switch (tab.kind) {
+            TabKind.file => Icons.description_outlined,
+            TabKind.web => Icons.public,
+            // tmux, said quietly: the same chip, split.
+            TabKind.terminal when tab.session.tmux != null =>
+              Icons.vertical_split_outlined,
+            TabKind.terminal => Icons.terminal,
+          },
+          label: switch (tab.kind) {
+            TabKind.file => tab.session.fileTabTitle(tab.path!),
+            TabKind.web => tab.web!.title,
+            TabKind.terminal => tab.session.title,
+          },
           cutFirst: tab.kind == TabKind.file ? tab.session.fileTabHost : null,
           selected: index + 1 == widget.activeIndex,
           connected: tab.kind == TabKind.terminal && tab.session.isConnected,
@@ -332,6 +360,7 @@ class _TabStripState extends State<TabStrip> {
             tab.session.id,
             kind: tab.kind,
             path: tab.path,
+            web: tab.web,
           ),
           onClose: () => widget.onClose(tab),
           onReconnect: tab.kind == TabKind.terminal && tab.session.ended
@@ -427,7 +456,8 @@ class _TabChip extends StatelessWidget {
 
   /// What a long press on the tab offers — a press it had no other use for:
   /// another session on a shell's host, and tmux's pane commands. Empty on a
-  /// file tab, which is read over its shell and has nothing of its own.
+  /// file or web tab, which hang off their shell and have nothing of their
+  /// own.
   final List<(String, VoidCallback)> menu;
 
   /// How much of a name a tab may show.

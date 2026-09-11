@@ -122,6 +122,7 @@ void main() {
           session: session,
           secrets: _NoSecrets(),
           onOpenFile: (_, {line}) {},
+          onOpenWeb: (_) {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -151,14 +152,19 @@ void main() {
     Future<List<(String, PreferredLaunchMode)>> open(
       WidgetTester tester,
       String url,
-      Set<PreferredLaunchMode> ways,
-    ) async {
+      Set<PreferredLaunchMode> ways, {
+      void Function(Uri url)? inTab,
+    }) async {
       final launcher = _Launcher(ways);
       UrlLauncherPlatform.instance = launcher;
       await tester.pumpWidget(
         const MaterialApp(home: Scaffold(body: SizedBox())),
       );
-      await openUrl(tester.element(find.byType(SizedBox)), Uri.parse(url));
+      await openUrl(
+        tester.element(find.byType(SizedBox)),
+        Uri.parse(url),
+        inTab: inTab,
+      );
       await tester.pump();
       return launcher.tried;
     }
@@ -166,10 +172,65 @@ void main() {
     const inApp = PreferredLaunchMode.inAppBrowserView;
     const browser = PreferredLaunchMode.externalApplication;
 
-    testWidgets('a web link opens in-app', (tester) async {
+    testWidgets('a web link from a shell opens in a tab next to it', (
+      tester,
+    ) async {
+      final manager = SessionManager();
+      final shell = manager.open(
+        const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+        ),
+      );
+      addTearDown(manager.closeAll);
+
+      final tried = await open(
+        tester,
+        'https://dart.dev',
+        {inApp, browser},
+        inTab: (url) => manager.openWeb(shell.id, url),
+      );
+
+      expect(tried, isEmpty);
+      expect(shell.webTabs.single.url, Uri.parse('https://dart.dev'));
+      expect(manager.activeWeb, same(shell.webTabs.single));
+    });
+
+    testWidgets('but a mailto: from one goes where the phone sends it', (
+      tester,
+    ) async {
+      const platform = PreferredLaunchMode.platformDefault;
+      final tabbed = <Uri>[];
+      expect(
+        await open(tester, 'mailto:me@box', {platform}, inTab: tabbed.add),
+        [('mailto:me@box', platform)],
+      );
+      expect(tabbed, isEmpty);
+    });
+
+    testWidgets('a web link with no shell beside it opens in-app', (
+      tester,
+    ) async {
       expect(await open(tester, 'https://dart.dev', {inApp, browser}), [
         ('https://dart.dev', inApp),
       ]);
+    });
+
+    testWidgets('and so does one from a page that has gone', (tester) async {
+      final launcher = _Launcher({inApp});
+      UrlLauncherPlatform.instance = launcher;
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      final gone = tester.element(find.byType(SizedBox));
+      await tester.pumpWidget(const MaterialApp(home: Placeholder()));
+
+      // A snack bar's Open, pressed after its tab closed.
+      final tabbed = <Uri>[];
+      await openUrl(gone, Uri.parse('https://dart.dev'), inTab: tabbed.add);
+
+      expect(tabbed, isEmpty);
+      expect(launcher.tried, [('https://dart.dev', inApp)]);
     });
 
     testWidgets('and in the browser when it cannot open in-app', (
@@ -200,6 +261,7 @@ void main() {
     late _Shell shell;
     late _Launcher launcher;
     late List<String> opened;
+    late List<Uri> openedWeb;
 
     // Columns: the URL 0–15, dev/ 17–20, notes.txt 22–30, missing/x 32–40.
     const line = 'https://dart.dev dev/ notes.txt missing/x';
@@ -210,6 +272,7 @@ void main() {
         PreferredLaunchMode.inAppBrowserView,
       });
       opened = [];
+      openedWeb = [];
       final session = LiveSession(
         host: const HostProfile(
           id: 'host-1',
@@ -227,6 +290,7 @@ void main() {
             session: session,
             secrets: _NoSecrets(),
             onOpenFile: (path, {line}) => opened.add(path),
+            onOpenWeb: openedWeb.add,
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -253,7 +317,7 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     }
 
-    testWidgets('underlines the links, opens a URL in-app, and uses CTRL up', (
+    testWidgets('underlines the links, opens a URL in a tab, and uses CTRL up', (
       tester,
     ) async {
       await pumpPage(tester);
@@ -265,9 +329,8 @@ void main() {
 
       await tapColumn(tester, 3);
 
-      expect(launcher.tried, [
-        ('https://dart.dev', PreferredLaunchMode.inAppBrowserView),
-      ]);
+      expect(openedWeb, [Uri.parse('https://dart.dev')]);
+      expect(launcher.tried, isEmpty);
       expect(shell.sent, isEmpty);
       expect(links(tester).underlines, isEmpty);
     });
@@ -351,6 +414,7 @@ void main() {
       await tapColumn(tester, 3);
 
       expect(launcher.tried, isEmpty);
+      expect(openedWeb, isEmpty);
       expect(opened, isEmpty);
       expect(find.byType(FileBrowserPage), findsNothing);
       expect(
@@ -384,6 +448,7 @@ void main() {
             session: session,
             secrets: _NoSecrets(),
             onOpenFile: (_, {line}) {},
+            onOpenWeb: (_) {},
             onSaveFileRoot: (_) async {},
           ),
         ),
