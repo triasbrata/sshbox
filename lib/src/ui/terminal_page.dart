@@ -17,6 +17,7 @@ import 'key_bar.dart';
 import 'magic_key.dart';
 import 'terminal_link.dart';
 import 'terminal_text_input.dart';
+import 'tmux_panes.dart';
 import 'toast.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
@@ -64,18 +65,14 @@ class _TerminalPageState extends State<TerminalPage> {
     changeDirectory: _cdTo,
   );
 
-  /// Shared with the terminal view below it, which is what holds focus.
-  final _focusNode = FocusNode();
-  final _scrollController = ScrollController();
-  final _inputKey = GlobalKey<TerminalTextInputState>();
-  final _viewKey = GlobalKey<TerminalViewState>();
-
-  /// Shared by the terminal view, which paints the selection, and the pad,
-  /// which makes it by touch. It also carries the underlines Ctrl puts under
-  /// every link, and keeps a Ctrl+tap from a program that reads the mouse.
-  final _selection = TerminalController();
-  List<TerminalUnderline> _underlines = const [];
+  /// Every terminal on screen, by the [Terminal] it shows — the shell's, or
+  /// each tmux pane's — so what acts on all of them can reach each: a key
+  /// sent letting go of a selection, Ctrl coming down underlining links.
+  final _views = <Terminal, GlobalKey<_PaneViewState>>{};
   bool _ctrlShown = false;
+
+  Iterable<_PaneViewState> get _paneViews =>
+      _views.values.map((key) => key.currentState).nonNulls;
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -145,6 +142,12 @@ class _TerminalPageState extends State<TerminalPage> {
     }
     setState(() {});
     _announceForwards();
+    final tmuxProblem = _session.takeTmuxProblem();
+    if (tmuxProblem != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Not using tmux: $tmuxProblem')),
+      );
+    }
     // A file shared from another app may have been queued before this page
     // existed, or before the shell came up. Either way the session notifies,
     // and this is where it lands.
@@ -209,10 +212,6 @@ class _TerminalPageState extends State<TerminalPage> {
   void dispose() {
     _session.removeListener(_onSessionChanged);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
-    _focusNode.dispose();
-    _scrollController.dispose();
-    // Takes the underlines with it.
-    _selection.dispose();
     if (_session.outputTransform == _outgoing) {
       _session.outputTransform = null;
     }
@@ -229,21 +228,20 @@ class _TerminalPageState extends State<TerminalPage> {
   /// folded in, and a selection is let go, since a key sent means you are done
   /// reading it.
   String _outgoing(String data) {
-    _selection.clearSelection();
+    _letGo();
     return _keyBar.applyModifiers(data);
   }
 
   /// The same for the keys the bar, the pad and the magic key send.
   void _send(String data) {
-    _selection.clearSelection();
+    _letGo();
     _session.sendRaw(data);
   }
 
-  /// Typing anywhere in the scrollback should snap back to the prompt.
-  void _scrollToBottom() {
-    if (!_scrollController.hasClients) return;
-    final position = _scrollController.position;
-    position.jumpTo(position.maxScrollExtent);
+  void _letGo() {
+    for (final view in _paneViews) {
+      view.selection.clearSelection();
+    }
   }
 
   void _reportPinnedKey(String fingerprint) {
@@ -318,45 +316,28 @@ class _TerminalPageState extends State<TerminalPage> {
     return false;
   }
 
-  /// Underlines every link on screen while Ctrl is down, and takes them away
-  /// when it lifts or is used up.
-  ///
-  /// ponytail: scanned once, as Ctrl goes down. Output that arrives while it
-  /// is held is not underlined until it comes down again, though a Ctrl+tap
-  /// on it still opens it — the tap reads the line afresh.
+  /// Underlines every link on every terminal on screen while Ctrl is down,
+  /// and takes them away when it lifts or is used up.
   void _syncCtrl() {
     final ctrl = _ctrl;
     if (!mounted || ctrl == _ctrlShown) return;
     _ctrlShown = ctrl;
-    // A program reading the mouse would otherwise take the tap as a click.
-    _selection.setSuspendPointerInput(ctrl);
-    for (final underline in _underlines) {
-      underline.dispose();
+    final color = Theme.of(context).colorScheme.primary;
+    for (final view in _paneViews) {
+      view.showLinks(ctrl: ctrl, color: color);
     }
-    _underlines = const [];
-
-    final view = _viewKey.currentState;
-    if (!ctrl || view == null) return;
-    final render = view.renderTerminal;
-    _underlines = underlineLinks(
-      _selection,
-      _session.terminal.buffer,
-      from: render.getCellOffset(Offset.zero).y,
-      to: render.getCellOffset(render.size.bottomLeft(Offset.zero)).y,
-      color: Theme.of(context).colorScheme.primary,
-    );
   }
 
   /// With Ctrl, opens the link under the tap and types nothing; without, asks
   /// for the keyboard back, the way a tap always has.
-  void _onTerminalTap(TapUpDetails _, CellOffset cell) {
+  void _onTerminalTap(_PaneViewState view, CellOffset cell) {
     if (!_ctrl) {
-      _inputKey.currentState?.requestKeyboard();
+      view.requestKeyboard();
       return;
     }
     // Used up by the tap, link or not, the way a key uses it up.
     if (_keyBar.ctrl) _keyBar.toggleCtrl();
-    final link = linkAt(_session.terminal.buffer, cell);
+    final link = linkAt(view.widget.terminal.buffer, cell);
     if (link != null) unawaited(_openLink(link));
   }
 
@@ -446,9 +427,11 @@ class _TerminalPageState extends State<TerminalPage> {
   /// and says why. A shell already there types nothing either: opening a
   /// folder and shutting it again is two taps on one place.
   ///
-  /// ponytail: inside tmux the probe sees tmux, not the pane's shell, so
-  /// every `cd` is refused as "tmux is running". Asking tmux for the pane's
-  /// foreground would fix it.
+  /// In a tab set to use tmux, tmux answers for the focused pane, and the
+  /// `cd` goes there.
+  ///
+  /// ponytail: inside a tmux started by hand the probe sees tmux, not the
+  /// pane's shell, so every `cd` is refused as "tmux is running".
   Future<void> _cdTo(String path) async {
     // A toast, which replaces rather than queues: following, every folder
     // tapped on the way down to a file can be refused, and each would wait its
@@ -571,42 +554,26 @@ class _TerminalPageState extends State<TerminalPage> {
       return _ConnectionError(message: error, onRetry: _reconnect);
     }
 
+    final tmux = _session.tmux;
+    final shown = tmux == null
+        ? {_session.terminal}
+        : {for (final pane in tmux.panes) pane.terminal};
+    _views.removeWhere((terminal, _) => !shown.contains(terminal));
+
     return Stack(
       children: [
-        // Two wrappers, because they take different things: the input owns
-        // the keyboard connection, the pad owns the swipe. The pad sits
-        // inside so its gestures land on the terminal itself — it claims
-        // only long presses and double taps, so a plain tap still falls
-        // through to xterm2 below and asks for the keyboard back, and a
-        // plain drag scrolls the scrollback. Only while a hold has text
-        // selected does it take every touch, until the selection goes.
-        TerminalTextInput(
-          key: _inputKey,
-          terminal: _session.terminal,
-          focusNode: _focusNode,
-          onInput: _scrollToBottom,
-          child: SwipeKeyPad(
-            terminal: _session.terminal,
-            controller: _selection,
-            onEmit: _send,
-            child: TerminalView(
-              _session.terminal,
-              key: _viewKey,
-              controller: _selection,
-              focusNode: _focusNode,
-              scrollController: _scrollController,
-              autofocus: true,
-              // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
-              // hardware keys, shortcuts and mouse selection.
-              hardwareKeyboardOnly: true,
-              // Tapping a terminal that already has focus is how you ask for
-              // the keyboard back, and focus alone will not raise it.
-              onTapUp: _onTerminalTap,
-              padding: const EdgeInsets.all(6),
-              textStyle: const TerminalStyle(fontSize: 13),
-            ),
+        if (tmux == null)
+          _paneView(_session.terminal, focused: true, padding: _padding)
+        else
+          TmuxPaneLayout(
+            tmux: tmux,
+            textStyle: _textStyle,
+            padding: _padding,
+            // Touching a pane is what focuses it, and the session sends the
+            // bar's keys to the focused pane, so every pane sends through it.
+            pane: (pane, focused) =>
+                _paneView(pane.terminal, focused: focused, autoResize: false),
           ),
-        ),
         if (_session.connecting)
           ColoredBox(
             color: Colors.black54,
@@ -637,6 +604,177 @@ class _TerminalPageState extends State<TerminalPage> {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _paneView(
+    Terminal terminal, {
+    required bool focused,
+    bool autoResize = true,
+    EdgeInsets? padding,
+  }) => _PaneView(
+    key: _views.putIfAbsent(terminal, GlobalKey.new),
+    terminal: terminal,
+    onEmit: _send,
+    onTap: _onTerminalTap,
+    focused: focused,
+    autoResize: autoResize,
+    padding: padding,
+  );
+}
+
+const _padding = EdgeInsets.all(6);
+
+/// What every terminal on the page draws with. tmux's panes are laid out in
+/// cells of it, so it is one value rather than one per view.
+const _textStyle = TerminalStyle(fontSize: 13);
+
+/// One terminal on the page, and what makes it usable by touch: the soft
+/// keyboard's input, the swipe pad, and xterm2's view. A plain session shows
+/// one; tmux shows one per pane, each with its own focus, scroll position and
+/// selection.
+class _PaneView extends StatefulWidget {
+  const _PaneView({
+    super.key,
+    required this.terminal,
+    required this.onEmit,
+    required this.onTap,
+    required this.focused,
+    this.autoResize = true,
+    this.padding,
+  });
+
+  final Terminal terminal;
+  final void Function(String data) onEmit;
+  final void Function(_PaneViewState view, CellOffset cell) onTap;
+
+  /// Whether keystrokes go here. Only such a view takes focus, and with it
+  /// the soft keyboard.
+  final bool focused;
+
+  /// False for a tmux pane: tmux sizes its terminal, not the view.
+  final bool autoResize;
+
+  final EdgeInsets? padding;
+
+  @override
+  State<_PaneView> createState() => _PaneViewState();
+}
+
+class _PaneViewState extends State<_PaneView> {
+  /// Shared with the terminal view below it, which is what holds focus.
+  final _focusNode = FocusNode();
+  final _scrollController = ScrollController();
+  final _inputKey = GlobalKey<TerminalTextInputState>();
+  final _viewKey = GlobalKey<TerminalViewState>();
+
+  /// Shared by the terminal view, which paints the selection, and the pad,
+  /// which makes it by touch. It also carries the underlines Ctrl puts under
+  /// every link, and keeps a Ctrl+tap from a program that reads the mouse.
+  final selection = TerminalController();
+  List<TerminalUnderline> _underlines = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    // A pane born focused — tmux focuses the one a split makes — takes focus
+    // from the pane that had it, which autofocus alone would leave alone.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
+  }
+
+  @override
+  void didUpdateWidget(_PaneView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.focused) _followFocus();
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    _scrollController.dispose();
+    // Takes the underlines with it.
+    selection.dispose();
+    super.dispose();
+  }
+
+  /// Typing goes wherever Flutter's focus is, and the key bar wherever
+  /// tmux's is: the two are kept on the same pane.
+  void _followFocus() {
+    if (mounted && widget.focused && !_focusNode.hasFocus) {
+      _focusNode.requestFocus();
+    }
+  }
+
+  void requestKeyboard() => _inputKey.currentState?.requestKeyboard();
+
+  /// Typing anywhere in the scrollback should snap back to the prompt.
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    position.jumpTo(position.maxScrollExtent);
+  }
+
+  /// Underlines every link on screen, or takes them away.
+  ///
+  /// ponytail: scanned once, as Ctrl goes down. Output that arrives while it
+  /// is held is not underlined until it comes down again, though a Ctrl+tap
+  /// on it still opens it — the tap reads the line afresh.
+  void showLinks({required bool ctrl, required Color color}) {
+    // A program reading the mouse would otherwise take the tap as a click.
+    selection.setSuspendPointerInput(ctrl);
+    for (final underline in _underlines) {
+      underline.dispose();
+    }
+    _underlines = const [];
+
+    final view = _viewKey.currentState;
+    if (!ctrl || view == null) return;
+    final render = view.renderTerminal;
+    _underlines = underlineLinks(
+      selection,
+      widget.terminal.buffer,
+      from: render.getCellOffset(Offset.zero).y,
+      to: render.getCellOffset(render.size.bottomLeft(Offset.zero)).y,
+      color: color,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Two wrappers, because they take different things: the input owns the
+    // keyboard connection, the pad owns the swipe. The pad sits inside so
+    // its gestures land on the terminal itself — it claims only long presses
+    // and double taps, so a plain tap still falls through to xterm2 below and
+    // asks for the keyboard back, and a plain drag scrolls the scrollback.
+    // Only while a hold has text selected does it take every touch, until
+    // the selection goes.
+    return TerminalTextInput(
+      key: _inputKey,
+      terminal: widget.terminal,
+      focusNode: _focusNode,
+      onInput: _scrollToBottom,
+      child: SwipeKeyPad(
+        terminal: widget.terminal,
+        controller: selection,
+        onEmit: widget.onEmit,
+        child: TerminalView(
+          widget.terminal,
+          key: _viewKey,
+          controller: selection,
+          focusNode: _focusNode,
+          scrollController: _scrollController,
+          autofocus: widget.focused,
+          autoResize: widget.autoResize,
+          // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+          // hardware keys, shortcuts and mouse selection.
+          hardwareKeyboardOnly: true,
+          // Tapping a terminal that already has focus is how you ask for the
+          // keyboard back, and focus alone will not raise it.
+          onTapUp: (_, cell) => widget.onTap(this, cell),
+          padding: widget.padding,
+          textStyle: _textStyle,
+        ),
+      ),
     );
   }
 }

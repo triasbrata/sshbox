@@ -35,6 +35,7 @@ lib/
       terminal_session.dart         protocol-agnostic session interface
       dartssh2_transport.dart       the SSH implementation of it
       tailnet_forwarder.dart        servers started in a session, onto the tailnet
+      tmux.dart                     tmux control mode: a tab's panes and layout
     files/
       file_browser.dart             protocol-agnostic filesystem interface
       sftp_file_browser.dart        the SFTP implementation of it
@@ -43,6 +44,7 @@ lib/
       hosts_page.dart               host list
       host_edit_page.dart           add / edit a host
       terminal_page.dart            TerminalView wired to a session
+      tmux_panes.dart               tmux's panes laid out as tmux laid them out
       key_bar.dart                  the accessory keyboard row
       ctrl_click.dart               the URLs and paths a Ctrl+tap opens
       file_browser_page.dart        a VS Code-style file tree, as a drawer
@@ -187,8 +189,10 @@ channel beside the shell:
 - The shell's pid is kept until the connection goes.
 
 On a host without `/proc` — anything but Linux — a relative path is taken from
-home, and the snack bar says so when that misses. Inside tmux or screen, what
-it finds is the multiplexer's client rather than the pane.
+home, and the snack bar says so when that misses. In a tab set to use tmux,
+tmux answers instead, for the focused pane — see [tmux](#tmux). Inside a tmux
+or screen started by hand, what it finds is the multiplexer's client rather
+than the pane.
 
 ## Running it
 
@@ -381,7 +385,8 @@ rather than flashing the other.
 **Long-press a shell's tab** for **Duplicate session**: another shell on the
 same host, opened the way a tap in the host list opens one — at the end of the
 strip, and shown. It starts where any new shell on the host starts, not in
-the folder the first one had reached. A file tab has no menu.
+the folder the first one had reached. A file tab has no menu. On a host set to
+use tmux the menu also splits and closes panes — see [tmux](#tmux).
 
 **Room on the strip.** A phone fits about one and a half tabs, so the space
 goes where it is read: the selected tab gets 180dp of name — enough for
@@ -451,6 +456,63 @@ leave roughly eleven terminal rows between them.
 Flutter engine, and therefore its own `SessionManager` — the two windows would
 not share sessions. Sharing them means moving sessions out of the isolate, so
 sshbox is meant to be one window beside another app, not beside itself.
+
+## tmux
+
+With **Use tmux** on in the host editor, a tab on that host is a tmux session,
+and tmux's panes are the app's own terminals: laid out the way tmux split
+them, with a thin line between, and no status bar, no borders drawn in text
+and no Ctrl-b. Long-press the tab for **Split right**, **Split down** and
+**Close pane**. They act on the focused pane, the one last touched, which is
+outlined; the key bar, the magic key, the swipe pad and both keyboards type
+into it. The tab's icon turns into a split pane to say which mode it is in.
+
+```
+tab ── SSH exec channel, no pty ── tmux -u -C new-session -A -s sshbox-<id>
+         %output %1 <bytes>       ──▶ pane %1's Terminal
+         send-keys -t %1 -H <hex> ◀── what is typed into it
+```
+
+This is tmux's control mode, the way iTerm2 uses it (`session/tmux.dart`).
+The tab writes tmux commands and reads back replies and notifications; each
+pane is an xterm2 `Terminal` fed from its own `%output`.
+
+- **One tmux session per tab**, named `sshbox-<id>` with an id made when the
+  tab opens. A dropped connection reattaches to it: the panes come back with
+  their programs still running, each filled in from `capture-pane` along with
+  its cursor and screen. Closing the tab kills it. The id is random rather
+  than the tab's number, so a tab never lands in a session left behind by an
+  earlier run of the app, or by another device.
+- **tmux decides the sizes.** The tab tells tmux how many cells it has room
+  for (`refresh-client -C WxH`), tmux answers with a layout, and each pane's
+  view goes at exactly its cells, with the divider in the one cell tmux leaves
+  between neighbours. `ui/tmux_panes.dart` measures a cell the way xterm2
+  does.
+- **Keys go as hex** (`send-keys -H`), so no byte is read as tmux syntax or
+  looked up as a key binding: Ctrl-b is just Ctrl-b to the program.
+- **Output is read as bytes.** tmux writes control bytes in `%output` as
+  octal but UTF-8 as it is, so a character a pane wrote in two reads arrives
+  split across two lines, and each pane decodes its own.
+- **What a terminal says back on its own is dropped.** tmux is the programs'
+  real terminal and has already answered "what are you" and "where is the
+  cursor"; the pane's `Terminal` answering as well would type its answer
+  into the program.
+- **tmux knows where each pane is.** A split starts in the focused pane's
+  folder, and `LiveSession.foreground()` asks tmux for the focused pane's
+  program and folder rather than reading `/proc`, which would find tmux
+  itself: a relative path Ctrl+tapped in a pane starts from that pane.
+- **No tmux on the host** falls back to a plain shell, and says why.
+
+It needs tmux on the host; it was built against 3.2a.
+`test/tmux_live_test.dart` runs the real thing when tmux is installed where
+the tests run — split, type, drop and reattach, kill — against a tmux server
+of its own.
+
+**Not yet:** tmux windows as tabs (a tab shows its session's current window),
+dragging a divider to resize, copy mode, and zooming a pane. Nor does a tab
+come back after Android kills the app: its session is left running on the
+host, as is one closed while its connection was already down (`tmux ls`
+lists them as `sshbox-…`).
 
 ## Notifications
 
@@ -598,9 +660,9 @@ and a toast names it: `claude is running — not moving the shell`. A host that
 cannot say (not Linux, the probe failed) or does not answer within 1.5s gets
 nothing typed either, and the toast says which. The toast sits above the key
 bar for two seconds, takes no touches, and a new one replaces it rather than
-queueing behind it. Inside tmux the probe
-sees tmux rather than the pane's shell, so every `cd` is refused there for
-now.
+queueing behind it. In a tab set to use tmux, tmux answers for the focused
+pane and the `cd` goes to it; inside a tmux started by hand the probe sees
+tmux rather than the pane's shell, so every `cd` is refused there.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:

@@ -22,6 +22,7 @@ class HostProfile {
     this.authMethod = SshAuthMethod.password,
     this.fileRoot = '',
     this.forwardPorts = false,
+    this.useTmux = false,
   });
 
   final String id;
@@ -40,6 +41,11 @@ class HostProfile {
   /// the tailnet lets in.
   final bool forwardPorts;
 
+  /// Whether a tab on this host runs in tmux, with tmux's panes drawn as the
+  /// app's own — see `TmuxSession`. Off by default: it needs tmux on the
+  /// host, and changes what a tab is.
+  final bool useTmux;
+
   /// What we show under the label, e.g. `root@10.0.2.2` or `me@box:2222`.
   String get target =>
       '$username@$host${port == 22 ? '' : ':$port'}';
@@ -55,6 +61,7 @@ class HostProfile {
     SshAuthMethod? authMethod,
     String? fileRoot,
     bool? forwardPorts,
+    bool? useTmux,
   }) {
     return HostProfile(
       id: id,
@@ -65,6 +72,7 @@ class HostProfile {
       authMethod: authMethod ?? this.authMethod,
       fileRoot: fileRoot ?? this.fileRoot,
       forwardPorts: forwardPorts ?? this.forwardPorts,
+      useTmux: useTmux ?? this.useTmux,
     );
   }
 
@@ -77,6 +85,7 @@ class HostProfile {
         'authMethod': authMethod.name,
         'fileRoot': fileRoot,
         'forwardPorts': forwardPorts,
+        'useTmux': useTmux,
       };
 
   factory HostProfile.fromJson(Map<String, dynamic> json) {
@@ -92,6 +101,7 @@ class HostProfile {
       ),
       fileRoot: json['fileRoot'] as String? ?? '',
       forwardPorts: json['forwardPorts'] as bool? ?? false,
+      useTmux: json['useTmux'] as bool? ?? false,
     );
   }
 }

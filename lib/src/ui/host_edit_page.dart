@@ -70,6 +70,7 @@ class _HostEditPageState extends State<HostEditPage> {
 
   late SshAuthMethod _authMethod;
   late bool _forwardPorts;
+  late bool _useTmux;
   bool _saving = false;
 
   bool get _isEditing => widget.existing != null;
@@ -85,6 +86,7 @@ class _HostEditPageState extends State<HostEditPage> {
     _fileRoot = TextEditingController(text: existing?.fileRoot ?? '');
     _authMethod = existing?.authMethod ?? SshAuthMethod.password;
     _forwardPorts = existing?.forwardPorts ?? false;
+    _useTmux = existing?.useTmux ?? false;
   }
 
   @override
@@ -121,6 +123,7 @@ class _HostEditPageState extends State<HostEditPage> {
       authMethod: _authMethod,
       fileRoot: _fileRoot.text.trim(),
       forwardPorts: _forwardPorts,
+      useTmux: _useTmux,
     );
 
     await widget.repository.upsert(profile);
@@ -228,6 +231,18 @@ class _HostEditPageState extends State<HostEditPage> {
                 'name on 3001. Needs Tailscale on a Linux host, and leave to '
                 'serve without root there (sudo tailscale set '
                 '--operator=\$USER, once).',
+              ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _useTmux,
+              onChanged: (value) => setState(() => _useTmux = value),
+              title: const Text('Use tmux'),
+              subtitle: const Text(
+                'Each tab is a tmux session you can split into panes from '
+                'its long-press menu. A dropped connection comes back to the '
+                'same panes with their programs still running; closing the '
+                'tab ends them. Needs tmux on the host.',
               ),
             ),
             const SizedBox(height: 24),

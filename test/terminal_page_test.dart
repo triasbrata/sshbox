@@ -42,6 +42,7 @@ class _Shell
     required SecretStore secrets,
     required int columns,
     required int rows,
+    bool shell = true,
   }) async => this;
 
   @override
