@@ -119,14 +119,41 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
       path: RemotePath.join(parent, name.filename),
       kind: kind,
       size: kind == RemoteEntryKind.directory ? null : attrs.size,
-      modified: attrs.modifyTime == null
-          ? null
-          : DateTime.fromMillisecondsSinceEpoch(attrs.modifyTime! * 1000),
+      modified: _stampOf(attrs).modified,
     );
   }
 
+  static FileStamp _stampOf(SftpFileAttrs attrs) => (
+        modified: attrs.modifyTime == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(attrs.modifyTime! * 1000),
+        size: attrs.size,
+      );
+
+  /// null when there is nothing at [path]; any other failure still throws.
+  static Future<SftpFileAttrs?> _statOrNull(
+    SftpClient sftp,
+    String path, {
+    bool followLink = true,
+  }) async {
+    try {
+      return await sftp.stat(path, followLink: followLink);
+    } on SftpStatusError catch (error) {
+      if (error.code == 2) return null;
+      rethrow;
+    }
+  }
+
+  static Future<void> _removeQuietly(SftpClient sftp, String path) async {
+    try {
+      await sftp.remove(path);
+    } catch (_) {
+      // Leftover temp files are hidden and overwritten by the next save.
+    }
+  }
+
   @override
-  Future<String> readText(
+  Future<RemoteText> readText(
     String path, {
     int maxBytes = FileBrowser.defaultReadLimit,
   }) =>
@@ -165,7 +192,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
           }
 
           try {
-            return utf8.decode(bytes);
+            return (text: utf8.decode(bytes), stamp: _stampOf(attrs));
           } on FormatException {
             // Decoding it loosely would show mojibake and then save that
             // mojibake back over the original, which is worse than refusing.
@@ -180,21 +207,123 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable {
       });
 
   @override
-  Future<void> writeText(String path, String content) =>
+  Future<FileStamp> writeText(
+    String path,
+    String content, {
+    FileStamp? expected,
+  }) =>
       _guard('save $path', () async {
         final sftp = await _channel();
-        final file = await sftp.open(
-          path,
-          mode: SftpFileOpenMode.create |
-              SftpFileOpenMode.write |
-              SftpFileOpenMode.truncate,
-        );
-        try {
-          await file.writeBytes(Uint8List.fromList(utf8.encode(content)));
-        } finally {
-          await file.close();
+        final bytes = Uint8List.fromList(utf8.encode(content));
+
+        var target = path;
+        var current = await _statOrNull(sftp, path, followLink: false);
+        var replaceable = true;
+        if (current != null && current.isSymbolicLink) {
+          // Saving through a link rewrites what it points at. Renaming over
+          // the link itself would swap it for a plain file.
+          target = await sftp.absolute(path).catchError((Object _) => path);
+          current = await _statOrNull(sftp, target);
+          // A server that will not resolve it leaves the in-place write, which
+          // the host follows through the link on its own.
+          replaceable = target != path;
         }
+
+        if (expected != null &&
+            (current == null || _stampOf(current) != expected)) {
+          throw FileBrowserException(
+            '${RemotePath.basename(path)} changed on the host since it was '
+            'opened.',
+            fault: FileBrowserFault.changed,
+          );
+        }
+
+        final replaced = current != null &&
+            replaceable &&
+            await _replace(sftp, target, bytes, current);
+        if (!replaced) await _writeInPlace(sftp, target, bytes);
+        return _stampOf(await sftp.stat(target));
       });
+
+  /// Writes [bytes] beside [target] and renames them over it, so a connection
+  /// that drops mid-save leaves the old file whole rather than half-written.
+  ///
+  /// Returns false, with [target] untouched, whenever the swap would not come
+  /// out the same as writing in place: a directory we cannot add to, a file
+  /// we do not own (the rename would hand it to us), or a server without
+  /// `posix-rename`, whose plain rename refuses to replace a file.
+  ///
+  /// ponytail: a rename splits hard links, and SFTP v3 attributes carry no
+  /// link count to spot them by. A daemon can check st_nlink first.
+  Future<bool> _replace(
+    SftpClient sftp,
+    String target,
+    Uint8List bytes,
+    SftpFileAttrs current,
+  ) async {
+    final temp = RemotePath.join(
+      RemotePath.parent(target),
+      '.${RemotePath.basename(target)}.sshbox-save',
+    );
+
+    final SftpFile file;
+    try {
+      file = await sftp.open(
+        temp,
+        mode: SftpFileOpenMode.create |
+            SftpFileOpenMode.write |
+            SftpFileOpenMode.truncate,
+      );
+    } on SftpStatusError catch (error) {
+      if (error.code == 3) return false;
+      rethrow;
+    }
+
+    try {
+      final made = await file.stat();
+      if (made.userID != current.userID || made.groupID != current.groupID) {
+        await file.close();
+        await _removeQuietly(sftp, temp);
+        return false;
+      }
+      // Before the bytes go in, so a private file is never readable as temp.
+      await file.setStat(SftpFileAttrs(mode: current.mode));
+      await file.writeBytes(bytes);
+      await file.close();
+    } catch (_) {
+      // Not falling back here: an in-place write truncates first, and the
+      // same failure (a full disk, say) would then take the original too.
+      if (!file.isClosed) await file.close().catchError((Object _) {});
+      await _removeQuietly(sftp, temp);
+      rethrow;
+    }
+
+    try {
+      await sftp.rename(temp, target);
+    } on SftpStatusError {
+      await _removeQuietly(sftp, temp);
+      return false;
+    }
+    return true;
+  }
+
+  static Future<void> _writeInPlace(
+    SftpClient sftp,
+    String path,
+    Uint8List bytes,
+  ) async {
+    final file = await sftp.open(
+      path,
+      mode: SftpFileOpenMode.create |
+          SftpFileOpenMode.write |
+          SftpFileOpenMode.truncate,
+    );
+    try {
+      await file.writeBytes(bytes);
+    } finally {
+      await file.close();
+    }
+  }
 
   @override
   Future<void> rename(String from, String to) => _guard(

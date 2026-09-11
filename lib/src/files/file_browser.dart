@@ -73,6 +73,15 @@ class SearchHit {
   final String preview;
 }
 
+/// Enough of a file's state to notice that somebody else saved it since.
+///
+/// ponytail: SFTP v3 reports mtime in whole seconds, so a second save of the
+/// same size inside the same second looks unchanged. A daemon can send a hash.
+typedef FileStamp = ({DateTime? modified, int? size});
+
+/// A file's text together with the stamp it had when it was read.
+typedef RemoteText = ({String text, FileStamp stamp});
+
 /// The kinds of failure a caller might genuinely act on differently.
 ///
 /// Everything else collapses into [unknown] with a readable message — the
@@ -84,6 +93,10 @@ enum FileBrowserFault {
   notEmpty,
   tooLarge,
   notText,
+
+  /// The file on the host is no longer the one the caller read, so writing
+  /// over it would quietly throw away someone else's save.
+  changed,
   disconnected,
   unsupported,
   unknown,
@@ -125,15 +138,23 @@ abstract class FileBrowser {
   /// not the transport's.
   Future<List<RemoteEntry>> list(String path);
 
-  /// The whole file as text.
+  /// The whole file as text, and the stamp to hand back to [writeText].
   ///
   /// Throws [FileBrowserFault.tooLarge] rather than truncating, and
   /// [FileBrowserFault.notText] for anything that is not, so the editor never
   /// silently shows half a file or a screenful of mojibake.
-  Future<String> readText(String path, {int maxBytes = defaultReadLimit});
+  Future<RemoteText> readText(String path, {int maxBytes = defaultReadLimit});
 
-  /// Replaces the contents of [path], creating it if it is not there.
-  Future<void> writeText(String path, String content);
+  /// Replaces the contents of [path], creating it if it is not there, and
+  /// returns the stamp of what is there now.
+  ///
+  /// With [expected], the write only goes ahead while the file still matches
+  /// it; otherwise it throws [FileBrowserFault.changed] and writes nothing.
+  Future<FileStamp> writeText(
+    String path,
+    String content, {
+    FileStamp? expected,
+  });
 
   Future<void> rename(String from, String to);
 

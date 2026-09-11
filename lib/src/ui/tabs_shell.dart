@@ -103,6 +103,9 @@ class _TabsShellState extends State<TabsShell> {
       // Non-null tells the editor it is embedded rather than a route: leaving
       // it closes this tab instead of popping the whole shell.
       onClose: () => widget.sessions.closeFile(tab.session.id, tab.path!),
+      // By host rather than session: a draft is for after the app was killed,
+      // when the session it was typed in is long gone.
+      draftKey: '${tab.session.host.id}:${tab.path}',
     ),
   };
 

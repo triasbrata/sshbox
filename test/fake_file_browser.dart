@@ -70,8 +70,24 @@ class FakeFileBrowser implements FileBrowser {
     return List.of(_tree[path] ?? const []);
   }
 
+  /// Bumped by every write, standing in for the host's mtime.
+  final Map<String, int> _versions = {};
+
+  FileStamp _stamp(String path) => (
+        // Local, like SFTP's: a stamp kept as milliseconds comes back local,
+        // and DateTime equality tells the two zones apart.
+        modified: DateTime(2026).add(Duration(seconds: _versions[path] ?? 0)),
+        size: contents[path]?.length,
+      );
+
+  /// Someone else saving the file on the host while it is open here.
+  void externalEdit(String path, String content) {
+    contents[path] = content;
+    _versions[path] = (_versions[path] ?? 0) + 1;
+  }
+
   @override
-  Future<String> readText(
+  Future<RemoteText> readText(
     String path, {
     int maxBytes = FileBrowser.defaultReadLimit,
   }) async {
@@ -84,12 +100,23 @@ class FakeFileBrowser implements FileBrowser {
         fault: FileBrowserFault.notFound,
       );
     }
-    return text;
+    return (text: text, stamp: _stamp(path));
   }
 
   @override
-  Future<void> writeText(String path, String content) async {
-    contents[path] = content;
+  Future<FileStamp> writeText(
+    String path,
+    String content, {
+    FileStamp? expected,
+  }) async {
+    if (expected != null &&
+        (!contents.containsKey(path) || _stamp(path) != expected)) {
+      throw const FileBrowserException(
+        'Changed on the host since it was opened.',
+        fault: FileBrowserFault.changed,
+      );
+    }
+    externalEdit(path, content);
     final parent = RemotePath.parent(path);
     final siblings = _tree.putIfAbsent(parent, () => []);
     if (!siblings.any((entry) => entry.path == path)) {
@@ -100,6 +127,7 @@ class FakeFileBrowser implements FileBrowser {
         size: content.length,
       ));
     }
+    return _stamp(path);
   }
 
   @override

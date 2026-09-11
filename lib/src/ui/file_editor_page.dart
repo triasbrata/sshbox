@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart';
 
@@ -12,6 +16,7 @@ class FileEditorPage extends StatefulWidget {
     required this.browser,
     required this.path,
     this.onClose,
+    this.draftKey,
   });
 
   final FileBrowser browser;
@@ -24,9 +29,22 @@ class FileEditorPage extends StatefulWidget {
   /// terminal the width back.
   final VoidCallback? onClose;
 
+  /// Names this file across app restarts, so an unsaved edit can be kept on
+  /// the phone and offered back after Android kills the app in the background.
+  /// Null keeps no draft.
+  final String? draftKey;
+
   @override
   State<FileEditorPage> createState() => _FileEditorPageState();
 }
+
+enum _Conflict { overwrite, reload }
+
+/// ponytail: prefs rewrite their whole store on every write, so drafts of big
+/// files are skipped. Move drafts to files if losing those starts to matter.
+const _draftLimit = 256 * 1024;
+
+String _draftPrefsKey(String key) => 'editor.draft.$key';
 
 class _FileEditorPageState extends State<FileEditorPage> {
   final _controller = TextEditingController();
@@ -35,6 +53,19 @@ class _FileEditorPageState extends State<FileEditorPage> {
   /// decide whether there is anything to save — a user who types a character
   /// and deletes it again has not made a change.
   String _original = '';
+
+  /// The version of the file [_original] came from. A save that finds
+  /// anything else on the host stops and asks instead of writing over it.
+  FileStamp? _stamp;
+
+  /// A draft from an earlier run, waiting on the banner to restore or drop it.
+  RemoteText? _draft;
+
+  Timer? _draftTimer;
+
+  /// Set once the user has chosen to throw the edit away, so the flush on the
+  /// way out does not store it again.
+  bool _dropDraft = false;
 
   String? _error;
   FileBrowserFault? _fault;
@@ -66,6 +97,12 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
   @override
   void dispose() {
+    // Flushed rather than dropped: closing a session takes its file tabs down
+    // without asking, and this is all that is left of the edit.
+    if (_draftTimer?.isActive ?? false) {
+      _draftTimer!.cancel();
+      unawaited(_storeDraft());
+    }
     _controller.removeListener(_onEdited);
     _controller.dispose();
     super.dispose();
@@ -76,6 +113,78 @@ class _FileEditorPageState extends State<FileEditorPage> {
   /// watched rather than sampled.
   void _onEdited() {
     setState(() {});
+    if (widget.draftKey == null) return;
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(seconds: 2), _storeDraft);
+  }
+
+  Future<void> _storeDraft() async {
+    final key = widget.draftKey;
+    // A draft still waiting on the banner is not this edit's to overwrite.
+    if (key == null || _draft != null || _dropDraft) return;
+    // Read before the first await: on the way out the field is disposed next.
+    final text = _controller.text;
+    final stamp = _stamp;
+    final dirty = text != _original;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (!dirty) {
+      await prefs.remove(_draftPrefsKey(key));
+      return;
+    }
+    if (text.length > _draftLimit) return;
+    await prefs.setString(
+      _draftPrefsKey(key),
+      jsonEncode({
+        'text': text,
+        'modified': stamp?.modified?.millisecondsSinceEpoch,
+        'size': stamp?.size,
+      }),
+    );
+  }
+
+  Future<RemoteText?> _readDraft() async {
+    final key = widget.draftKey;
+    if (key == null) return null;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_draftPrefsKey(key));
+    if (raw == null) return null;
+    final json = jsonDecode(raw) as Map<String, dynamic>;
+    final modified = json['modified'] as int?;
+    return (
+      text: json['text'] as String,
+      stamp: (
+        modified: modified == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(modified),
+        size: json['size'] as int?,
+      ),
+    );
+  }
+
+  Future<void> _clearDraft() async {
+    final key = widget.draftKey;
+    if (key == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_draftPrefsKey(key));
+  }
+
+  void _restoreDraft() {
+    final draft = _draft;
+    if (draft == null) return;
+    setState(() {
+      _draft = null;
+      // The draft was made against this version. If the host has moved on
+      // since, saving raises the same question any other conflicting save
+      // does, rather than quietly writing over the newer file.
+      _stamp = draft.stamp;
+      _controller.text = draft.text;
+    });
+  }
+
+  void _discardStoredDraft() {
+    setState(() => _draft = null);
+    unawaited(_clearDraft());
   }
 
   Future<void> _load() async {
@@ -86,12 +195,16 @@ class _FileEditorPageState extends State<FileEditorPage> {
     });
 
     try {
-      final text = await widget.browser.readText(widget.path);
+      final read = await widget.browser.readText(widget.path);
+      final draft = await _readDraft();
       if (!mounted) return;
       setState(() {
-        _original = text;
-        _controller.text = text;
+        _original = read.text;
+        _stamp = read.stamp;
+        _controller.text = read.text;
         _loading = false;
+        // A draft that matches the host has nothing left to offer.
+        _draft = draft != null && draft.text != read.text ? draft : null;
       });
     } on FileBrowserException catch (error) {
       if (!mounted) return;
@@ -103,33 +216,90 @@ class _FileEditorPageState extends State<FileEditorPage> {
     }
   }
 
-  Future<void> _save() async {
+  Future<void> _reload() async {
+    if (_dirty && !await _confirmDiscard()) return;
+    await _load();
+  }
+
+  /// [overwrite] skips the check that the host still has the version this
+  /// edit started from — only ever set once the user has said so.
+  Future<void> _save({bool overwrite = false}) async {
     setState(() => _saving = true);
     final text = _controller.text;
+    var conflict = false;
 
     try {
-      await widget.browser.writeText(widget.path, text);
+      final stamp = await widget.browser.writeText(
+        widget.path,
+        text,
+        expected: overwrite ? null : _stamp,
+      );
       if (!mounted) return;
       setState(() {
         // Not `_controller.text`: the user may have typed while the write was
         // in flight, and those keystrokes are genuinely still unsaved.
         _original = text;
+        _stamp = stamp;
         _saved = true;
       });
+      if (!_dirty) unawaited(_clearDraft());
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Saved ${RemotePath.basename(widget.path)}')),
       );
     } on FileBrowserException catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message)),
-      );
+      if (error.fault == FileBrowserFault.changed) {
+        conflict = true;
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message)),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+
+    if (conflict && mounted) await _resolveConflict();
   }
 
-  Future<void> _confirmDiscard() async {
+  Future<void> _resolveConflict() async {
+    final choice = await showDialog<_Conflict>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Changed on the host'),
+        content: Text(
+          '${RemotePath.basename(widget.path)} was saved on the host after you '
+          'opened it. Overwrite that version with yours, or reload it and drop '
+          'your edits?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(_Conflict.reload),
+            child: const Text('Reload'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(_Conflict.overwrite),
+            child: const Text('Overwrite'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    switch (choice) {
+      case _Conflict.overwrite:
+        await _save(overwrite: true);
+      case _Conflict.reload:
+        await _load();
+      case null:
+        break;
+    }
+  }
+
+  Future<bool> _confirmDiscard() async {
     final discard = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -150,7 +320,16 @@ class _FileEditorPageState extends State<FileEditorPage> {
         ],
       ),
     );
-    if (discard == true && mounted) _leave();
+    return discard == true && mounted;
+  }
+
+  Future<void> _leaveIfConfirmed() async {
+    if (_dirty) {
+      if (!await _confirmDiscard()) return;
+      _dropDraft = true;
+      unawaited(_clearDraft());
+    }
+    _leave();
   }
 
   @override
@@ -163,12 +342,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
       // do here first: close the pane rather than leave the terminal behind it.
       canPop: !_embedded && !_dirty,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        if (_dirty) {
-          _confirmDiscard();
-        } else {
-          _leave();
-        }
+        if (!didPop) _leaveIfConfirmed();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -176,7 +350,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
           leading: IconButton(
             tooltip: _embedded ? 'Close file' : 'Back',
             icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
-            onPressed: () => _dirty ? _confirmDiscard() : _leave(),
+            onPressed: _leaveIfConfirmed,
           ),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -202,7 +376,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
           actions: [
             IconButton(
               tooltip: 'Reload from host',
-              onPressed: _loading || _saving ? null : _load,
+              onPressed: _loading || _saving ? null : _reload,
               icon: const Icon(Icons.refresh),
             ),
             IconButton(
@@ -223,24 +397,47 @@ class _FileEditorPageState extends State<FileEditorPage> {
     final error = _error;
     if (error != null) return _EditorError(message: error, fault: _fault);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: TextField(
-        controller: _controller,
-        // Files are code and config far more often than prose, and both are
-        // unreadable in a proportional face once alignment matters.
-        style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-        maxLines: null,
-        expands: true,
-        textAlignVertical: TextAlignVertical.top,
-        keyboardType: TextInputType.multiline,
-        // Every one of these fights a plain text file: autocorrect rewrites
-        // identifiers, and capitalisation breaks case-sensitive keys.
-        autocorrect: false,
-        enableSuggestions: false,
-        textCapitalization: TextCapitalization.none,
-        decoration: const InputDecoration(border: InputBorder.none),
-      ),
+    return Column(
+      children: [
+        if (_draft != null)
+          MaterialBanner(
+            content: const Text(
+              'There are unsaved edits to this file from last time.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: _discardStoredDraft,
+                child: const Text('Discard'),
+              ),
+              TextButton(
+                onPressed: _restoreDraft,
+                child: const Text('Restore'),
+              ),
+            ],
+          ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: TextField(
+              controller: _controller,
+              // Files are code and config far more often than prose, and both
+              // are unreadable in a proportional face once alignment matters.
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              maxLines: null,
+              expands: true,
+              textAlignVertical: TextAlignVertical.top,
+              keyboardType: TextInputType.multiline,
+              // Every one of these fights a plain text file: autocorrect
+              // rewrites identifiers, and capitalisation breaks case-sensitive
+              // keys.
+              autocorrect: false,
+              enableSuggestions: false,
+              textCapitalization: TextCapitalization.none,
+              decoration: const InputDecoration(border: InputBorder.none),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

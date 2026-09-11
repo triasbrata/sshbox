@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 
@@ -61,6 +62,122 @@ void main() {
     expect(browser.contents['/home/me/notes.txt'], 'rewritten\n');
     expect(find.text('Saved notes.txt'), findsOneWidget);
     expect(_canSave(tester), isFalse);
+
+    // The save moved the file on; the next one must start from there rather
+    // than mistaking its own earlier save for somebody else's.
+    await tester.enterText(find.byType(TextField), 'again\n');
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+    await tester.pumpAndSettle();
+    expect(browser.contents['/home/me/notes.txt'], 'again\n');
+    expect(find.text('Changed on the host'), findsNothing);
+  });
+
+  testWidgets('will not save over a version someone else saved',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpEditor(tester, browser);
+
+    await tester.enterText(find.byType(TextField), 'mine\n');
+    await tester.pumpAndSettle();
+    browser.externalEdit('/home/me/notes.txt', 'theirs\n');
+
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+    await tester.pumpAndSettle();
+    expect(find.text('Changed on the host'), findsOneWidget);
+    expect(browser.contents['/home/me/notes.txt'], 'theirs\n');
+
+    await tester.tap(find.text('Overwrite'));
+    await tester.pumpAndSettle();
+    expect(browser.contents['/home/me/notes.txt'], 'mine\n');
+    expect(_canSave(tester), isFalse);
+  });
+
+  testWidgets('a conflict can take the host version instead', (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpEditor(tester, browser);
+
+    await tester.enterText(find.byType(TextField), 'mine\n');
+    await tester.pumpAndSettle();
+    browser.externalEdit('/home/me/notes.txt', 'theirs\n');
+
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reload'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'theirs\n',
+    );
+    expect(_canSave(tester), isFalse);
+  });
+
+  testWidgets('reloading asks before dropping an edit', (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpEditor(tester, browser);
+    String text() =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    await tester.enterText(find.byType(TextField), 'half typed');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.refresh));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard changes?'), findsOneWidget);
+    await tester.tap(find.text('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(text(), 'half typed');
+
+    await tester.tap(find.byIcon(Icons.refresh));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+    expect(text(), 'first line\nsecond line\n');
+  });
+
+  testWidgets('offers back an edit the app never got to save',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final browser = FakeFileBrowser();
+    Widget editor() => MaterialApp(
+          home: FileEditorPage(
+            browser: browser,
+            path: '/home/me/notes.txt',
+            draftKey: 'box:/home/me/notes.txt',
+          ),
+        );
+    String text() =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    await tester.pumpWidget(editor());
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'draft\n');
+    await tester.pump(const Duration(seconds: 3));
+
+    // The app goes away with the edit unsaved, and comes back to the file.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(editor());
+    await tester.pumpAndSettle();
+
+    const banner = 'There are unsaved edits to this file from last time.';
+    expect(find.text(banner), findsOneWidget);
+    expect(text(), 'first line\nsecond line\n');
+
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+    expect(find.text(banner), findsNothing);
+    expect(text(), 'draft\n');
+
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+    await tester.pumpAndSettle();
+    expect(browser.contents['/home/me/notes.txt'], 'draft\n');
+
+    // Saved, so there is nothing left to offer next time.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(editor());
+    await tester.pumpAndSettle();
+    expect(find.text(banner), findsNothing);
   });
 
   testWidgets('guards an unsaved edit against a stray back', (tester) async {

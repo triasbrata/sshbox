@@ -124,7 +124,48 @@ void main() {
       expect(listing.single.size, utf8.encode(content).length);
 
       // The claim the whole browser rests on: what comes back is what went out.
-      expect(await browser.readText(file), content);
+      final read = await browser.readText(file);
+      expect(read.text, content);
+
+      // A save that finds someone else's version on the host must not write.
+      await browser.writeText(file, '${content}theirs\n');
+      await expectLater(
+        browser.writeText(file, 'mine\n', expected: read.stamp),
+        throwsA(
+          isA<FileBrowserException>().having(
+            (error) => error.fault,
+            'fault',
+            FileBrowserFault.changed,
+          ),
+        ),
+      );
+      expect((await browser.readText(file)).text, '${content}theirs\n');
+
+      // A save is a swap, and the swap must keep what the old file was:
+      // its permissions, and a link staying a link. Only checkable when the
+      // host's filesystem is this machine's.
+      if (_host == '127.0.0.1' || _host == 'localhost') {
+        final local = File(file);
+        await Process.run('chmod', ['600', file]);
+        final link = Link(RemotePath.join(root, 'tautan.txt'))
+          ..createSync(file);
+
+        final stamp = await browser.writeText(link.path, content);
+        expect(link.existsSync(), isTrue);
+        expect(FileSystemEntity.isLinkSync(link.path), isTrue);
+        expect(local.readAsStringSync(), content);
+        expect(local.statSync().mode & 0x1ff, 0x180);
+        expect(stamp.size, utf8.encode(content).length);
+        link.deleteSync();
+      } else {
+        await browser.writeText(file, content);
+      }
+
+      // No temp file left beside it once the swap is done.
+      expect(
+        (await browser.list(root)).map((entry) => entry.name),
+        ['catatan.txt'],
+      );
 
       final renamed = RemotePath.join(root, 'catatan-lama.txt');
       await browser.rename(file, renamed);
