@@ -179,6 +179,17 @@ void main() {
       expect(forwarder.problem, isNull);
     });
 
+    test('but a watch that fails once watching is, rather than going quiet',
+        () async {
+      await connect([]);
+      final before = changes;
+      host.watch.addError('Channel 3 closed: the peer broke the window');
+      await host.watch.close();
+      await pumpEventQueue();
+      expect(forwarder.problem, 'Channel 3 closed: the peer broke the window');
+      expect(changes, greaterThan(before));
+    });
+
     test('after a reconnect a server already running is forwarded again, '
         'at the address it had', () async {
       await connect([]);

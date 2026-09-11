@@ -364,10 +364,13 @@ dropped.
 
 **What the host needs:** Linux, Tailscale, and permission to change the serve
 config without root — `sudo tailscale set --operator=$USER`, once. Without it
-the forward is refused and the app shows tailscale's own error. A refused
-forward is not retried until its server restarts. Each forward holds a
-channel, and OpenSSH allows ten per connection by default (`MaxSessions`), so
-about seven fit beside the shell, the watch and the file browser.
+the forward is refused, and a red toast in the blue one's place says **Port
+3000 not forwarded** with tailscale's own words under it, for eight seconds.
+A host that cannot forward at all (no tailscale, not Linux), or whose watch
+fails, says **Not forwarding ports** and why, the same way. A refused forward
+is not retried until its server restarts. Each forward holds a channel, and
+OpenSSH allows ten per connection by default (`MaxSessions`), so about seven
+fit beside the shell, the watch and the file browser.
 
 **Recent Vite refuses hostnames it does not know.** Opened at `…ts.net:3001`
 it answers "Blocked request. This host is not allowed"; add
@@ -740,7 +743,8 @@ that slide in at the top, under the status bar. Each goes by itself after a
 second, counting down along its bottom edge; a touch holds it, a swipe or its
 × sends it off sooner. They stack rather than queue, three at most, so a
 refusal for every folder tapped is on screen at once instead of each waiting
-its turn, and words already showing are not said twice.
+its turn, and words already showing are not said twice. A message's first
+line is its title and any more go under it, since the title stops at two.
 
 **A picked file opens as a tab**, named `<host> · <file>`, beside the session
 it was read over:

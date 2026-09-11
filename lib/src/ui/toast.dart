@@ -28,6 +28,11 @@ final _showing = <String, ToastificationItem>{};
 /// [action] puts a button on it, the way a snack bar's does, and pressing it
 /// closes the toast.
 ///
+/// A [message] of more than one line is a heading and what it is about: the
+/// first line is the title and the rest goes under it, in lighter type. The
+/// package cuts a title at two lines, and a reason — tailscale's own words
+/// for a refused forward, which run to three — needs all of its own.
+///
 /// The one way into the toast package: only the wrapper around the app talks
 /// to it besides.
 void showToast(
@@ -40,6 +45,7 @@ void showToast(
   _showing.removeWhere((_, toast) => !toast.isRunning);
   if (_showing.containsKey(message)) return;
 
+  final [heading, ...rest] = message.split('\n');
   late final ToastificationItem toast;
   toast = _showing[message] = toastification.show(
     context: context,
@@ -53,10 +59,10 @@ void showToast(
     autoCloseDuration: duration,
     showProgressBar: true,
     title: action == null
-        ? Text(message)
+        ? Text(heading)
         : Row(
             children: [
-              Expanded(child: Text(message)),
+              Expanded(child: Text(heading)),
               TextButton(
                 // The filled style's own white, on the toast's colour.
                 style: TextButton.styleFrom(foregroundColor: Colors.white),
@@ -68,5 +74,6 @@ void showToast(
               ),
             ],
           ),
+    description: rest.isEmpty ? null : Text(rest.join('\n')),
   );
 }

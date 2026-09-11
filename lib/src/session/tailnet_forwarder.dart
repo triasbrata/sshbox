@@ -79,9 +79,10 @@ class TailnetForwarder {
       onError: (Object error) => problem = '$error',
       onDone: () {
         // Ending once it is watching means the connection went, which is the
-        // session's news to break. Only ending before that is the host's
-        // problem.
-        if (_uid != null) return;
+        // session's news to break: a dropped connection closes the channel
+        // without an error. An error, or ending before it is watching, is the
+        // host's problem — and otherwise forwarding would stop unsaid.
+        if (_uid != null && problem == null) return;
         problem ??= _remark ?? 'Could not watch the host for servers.';
         onChanged();
       },

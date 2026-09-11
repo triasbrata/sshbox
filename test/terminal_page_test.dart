@@ -4,6 +4,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/models/host_profile.dart';
@@ -11,6 +13,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
 import 'package:toastification/toastification.dart';
 import 'package:url_launcher_platform_interface/link.dart';
@@ -643,6 +646,167 @@ void main() {
 
       expect(openedWeb, [Uri.parse('http://a.tail1.ts.net:3001')]);
       expect(find.text(said), findsNothing);
+    });
+  });
+
+  group('a forward landing, through the app', () {
+    const said = 'Port 3000 is on a.tail1.ts.net:3001';
+    late StreamController<String> watch;
+    late StreamController<String> serving;
+    late SessionManager manager;
+
+    /// The app's one screen, wrapped the way `SshboxApp` wraps it, over one
+    /// shell on a host set to forward ports. The test writes what the host's
+    /// watch and `tailscale serve` say.
+    Future<void> pumpApp(WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      watch = StreamController<String>();
+      serving = StreamController<String>();
+      final shell = _Shell()
+        ..answer = (command) => command.startsWith('tailscale serve')
+            ? serving.stream
+            : command.contains('/proc/net/tcp')
+                ? watch.stream
+                : null;
+      manager = SessionManager();
+      addTearDown(manager.closeAll);
+      manager.open(
+        const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+          forwardPorts: true,
+        ),
+        transport: shell,
+      );
+
+      await tester.pumpWidget(
+        ToastificationWrapper(
+          config: const ToastificationConfig(maxToastLimit: 3),
+          child: MaterialApp(
+            home: TabsShell(
+              repository: HostRepository(_NoSecrets()),
+              secrets: _NoSecrets(),
+              sessions: manager,
+              onOpenHost: (_) async {},
+              pushToken: () => null,
+            ),
+          ),
+        ),
+      );
+      // Connects after the first frame.
+      await tester.pump();
+    }
+
+    /// A while into the session vite starts on 3000, and tailscale answers
+    /// for it with [tailscale]; with [exits], and then gives up.
+    Future<void> viteStarts(
+      WidgetTester tester,
+      List<String> tailscale, {
+      bool exits = false,
+    }) async {
+      // The uid, and a sweep with nothing new up.
+      watch
+        ..add('1000')
+        ..add('');
+      await tester.pump(const Duration(seconds: 2));
+      watch
+        ..add('0100007F:0BB8 1000')
+        ..add('');
+      await tester.pump();
+      tailscale.forEach(serving.add);
+      if (exits) unawaited(serving.close());
+      // The toast's overlay, the toast, and its slide in.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('with the shell showing: a blue toast at the top with Open, '
+        'for five seconds', (tester) async {
+      await pumpApp(tester);
+      await viteStarts(tester, ['|-- tcp://a.tail1.ts.net:3001']);
+
+      final toast = _toast(said, ToastificationType.info);
+      expect(toast, findsOneWidget);
+      expect(
+        find.descendant(of: toast, matching: find.text('Open')),
+        findsOneWidget,
+      );
+      // Up where the tabs are, not down by the shell's key bar.
+      expect(
+        tester.getTopLeft(toast).dy,
+        lessThan(tester.getBottomLeft(find.byType(TabStrip)).dy),
+      );
+      expect(find.byType(SnackBar), findsNothing);
+
+      await tester.pump(const Duration(milliseconds: 3400));
+      expect(find.text(said), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump();
+      expect(find.text(said), findsNothing);
+    });
+
+    testWidgets('and with a file of that session showing instead', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      manager.openFile(manager.sessions.single.id, '/home/me/notes.txt');
+      await tester.pumpAndSettle();
+      expect(manager.activeKind, TabKind.file);
+
+      await viteStarts(tester, ['|-- tcp://a.tail1.ts.net:3001']);
+      expect(_toast(said, ToastificationType.info), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets("a refused forward is a red toast with all of tailscale's "
+        'reason, for eight seconds', (tester) async {
+      const why = [
+        'sending serve config: Access denied: serve config denied',
+        "Use 'sudo tailscale serve --tcp 3001 tcp://localhost:3000'.",
+        "To not require root, use 'sudo tailscale set --operator=\$USER' once.",
+      ];
+      await pumpApp(tester);
+      await viteStarts(tester, why, exits: true);
+
+      final toast = _toast('Port 3000 not forwarded', ToastificationType.error);
+      expect(toast, findsOneWidget);
+      // Under the title rather than in it, which stops at two lines.
+      expect(
+        find.descendant(of: toast, matching: find.text(why.join('\n'))),
+        findsOneWidget,
+      );
+      expect(find.byType(SnackBar), findsNothing);
+
+      await tester.pump(const Duration(seconds: 6));
+      expect(toast, findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump();
+      expect(toast, findsNothing);
+    });
+
+    testWidgets('and so is a host that cannot forward at all', (tester) async {
+      await pumpApp(tester);
+      watch.add('tailscale is not installed on this host');
+      unawaited(watch.close());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      final toast = _toast('Not forwarding ports', ToastificationType.error);
+      expect(
+        find.descendant(
+          of: toast,
+          matching: find.text('tailscale is not installed on this host'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(SnackBar), findsNothing);
+      await tester.pumpAndSettle();
     });
   });
 }

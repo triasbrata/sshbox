@@ -155,13 +155,23 @@ class _TerminalPageState extends State<TerminalPage> {
   /// Says so when a server lands on the tailnet, or cannot, with a way
   /// straight to it — whichever tab is showing, because the moment it lands
   /// is when the address is wanted.
+  ///
+  /// One that cannot land says so in the same place, in red, with the reason
+  /// under it — tailscale's own words, `--operator` and all — and stays long
+  /// enough to read them. As a snack bar it came at the other end of the
+  /// screen from the toast the user was waiting for.
   void _announceForwards() {
-    final messenger = ScaffoldMessenger.of(context);
     // Held now rather than read when Open is pressed: the toast can outlive
     // this page, and a page that has gone has no context to read.
     final page = context;
     final inTab = widget.onOpenWeb;
     final forwarder = _session.forwarder;
+    void failed(String what, String why) => showToast(
+      context,
+      '$what\n$why',
+      type: ToastificationType.error,
+      duration: const Duration(seconds: 8),
+    );
     for (final forward in forwarder.forwards) {
       final address = forward.address;
       if (address == null && forward.error == null) continue;
@@ -179,20 +189,12 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         );
       } else {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(
-              'Port ${forward.port} not forwarded: ${forward.error}',
-            ),
-          ),
-        );
+        failed('Port ${forward.port} not forwarded', forward.error!);
       }
     }
     final problem = forwarder.problem;
     if (problem != null && _announced.add(problem)) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('Not forwarding ports: $problem')),
-      );
+      failed('Not forwarding ports', problem);
     }
   }
 
