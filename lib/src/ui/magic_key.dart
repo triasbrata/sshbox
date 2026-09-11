@@ -444,17 +444,33 @@ class _MagicKeyState extends State<MagicKey> {
   /// petal nearest that direction instead, so straight on is the key right
   /// behind — whichever key of ring 1 that petal hangs off. Where ring 1 has
   /// nothing, the middle or the gap a fan leaves, ring 2 has nothing too.
+  ///
+  /// Tucked, ring 2 keeps to the keys behind the one ring 1 picked. The fan
+  /// there packs ring 2 so tight that its nearest petal is often one hanging
+  /// off the next key along, and a pull that lit → must not send `^\`.
   void _aimAt(Offset drag) {
     var aim = petalFor(drag, _ring.angles);
     int? child;
     if (aim != null && drag.distance >= _ringTwoFrom) {
       // North, clockwise, as in [petalFor].
       final pointing = math.atan2(drag.dx, -drag.dy);
+      double off(double angle) => _angleBetween(pointing, angle);
+      // A key's second key behind sits on the line to the next key of ring 1,
+      // so once out in ring 2 the key holds for as long as one of its own
+      // keys behind is nearer than that next key is: a lean onto the second
+      // keeps it, and only a clear move on to the next key hands over.
+      if (_docked && _child != null) {
+        final held = _aim!;
+        final own = _subAnglesOf(held).map(off).reduce(math.min);
+        if (own <= off(_ring.angles[aim])) aim = held;
+      }
+      final parent = aim;
       var nearest = double.infinity;
       for (var i = 0; i < magicKeys.length; i++) {
+        if (_docked && i != parent) continue;
         final angles = _subAnglesOf(i);
         for (var j = 0; j < angles.length; j++) {
-          final gap = _angleBetween(pointing, angles[j]);
+          final gap = off(angles[j]);
           if (gap < nearest) {
             nearest = gap;
             aim = i;

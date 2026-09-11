@@ -7,6 +7,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/ui/magic_key.dart';
 import 'package:xterm2/xterm.dart';
 
+/// Moves a held finger [distance] out and answers with the petal lit up.
+typedef Pull = Future<String?> Function(
+  double distance, {
+  String? toward,
+  double lean,
+});
+
 void main() {
   final compass = [for (var i = 0; i < 8; i++) 2 * math.pi * i / 8];
 
@@ -300,18 +307,19 @@ void main() {
       return label.evaluate().isEmpty ? null : tester.widget<Text>(label).data;
     }
 
-    /// Holds a key tucked into the [left] or right side, on the half of it that
-    /// shows. Each pull then puts the finger that far out from where it landed
-    /// toward the [toward] petal, the way a thumb aims at one, and answers with
-    /// the petal lit up.
-    Future<(TestGesture, Future<String?> Function(double))> holdTucked(
+    /// Holds a key tucked into the [left] or right side, [y] of the way down,
+    /// on the half of it that shows. Each pull then puts the finger that far
+    /// out from where it landed — toward the `toward` petal, the way a thumb
+    /// aims at one, or else straight out from the side — turned `lean` degrees
+    /// clockwise, and answers with the petal lit up.
+    Future<(TestGesture, Pull)> holdTucked(
       WidgetTester tester, {
       required bool left,
-      required String toward,
+      double y = 0.5,
     }) async {
       SharedPreferences.setMockInitialValues({
         'sshbox.magickey.x': left ? 0.0 : 1.0,
-        'sshbox.magickey.y': 0.5,
+        'sshbox.magickey.y': y,
         'sshbox.magickey.docked': true,
       });
       await pumpKey(tester);
@@ -320,9 +328,17 @@ void main() {
       final centre = tester.getRect(box).center;
       final landed = centre + Offset(left ? 10 : -10, 0);
       final finger = await hold(tester, landed);
-      final way = tester.getCenter(find.text(toward)) - centre;
-      Future<String?> pull(double distance) async {
-        await finger.moveTo(landed + way / way.distance * distance);
+      Future<String?> pull(double distance,
+          {String? toward, double lean = 0}) async {
+        final way = toward == null
+            ? Offset(left ? 1 : -1, 0)
+            : tester.getCenter(find.text(toward)) - centre;
+        final a = lean * math.pi / 180;
+        final turned = Offset(
+          way.dx * math.cos(a) - way.dy * math.sin(a),
+          way.dx * math.sin(a) + way.dy * math.cos(a),
+        );
+        await finger.moveTo(landed + turned / turned.distance * distance);
         await tester.pump();
         return aimed(tester);
       }
@@ -333,10 +349,10 @@ void main() {
     // Tucked, ring 2 takes over 50 out: the dead zone's 18 and a pull of 32.
     testWidgets('tucked on the left, ring 2 is a short pull right',
         (tester) async {
-      final (finger, pull) = await holdTucked(tester, left: true, toward: '→');
-      expect(await pull(24), '→', reason: 'just past the dead zone');
-      expect(await pull(60), 'END', reason: 'the key behind, nowhere near it');
-      expect(await pull(20), '→', reason: 'easing back is ring 1 again');
+      final (finger, pull) = await holdTucked(tester, left: true);
+      expect(await pull(24, toward: '→'), '→', reason: 'past the dead zone');
+      expect(await pull(60, toward: '→'), 'END', reason: 'the key behind');
+      expect(await pull(20, toward: '→'), '→', reason: 'eased back, ring 1');
       await finger.up();
       await tester.pump();
       expect(sent, ['\x1b[C'], reason: 'lifting sends what is lit');
@@ -344,23 +360,64 @@ void main() {
 
     testWidgets('tucked, a finger on the line keeps the ring it is in',
         (tester) async {
-      final (finger, pull) = await holdTucked(tester, left: true, toward: '→');
-      expect(await pull(52), 'END');
-      expect(await pull(47), 'END', reason: 'ring 2 lets go only 6 inside');
-      expect(await pull(42), '→');
-      expect(await pull(47), '→', reason: 'and ring 1 holds up to the line');
+      final (finger, pull) = await holdTucked(tester, left: true);
+      expect(await pull(52, toward: '→'), 'END');
+      expect(await pull(47, toward: '→'), 'END',
+          reason: 'ring 2 lets go only 6 inside');
+      expect(await pull(42, toward: '→'), '→');
+      expect(await pull(47, toward: '→'), '→',
+          reason: 'and ring 1 holds up to the line');
       await finger.up();
       await tester.pump();
     });
 
     testWidgets('tucked on the right, it mirrors: ring 2 is a pull left',
         (tester) async {
-      final (finger, pull) = await holdTucked(tester, left: false, toward: '←');
-      expect(await pull(24), '←');
-      expect(await pull(60), 'HOME');
+      final (finger, pull) = await holdTucked(tester, left: false);
+      expect(await pull(24, toward: '←'), '←');
+      expect(await pull(60, toward: '←'), 'HOME');
       await finger.up();
       await tester.pump();
       expect(sent, ['\x1b[H']);
+    });
+
+    testWidgets('tucked in a corner, straight on from → is only ever End',
+        (tester) async {
+      // Low on the left the fan is squeezed, and a flat pull right passes
+      // closer to ^\ — behind ^C, the next key round — than to End.
+      final (finger, pull) = await holdTucked(tester, left: true, y: 0.9);
+      expect(await pull(24), '→');
+      expect(await pull(60), 'END');
+      await finger.up();
+      await tester.pump();
+      expect(sent, ['\x1b[F']);
+    });
+
+    // In the fan at the middle of a side, ring 1's keys are 22.4° apart, and
+    // a second key behind sits 11.2° clockwise of the first: on the line to
+    // the next key of ring 1.
+    testWidgets('tucked, a clockwise lean in ring 2 is the second key behind',
+        (tester) async {
+      final (finger, pull) = await holdTucked(tester, left: true);
+      expect(await pull(60, toward: '→'), 'END');
+      expect(await pull(60, toward: '→', lean: 8), 'W→');
+      expect(await pull(60, toward: '→', lean: 13), 'W→',
+          reason: 'just past the line to ^C, → still has it');
+      expect(await pull(60, toward: '→', lean: 20), '^Z',
+          reason: 'well into ^C it hands over');
+      await finger.up();
+      await tester.pump();
+    });
+
+    testWidgets('tucked, a key with one behind it gives that one at any lean',
+        (tester) async {
+      final (finger, pull) = await holdTucked(tester, left: true);
+      // Most of the way to either edge of ESC's 22.4°.
+      expect(await pull(60, toward: 'ESC', lean: -9), 'ESC²');
+      expect(await pull(60, toward: 'ESC', lean: 9), 'ESC²');
+      await finger.up();
+      await tester.pump();
+      expect(sent, ['\x1b\x1b']);
     });
 
     testWidgets('in its corner both rings fan out and stay on screen',
