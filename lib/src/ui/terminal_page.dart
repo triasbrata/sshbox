@@ -583,7 +583,10 @@ class _TerminalPageState extends State<TerminalPage> {
             child: Center(
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()
-                  : AuthCheckPrompt(url: _session.authUrl!),
+                  : AuthCheckPrompt(
+                      url: _session.authUrl!,
+                      inTab: widget.onOpenWeb,
+                    ),
             ),
           ),
         // Along the terminal's bottom edge, just above the key bar, rather
@@ -822,8 +825,8 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
 /// through here — a Ctrl+tap, a forwarded port, a sign-in check.
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
-/// [inTab] puts it there. Without one — the web tab's own Open in browser, a
-/// sign-in check, or a toast that outlived its page — it goes to a Custom
+/// [inTab] puts it there. With no shell to put it beside — the web tab's own
+/// Open in browser, or a toast that outlived its page — it goes to a Custom
 /// Tab instead, which the phone's default browser draws over this app with
 /// its own engine, cookies and sign-ins, and Back returns from.
 ///
@@ -861,19 +864,25 @@ Future<void> openUrl(
 /// Shown while a server is waiting for the user to prove who they are
 /// somewhere else — Tailscale SSH's check, for instance.
 ///
-/// The connection is still open behind this; finishing in the browser is what
+/// The connection is still open behind this; finishing the sign-in is what
 /// releases it, so there is nothing to submit here.
 ///
-/// Its link skips the web tabs: identity providers, Google above all, refuse
-/// to sign in inside an embedded web view.
+/// Its link opens in a web tab beside the shell, like every other link from a
+/// session, because that is where the user asked for it. Some identity
+/// providers, Google in particular, refuse to sign in inside an embedded web
+/// view; when one does, the tab's Open in browser is the way out. Nothing
+/// here passes the web view off as a browser to get past that refusal: the
+/// providers' policies forbid it. Once the session is through the check, the
+/// tab closes itself — see [LiveSession.openWeb].
 ///
 /// Public only so a test can press that link without a server holding a
 /// session at its sign-in.
 @visibleForTesting
 class AuthCheckPrompt extends StatelessWidget {
-  const AuthCheckPrompt({super.key, required this.url});
+  const AuthCheckPrompt({super.key, required this.url, required this.inTab});
 
   final Uri url;
+  final void Function(Uri url) inTab;
 
   @override
   Widget build(BuildContext context) {
@@ -903,7 +912,7 @@ class AuthCheckPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: () => openUrl(context, url),
+            onPressed: () => openUrl(context, url, inTab: inTab),
             icon: const Icon(Icons.open_in_new),
             label: const Text('Open link'),
           ),

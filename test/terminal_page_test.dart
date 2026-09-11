@@ -279,23 +279,41 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('a sign-in check opens in-app, never in a web tab', (
+    testWidgets("a sign-in's Open link opens a web tab beside the session", (
       tester,
     ) async {
       final launcher = _Launcher({inApp});
       UrlLauncherPlatform.instance = launcher;
-      const link = 'https://login.tailscale.com/a/1a2b3c';
+      final manager = SessionManager();
+      final shell = manager.open(
+        const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+        ),
+      );
+      addTearDown(manager.closeAll);
+      final link = Uri.parse('https://login.tailscale.com/a/1a2b3c');
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(body: AuthCheckPrompt(url: Uri.parse(link))),
+          home: Scaffold(
+            body: AuthCheckPrompt(
+              url: link,
+              inTab: (url) => manager.openWeb(shell.id, url),
+            ),
+          ),
         ),
       );
 
       await tester.tap(find.text('Open link'));
       await tester.pump();
 
-      // Google, for one, refuses to sign in inside an embedded web view.
-      expect(launcher.tried, [(link, inApp)]);
+      // Where the user asked for it; Open in browser is there for a provider
+      // that refuses an embedded web view.
+      expect(launcher.tried, isEmpty);
+      expect(shell.webTabs.single.url, link);
+      expect(manager.activeWeb, same(shell.webTabs.single));
     });
   });
 

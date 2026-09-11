@@ -176,7 +176,10 @@ class LiveSession extends ChangeNotifier {
     return Uri.tryParse(raw);
   }
 
-  void _onAuthBanner(String banner) {
+  /// Where the transport hands over what the server said. Public only so a
+  /// test can hold a session at its sign-in without a server to send one.
+  @visibleForTesting
+  void onAuthBanner(String banner) {
     _authBanner = banner.trim();
     _authUrl = extractAuthUrl(banner);
     _notify();
@@ -224,10 +227,15 @@ class LiveSession extends ChangeNotifier {
 
   /// A link already showing in one of this session's tabs returns that tab
   /// rather than opening a second, as a file does.
+  ///
+  /// The session's own sign-in link, opened while it waits at that sign-in,
+  /// is the check prompt's Open link. Its tab closes once the session is
+  /// through, and whoever was still on it lands back in the shell they were
+  /// signing in for.
   WebTab openWeb(Uri url) {
     final open = _webTabs.where((tab) => tab.url == url).firstOrNull;
     if (open != null) return open;
-    final tab = WebTab._(url);
+    final tab = WebTab._(url).._signIn = _connecting && url == _authUrl;
     _webTabs.add(tab);
     _notify();
     return tab;
@@ -305,7 +313,7 @@ class LiveSession extends ChangeNotifier {
       final transport = _transport ??
           Dartssh2Transport(
             onHostKeyPinned: onHostKeyPinned,
-            onAuthBanner: _onAuthBanner,
+            onAuthBanner: onAuthBanner,
           );
       Future<TerminalSession> open({required bool shell}) => transport.connect(
         host: host,
@@ -325,6 +333,8 @@ class LiveSession extends ChangeNotifier {
       _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
+      // Through the sign-in: its page has done its work.
+      _webTabs.removeWhere((tab) => tab._signIn);
       _syncForwarding();
       unawaited(_fetchHostname());
     } on SshSessionException catch (error) {
@@ -645,6 +655,9 @@ class WebTab {
   Uri _url;
   String? _title;
 
+  /// Opened by the session's sign-in — see [LiveSession.openWeb].
+  bool _signIn = false;
+
   /// Where the page is now: the link it opened at, until it moves on.
   Uri get url => _url;
 
@@ -775,6 +788,18 @@ class SessionManager extends ChangeNotifier {
     if (_activeWeb == web) select(id);
   }
 
+  /// Passes a session's change on to the tabs. A web tab the session closed
+  /// itself — a sign-in's, once the session is through it — lands on its
+  /// shell, as closing one by hand does, not on the host list.
+  void _onSessionChanged() {
+    final web = _activeWeb;
+    if (web != null && _active?.webTabs.contains(web) == false) {
+      select(_activeId);
+    } else {
+      notifyListeners();
+    }
+  }
+
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
 
   /// Every session open on this host, in tab order.
@@ -791,7 +816,7 @@ class SessionManager extends ChangeNotifier {
           .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
     );
-    created.addListener(notifyListeners);
+    created.addListener(_onSessionChanged);
     _sessions[created.id] = created;
     _active = created;
     _activeId = created.id;
@@ -818,7 +843,7 @@ class SessionManager extends ChangeNotifier {
     final index = ids.indexOf(id);
     final session = _sessions.remove(id);
     if (session == null) return;
-    session.removeListener(notifyListeners);
+    session.removeListener(_onSessionChanged);
     session.dispose();
 
     // Closing the tab you are looking at lands on its left-hand neighbour,
