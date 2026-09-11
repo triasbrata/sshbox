@@ -16,6 +16,13 @@ import 'tmux.dart';
 /// by another app through the share sheet.
 typedef SharedFile = ({String path, String name});
 
+/// What a session's terminal is running on the host, as
+/// [LiveSession.foreground] reads it: whether the shell itself has the
+/// terminal — sitting at a prompt rather than running something — the name of
+/// whatever does (`claude`, `vim`, or the shell's own), and that program's
+/// working directory.
+typedef Foreground = ({bool shellInForeground, String program, String cwd});
+
 /// One terminal that outlives the widget showing it.
 ///
 /// The [Terminal] holds the scrollback, so it must be owned here rather than
@@ -26,6 +33,7 @@ class LiveSession extends ChangeNotifier {
   LiveSession({
     required this._host,
     bool Function(int port)? forwardedElsewhere,
+    this._transport,
   }) {
     forwarder = TailnetForwarder(
       onChanged: _notify,
@@ -37,6 +45,11 @@ class LiveSession extends ChangeNotifier {
   }
 
   HostProfile _host;
+
+  /// What [connect] opens the shell with, when a test hands one in. Otherwise
+  /// each attempt makes its own SSH transport, carrying that attempt's host
+  /// key and banner callbacks.
+  final SessionTransport? _transport;
 
   HostProfile get host => _host;
 
@@ -245,10 +258,11 @@ class LiveSession extends ChangeNotifier {
     _notify();
 
     try {
-      final transport = Dartssh2Transport(
-        onHostKeyPinned: onHostKeyPinned,
-        onAuthBanner: _onAuthBanner,
-      );
+      final transport = _transport ??
+          Dartssh2Transport(
+            onHostKeyPinned: onHostKeyPinned,
+            onAuthBanner: _onAuthBanner,
+          );
       Future<TerminalSession> open({required bool shell}) => transport.connect(
         host: host,
         secrets: secrets,
@@ -318,11 +332,6 @@ class LiveSession extends ChangeNotifier {
   /// screen, and the tab offers to reconnect.
   void _onTmuxEnded() => unawaited(_session?.dispose());
 
-  /// The focused pane's foreground program and its working directory. Only
-  /// tmux knows them; a plain shell never tells the app either, so null.
-  Future<({String command, String path})?> foreground() =>
-      _tmux?.foreground() ?? Future.value();
-
   void _onStatusChanged() {
     _syncForwarding();
     final status = _session?.status.value;
@@ -375,6 +384,88 @@ class LiveSession extends ChangeNotifier {
   /// idle on the server. It is closed with the session, and dropped on a
   /// reconnect because it is bound to the client that went away.
   FileBrowser get fileBrowser => _fileBrowser ??= openFileBrowser();
+
+  /// This session's login shell on the host, once [foreground] has found it.
+  /// Forgotten with the connection: the next one starts another shell.
+  int? _shellPid;
+
+  /// What this session's terminal is running on the host, and where. Null
+  /// when the host cannot say: not Linux, or no way to run a command beside
+  /// the shell.
+  ///
+  /// One exec channel on the connection the shell already holds, reading
+  /// `/proc`. The shell is found by `SSH_CONNECTION` — the client's address
+  /// and port as the host saw them, which no two open connections share — as
+  /// the oldest process with a terminal that carries this connection's value
+  /// while its parent does not. sshd and tailscaled put it only in what they
+  /// start, and everything else on the connection, this command included,
+  /// comes after the shell. Not a marker of our own sent with the shell:
+  /// dartssh2 fails the shell outright when sshd refuses an environment
+  /// variable, and Tailscale SSH drops them unless the tailnet policy lists
+  /// them.
+  ///
+  /// The terminal's foreground process group is then whatever the user is
+  /// looking at, and its cwd is where a relative path it printed starts from:
+  /// Claude Code's project, not wherever the shell was when it started it.
+  ///
+  /// In tmux mode, tmux answers instead, for the focused pane.
+  ///
+  /// ponytail: the shell's own terminal only. Inside a tmux or screen started
+  /// by hand the pane is on a terminal of its own, and this reports the
+  /// multiplexer's client.
+  Future<Foreground?> foreground() async {
+    final tmux = _tmux;
+    if (tmux != null) return isConnected ? tmux.foreground() : null;
+    final session = _session;
+    if (session is! CommandCapable || !isConnected) return null;
+    // Through `sh`, because the login shell may be fish.
+    final script = _foregroundScript.replaceAll("'", r"'\''");
+    try {
+      final lines = await (session as CommandCapable)
+          .run("sh -c '$script' sh ${_shellPid ?? ''}")
+          .toList();
+      // Anything else is the login shell's own chatter.
+      final fields = lines
+          .firstWhere((line) => line.startsWith('sshbox\t'), orElse: () => '')
+          .split('\t');
+      if (fields.length != 5) return null;
+      _shellPid = int.tryParse(fields[1]);
+      return (
+        shellInForeground: fields[2] == '1',
+        program: fields[3],
+        cwd: fields[4],
+      );
+    } catch (_) {
+      // A dropped connection is announced elsewhere; here it only means the
+      // host cannot say.
+      return null;
+    }
+  }
+
+  /// Finds the shell as [foreground] describes, unless its pid comes in `$1`,
+  /// and prints one line: `sshbox`, the pid, 1 when the terminal's foreground
+  /// group (field 8 of `/proc/<pid>/stat`) is the shell's own (field 5), that
+  /// group's program name, and its cwd — or the shell's, when the program's
+  /// cannot be read. Prints nothing where there is no `/proc` to read.
+  static const _foregroundScript = r'''
+[ -n "$SSH_CONNECTION" ] || exit
+shells() {
+  for e in $(grep -lsF "SSH_CONNECTION=$SSH_CONNECTION" /proc/[0-9]*/environ); do
+    s=$(cat "${e%/environ}/stat" 2>/dev/null) || continue
+    set -- ${s##*) }
+    [ "$5" = 0 ] || grep -qsF "SSH_CONNECTION=$SSH_CONNECTION" "/proc/$2/environ" ||
+      echo "${20} ${e%/environ}"
+  done
+}
+p=/proc/$1
+[ -n "$1" ] && [ -r "$p/stat" ] || p=$(shells | sort -n | head -n 1 | cut -d " " -f 2)
+[ -n "$p" ] || exit
+s=$(cat "$p/stat")
+set -- ${s##*) }
+f=/proc/$6
+[ "$6" = "$3" ] && t=1 || t=0
+d=$(readlink "$f/cwd" || readlink "$p/cwd")
+printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/null)" "$d"''';
 
   /// Files handed to this session from outside the terminal page, waiting for
   /// the page to be on screen and the shell to be up.
@@ -429,6 +520,7 @@ class LiveSession extends ChangeNotifier {
     tmux?.dispose();
     final session = _session;
     _session = null;
+    _shellPid = null;
     final browser = _fileBrowser;
     _fileBrowser = null;
     await browser?.close();

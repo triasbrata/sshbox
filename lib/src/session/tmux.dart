@@ -478,24 +478,36 @@ class TmuxSession {
     if (pane != null) await _client.command('kill-pane -t %${pane.id}');
   }
 
-  /// The focused pane's foreground program and its working directory, as
-  /// tmux sees them. null when tmux cannot say.
-  Future<({String command, String path})?> foreground() async {
+  /// What the focused pane is running and where, as tmux sees it — the
+  /// shape of `LiveSession.foreground`. null when tmux cannot say.
+  ///
+  /// The shell is in the foreground when the program is the host's default
+  /// shell, which is what every pane here starts, or a shell by another name.
+  Future<({bool shellInForeground, String program, String cwd})?>
+  foreground() async {
     final pane = focused;
     if (pane == null) return null;
     try {
       final reply = await _client.command(
         'display -p -t %${pane.id} '
-        '"#{pane_current_command}\t#{pane_current_path}"',
+        '"#{default-shell}\t#{pane_current_command}\t#{pane_current_path}"',
       );
-      final line = reply.firstOrNull ?? '';
-      final tab = line.indexOf('\t');
-      if (tab < 0) return null;
-      return (command: line.substring(0, tab), path: line.substring(tab + 1));
+      final fields = (reply.firstOrNull ?? '').split('\t');
+      if (fields.length < 3) return null;
+      final program = fields[1];
+      return (
+        shellInForeground:
+            program == fields[0].split('/').last || _shells.contains(program),
+        program: program,
+        // A folder may hold a tab; nothing else here can.
+        cwd: fields.skip(2).join('\t'),
+      );
     } on TmuxException {
       return null;
     }
   }
+
+  static const _shells = {'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'tcsh'};
 
   /// Ends the tmux session and everything running in it — closing the tab,
   /// as opposed to losing the connection.

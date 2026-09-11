@@ -4,12 +4,14 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../session/session_manager.dart';
+import 'ctrl_click.dart';
 import 'file_browser_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
@@ -28,6 +30,7 @@ class TerminalPage extends StatefulWidget {
     required this.secrets,
     required this.onOpenFile,
     required this.onSaveFileRoot,
+    this.openUrl = _openExternally,
   });
 
   final LiveSession session;
@@ -39,9 +42,16 @@ class TerminalPage extends StatefulWidget {
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
 
+  /// Opens a link Ctrl+tapped in the terminal. The browser, unless a test
+  /// hands in something else.
+  final Future<void> Function(Uri url) openUrl;
+
   @override
   State<TerminalPage> createState() => _TerminalPageState();
 }
+
+Future<void> _openExternally(Uri url) =>
+    launchUrl(url, mode: LaunchMode.externalApplication);
 
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
@@ -53,6 +63,15 @@ class _TerminalPageState extends State<TerminalPage> {
     typePath: _typePath,
     changeDirectory: _cdTo,
   );
+
+  /// Every terminal on screen, by the [Terminal] it shows — the shell's, or
+  /// each tmux pane's — so what acts on all of them can reach each: a key
+  /// sent letting go of a selection, Ctrl coming down underlining links.
+  final _views = <Terminal, GlobalKey<_PaneViewState>>{};
+  bool _ctrlShown = false;
+
+  Iterable<_PaneViewState> get _paneViews =>
+      _views.values.map((key) => key.currentState).nonNulls;
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -80,8 +99,10 @@ class _TerminalPageState extends State<TerminalPage> {
 
     // Only meaningful while this page is on screen, so it is installed and
     // removed with the widget rather than held by the session.
-    _session.outputTransform = _keyBar.applyModifiers;
+    _session.outputTransform = _outgoing;
     _session.addListener(_onSessionChanged);
+    _keyBar.addListener(_syncCtrl);
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
 
     // Connect after first layout so the PTY opens at the real on-screen size.
     // A no-op when we are returning to a session that is already connected.
@@ -183,7 +204,8 @@ class _TerminalPageState extends State<TerminalPage> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
-    if (_session.outputTransform == _keyBar.applyModifiers) {
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    if (_session.outputTransform == _outgoing) {
       _session.outputTransform = null;
     }
     _keyBar.dispose();
@@ -193,6 +215,26 @@ class _TerminalPageState extends State<TerminalPage> {
     _browser?.close();
     // The session itself is intentionally left running.
     super.dispose();
+  }
+
+  /// Typing, from either keyboard, on its way out: armed key-bar modifiers are
+  /// folded in, and a selection is let go, since a key sent means you are done
+  /// reading it.
+  String _outgoing(String data) {
+    _letGo();
+    return _keyBar.applyModifiers(data);
+  }
+
+  /// The same for the keys the bar, the pad and the magic key send.
+  void _send(String data) {
+    _letGo();
+    _session.sendRaw(data);
+  }
+
+  void _letGo() {
+    for (final view in _paneViews) {
+      view.selection.clearSelection();
+    }
   }
 
   void _reportPinnedKey(String fingerprint) {
@@ -251,6 +293,105 @@ class _TerminalPageState extends State<TerminalPage> {
   void _openFileTab(String path) {
     _closeFilesDrawer();
     widget.onOpenFile(path);
+  }
+
+  /// Whether a tap now is a Ctrl+tap: CTRL latched on the bar, or held on a
+  /// hardware keyboard — which covers a mouse click with Ctrl too.
+  bool get _ctrl => _keyBar.ctrl || HardwareKeyboard.instance.isControlPressed;
+
+  /// Only watches. The key still goes wherever it was going.
+  bool _onHardwareKey(KeyEvent _) {
+    _syncCtrl();
+    return false;
+  }
+
+  /// Underlines every link on every terminal on screen while Ctrl is down,
+  /// and takes them away when it lifts or is used up.
+  void _syncCtrl() {
+    final ctrl = _ctrl;
+    if (!mounted || ctrl == _ctrlShown) return;
+    _ctrlShown = ctrl;
+    final color = Theme.of(context).colorScheme.primary;
+    for (final view in _paneViews) {
+      view.showLinks(ctrl: ctrl, color: color);
+    }
+  }
+
+  /// With Ctrl, opens the link under the tap and types nothing; without, asks
+  /// for the keyboard back, the way a tap always has.
+  void _onTerminalTap(_PaneViewState view, CellOffset cell) {
+    if (!_ctrl) {
+      view.requestKeyboard();
+      return;
+    }
+    // Used up by the tap, link or not, the way a key uses it up.
+    if (_keyBar.ctrl) _keyBar.toggleCtrl();
+    final link = linkAt(view.widget.terminal.buffer, cell);
+    if (link != null) unawaited(_openLink(link));
+  }
+
+  /// A URL goes to the browser, a folder becomes the files drawer's root, and
+  /// a file opens in a tab the way one picked in the drawer does.
+  ///
+  /// A relative path starts from the program that printed it, the terminal's
+  /// foreground process on the host, and from home when the host cannot say.
+  ///
+  /// ponytail: the line number is read and dropped; the editor cannot open at
+  /// a line yet.
+  Future<void> _openLink(LinkCandidate link) async {
+    final target = link.target;
+    if (link.kind == LinkKind.url) {
+      final url = Uri.tryParse(target);
+      if (url != null) await widget.openUrl(url);
+      return;
+    }
+    if (!_session.isConnected || !_session.canBrowseFiles) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final browser = _session.fileBrowser;
+    final relative = !target.startsWith('/') && !target.startsWith('~');
+    try {
+      final cwd = relative ? (await _session.foreground())?.cwd : null;
+      final path = RemotePath.normalize(
+        cwd != null
+            ? RemotePath.join(cwd, target)
+            : RemotePath.resolve(
+                target,
+                target.startsWith('/') ? '/' : await browser.resolveHome(),
+              ),
+      );
+      final kind = await browser.stat(path);
+      if (!mounted) return;
+      switch (kind) {
+        case RemoteEntryKind.directory:
+          _browseRoot = path;
+          await _openFiles();
+        case RemoteEntryKind.file:
+          _openFileTab(path);
+        case RemoteEntryKind.other || RemoteEntryKind.symlink:
+          messenger.showSnackBar(
+            SnackBar(content: Text('Not a file or a folder: $path')),
+          );
+        case null:
+          // A bare name only counted if it was there, so a miss on one is
+          // nothing under the tap.
+          if (link.kind == LinkKind.name) return;
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                relative && cwd == null
+                    ? 'Not found: $path\nTaken from home: the host did not '
+                          'say where the terminal is.'
+                    : 'Not found: $path',
+              ),
+            ),
+          );
+      }
+    } on FileBrowserException catch (error) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    }
   }
 
   /// Wraps a path so the shell sees exactly these characters.
@@ -337,7 +478,7 @@ class _TerminalPageState extends State<TerminalPage> {
       bottomNavigationBar: TerminalKeyBar(
         controller: _keyBar,
         terminal: _session.terminal,
-        onEmit: _session.sendRaw,
+        onEmit: _send,
         showKeys: _session.isConnected,
         leading: [
           IconButton(
@@ -368,28 +509,24 @@ class _TerminalPageState extends State<TerminalPage> {
     }
 
     final tmux = _session.tmux;
+    final shown = tmux == null
+        ? {_session.terminal}
+        : {for (final pane in tmux.panes) pane.terminal};
+    _views.removeWhere((terminal, _) => !shown.contains(terminal));
+
     return Stack(
       children: [
         if (tmux == null)
-          _PaneView(
-            terminal: _session.terminal,
-            onEmit: _session.sendRaw,
-            focused: true,
-            padding: _padding,
-          )
+          _paneView(_session.terminal, focused: true, padding: _padding)
         else
           TmuxPaneLayout(
             tmux: tmux,
             textStyle: _textStyle,
             padding: _padding,
-            // Every pane's keys go through the session, which sends them to
-            // the focused pane — and touching a pane is what focuses it.
-            pane: (pane, focused) => _PaneView(
-              terminal: pane.terminal,
-              onEmit: _session.sendRaw,
-              focused: focused,
-              autoResize: false,
-            ),
+            // Touching a pane is what focuses it, and the session sends the
+            // bar's keys to the focused pane, so every pane sends through it.
+            pane: (pane, focused) =>
+                _paneView(pane.terminal, focused: focused, autoResize: false),
           ),
         if (_session.connecting)
           ColoredBox(
@@ -417,12 +554,27 @@ class _TerminalPageState extends State<TerminalPage> {
           Positioned.fill(
             child: MagicKey(
               terminal: _session.terminal,
-              onEmit: _session.sendRaw,
+              onEmit: _send,
             ),
           ),
       ],
     );
   }
+
+  Widget _paneView(
+    Terminal terminal, {
+    required bool focused,
+    bool autoResize = true,
+    EdgeInsets? padding,
+  }) => _PaneView(
+    key: _views.putIfAbsent(terminal, GlobalKey.new),
+    terminal: terminal,
+    onEmit: _send,
+    onTap: _onTerminalTap,
+    focused: focused,
+    autoResize: autoResize,
+    padding: padding,
+  );
 }
 
 const _padding = EdgeInsets.all(6);
@@ -433,11 +585,14 @@ const _textStyle = TerminalStyle(fontSize: 13);
 
 /// One terminal on the page, and what makes it usable by touch: the soft
 /// keyboard's input, the swipe pad, and xterm2's view. A plain session shows
-/// one; tmux shows one per pane, each with its own focus and scroll position.
+/// one; tmux shows one per pane, each with its own focus, scroll position and
+/// selection.
 class _PaneView extends StatefulWidget {
   const _PaneView({
+    super.key,
     required this.terminal,
     required this.onEmit,
+    required this.onTap,
     required this.focused,
     this.autoResize = true,
     this.padding,
@@ -445,6 +600,7 @@ class _PaneView extends StatefulWidget {
 
   final Terminal terminal;
   final void Function(String data) onEmit;
+  final void Function(_PaneViewState view, CellOffset cell) onTap;
 
   /// Whether keystrokes go here. Only such a view takes focus, and with it
   /// the soft keyboard.
@@ -464,6 +620,13 @@ class _PaneViewState extends State<_PaneView> {
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
   final _inputKey = GlobalKey<TerminalTextInputState>();
+  final _viewKey = GlobalKey<TerminalViewState>();
+
+  /// Shared by the terminal view, which paints the selection, and the pad,
+  /// which makes it by touch. It also carries the underlines Ctrl puts under
+  /// every link, and keeps a Ctrl+tap from a program that reads the mouse.
+  final selection = TerminalController();
+  List<TerminalUnderline> _underlines = const [];
 
   @override
   void initState() {
@@ -479,6 +642,15 @@ class _PaneViewState extends State<_PaneView> {
     if (!oldWidget.focused) _followFocus();
   }
 
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    _scrollController.dispose();
+    // Takes the underlines with it.
+    selection.dispose();
+    super.dispose();
+  }
+
   /// Typing goes wherever Flutter's focus is, and the key bar wherever
   /// tmux's is: the two are kept on the same pane.
   void _followFocus() {
@@ -487,18 +659,38 @@ class _PaneViewState extends State<_PaneView> {
     }
   }
 
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    _scrollController.dispose();
-    super.dispose();
-  }
+  void requestKeyboard() => _inputKey.currentState?.requestKeyboard();
 
   /// Typing anywhere in the scrollback should snap back to the prompt.
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
     position.jumpTo(position.maxScrollExtent);
+  }
+
+  /// Underlines every link on screen, or takes them away.
+  ///
+  /// ponytail: scanned once, as Ctrl goes down. Output that arrives while it
+  /// is held is not underlined until it comes down again, though a Ctrl+tap
+  /// on it still opens it — the tap reads the line afresh.
+  void showLinks({required bool ctrl, required Color color}) {
+    // A program reading the mouse would otherwise take the tap as a click.
+    selection.setSuspendPointerInput(ctrl);
+    for (final underline in _underlines) {
+      underline.dispose();
+    }
+    _underlines = const [];
+
+    final view = _viewKey.currentState;
+    if (!ctrl || view == null) return;
+    final render = view.renderTerminal;
+    _underlines = underlineLinks(
+      selection,
+      widget.terminal.buffer,
+      from: render.getCellOffset(Offset.zero).y,
+      to: render.getCellOffset(render.size.bottomLeft(Offset.zero)).y,
+      color: color,
+    );
   }
 
   @override
@@ -508,6 +700,8 @@ class _PaneViewState extends State<_PaneView> {
     // its gestures land on the terminal itself — it claims only long presses
     // and double taps, so a plain tap still falls through to xterm2 below and
     // asks for the keyboard back, and a plain drag scrolls the scrollback.
+    // Only while a hold has text selected does it take every touch, until
+    // the selection goes.
     return TerminalTextInput(
       key: _inputKey,
       terminal: widget.terminal,
@@ -515,9 +709,12 @@ class _PaneViewState extends State<_PaneView> {
       onInput: _scrollToBottom,
       child: SwipeKeyPad(
         terminal: widget.terminal,
+        controller: selection,
         onEmit: widget.onEmit,
         child: TerminalView(
           widget.terminal,
+          key: _viewKey,
+          controller: selection,
           focusNode: _focusNode,
           scrollController: _scrollController,
           autofocus: widget.focused,
@@ -527,7 +724,7 @@ class _PaneViewState extends State<_PaneView> {
           hardwareKeyboardOnly: true,
           // Tapping a terminal that already has focus is how you ask for the
           // keyboard back, and focus alone will not raise it.
-          onTapUp: (_, _) => _inputKey.currentState?.requestKeyboard(),
+          onTapUp: (_, cell) => widget.onTap(this, cell),
           padding: widget.padding,
           textStyle: _textStyle,
         ),

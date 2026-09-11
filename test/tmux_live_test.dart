@@ -105,9 +105,11 @@ void main() {
       await _until(() => tmux.focused == right);
 
       tmux.focus(left);
+      // The pane's shell, sitting at its prompt, somewhere real.
       final foreground = await tmux.foreground();
-      expect(foreground?.command, isNotEmpty);
-      expect(Directory(foreground!.path).existsSync(), isTrue);
+      expect(foreground?.shellInForeground, isTrue);
+      expect(foreground!.program, isNotEmpty);
+      expect(Directory(foreground.cwd).existsSync(), isTrue);
 
       // A dropped connection: the channel goes, the session stays.
       tmux.dispose();

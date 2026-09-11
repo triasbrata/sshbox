@@ -138,6 +138,11 @@ abstract class FileBrowser {
   /// not the transport's.
   Future<List<RemoteEntry>> list(String path);
 
+  /// What is at [path] with links followed — a directory, a file or something
+  /// else — or null when nothing is. For a path met outside any listing, such
+  /// as one tapped in the terminal.
+  Future<RemoteEntryKind?> stat(String path);
+
   /// The whole file as text, and the stamp to hand back to [writeText].
   ///
   /// Throws [FileBrowserFault.tooLarge] rather than truncating, and
@@ -239,6 +244,21 @@ abstract final class RemotePath {
     return _stripTrailingSlash(
       join(home, trimmed.startsWith('~/') ? trimmed.substring(2) : trimmed),
     );
+  }
+
+  /// An absolute [path] with its `.` and `..` walked and doubled slashes
+  /// dropped, so one file is always spelled one way — the tab strip tells
+  /// files apart by path. `..` at the root stays there, as it does on the host.
+  static String normalize(String path) {
+    final parts = <String>[];
+    for (final part in path.split('/')) {
+      if (part == '..') {
+        if (parts.isNotEmpty) parts.removeLast();
+      } else if (part.isNotEmpty && part != '.') {
+        parts.add(part);
+      }
+    }
+    return '/${parts.join('/')}';
   }
 
   /// Whether [path] is [ancestor] itself or somewhere beneath it.
