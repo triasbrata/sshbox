@@ -422,6 +422,103 @@ void main() {
       await tester.pump();
     });
 
+    /// Lines a second the scrollback runs at with [drag]'s finger held at
+    /// each height in [ys] in turn, for ten frames at each.
+    Future<List<double>> speeds(
+      WidgetTester tester,
+      TestGesture drag,
+      List<double> ys,
+    ) async {
+      final line = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal
+          .cellSize
+          .height;
+      final x = tester.getCenter(find.byType(TerminalView)).dx;
+      final speeds = <double>[];
+      for (final y in ys) {
+        await drag.moveTo(Offset(x, y));
+        // The frame a scroll starting from rest spends starting.
+        await tester.pump(const Duration(milliseconds: 16));
+        final from = scroll.offset;
+        for (var i = 0; i < 10; i++) {
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        speeds.add((scroll.offset - from).abs() / 0.16 / line);
+      }
+      return speeds;
+    }
+
+    testWidgets(
+        'the start handle held inside the top edge scrolls back faster the '
+        'nearer the edge it is, flat out at the edge, and no faster past it',
+        (tester) async {
+      await pumpPad(tester, lines: 500);
+      await selectWord(tester, x: 6);
+      final top = tester.getRect(find.byType(TerminalView)).top;
+
+      final drag = await tester.startGesture(
+        tester.getCenter(
+          find.byKey(const ValueKey(TextSelectionHandleType.left)),
+        ),
+      );
+      final [inner, middle, near, edge, past] = await speeds(
+        tester,
+        drag,
+        [top + 44, top + 24, top + 8, top, top - 40],
+      );
+
+      expect(inner, inInclusiveRange(1, 20));
+      expect(middle, greaterThan(inner));
+      expect(near, greaterThan(middle));
+      expect(edge, greaterThan(near));
+      expect(edge, closeTo(240, 1));
+      expect(past, closeTo(edge, 1));
+
+      await drag.up();
+      await tester.pump();
+      expect(selection.selection, isNotNull);
+    });
+
+    testWidgets(
+        'the end handle held inside the bottom edge scrolls on faster the '
+        'nearer the edge it is, flat out at the edge, and no faster past it',
+        (tester) async {
+      await pumpPad(tester, lines: 500);
+      final line = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal
+          .cellSize
+          .height;
+      // Three hundred lines up, so there is scrollback below to scroll on to.
+      scroll.jumpTo(scroll.offset - 300 * line);
+      await tester.pump();
+      await selectWord(tester, down: -300);
+      final bottom = tester.getRect(find.byType(TerminalView)).bottom;
+
+      final drag = await tester.startGesture(
+        tester.getCenter(
+          find.byKey(const ValueKey(TextSelectionHandleType.right)),
+        ),
+      );
+      final [inner, middle, near, edge, past] = await speeds(
+        tester,
+        drag,
+        [bottom - 44, bottom - 24, bottom - 8, bottom, bottom + 40],
+      );
+
+      expect(inner, inInclusiveRange(1, 20));
+      expect(middle, greaterThan(inner));
+      expect(near, greaterThan(middle));
+      expect(edge, greaterThan(near));
+      expect(edge, closeTo(240, 1));
+      expect(past, closeTo(edge, 1));
+
+      await drag.up();
+      await tester.pump();
+      expect(selection.selection, isNotNull);
+    });
+
     testWidgets(
         'the end handle taken up past the start keeps its drag while the edge '
         'scroll carries the other end out of sight', (tester) async {

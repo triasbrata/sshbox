@@ -601,16 +601,28 @@ class SwipeKeyPad extends StatefulWidget {
 /// speeds the repeat up under the finger, long enough to be free.
 const _swipeTick = Duration(milliseconds: 50);
 
+/// How deep the zone along the terminal's top and bottom edges is, where a
+/// held handle scrolls it on: 48dp, room for a fingertip to pick a speed in,
+/// or two rows when those are more.
+const _edgeZone = 48.0;
+const _edgeZoneRows = 2;
+
+/// Lines a second the scroll runs at the zone's inner edge — a line every
+/// 100ms, slow enough to stop on the one you want — and at the terminal's
+/// edge itself: four a frame at 60Hz, for the far end of the scrollback.
+const _edgeSlowest = 10.0;
+const _edgeFastest = 240.0;
+
 /// Lines a second a handle held at an edge scrolls the terminal on by, for a
-/// finger [reach] strips deep: 0 at the inner edge of the strip along the
-/// terminal's edge, 1 at the edge itself, more past it. A line every 100ms at
-/// first, slow enough to stop on the one you want; four a frame at 60Hz two
-/// strips past the edge, for the far end of the scrollback. Squared, so the
-/// strip itself, where a finger brought to the edge comes to rest, stays near
-/// the slow end.
+/// finger [reach] of the zone deep: 0 at its inner edge, 1 at the terminal's
+/// edge. Past the edge is no faster, so the finger never has to leave the
+/// terminal: above it are the tab strip and the status bar, where Android
+/// pulls its notification shade down, and below it the key bar and the
+/// gesture bar. Squared, so it picks up gently from the inner edge and only
+/// climbs steeply near the terminal's.
 double _edgeLines(double reach) {
-  final r = math.min(reach / 3, 1.0);
-  return 10 + 230 * r * r;
+  final r = math.min(reach, 1.0);
+  return _edgeSlowest + (_edgeFastest - _edgeSlowest) * r * r;
 }
 
 class _SwipeKeyPadState extends State<SwipeKeyPad>
@@ -880,10 +892,9 @@ class _SwipeKeyPadState extends State<SwipeKeyPad>
   /// wherever it is read, so the handles trade places, as they do in a text
   /// field.
   ///
-  /// Held in the strip along the top or bottom edge — a row deep, or 32dp
-  /// when a row is less, the least a fingertip can aim at — or past it, the
-  /// finger scrolls the terminal on towards that edge, as a text field's
-  /// handle does, and faster the deeper it goes: see [_edgeLines].
+  /// Held in the zone inside the top or bottom edge, the finger scrolls the
+  /// terminal on towards that edge, as a text field's handle does, and
+  /// faster the nearer the edge it is: see [_edgeLines].
   void _drag(DragUpdateDetails details) {
     final render = _view()?.renderTerminal;
     if (_pinned == null || render == null) return;
@@ -895,11 +906,12 @@ class _SwipeKeyPadState extends State<SwipeKeyPad>
     final height = render.size.height;
     final y = render.globalToLocal(details.globalPosition).dy;
     // Never so deep that a short tmux pane is all edge.
-    final strip = math.min(math.max(line, 32.0), height / 3);
-    // How far into a strip the finger is: negative along the top, nothing
+    final zone =
+        math.min(math.max(_edgeZoneRows * line, _edgeZone), height / 3);
+    // How far into a zone the finger is: negative along the top, nothing
     // between the two.
-    final into = y < strip ? y - strip : math.max(0.0, y - height + strip);
-    _edgeSpeed = into.sign * _edgeLines(into.abs() / strip) * line;
+    final into = y < zone ? y - zone : math.max(0.0, y - height + zone);
+    _edgeSpeed = into.sign * _edgeLines(into.abs() / zone) * line;
     if (into == 0) {
       _edge.stop();
     } else if (!_edge.isActive) {
