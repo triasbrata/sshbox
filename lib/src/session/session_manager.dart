@@ -638,6 +638,12 @@ class SessionManager extends ChangeNotifier {
   /// The file the showing tab holds, when [activeKind] is [TabKind.file].
   String? get activePath => _activePath;
 
+  int? _activeLine;
+
+  /// The line a search result asked the showing file tab to open at. Dropped
+  /// when another tab is shown, so coming back does not move the cursor.
+  int? get activeLine => _activeLine;
+
   /// null selects the pinned host list.
   void select(int? id, {TabKind kind = TabKind.terminal, String? path}) {
     if (_activeId == id && _activeKind == kind && _activePath == path) {
@@ -646,6 +652,7 @@ class SessionManager extends ChangeNotifier {
     _activeId = id;
     _activeKind = kind;
     _activePath = kind == TabKind.file ? path : null;
+    _activeLine = null;
     // Going back to the host list leaves the last session standing as the
     // active one: a file shared from another app still has somewhere to go.
     if (id != null) _active = _sessions[id];
@@ -653,12 +660,17 @@ class SessionManager extends ChangeNotifier {
   }
 
   /// Opens a file picked in the drawer as a tab of its own, and shows it.
-  /// Picking a file that already has a tab just goes back to it.
-  void openFile(int id, String path) {
+  /// Picking a file that already has a tab just goes back to it. [line] is
+  /// where a search result found what was asked for.
+  void openFile(int id, String path, {int? line}) {
     final session = _sessions[id];
     if (session == null) return;
     session.openFile(path);
     select(id, kind: TabKind.file, path: path);
+    if (line != null) {
+      _activeLine = line;
+      notifyListeners();
+    }
   }
 
   /// Closing a file tab lands on the shell it was opened from — the session

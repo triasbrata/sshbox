@@ -61,8 +61,8 @@ env:
 - tapOn: "Keep editing"
 - assertVisible: "(?s).*Unsaved changes.*"
 
-# The view menu.
-- tapOn: "View"
+# The view settings in the overflow menu.
+- tapOn: "More"
 - assertVisible: "Word wrap"
 - assertVisible: "Smaller text"
 - tapOn: "Larger text"

@@ -6,7 +6,8 @@ import '../files/file_browser.dart';
 
 /// Finds text inside files under one directory.
 ///
-/// Pops the path of whatever the user picked, or nothing if they backed out.
+/// Pops the [SearchHit] the user picked, so the file can open at its line, or
+/// nothing if they backed out.
 ///
 /// It runs on submit rather than on every keystroke. Searching as you type is
 /// the nicer feeling, but over SFTP each run is a process on the far end
@@ -184,7 +185,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
           ),
-          onTap: () => Navigator.of(context).pop(hit.path),
+          onTap: () => Navigator.of(context).pop(hit),
         );
       },
     );

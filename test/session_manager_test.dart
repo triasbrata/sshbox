@@ -266,6 +266,23 @@ void main() {
       expect(manager.sessionsFor(_host.id), [session]);
     });
 
+    test('a search result carries its line to the file tab it opens', () {
+      final session = manager.openOrCreate(_host);
+
+      manager.openFile(session.id, '/etc/hosts', line: 12);
+      expect(manager.activeLine, 12);
+
+      // Another result in the same file moves it there.
+      manager.openFile(session.id, '/etc/hosts', line: 40);
+      expect(manager.activePath, '/etc/hosts');
+      expect(manager.activeLine, 40);
+
+      // Shown again from the tab strip, it stays where the user left it.
+      manager.select(session.id);
+      manager.select(session.id, kind: TabKind.file, path: '/etc/hosts');
+      expect(manager.activeLine, isNull);
+    });
+
     test('picking the same file again returns to its tab', () {
       final session = manager.openOrCreate(_host);
       manager.openFile(session.id, '/etc/hosts');

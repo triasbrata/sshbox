@@ -462,6 +462,37 @@ void main() {
     expect(browser.closed, isTrue);
   });
 
+  testWidgets('hands a search result over with the line it was found on',
+      (tester) async {
+    (String, int?)? handed;
+    await tester.pumpWidget(MaterialApp(
+      home: FileBrowserPage(
+        browser: SearchingFakeFileBrowser(),
+        title: 'box',
+        ownsBrowser: false,
+        onClose: () {},
+        onFileSelected: (path, {line}) => handed = (path, line),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Filter by name'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Search file contents'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Text to find'),
+      'second',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('notes.txt:2'));
+    await tester.pumpAndSettle();
+
+    expect(handed, ('/home/me/notes.txt', 2));
+  });
+
   testWidgets('hands a file over instead of navigating when embedded',
       (tester) async {
     final browser = FakeFileBrowser();
@@ -472,7 +503,7 @@ void main() {
         title: 'box',
         ownsBrowser: false,
         onClose: () {},
-        onFileSelected: (path) => handed = path,
+        onFileSelected: (path, {line}) => handed = path,
       ),
     ));
     await tester.pumpAndSettle();
@@ -575,7 +606,7 @@ void main() {
           browser: FakeFileBrowser(),
           title: 'box',
           terminal: link,
-          onFileSelected: (_) {},
+          onFileSelected: (_, {line}) {},
         ),
       ));
       await tester.pumpAndSettle();

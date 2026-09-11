@@ -20,6 +20,7 @@ class FileEditorPage extends StatefulWidget {
     required this.path,
     this.onClose,
     this.draftKey,
+    this.line,
   });
 
   final FileBrowser browser;
@@ -36,6 +37,10 @@ class FileEditorPage extends StatefulWidget {
   /// the phone and offered back after Android kills the app in the background.
   /// Null keeps no draft.
   final String? draftKey;
+
+  /// 1-based line to put the cursor on once the file is in, as a search
+  /// result names it. A new value moves it there again.
+  final int? line;
 
   @override
   State<FileEditorPage> createState() => _FileEditorPageState();
@@ -60,6 +65,8 @@ class _FileEditorPageState extends State<FileEditorPage> {
   late final _toolbar = MobileSelectionToolbarController(
     builder: _selectionMenu,
   );
+
+  late final _find = CodeFindController(_controller);
 
   /// What is on the host, as far as we know, in the editor's own `\n` form.
   /// Compared against the field to decide whether there is anything to save —
@@ -163,9 +170,43 @@ class _FileEditorPageState extends State<FileEditorPage> {
       _draftTimer!.cancel();
       unawaited(_storeDraft());
     }
+    _find.dispose();
     _controller.removeListener(_onEdited);
     _controller.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(FileEditorPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final line = widget.line;
+    if (line != null && line != oldWidget.line && !_loading && _error == null) {
+      _jumpTo(line);
+    }
+  }
+
+  /// Puts the cursor at the start of 1-based [line] and scrolls it into the
+  /// middle of the view.
+  void _jumpTo(int line) {
+    _controller.selection = CodeLineSelection.collapsed(
+      index: (line - 1).clamp(0, _controller.lineCount - 1),
+      offset: 0,
+    );
+    _controller.makeCursorCenterIfInvisible();
+  }
+
+  Future<void> _goToLine() async {
+    final answer = await showDialog<String>(
+      context: context,
+      builder: (_) => _TextPrompt(
+        title: 'Go to line',
+        label: 'Line, 1 to ${_controller.lineCount}',
+        action: 'Go',
+        number: true,
+      ),
+    );
+    final line = int.tryParse(answer?.trim() ?? '');
+    if (line != null && mounted) _jumpTo(line);
   }
 
   /// The controller reports every caret move as well as every edit, so the
@@ -287,6 +328,13 @@ class _FileEditorPageState extends State<FileEditorPage> {
         // A draft that matches the host has nothing left to offer.
         _draft = draft != null && draft.text != text ? draft : null;
       });
+      final line = widget.line;
+      // After the frame: centring the cursor needs the new text laid out.
+      if (line != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _jumpTo(line);
+        });
+      }
     } on FileBrowserException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -351,7 +399,13 @@ class _FileEditorPageState extends State<FileEditorPage> {
     if (!mounted) return null;
     final password = await showDialog<String>(
       context: context,
-      builder: (_) => const _PasswordPrompt(),
+      builder: (_) => const _TextPrompt(
+        title: 'sudo password',
+        label: 'Password',
+        helper: 'Kept only while this file is open.',
+        action: 'Continue',
+        obscure: true,
+      ),
     );
     if (password == null || !mounted) return null;
     final result = await attempt(password);
@@ -540,6 +594,11 @@ class _FileEditorPageState extends State<FileEditorPage> {
               : null,
           actions: [
             IconButton(
+              tooltip: 'Find',
+              onPressed: _loading || _error != null ? null : _find.findMode,
+              icon: const Icon(Icons.search),
+            ),
+            IconButton(
               tooltip: 'Reload from host',
               onPressed: _loading || _saving ? null : _reload,
               icon: const Icon(Icons.refresh),
@@ -550,9 +609,20 @@ class _FileEditorPageState extends State<FileEditorPage> {
               icon: const Icon(Icons.save_outlined),
             ),
             PopupMenuButton<VoidCallback>(
-              tooltip: 'View',
+              tooltip: 'More',
               onSelected: (action) => action(),
               itemBuilder: (context) => [
+                if (!_loading && _error == null) ...[
+                  PopupMenuItem(
+                    value: _find.replaceMode,
+                    child: const Text('Find and replace'),
+                  ),
+                  PopupMenuItem(
+                    value: _goToLine,
+                    child: const Text('Go to line…'),
+                  ),
+                  const PopupMenuDivider(),
+                ],
                 CheckedPopupMenuItem(
                   value: () => _setLook(wordWrap: !_wordWrap),
                   checked: _wordWrap,
@@ -617,6 +687,8 @@ class _FileEditorPageState extends State<FileEditorPage> {
             controller: _controller,
             wordWrap: _wordWrap,
             toolbarController: _toolbar,
+            findController: _find,
+            findBuilder: (context, find, readOnly) => _FindBar(find),
             style: CodeEditorStyle(
               fontSize: _fontSize,
               // Files are code and config far more often than prose, and both
@@ -718,19 +790,150 @@ class _EditorError extends StatelessWidget {
   }
 }
 
-/// Asks for the sudo password.
+/// Find, and replace once asked for, across the top of the editor.
+///
+/// re_editor runs the search and keeps the state; this is only the face, sized
+/// for a finger rather than a mouse.
+class _FindBar extends StatelessWidget implements PreferredSizeWidget {
+  const _FindBar(this.controller);
+
+  final CodeFindController controller;
+
+  static const _rowHeight = 48.0;
+
+  @override
+  Size get preferredSize {
+    final value = controller.value;
+    if (value == null) return Size.zero;
+    return Size.fromHeight(_rowHeight * (value.replaceMode ? 2 : 1));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = controller.value;
+    if (value == null) return const SizedBox.shrink();
+    final result = value.result;
+    final found = result != null;
+    // A search that found nothing also comes back without a result, so the
+    // pattern is what tells "nothing yet" from "nothing there".
+    final count = value.searching || value.option.pattern.isEmpty
+        ? ''
+        : found
+            ? '${result.index + 1}/${result.matches.length}'
+            : 'No results';
+
+    Widget row(Widget field, List<Widget> trailing) => SizedBox(
+          height: _rowHeight,
+          child: Row(
+            children: [
+              const SizedBox(width: 12),
+              Expanded(child: field),
+              ...trailing,
+            ],
+          ),
+        );
+    Widget field(TextEditingController text, FocusNode focus, String hint) =>
+        TextField(
+          controller: text,
+          focusNode: focus,
+          autocorrect: false,
+          enableSuggestions: false,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+          decoration: InputDecoration(
+            hintText: hint,
+            border: InputBorder.none,
+            isDense: true,
+          ),
+        );
+
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          row(
+            field(
+              controller.findInputController,
+              controller.findInputFocusNode,
+              'Find',
+            ),
+            [
+              Text(count, style: Theme.of(context).textTheme.bodySmall),
+              IconButton(
+                tooltip: 'Previous match',
+                onPressed: found ? controller.previousMatch : null,
+                icon: const Icon(Icons.keyboard_arrow_up),
+              ),
+              IconButton(
+                tooltip: 'Next match',
+                onPressed: found ? controller.nextMatch : null,
+                icon: const Icon(Icons.keyboard_arrow_down),
+              ),
+              IconButton(
+                tooltip: 'Replace…',
+                isSelected: value.replaceMode,
+                onPressed: controller.toggleMode,
+                icon: const Icon(Icons.find_replace),
+              ),
+              IconButton(
+                tooltip: 'Close find',
+                onPressed: controller.close,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          if (value.replaceMode)
+            row(
+              field(
+                controller.replaceInputController,
+                controller.replaceInputFocusNode,
+                'Replace with',
+              ),
+              [
+                TextButton(
+                  onPressed: found ? controller.replaceMatch : null,
+                  child: const Text('Replace'),
+                ),
+                TextButton(
+                  onPressed: found ? controller.replaceAllMatches : null,
+                  child: const Text('Replace all'),
+                ),
+                const SizedBox(width: 8),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Asks for one line of text: the sudo password, a line number.
 ///
 /// Owns its field's controller for the same reason the file browser's name
 /// prompt does: the dialog's future completes as the route starts leaving,
 /// while the field is still being built for the dismiss animation.
-class _PasswordPrompt extends StatefulWidget {
-  const _PasswordPrompt();
+class _TextPrompt extends StatefulWidget {
+  const _TextPrompt({
+    required this.title,
+    required this.label,
+    required this.action,
+    this.helper,
+    this.obscure = false,
+    this.number = false,
+  });
+
+  final String title;
+  final String label;
+  final String action;
+  final String? helper;
+  final bool obscure;
+  final bool number;
 
   @override
-  State<_PasswordPrompt> createState() => _PasswordPromptState();
+  State<_TextPrompt> createState() => _TextPromptState();
 }
 
-class _PasswordPromptState extends State<_PasswordPrompt> {
+class _TextPromptState extends State<_TextPrompt> {
   final _controller = TextEditingController();
 
   @override
@@ -744,16 +947,17 @@ class _PasswordPromptState extends State<_PasswordPrompt> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('sudo password'),
+      title: Text(widget.title),
       content: TextField(
         controller: _controller,
         autofocus: true,
-        obscureText: true,
+        obscureText: widget.obscure,
         autocorrect: false,
         enableSuggestions: false,
-        decoration: const InputDecoration(
-          labelText: 'Password',
-          helperText: 'Kept only while this file is open.',
+        keyboardType: widget.number ? TextInputType.number : null,
+        decoration: InputDecoration(
+          labelText: widget.label,
+          helperText: widget.helper,
         ),
         onSubmitted: (_) => _submit(),
       ),
@@ -762,7 +966,7 @@ class _PasswordPromptState extends State<_PasswordPrompt> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('Continue')),
+        FilledButton(onPressed: _submit, child: Text(widget.action)),
       ],
     );
   }

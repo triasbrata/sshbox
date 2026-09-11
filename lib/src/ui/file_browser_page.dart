@@ -79,8 +79,9 @@ class FileBrowserPage extends StatefulWidget {
   ///
   /// Null on a phone, where this page pushes the editor as its own screen.
   /// Set when something else owns the editor — a tablet showing it beside the
-  /// terminal — so this page hands the path over instead of navigating.
-  final void Function(String path)? onFileSelected;
+  /// terminal — so this page hands the path over instead of navigating. A
+  /// search result also hands over the line it was found on.
+  final void Function(String path, {int? line})? onFileSelected;
 
   /// Reports the root being shown, [onExpandedChanged] the folders open under
   /// it and [onScrollChanged] how far down it is scrolled, so a host that
@@ -368,16 +369,17 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     await _openEditor(entry.path);
   }
 
-  Future<void> _openEditor(String path) async {
+  Future<void> _openEditor(String path, {int? line}) async {
     final handOver = widget.onFileSelected;
     if (handOver != null) {
-      handOver(path);
+      handOver(path, line: line);
       return;
     }
 
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => FileEditorPage(browser: widget.browser, path: path),
+        builder: (_) =>
+            FileEditorPage(browser: widget.browser, path: path, line: line),
       ),
     );
     // A save can change what is listed; re-read rather than guess.
@@ -389,7 +391,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     final browser = widget.browser;
     if (root == null || browser is! FileSearchCapable) return;
 
-    final hit = await Navigator.of(context).push<String>(
+    final hit = await Navigator.of(context).push<SearchHit>(
       MaterialPageRoute(
         builder: (_) => FileSearchPage(
           searcher: browser as FileSearchCapable,
@@ -401,9 +403,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     if (hit == null || !mounted) return;
 
     _clearFilter();
-    await _reveal(hit);
+    await _reveal(hit.path);
     if (!mounted) return;
-    await _openEditor(hit);
+    await _openEditor(hit.path, line: hit.line);
   }
 
   /// Opens every folder between the root and [path] and selects it, so a file

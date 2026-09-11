@@ -36,8 +36,9 @@ class TerminalPage extends StatefulWidget {
   final LiveSession session;
   final SecretStore secrets;
 
-  /// Opens a file picked in the drawer as a tab of its own, next to this one.
-  final void Function(String path) onOpenFile;
+  /// Opens a file picked in the drawer as a tab of its own, next to this one;
+  /// with [line], a search result's, at that line.
+  final void Function(String path, {int? line}) onOpenFile;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -289,9 +290,9 @@ class _TerminalPageState extends State<TerminalPage> {
 
   /// A picked file becomes a tab of its own, beside this session's — the same
   /// answer on every size, so there is one place a file is ever opened.
-  void _openFileTab(String path) {
+  void _openFileTab(String path, {int? line}) {
     _closeFilesDrawer();
-    widget.onOpenFile(path);
+    widget.onOpenFile(path, line: line);
   }
 
   /// Whether a tap now is a Ctrl+tap: CTRL latched on the bar, or held on a

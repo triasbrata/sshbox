@@ -121,7 +121,7 @@ void main() {
         home: TerminalPage(
           session: session,
           secrets: _NoSecrets(),
-          onOpenFile: (_) {},
+          onOpenFile: (_, {line}) {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -226,7 +226,7 @@ void main() {
           home: TerminalPage(
             session: session,
             secrets: _NoSecrets(),
-            onOpenFile: opened.add,
+            onOpenFile: (path, {line}) => opened.add(path),
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -383,7 +383,7 @@ void main() {
           home: TerminalPage(
             session: session,
             secrets: _NoSecrets(),
-            onOpenFile: (_) {},
+            onOpenFile: (_, {line}) {},
             onSaveFileRoot: (_) async {},
           ),
         ),

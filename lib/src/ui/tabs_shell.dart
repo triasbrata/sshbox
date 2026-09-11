@@ -94,7 +94,8 @@ class _TabsShellState extends State<TabsShell> {
       key: ValueKey('terminal:${tab.session.id}'),
       session: tab.session,
       secrets: widget.secrets,
-      onOpenFile: (path) => widget.sessions.openFile(tab.session.id, path),
+      onOpenFile: (path, {line}) =>
+          widget.sessions.openFile(tab.session.id, path, line: line),
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
@@ -107,6 +108,10 @@ class _TabsShellState extends State<TabsShell> {
       // By host rather than session: a draft is for after the app was killed,
       // when the session it was typed in is long gone.
       draftKey: '${tab.session.host.id}:${tab.path}',
+      line: tab.session.id == widget.sessions.activeId &&
+              tab.path == widget.sessions.activePath
+          ? widget.sessions.activeLine
+          : null,
     ),
   };
 

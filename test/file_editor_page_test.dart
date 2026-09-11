@@ -65,7 +65,7 @@ void main() {
     await _pumpEditor(tester, browser);
     CodeEditor editor() => tester.widget<CodeEditor>(find.byType(CodeEditor));
     Future<void> pick(String item) async {
-      await tester.tap(find.byTooltip('View'));
+      await tester.tap(find.byTooltip('More'));
       await tester.pumpAndSettle();
       await tester.tap(find.text(item));
       await tester.pumpAndSettle();
@@ -187,6 +187,99 @@ void main() {
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
     expect(text(), 'first line\nsecond line\n');
+  });
+
+  group('find', () {
+    // re_editor searches in an isolate, whose answer only comes back in real
+    // time rather than on the test's fake clock.
+    Future<void> untilShown(WidgetTester tester, String text) async {
+      for (var i = 0; i < 100 && find.text(text).evaluate().isEmpty; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+    }
+
+    testWidgets('finds, steps between matches and replaces them all',
+        (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+
+      await tester.tap(find.byTooltip('Find'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.widgetWithText(TextField, 'Find'), 'line');
+      await untilShown(tester, '1/2');
+      expect(find.text('1/2'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Next match'));
+      await untilShown(tester, '2/2');
+      expect(find.text('2/2'), findsOneWidget);
+      expect(_editor(tester).selection.extentIndex, 1);
+
+      await tester.tap(find.byTooltip('Replace…'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Replace with'),
+        'row',
+      );
+      await tester.tap(find.text('Replace all'));
+      await tester.pumpAndSettle();
+      expect(_editor(tester).text, 'first row\nsecond row\n');
+    });
+
+    testWidgets('says so when there is nothing to find', (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+
+      await tester.tap(find.byTooltip('Find'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.widgetWithText(TextField, 'Find'), 'nope');
+      await untilShown(tester, 'No results');
+      expect(find.text('No results'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Close find'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(TextField, 'Find'), findsNothing);
+    });
+  });
+
+  testWidgets('goes to a line', (tester) async {
+    await _pumpEditor(tester, FakeFileBrowser());
+
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Go to line…'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      '2',
+    );
+    await tester.tap(find.text('Go'));
+    await tester.pumpAndSettle();
+
+    expect(_editor(tester).selection.extentIndex, 1);
+  });
+
+  testWidgets('opens at the line asked for, and moves when asked again',
+      (tester) async {
+    final browser = FakeFileBrowser();
+    Widget editor(int line) => MaterialApp(
+          home: FileEditorPage(
+            browser: browser,
+            path: '/home/me/notes.txt',
+            line: line,
+          ),
+        );
+
+    await tester.pumpWidget(editor(2));
+    await tester.pumpAndSettle();
+    expect(_editor(tester).selection.extentIndex, 1);
+
+    await tester.pumpWidget(editor(1));
+    await tester.pumpAndSettle();
+    expect(_editor(tester).selection.extentIndex, 0);
   });
 
   group('key bar', () {
