@@ -70,12 +70,13 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
+| Tailnet forwarding: never forward debugger ports (9229 etc.), stop a forward as soon as its server stops, reuse the same tailnet port when it comes back (restarting `bun dev` stacked 3002–3005 and exposed the inspector) | Coordinator | — | in development |
 | Settings page (⚙ on the host list) with a terminal font picker (Cascadia Mono, Cascadia Code, CaskaydiaCove Nerd Font, JetBrains Mono, Fira Code) and font size, live everywhere | Coordinator | 09ced89 | UAT passed |
 | App renamed to Clode (visible name only; package id, settings keys, tmux names and the sshbox:// scheme keep "sshbox") | Coordinator | 66d22e3 | UAT passed |
 | The Tailscale sign-in link opens in a web tab too (Google may refuse embedded sign-in; Open in browser is the fallback) | Coordinator | bf149c7 | on tablet, UAT pending (the user cannot trigger a Tailscale SSH sign-in to test it yet) |
 | Tucked magic key: a short pull (~32 dp past the dead zone) switches the aim to ring 2, sliding back returns to ring 1 | Coordinator | b5d129c, 1da91aa | UAT passed |
 | Hidden tabs cannot take keyboard focus; switching tabs focuses the page shown (keys typed after a file tab opens no longer reach the hidden shell) | Coordinator | b34a998, 6e112ce | on tablet, UAT pending (the keys-to-a-hidden-shell bug did not reproduce; this fixed focus on switching back to a tab, and pages rebuilt when a tab was inserted before them) |
-| Toasts in the toastification style at the top, auto-closing (1s by default); the port-forward notice becomes a 5s toast with Open | Coordinator | 6764896, 89f37e0 | on tablet, UAT pending (retest: the port-forward toast did not appear because the server started before the session connected; forward failures are now red toasts, 89f37e0) |
+| Toasts in the toastification style at the top, auto-closing (1s by default); the port-forward notice becomes a 5s toast with Open | Coordinator | 6764896, 89f37e0 | UAT passed (after a retest: the first port-forward test ran a server started before the session connected) |
 | Code editor: find and replace, go to line, and a search result opens at its line | text editor enhancement | bf404f2 | UAT passed |
 | Code editor key bar: arrows and a cursor pad, Tab, undo/redo, symbols (the user found no way to move the cursor in a file) | text editor enhancement | 13c7831, 47d9013 | UAT passed (after a first failed try: physical-keyboard arrows did not move the editor cursor) |
 | Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | 40bcdd9, 7df6997, 479c2a5, 46e9fcd | Dropped by the user after three failed UATs; removed in 46e9fcd |
