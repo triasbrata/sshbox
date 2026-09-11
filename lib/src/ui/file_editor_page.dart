@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -68,6 +69,89 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
   late final _find = CodeFindController(_controller);
 
+  /// The text's own focus, so hardware keys are only taken while the text
+  /// has it, and never from the find row's fields inside the editor.
+  final _editorFocus = FocusNode(debugLabel: 'file editor text');
+
+  /// What a hardware keyboard does in the text.
+  ///
+  /// re_editor binds all of this itself on a desktop, but on Android and iOS
+  /// only Backspace and Enter. Everything else fell through to Flutter's own
+  /// shortcuts, where an arrow means "move focus": the caret left the editor
+  /// instead of moving.
+  late final Map<ShortcutActivator, VoidCallback> _hardwareKeys = {
+    for (final (key, direction) in const [
+      (LogicalKeyboardKey.arrowLeft, AxisDirection.left),
+      (LogicalKeyboardKey.arrowRight, AxisDirection.right),
+      (LogicalKeyboardKey.arrowUp, AxisDirection.up),
+      (LogicalKeyboardKey.arrowDown, AxisDirection.down),
+    ]) ...{
+      SingleActivator(key): () => _controller.moveCursor(direction),
+      SingleActivator(key, shift: true): () =>
+          _controller.extendSelection(direction),
+    },
+    const SingleActivator(LogicalKeyboardKey.arrowLeft, control: true):
+        _controller.moveCursorToWordBoundaryBackward,
+    const SingleActivator(LogicalKeyboardKey.arrowRight, control: true):
+        _controller.moveCursorToWordBoundaryForward,
+    const SingleActivator(
+      LogicalKeyboardKey.arrowLeft,
+      control: true,
+      shift: true,
+    ): _controller.extendSelectionToWordBoundaryBackward,
+    const SingleActivator(
+      LogicalKeyboardKey.arrowRight,
+      control: true,
+      shift: true,
+    ): _controller.extendSelectionToWordBoundaryForward,
+    const SingleActivator(LogicalKeyboardKey.home):
+        _controller.moveCursorToLineStart,
+    const SingleActivator(LogicalKeyboardKey.end):
+        _controller.moveCursorToLineEnd,
+    const SingleActivator(LogicalKeyboardKey.home, shift: true):
+        _controller.extendSelectionToLineStart,
+    const SingleActivator(LogicalKeyboardKey.end, shift: true):
+        _controller.extendSelectionToLineEnd,
+    // Tab too would otherwise move focus to the next widget.
+    const SingleActivator(LogicalKeyboardKey.tab): () => _useTabs
+        ? _controller.replaceSelection('\t')
+        : _controller.applyIndent(),
+    const SingleActivator(LogicalKeyboardKey.tab, shift: true):
+        _controller.applyOutdent,
+    const SingleActivator(LogicalKeyboardKey.delete): _controller.deleteForward,
+    const SingleActivator(LogicalKeyboardKey.keyA, control: true):
+        _controller.selectAll,
+    const SingleActivator(LogicalKeyboardKey.keyC, control: true):
+        _controller.copy,
+    const SingleActivator(LogicalKeyboardKey.keyX, control: true):
+        _controller.cut,
+    const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+        _controller.paste,
+    const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+        _controller.undo,
+    const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true):
+        _controller.redo,
+    const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+        _controller.redo,
+    const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+        _find.findMode,
+    const SingleActivator(LogicalKeyboardKey.keyS, control: true): () {
+      if (_canSave) _save();
+    },
+  };
+
+  KeyEventResult _onHardwareKey(FocusNode _, KeyEvent event) {
+    if (!_editorFocus.hasPrimaryFocus) return KeyEventResult.ignored;
+    for (final MapEntry(key: activator, value: action)
+        in _hardwareKeys.entries) {
+      if (activator.accepts(event, HardwareKeyboard.instance)) {
+        action();
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  }
+
   /// What is on the host, as far as we know, in the editor's own `\n` form.
   /// Compared against the field to decide whether there is anything to save —
   /// a user who types a character and deletes it again has not made a change.
@@ -124,6 +208,8 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
   bool get _embedded => widget.onClose != null;
 
+  bool get _canSave => !_loading && _error == null && _dirty && !_saving;
+
   /// Leaves the editor: closes the pane when embedded, pops the route when it
   /// is one. Everywhere that gives up on the file goes through here.
   void _leave() {
@@ -171,6 +257,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
       unawaited(_storeDraft());
     }
     _find.dispose();
+    _editorFocus.dispose();
     _controller.removeListener(_onEdited);
     _controller.dispose();
     super.dispose();
@@ -550,7 +637,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
   @override
   Widget build(BuildContext context) {
-    final canSave = !_loading && _error == null && _dirty && !_saving;
+    final canSave = _canSave;
 
     return PopScope<bool>(
       // An unsaved edit on a phone is one stray back-swipe from being gone,
@@ -683,21 +770,32 @@ class _FileEditorPageState extends State<FileEditorPage> {
         Expanded(
           // re_editor opens the keyboard with autocorrect, smart punctuation
           // and capitalisation all off, as a plain text file needs.
-          child: CodeEditor(
-            controller: _controller,
-            wordWrap: _wordWrap,
-            toolbarController: _toolbar,
-            findController: _find,
-            findBuilder: (context, find, readOnly) => _FindBar(find),
-            style: CodeEditorStyle(
-              fontSize: _fontSize,
-              // Files are code and config far more often than prose, and both
-              // are unreadable in a proportional face once alignment matters.
-              fontFamily: 'monospace',
-              codeTheme: _codeTheme,
+          child: Focus(
+            // Not a stop of its own: it only hears the keys the text lets by.
+            canRequestFocus: false,
+            skipTraversal: true,
+            onKeyEvent: _onHardwareKey,
+            child: CodeEditor(
+              controller: _controller,
+              focusNode: _editorFocus,
+              wordWrap: _wordWrap,
+              toolbarController: _toolbar,
+              findController: _find,
+              findBuilder: (context, find, readOnly) => _FindBar(find),
+              style: CodeEditorStyle(
+                fontSize: _fontSize,
+                // Files are code and config far more often than prose, and
+                // both are unreadable in a proportional face once alignment
+                // matters.
+                fontFamily: 'monospace',
+                codeTheme: _codeTheme,
+              ),
+              indicatorBuilder: (context, editing, chunks, notifier) =>
+                  DefaultCodeLineNumber(
+                controller: editing,
+                notifier: notifier,
+              ),
             ),
-            indicatorBuilder: (context, editing, chunks, notifier) =>
-                DefaultCodeLineNumber(controller: editing, notifier: notifier),
           ),
         ),
       ],

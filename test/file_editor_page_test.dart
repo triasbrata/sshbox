@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -280,6 +281,97 @@ void main() {
     await tester.pumpWidget(editor(1));
     await tester.pumpAndSettle();
     expect(_editor(tester).selection.extentIndex, 0);
+  });
+
+  group('hardware keyboard', () {
+    // The test's platform is Android, where re_editor binds no keys of its
+    // own beyond Backspace and Enter: exactly the tablet's case.
+    Future<CodeLineEditingController> focused(
+      WidgetTester tester, [
+      FakeFileBrowser? browser,
+    ]) async {
+      await _pumpEditor(tester, browser ?? FakeFileBrowser());
+      await tester.tap(find.byType(CodeEditor));
+      // Past the double-tap window the tap opened, so no timer outlives it.
+      await tester.pump(const Duration(seconds: 1));
+      final editor = _editor(tester)
+        ..selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
+      await tester.pump();
+      return editor;
+    }
+
+    (int, int) caret(CodeLineEditingController editor) =>
+        (editor.selection.extentIndex, editor.selection.extentOffset);
+
+    Future<void> press(
+      WidgetTester tester,
+      LogicalKeyboardKey key, {
+      LogicalKeyboardKey? holding,
+    }) async {
+      if (holding != null) await tester.sendKeyDownEvent(holding);
+      await tester.sendKeyEvent(key);
+      if (holding != null) await tester.sendKeyUpEvent(holding);
+      // A moved caret restarts its blink on a timer; let it run out.
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    testWidgets('arrows, Home and End move the cursor', (tester) async {
+      final editor = await focused(tester);
+
+      await press(tester, LogicalKeyboardKey.arrowRight);
+      expect(caret(editor), (0, 1));
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(caret(editor).$1, 1);
+      await press(tester, LogicalKeyboardKey.end);
+      expect(caret(editor), (1, 'second line'.length));
+      await press(tester, LogicalKeyboardKey.arrowLeft);
+      expect(caret(editor), (1, 'second line'.length - 1));
+      await press(tester, LogicalKeyboardKey.home);
+      expect(caret(editor), (1, 0));
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      // Still the editor's keys: focus did not wander off to another widget.
+      expect(caret(editor).$1, 0);
+    });
+
+    testWidgets('Shift selects, and Ctrl goes by word', (tester) async {
+      final editor = await focused(tester);
+
+      await press(
+        tester,
+        LogicalKeyboardKey.arrowRight,
+        holding: LogicalKeyboardKey.controlLeft,
+      );
+      expect(caret(editor), (0, 'first'.length));
+
+      await press(
+        tester,
+        LogicalKeyboardKey.end,
+        holding: LogicalKeyboardKey.shiftLeft,
+      );
+      expect(editor.selectedText, ' line');
+    });
+
+    testWidgets('Ctrl+Z undoes and Ctrl+S saves', (tester) async {
+      final browser = FakeFileBrowser();
+      final editor = await focused(tester, browser);
+
+      editor.text = 'edited\n';
+      await tester.pumpAndSettle();
+      await press(
+        tester,
+        LogicalKeyboardKey.keyS,
+        holding: LogicalKeyboardKey.controlLeft,
+      );
+      await tester.pumpAndSettle();
+      expect(browser.contents['/home/me/notes.txt'], 'edited\n');
+
+      await press(
+        tester,
+        LogicalKeyboardKey.keyZ,
+        holding: LogicalKeyboardKey.controlLeft,
+      );
+      expect(editor.text, 'first line\nsecond line\n');
+    });
   });
 
   group('key bar', () {
