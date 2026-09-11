@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:toastification/toastification.dart';
@@ -74,7 +75,9 @@ class _SshboxAppState extends State<SshboxApp> {
   /// The second exists so the whole notify → tap → resume path can be
   /// exercised end to end without any push infrastructure — adb can fire the
   /// URI directly. Once FCM is wired it calls the same
-  /// [NotificationGateway.showForHost].
+  /// [NotificationGateway.showForHost]. Debug builds only: any web page or
+  /// app can fire the link, and in a release build that would let it post a
+  /// notification saying whatever it likes, under the app's name.
   Future<void> _handleLink(Uri uri) async {
     if (uri.scheme != 'sshbox') return;
     if (uri.pathSegments.isEmpty) return;
@@ -83,7 +86,7 @@ class _SshboxAppState extends State<SshboxApp> {
     switch (uri.host) {
       case 'host':
         await openHost(hostId);
-      case 'notify':
+      case 'notify' when kDebugMode:
         await _notifications.showForHost(
           hostId: hostId,
           title: uri.queryParameters['title'] ?? 'Clode',

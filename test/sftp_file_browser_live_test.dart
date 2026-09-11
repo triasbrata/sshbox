@@ -87,7 +87,9 @@ void main() {
     final secrets = InMemorySecretStore();
     await secrets.write(SecretKeys.privateKey(hostId), pem);
 
-    final session = await Dartssh2Transport().connect(
+    final session = await Dartssh2Transport(
+      confirmHostKey: (_) async => true,
+    ).connect(
       host: host,
       secrets: secrets,
       columns: 80,

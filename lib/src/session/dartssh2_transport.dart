@@ -21,15 +21,16 @@ import 'terminal_session.dart';
 class Dartssh2Transport implements SessionTransport {
   Dartssh2Transport({
     KnownHostStore? knownHosts,
-    this.onHostKeyPinned,
+    this.confirmHostKey,
     this.onAuthBanner,
   }) : _knownHosts = knownHosts ?? KnownHostStore();
 
   final KnownHostStore _knownHosts;
 
-  /// Fires when a host key is pinned for the very first time, so the UI can
-  /// say so out loud instead of trusting a stranger silently.
-  final void Function(String fingerprint)? onHostKeyPinned;
+  /// Asked when a host's key is not the one pinned for it — the first
+  /// connect, or a key that has changed — so the user decides rather than
+  /// the app trusting a stranger silently. Left out, such a key is refused.
+  final Future<bool> Function(HostKeyCheck check)? confirmHostKey;
 
   /// Text the server sent during authentication. Tailscale SSH puts its
   /// "visit this URL" check in here.
@@ -44,7 +45,7 @@ class Dartssh2Transport implements SessionTransport {
     bool shell = true,
   }) async {
     final session =
-        _Dartssh2Session(_knownHosts, onHostKeyPinned, onAuthBanner);
+        _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner);
     await session._open(
       host: host,
       secrets: secrets,
@@ -65,12 +66,12 @@ class _Dartssh2Session
         ChannelCapable {
   _Dartssh2Session(
     this._knownHosts,
-    this._onHostKeyPinned,
+    this._confirmHostKey,
     this._onAuthBannerReceived,
   );
 
   final KnownHostStore _knownHosts;
-  final void Function(String fingerprint)? _onHostKeyPinned;
+  final Future<bool> Function(HostKeyCheck check)? _confirmHostKey;
   final void Function(String banner)? _onAuthBannerReceived;
 
   final _output = StreamController<String>.broadcast();
@@ -84,7 +85,7 @@ class _Dartssh2Session
 
   /// Set when we reject the server's key, so the generic handshake failure
   /// that follows can be reported as the security event it actually is.
-  bool _hostKeyRejected = false;
+  String? _hostKeyRefused;
 
   @override
   Stream<String> get output => _output.stream;
@@ -173,23 +174,18 @@ class _Dartssh2Session
     _onAuthBannerReceived?.call(banner);
   }
 
+  /// Runs before authentication, so a refused key costs no credential.
   Future<bool> _verifyHostKey(HostProfile host, String fingerprint) async {
-    final verdict = await _knownHosts.verify(
-      host: host.host,
-      port: host.port,
-      fingerprint: fingerprint,
-    );
-
-    switch (verdict) {
-      case HostKeyVerdict.matched:
-        return true;
-      case HostKeyVerdict.trustedOnFirstUse:
-        _onHostKeyPinned?.call(fingerprint);
-        return true;
-      case HostKeyVerdict.changed:
-        _hostKeyRejected = true;
-        return false;
+    if (await _knownHosts.trust(host, fingerprint, _confirmHostKey)) {
+      return true;
     }
+    _hostKeyRefused = await _knownHosts.pinnedKey(host.host, host.port) == null
+        ? 'The host key was not trusted, so nothing was sent to the host.'
+        : 'Host key changed since the last connection. This can mean the '
+            'server was rebuilt — or that something is intercepting the '
+            'connection. Replace the pinned key only if you know why it '
+            'changed.';
+    return false;
   }
 
   /// Read once, up front, so a host with nothing stored fails immediately.
@@ -326,15 +322,32 @@ class _Dartssh2Session
 
     final source = File(localPath);
     final total = await source.length();
-    final remotePath = _remotePathFor(fileName);
+    var remotePath = _remotePathFor(fileName);
 
     final sftp = await client.sftp();
     try {
-      final remote = await sftp.open(
-        remotePath,
-        mode: SftpFileOpenMode.create |
-            SftpFileOpenMode.write |
-            SftpFileOpenMode.truncate,
+      // Exclusive, and 0600 before the bytes go in: /tmp is shared, so a link
+      // planted under the name would aim this write at another file, and
+      // whatever is left readable there every login on the host can read. An
+      // earlier upload of ours under the name is replaced; someone else's,
+      // which we cannot remove, makes way for a name nobody can guess.
+      Future<SftpFile> create(String path) => sftp.open(
+            path,
+            mode: SftpFileOpenMode.create |
+                SftpFileOpenMode.exclusive |
+                SftpFileOpenMode.write,
+          );
+      SftpFile remote;
+      try {
+        await sftp.remove(remotePath).catchError((Object _) {});
+        remote = await create(remotePath);
+      } on SftpStatusError {
+        remotePath = '/tmp/${SftpFileBrowser.randomName()}-'
+            '${remotePath.substring('/tmp/'.length)}';
+        remote = await create(remotePath);
+      }
+      await remote.setStat(
+        SftpFileAttrs(mode: const SftpFileMode.value(0x180)),
       );
       final handle = await source.open();
 
@@ -386,11 +399,8 @@ class _Dartssh2Session
   }
 
   String _describe(Object error) {
-    if (_hostKeyRejected) {
-      return 'Host key changed since the last connection. This can mean the '
-          'server was rebuilt — or that something is intercepting the '
-          'connection. Forget the pinned key only if you know why it changed.';
-    }
+    final refused = _hostKeyRefused;
+    if (refused != null) return refused;
     if (error is SshSessionException) return error.message;
     if (error is SSHAuthFailError) {
       return 'Authentication rejected. Check the username and credentials.';

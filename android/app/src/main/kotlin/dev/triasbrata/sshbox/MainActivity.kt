@@ -34,6 +34,9 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+        // Copies from an earlier run were uploaded or abandoned with it; a
+        // shared photo or document should not sit in our cache for good.
+        File(cacheDir, "shared").deleteRecursively()
         pending = filesIn(intent)
     }
 

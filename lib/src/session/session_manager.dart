@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../models/host_profile.dart';
@@ -295,7 +296,7 @@ class LiveSession extends ChangeNotifier {
   /// session is a no-op, so a notification tap can route here unconditionally.
   Future<void> connect({
     required SecretStore secrets,
-    void Function(String fingerprint)? onHostKeyPinned,
+    Future<bool> Function(HostKeyCheck check)? confirmHostKey,
     (int columns, int rows)? size,
   }) async {
     if (isConnected || _connecting) return;
@@ -312,7 +313,7 @@ class LiveSession extends ChangeNotifier {
     try {
       final transport = _transport ??
           Dartssh2Transport(
-            onHostKeyPinned: onHostKeyPinned,
+            confirmHostKey: confirmHostKey,
             onAuthBanner: onAuthBanner,
           );
       Future<TerminalSession> open({required bool shell}) => transport.connect(
@@ -621,11 +622,11 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
 
   Future<void> reconnect({
     required SecretStore secrets,
-    void Function(String fingerprint)? onHostKeyPinned,
+    Future<bool> Function(HostKeyCheck check)? confirmHostKey,
   }) async {
     await disconnect();
     _terminal.write('\x1b[2J\x1b[H');
-    await connect(secrets: secrets, onHostKeyPinned: onHostKeyPinned);
+    await connect(secrets: secrets, confirmHostKey: confirmHostKey);
   }
 
   @override

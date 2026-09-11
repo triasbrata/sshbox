@@ -48,7 +48,10 @@ void main() {
 
     final transport = Dartssh2Transport(
       knownHosts: knownHosts,
-      onHostKeyPinned: (fingerprint) => pinnedFingerprint = fingerprint,
+      confirmHostKey: (check) async {
+        pinnedFingerprint = check.fingerprint;
+        return true;
+      },
     );
 
     const host = HostProfile(

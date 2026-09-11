@@ -179,12 +179,10 @@ class _TabsShellState extends State<TabsShell> {
                 ),
               },
               // What the terminal page's own "Try again" does, host key
-              // notice and all.
+              // prompt and all.
               onReconnect: (session) => session.reconnect(
                 secrets: widget.secrets,
-                onHostKeyPinned: (fingerprint) {
-                  if (mounted) reportPinnedKey(context, fingerprint);
-                },
+                confirmHostKey: (check) => confirmHostKey(context, check),
               ),
               // What a tap in the host list does: another shell on the host,
               // added at the end of the strip and shown.

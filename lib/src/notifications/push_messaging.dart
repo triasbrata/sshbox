@@ -53,7 +53,9 @@ class PushMessaging {
     // so push would stay dead for the whole run rather than just this attempt.
     try {
       _token = await messaging.getToken();
-      debugPrint('sshbox: FCM token $_token');
+      // debugPrint still reaches logcat in a release build, and the token is
+      // what lets a sender reach this device.
+      if (kDebugMode) debugPrint('sshbox: FCM token $_token');
     } catch (error) {
       debugPrint('sshbox: FCM registration failed, will retry on next launch ($error)');
     }

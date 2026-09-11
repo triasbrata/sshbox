@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../session/session_manager.dart';
@@ -115,7 +116,7 @@ class _TerminalPageState extends State<TerminalPage> {
       if (!mounted) return;
       _session.connect(
         secrets: widget.secrets,
-        onHostKeyPinned: _reportPinnedKey,
+        confirmHostKey: _confirmHostKey,
       );
       // Files queued before this page existed. Connecting to an already-live
       // session is a no-op and notifies nothing, so the drain cannot rely on
@@ -249,13 +250,12 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
-  void _reportPinnedKey(String fingerprint) {
-    if (mounted) reportPinnedKey(context, fingerprint);
-  }
+  Future<bool> _confirmHostKey(HostKeyCheck check) =>
+      confirmHostKey(context, check);
 
   Future<void> _reconnect() => _session.reconnect(
         secrets: widget.secrets,
-        onHostKeyPinned: _reportPinnedKey,
+        confirmHostKey: _confirmHostKey,
       );
 
   /// Opens the remote filesystem as a native listing.
@@ -828,16 +828,69 @@ class _PaneViewState extends State<_PaneView> {
   }
 }
 
-/// Says out loud that a host key was trusted on first sight, rather than
-/// trusting a stranger silently. Shared by everything that connects a
-/// session: this page, and the reconnect on a tab whose shell has ended.
-void reportPinnedKey(BuildContext context, String fingerprint) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      duration: const Duration(seconds: 6),
-      content: Text('Pinned new host key\n$fingerprint'),
+/// Asks whether to trust a host key that is not the one pinned for its host:
+/// the first connect to it, or a key that has changed since, shown beside
+/// the old one. Anything but a yes refuses the key. Shared by everything that
+/// connects a session: this page, and the reconnect on a tab whose shell has
+/// ended.
+Future<bool> confirmHostKey(BuildContext context, HostKeyCheck check) async {
+  if (!context.mounted) return false;
+  final host = check.host;
+  final where = host.port == 22 ? host.host : '${host.host}:${host.port}';
+  final pinned = check.pinned;
+  final error = Theme.of(context).colorScheme.error;
+  const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+
+  final trusted = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      icon: pinned == null ? null : Icon(Icons.gpp_maybe, color: error),
+      title: Text(pinned == null ? 'Trust $where?' : 'Host key changed'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              pinned == null
+                  ? 'First connection to ${host.displayName}. Trust it only '
+                        'if this fingerprint matches the one '
+                        '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
+                        'prints on the server.'
+                  : '$where is not showing the key pinned for it. The server '
+                        'may have been rebuilt — or something may be '
+                        'intercepting the connection.',
+            ),
+            if (pinned != null) ...[
+              const SizedBox(height: 12),
+              const Text('Pinned'),
+              SelectableText(pinned, style: mono),
+            ],
+            const SizedBox(height: 12),
+            Text(pinned == null ? 'Fingerprint' : 'Now'),
+            SelectableText(check.fingerprint, style: mono),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        pinned == null
+            ? FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Trust'),
+              )
+            : TextButton(
+                style: TextButton.styleFrom(foregroundColor: error),
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Replace key'),
+              ),
+      ],
     ),
   );
+  return trusted ?? false;
 }
 
 /// Opens a link without leaving the app. Every link the app opens goes

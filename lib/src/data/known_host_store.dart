@@ -2,26 +2,24 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Outcome of comparing a server's host key against what we saw last time.
-enum HostKeyVerdict {
-  /// First time we have met this host — the key is now pinned.
-  trustedOnFirstUse,
+import '../models/host_profile.dart';
 
-  /// Same key as last time.
-  matched,
+/// A host key the user has to rule on: [pinned] is null the first time
+/// [host] is met, and otherwise the key it had before this one.
+typedef HostKeyCheck = ({HostProfile host, String fingerprint, String? pinned});
 
-  /// Different key than the one we pinned. Treated as hostile.
-  changed,
-}
-
-/// Trust-on-first-use pinning of SSH host keys, the mobile equivalent of
-/// `~/.ssh/known_hosts`.
+/// Pinning of SSH host keys, the mobile equivalent of `~/.ssh/known_hosts`.
 ///
 /// Without this a client silently accepts any key a server offers, which is
-/// exactly what a man-in-the-middle needs. Pinning on first connect and
-/// refusing a changed key afterwards closes that.
+/// exactly what a man-in-the-middle needs. As OpenSSH does, a key is pinned
+/// only once the user has accepted it, and a different key afterwards is
+/// refused unless the user replaces the pin — see [trust].
 class KnownHostStore {
   static const _storageKey = 'sshbox.knownhosts.v1';
+
+  /// Every change, from every store: each connect makes a store of its own,
+  /// and two read-modify-writes interleaved would drop one of the pins.
+  static Future<void> _writes = Future.value();
 
   String _entryKey(String host, int port) => '$host:$port';
 
@@ -38,43 +36,39 @@ class KnownHostStore {
     }
   }
 
-  Future<void> _persist(Map<String, String> known) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_storageKey, jsonEncode(known));
+  Future<void> _update(void Function(Map<String, String> known) change) {
+    final write = _writes.then((_) async {
+      final known = await _load();
+      change(known);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_storageKey, jsonEncode(known));
+    });
+    _writes = write.catchError((Object _) {});
+    return write;
   }
 
-  /// Pins on first sight, then compares. [fingerprint] is the OpenSSH-style
-  /// `SHA256:<base64>` string.
-  Future<HostKeyVerdict> verify({
-    required String host,
-    required int port,
-    required String fingerprint,
-  }) async {
-    final known = await _load();
-    final key = _entryKey(host, port);
-    final pinned = known[key];
+  /// Whether [fingerprint] may stand for [host]: it is the key pinned for
+  /// the host, or [confirm] accepts it and it is pinned in place of whatever
+  /// was there. With nobody to ask, a key that is not pinned is refused.
+  ///
+  /// [fingerprint] is the OpenSSH-style `SHA256:<base64>` string.
+  Future<bool> trust(
+    HostProfile host,
+    String fingerprint,
+    Future<bool> Function(HostKeyCheck check)? confirm,
+  ) async {
+    final pinned = await pinnedKey(host.host, host.port);
+    if (pinned == fingerprint) return true;
 
-    if (pinned == null) {
-      known[key] = fingerprint;
-      await _persist(known);
-      return HostKeyVerdict.trustedOnFirstUse;
-    }
+    final check = (host: host, fingerprint: fingerprint, pinned: pinned);
+    if (!(await confirm?.call(check) ?? false)) return false;
 
-    return pinned == fingerprint
-        ? HostKeyVerdict.matched
-        : HostKeyVerdict.changed;
+    await _update((known) => known[_entryKey(host.host, host.port)] = fingerprint);
+    return true;
   }
 
   Future<String?> pinnedKey(String host, int port) async {
     final known = await _load();
     return known[_entryKey(host, port)];
-  }
-
-  /// Drops the pin so the next connect re-pins. This is what a user needs
-  /// after legitimately rebuilding a server.
-  Future<void> forget(String host, int port) async {
-    final known = await _load();
-    known.remove(_entryKey(host, port));
-    await _persist(known);
   }
 }

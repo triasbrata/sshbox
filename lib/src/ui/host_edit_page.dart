@@ -288,7 +288,11 @@ class _HostEditPageState extends State<HostEditPage> {
                 controller: _privateKey,
                 maxLines: 6,
                 minLines: 3,
+                // Not obscured, so nothing else tells the keyboard to keep a
+                // private key out of its suggestions and what it learns.
                 autocorrect: false,
+                enableSuggestions: false,
+                enableIMEPersonalizedLearning: false,
                 decoration: InputDecoration(
                   labelText: 'Private key (OpenSSH or PEM)',
                   alignLabelWithHint: true,

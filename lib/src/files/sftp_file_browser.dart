@@ -163,7 +163,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     try {
       await sftp.remove(path);
     } catch (_) {
-      // Leftover temp files are hidden and overwritten by the next save.
+      // Leftover temp files are hidden and removed by the next save.
     }
   }
 
@@ -294,16 +294,22 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
       '.${RemotePath.basename(target)}.sshbox-save',
     );
 
+    // Exclusive: where others can write to the directory, a link planted
+    // under this name would aim the write at a file of their choosing. A
+    // copy left by a save that died goes first; a name still taken after
+    // that, by someone else's file, means writing in place instead.
+    await _removeQuietly(sftp, temp);
     final SftpFile file;
     try {
       file = await sftp.open(
         temp,
         mode: SftpFileOpenMode.create |
-            SftpFileOpenMode.write |
-            SftpFileOpenMode.truncate,
+            SftpFileOpenMode.exclusive |
+            SftpFileOpenMode.write,
       );
     } on SftpStatusError catch (error) {
-      if (error.code == 3) return false;
+      // 3: not ours to add to. 4: SFTP v3's word for the name being taken.
+      if (error.code == 3 || error.code == 4) return false;
       rethrow;
     }
 
@@ -484,7 +490,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         // Exclusive, under a name nobody can guess: /tmp is shared, and a
         // link planted there under a known name would aim this write
         // somewhere else.
-        final temp = '/tmp/.sshbox-${_randomName()}';
+        final temp = '/tmp/.sshbox-${randomName()}';
         final file = await sftp.open(
           temp,
           mode: SftpFileOpenMode.create |
@@ -518,7 +524,9 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
 
   static final _random = Random.secure();
 
-  static String _randomName() =>
+  /// Sixteen characters nobody can guess, for a file of ours in a directory
+  /// others can write to.
+  static String randomName() =>
       List.generate(16, (_) => _random.nextInt(36).toRadixString(36)).join();
 
   /// Runs [command] as root on the session's own connection and returns what

@@ -24,11 +24,19 @@
         android:name="android.software.freeform_window_management"
         android:required="false"/>
 
-    <!-- Plain http for the web tabs: network_security_config.xml says why. -->
+    <!-- Plain http for the web tabs: network_security_config.xml says why.
+         No backup and no device-to-device transfer: hosts, pinned host keys
+         and the keystore-encrypted secrets would otherwise leave the device
+         in a Google backup, and a restored secret cannot be decrypted anyway,
+         since its Keystore key never leaves the old device. allowBackup off
+         covers Android 11 and older; from 12 the extraction rules decide. -->
     <application
         android:label="Clode"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
