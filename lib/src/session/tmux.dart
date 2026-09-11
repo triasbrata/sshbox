@@ -318,13 +318,30 @@ class TmuxPane {
   }
 }
 
+/// Feeds a pane's decoded output to its terminal, with screen's title
+/// sequence made harmless on the way.
+///
+/// A program told its terminal is `screen` or `tmux` — what tmux tells the
+/// programs in its panes — may name the window with `ESC k title ESC \`.
+/// tmux takes that for itself, but `%output` hands it on raw, and xterm2 does
+/// not know it: it would print the title at every prompt. Turned into APC
+/// (`ESC _`), it is read to its end and dropped.
 class _PaneSink implements Sink<String> {
   _PaneSink(this.pane);
 
   final TmuxPane pane;
 
+  /// An ESC that ended the last piece, held until the next says whether it
+  /// began one.
+  bool _escape = false;
+
   @override
-  void add(String data) => pane._write(data);
+  void add(String data) {
+    var text = _escape ? '\x1b$data' : data;
+    _escape = text.endsWith('\x1b');
+    if (_escape) text = text.substring(0, text.length - 1);
+    pane._write(text.replaceAll('\x1bk', '\x1b_'));
+  }
 
   @override
   void close() {}

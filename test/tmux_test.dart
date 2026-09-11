@@ -146,6 +146,32 @@ void main() {
     },
   );
 
+  test("screen's title sequence is dropped, not printed", () async {
+    final fake = _FakeTmux('b25d,80x24,0,0,1');
+    final tmux = TmuxSession(
+      name: 'sshbox-test',
+      channel: fake.channel,
+      newTerminal: Terminal.new,
+      transform: (data) => data,
+      onChanged: () {},
+      onEnded: () {},
+    );
+    addTearDown(tmux.dispose);
+    fake.say('%session-changed \$1 sshbox-test');
+    await pumpEventQueue();
+
+    // What zsh sends at every prompt under TERM=screen, split where two
+    // reads of the pane can split it.
+    fake.say(r'%output %1 \033');
+    fake.say(r'%output %1 k/tmp\033\134~ $ ');
+    await pumpEventQueue();
+
+    expect(
+      tmux.panes.single.terminal.buffer.lines[0].getText().trimRight(),
+      r'~ $',
+    );
+  });
+
   testWidgets('two panes sit side by side, and touching one focuses it', (
     tester,
   ) async {
