@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -9,6 +11,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:xterm2/xterm.dart';
 
 import 'fake_file_browser.dart';
 
@@ -92,6 +95,77 @@ void main() {
     await tester.pump();
     await tester.pump();
   }
+
+  /// Picks notes.txt in the files drawer, the way a finger does.
+  Future<void> openFile(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('Browse files'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('notes.txt'));
+    await tester.pumpAndSettle();
+  }
+
+  /// The shell's terminal, found whether its tab is showing or not.
+  FocusNode terminal(WidgetTester tester) => tester
+      .widget<TerminalView>(find.byType(TerminalView, skipOffstage: false))
+      .focusNode!;
+
+  testWidgets('keys typed once a file opens go to its editor, not the shell', (
+    tester,
+  ) async {
+    await pumpTabs(tester);
+    await openFile(tester);
+    final editor = tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!
+      ..selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
+    await tester.pump();
+
+    // A letter the shell would have sent on, and an arrow only the editor
+    // moves on: the drawer closing hands nothing back to the terminal.
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    // The moved caret restarts its blink on a timer; let it run out.
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(editor.selection.extentIndex, 1);
+    expect(shell.sent, isEmpty);
+  });
+
+  testWidgets('a hidden shell cannot take focus', (tester) async {
+    await pumpTabs(tester);
+    await openFile(tester);
+
+    terminal(tester).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+
+    expect(terminal(tester).hasFocus, isFalse);
+    expect(shell.sent, isEmpty);
+  });
+
+  testWidgets('a tab shown again takes the keys back, without the keyboard', (
+    tester,
+  ) async {
+    await pumpTabs(tester);
+    await openFile(tester);
+    tester.testTextInput.log.clear();
+
+    await tester.tap(find.byIcon(Icons.terminal));
+    await tester.pumpAndSettle();
+    expect(terminal(tester).hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    expect(shell.sent, ['a']);
+
+    await tester.tap(find.byIcon(Icons.description_outlined));
+    await tester.pumpAndSettle();
+    expect(
+      FocusManager.instance.primaryFocus?.debugLabel,
+      'file editor text',
+    );
+
+    expect(
+      tester.testTextInput.log.map((call) => call.method),
+      isNot(contains('TextInput.show')),
+    );
+  });
 
   testWidgets('a tab opened before a page leaves the page as it was', (
     tester,

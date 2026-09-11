@@ -209,7 +209,8 @@ class _TabsShellState extends State<TabsShell> {
                     // one may hold focus. Without this the hidden terminals
                     // still have focus nodes, and keystrokes land in whichever
                     // one grabbed focus last: typed commands going to the
-                    // wrong host.
+                    // wrong host. Shown again, each page puts the focus back
+                    // on its own terminal, text or web view.
                     ExcludeFocus(excluding: index != activeIndex, child: page),
                 ],
               ),

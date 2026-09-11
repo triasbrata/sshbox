@@ -393,7 +393,11 @@ The pages sit in an `IndexedStack`, so every terminal keeps its scrollback,
 key bar and connection while another one is on screen. Only the visible page
 may hold focus (`ExcludeFocus`), because hidden terminals still have focus
 nodes — without it keystrokes land in whichever terminal grabbed focus last,
-which means typed commands going to the wrong host.
+which means typed commands going to the wrong host. A tab shown again puts the
+focus back on its terminal (the focused pane, with tmux), its file's text or
+its web view, without raising the soft keyboard, so a hardware keyboard types
+into what is on screen; only letters in a file wait for a tap into the text,
+since re_editor takes them through the soft keyboard's connection.
 
 **Files get tabs too.** The folder button opens the files drawer over the
 shell; tapping a file there gives it a tab of its own, named

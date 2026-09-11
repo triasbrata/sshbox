@@ -699,11 +699,35 @@ class _PaneViewState extends State<_PaneView> {
     super.dispose();
   }
 
+  /// Whether the tabs were showing this pane when it last looked; null until
+  /// its first look.
+  bool? _shown;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Back on screen after another tab, typing comes back here. The tabs'
+    // IndexedStack says which page is showing. Only on the way back: a tab
+    // built on screen has autofocus, and raises the keyboard as a new shell
+    // always has. After the frame, so a page leaving the screen in the same
+    // build cannot take the focus back off it.
+    final shown = Visibility.of(context);
+    if (shown && _shown == false) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _followFocus(keyboard: false),
+      );
+    }
+    _shown = shown;
+  }
+
   /// Typing goes wherever Flutter's focus is, and the key bar wherever
-  /// tmux's is: the two are kept on the same pane.
-  void _followFocus() {
+  /// tmux's is: the two are kept on the same pane. Without [keyboard] the
+  /// focus comes without the soft keyboard, since [TerminalTextInput] raises
+  /// it only for a focus that still holds its keyboard token.
+  void _followFocus({bool keyboard = true}) {
     if (mounted && widget.focused && !_focusNode.hasFocus) {
       _focusNode.requestFocus();
+      if (!keyboard) _focusNode.consumeKeyboardToken();
     }
   }
 

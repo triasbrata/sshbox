@@ -263,6 +263,34 @@ class _FileEditorPageState extends State<FileEditorPage> {
     super.dispose();
   }
 
+  /// Whether the tabs were showing this page when it last looked; null until
+  /// its first look.
+  bool? _shown;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Shown again after another tab, the text takes the keys back, as a
+    // shell's terminal does, and after the frame for the same reason. A new
+    // tab needs none of this: re_editor focuses its text once the file is in.
+    //
+    // ponytail: without the soft keyboard, which re_editor raises only for a
+    // focus still holding its keyboard token, so the token is taken straight
+    // back. Arrows and shortcuts work at once, but typed letters wait for a
+    // tap into the text: on Android they come through the keyboard's
+    // connection, which re_editor opens with that token. Leave the token if a
+    // soft keyboard on every switch to a file is the lesser evil.
+    final shown = Visibility.of(context);
+    if (shown && _shown == false) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _loading || _error != null) return;
+        _editorFocus.requestFocus();
+        _editorFocus.consumeKeyboardToken();
+      });
+    }
+    _shown = shown;
+  }
+
   @override
   void didUpdateWidget(FileEditorPage oldWidget) {
     super.didUpdateWidget(oldWidget);
