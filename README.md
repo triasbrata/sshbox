@@ -52,6 +52,9 @@ lib/
       file_editor_page.dart         read and edit one remote file, in a tab
       web_page.dart                 a web page opened from a link, in a tab
       file_search_page.dart         find text under a directory
+      settings_page.dart            Settings: the terminal's font and size
+assets/
+  fonts/<family>/                   the terminal's fonts, each with its license
 ```
 
 `dartssh2` is imported in exactly two files, `dartssh2_transport.dart` and
@@ -230,6 +233,44 @@ home, and the snack bar says so when that misses. In a tab set to use tmux,
 tmux answers instead, for the focused pane — see [tmux](#tmux). Inside a tmux
 or screen started by hand, what it finds is the multiplexer's client rather
 than the pane.
+
+### Settings and fonts
+
+The gear in the host list's bar opens Settings (`ui/settings_page.dart`). Its
+one section so far is **Terminal**: a preview, the font size (9 to 24, 13 by
+default) and the font, each font's row drawn in that font. The preview is
+drawn by xterm2's own view, so its cells, colours and glyphs are what a shell
+gets. A choice applies at once to every open terminal, tmux's panes included —
+each is re-measured in the new cells and tmux is told how many fit now — and
+is saved as `sshbox.terminal.fontFamily` and `sshbox.terminal.fontSize`.
+`main` reads them before the first frame, so a shell never opens in one font
+and resizes into the other a moment later.
+
+The fonts ship in the APK, so they work offline:
+
+| Font | From | Notes |
+| --- | --- | --- |
+| Cascadia Mono | [microsoft/cascadia-code](https://github.com/microsoft/cascadia-code) 2407.24 | PowerShell's and Windows Terminal's font |
+| Cascadia Code | the same | Cascadia with ligatures; xterm2 draws a cell at a time, so none form in the terminal |
+| CaskaydiaCove Nerd Font Mono | [ryanoasis/nerd-fonts](https://github.com/ryanoasis/nerd-fonts) 3.5.1 | Cascadia Code patched with prompt glyphs |
+| JetBrains Mono | [JetBrains/JetBrainsMono](https://github.com/JetBrains/JetBrainsMono) 2.304 | |
+| Fira Code | [tonsky/FiraCode](https://github.com/tonsky/FiraCode) 6.2 | |
+| System monospace | Android | the default, and what the terminal drew with before |
+
+Each is the static Regular and Bold TTF from the official release, in
+`assets/fonts/<family>/` beside its license, the SIL Open Font License 1.1.
+Italic is left to Flutter's slant. Together they add about 5 MB to the APK,
+3.5 MB of it the Nerd Font. Adding one means its files under `assets/fonts/`,
+its family in `pubspec.yaml`, and a row in `terminalFonts`;
+`test/settings_page_test.dart` fails if the two names differ, which would
+otherwise draw in the system font without a word.
+
+**Prompt glyphs never show as boxes.** spaceship and powerlevel10k draw
+powerline arrows and a git branch from Unicode's Private Use Area, which no
+ordinary font covers — Android's monospace included. Whatever font is picked,
+those glyphs fall back to CaskaydiaCove Nerd Font Mono, whose Mono build draws
+them a cell wide, and then to xterm2's own list, which ends at the system
+monospace; emoji and CJK go where they always went.
 
 ## Running it
 
@@ -803,8 +844,8 @@ why search is stated as a separate capability rather than folded into
   place; pulling a binary down to local storage is not wired.
 - **A daemon on the host**, to replace SFTP where it is slow. `FileBrowser` is
   the seam; nothing has been written against it yet.
-- **Biometric unlock**, key generation and import from file, and a
-  landscape-aware font size control.
+- **Biometric unlock**, key generation and import from file, and a font
+  size per orientation (Settings has one for both).
 - **More of a browser in a web tab:** downloads (handed to the phone's browser
   for now), `<input type=file>`, popups as tabs of their own, Back stepping
   back through a page's history, and HTTP auth prompts. Google refuses to sign

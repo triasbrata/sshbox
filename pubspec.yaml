@@ -106,3 +106,33 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+  # The terminal's fonts, picked in Settings (lib/src/ui/settings_page.dart,
+  # which names them by these families). Static Regular and Bold only; each
+  # folder holds its SIL OFL 1.1 license.
+  fonts:
+    - family: Cascadia Mono
+      fonts:
+        - asset: assets/fonts/cascadia-mono/CascadiaMono-Regular.ttf
+        - asset: assets/fonts/cascadia-mono/CascadiaMono-Bold.ttf
+          weight: 700
+    - family: Cascadia Code
+      fonts:
+        - asset: assets/fonts/cascadia-code/CascadiaCode-Regular.ttf
+        - asset: assets/fonts/cascadia-code/CascadiaCode-Bold.ttf
+          weight: 700
+    - family: CaskaydiaCove Nerd Font Mono
+      fonts:
+        - asset: assets/fonts/caskaydia-cove-nerd-font-mono/CaskaydiaCoveNerdFontMono-Regular.ttf
+        - asset: assets/fonts/caskaydia-cove-nerd-font-mono/CaskaydiaCoveNerdFontMono-Bold.ttf
+          weight: 700
+    - family: JetBrains Mono
+      fonts:
+        - asset: assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf
+          weight: 700
+    - family: Fira Code
+      fonts:
+        - asset: assets/fonts/fira-code/FiraCode-Regular.ttf
+        - asset: assets/fonts/fira-code/FiraCode-Bold.ttf
+          weight: 700

@@ -10,8 +10,11 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:toastification/toastification.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
@@ -159,6 +162,56 @@ void main() {
       );
     }
     expect(find.text('ESC'), findsNothing);
+  });
+
+  testWidgets('a font picked in Settings redraws the open terminal at once', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    addTearDown(() => terminalSettings.value = TerminalSettings.defaultStyle);
+    final session = LiveSession(
+      host: const HostProfile(
+        id: 'host-1',
+        label: 'box',
+        host: '10.0.2.2',
+        username: 'me',
+      ),
+      transport: _Shell(),
+    );
+    addTearDown(session.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TerminalPage(
+          session: session,
+          secrets: _NoSecrets(),
+          onOpenFile: (_, {line}) {},
+          onOpenWeb: (_) {},
+          onSaveFileRoot: (_) async {},
+        ),
+      ),
+    );
+    await tester.pump();
+    TerminalView view() => tester.widget(find.byType(TerminalView));
+    expect(view().textStyle, TerminalSettings.defaultStyle);
+    final columns = session.terminal.viewWidth;
+
+    await terminalSettings.choose(family: 'Cascadia Mono', size: 20);
+    await tester.pump();
+
+    expect(view().textStyle, terminalStyleOf('Cascadia Mono', 20));
+    expect(
+      view().textStyle.fontFamilyFallback,
+      contains('CaskaydiaCove Nerd Font Mono'),
+    );
+    expect(
+      tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal
+          .cellSize,
+      terminalCellSize(view().textStyle, TextScaler.noScaling),
+    );
+    // Bigger cells, fewer of them: the shell is told its new size.
+    expect(session.terminal.viewWidth, lessThan(columns));
   });
 
   group('openUrl', () {
