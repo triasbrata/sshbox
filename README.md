@@ -168,7 +168,7 @@ opens a web page in a Custom Tab: the phone's default browser — Chrome, Firefo
 Edge — draws it over the app with its own engine, cookies and sign-ins, and
 Back comes back to the shell. A browser that cannot do Custom Tabs gets the
 link as an ordinary page; `mailto:` and the like go wherever Android sends
-them; and when nothing takes it the app says **No app can open** and the link.
+them; and when nothing takes it a toast says **No app can open** and the link.
 No `<queries>` is needed for this: url_launcher fires the Custom Tabs intent
 without asking the package manager first, which is the only thing Android 11's
 package visibility restricts.

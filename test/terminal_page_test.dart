@@ -192,6 +192,7 @@ void main() {
     testWidgets('says so when nothing can open it', (tester) async {
       await open(tester, 'https://dart.dev', {});
       expect(find.text('No app can open https://dart.dev'), findsOneWidget);
+      expect(find.byType(SnackBar), findsNothing);
     });
   });
 

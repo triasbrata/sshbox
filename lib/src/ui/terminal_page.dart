@@ -802,11 +802,7 @@ Future<void> openUrl(BuildContext context, Uri url) async {
       // How Android says no app took it, rather than returning false.
     }
   }
-  if (context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('No app can open $url')),
-    );
-  }
+  if (context.mounted) showToast(context, 'No app can open $url');
 }
 
 /// Shown while a server is waiting for the user to prove who they are
