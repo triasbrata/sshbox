@@ -30,7 +30,6 @@ class TerminalPage extends StatefulWidget {
     required this.secrets,
     required this.onOpenFile,
     required this.onSaveFileRoot,
-    this.openUrl = _openExternally,
   });
 
   final LiveSession session;
@@ -42,16 +41,9 @@ class TerminalPage extends StatefulWidget {
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
 
-  /// Opens a link Ctrl+tapped in the terminal. The browser, unless a test
-  /// hands in something else.
-  final Future<void> Function(Uri url) openUrl;
-
   @override
   State<TerminalPage> createState() => _TerminalPageState();
 }
-
-Future<void> _openExternally(Uri url) =>
-    launchUrl(url, mode: LaunchMode.externalApplication);
 
 class _TerminalPageState extends State<TerminalPage> {
   final _keyBar = KeyBarController();
@@ -170,7 +162,8 @@ class _TerminalPageState extends State<TerminalPage> {
                 content: Text('Port ${forward.port} is on $address'),
                 action: SnackBarAction(
                   label: 'Open',
-                  onPressed: () => _openForward(address),
+                  onPressed: () =>
+                      openUrl(context, Uri.parse('http://$address')),
                 ),
               )
             : SnackBar(
@@ -187,11 +180,6 @@ class _TerminalPageState extends State<TerminalPage> {
       );
     }
   }
-
-  void _openForward(String address) => launchUrl(
-        Uri.parse('http://$address'),
-        mode: LaunchMode.externalApplication,
-      );
 
   /// Uploads anything handed to the session from outside the terminal page.
   Future<void> _drainShared() async {
@@ -352,7 +340,7 @@ class _TerminalPageState extends State<TerminalPage> {
     final target = link.target;
     if (link.kind == LinkKind.url) {
       final url = Uri.tryParse(target);
-      if (url != null) await widget.openUrl(url);
+      if (url != null) await openUrl(context, url);
       return;
     }
     if (!_session.isConnected || !_session.canBrowseFiles) return;
@@ -790,6 +778,36 @@ void reportPinnedKey(BuildContext context, String fingerprint) {
   );
 }
 
+/// Opens a link without leaving the app: a web page in a Custom Tab, which
+/// the phone's default browser draws over this app with its own engine,
+/// cookies and sign-ins, and Back returns from. Every link the app opens goes
+/// through here — a Ctrl+tap, a forwarded port, a sign-in check.
+///
+/// A browser that cannot draw a Custom Tab takes the link as a page of its
+/// own instead; a `mailto:` or `tel:` goes wherever the phone sends it. When
+/// nothing takes it the user is told, rather than left tapping a dead link.
+///
+/// [context] is only read at the end, if it is still mounted: a snack bar's
+/// Open can outlive the page that showed it.
+Future<void> openUrl(BuildContext context, Uri url) async {
+  final web = url.isScheme('http') || url.isScheme('https');
+  for (final mode in [
+    if (web) LaunchMode.inAppBrowserView,
+    web ? LaunchMode.externalApplication : LaunchMode.platformDefault,
+  ]) {
+    try {
+      if (await launchUrl(url, mode: mode)) return;
+    } on PlatformException {
+      // How Android says no app took it, rather than returning false.
+    }
+  }
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('No app can open $url')),
+    );
+  }
+}
+
 /// Shown while a server is waiting for the user to prove who they are
 /// somewhere else — Tailscale SSH's check, for instance.
 ///
@@ -828,7 +846,7 @@ class _AuthCheckPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-            onPressed: () => launchUrl(url, mode: LaunchMode.externalApplication),
+            onPressed: () => openUrl(context, url),
             icon: const Icon(Icons.open_in_new),
             label: const Text('Open link'),
           ),

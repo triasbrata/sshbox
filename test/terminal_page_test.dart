@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/file_browser.dart';
@@ -9,9 +10,32 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:url_launcher_platform_interface/link.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_file_browser.dart';
+
+/// The phone's url_launcher, able to open links only the [ways] it is given,
+/// and failing the rest the way Android does: by throwing.
+class _Launcher extends UrlLauncherPlatform {
+  _Launcher(this.ways);
+
+  final Set<PreferredLaunchMode> ways;
+
+  /// Every launch asked for, whether it opened or not.
+  final tried = <(String, PreferredLaunchMode)>[];
+
+  @override
+  LinkDelegate? get linkDelegate => null;
+
+  @override
+  Future<bool> launchUrl(String url, LaunchOptions options) async {
+    tried.add((url, options.mode));
+    if (ways.contains(options.mode)) return true;
+    throw PlatformException(code: 'ACTIVITY_NOT_FOUND');
+  }
+}
 
 /// Holds nothing, so a password host fails to connect before a socket is
 /// ever opened: the page comes up and stays up without a network.
@@ -121,9 +145,59 @@ void main() {
     expect(find.text('ESC'), findsNothing);
   });
 
+  group('openUrl', () {
+    /// Opens [url] on a phone that can open it only the [ways] given, and
+    /// returns every way that was tried.
+    Future<List<(String, PreferredLaunchMode)>> open(
+      WidgetTester tester,
+      String url,
+      Set<PreferredLaunchMode> ways,
+    ) async {
+      final launcher = _Launcher(ways);
+      UrlLauncherPlatform.instance = launcher;
+      await tester.pumpWidget(
+        const MaterialApp(home: Scaffold(body: SizedBox())),
+      );
+      await openUrl(tester.element(find.byType(SizedBox)), Uri.parse(url));
+      await tester.pump();
+      return launcher.tried;
+    }
+
+    const inApp = PreferredLaunchMode.inAppBrowserView;
+    const browser = PreferredLaunchMode.externalApplication;
+
+    testWidgets('a web link opens in-app', (tester) async {
+      expect(await open(tester, 'https://dart.dev', {inApp, browser}), [
+        ('https://dart.dev', inApp),
+      ]);
+    });
+
+    testWidgets('and in the browser when it cannot open in-app', (
+      tester,
+    ) async {
+      expect(await open(tester, 'http://box.ts.net:3001', {browser}), [
+        ('http://box.ts.net:3001', inApp),
+        ('http://box.ts.net:3001', browser),
+      ]);
+      expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets('anything else goes where the phone sends it', (tester) async {
+      const platform = PreferredLaunchMode.platformDefault;
+      expect(await open(tester, 'mailto:me@box', {platform}), [
+        ('mailto:me@box', platform),
+      ]);
+    });
+
+    testWidgets('says so when nothing can open it', (tester) async {
+      await open(tester, 'https://dart.dev', {});
+      expect(find.text('No app can open https://dart.dev'), findsOneWidget);
+    });
+  });
+
   group('Ctrl+tap', () {
     late _Shell shell;
-    late List<Uri> launched;
+    late _Launcher launcher;
     late List<String> opened;
 
     // Columns: the URL 0–15, dev/ 17–20, notes.txt 22–30, missing/x 32–40.
@@ -131,7 +205,9 @@ void main() {
 
     Future<void> pumpPage(WidgetTester tester) async {
       shell = _Shell();
-      launched = [];
+      UrlLauncherPlatform.instance = launcher = _Launcher({
+        PreferredLaunchMode.inAppBrowserView,
+      });
       opened = [];
       final session = LiveSession(
         host: const HostProfile(
@@ -151,7 +227,6 @@ void main() {
             secrets: _NoSecrets(),
             onOpenFile: opened.add,
             onSaveFileRoot: (_) async {},
-            openUrl: (url) async => launched.add(url),
           ),
         ),
       );
@@ -177,7 +252,7 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     }
 
-    testWidgets('underlines the links, opens a URL, and uses CTRL up', (
+    testWidgets('underlines the links, opens a URL in-app, and uses CTRL up', (
       tester,
     ) async {
       await pumpPage(tester);
@@ -189,7 +264,9 @@ void main() {
 
       await tapColumn(tester, 3);
 
-      expect(launched, [Uri.parse('https://dart.dev')]);
+      expect(launcher.tried, [
+        ('https://dart.dev', PreferredLaunchMode.inAppBrowserView),
+      ]);
       expect(shell.sent, isEmpty);
       expect(links(tester).underlines, isEmpty);
     });
@@ -272,7 +349,7 @@ void main() {
 
       await tapColumn(tester, 3);
 
-      expect(launched, isEmpty);
+      expect(launcher.tried, isEmpty);
       expect(opened, isEmpty);
       expect(find.byType(FileBrowserPage), findsNothing);
       expect(

@@ -156,11 +156,22 @@ that is left, each outer key still behind its inner one.
 VS Code's Ctrl+click, for a touch screen. With CTRL armed on the bar — or Ctrl
 held on a hardware keyboard, which covers a mouse click with Ctrl — every URL
 and path on screen gets a thin underline, and a tap on one opens it instead of
-raising the keyboard: a URL in the browser, a folder as the root of the files
-drawer, a file in a tab of its own, the way one picked in the drawer opens. The
-tap types nothing, a program reading the mouse does not see it, and it uses
-CTRL up whether it hit anything or not. A path that is not there says
+raising the keyboard: a URL in an in-app browser, a folder as the root of the
+files drawer, a file in a tab of its own, the way one picked in the drawer
+opens. The tap types nothing, a program reading the mouse does not see it, and
+it uses CTRL up whether it hit anything or not. A path that is not there says
 **Not found:** and the path.
+
+**Every link opens in-app.** A Ctrl+tapped URL, a forwarded port's **Open** and
+a Tailscale sign-in all go through `openUrl` in `ui/terminal_page.dart`, which
+opens a web page in a Custom Tab: the phone's default browser — Chrome, Firefox,
+Edge — draws it over the app with its own engine, cookies and sign-ins, and
+Back comes back to the shell. A browser that cannot do Custom Tabs gets the
+link as an ordinary page; `mailto:` and the like go wherever Android sends
+them; and when nothing takes it the app says **No app can open** and the link.
+No `<queries>` is needed for this: url_launcher fires the Custom Tabs intent
+without asking the package manager first, which is the only thing Android 11's
+package visibility restricts.
 
 The text is read back from the terminal's own buffer (`ui/ctrl_click.dart`),
 rows the terminal wrapped joined up again, and quotes, brackets and the full
