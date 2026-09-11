@@ -41,6 +41,7 @@ class Dartssh2Transport implements SessionTransport {
     required SecretStore secrets,
     required int columns,
     required int rows,
+    bool shell = true,
   }) async {
     final session =
         _Dartssh2Session(_knownHosts, onHostKeyPinned, onAuthBanner);
@@ -49,6 +50,7 @@ class Dartssh2Transport implements SessionTransport {
       secrets: secrets,
       columns: columns,
       rows: rows,
+      shell: shell,
     );
     return session;
   }
@@ -59,7 +61,8 @@ class _Dartssh2Session
         TerminalSession,
         FileUploadCapable,
         FileBrowseCapable,
-        CommandCapable {
+        CommandCapable,
+        ChannelCapable {
   _Dartssh2Session(
     this._knownHosts,
     this._onHostKeyPinned,
@@ -97,6 +100,7 @@ class _Dartssh2Session
     required SecretStore secrets,
     required int columns,
     required int rows,
+    required bool shell,
   }) async {
     try {
       final identities = await _loadIdentities(host, secrets);
@@ -126,6 +130,16 @@ class _Dartssh2Session
         onVerifyHostKey: (type, fingerprint) =>
             _verifyHostKey(host, utf8.decode(fingerprint)),
       );
+
+      if (!shell) {
+        // What opening a shell would otherwise wait out, and fail on.
+        await _client!.authenticated;
+        unawaited(
+          _client!.done.catchError((Object _) {}).whenComplete(_markClosed),
+        );
+        _status.value = SessionStatus.connected;
+        return;
+      }
 
       _shell = await _client!.shell(
         pty: SSHPtyConfig(
@@ -269,6 +283,22 @@ class _Dartssh2Session
       // close outright, and sshd hangs up what it was running.
       session.channel.destroy();
     }
+  }
+
+  /// An exec channel with no pty, closed with `destroy` for the same reason
+  /// [run]'s is.
+  @override
+  Future<CommandChannel> open(String command) async {
+    final client = _client;
+    if (client == null || _status.value != SessionStatus.connected) {
+      throw const SshSessionException('Not connected.');
+    }
+    final session = await client.execute(command);
+    return (
+      output: session.stdout,
+      write: session.write,
+      close: session.channel.destroy,
+    );
   }
 
   /// Everything lands in `/tmp`, named after the file the user picked.

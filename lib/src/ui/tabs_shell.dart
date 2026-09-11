@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../session/session_manager.dart';
+import '../session/tmux.dart';
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
@@ -252,6 +253,35 @@ class _TabStripState extends State<TabStrip> {
     });
   }
 
+  /// Runs a pane command from a tab's menu, and says so when tmux turns it
+  /// down — on a phone, most often because there is no room for another pane.
+  Future<void> _tmux(Future<void> Function() command) async {
+    try {
+      await command();
+    } on TmuxException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('tmux: $error')),
+      );
+    }
+  }
+
+  /// What a long press on a shell's tab offers. The pane entries act on the
+  /// focused pane, and are there only while tmux is: a plain shell has no
+  /// panes to split.
+  List<(String, VoidCallback)> _menuFor(LiveSession session) {
+    final tmux = session.isConnected ? session.tmux : null;
+    return [
+      ('Duplicate session', () => widget.onDuplicate(session.host.id)),
+      if (tmux != null) ...[
+        ('Split right', () => _tmux(() => tmux.split(sideBySide: true))),
+        ('Split down', () => _tmux(() => tmux.split(sideBySide: false))),
+        // The last pane goes with the tab, by the tab's own close button.
+        if (tmux.panes.length > 1) ('Close pane', () => _tmux(tmux.closePane)),
+      ],
+    ];
+  }
+
   /// Below this the strip is too narrow to let the new-tab button wander:
   /// Material's compact breakpoint, which is every phone in portrait.
   static const double _wideStrip = 600;
@@ -282,6 +312,9 @@ class _TabStripState extends State<TabStrip> {
           key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
           icon: tab.kind == TabKind.file
               ? Icons.description_outlined
+              // tmux, said quietly: the same chip, split.
+              : tab.session.tmux != null
+              ? Icons.vertical_split_outlined
               : Icons.terminal,
           label: tab.kind == TabKind.file
               ? tab.session.fileTabTitle(tab.path!)
@@ -301,9 +334,7 @@ class _TabStripState extends State<TabStrip> {
           onReconnect: tab.kind == TabKind.terminal && tab.session.ended
               ? () => widget.onReconnect(tab.session)
               : null,
-          onDuplicate: tab.kind == TabKind.terminal
-              ? () => widget.onDuplicate(tab.session.host.id)
-              : null,
+          menu: tab.kind == TabKind.terminal ? _menuFor(tab.session) : const [],
         ),
     ];
 
@@ -363,7 +394,7 @@ class _TabChip extends StatelessWidget {
     this.onClose,
     this.onReconnect,
     this.cutFirst,
-    this.onDuplicate,
+    this.menu = const [],
   });
 
   /// null shows the icon alone — the chip still answers to [tooltip], so it
@@ -391,10 +422,10 @@ class _TabChip extends StatelessWidget {
   /// end, as a shell's name is cut.
   final String? cutFirst;
 
-  /// Another session on a shell's host, offered from a long press on its
-  /// tab — a press the tab had no other use for. null on a file tab: it is
-  /// read over its shell and has nothing of its own to duplicate.
-  final VoidCallback? onDuplicate;
+  /// What a long press on the tab offers — a press it had no other use for:
+  /// another session on a shell's host, and tmux's pane commands. Empty on a
+  /// file tab, which is read over its shell and has nothing of its own.
+  final List<(String, VoidCallback)> menu;
 
   /// How much of a name a tab may show.
   ///
@@ -459,7 +490,7 @@ class _TabChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         onTap: onTap,
-        onLongPress: onDuplicate == null ? null : () => _showMenu(context),
+        onLongPress: menu.isEmpty ? null : () => _showMenu(context),
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
@@ -533,10 +564,8 @@ class _TabChip extends StatelessWidget {
         Offset.zero & overlay.size,
       ),
       items: [
-        PopupMenuItem(
-          onTap: onDuplicate,
-          child: const Text('Duplicate session'),
-        ),
+        for (final (label, onTap) in menu)
+          PopupMenuItem(onTap: onTap, child: Text(label)),
       ],
     );
   }

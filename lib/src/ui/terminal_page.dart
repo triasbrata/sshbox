@@ -15,6 +15,7 @@ import 'key_bar.dart';
 import 'magic_key.dart';
 import 'terminal_link.dart';
 import 'terminal_text_input.dart';
+import 'tmux_panes.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -52,11 +53,6 @@ class _TerminalPageState extends State<TerminalPage> {
     typePath: _typePath,
     changeDirectory: _cdTo,
   );
-
-  /// Shared with the terminal view below it, which is what holds focus.
-  final _focusNode = FocusNode();
-  final _scrollController = ScrollController();
-  final _inputKey = GlobalKey<TerminalTextInputState>();
 
   bool _uploading = false;
   double? _uploadProgress;
@@ -118,6 +114,12 @@ class _TerminalPageState extends State<TerminalPage> {
     }
     setState(() {});
     _announceForwards();
+    final tmuxProblem = _session.takeTmuxProblem();
+    if (tmuxProblem != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Not using tmux: $tmuxProblem')),
+      );
+    }
     // A file shared from another app may have been queued before this page
     // existed, or before the shell came up. Either way the session notifies,
     // and this is where it lands.
@@ -181,8 +183,6 @@ class _TerminalPageState extends State<TerminalPage> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
-    _focusNode.dispose();
-    _scrollController.dispose();
     if (_session.outputTransform == _keyBar.applyModifiers) {
       _session.outputTransform = null;
     }
@@ -193,13 +193,6 @@ class _TerminalPageState extends State<TerminalPage> {
     _browser?.close();
     // The session itself is intentionally left running.
     super.dispose();
-  }
-
-  /// Typing anywhere in the scrollback should snap back to the prompt.
-  void _scrollToBottom() {
-    if (!_scrollController.hasClients) return;
-    final position = _scrollController.position;
-    position.jumpTo(position.maxScrollExtent);
   }
 
   void _reportPinnedKey(String fingerprint) {
@@ -374,38 +367,30 @@ class _TerminalPageState extends State<TerminalPage> {
       return _ConnectionError(message: error, onRetry: _reconnect);
     }
 
+    final tmux = _session.tmux;
     return Stack(
       children: [
-        // Two wrappers, because they take different things: the input owns
-        // the keyboard connection, the pad owns the swipe. The pad sits
-        // inside so its gestures land on the terminal itself — it claims
-        // only long presses and double taps, so a plain tap still falls
-        // through to xterm2 below and asks for the keyboard back, and a
-        // plain drag scrolls the scrollback.
-        TerminalTextInput(
-          key: _inputKey,
-          terminal: _session.terminal,
-          focusNode: _focusNode,
-          onInput: _scrollToBottom,
-          child: SwipeKeyPad(
+        if (tmux == null)
+          _PaneView(
             terminal: _session.terminal,
             onEmit: _session.sendRaw,
-            child: TerminalView(
-              _session.terminal,
-              focusNode: _focusNode,
-              scrollController: _scrollController,
-              autofocus: true,
-              // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
-              // hardware keys, shortcuts and mouse selection.
-              hardwareKeyboardOnly: true,
-              // Tapping a terminal that already has focus is how you ask for
-              // the keyboard back, and focus alone will not raise it.
-              onTapUp: (_, _) => _inputKey.currentState?.requestKeyboard(),
-              padding: const EdgeInsets.all(6),
-              textStyle: const TerminalStyle(fontSize: 13),
+            focused: true,
+            padding: _padding,
+          )
+        else
+          TmuxPaneLayout(
+            tmux: tmux,
+            textStyle: _textStyle,
+            padding: _padding,
+            // Every pane's keys go through the session, which sends them to
+            // the focused pane — and touching a pane is what focuses it.
+            pane: (pane, focused) => _PaneView(
+              terminal: pane.terminal,
+              onEmit: _session.sendRaw,
+              focused: focused,
+              autoResize: false,
             ),
           ),
-        ),
         if (_session.connecting)
           ColoredBox(
             color: Colors.black54,
@@ -436,6 +421,117 @@ class _TerminalPageState extends State<TerminalPage> {
             ),
           ),
       ],
+    );
+  }
+}
+
+const _padding = EdgeInsets.all(6);
+
+/// What every terminal on the page draws with. tmux's panes are laid out in
+/// cells of it, so it is one value rather than one per view.
+const _textStyle = TerminalStyle(fontSize: 13);
+
+/// One terminal on the page, and what makes it usable by touch: the soft
+/// keyboard's input, the swipe pad, and xterm2's view. A plain session shows
+/// one; tmux shows one per pane, each with its own focus and scroll position.
+class _PaneView extends StatefulWidget {
+  const _PaneView({
+    required this.terminal,
+    required this.onEmit,
+    required this.focused,
+    this.autoResize = true,
+    this.padding,
+  });
+
+  final Terminal terminal;
+  final void Function(String data) onEmit;
+
+  /// Whether keystrokes go here. Only such a view takes focus, and with it
+  /// the soft keyboard.
+  final bool focused;
+
+  /// False for a tmux pane: tmux sizes its terminal, not the view.
+  final bool autoResize;
+
+  final EdgeInsets? padding;
+
+  @override
+  State<_PaneView> createState() => _PaneViewState();
+}
+
+class _PaneViewState extends State<_PaneView> {
+  /// Shared with the terminal view below it, which is what holds focus.
+  final _focusNode = FocusNode();
+  final _scrollController = ScrollController();
+  final _inputKey = GlobalKey<TerminalTextInputState>();
+
+  @override
+  void initState() {
+    super.initState();
+    // A pane born focused — tmux focuses the one a split makes — takes focus
+    // from the pane that had it, which autofocus alone would leave alone.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
+  }
+
+  @override
+  void didUpdateWidget(_PaneView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.focused) _followFocus();
+  }
+
+  /// Typing goes wherever Flutter's focus is, and the key bar wherever
+  /// tmux's is: the two are kept on the same pane.
+  void _followFocus() {
+    if (mounted && widget.focused && !_focusNode.hasFocus) {
+      _focusNode.requestFocus();
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// Typing anywhere in the scrollback should snap back to the prompt.
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    position.jumpTo(position.maxScrollExtent);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Two wrappers, because they take different things: the input owns the
+    // keyboard connection, the pad owns the swipe. The pad sits inside so
+    // its gestures land on the terminal itself — it claims only long presses
+    // and double taps, so a plain tap still falls through to xterm2 below and
+    // asks for the keyboard back, and a plain drag scrolls the scrollback.
+    return TerminalTextInput(
+      key: _inputKey,
+      terminal: widget.terminal,
+      focusNode: _focusNode,
+      onInput: _scrollToBottom,
+      child: SwipeKeyPad(
+        terminal: widget.terminal,
+        onEmit: widget.onEmit,
+        child: TerminalView(
+          widget.terminal,
+          focusNode: _focusNode,
+          scrollController: _scrollController,
+          autofocus: widget.focused,
+          autoResize: widget.autoResize,
+          // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+          // hardware keys, shortcuts and mouse selection.
+          hardwareKeyboardOnly: true,
+          // Tapping a terminal that already has focus is how you ask for the
+          // keyboard back, and focus alone will not raise it.
+          onTapUp: (_, _) => _inputKey.currentState?.requestKeyboard(),
+          padding: widget.padding,
+          textStyle: _textStyle,
+        ),
+      ),
     );
   }
 }

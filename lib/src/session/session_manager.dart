@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:xterm2/xterm.dart';
@@ -9,6 +10,7 @@ import '../models/host_profile.dart';
 import 'dartssh2_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
+import 'tmux.dart';
 
 /// A local file waiting to go to the host — from the picker, or handed to us
 /// by another app through the share sheet.
@@ -68,13 +70,13 @@ class LiveSession extends ChangeNotifier {
   static int _nextId = 0;
 
   /// 10k lines: enough to scroll back through a build log, small enough not to
-  /// strain a phone's memory.
+  /// strain a phone's memory. Every tmux pane gets the same.
   ///
   /// Every key a hardware keyboard sends is turned into bytes by this input
   /// handler, which makes it the one place to change what a key means. The
   /// kitty handler goes first so a program that has switched that protocol on
   /// still gets the protocol's own encoding.
-  final Terminal terminal = Terminal(
+  static Terminal _newTerminal() => Terminal(
     maxLines: 10000,
     inputHandler: const CascadeInputHandler([
       KittyKeyboardInputHandler(),
@@ -82,6 +84,36 @@ class LiveSession extends ChangeNotifier {
       defaultInputHandler,
     ]),
   );
+
+  /// The shell's terminal, and in tmux mode the one shown until tmux is up.
+  final Terminal _terminal = _newTerminal();
+
+  /// The terminal keystrokes go to: the shell's, or in tmux mode the focused
+  /// pane's. What the key bar, the magic key and the upload all act on.
+  Terminal get terminal => _tmux?.focused?.terminal ?? _terminal;
+
+  /// This tab's tmux session, while one is attached — see [HostProfile.useTmux].
+  TmuxSession? get tmux => _tmux;
+  TmuxSession? _tmux;
+
+  /// What the tmux session is called on the host. Made once per tab and kept
+  /// across reconnects, which is what brings a dropped connection back to the
+  /// same panes. Random rather than [id], which restarts with the app: a new
+  /// tab must not land in a session left behind by an earlier run, or by
+  /// another device.
+  late final tmuxName =
+      'sshbox-${_random.nextInt(1 << 32).toRadixString(36)}';
+  static final _random = math.Random();
+
+  /// Why this host's tmux could not be used, for the page to say once.
+  String? _tmuxProblem;
+
+  /// Hands the reason over and forgets it, so it is said once per connect.
+  String? takeTmuxProblem() {
+    final problem = _tmuxProblem;
+    _tmuxProblem = null;
+    return problem;
+  }
 
   /// Set by the page while it is on screen, so armed key-bar modifiers can be
   /// folded into outgoing keystrokes. Lives here as a hook rather than a
@@ -178,17 +210,17 @@ class LiveSession extends ChangeNotifier {
     if (_wired) return;
     _wired = true;
 
-    terminal.onTitleChange = (title) {
+    _terminal.onTitleChange = (title) {
       _remoteTitle = title;
       _notify();
     };
 
-    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
       _size = (width, height);
       _session?.resize(width, height, pixelWidth, pixelHeight);
     };
 
-    terminal.onOutput = (data) {
+    _terminal.onOutput = (data) {
       final transformed = outputTransform?.call(data) ?? data;
       _session?.send(transformed);
     };
@@ -217,14 +249,22 @@ class LiveSession extends ChangeNotifier {
         onHostKeyPinned: onHostKeyPinned,
         onAuthBanner: _onAuthBanner,
       );
-      final session = await transport.connect(
+      Future<TerminalSession> open({required bool shell}) => transport.connect(
         host: host,
         secrets: secrets,
         columns: _size.$1,
         rows: _size.$2,
+        shell: shell,
       );
 
-      _outputSubscription = session.output.listen(terminal.write);
+      var session = await open(shell: !host.useTmux);
+      if (host.useTmux && !await _attachTmux(session)) {
+        // The plain shell the host would have had without the switch.
+        await session.dispose();
+        session = await open(shell: true);
+      }
+
+      _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
       _syncForwarding();
@@ -238,11 +278,56 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
+  /// Starts this tab's tmux session on the connection [session] holds, and
+  /// says why not when it cannot.
+  Future<bool> _attachTmux(TerminalSession session) async {
+    final TmuxSession tmux;
+    try {
+      final host = session as ChannelCapable;
+      tmux = TmuxSession(
+        name: tmuxName,
+        channel: await host.open(TmuxSession.command(tmuxName)),
+        newTerminal: _newTerminal,
+        transform: (data) => outputTransform?.call(data) ?? data,
+        onChanged: _notify,
+        onEnded: _onTmuxEnded,
+        size: _size,
+      );
+    } catch (error) {
+      _tmuxProblem = '$error';
+      return false;
+    }
+    // A host that neither starts tmux nor says why must not leave the tab
+    // spinning.
+    final attached = await tmux.attached.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => false,
+    );
+    if (attached) {
+      _tmux = tmux;
+      return true;
+    }
+    tmux.dispose();
+    _tmuxProblem = tmux.problem ?? 'tmux did not answer.';
+    return false;
+  }
+
+  /// tmux ending is this tab's shell ending, however it came about — the last
+  /// pane exited, the session was killed elsewhere, the connection dropped —
+  /// and it ends the way a plain shell does: the panes keep their last
+  /// screen, and the tab offers to reconnect.
+  void _onTmuxEnded() => unawaited(_session?.dispose());
+
+  /// The focused pane's foreground program and its working directory. Only
+  /// tmux knows them; a plain shell never tells the app either, so null.
+  Future<({String command, String path})?> foreground() =>
+      _tmux?.foreground() ?? Future.value();
+
   void _onStatusChanged() {
     _syncForwarding();
     final status = _session?.status.value;
     if (status == SessionStatus.closed) {
-      terminal.write('\r\n\x1b[2m[session closed]\x1b[0m\r\n');
+      _terminal.write('\r\n\x1b[2m[session closed]\x1b[0m\r\n');
     } else if (status == SessionStatus.failed) {
       _error = _session?.failure;
     }
@@ -255,8 +340,15 @@ class LiveSession extends ChangeNotifier {
   }
 
   /// Bypasses [outputTransform] — key bar entries are already complete
-  /// escape sequences.
-  void sendRaw(String data) => _session?.send(data);
+  /// escape sequences. In tmux mode, to the focused pane.
+  void sendRaw(String data) {
+    final tmux = _tmux;
+    if (tmux != null) {
+      tmux.send(data);
+    } else {
+      _session?.send(data);
+    }
+  }
 
   /// Whether this session's transport can move files at all.
   bool get canUploadFiles => _session is FileUploadCapable;
@@ -327,8 +419,14 @@ class LiveSession extends ChangeNotifier {
     );
   }
 
-  Future<void> _teardown() async {
+  /// [kill] ends the tmux session too — closing the tab. A reconnect leaves
+  /// it running, to come back to.
+  Future<void> _teardown({bool kill = false}) async {
     forwarder.stop();
+    final tmux = _tmux;
+    _tmux = null;
+    if (kill) await tmux?.kill();
+    tmux?.dispose();
     final session = _session;
     _session = null;
     final browser = _fileBrowser;
@@ -350,7 +448,7 @@ class LiveSession extends ChangeNotifier {
     void Function(String fingerprint)? onHostKeyPinned,
   }) async {
     await disconnect();
-    terminal.write('\x1b[2J\x1b[H');
+    _terminal.write('\x1b[2J\x1b[H');
     await connect(secrets: secrets, onHostKeyPinned: onHostKeyPinned);
   }
 
@@ -359,8 +457,8 @@ class LiveSession extends ChangeNotifier {
     // Flag first: teardown continues after this method returns, and anything
     // it triggers must not touch a disposed notifier.
     _disposed = true;
-    unawaited(_teardown());
-    terminal.dispose();
+    unawaited(_teardown(kill: true));
+    _terminal.dispose();
     super.dispose();
   }
 }
