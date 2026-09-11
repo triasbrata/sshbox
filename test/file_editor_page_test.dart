@@ -38,6 +38,51 @@ void main() {
       _editor(tester).text,
       'first line\nsecond line\n',
     );
+    // Undo stops at the file as it came, not at the empty page before it.
+    expect(_editor(tester).canUndo, isFalse);
+  });
+
+  testWidgets('keeps a CRLF file CRLF', (tester) async {
+    final browser = FakeFileBrowser()
+      ..contents['/home/me/notes.txt'] = 'one\r\ntwo\r\n';
+    await _pumpEditor(tester, browser);
+
+    // Its line endings alone are not an edit.
+    expect(_canSave(tester), isFalse);
+
+    _editor(tester).text = 'one\ntwo\nthree\n';
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
+    await tester.pumpAndSettle();
+
+    expect(browser.contents['/home/me/notes.txt'], 'one\r\ntwo\r\nthree\r\n');
+    expect(_canSave(tester), isFalse);
+  });
+
+  testWidgets('remembers word wrap and text size', (tester) async {
+    final browser = FakeFileBrowser();
+    await _pumpEditor(tester, browser);
+    CodeEditor editor() => tester.widget<CodeEditor>(find.byType(CodeEditor));
+    Future<void> pick(String item) async {
+      await tester.tap(find.byTooltip('View'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(item));
+      await tester.pumpAndSettle();
+    }
+
+    expect(editor().wordWrap, isTrue);
+    expect(editor().style!.fontSize, 13);
+
+    await pick('Word wrap');
+    await pick('Larger text');
+    expect(editor().wordWrap, isFalse);
+    expect(editor().style!.fontSize, 14);
+
+    // Opened again, it comes back the way it was left.
+    await tester.pumpWidget(const SizedBox());
+    await _pumpEditor(tester, browser);
+    expect(editor().wordWrap, isFalse);
+    expect(editor().style!.fontSize, 14);
   });
 
   testWidgets('cannot save until something changed', (tester) async {
