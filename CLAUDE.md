@@ -63,8 +63,8 @@ through its sub-agents.
 |---|---|---|---|
 | Code editor: find and replace, go to line, and a search result opens at its line | text editor enhancement | — | in development |
 | Code editor key bar: arrows and a cursor pad, Tab, undo/redo, symbols (the user found no way to move the cursor in a file) | text editor enhancement | 13c7831 | on tablet, UAT pending |
-| Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | — | in development |
-| Links open in an in-app browser (Custom Tabs, the OS default browser's engine) | Coordinator | de465b5, 6452ba6 | UAT failed: it opens a separate screen; links should open as a tab in sshbox's own tab strip (fix in development) |
+| Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | 40bcdd9 | on tablet, UAT pending |
+| Links open as a web tab beside their shell (WebView); the Tailscale sign-in stays on a Custom Tab | Coordinator | de465b5, f54e12f, 0168e48 | on tablet, UAT pending (first try failed: the Custom Tab opened a separate screen, not a tab) |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
 | Terminal selection with the platform's start/end handles and toolbar | Coordinator | dbd8375 | UAT passed |
 | Follow's busy-check messages as a toast | Coordinator | b984c8e | UAT passed |
