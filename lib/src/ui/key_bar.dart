@@ -733,10 +733,11 @@ class _SwipeKeyPadState extends State<SwipeKeyPad>
     });
   }
 
-  /// The first [T] inside [SwipeKeyPad.child] — its TerminalView, or the
-  /// Scrollable that scrolls it — found rather than handed in so a pad needs
-  /// nothing beyond the controller its view was already given.
-  T? _find<T extends State>() {
+  /// The first [T] inside [SwipeKeyPad.child], or inside [under] — its
+  /// TerminalView, or the Scrollable that scrolls it — found rather than
+  /// handed in so a pad needs nothing beyond the controller its view was
+  /// already given.
+  T? _find<T extends State>([BuildContext? under]) {
     T? found;
     void look(Element element) {
       if (element is StatefulElement && element.state is T) {
@@ -746,8 +747,23 @@ class _SwipeKeyPadState extends State<SwipeKeyPad>
       }
     }
 
-    context.visitChildElements(look);
+    (under ?? context).visitChildElements(look);
     return found;
+  }
+
+  /// The scroll the terminal lays its text out by, which is the innermost
+  /// Scrollable in its view. While a program reads the mouse, or has the
+  /// alternate screen up, xterm2 wraps that one in a Scrollable of its own
+  /// that turns scrolling into wheel events or arrow keys for the program,
+  /// and [_find] meets the wrapper first.
+  ScrollPosition? _scrollback() {
+    ScrollPosition? position;
+    for (var scrollable = _find<ScrollableState>();
+        scrollable != null;
+        scrollable = _find<ScrollableState>(scrollable.context)) {
+      position = scrollable.position;
+    }
+    return position;
   }
 
   TerminalViewState? _view() => _find<TerminalViewState>();
@@ -927,8 +943,15 @@ class _SwipeKeyPadState extends State<SwipeKeyPad>
   /// under it has. The handles and toolbar follow the scroll as they do any
   /// other. Stops at the end of the scrollback, where there is nothing left to
   /// bring into sight.
+  ///
+  /// It scrolls the scrollback itself, never the program: the text beyond the
+  /// edge is what the handle is reaching for. A wheel event sent instead
+  /// would scroll the program a line, and the page lets go of a selection on
+  /// anything the terminal sends, so the selection, and the scroll with it,
+  /// would end a line in. On the alternate screen there is no scrollback,
+  /// and so nothing to scroll.
   void _edgeTick(Duration elapsed) {
-    final position = _find<ScrollableState>()?.position;
+    final position = _scrollback();
     if (_pinned == null || position == null) {
       _edge.stop();
       return;
