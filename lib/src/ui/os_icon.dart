@@ -41,6 +41,11 @@ OsLogo? osLogo(OsInfo? os) {
   return null;
 }
 
+/// The line under a host's name, as Termius writes it: `ssh, me, ubuntu`,
+/// or `ssh, me` before the host has said what it runs.
+String sshLine(String username, OsInfo? os) =>
+    ['ssh', username, ?os?.id].where((part) => part.isNotEmpty).join(', ');
+
 /// A host's OS as a rounded square in its colour with its logo in white, the
 /// way Termius shows one. A host that has not said yet, or runs something
 /// without a logo here, gets a plain badge in the theme's colours with a

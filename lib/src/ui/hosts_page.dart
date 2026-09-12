@@ -6,6 +6,7 @@ import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/session_manager.dart';
 import 'host_edit_page.dart';
+import 'logs_page.dart';
 import 'os_icon.dart';
 import 'settings_page.dart';
 
@@ -137,6 +138,18 @@ class _HostsPageState extends State<HostsPage> {
             tooltip: 'Copy FCM token',
             onPressed: _copyPushToken,
             icon: const Icon(Icons.key_outlined),
+          ),
+          IconButton(
+            tooltip: 'Logs',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => LogsPage(
+                  repository: widget.repository,
+                  onOpenHost: widget.onOpenHost,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.history),
           ),
           IconButton(
             tooltip: 'Settings',
@@ -271,10 +284,7 @@ class _HostTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             for (final line in [
-              // As Termius puts it: `ssh, me, ubuntu`.
-              ['ssh', host.username, ?host.os?.id]
-                  .where((part) => part.isNotEmpty)
-                  .join(', '),
+              sshLine(host.username, host.os),
               ?host.os?.summary,
               host.target,
               switch (activeCount) {

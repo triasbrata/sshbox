@@ -75,6 +75,9 @@ class _HostEditPageState extends State<HostEditPage> {
   late bool _useTmux;
   late String _jumpHostId;
 
+  /// The host's port forwards, as edited so far.
+  late final List<LocalForward> _localForwards;
+
   /// The hosts this one can jump through: every other saved host, once read.
   List<HostProfile>? _jumpHosts;
   bool _saving = false;
@@ -94,6 +97,7 @@ class _HostEditPageState extends State<HostEditPage> {
     _forwardPorts = existing?.forwardPorts ?? false;
     _useTmux = existing?.useTmux ?? false;
     _jumpHostId = existing?.jumpHostId ?? '';
+    _localForwards = [...?existing?.localForwards];
     unawaited(_loadJumpHosts());
   }
 
@@ -146,6 +150,7 @@ class _HostEditPageState extends State<HostEditPage> {
       forwardPorts: _forwardPorts,
       useTmux: _useTmux,
       jumpHostId: _jumpHostId,
+      localForwards: _localForwards,
       // Not the form's: the host says it again on its next connect.
       os: widget.existing?.os,
     );
@@ -166,6 +171,94 @@ class _HostEditPageState extends State<HostEditPage> {
 
     if (!mounted) return;
     Navigator.of(context).pop(profile);
+  }
+
+  /// Asks for one port forward, and adds it. A blank destination port is
+  /// the tablet's: 5432 to the host's 5432.
+  Future<void> _addLocalForward() async {
+    final form = GlobalKey<FormState>();
+    var localPort = '';
+    var destHost = 'localhost';
+    var destPort = '';
+    final rule = await showDialog<LocalForward>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Port forward'),
+        scrollable: true,
+        content: Form(
+          key: form,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Port on this tablet',
+                  hintText: '5432',
+                ),
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.next,
+                validator: (value) =>
+                    LocalForward.portError(value, local: true) ??
+                    (_localForwards.any(
+                          (rule) => rule.localPort == int.parse(value!.trim()),
+                        )
+                        ? 'This host already forwards that port'
+                        : null),
+                onSaved: (value) => localPort = value!.trim(),
+              ),
+              TextFormField(
+                initialValue: destHost,
+                decoration: const InputDecoration(
+                  labelText: 'Destination host',
+                  helperText: 'As the host reaches it',
+                ),
+                autocorrect: false,
+                keyboardType: TextInputType.url,
+                textInputAction: TextInputAction.next,
+                validator: (value) => (value == null || value.trim().isEmpty)
+                    ? 'A hostname or IP is required'
+                    : null,
+                onSaved: (value) => destHost = value!.trim(),
+              ),
+              TextFormField(
+                decoration: const InputDecoration(
+                  labelText: 'Destination port',
+                  helperText: 'Blank is the same as on this tablet',
+                ),
+                keyboardType: TextInputType.number,
+                validator: (value) => (value ?? '').trim().isEmpty
+                    ? null
+                    : LocalForward.portError(value),
+                onSaved: (value) => destPort = value!.trim(),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (!form.currentState!.validate()) return;
+              form.currentState!.save();
+              Navigator.of(context).pop(
+                LocalForward(
+                  localPort: int.parse(localPort),
+                  destHost: destHost,
+                  destPort: int.parse(destPort.isEmpty ? localPort : destPort),
+                ),
+              );
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    if (rule == null || !mounted) return;
+    setState(() => _localForwards.add(rule));
   }
 
   @override
@@ -263,6 +356,39 @@ class _HostEditPageState extends State<HostEditPage> {
               ),
               const SizedBox(height: 12),
             ],
+            InputDecorator(
+              decoration: const InputDecoration(
+                labelText: 'Port forwards',
+                helperText: 'Like ssh -L: a port on this tablet, tunnelled to '
+                    'the host while a session is connected. Only apps on '
+                    'this tablet can reach it: a database app connects to '
+                    '127.0.0.1 at that port.',
+                helperMaxLines: 4,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final rule in _localForwards)
+                    Row(
+                      children: [
+                        Expanded(child: Text(rule.label)),
+                        IconButton(
+                          tooltip: 'Remove',
+                          icon: const Icon(Icons.close),
+                          onPressed: () =>
+                              setState(() => _localForwards.remove(rule)),
+                        ),
+                      ],
+                    ),
+                  TextButton.icon(
+                    onPressed: _addLocalForward,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add port forward'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
             TextFormField(
               controller: _fileRoot,
               decoration: const InputDecoration(

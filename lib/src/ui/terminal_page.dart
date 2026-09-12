@@ -207,6 +207,16 @@ class _TerminalPageState extends State<TerminalPage> {
     if (problem != null && _announced.add(problem)) {
       failed('Not forwarding ports', problem);
     }
+    // The host's port forwards to this tablet: each one opening, or why it
+    // could not. The session hands each over once.
+    for (final news in _session.localForwarder.takeNews()) {
+      showToast(
+        context,
+        news.message,
+        type: news.failed ? ToastificationType.error : ToastificationType.info,
+        duration: Duration(seconds: news.failed ? 8 : 3),
+      );
+    }
   }
 
   /// Uploads anything handed to the session from outside the terminal page.
@@ -336,7 +346,9 @@ class _TerminalPageState extends State<TerminalPage> {
     final ctrl = _ctrl;
     if (!mounted || ctrl == _ctrlShown) return;
     _ctrlShown = ctrl;
-    final color = Theme.of(context).colorScheme.primary;
+    // The accent as the dark theme has it, whichever theme is picked: the
+    // terminal under the line is dark either way.
+    final color = Theme.of(context).colorScheme.primaryFixedDim;
     for (final view in _paneViews) {
       view.showLinks(ctrl: ctrl, color: color);
     }
@@ -607,7 +619,11 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         if (_session.connecting)
           ColoredBox(
-            color: Colors.black54,
+            // A light theme's sign-in prompt is dark text, lost on black, so
+            // there the shell is veiled in the page's own surface instead.
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.black54
+                : Theme.of(context).colorScheme.surface.withValues(alpha: 0.8),
             child: Center(
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()

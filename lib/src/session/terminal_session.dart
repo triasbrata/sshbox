@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/secret_store.dart';
@@ -104,6 +106,18 @@ abstract class ChannelCapable {
   /// No pty: nothing on the way should turn `\n` into `\r\n` or read a
   /// control byte as a signal. [CommandChannel.close] ends the command.
   Future<CommandChannel> open(String command);
+}
+
+/// A TCP connection [ForwardCapable.forward] made from the host: the bytes
+/// the far end sends, and a sink for ours whose close says we are done.
+typedef Tunnel = ({Stream<Uint8List> output, StreamSink<List<int>> input});
+
+/// Optional capability: a TCP connection made from the host, as `ssh -L`
+/// makes one — what `LocalForwarder` pipes a port on the tablet into.
+abstract class ForwardCapable {
+  /// Connects to [host]:[port] as the host reaches it. Throws, with the
+  /// host's reason, when it cannot.
+  Future<Tunnel> forward(String host, int port);
 }
 
 abstract class SessionTransport {
