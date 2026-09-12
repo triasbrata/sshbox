@@ -38,6 +38,7 @@ class _Shell implements SessionTransport, TerminalSession, FileBrowseCapable {
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   }) async => this;
 
   @override
@@ -90,7 +91,6 @@ void main() {
           secrets: _NoSecrets(),
           sessions: manager,
           onOpenHost: (_) async {},
-          pushToken: () => null,
         ),
       ),
     );

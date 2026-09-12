@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -137,7 +138,11 @@ final appTheme = AppTheme();
 
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.pushToken});
+
+  /// Reads the device's push token, for Notifications to copy. Left out,
+  /// there is none to copy.
+  final String? Function()? pushToken;
 
   @override
   Widget build(BuildContext context) {
@@ -145,7 +150,11 @@ class SettingsPage extends StatelessWidget {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.only(bottom: 24),
-        children: const [_ThemeSection(), _TerminalSection()],
+        children: [
+          const _ThemeSection(),
+          const _TerminalSection(),
+          _NotificationsSection(pushToken),
+        ],
       ),
     );
   }
@@ -446,6 +455,49 @@ class _TerminalSectionState extends State<_TerminalSection> {
           ],
         );
       },
+    );
+  }
+}
+
+/// The device's push token, to copy by hand for a host that will not take
+/// it the usual way, as `LC_SSHBOX_TOKEN` with every shell: see
+/// `LiveSession.connect`.
+class _NotificationsSection extends StatelessWidget {
+  const _NotificationsSection(this.pushToken);
+
+  final String? Function()? pushToken;
+
+  Future<void> _copy(BuildContext context) async {
+    final token = pushToken?.call();
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (token == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('No FCM token yet — push is unavailable')),
+      );
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: token));
+    messenger.showSnackBar(const SnackBar(content: Text('FCM token copied')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _SectionHeader('Notifications'),
+        ListTile(
+          leading: const Icon(Icons.key_outlined),
+          title: const Text('Copy notification token'),
+          subtitle: const Text(
+            'Normally sent to hosts automatically as LC_SSHBOX_TOKEN. Copy '
+            'it only for a server that does not accept it.',
+          ),
+          onTap: () => _copy(context),
+        ),
+      ],
     );
   }
 }

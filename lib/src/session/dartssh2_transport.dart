@@ -44,9 +44,10 @@ class Dartssh2Transport implements SessionTransport {
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   }) async {
-    final session =
-        _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner);
+    final session = _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner)
+      .._environment = environment;
     await session._open(
       host: host,
       secrets: secrets,
@@ -111,6 +112,10 @@ class _Dartssh2Session
   /// The jump hosts [_client] is tunnelled through, first dialled first.
   final _jumps = <SSHClient>[];
   SSHSession? _shell;
+
+  /// Sent with the shell and with each command [open] starts: see
+  /// [SessionTransport.connect]. Emptied once the host has refused it.
+  Map<String, String> _environment = const {};
   String? _failure;
   bool _disposed = false;
 
@@ -178,10 +183,10 @@ class _Dartssh2Session
         return;
       }
 
-      _shell = await _client!.shell(
-        pty: SSHPtyConfig(
-          width: columns,
-          height: rows,
+      _shell = await _withEnvironment(
+        (environment) => _client!.shell(
+          pty: SSHPtyConfig(width: columns, height: rows),
+          environment: environment,
         ),
       );
 
@@ -290,6 +295,23 @@ class _Dartssh2Session
     return SSHKeyPair.fromPem(pem, passphrase);
   }
 
+  /// Starts a session channel with [_environment], or without it once the
+  /// host has refused it. sshd takes only the names its `AcceptEnv` lists,
+  /// and dartssh2 fails the whole channel over a refused one where `ssh(1)`
+  /// carries on, so the channel is started again without them, and the rest
+  /// of this connection stops asking.
+  Future<SSHSession> _withEnvironment(
+    Future<SSHSession> Function(Map<String, String>? environment) start,
+  ) async {
+    if (_environment.isEmpty) return start(null);
+    try {
+      return await start(_environment);
+    } on SSHChannelRequestError {
+      _environment = const {};
+      return start(null);
+    }
+  }
+
   void _emit(String data) {
     if (_output.isClosed) return;
     _output.add(data);
@@ -349,15 +371,17 @@ class _Dartssh2Session
     }
   }
 
-  /// An exec channel with no pty, closed with `destroy` for the same reason
-  /// [run]'s is.
+  /// An exec channel with no pty, and the environment the shell would have
+  /// had, closed with `destroy` for the same reason [run]'s is.
   @override
   Future<CommandChannel> open(String command) async {
     final client = _client;
     if (client == null || _status.value != SessionStatus.connected) {
       throw const SshSessionException('Not connected.');
     }
-    final session = await client.execute(command);
+    final session = await _withEnvironment(
+      (environment) => client.execute(command, environment: environment),
+    );
     return (
       output: session.stdout,
       write: session.write,

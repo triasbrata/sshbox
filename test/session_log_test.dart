@@ -35,6 +35,7 @@ class _Shell implements SessionTransport, TerminalSession {
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   }) async {
     if (refuse) throw const SshSessionException('Connection refused.');
     return this;

@@ -14,10 +14,14 @@ import 'package:xterm2/xterm.dart';
 /// `exec`, so the process is tmux's client itself and closing the channel
 /// ends it, as sshd closing a channel does. Killing a shell in front of it
 /// instead left the client running, attached, and the server with it.
+///
+/// [environment] is whatever else the channel brought, as the device's
+/// variables come with it.
 Future<(Process, CommandChannel)> _start(
   String name,
   Directory dir, {
   String path = '/usr/local/bin:/usr/bin:/bin',
+  Map<String, String> environment = const {},
 }) async {
   final process = await Process.start(
     '/bin/sh',
@@ -27,6 +31,7 @@ Future<(Process, CommandChannel)> _start(
       'PATH': path,
       'SHELL': '/bin/sh',
       'TMUX_TMPDIR': dir.path,
+      ...environment,
     },
     includeParentEnvironment: false,
   );
@@ -133,6 +138,65 @@ void main() {
       tmux.dispose();
       final gone = await _tmux(dir, ['has-session', '-t', name]);
       expect(gone.exitCode, isNot(0));
+    },
+    skip: hasTmux ? false : 'tmux is not installed here',
+  );
+
+  test(
+    "the device's variables reach new panes, whoever started the server",
+    () async {
+      // A tmux server already running, started without them.
+      await _tmux(dir, [
+        'set',
+        '-g',
+        'default-shell',
+        '/bin/sh',
+        ';',
+        'new-session',
+        '-d',
+        '-s',
+        'elsewhere',
+      ]);
+      const name = 'sshbox-env';
+      Future<(Process, CommandChannel)> start(String token) => _start(
+        name,
+        dir,
+        environment: {'LC_SSHBOX_TOKEN': token, 'LC_SSHBOX_HOST_ID': 'host-1'},
+      );
+      // What the focused pane's shell has, and not the line typed to ask.
+      Future<void> printed(TmuxSession tmux, String values) async {
+        tmux.send(
+          r'echo "<$LC_SSHBOX_TOKEN $LC_SSHBOX_HOST_ID>"'
+          '\r',
+        );
+        await _until(() => _text(tmux.focused!).contains('<$values>'));
+      }
+
+      var (process, channel) = await start('token-1');
+      var tmux = _session(name, channel);
+      expect(await tmux.attached, isTrue);
+      await _until(() => tmux.panes.length == 1);
+      await printed(tmux, 'token-1 host-1');
+
+      // Back after a reconnect, with a token FCM has replaced since.
+      tmux.dispose();
+      await process.exitCode;
+      (process, channel) = await start('token-2');
+      tmux = _session(name, channel);
+      expect(await tmux.attached, isTrue);
+      await _until(() => tmux.panes.length == 1);
+      await tmux.split(sideBySide: true);
+      await _until(
+        () => tmux.panes.length == 2 && tmux.focused == tmux.panes.last,
+      );
+      await printed(tmux, 'token-2 host-1');
+
+      // Listed once, however often a tab attaches.
+      final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
+      expect('LC_SSHBOX_TOKEN'.allMatches('${listed.stdout}'), hasLength(1));
+
+      tmux.dispose();
+      await process.exitCode;
     },
     skip: hasTmux ? false : 'tmux is not installed here',
   );

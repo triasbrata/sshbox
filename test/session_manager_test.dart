@@ -24,6 +24,9 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
   final commands = <String>[];
   final reply = Completer<List<String>>();
 
+  /// What the last connect was asked to send with the shell.
+  Map<String, String>? environment;
+
   @override
   Future<TerminalSession> connect({
     required HostProfile host,
@@ -31,7 +34,11 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
     required int columns,
     required int rows,
     bool shell = true,
-  }) async => this;
+    Map<String, String> environment = const {},
+  }) async {
+    this.environment = environment;
+    return this;
+  }
 
   @override
   final status = ValueNotifier(SessionStatus.connected);
@@ -453,6 +460,27 @@ void main() {
       await pumpEventQueue();
 
       expect(session.fileTabTitle('/srv/app.py'), 'box · app.py');
+    });
+  });
+
+  group('tells the host which device to notify', () {
+    Future<Map<String, String>?> sent(SessionManager manager) async {
+      final host = _Host();
+      final session = manager.create(_host, transport: (_, _) => host);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      return host.environment;
+    }
+
+    test('its push token and the host id, once it has a token', () async {
+      expect(await sent(SessionManager(pushToken: () => 'device-token')), {
+        'LC_SSHBOX_TOKEN': 'device-token',
+        'LC_SSHBOX_HOST_ID': 'host-1',
+      });
+    });
+
+    test('nothing without one', () async {
+      expect(await sent(SessionManager()), isEmpty);
     });
   });
 }

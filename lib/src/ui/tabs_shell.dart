@@ -41,14 +41,12 @@ class TabsShell extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
-    required this.pushToken,
   });
 
   final HostRepository repository;
   final SecretStore secrets;
   final SessionManager sessions;
   final Future<void> Function(String hostId) onOpenHost;
-  final String? Function() pushToken;
 
   @override
   State<TabsShell> createState() => _TabsShellState();
@@ -222,7 +220,6 @@ class _TabsShellState extends State<TabsShell> {
                       secrets: widget.secrets,
                       sessions: widget.sessions,
                       onOpenHost: widget.onOpenHost,
-                      pushToken: widget.pushToken,
                     ),
                     ...tabs.map(_pageFor),
                   ].indexed)

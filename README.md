@@ -675,8 +675,10 @@ over a message, the gateway does the rest.
 A `notification` block would let Android post its own notification while the
 app is backgrounded, and that one carries no payload to route with.
 
-Get the device's registration token from the key icon in the host list, or
-from logcat at startup.
+The device's registration token goes to every host it connects to, as
+`LC_SSHBOX_TOKEN`: see [Sending one from a server](#sending-one-from-a-server).
+**Settings → Notifications → Copy notification token** copies it for a host
+that won't take it, and a debug build prints it to logcat at startup.
 
 **Testing without a server:** `sshbox://notify/<hostId>` posts a notification
 locally, so the whole notify → tap → resume path can be exercised with adb:
@@ -707,12 +709,46 @@ requires OAuth2 with a service account, and signing an RS256 JWT in shell is
 not worth the evening. Static, no runtime dependencies, and it cross-compiles
 for linux/amd64, linux/arm64 and darwin/arm64.
 
-Config lives at `~/.config/sshbox-notify/config.json`:
+It notifies the device the shell it runs in was opened from, and a tap opens
+the host that shell came through. Jeansh passes both with every shell it
+opens, plain or tmux:
+
+| Variable | Holds |
+| --- | --- |
+| `LC_SSHBOX_TOKEN` | the device's FCM registration token |
+| `LC_SSHBOX_HOST_ID` | the id of the saved host, which a tap opens |
+
+Neither is sent while the device has no token, as when Firebase did not
+start. `-token` and `-host` still win over them.
+
+**The server has to accept them.** OpenSSH takes only the variables its
+`AcceptEnv` lists. Debian, Ubuntu and macOS ship `AcceptEnv LANG LC_*`, which
+is why both names start with `LC_`, the trick iTerm2's `LC_TERMINAL` uses.
+Elsewhere, add `AcceptEnv LC_SSHBOX_*` (or `LC_*`) to `sshd_config` and reload
+sshd. Tailscale SSH passes them only when the tailnet policy's SSH rule lists
+them in `acceptEnv`, as in `"acceptEnv": ["LC_SSHBOX_*"]`, on Tailscale 1.76
+or later. A server that refuses them still connects, and
+`echo $LC_SSHBOX_TOKEN` prints nothing there; put the token in the config
+instead, from **Settings → Notifications → Copy notification token**.
+
+In tmux mode a tab adds the two names to tmux's `update-environment`, once per
+tmux server, so tmux copies them into the tab's session when it makes it and
+at every reattach. A new pane gets this connection's values even when the
+tmux server was started by something else; a pane already running keeps the
+ones it started with.
+
+**The token goes to every host you connect to.** It tells FCM which device to
+reach, but sending to it also takes the Firebase service account, which stays
+on the machine that runs `sshbox-notify`.
+
+Config lives at `~/.config/sshbox-notify/config.json`, and all it needs is the
+service account. `tokens` and `host_id` stand in for a shell without the
+variables:
 
 ```json
 {
   "service_account": "/etc/sshbox/service-account.json",
-  "tokens": ["<FCM token from the key icon in sshbox>"],
+  "tokens": ["<token from Settings → Notifications in Jeansh>"],
   "host_id": "<the sshbox host entry for this server>"
 }
 ```

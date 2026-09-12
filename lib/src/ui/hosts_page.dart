@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
@@ -20,16 +19,11 @@ class HostsPage extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
-    required this.pushToken,
   });
 
   final HostRepository repository;
   final SecretStore secrets;
   final SessionManager sessions;
-
-  /// Reads the current FCM registration token, so it can be copied out and
-  /// handed to whatever server should be able to notify this device.
-  final String? Function() pushToken;
 
   /// Opens another session on the host, even one that already has some — the
   /// tab strip is how you get back to those.
@@ -82,21 +76,6 @@ class _HostsPageState extends State<HostsPage> {
     // file tree root would wait for the tab to be closed and opened again.
     if (saved != null) widget.sessions.updateHost(saved);
     await _reload();
-  }
-
-  Future<void> _copyPushToken() async {
-    final token = widget.pushToken();
-    final messenger = ScaffoldMessenger.of(context);
-
-    if (token == null) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('No FCM token yet — push is unavailable')),
-      );
-      return;
-    }
-
-    await Clipboard.setData(ClipboardData(text: token));
-    messenger.showSnackBar(const SnackBar(content: Text('FCM token copied')));
   }
 
   Future<void> _confirmDelete(HostProfile host) async {
@@ -154,11 +133,6 @@ class _HostsPageState extends State<HostsPage> {
         ),
         actions: [
           IconButton(
-            tooltip: 'Copy FCM token',
-            onPressed: _copyPushToken,
-            icon: const Icon(Icons.key_outlined),
-          ),
-          IconButton(
             tooltip: 'Port forwarding',
             onPressed: () async {
               await Navigator.of(context).push(
@@ -199,7 +173,10 @@ class _HostsPageState extends State<HostsPage> {
           IconButton(
             tooltip: 'Settings',
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    SettingsPage(pushToken: widget.sessions.pushToken),
+              ),
             ),
             icon: const Icon(Icons.settings_outlined),
           ),

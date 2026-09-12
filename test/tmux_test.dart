@@ -44,6 +44,18 @@ class _FakeTmux {
 }
 
 void main() {
+  test(
+    "tmux copies the device's variables from the channel into its session",
+    () {
+      final command = TmuxSession.command('sshbox-abc');
+      expect(
+        command,
+        contains('update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID"'),
+      );
+      expect(command, endsWith("new-session -A -s sshbox-abc 2>&1'"));
+    },
+  );
+
   test('%output unescapes to the bytes the pane wrote', () {
     final written = <int>[];
     final client = TmuxClient(

@@ -121,4 +121,23 @@ void main() {
       expect(declared, contains(font.family));
     }
   });
+
+  testWidgets('with no push token yet, copying says push is unavailable', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    final copy = find.text('Copy notification token');
+    // The page's own list, not the preview terminal's.
+    await tester.scrollUntilVisible(
+      copy,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    // Why the row is there at all, when hosts get the token by themselves.
+    expect(find.textContaining('LC_SSHBOX_TOKEN'), findsOneWidget);
+
+    await tester.tap(copy);
+    await tester.pumpAndSettle();
+    expect(find.text('No FCM token yet — push is unavailable'), findsOneWidget);
+  });
 }

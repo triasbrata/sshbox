@@ -46,6 +46,7 @@ class LiveSession extends ChangeNotifier {
     required this._host,
     bool Function(int port)? forwardedElsewhere,
     this._transport,
+    this._pushToken,
   }) {
     forwarder = TailnetForwarder(
       onChanged: _notify,
@@ -62,6 +63,10 @@ class LiveSession extends ChangeNotifier {
   /// Otherwise each attempt makes its own SSH transport. Either way it
   /// carries that attempt's host key and banner callbacks.
   final TransportMaker? _transport;
+
+  /// Reads the device's push token, at every connect: FCM replaces it now
+  /// and then. See [SessionManager.pushToken].
+  final String? Function()? _pushToken;
 
   HostProfile get host => _host;
 
@@ -331,12 +336,25 @@ class LiveSession extends ChangeNotifier {
             confirmHostKey: confirmHostKey,
             onAuthBanner: banner,
           );
+      // Which device to notify and which host a tap opens, for
+      // `sshbox-notify` on the host to read rather than anyone copying them
+      // over by hand; nothing without a token. `LC_` because sshd takes only
+      // the names its AcceptEnv lists, and Debian, Ubuntu and macOS ship
+      // `AcceptEnv LANG LC_*`: how iTerm2's `LC_TERMINAL` gets through.
+      final token = _pushToken?.call();
+      final environment = {
+        if (token != null) ...{
+          'LC_SSHBOX_TOKEN': token,
+          'LC_SSHBOX_HOST_ID': host.id,
+        },
+      };
       Future<TerminalSession> open({required bool shell}) => transport.connect(
         host: host,
         secrets: secrets,
         columns: _size.$1,
         rows: _size.$2,
         shell: shell,
+        environment: environment,
       );
 
       var session = await open(shell: !host.useTmux);
@@ -480,10 +498,10 @@ class LiveSession extends ChangeNotifier {
   /// the oldest process with a terminal that carries this connection's value
   /// while its parent does not. sshd and tailscaled put it only in what they
   /// start, and everything else on the connection, this command included,
-  /// comes after the shell. Not a marker of our own sent with the shell:
-  /// dartssh2 fails the shell outright when sshd refuses an environment
-  /// variable, and Tailscale SSH drops them unless the tailnet policy lists
-  /// them.
+  /// comes after the shell. Not a marker of our own sent with the shell: a
+  /// host may refuse the variables sent with it, as sshd does any its
+  /// AcceptEnv does not list, and Tailscale SSH any its tailnet policy does
+  /// not.
   ///
   /// The terminal's foreground process group is then whatever the user is
   /// looking at, and its cwd is where a relative path it printed starts from:
@@ -733,6 +751,14 @@ class WebTab {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
+  SessionManager({this.pushToken = _noToken});
+
+  /// Reads the device's push token, or null while it has none: what each
+  /// connection hands its host, and what Settings copies for a host that
+  /// will not take it.
+  final String? Function() pushToken;
+  static String? _noToken() => null;
+
   /// Insertion-ordered, and that order is the tab order.
   final Map<int, LiveSession> _sessions = {};
 
@@ -855,6 +881,7 @@ class SessionManager extends ChangeNotifier {
       forwardedElsewhere: (port) => sessionsFor(created.host.id)
           .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
+      pushToken: pushToken,
     );
     return created;
   }

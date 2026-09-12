@@ -135,11 +135,16 @@ abstract class SessionTransport {
   /// terminals come from somewhere else — tmux's panes, over
   /// [ChannelCapable.open]. The session then stays up for as long as the
   /// connection does, and its own output, input and size go nowhere.
+  ///
+  /// [environment] goes with the shell, and with each command
+  /// [ChannelCapable.open] starts, for the programs there to read. A host
+  /// may refuse it, which costs the variables, never the connection.
   Future<TerminalSession> connect({
     required HostProfile host,
     required SecretStore secrets,
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   });
 }

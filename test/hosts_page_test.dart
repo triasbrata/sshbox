@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
@@ -23,6 +24,7 @@ class _Shell implements SessionTransport, TerminalSession {
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   }) async => this;
 
   @override
@@ -118,7 +120,6 @@ void main() {
             secrets: secrets,
             sessions: sessions,
             onOpenHost: (_) async {},
-            pushToken: () => null,
           ),
         ),
       );
@@ -202,7 +203,6 @@ void main() {
           secrets: secrets,
           sessions: SessionManager(),
           onOpenHost: (_) async {},
-          pushToken: () => null,
         ),
       ),
     );
@@ -212,5 +212,49 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(KnownHostsPage), findsOneWidget);
     expect(find.text('Nothing trusted yet'), findsOneWidget);
+  });
+
+  testWidgets('the push token is copied in Settings, no longer on Home', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final copied = <Object?>[];
+    final platform = tester.binding.defaultBinaryMessenger;
+    platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+      return null;
+    });
+    addTearDown(
+      () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final secrets = InMemorySecretStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostsPage(
+          repository: HostRepository(secrets),
+          secrets: secrets,
+          sessions: SessionManager(pushToken: () => 'device-token'),
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.key_outlined), findsNothing);
+
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    final copy = find.text('Copy notification token');
+    // Settings' own list, not its preview terminal's.
+    await tester.scrollUntilVisible(
+      copy,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(copy);
+    await tester.pumpAndSettle();
+    expect(copied, [
+      {'text': 'device-token'},
+    ]);
+    expect(find.text('FCM token copied'), findsOneWidget);
   });
 }

@@ -386,10 +386,24 @@ class TmuxSession {
   /// `-u` because a control client that tmux does not believe speaks UTF-8
   /// gets `_` in place of every other character in what `capture-pane`
   /// prints, and an SSH exec channel usually arrives with no locale at all.
+  ///
+  /// The device's variables (see `LiveSession.connect`) reach the client with
+  /// the channel, but a pane gets the tmux server's environment: what it
+  /// started with, perhaps nothing, or a token since replaced. Listed in
+  /// `update-environment`, tmux copies them from the client into the session
+  /// when it makes it and at every attach, so the first pane, and any split
+  /// off after a reconnect, has this connection's; a pane already running
+  /// keeps its own, as any process does. Not `new-session -e`, which tmux
+  /// before 3.0 refuses and which would show the token in `ps`. Added once
+  /// per server, since the list holds at most 1000 names.
   static String command(String name) =>
       "sh -c 'command -v tmux >/dev/null || "
       "{ echo tmux is not installed on this host; exit 1; }; "
-      "exec tmux -u -C new-session -A -s $name 2>&1'";
+      'tmux show -gv update-environment 2>/dev/null | '
+      'grep -q LC_SSHBOX_TOKEN || '
+      r'set -- set -ga update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID" '
+      r'\;; exec tmux -u -C "$@" '
+      "new-session -A -s $name 2>&1'";
 
   /// How far back a pane's history reaches when it is filled in on attach.
   // ponytail: a fixed 2000 lines, a fifth of the plain terminal's 10k,

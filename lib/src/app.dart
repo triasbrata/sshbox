@@ -36,7 +36,9 @@ class _SshboxAppState extends State<SshboxApp> {
   /// navigator, with no context under it.
   final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
-  final SessionManager _sessions = SessionManager();
+  late final SessionManager _sessions = SessionManager(
+    pushToken: () => _push.token,
+  );
   late final HostRepository _repository = HostRepository(_secrets);
 
   final AppLinks _appLinks = AppLinks();
@@ -231,7 +233,6 @@ class _SshboxAppState extends State<SshboxApp> {
               secrets: _secrets,
               sessions: _sessions,
               onOpenHost: (hostId) => openHost(hostId, newSession: true),
-              pushToken: () => _push.token,
             ),
           );
         },

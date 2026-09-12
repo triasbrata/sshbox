@@ -69,6 +69,7 @@ class _Host implements SessionTransport, TerminalSession {
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   }) async {
     attempts++;
     final key = fingerprint;
@@ -143,7 +144,6 @@ void main() {
           secrets: _NoSecrets(),
           sessions: manager,
           onOpenHost: (_) async {},
-          pushToken: () => null,
         ),
       ),
     );

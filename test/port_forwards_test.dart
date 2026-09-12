@@ -84,6 +84,7 @@ class _Connection extends _Host implements SessionTransport, TerminalSession {
     required int columns,
     required int rows,
     bool shell = true,
+    Map<String, String> environment = const {},
   }) async {
     shells.add(shell);
     disposed = false;

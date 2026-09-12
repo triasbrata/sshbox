@@ -7,7 +7,9 @@
 //	sshbox-notify -title Deploy -host 1788717544349041 "selesai dalam 4m"
 //
 // Tapping the notification opens that host's terminal in sshbox, resuming the
-// session if it is still open.
+// session if it is still open. The device and the host come from
+// LC_SSHBOX_TOKEN and LC_SSHBOX_HOST_ID, which the app passes with every shell
+// it opens; the config's tokens and host_id stand in where they are not set.
 //
 // Messages are sent data-only through FCM HTTP v1. That API requires OAuth2
 // with a service account, which is why this is a Go binary rather than a
@@ -46,12 +48,14 @@ type config struct {
 	// ProjectID is optional; it defaults to the one inside the service account.
 	ProjectID string `json:"project_id"`
 
-	// Tokens are the FCM registration tokens of the devices to notify. The
-	// sshbox host list has a key icon that copies the current one.
+	// Tokens are the FCM registration tokens of the devices to notify, for a
+	// shell without LC_SSHBOX_TOKEN: one on a server whose sshd refuses it.
+	// Settings -> Notifications in the app copies the current one.
 	Tokens []string `json:"tokens"`
 
-	// HostID is the sshbox host a tap should open. Usually the host entry that
-	// points at this very server.
+	// HostID is the sshbox host a tap should open, for a shell without
+	// LC_SSHBOX_HOST_ID. Usually the host entry that points at this very
+	// server.
 	HostID string `json:"host_id"`
 }
 
@@ -84,11 +88,16 @@ func configHelp(path string) string {
   mkdir -p %s
   cat > %s <<'JSON'
   {
-    "service_account": "/etc/sshbox/service-account.json",
-    "tokens": ["<FCM token from the key icon in sshbox>"],
-    "host_id": "<host id this server corresponds to>"
+    "service_account": "/etc/sshbox/service-account.json"
   }
   JSON
+
+The device to notify and the host to open come from LC_SSHBOX_TOKEN and
+LC_SSHBOX_HOST_ID, which Jeansh sends with every shell. Where sshd refuses
+them (it needs AcceptEnv LC_* in sshd_config), add them to the config:
+
+    "tokens": ["<token from Settings -> Notifications in Jeansh>"],
+    "host_id": "<host id this server corresponds to>"
 
 The service account comes from the Firebase console:
 Project Settings -> Service Accounts -> Generate new private key.
@@ -173,9 +182,9 @@ func send(ctx context.Context, client *http.Client, projectID string, msg fcmMes
 
 func run() error {
 	configPath := flag.String("config", defaultConfigPath(), "path to config.json")
-	hostID := flag.String("host", "", "sshbox host id to open on tap (overrides config)")
+	hostID := flag.String("host", "", "sshbox host id to open on tap (overrides LC_SSHBOX_HOST_ID and config)")
 	title := flag.String("title", "sshbox", "notification title")
-	token := flag.String("token", "", "send to this device token only (overrides config)")
+	token := flag.String("token", "", "send to this device token only (overrides LC_SSHBOX_TOKEN and config)")
 	timeout := flag.Duration("timeout", 15*time.Second, "network timeout")
 
 	flag.Usage = func() {
@@ -195,19 +204,27 @@ func run() error {
 		return err
 	}
 
+	// What the app gave the shell wins over the config, and the flags over
+	// both.
+	if env := os.Getenv("LC_SSHBOX_HOST_ID"); env != "" {
+		cfg.HostID = env
+	}
 	if *hostID != "" {
 		cfg.HostID = *hostID
 	}
 	if cfg.HostID == "" {
-		return errors.New("no host_id in config and no -host given; a notification with nothing to open is not much use")
+		return errors.New("no LC_SSHBOX_HOST_ID, no host_id in config and no -host given; a notification with nothing to open is not much use")
 	}
 
 	tokens := cfg.Tokens
+	if env := os.Getenv("LC_SSHBOX_TOKEN"); env != "" {
+		tokens = []string{env}
+	}
 	if *token != "" {
 		tokens = []string{*token}
 	}
 	if len(tokens) == 0 {
-		return fmt.Errorf("no device tokens configured\n\n%s", configHelp(*configPath))
+		return fmt.Errorf("no LC_SSHBOX_TOKEN and no device tokens configured\n\n%s", configHelp(*configPath))
 	}
 
 	if cfg.ServiceAccount == "" {
