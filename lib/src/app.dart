@@ -11,6 +11,7 @@ import 'data/secret_store.dart';
 import 'models/host_profile.dart';
 import 'notifications/notification_gateway.dart';
 import 'notifications/push_messaging.dart';
+import 'session/port_forwards.dart';
 import 'session/session_keepalive.dart';
 import 'session/session_log.dart';
 import 'session/session_manager.dart';
@@ -42,7 +43,8 @@ class _SshboxAppState extends State<SshboxApp> {
     onOpenLink: _handleLink,
   );
 
-  late final SessionKeepAlive _keepAlive = SessionKeepAlive(_sessions);
+  late final SessionKeepAlive _keepAlive =
+      SessionKeepAlive(_sessions, portForwards);
 
   @override
   void initState() {

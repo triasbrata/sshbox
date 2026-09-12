@@ -26,7 +26,6 @@ class HostProfile {
     this.forwardPorts = false,
     this.useTmux = false,
     this.jumpHostId = '',
-    this.localForwards = const [],
     this.os,
   });
 
@@ -56,10 +55,6 @@ class HostProfile {
   /// it. Blank connects directly. A jump host may have one of its own.
   final String jumpHostId;
 
-  /// Ports on this tablet tunnelled to the host, as `ssh -L` does — see
-  /// `LocalForwarder`. They open when a session connects.
-  final List<LocalForward> localForwards;
-
   /// What the host said it runs at its last connect, for the host list's
   /// badge. Null until it first connects — see `LiveSession`.
   final OsInfo? os;
@@ -81,7 +76,6 @@ class HostProfile {
     bool? forwardPorts,
     bool? useTmux,
     String? jumpHostId,
-    List<LocalForward>? localForwards,
     OsInfo? os,
   }) {
     return HostProfile(
@@ -95,7 +89,6 @@ class HostProfile {
       forwardPorts: forwardPorts ?? this.forwardPorts,
       useTmux: useTmux ?? this.useTmux,
       jumpHostId: jumpHostId ?? this.jumpHostId,
-      localForwards: localForwards ?? this.localForwards,
       os: os ?? this.os,
     );
   }
@@ -111,10 +104,12 @@ class HostProfile {
         'forwardPorts': forwardPorts,
         'useTmux': useTmux,
         'jumpHostId': jumpHostId,
-        'localForwards': [for (final rule in localForwards) rule.toJson()],
         'os': ?os?.toJson(),
       };
 
+  /// A host saved with `localForwards`, from before the Port forwarding page,
+  /// loads as it was: those are read once, by `ForwardSetting.migrate`, and
+  /// go at the host's next save.
   factory HostProfile.fromJson(Map<String, dynamic> json) {
     return HostProfile(
       id: json['id'] as String,
@@ -130,69 +125,10 @@ class HostProfile {
       forwardPorts: json['forwardPorts'] as bool? ?? false,
       useTmux: json['useTmux'] as bool? ?? false,
       jumpHostId: json['jumpHostId'] as String? ?? '',
-      // Hosts saved before port forwards existed have none.
-      localForwards: [
-        for (final rule in json['localForwards'] as List? ?? const [])
-          if (rule is Map<String, dynamic>) LocalForward.fromJson(rule),
-      ],
       os: switch (json['os']) {
         final Map<String, dynamic> os => OsInfo.fromJson(os),
         _ => null,
       },
     );
   }
-}
-
-/// One `ssh -L`: [localPort] on this tablet's loopback, tunnelled to
-/// [destHost]:[destPort] as the host reaches it — 5432 to its own postgres.
-class LocalForward {
-  const LocalForward({
-    required this.localPort,
-    this.destHost = 'localhost',
-    required this.destPort,
-  });
-
-  final int localPort;
-  final String destHost;
-  final int destPort;
-
-  /// `127.0.0.1:5432 → localhost:5432`.
-  String get label => '127.0.0.1:$localPort → $destHost:$destPort';
-
-  Map<String, dynamic> toJson() => {
-        'localPort': localPort,
-        'destHost': destHost,
-        'destPort': destPort,
-      };
-
-  factory LocalForward.fromJson(Map<String, dynamic> json) => LocalForward(
-        localPort: json['localPort'] as int? ?? 0,
-        destHost: json['destHost'] as String? ?? 'localhost',
-        destPort: json['destPort'] as int? ?? 0,
-      );
-
-  /// Why [text] cannot be a forward's port, or null when it can. The
-  /// tablet's end, [local], cannot be below 1024: Android keeps those from
-  /// apps.
-  static String? portError(String? text, {bool local = false}) {
-    final port = int.tryParse(text?.trim() ?? '');
-    if (port == null || port < 1 || port > 65535) {
-      return 'Port must be between 1 and 65535';
-    }
-    if (local && port < 1024) {
-      return 'Android apps cannot open ports below 1024. Use 1024 or above, '
-          'like 15432 for 5432.';
-    }
-    return null;
-  }
-
-  @override
-  bool operator ==(Object other) =>
-      other is LocalForward &&
-      other.localPort == localPort &&
-      other.destHost == destHost &&
-      other.destPort == destPort;
-
-  @override
-  int get hashCode => Object.hash(localPort, destHost, destPort);
 }

@@ -11,7 +11,6 @@ import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import '../models/os_info.dart';
 import 'dartssh2_transport.dart';
-import 'local_forwarder.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 import 'tmux.dart';
@@ -37,18 +36,11 @@ class LiveSession extends ChangeNotifier {
   LiveSession({
     required this._host,
     bool Function(int port)? forwardedElsewhere,
-    bool Function(int port)? localPortHeldElsewhere,
-    void Function()? onLocalPortsReleased,
     this._transport,
   }) {
     forwarder = TailnetForwarder(
       onChanged: _notify,
       forwardedElsewhere: forwardedElsewhere,
-    );
-    localForwarder = LocalForwarder(
-      onChanged: _notify,
-      heldElsewhere: localPortHeldElsewhere,
-      onReleased: onLocalPortsReleased,
     );
     // Wired up front, not at connect time: the view reports its size during
     // the first layout, which happens before the shell exists.
@@ -77,28 +69,14 @@ class LiveSession extends ChangeNotifier {
   /// dropped connection.
   late final TailnetForwarder forwarder;
 
-  /// The host's port forwards to this tablet — see [HostProfile.localForwards].
-  late final LocalForwarder localForwarder;
-
   /// Forwarding follows the host's switch while connected, so turning it off
   /// takes the ports off the tailnet now rather than at the next connect.
-  /// The host's port forwards follow its rules the same way.
   void _syncForwarding() {
     final session = _session;
     if (host.forwardPorts && isConnected && session is CommandCapable) {
       forwarder.start(session as CommandCapable);
     } else {
       forwarder.stop();
-    }
-    _syncLocalForwards();
-  }
-
-  void _syncLocalForwards() {
-    final session = _session;
-    if (isConnected && session is ForwardCapable) {
-      localForwarder.sync(session as ForwardCapable, host.localForwards);
-    } else {
-      unawaited(localForwarder.stop());
     }
   }
 
@@ -639,7 +617,6 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
   /// it running, to come back to.
   Future<void> _teardown({bool kill = false}) async {
     forwarder.stop();
-    unawaited(localForwarder.stop());
     final tmux = _tmux;
     _tmux = null;
     if (kill) await tmux?.kill();
@@ -648,9 +625,6 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     _session = null;
     _shellPid = null;
     _hostname = null;
-    // Again, now that nothing can open them: an edit to the host while tmux
-    // was ending would have. Awaited, so a reconnect can bind them again.
-    await localForwarder.stop();
     final browser = _fileBrowser;
     _fileBrowser = null;
     await browser?.close();
@@ -860,14 +834,6 @@ class SessionManager extends ChangeNotifier {
       host: host,
       forwardedElsewhere: (port) => sessionsFor(created.host.id)
           .any((s) => s != created && s.forwarder.isForwarding(port)),
-      localPortHeldElsewhere: (port) => sessionsFor(created.host.id)
-          .any((s) => s != created && s.localForwarder.isHolding(port)),
-      // What it let go of, another session still on the host takes over.
-      onLocalPortsReleased: () {
-        for (final other in sessionsFor(created.host.id)) {
-          if (other != created) other._syncLocalForwards();
-        }
-      },
       transport: transport,
     );
     created.addListener(_onSessionChanged);

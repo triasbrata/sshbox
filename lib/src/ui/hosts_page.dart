@@ -4,10 +4,12 @@ import 'package:flutter/services.dart';
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
+import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import 'host_edit_page.dart';
 import 'logs_page.dart';
 import 'os_icon.dart';
+import 'port_forwarding_page.dart';
 import 'settings_page.dart';
 
 class HostsPage extends StatefulWidget {
@@ -138,6 +140,23 @@ class _HostsPageState extends State<HostsPage> {
             tooltip: 'Copy FCM token',
             onPressed: _copyPushToken,
             icon: const Icon(Icons.key_outlined),
+          ),
+          IconButton(
+            tooltip: 'Port forwarding',
+            onPressed: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => PortForwardingPage(
+                    forwards: portForwards,
+                    repository: widget.repository,
+                    secrets: widget.secrets,
+                  ),
+                ),
+              );
+              // A host made there belongs here too.
+              await _reload();
+            },
+            icon: const Icon(Icons.swap_horiz),
           ),
           IconButton(
             tooltip: 'Logs',
