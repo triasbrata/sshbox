@@ -76,12 +76,14 @@ flutter_launcher_icons:
   android: true
   image_path: assets/branding/app_icon.png
   adaptive_icon_foreground: assets/branding/app_icon.png
-  # The denim just inside the tile's edge.
-  adaptive_icon_background: "#32335d"
+  # The violet-blue denim just inside the tile's edge (its average all round).
+  adaptive_icon_background: "#373965"
   # 16% a side draws the tile at 73.4 of the 108 dp layer, a little over the
-  # 72 dp a launcher shows, so the tile's own rounded corners fall outside the
-  # mask. The pocket reaches past the 66 dp safe zone; a circle mask trims its
-  # bottom corners slightly.
+  # 72 dp a launcher shows, so the tile's own rounded corners fall outside both
+  # a circle and a rounded-square mask. It is also the smallest whole inset at
+  # which the whole pocket fits inside a circle mask (its bottom corners reach
+  # 70.5 of the 72 dp), so a bigger inset would show the tile's edge and a
+  # smaller one would trim the pocket.
   adaptive_icon_foreground_inset: 16
 
 # For information on the generic Dart part of this file, see the
