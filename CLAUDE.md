@@ -70,6 +70,9 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
+| Port forwards on the tablet (`ssh -L`): rules saved per host open 127.0.0.1:<port> on the tablet when a session connects, e.g. for a DB app | Coordinator | | in development |
+| Theme in Settings: light/dark/system mode and a colour palette for the whole app | Coordinator | | in development |
+| Long-press a tab that failed to connect → Close tab (its ✕ is Reconnect then, so it could not be closed) | Coordinator | 6c77828 | on tablet, UAT pending |
 | Security hardening: a new host key asks before it is trusted (fingerprint shown), a changed one shows old and new and can be replaced; no Google backup or device transfer of app data; `/tmp` uploads and editor saves never follow a planted link, and uploads are `0600`; release builds sign with `android/key.properties`; the private-key field stays out of keyboard learning | security audit codebase | 00f3aaa | on tablet, UAT pending |
 | Proxy jump: a host can connect through another saved host ("Jump host" in its edit page, like `ssh -J`; a jump host may have its own) | proxy jump settings | b8484f5 | UAT passed |
 | Tailnet forwarding: never forward debugger ports (9229 etc.), stop a forward as soon as its server stops, reuse the same tailnet port when it comes back (restarting `bun dev` stacked 3002–3005 and exposed the inspector) | Coordinator | 5ed4f74 | UAT passed |
