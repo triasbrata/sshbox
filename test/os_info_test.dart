@@ -176,13 +176,10 @@ PRETTY_NAME="Rocky Linux 9.4 (Blue Onyx)"
     });
   });
 
-  test("the host list's line", () {
+  test("the name under a host's badge, without the arch", () {
     const ubuntu = OsInfo(prettyName: 'Ubuntu 24.04.1 LTS', arch: 'x86_64');
-    expect(ubuntu.summary, 'Ubuntu 24.04.1 LTS · x86_64');
-    expect(
-      const OsInfo(kernel: 'FreeBSD', arch: 'amd64').summary,
-      'FreeBSD · amd64',
-    );
+    expect(ubuntu.summary, 'Ubuntu 24.04.1 LTS');
+    expect(const OsInfo(kernel: 'FreeBSD', arch: 'amd64').summary, 'FreeBSD');
   });
 
   test('Tux for another Linux, the generic badge for the unknown', () {

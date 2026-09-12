@@ -31,16 +31,14 @@ class OsInfo {
   /// `uname -m`, e.g. `x86_64`; Windows' `PROCESSOR_ARCHITECTURE`.
   final String arch;
 
-  /// The host list's line, e.g. `Ubuntu 24.04.1 LTS · x86_64`.
-  String get summary => [
-    if (prettyName.isNotEmpty)
-      prettyName
-    else if (kernel.isNotEmpty)
-      kernel
-    else
-      id,
-    if (arch.isNotEmpty) arch,
-  ].join(' · ');
+  /// The name under a host's badge in the host list, e.g.
+  /// `Ubuntu 24.04.1 LTS`: the kernel, or [id], when that is all it said.
+  /// [arch] is kept, but not shown.
+  String get summary => prettyName.isNotEmpty
+      ? prettyName
+      : kernel.isNotEmpty
+      ? kernel
+      : id;
 
   /// Unix: os-release, which is only ever read here as data, never run; then
   /// `uname`; then `sw_vers` on macOS, which has no os-release. Through `sh`,

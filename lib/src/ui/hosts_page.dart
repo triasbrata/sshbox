@@ -248,90 +248,129 @@ class _HostTile extends StatelessWidget {
       SshAuthMethod.privateKey => 'key',
       SshAuthMethod.tailscale => 'tailscale',
     };
-    final os = host.os?.summary ?? '';
+    final muted = theme.colorScheme.onSurfaceVariant;
 
+    // By hand rather than a ListTile, whose leading is at most 56 dp tall:
+    // too short for the badge with its OS's name under it.
     return Card(
       margin: const EdgeInsets.all(6),
       clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        leading: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            OsBadge(host.os),
-            if (activeCount > 0)
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary,
-                    shape: BoxShape.circle,
-                    // Cut out of the icon in the card's own colour.
-                    border: Border.all(
-                      color: theme.cardTheme.color ??
-                          theme.colorScheme.surfaceContainerLow,
-                      width: 2,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-        title: Text(
-          host.displayName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        // A line each, so a long address ellipsizes without taking the
-        // session count with it on a narrow card. Every card has the same
-        // three, so the grid stays even: a host not connected to yet keeps
-        // the OS line's place.
-        subtitle: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              os.isEmpty ? 'OS not detected yet' : os,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: os.isEmpty
-                  ? TextStyle(color: theme.colorScheme.outline)
-                  : null,
-            ),
-            for (final line in [
-              host.target,
-              switch (activeCount) {
-                0 => authLabel,
-                1 => 'active session',
-                _ => '$activeCount active sessions',
-              },
-            ])
-              Text(line, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ],
-        ),
+      child: InkWell(
         onTap: onOpen,
-        trailing: PopupMenuButton<String>(
-          onSelected: (action) => switch (action) {
-            'edit' => onEdit(),
-            'delete' => onDelete(),
-            'close' => onCloseSessions(),
-            _ => null,
-          },
-          itemBuilder: (_) => [
-            if (sessionCount > 0)
-              PopupMenuItem(
-                value: 'close',
-                child: Text(
-                  sessionCount == 1
-                      ? 'Close session'
-                      : 'Close $sessionCount sessions',
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
+          child: Row(
+            children: [
+              // As wide on every card, so every name starts at the same x.
+              SizedBox(
+                width: 80,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        OsBadge(host.os),
+                        if (activeCount > 0)
+                          Positioned(
+                            right: -2,
+                            bottom: -2,
+                            child: Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primary,
+                                shape: BoxShape.circle,
+                                // Cut out of the icon in the card's own
+                                // colour.
+                                border: Border.all(
+                                  color: theme.cardTheme.color ??
+                                      theme.colorScheme.surfaceContainerLow,
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    // Always two lines' room, for a long name, a short one,
+                    // or none before the first connect, so every card is as
+                    // tall. The arch is saved, but not shown.
+                    DefaultTextStyle.merge(
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: muted,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      child: Stack(
+                        alignment: Alignment.topCenter,
+                        children: [
+                          const ExcludeSemantics(child: Text('\n')),
+                          Text(host.os?.summary ?? ''),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            const PopupMenuItem(value: 'edit', child: Text('Edit')),
-            const PopupMenuItem(value: 'delete', child: Text('Delete')),
-          ],
+              const SizedBox(width: 8),
+              // A line each, so a long address ellipsizes without taking the
+              // session count with it on a narrow card.
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      host.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                    for (final line in [
+                      host.target,
+                      switch (activeCount) {
+                        0 => authLabel,
+                        1 => 'active session',
+                        _ => '$activeCount active sessions',
+                      },
+                    ])
+                      Text(
+                        line,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: muted,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (action) => switch (action) {
+                  'edit' => onEdit(),
+                  'delete' => onDelete(),
+                  'close' => onCloseSessions(),
+                  _ => null,
+                },
+                itemBuilder: (_) => [
+                  if (sessionCount > 0)
+                    PopupMenuItem(
+                      value: 'close',
+                      child: Text(
+                        sessionCount == 1
+                            ? 'Close session'
+                            : 'Close $sessionCount sessions',
+                      ),
+                    ),
+                  const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
