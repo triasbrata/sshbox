@@ -7,6 +7,7 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../models/forward_setting.dart';
 import '../models/host_profile.dart';
+import '../models/port_snippets.dart';
 import '../session/port_forwards.dart';
 import 'host_edit_page.dart';
 import 'os_icon.dart';
@@ -19,9 +20,9 @@ EdgeInsets _gutters(double width, {double bottom = 32}) {
   return EdgeInsets.fromLTRB(side, 8, side, bottom);
 }
 
-/// The port forwarding settings: ports on this tablet tunnelled to a saved
-/// host, each over a connection of its own with no terminal. Each is
-/// switched on and off here, and tapped to edit.
+/// The port forwarding settings: ports tunnelled between this tablet and a
+/// saved host, either way, each setting over a connection of its own with no
+/// terminal. Each is switched on and off here, and tapped to edit.
 class PortForwardingPage extends StatefulWidget {
   const PortForwardingPage({
     super.key,
@@ -162,9 +163,9 @@ class _ForwardCard extends StatelessWidget {
               error == null ? status : '$status — $error',
               style: TextStyle(color: color),
             ),
-            for (final MapEntry(key: port, value: problem)
+            for (final MapEntry(key: side, value: problem)
                 in run.problems.entries)
-              Text('$port: $problem', style: TextStyle(color: scheme.error)),
+              Text('$side: $problem', style: TextStyle(color: scheme.error)),
             if (signIn != null)
               TextButton.icon(
                 onPressed: () => openUrl(context, signIn),
@@ -202,8 +203,9 @@ class _EmptyState extends StatelessWidget {
             Text('No port forwards yet', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
-              'Add one to open a host\'s ports on this tablet, like ssh -L: a '
-              'database app then connects to 127.0.0.1.',
+              'Add one to reach a host\'s port from this tablet, like a '
+              'database app on 127.0.0.1, or to let the host reach a port on '
+              'this tablet.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
@@ -216,31 +218,88 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-/// One mapping's fields, as typed so far.
+enum _Direction { tabletToRemote, remoteToTablet }
+
+/// One mapping's fields, as typed so far. A blank advanced field is its
+/// default: the same port, and each side's own loopback.
 class _Mapping {
-  _Mapping([LocalForward? mapping])
-    : local = TextEditingController(text: '${mapping?.localPort ?? ''}'),
-      host = TextEditingController(text: mapping?.destHost ?? 'localhost'),
-      port = TextEditingController(text: '${mapping?.destPort ?? ''}');
+  _Mapping([PortMapping? mapping]) {
+    if (mapping is LocalForward) {
+      port.text = '${mapping.localPort}';
+      if (mapping.destHost != 'localhost') remoteHost.text = mapping.destHost;
+      if (mapping.destPort != mapping.localPort) {
+        otherPort.text = '${mapping.destPort}';
+      }
+    } else if (mapping is RemoteForward) {
+      direction = _Direction.remoteToTablet;
+      port.text = '${mapping.remotePort}';
+      if (mapping.remoteHost != 'localhost') {
+        listenHost.text = mapping.remoteHost;
+      }
+      if (mapping.tabletHost != '127.0.0.1') {
+        tabletHost.text = mapping.tabletHost;
+      }
+      if (mapping.tabletPort != mapping.remotePort) {
+        otherPort.text = '${mapping.tabletPort}';
+      }
+    }
+    // What was set there shows.
+    advanced = [
+      remoteHost,
+      listenHost,
+      tabletHost,
+      otherPort,
+    ].any((field) => field.text.isNotEmpty);
+  }
 
-  final TextEditingController local;
-  final TextEditingController host;
-  final TextEditingController port;
+  var direction = _Direction.tabletToRemote;
+  var advanced = false;
 
-  /// A blank destination port is the tablet's: 5432 to the host's 5432.
-  LocalForward get value {
-    final localPort = int.parse(local.text.trim());
-    return LocalForward(
-      localPort: localPort,
-      destHost: host.text.trim(),
-      destPort: int.tryParse(port.text.trim()) ?? localPort,
-    );
+  /// The chip last tapped. The setting is named after it while [port]
+  /// still holds its port.
+  PortSnippet? snippet;
+
+  /// Where connections start: on the tablet, or on the host.
+  final port = TextEditingController();
+
+  /// Tablet → Remote's destination, as the host reaches it.
+  final remoteHost = TextEditingController();
+
+  /// Remote → Tablet's address the host listens on, and its target as the
+  /// tablet reaches it.
+  final listenHost = TextEditingController();
+  final tabletHost = TextEditingController();
+
+  /// The far end's port, either way.
+  final otherPort = TextEditingController();
+
+  bool get tablet => direction == _Direction.tabletToRemote;
+
+  /// What it forwards, once [port] is a number.
+  PortMapping? get value {
+    final port = int.tryParse(this.port.text.trim());
+    if (port == null) return null;
+    final other = int.tryParse(otherPort.text.trim()) ?? port;
+    String or(TextEditingController field, String blank) =>
+        field.text.trim().isEmpty ? blank : field.text.trim();
+    return tablet
+        ? LocalForward(
+            localPort: port,
+            destHost: or(remoteHost, 'localhost'),
+            destPort: other,
+          )
+        : RemoteForward(
+            remoteHost: or(listenHost, 'localhost'),
+            remotePort: port,
+            tabletHost: or(tabletHost, '127.0.0.1'),
+            tabletPort: other,
+          );
   }
 
   void dispose() {
-    local.dispose();
-    host.dispose();
-    port.dispose();
+    for (final field in [port, remoteHost, listenHost, tabletHost, otherPort]) {
+      field.dispose();
+    }
   }
 }
 
@@ -267,14 +326,14 @@ class _ForwardEditor extends StatefulWidget {
 
 class _ForwardEditorState extends State<_ForwardEditor> {
   /// The host list's "New host…" item.
-  static const _newHost = ' new';
+  static const _newHost = ' new';
 
   final _form = GlobalKey<FormState>();
   final _hostField = GlobalKey<FormFieldState<String>>();
   late final _hosts = [...widget.hosts];
   late final _name = TextEditingController(text: widget.existing?.name ?? '');
   late final _mappings = [
-    for (final mapping in widget.existing?.mappings ?? const <LocalForward>[])
+    for (final mapping in widget.existing?.mappings ?? const <PortMapping>[])
       _Mapping(mapping),
     if (widget.existing?.mappings.isEmpty ?? true) _Mapping(),
   ];
@@ -284,6 +343,25 @@ class _ForwardEditorState extends State<_ForwardEditor> {
       .where((host) => host.id == widget.existing?.hostId)
       .firstOrNull
       ?.id;
+
+  /// The picked host's name, for the sentences.
+  String get _hostName =>
+      _hosts.where((host) => host.id == _hostId).firstOrNull?.displayName ??
+      'the host';
+
+  /// What a blank Name saves as: `PostgreSQL on db box`, while the first
+  /// port is still the chip's it came from. Otherwise blank, which shows the
+  /// host's name.
+  String get _defaultName {
+    final first = _mappings.first;
+    final snippet = first.snippet;
+    if (snippet == null ||
+        _hostId == null ||
+        int.tryParse(first.port.text.trim()) != snippet.port) {
+      return '';
+    }
+    return '${snippet.name} on $_hostName';
+  }
 
   @override
   void dispose() {
@@ -323,13 +401,14 @@ class _ForwardEditorState extends State<_ForwardEditor> {
 
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
+    final name = _name.text.trim();
     await widget.forwards.save(
       ForwardSetting(
         id: widget.existing?.id ??
             DateTime.now().microsecondsSinceEpoch.toString(),
         hostId: _hostId!,
-        name: _name.text.trim(),
-        mappings: [for (final mapping in _mappings) mapping.value],
+        name: name.isEmpty ? _defaultName : name,
+        mappings: [for (final mapping in _mappings) mapping.value!],
       ),
     );
     if (mounted) Navigator.of(context).pop();
@@ -358,79 +437,224 @@ class _ForwardEditorState extends State<_ForwardEditor> {
     if (mounted) Navigator.of(context).pop();
   }
 
-  /// Why [mapping]'s tablet port cannot be, or null when it can.
-  String? _localPortError(_Mapping mapping) {
-    final error = LocalForward.portError(mapping.local.text, local: true);
-    if (error != null) return error;
-    final port = int.parse(mapping.local.text.trim());
-    final twice = _mappings.where(
-      (other) => int.tryParse(other.local.text.trim()) == port,
+  /// Why [mapping]'s port cannot be, or null when it can: no two listen on
+  /// one port on the same side.
+  String? _portError(_Mapping mapping) {
+    final error = PortMapping.portError(
+      mapping.port.text,
+      tablet: mapping.tablet,
     );
+    if (error != null) return error;
+    final side = mapping.value!.side;
+    final twice = _mappings.where((other) => other.value?.side == side);
     return twice.length > 1 ? 'Used twice' : null;
   }
 
-  Widget _mappingRow(_Mapping mapping) => Padding(
-    key: ObjectKey(mapping),
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          flex: 2,
-          child: TextFormField(
-            controller: mapping.local,
-            decoration: const InputDecoration(
-              labelText: 'Tablet port',
-              hintText: '5432',
-              errorMaxLines: 4,
+  /// A mapping's direction, port, service chips, what it does in words, and
+  /// its advanced fields. [wide] puts the direction and port on one line.
+  Widget _mappingBlock(_Mapping mapping, {required bool wide}) {
+    final theme = Theme.of(context);
+    final port = int.tryParse(mapping.port.text.trim());
+    final sentence = mapping.value?.sentence(_hostName);
+
+    final direction = SegmentedButton<_Direction>(
+      showSelectedIcon: false,
+      segments: const [
+        ButtonSegment(
+          value: _Direction.tabletToRemote,
+          label: Text('Tablet → Remote'),
+        ),
+        ButtonSegment(
+          value: _Direction.remoteToTablet,
+          label: Text('Remote → Tablet'),
+        ),
+      ],
+      selected: {mapping.direction},
+      onSelectionChanged: (picked) =>
+          setState(() => mapping.direction = picked.single),
+    );
+    final portField = TextFormField(
+      controller: mapping.port,
+      decoration: InputDecoration(
+        labelText: mapping.tablet ? 'Tablet port' : 'Remote port',
+        helperText: !mapping.tablet && port != null && port > 0 && port < 1024
+            ? 'Hosts usually refuse ports below 1024 unless you sign in as '
+                  'root.'
+            : null,
+        helperMaxLines: 2,
+        errorMaxLines: 4,
+      ),
+      keyboardType: TextInputType.number,
+      validator: (_) => _portError(mapping),
+      onChanged: (_) => setState(() {}),
+    );
+    final chips = SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        spacing: 8,
+        children: [
+          for (final snippet in portSnippets)
+            ChoiceChip(
+              label: Text('${snippet.name} ${snippet.port}'),
+              selected: port == snippet.port,
+              // The far end follows the port; its hosts stay as they are.
+              onSelected: (_) => setState(() {
+                mapping
+                  ..port.text = '${snippet.port}'
+                  ..otherPort.clear()
+                  ..snippet = snippet;
+              }),
             ),
-            keyboardType: TextInputType.number,
-            validator: (_) => _localPortError(mapping),
-          ),
+        ],
+      ),
+    );
+
+    return Card.outlined(
+      key: ObjectKey(mapping),
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (wide)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                spacing: 16,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: direction,
+                  ),
+                  Expanded(child: portField),
+                ],
+              )
+            else ...[direction, const SizedBox(height: 8), portField],
+            const SizedBox(height: 8),
+            chips,
+            const SizedBox(height: 12),
+            Text(
+              sentence ?? 'Type a port, or tap a service.',
+              style: sentence == null
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    )
+                  : theme.textTheme.bodyMedium,
+            ),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: () =>
+                      setState(() => mapping.advanced = !mapping.advanced),
+                  icon: Icon(
+                    mapping.advanced ? Icons.expand_less : Icons.expand_more,
+                  ),
+                  label: const Text('Advanced'),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Remove port',
+                  onPressed: _mappings.length == 1
+                      ? null
+                      : () => _removeMapping(mapping),
+                  icon: const Icon(Icons.remove_circle_outline),
+                ),
+              ],
+            ),
+            if (mapping.advanced) ..._advanced(mapping),
+          ],
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          flex: 3,
-          child: TextFormField(
-            controller: mapping.host,
-            decoration: const InputDecoration(labelText: 'To host'),
-            autocorrect: false,
-            keyboardType: TextInputType.url,
-            validator: (value) => (value ?? '').trim().isEmpty
-                ? 'A hostname or IP is required'
-                : null,
-          ),
-        ),
-        const SizedBox(width: 8),
+      ),
+    );
+  }
+
+  /// The far end, and for Remote → Tablet the address the host listens on.
+  /// Blank is the default each hint shows.
+  List<Widget> _advanced(_Mapping mapping) {
+    final scheme = Theme.of(context).colorScheme;
+    InputDecoration decoration(
+      String label,
+      String blank, {
+      String? helper,
+      Color? helperColor,
+    }) => InputDecoration(
+      labelText: label,
+      hintText: blank,
+      helperText: helper,
+      helperStyle: helperColor == null ? null : TextStyle(color: helperColor),
+      helperMaxLines: 3,
+      errorMaxLines: 2,
+      floatingLabelBehavior: FloatingLabelBehavior.always,
+    );
+    Widget host(TextEditingController field, InputDecoration decoration) =>
+        TextFormField(
+          controller: field,
+          decoration: decoration,
+          autocorrect: false,
+          keyboardType: TextInputType.url,
+          onChanged: (_) => setState(() {}),
+        );
+    Widget withPort(Widget host) => Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 8,
+      children: [
+        Expanded(flex: 3, child: host),
         Expanded(
           flex: 2,
           child: TextFormField(
-            controller: mapping.port,
-            decoration: const InputDecoration(
-              labelText: 'To port',
-              hintText: 'Same',
-              errorMaxLines: 2,
+            controller: mapping.otherPort,
+            decoration: decoration(
+              mapping.tablet ? 'Remote port' : 'Tablet port',
+              'Same',
             ),
             keyboardType: TextInputType.number,
             validator: (value) => (value ?? '').trim().isEmpty
                 ? null
-                : LocalForward.portError(value),
+                : PortMapping.portError(value),
+            onChanged: (_) => setState(() {}),
           ),
         ),
-        IconButton(
-          tooltip: 'Remove port',
-          onPressed: _mappings.length == 1
-              ? null
-              : () => _removeMapping(mapping),
-          icon: const Icon(Icons.remove_circle_outline),
-        ),
       ],
-    ),
-  );
+    );
+
+    if (mapping.tablet) {
+      return [
+        withPort(
+          host(
+            mapping.remoteHost,
+            decoration(
+              'Remote host',
+              'localhost',
+              helper: 'As the host reaches it: localhost is the host itself.',
+            ),
+          ),
+        ),
+      ];
+    }
+    final listen = mapping.listenHost.text.trim();
+    final exposed = listen.isNotEmpty && !RemoteForward.loopback(listen);
+    return [
+      host(
+        mapping.listenHost,
+        decoration(
+          'Remote listens on',
+          'localhost',
+          helper: exposed
+              ? 'Open to the host\'s network too, and needs GatewayPorts in '
+                    'its sshd_config.'
+              : 'Only programs on the host itself can connect.',
+          helperColor: exposed ? scheme.tertiary : null,
+        ),
+      ),
+      const SizedBox(height: 8),
+      withPort(host(mapping.tabletHost, decoration('Tablet host', '127.0.0.1'))),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final defaultName = _defaultName;
 
     return Scaffold(
       appBar: AppBar(
@@ -509,9 +733,11 @@ class _ForwardEditorState extends State<_ForwardEditor> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _name,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Name',
-                  helperText: 'Optional. Defaults to the host\'s name.',
+                  helperText:
+                      'Optional. Defaults to '
+                      '${defaultName.isEmpty ? 'the host\'s name' : defaultName}.',
                 ),
                 textInputAction: TextInputAction.next,
               ),
@@ -519,16 +745,14 @@ class _ForwardEditorState extends State<_ForwardEditor> {
               Text('Ports', style: theme.textTheme.titleSmall),
               const SizedBox(height: 4),
               Text(
-                'Each tablet port opens on 127.0.0.1, for apps on this tablet '
-                'only, and goes to the host and port as the SSH host reaches '
-                'them: localhost is the SSH host itself. Android keeps ports '
-                'below 1024 from apps.',
+                'Pick which way each port goes, then the port.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: 12),
-              for (final mapping in _mappings) _mappingRow(mapping),
+              for (final mapping in _mappings)
+                _mappingBlock(mapping, wide: constraints.maxWidth >= 600),
               Align(
                 alignment: AlignmentDirectional.centerStart,
                 child: TextButton.icon(

@@ -32,6 +32,43 @@ class _Host implements ForwardCapable {
     tunnels.add((sent: sent, reply: reply));
     return (output: reply.stream, input: sent.sink);
   }
+
+  /// The ports it listens on for us, by `host:port`: a test connects to one
+  /// by adding to it — see [_Caller].
+  final listening = <String, StreamController<Tunnel>>{};
+
+  /// Those it stopped listening on.
+  final unlistened = <String>[];
+
+  /// Why it will not listen, while it will not.
+  SshSessionException? listenRefusal;
+
+  @override
+  Future<RemotePort> listen(String host, int port) async {
+    final refusal = listenRefusal;
+    if (refusal != null) throw refusal;
+    final connections = listening['$host:$port'] = StreamController<Tunnel>();
+    return (
+      connections: connections.stream,
+      close: () => unlistened.add('$host:$port'),
+    );
+  }
+}
+
+/// A program on the host connecting to a port it listens on for us: what it
+/// sends goes in [send], and what comes back lands in [received].
+class _Caller {
+  _Caller(StreamController<Tunnel> port) {
+    port.add((output: send.stream, input: back.sink));
+    back.stream.listen(received.addAll, onDone: () => hungUp = true);
+  }
+
+  final send = StreamController<Uint8List>();
+  final back = StreamController<List<int>>();
+  final received = <int>[];
+
+  /// Its connection was closed from our end.
+  var hungUp = false;
 }
 
 /// A connection to the host that is up at once, and can forward.
@@ -112,10 +149,17 @@ void main() {
       mappings: [
         LocalForward(localPort: 5432, destPort: 5432),
         LocalForward(localPort: 16379, destHost: '10.0.0.9', destPort: 6379),
+        RemoteForward(remotePort: 8000, tabletPort: 8000),
+        RemoteForward(
+          remoteHost: '0.0.0.0',
+          remotePort: 3000,
+          tabletHost: '192.168.1.5',
+          tabletPort: 3001,
+        ),
       ],
     );
 
-    test('survives JSON, and reads as its ports', () {
+    test('survives JSON, and reads as its ports, either way', () {
       final saved =
           jsonDecode(jsonEncode(setting.toJson())) as Map<String, dynamic>;
       final loaded = ForwardSetting.fromJson(saved);
@@ -123,7 +167,61 @@ void main() {
       expect(loaded.mappings, setting.mappings);
       expect(
         setting.summary,
-        '5432 → localhost:5432 · 16379 → 10.0.0.9:6379',
+        'PostgreSQL · Tablet 5432 → Remote 5432\n'
+        'Redis · Tablet 16379 → Remote 10.0.0.9:6379\n'
+        'Remote 8000 → Tablet 8000\n'
+        'Remote 0.0.0.0:3000 → Tablet 192.168.1.5:3001',
+      );
+    });
+
+    test('one saved before there were two ways loads as Tablet → Remote, '
+        'and saves as it was', () {
+      final old = <String, dynamic>{
+        'id': 'f',
+        'hostId': 'db',
+        'name': '',
+        'mappings': [
+          {'localPort': 15432, 'destHost': 'pg.lan', 'destPort': 5432},
+        ],
+      };
+      final loaded = ForwardSetting.fromJson(
+        jsonDecode(jsonEncode(old)) as Map<String, dynamic>,
+      );
+      expect(loaded.mappings, const [
+        LocalForward(localPort: 15432, destHost: 'pg.lan', destPort: 5432),
+      ]);
+      expect(loaded.toJson(), old);
+    });
+
+    test('says what each port does, with its service, in words', () {
+      expect(
+        const LocalForward(localPort: 5432, destPort: 5432).sentence('proxy'),
+        'Apps on this tablet open 127.0.0.1:5432 (PostgreSQL) to reach port '
+        '5432 on proxy.',
+      );
+      expect(
+        const LocalForward(
+          localPort: 15433,
+          destHost: '10.0.0.9',
+          destPort: 5433,
+        ).sentence('proxy'),
+        'Apps on this tablet open 127.0.0.1:15433 to reach 10.0.0.9:5433 '
+        'through proxy.',
+      );
+      expect(
+        const RemoteForward(remotePort: 8000, tabletPort: 8000).sentence('proxy'),
+        'Programs on proxy open localhost:8000 to reach port 8000 on this '
+        'tablet.',
+      );
+      expect(
+        const RemoteForward(
+          remoteHost: '0.0.0.0',
+          remotePort: 8000,
+          tabletHost: '192.168.1.5',
+          tabletPort: 5173,
+        ).sentence('proxy'),
+        'Programs on proxy, and machines that reach it, open port 8000 (Vite) '
+        'on it to reach 192.168.1.5:5173 through this tablet.',
       );
     });
 
@@ -141,11 +239,11 @@ void main() {
     });
 
     test('a port is 1 to 65535, and 1024 or above on the tablet', () {
-      expect(LocalForward.portError('5432', local: true), isNull);
-      expect(LocalForward.portError(' 80 '), isNull);
-      expect(LocalForward.portError('80', local: true), contains('1024'));
+      expect(PortMapping.portError('5432', tablet: true), isNull);
+      expect(PortMapping.portError(' 80 '), isNull);
+      expect(PortMapping.portError('80', tablet: true), contains('1024'));
       for (final bad in [null, '', '0', '65536', 'pg']) {
-        expect(LocalForward.portError(bad), isNotNull, reason: '$bad');
+        expect(PortMapping.portError(bad), isNotNull, reason: '$bad');
       }
     });
   });
@@ -346,7 +444,9 @@ void main() {
       expect(connection.shells, [false]);
       expect(said, [
         (
-          message: 'Forwarding 127.0.0.1:${ports.join(', ')}',
+          message:
+              'Forwarding tablet ${ports[0]} → remote, '
+              'tablet ${ports[1]} → remote',
           failed: false,
           link: null,
         ),
@@ -392,6 +492,91 @@ void main() {
       );
       expect(connection.shells, hasLength(2));
       expect(run.status, ForwardStatus.stopped);
+    });
+
+    test('a Remote → Tablet port has the host listen on its own loopback, '
+        'pipes each connection made there to its target on this tablet, and '
+        'stops listening when switched off', () async {
+      final target = ports.first;
+      await forwards.save(
+        ForwardSetting(
+          id: 'f',
+          hostId: 'db',
+          mappings: [RemoteForward(remotePort: 8000, tabletPort: target)],
+        ),
+      );
+      await forwards.start('f');
+      final run = forwards.runs.single;
+      expect(run.status, ForwardStatus.running);
+      expect(connection.listening.keys, ['localhost:8000']);
+      expect(said.last.message, 'Forwarding remote 8000 → tablet');
+      final port = connection.listening['localhost:8000']!;
+
+      // Nothing on the tablet listens there yet: that connection closes, and
+      // says why.
+      final early = _Caller(port);
+      await until(() => early.hungUp);
+      expect(
+        run.problems['Remote 8000'],
+        startsWith('cannot reach 127.0.0.1:$target on this tablet'),
+      );
+
+      final server = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        target,
+      );
+      addTearDown(server.close);
+      final served = <Socket>[];
+      final got = <int>[];
+      var serverEnded = false;
+      server.listen((socket) {
+        served.add(socket);
+        socket.listen(
+          got.addAll,
+          onDone: () => serverEnded = true,
+          onError: (Object _) {},
+        );
+      });
+
+      final caller = _Caller(port);
+      await until(() => served.isNotEmpty);
+      caller.send.add(Uint8List.fromList(utf8.encode('GET /')));
+      await until(() => got.length == 5);
+      expect(utf8.decode(got), 'GET /');
+      served.single.add(utf8.encode('200'));
+      await until(() => caller.received.length == 3);
+      expect(utf8.decode(caller.received), '200');
+      expect(run.problems, isEmpty);
+
+      await forwards.stop('f');
+      expect(connection.unlistened, ['localhost:8000']);
+      await until(() => serverEnded);
+    });
+
+    test('a port the host will not listen on says why, and the rest open',
+        () async {
+      connection.listenRefusal =
+          const SshSessionException('The host refused to open it.');
+      await forwards.save(
+        ForwardSetting(
+          id: 'f',
+          hostId: 'db',
+          mappings: [
+            LocalForward(localPort: ports.first, destPort: 5432),
+            const RemoteForward(remotePort: 80, tabletPort: 8080),
+          ],
+        ),
+      );
+      await forwards.start('f');
+      final run = forwards.runs.single;
+      expect(run.status, ForwardStatus.running);
+      expect(run.problems, {'Remote 80': 'The host refused to open it.'});
+      expect([for (final notice in said) (notice.message, notice.failed)], [
+        ('db\nRemote 80: The host refused to open it.', true),
+        ('Forwarding tablet ${ports.first} → remote', false),
+      ]);
+      (await _app(ports.first)).destroy();
+      await until(() => connection.tunnels.isNotEmpty);
     });
 
     test('a first connect that fails says why, and stays off', () async {

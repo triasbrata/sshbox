@@ -42,7 +42,18 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// A new setting's editor, with the saved host picked.
+  Future<void> addOne(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('Add port forward'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('db box').last);
+    await tester.pumpAndSettle();
+  }
+
   final tabletPort = find.widgetWithText(TextFormField, 'Tablet port');
+  final remotePort = find.widgetWithText(TextFormField, 'Remote port');
 
   // A phone in portrait, and a tablet.
   for (final width in [400.0, 1200.0]) {
@@ -83,7 +94,10 @@ void main() {
 
       expect(find.text('db box'), findsOneWidget);
       expect(
-        find.text('5432 → localhost:5432 · 6379 → localhost:6379'),
+        find.text(
+          'PostgreSQL · Tablet 5432 → Remote 5432\n'
+          'Redis · Tablet 6379 → Remote 6379',
+        ),
         findsOneWidget,
       );
       expect(find.text('Stopped'), findsOneWidget);
@@ -103,7 +117,79 @@ void main() {
       expect(find.text('No port forwards yet'), findsOneWidget);
       expect(forwards.runs, isEmpty);
     });
+
+    testWidgets('a Remote → Tablet port at $width dp says what it does as it '
+        'is typed, warns of what the host may refuse or expose, and saves', (
+      tester,
+    ) async {
+      await open(tester, width);
+      await addOne(tester);
+      await tester.tap(find.text('Remote → Tablet'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(remotePort, '80');
+      await tester.pump();
+      expect(find.textContaining('unless you sign in as root'), findsOneWidget);
+
+      await tester.enterText(remotePort, '8000');
+      await tester.pump();
+      expect(find.textContaining('unless you sign in as root'), findsNothing);
+      expect(
+        find.text(
+          'Programs on db box open localhost:8000 to reach port 8000 on this '
+          'tablet.',
+        ),
+        findsOneWidget,
+      );
+
+      final listenOn = find.widgetWithText(TextFormField, 'Remote listens on');
+      expect(listenOn, findsNothing);
+      await tester.tap(find.text('Advanced'));
+      await tester.pumpAndSettle();
+      await tester.enterText(listenOn, '0.0.0.0');
+      await tester.enterText(tabletPort, '9000');
+      await tester.pump();
+      expect(find.textContaining('GatewayPorts'), findsOneWidget);
+      expect(
+        find.text(
+          'Programs on db box, and machines that reach it, open port 8000 on '
+          'it to reach port 9000 on this tablet.',
+        ),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.byTooltip('Save'));
+      await tester.pumpAndSettle();
+      expect(forwards.runs.single.setting.mappings, const [
+        RemoteForward(remoteHost: '0.0.0.0', remotePort: 8000, tabletPort: 9000),
+      ]);
+      expect(find.text('Remote 0.0.0.0:8000 → Tablet 9000'), findsOneWidget);
+    });
   }
+
+  testWidgets('a service chip fills the port, names the service, and names '
+      'the setting after it', (tester) async {
+    await open(tester, 400);
+    await addOne(tester);
+    await tester.tap(find.text('PostgreSQL 5432'));
+    await tester.pump();
+
+    expect(tester.widget<TextFormField>(tabletPort).controller!.text, '5432');
+    expect(
+      find.text(
+        'Apps on this tablet open 127.0.0.1:5432 (PostgreSQL) to reach port '
+        '5432 on db box.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Optional. Defaults to PostgreSQL on db box.'), findsOne);
+
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('PostgreSQL on db box'), findsOneWidget);
+    expect(find.text('PostgreSQL · Tablet 5432 → Remote 5432'), findsOneWidget);
+  });
 
   testWidgets('New host… makes one in the host editor and comes back with it '
       'picked', (tester) async {
@@ -133,6 +219,6 @@ void main() {
     expect(created.host, 'pg.example');
     expect(forwards.runs.single.setting.hostId, created.id);
     expect(find.text('me@pg.example'), findsOneWidget);
-    expect(find.text('15432 → localhost:15432'), findsOneWidget);
+    expect(find.text('Tablet 15432 → Remote 15432'), findsOneWidget);
   });
 }
