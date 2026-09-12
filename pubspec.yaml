@@ -64,6 +64,25 @@ dev_dependencies:
   url_launcher_platform_interface: ^2.3.2
   # The same, under webview_flutter: no web view runs under flutter test.
   webview_flutter_platform_interface: ^2.15.1
+  # Draws the launcher icon from the flutter_launcher_icons block below.
+  flutter_launcher_icons: ^0.14.4
+
+# The Android launcher icon, legacy and adaptive, from the tile in
+# assets/branding/app_icon.png. After changing the tile or these values, run
+#   dart run flutter_launcher_icons
+# and commit what it writes under android/app/src/main/res. iOS keeps
+# Flutter's default icon.
+flutter_launcher_icons:
+  android: true
+  image_path: assets/branding/app_icon.png
+  adaptive_icon_foreground: assets/branding/app_icon.png
+  # The denim just inside the tile's edge.
+  adaptive_icon_background: "#32335d"
+  # 16% a side draws the tile at 73.4 of the 108 dp layer, a little over the
+  # 72 dp a launcher shows, so the tile's own rounded corners fall outside the
+  # mask. The pocket reaches past the 66 dp safe zone; a circle mask trims its
+  # bottom corners slightly.
+  adaptive_icon_foreground_inset: 16
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
