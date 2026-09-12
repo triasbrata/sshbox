@@ -8,6 +8,7 @@ import 'package:sshbox/src/models/os_info.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
+import 'package:sshbox/src/ui/os_icon.dart';
 
 /// A shell that is up the moment it is asked for.
 class _Shell implements SessionTransport, TerminalSession {
@@ -55,18 +56,37 @@ void main() {
         username: 'me',
         os: OsInfo(
           id: 'ubuntu',
-          prettyName: 'Ubuntu 24.04.1 LTS',
+          prettyName: 'Ubuntu 22.04.5 LTS',
           arch: 'x86_64',
         ),
       );
       await repository.upsert(connected);
+      // A short version.
+      await repository.upsert(
+        const HostProfile(
+          id: 'b',
+          label: 'b',
+          host: '10.0.0.2',
+          username: 'me',
+          os: OsInfo(
+            id: 'alpine',
+            prettyName: 'Alpine Linux v3.20',
+            kernel: 'Linux',
+            arch: 'aarch64',
+          ),
+        ),
+      );
       // Never connected.
-      for (final id in ['b', 'c']) {
-        await repository.upsert(
-          HostProfile(id: id, label: id, host: '10.0.0.1', username: 'me'),
-        );
-      }
-      // Far too long for any card: it has to ellipsize, not overflow.
+      await repository.upsert(
+        const HostProfile(
+          id: 'c',
+          label: 'c',
+          host: '10.0.0.3',
+          username: 'me',
+        ),
+      );
+      // Far too long for any card, and a long version: they have to
+      // ellipsize, not overflow. On a tablet it is alone in the second row.
       await repository.upsert(
         HostProfile(
           id: 'd',
@@ -74,6 +94,12 @@ void main() {
           host: 'build-${'x' * 80}.example.com',
           username: 'deploy',
           port: 2222,
+          os: const OsInfo(
+            id: 'fedora',
+            prettyName: 'Fedora Linux 40 (Workstation Edition)',
+            kernel: 'Linux',
+            arch: 'x86_64',
+          ),
         ),
       );
 
@@ -106,15 +132,58 @@ void main() {
       expect(corners.map((c) => c.dy).toSet(), hasLength((4 / columns).ceil()));
       // Off the screen's edge.
       expect(corners.first.dx, greaterThan(0));
-      // Whatever a host has said, its card is as tall as the others.
-      expect(
-        {for (var i = 0; i < 4; i++) tester.getSize(cards.at(i)).height},
-        hasLength(1),
-      );
+      // Whatever a host has said, and however long its version, its card
+      // is as tall as the others, in its own row and the next...
+      expect({
+        for (var i = 0; i < 4; i++) tester.getSize(cards.at(i)).height,
+      }, hasLength(1));
+      // ...with its badge as far down it: the version under the badge takes
+      // one line, long, short, or blank before the first connect.
+      expect({
+        for (var i = 0; i < 4; i++)
+          tester
+                  .getTopLeft(
+                    find.descendant(
+                      of: cards.at(i),
+                      matching: find.byType(OsBadge),
+                    ),
+                  )
+                  .dy -
+              tester.getTopLeft(cards.at(i)).dy,
+      }, hasLength(1));
+      expect({
+        for (final version in [
+          '22.04.5 LTS',
+          '3.20',
+          '40 (Workstation Edition)',
+        ])
+          tester.getSize(find.text(version)).height,
+      }, hasLength(1));
 
-      expect(find.text('Ubuntu 24.04.1 LTS · x86_64'), findsOneWidget);
+      // The version is under its badge, centred on it, without the OS's
+      // name: the badge already shows it.
+      final badge = tester.getRect(
+        find.descendant(
+          of: find.widgetWithText(Card, '22.04.5 LTS'),
+          matching: find.byType(OsBadge),
+        ),
+      );
+      final version = tester.getRect(find.text('22.04.5 LTS'));
+      expect(version.top, greaterThanOrEqualTo(badge.bottom));
+      expect(
+        version.center.dx,
+        moreOrLessEquals(badge.center.dx, epsilon: 0.5),
+      );
+      for (final name in ['Ubuntu', 'Alpine', 'Fedora', 'Linux']) {
+        expect(find.textContaining(name), findsNothing);
+      }
+
+      // The arch is saved, but on no card.
+      for (final arch in ['x86_64', 'aarch64', '·']) {
+        expect(find.textContaining(arch), findsNothing);
+      }
       expect(find.text('2 active sessions'), findsOneWidget);
-      expect(find.text('OS not detected yet'), findsNWidgets(3));
+      expect(find.text('OS not detected yet'), findsNothing);
       // The user and the OS are on the card once each, not again in an
       // `ssh, me, ubuntu` line.
       expect(find.textContaining('ssh,'), findsNothing);

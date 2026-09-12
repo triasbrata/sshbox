@@ -95,9 +95,7 @@ class _HostsPageState extends State<HostsPage> {
     }
 
     await Clipboard.setData(ClipboardData(text: token));
-    messenger.showSnackBar(
-      const SnackBar(content: Text('FCM token copied')),
-    );
+    messenger.showSnackBar(const SnackBar(content: Text('FCM token copied')));
   }
 
   Future<void> _confirmDelete(HostProfile host) async {
@@ -188,49 +186,47 @@ class _HostsPageState extends State<HostsPage> {
         null => const Center(child: CircularProgressIndicator()),
         [] => const _EmptyState(),
         _ => LayoutBuilder(
-            builder: (context, constraints) {
-              // Material's compact breakpoint, as the tab strip uses: one
-              // column on a phone, three once there is a tablet's width.
-              final columns = constraints.maxWidth < 600 ? 1 : 3;
+          builder: (context, constraints) {
+            // Material's compact breakpoint, as the tab strip uses: one
+            // column on a phone, three once there is a tablet's width.
+            final columns = constraints.maxWidth < 600 ? 1 : 3;
 
-              Widget card(HostProfile host) {
-                final open = widget.sessions.sessionsFor(host.id);
-                return _HostTile(
-                  host: host,
-                  sessionCount: open.length,
-                  activeCount: open.where((s) => s.isConnected).length,
-                  onOpen: () => widget.onOpenHost(host.id),
-                  onEdit: () => _openEditor(existing: host),
-                  onDelete: () => _confirmDelete(host),
-                  onCloseSessions: () => widget.sessions.closeHost(host.id),
-                );
-              }
-
-              // Rows of cards rather than a grid, so a card is as tall as its
-              // text at any font size, and every card in a row as tall as
-              // the tallest. The cards' 6 dp margins make the rest of the
-              // gutters.
-              return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
-                itemCount: (hosts.length / columns).ceil(),
-                itemBuilder: (context, row) => IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = row * columns;
-                          i < (row + 1) * columns;
-                          i++)
-                        Expanded(
-                          child: i < hosts.length
-                              ? card(hosts[i])
-                              : const SizedBox(),
-                        ),
-                    ],
-                  ),
-                ),
+            Widget card(HostProfile host) {
+              final open = widget.sessions.sessionsFor(host.id);
+              return _HostTile(
+                host: host,
+                sessionCount: open.length,
+                activeCount: open.where((s) => s.isConnected).length,
+                onOpen: () => widget.onOpenHost(host.id),
+                onEdit: () => _openEditor(existing: host),
+                onDelete: () => _confirmDelete(host),
+                onCloseSessions: () => widget.sessions.closeHost(host.id),
               );
-            },
-          ),
+            }
+
+            // Rows of cards rather than a grid, so a card is as tall as its
+            // text at any font size, and every card in a row as tall as
+            // the tallest. The cards' 6 dp margins make the rest of the
+            // gutters.
+            return ListView.builder(
+              padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
+              itemCount: (hosts.length / columns).ceil(),
+              itemBuilder: (context, row) => IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var i = row * columns; i < (row + 1) * columns; i++)
+                      Expanded(
+                        child: i < hosts.length
+                            ? card(hosts[i])
+                            : const SizedBox(),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       },
     );
   }
@@ -267,90 +263,133 @@ class _HostTile extends StatelessWidget {
       SshAuthMethod.privateKey => 'key',
       SshAuthMethod.tailscale => 'tailscale',
     };
-    final os = host.os?.summary ?? '';
+    final muted = theme.colorScheme.onSurfaceVariant;
 
+    // By hand rather than a ListTile, whose leading is at most 56 dp tall:
+    // too short for the badge with its version under it.
     return Card(
       margin: const EdgeInsets.all(6),
       clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        leading: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            OsBadge(host.os),
-            if (activeCount > 0)
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary,
-                    shape: BoxShape.circle,
-                    // Cut out of the icon in the card's own colour.
-                    border: Border.all(
-                      color: theme.cardTheme.color ??
-                          theme.colorScheme.surfaceContainerLow,
-                      width: 2,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-        title: Text(
-          host.displayName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        // A line each, so a long address ellipsizes without taking the
-        // session count with it on a narrow card. Every card has the same
-        // three, so the grid stays even: a host not connected to yet keeps
-        // the OS line's place.
-        subtitle: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              os.isEmpty ? 'OS not detected yet' : os,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: os.isEmpty
-                  ? TextStyle(color: theme.colorScheme.outline)
-                  : null,
-            ),
-            for (final line in [
-              host.target,
-              switch (activeCount) {
-                0 => authLabel,
-                1 => 'active session',
-                _ => '$activeCount active sessions',
-              },
-            ])
-              Text(line, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ],
-        ),
+      child: InkWell(
         onTap: onOpen,
-        trailing: PopupMenuButton<String>(
-          onSelected: (action) => switch (action) {
-            'edit' => onEdit(),
-            'delete' => onDelete(),
-            'close' => onCloseSessions(),
-            _ => null,
-          },
-          itemBuilder: (_) => [
-            if (sessionCount > 0)
-              PopupMenuItem(
-                value: 'close',
-                child: Text(
-                  sessionCount == 1
-                      ? 'Close session'
-                      : 'Close $sessionCount sessions',
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
+          child: Row(
+            children: [
+              // As wide on every card, so every name starts at the same x.
+              SizedBox(
+                width: 80,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        OsBadge(host.os),
+                        if (activeCount > 0)
+                          Positioned(
+                            right: -2,
+                            bottom: -2,
+                            child: Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primary,
+                                shape: BoxShape.circle,
+                                // Cut out of the icon in the card's own
+                                // colour.
+                                border: Border.all(
+                                  color:
+                                      theme.cardTheme.color ??
+                                      theme.colorScheme.surfaceContainerLow,
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    // Only the version: the badge already says which OS.
+                    // Always a line's room, even blank before the first
+                    // connect or with no version (an empty Text is a little
+                    // shorter), so every badge sits as high.
+                    DefaultTextStyle.merge(
+                      // A step under labelSmall's 11.
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: muted,
+                        fontSize: 9.5,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      child: Stack(
+                        alignment: Alignment.topCenter,
+                        children: [
+                          const ExcludeSemantics(child: Text(' ')),
+                          Text(host.os?.version ?? ''),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            const PopupMenuItem(value: 'edit', child: Text('Edit')),
-            const PopupMenuItem(value: 'delete', child: Text('Delete')),
-          ],
+              const SizedBox(width: 8),
+              // A line each, so a long address ellipsizes without taking the
+              // session count with it on a narrow card.
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      host.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                    for (final line in [
+                      host.target,
+                      switch (activeCount) {
+                        0 => authLabel,
+                        1 => 'active session',
+                        _ => '$activeCount active sessions',
+                      },
+                    ])
+                      Text(
+                        line,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: muted,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (action) => switch (action) {
+                  'edit' => onEdit(),
+                  'delete' => onDelete(),
+                  'close' => onCloseSessions(),
+                  _ => null,
+                },
+                itemBuilder: (_) => [
+                  if (sessionCount > 0)
+                    PopupMenuItem(
+                      value: 'close',
+                      child: Text(
+                        sessionCount == 1
+                            ? 'Close session'
+                            : 'Close $sessionCount sessions',
+                      ),
+                    ),
+                  const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
