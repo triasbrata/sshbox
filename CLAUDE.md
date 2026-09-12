@@ -70,7 +70,8 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
-| New app icon from the user's pocket-and-terminal picture, and a new visible name (the user is choosing: their "Pockal : Terminal Buddy on pocket" or a suggestion) | Coordinator | — | in development |
+| Push token passed to each host on connect as LC_SSHBOX_TOKEN and LC_SSHBOX_HOST_ID (tmux too) and read by sshbox-notify; the Home key button leaves, and Settings keeps "Copy notification token" as a fallback | Coordinator | — | in development |
+| App renamed to Jeansh with the tagline "Terminal buddy in your pocket" under the Home title, and a new launcher icon from the user's denim-pocket-and-terminal picture, legacy and adaptive | Coordinator | 64e873b, 417fb09 | merged, waiting for the install on the tablet |
 | Known hosts, opened from the fingerprint button on Home: every trusted host fingerprint listed (address, the saved hosts using it, fingerprint), and Forget drops one so the next connection asks again | Coordinator | a9ea390, af2a44b | UAT passed (after the entry moved from Settings to Home: "entry point known host pindahkan ke home") |
 | Connect sheet: a new connection or reconnect starts in a bottom sheet that shows progress, the host fingerprint to trust and the Tailscale sign-in link (opened in the phone's browser); a new tab opens only once connected, and closing the sheet gives up | Coordinator | a48d875 | UAT passed |
 | Host editor: Choose file reads a private key into its field (OpenSSH/PEM, 64 KB max; a public key or .ppk is refused with a hint); passphrase and password get a show/hide eye | Coordinator | 80a145e, c4fc025 | UAT passed |
