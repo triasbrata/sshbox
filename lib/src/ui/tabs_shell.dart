@@ -304,11 +304,14 @@ class _TabStripState extends State<TabStrip> {
 
   /// What a long press on a shell's tab offers. The pane entries act on the
   /// focused pane, and are there only while tmux is: a plain shell has no
-  /// panes to split.
-  List<(String, VoidCallback)> _menuFor(LiveSession session) {
+  /// panes to split. An ended shell's close button has become Reconnect, so
+  /// closing it is offered here instead.
+  List<(String, VoidCallback)> _menuFor(TabRef tab) {
+    final session = tab.session;
     final tmux = session.isConnected ? session.tmux : null;
     return [
       ('Duplicate session', () => widget.onDuplicate(session.host.id)),
+      if (session.ended) ('Close tab', () => widget.onClose(tab)),
       if (tmux != null) ...[
         ('Split right', () => _tmux(() => tmux.split(sideBySide: true))),
         ('Split down', () => _tmux(() => tmux.split(sideBySide: false))),
@@ -373,7 +376,7 @@ class _TabStripState extends State<TabStrip> {
           onReconnect: tab.kind == TabKind.terminal && tab.session.ended
               ? () => widget.onReconnect(tab.session)
               : null,
-          menu: tab.kind == TabKind.terminal ? _menuFor(tab.session) : const [],
+          menu: tab.kind == TabKind.terminal ? _menuFor(tab) : const [],
         ),
     ];
 
@@ -395,9 +398,9 @@ class _TabStripState extends State<TabStrip> {
               // scrolled away or closed. It drops to its icon while you are on a
               // session, handing the room back to the tabs that need it.
               _TabChip(
-                icon: Icons.dns_outlined,
-                label: widget.activeIndex == 0 ? 'Hosts' : null,
-                tooltip: 'Hosts',
+                icon: Icons.home_outlined,
+                label: widget.activeIndex == 0 ? 'Home' : null,
+                tooltip: 'Home',
                 selected: widget.activeIndex == 0,
                 onTap: () => widget.onSelect(null),
               ),
