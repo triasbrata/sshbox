@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../session/tmux.dart';
+import 'settings_page.dart';
 
 /// A tmux window drawn the way tmux laid it out: every pane at its own cells,
 /// a thin line down the middle of the cell tmux leaves between two panes,
@@ -63,7 +64,7 @@ class TmuxPaneLayout extends StatelessWidget {
           // The gaps between panes are the terminal's colour, not the page's,
           // so the window reads as one terminal cut up rather than several
           // floating on a card.
-          color: TerminalThemes.defaultTheme.background,
+          color: terminalThemeOf(theme.colorScheme).background,
           child: ClipRect(
             child: Stack(
               children: [
@@ -91,10 +92,11 @@ class TmuxPaneLayout extends StatelessWidget {
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           border: Border.all(
-                            // The dark theme's accent in any theme: it is
-                            // drawn on the terminal, which stays dark.
-                            color: theme.colorScheme.primaryFixedDim.withValues(
-                              alpha: 0.55,
+                            // The terminal's cursor colour. Light primary
+                            // sits nearer its background, so this much of
+                            // it keeps the line at 3:1 there too.
+                            color: theme.colorScheme.primary.withValues(
+                              alpha: 0.7,
                             ),
                           ),
                         ),

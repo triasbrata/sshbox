@@ -346,9 +346,9 @@ class _TerminalPageState extends State<TerminalPage> {
     final ctrl = _ctrl;
     if (!mounted || ctrl == _ctrlShown) return;
     _ctrlShown = ctrl;
-    // The accent as the dark theme has it, whichever theme is picked: the
-    // terminal under the line is dark either way.
-    final color = Theme.of(context).colorScheme.primaryFixedDim;
+    // The terminal's cursor colour, clear of its background in either
+    // brightness.
+    final color = Theme.of(context).colorScheme.primary;
     for (final view in _paneViews) {
       view.showLinks(ctrl: ctrl, color: color);
     }
@@ -619,11 +619,10 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         if (_session.connecting)
           ColoredBox(
-            // A light theme's sign-in prompt is dark text, lost on black, so
-            // there the shell is veiled in the page's own surface instead.
-            color: Theme.of(context).brightness == Brightness.dark
-                ? Colors.black54
-                : Theme.of(context).colorScheme.surface.withValues(alpha: 0.8),
+            // The page's own surface: the terminal is drawn from the same
+            // palette, and the sign-in prompt's text reads on it in either
+            // brightness.
+            color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.8),
             child: Center(
               child: _session.authUrl == null
                   ? const CircularProgressIndicator()
@@ -847,6 +846,9 @@ class _PaneViewState extends State<_PaneView> {
           onTapUp: (_, cell) => widget.onTap(this, cell),
           padding: widget.padding,
           textStyle: widget.textStyle,
+          // Read from the app's theme, so a change in Settings repaints the
+          // shell at once, with no reconnect.
+          theme: terminalThemeOf(Theme.of(context).colorScheme),
         ),
       ),
     );
