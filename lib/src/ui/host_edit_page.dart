@@ -1,10 +1,70 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart' show FilePicker;
 import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
+import 'toast.dart';
+
+/// The most a key file may hold. A private key is a few KB, so a larger file
+/// is something else, and is refused before it is read.
+const maxKeyFileBytes = 64 * 1024;
+
+const _keyFileTooBig = 'That file is over 64 KB\n'
+    'A private key is a few KB. Pick the key file itself.';
+
+/// A private key from BEGIN to its own END: OpenSSH's format, PKCS#1 RSA
+/// (encrypted or not), SEC1 EC, DSA, and PKCS#8 plain or encrypted.
+final _privateKeyBlock = RegExp(
+  r'-----BEGIN ((?:OPENSSH |RSA |EC |DSA |ENCRYPTED )?PRIVATE KEY)-----'
+  r'[\s\S]+-----END \1-----',
+);
+
+/// A public key: an authorized_keys line (`ssh-ed25519 AAAA…`), or a PEM or
+/// RFC 4716 block.
+final _publicKey = RegExp(
+  r'^(?:ssh-|ecdsa-|sk-)\S+ AAAA|PUBLIC KEY-----',
+  multiLine: true,
+);
+
+/// The text of the private key in a key file's [bytes], to be stored as is,
+/// the way a pasted key is. Throws a [FormatException] whose message tells
+/// the user why the file is not one: a heading, then what to do.
+String privateKeyFromFile(List<int> bytes) {
+  if (bytes.length > maxKeyFileBytes) {
+    throw const FormatException(_keyFileTooBig);
+  }
+  final text = utf8.decode(bytes, allowMalformed: true);
+  if (text.contains('\uFFFD') || text.contains('\x00')) {
+    throw const FormatException(
+      "That file isn't text\n"
+      'A private key file is text, with a BEGIN … PRIVATE KEY line.',
+    );
+  }
+  if (_privateKeyBlock.hasMatch(text)) return text;
+  // dartssh2 reads no PuTTY keys.
+  if (text.trimLeft().startsWith('PuTTY-User-Key-File-')) {
+    throw const FormatException(
+      "That's a PuTTY key (.ppk)\n"
+      'Convert it to OpenSSH format first: '
+      'puttygen key.ppk -O private-openssh -o key',
+    );
+  }
+  if (_publicKey.hasMatch(text)) {
+    throw const FormatException(
+      "That's the public half of the key\n"
+      'Pick the private file: the one without .pub, like id_ed25519.',
+    );
+  }
+  throw const FormatException(
+    "That file isn't a private key\n"
+    'Pick an OpenSSH or PEM private key, the file with a BEGIN … PRIVATE '
+    'KEY line.',
+  );
+}
 
 class HostEditPage extends StatefulWidget {
   const HostEditPage({
@@ -52,6 +112,50 @@ class _TailscaleNotice extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A password field whose eye shows or masks what was typed. Shown or not, it
+/// stays out of the keyboard's suggestions and out of what it learns.
+class _SecretField extends StatefulWidget {
+  const _SecretField({
+    required this.controller,
+    required this.what,
+    required this.decoration,
+  });
+
+  final TextEditingController controller;
+
+  /// What it holds, as the eye's tooltip names it: "password", "passphrase".
+  final String what;
+
+  final InputDecoration decoration;
+
+  @override
+  State<_SecretField> createState() => _SecretFieldState();
+}
+
+class _SecretFieldState extends State<_SecretField> {
+  var _shown = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: widget.controller,
+      obscureText: !_shown,
+      // Masked, the platform already keeps it from the keyboard; shown, only
+      // these do.
+      autocorrect: false,
+      enableSuggestions: false,
+      enableIMEPersonalizedLearning: false,
+      decoration: widget.decoration.copyWith(
+        suffixIcon: IconButton(
+          tooltip: '${_shown ? 'Hide' : 'Show'} ${widget.what}',
+          icon: Icon(_shown ? Icons.visibility_off : Icons.visibility),
+          onPressed: () => setState(() => _shown = !_shown),
         ),
       ),
     );
@@ -125,6 +229,40 @@ class _HostEditPageState extends State<HostEditPage> {
       controller.dispose();
     }
     super.dispose();
+  }
+
+  /// Reads the private key in a file the user picks into the key field, where
+  /// it is saved as a pasted key is, or says why the file isn't one.
+  Future<void> _chooseKeyFile() async {
+    // Any type: key files seldom have an extension.
+    final file = await FilePicker.pickFile();
+    if (file == null) return;
+
+    final String key;
+    try {
+      // Sized before it is read, so no large file lands in memory.
+      if (await file.length() > maxKeyFileBytes) {
+        throw const FormatException(_keyFileTooBig);
+      }
+      key = privateKeyFromFile(await file.readAsBytes());
+    } on Exception catch (error) {
+      if (mounted) {
+        showToast(
+          context,
+          error is FormatException ? error.message : "Couldn't read that file",
+          type: ToastificationType.warning,
+          duration: const Duration(seconds: 6),
+        );
+      }
+      return;
+    } finally {
+      // Android's picker hands over a copy in the app's cache
+      // (cache/file_picker/), and a private key must not stay there in plain
+      // text: this deletes every copy it made. Not a delete of file.path,
+      // which on a desktop is the user's own key file.
+      await FilePicker.clearTemporaryFiles();
+    }
+    if (mounted) _privateKey.text = key;
   }
 
   Future<void> _save() async {
@@ -329,9 +467,9 @@ class _HostEditPageState extends State<HostEditPage> {
             if (_authMethod == SshAuthMethod.tailscale)
               const _TailscaleNotice()
             else if (_authMethod == SshAuthMethod.password)
-              TextFormField(
+              _SecretField(
                 controller: _password,
-                obscureText: true,
+                what: 'password',
                 decoration: InputDecoration(
                   labelText: 'Password',
                   helperText: _isEditing
@@ -359,10 +497,18 @@ class _HostEditPageState extends State<HostEditPage> {
                   helperMaxLines: 2,
                 ),
               ),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  onPressed: _chooseKeyFile,
+                  icon: const Icon(Icons.file_open_outlined),
+                  label: const Text('Choose file'),
+                ),
+              ),
               const SizedBox(height: 12),
-              TextFormField(
+              _SecretField(
                 controller: _passphrase,
-                obscureText: true,
+                what: 'passphrase',
                 decoration: const InputDecoration(
                   labelText: 'Key passphrase',
                   helperText: 'Only if the key is encrypted',
