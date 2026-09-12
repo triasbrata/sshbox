@@ -46,6 +46,83 @@ TerminalStyle terminalStyleOf(String family, double size) => TerminalStyle(
   ],
 );
 
+/// The terminal's colours in [scheme]: background, text, cursor and selection
+/// from the app's palette, and the 16 ANSI colours from a set made for the
+/// scheme's brightness. Those are never tinted, so `ls`, `git diff` and vim
+/// read the same in every palette.
+///
+/// The same scheme gives back the same theme: xterm2 re-shapes every glyph on
+/// screen when its theme changes, and a page rebuilds far more often than the
+/// palette does.
+TerminalTheme terminalThemeOf(ColorScheme scheme) {
+  if (scheme == _themedScheme) return _terminalTheme!;
+  final ansi = scheme.brightness == Brightness.dark
+      ? TerminalThemes.defaultTheme
+      : _lightAnsi;
+  _themedScheme = scheme;
+  return _terminalTheme = TerminalTheme(
+    // Dark, about the #1E1E1E the terminal always had; light, an off-white.
+    background: scheme.surfaceContainerLow,
+    foreground: scheme.onSurface,
+    cursor: scheme.primary,
+    // Painted under the text, which xterm2 recolours where it would not show.
+    selection: scheme.primary.withValues(alpha: 0.35),
+    black: ansi.black,
+    red: ansi.red,
+    green: ansi.green,
+    yellow: ansi.yellow,
+    blue: ansi.blue,
+    magenta: ansi.magenta,
+    cyan: ansi.cyan,
+    white: ansi.white,
+    brightBlack: ansi.brightBlack,
+    brightRed: ansi.brightRed,
+    brightGreen: ansi.brightGreen,
+    brightYellow: ansi.brightYellow,
+    brightBlue: ansi.brightBlue,
+    brightMagenta: ansi.brightMagenta,
+    brightCyan: ansi.brightCyan,
+    brightWhite: ansi.brightWhite,
+    searchHitBackground: ansi.searchHitBackground,
+    searchHitBackgroundCurrent: ansi.searchHitBackgroundCurrent,
+    searchHitForeground: ansi.searchHitForeground,
+  );
+}
+
+ColorScheme? _themedScheme;
+TerminalTheme? _terminalTheme;
+
+/// The ANSI colours of a light terminal, after VS Code's Light+: dark enough
+/// to read on an off-white, where the dark set's yellow and cyan vanish. White
+/// is a dark grey and bright white a lighter one, so text a program writes in
+/// white still shows; black stays black, the colour programs also put their
+/// bars on. Only the ANSI colours are read: [terminalThemeOf] sets the rest.
+const _lightAnsi = TerminalTheme(
+  cursor: Color(0xFF000000),
+  selection: Color(0x40000000),
+  foreground: Color(0xFF1E1E1E),
+  background: Color(0xFFFFFFFF),
+  black: Color(0xFF000000),
+  red: Color(0xFFCD3131),
+  green: Color(0xFF107C10),
+  yellow: Color(0xFF946F00),
+  blue: Color(0xFF0451A5),
+  magenta: Color(0xFFBC05BC),
+  cyan: Color(0xFF0A7F9E),
+  white: Color(0xFF555555),
+  brightBlack: Color(0xFF666666),
+  brightRed: Color(0xFFE04848),
+  brightGreen: Color(0xFF148F14),
+  brightYellow: Color(0xFFA88400),
+  brightBlue: Color(0xFF2A6FD6),
+  brightMagenta: Color(0xFFC837C8),
+  brightCyan: Color(0xFF0A93B3),
+  brightWhite: Color(0xFF8C8C8C),
+  searchHitBackground: Color(0xFFFFFF2B),
+  searchHitBackgroundCurrent: Color(0xFF31FF26),
+  searchHitForeground: Color(0xFF000000),
+);
+
 /// The terminal's font and size, as picked in Settings, in one value every
 /// terminal page listens to: a change reaches each open shell and tmux pane at
 /// once, and a page need not know where it came from.
@@ -99,12 +176,11 @@ const appPalettes = <({String name, Color seed})>[
 
 /// Light, dark or the system's, and the palette, as picked in Settings.
 /// `SshboxApp` builds its theme from this, so a change repaints every page at
-/// once. The terminal keeps its own colours whatever is picked.
+/// once, every terminal included: see [terminalThemeOf].
 class AppTheme extends ValueNotifier<({ThemeMode mode, Color seed})> {
   AppTheme() : super(defaults);
 
-  /// Dark and green, the way Clode looked before there was a choice: a
-  /// terminal is a dark surface, and dark chrome does not fight it.
+  /// Dark and green, the way Clode looked before there was a choice.
   static final defaults = (mode: ThemeMode.dark, seed: appPalettes.first.seed);
 
   static const _modeKey = 'sshbox.theme.mode';
@@ -297,6 +373,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
                     child: TerminalView(
                       _preview,
                       textStyle: style,
+                      theme: terminalThemeOf(theme.colorScheme),
                       padding: _previewPadding,
                       readOnly: true,
                     ),
