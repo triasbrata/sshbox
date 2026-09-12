@@ -18,6 +18,7 @@ TabRef _shell(WidgetTester tester, String id, String label) {
 Future<void> _pump(
   WidgetTester tester,
   List<TabRef> tabs, {
+  void Function(TabRef tab)? onClose,
   void Function(LiveSession session)? onReconnect,
   void Function(String hostId)? onDuplicate,
 }) => tester.pumpWidget(
@@ -29,7 +30,7 @@ Future<void> _pump(
             tabs: tabs,
             activeIndex: 1,
             onSelect: (_, {kind = TabKind.terminal, path, web}) {},
-            onClose: (_) {},
+            onClose: onClose ?? (_) {},
             onReconnect: onReconnect ?? (_) {},
             onDuplicate: onDuplicate ?? (_) {},
           ),
@@ -124,6 +125,31 @@ void main() {
 
     await tester.tap(find.byTooltip('Reconnect'));
     expect(reconnected, same(tab.session));
+  });
+
+  testWidgets('long-pressing a shell that failed to connect offers to close it', (
+    tester,
+  ) async {
+    final tab = _shell(tester, 'host-1', 'box');
+    TabRef? closed;
+    void onClose(TabRef tab) => closed = tab;
+
+    // Still live: the close button is right there on the chip.
+    await _pump(tester, [tab], onClose: onClose);
+    await tester.longPress(find.text('box'));
+    await tester.pumpAndSettle();
+    expect(find.text('Close tab'), findsNothing);
+    await tester.tapAt(Offset.zero);
+    await tester.pumpAndSettle();
+
+    await tab.session.connect(secrets: _NoSecrets());
+    await _pump(tester, [tab], onClose: onClose);
+    await tester.longPress(find.text('box'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Close tab'));
+    await tester.pumpAndSettle();
+
+    expect(closed, same(tab));
   });
 
   testWidgets('a file tab reads host · file, and gives up the host for room', (
