@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -5,6 +9,98 @@ import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/host_edit_page.dart';
+import 'package:toastification/toastification.dart';
+
+const _openSshKey = '-----BEGIN OPENSSH PRIVATE KEY-----\n'
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n'
+    '-----END OPENSSH PRIVATE KEY-----\n';
+
+const _publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake me@box\n';
+
+/// A picker that hands over [next] without asking anyone.
+class _FakePicker extends FilePickerPlatform {
+  PlatformFile? next;
+
+  /// How many times the plugin's cached copies were cleared.
+  var cleared = 0;
+
+  @override
+  Future<PlatformFile?> pickFile({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    int compressionQuality = 0,
+    AndroidOptions androidOptions = const AndroidOptions(),
+    DarwinOptions darwinOptions = const DarwinOptions(),
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async => next;
+
+  @override
+  Future<void> clearTemporaryFiles() async {
+    cleared++;
+  }
+}
+
+/// A picked file, read from memory.
+final class _PickedFile extends PlatformFile {
+  _PickedFile(this.name, String text) : _bytes = utf8.encode(text);
+
+  @override
+  final String name;
+  final Uint8List _bytes;
+
+  @override
+  Uri get uri => Uri.file('/data/cache/file_picker/1/$name');
+
+  @override
+  get xFile => throw UnimplementedError();
+
+  @override
+  int? lengthSync() => _bytes.length;
+
+  @override
+  Future<int> length() async => _bytes.length;
+
+  @override
+  Future<Uint8List> readAsBytes() async => _bytes;
+
+  @override
+  Stream<Uint8List> readAsByteStream() => Stream.value(_bytes);
+}
+
+/// Opens the edit page of a host that signs in with a key, tall enough to
+/// show all of it.
+Future<void> _openKeyHost(WidgetTester tester) async {
+  SharedPreferences.setMockInitialValues({});
+  await tester.binding.setSurfaceSize(const Size(800, 2000));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+  final secrets = InMemorySecretStore();
+  await tester.pumpWidget(
+    ToastificationWrapper(
+      child: MaterialApp(
+        home: HostEditPage(
+          repository: HostRepository(secrets),
+          secrets: secrets,
+          existing: const HostProfile(
+            id: 'box',
+            label: 'box',
+            host: '10.0.0.5',
+            username: 'me',
+            authMethod: SshAuthMethod.privateKey,
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+TextField _field(WidgetTester tester, String label) =>
+    tester.widget<TextField>(find.widgetWithText(TextField, label));
 
 void main() {
   testWidgets('picks a saved host to jump through, and saves it', (
@@ -63,5 +159,105 @@ void main() {
     await tester.pumpAndSettle();
     final saved = (await repository.load()).firstWhere((h) => h.id == 'box');
     expect(saved.jumpHostId, 'gw');
+  });
+
+  testWidgets('the passphrase is masked until its eye shows it, and the '
+      'keyboard learns it neither way', (tester) async {
+    await _openKeyHost(tester);
+
+    void expectUnlearned() {
+      final field = _field(tester, 'Key passphrase');
+      expect(field.enableSuggestions, isFalse);
+      expect(field.autocorrect, isFalse);
+      expect(field.enableIMEPersonalizedLearning, isFalse);
+    }
+
+    expect(_field(tester, 'Key passphrase').obscureText, isTrue);
+    expectUnlearned();
+
+    await tester.tap(find.byTooltip('Show passphrase'));
+    await tester.pump();
+    expect(_field(tester, 'Key passphrase').obscureText, isFalse);
+    expectUnlearned();
+
+    await tester.tap(find.byTooltip('Hide passphrase'));
+    await tester.pump();
+    expect(_field(tester, 'Key passphrase').obscureText, isTrue);
+  });
+
+  testWidgets('a picked key file fills the key field; a public key does not, '
+      'and the picker\'s copies are cleared either way', (tester) async {
+    final picker = _FakePicker();
+    final real = FilePickerPlatform.instance;
+    FilePickerPlatform.instance = picker;
+    addTearDown(() => FilePickerPlatform.instance = real);
+    await _openKeyHost(tester);
+    String key() =>
+        _field(tester, 'Private key (OpenSSH or PEM)').controller!.text;
+
+    picker.next = _PickedFile('id_ed25519', _openSshKey);
+    await tester.tap(find.text('Choose file'));
+    await tester.pumpAndSettle();
+    expect(key(), _openSshKey);
+    expect(picker.cleared, 1);
+
+    picker.next = _PickedFile('id_ed25519.pub', _publicKey);
+    await tester.tap(find.text('Choose file'));
+    // A toast is on screen a couple of frames and its slide-in later.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.textContaining('public half'), findsOneWidget);
+    expect(key(), _openSshKey);
+    expect(picker.cleared, 2);
+
+    // The toast goes by itself.
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pumpAndSettle();
+  });
+
+  test('a key file is read if it holds an OpenSSH or PEM private key, and '
+      'refused in words that say why otherwise', () {
+    for (final key in [
+      _openSshKey,
+      '-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n'
+          'DEK-Info: AES-128-CBC,00\n\nMIIE\n-----END RSA PRIVATE KEY-----\n',
+      '-----BEGIN EC PRIVATE KEY-----\nMHcC\n-----END EC PRIVATE KEY-----\n',
+      '-----BEGIN DSA PRIVATE KEY-----\nMIIB\n-----END DSA PRIVATE KEY-----\n',
+      '-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n',
+      '-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIF\n'
+          '-----END ENCRYPTED PRIVATE KEY-----\n',
+    ]) {
+      expect(privateKeyFromFile(utf8.encode(key)), key);
+    }
+
+    Matcher refused(String why) => throwsA(
+      isA<FormatException>().having((e) => e.message, 'message', contains(why)),
+    );
+    String? read(String text) => privateKeyFromFile(utf8.encode(text));
+
+    expect(() => read(_publicKey), refused('public half'));
+    expect(
+      () => read('-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----\n'),
+      refused('public half'),
+    );
+    expect(
+      () => read('PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n'),
+      refused('puttygen key.ppk -O private-openssh -o key'),
+    );
+    expect(() => read('hello world\n'), refused("isn't a private key"));
+    // Cut short: a BEGIN with no END.
+    expect(
+      () => read('-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n'),
+      refused("isn't a private key"),
+    );
+    expect(
+      () => privateKeyFromFile([0xff, 0xfe, 0x00, 0x01]),
+      refused("isn't text"),
+    );
+    expect(
+      () => privateKeyFromFile(List.filled(maxKeyFileBytes + 1, 0x41)),
+      refused('64 KB'),
+    );
   });
 }

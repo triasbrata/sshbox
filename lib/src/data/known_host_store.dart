@@ -8,6 +8,9 @@ import '../models/host_profile.dart';
 /// [host] is met, and otherwise the key it had before this one.
 typedef HostKeyCheck = ({HostProfile host, String fingerprint, String? pinned});
 
+/// A pinned key and the host and port it stands for, as Settings lists them.
+typedef KnownHost = ({String host, int port, String fingerprint});
+
 /// Pinning of SSH host keys, the mobile equivalent of `~/.ssh/known_hosts`.
 ///
 /// Without this a client silently accepts any key a server offers, which is
@@ -71,4 +74,23 @@ class KnownHostStore {
     final known = await _load();
     return known[_entryKey(host, port)];
   }
+
+  /// Every pinned key, in the order the hosts were first trusted.
+  Future<List<KnownHost>> pins() async {
+    final known = await _load();
+    return [
+      for (final MapEntry(:key, :value) in known.entries)
+        (
+          // The port follows the last colon: an IPv6 host is full of them.
+          host: key.substring(0, key.lastIndexOf(':')),
+          port: int.parse(key.substring(key.lastIndexOf(':') + 1)),
+          fingerprint: value,
+        ),
+    ];
+  }
+
+  /// Drops the pin for [host] on [port], so the next connection there asks
+  /// the user as a first one does. Forgetting a key never trusts another.
+  Future<void> forget(String host, int port) =>
+      _update((known) => known.remove(_entryKey(host, port)));
 }

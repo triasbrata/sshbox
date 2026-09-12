@@ -8,6 +8,7 @@ import 'package:sshbox/src/models/os_info.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
+import 'package:sshbox/src/ui/known_hosts_page.dart';
 import 'package:sshbox/src/ui/os_icon.dart';
 
 /// A shell that is up the moment it is asked for.
@@ -190,4 +191,26 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  testWidgets('Known hosts opens from Home', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final secrets = InMemorySecretStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostsPage(
+          repository: HostRepository(secrets),
+          secrets: secrets,
+          sessions: SessionManager(),
+          onOpenHost: (_) async {},
+          pushToken: () => null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Known hosts'));
+    await tester.pumpAndSettle();
+    expect(find.byType(KnownHostsPage), findsOneWidget);
+    expect(find.text('Nothing trusted yet'), findsOneWidget);
+  });
 }
