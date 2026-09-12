@@ -398,9 +398,9 @@ class _TabStripState extends State<TabStrip> {
               // scrolled away or closed. It drops to its icon while you are on a
               // session, handing the room back to the tabs that need it.
               _TabChip(
-                icon: Icons.dns_outlined,
-                label: widget.activeIndex == 0 ? 'Hosts' : null,
-                tooltip: 'Hosts',
+                icon: Icons.home_outlined,
+                label: widget.activeIndex == 0 ? 'Home' : null,
+                tooltip: 'Home',
                 selected: widget.activeIndex == 0,
                 onTap: () => widget.onSelect(null),
               ),

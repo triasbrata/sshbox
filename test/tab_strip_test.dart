@@ -70,7 +70,7 @@ void main() {
     await _pump(tester, [_shell(tester, 'host-1', 'box')]);
 
     final strip = tester.getRect(find.byType(TabStrip));
-    final hosts = tester.getRect(find.byTooltip('Hosts'));
+    final hosts = tester.getRect(find.byTooltip('Home'));
     final add = tester.getRect(find.byTooltip('New tab'));
     final close = tester.getRect(find.byTooltip('Close box'));
     final pill = _pill(tester, 'box');
