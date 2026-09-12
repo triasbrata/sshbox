@@ -71,12 +71,12 @@ through its sub-agents.
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
 | Logs: a history of past sessions (date, start–end, host with its distro icon, Saved bookmark), opened from the host list, like Termius | Coordinator | 6ce6441 | on tablet, UAT pending |
-| Server OS info: read on every connect (os-release, uname, macOS, Windows) and saved on the host; the host list shows it with a distro/OS icon | Coordinator | db1c6b0, ba6d9c2 | on tablet, UAT pending |
-| Host list as cards: a grid, 1 column on a phone and 3 on a tablet, not full width | Coordinator | 4bf1e4a | on tablet, UAT pending |
-| The host-list tab chip reads "Home" with a home icon | Coordinator | e93419e | on tablet, UAT pending |
+| Server OS info: read on every connect (os-release, uname, macOS, Windows) and saved on the host; the host list shows it with a distro/OS icon | Coordinator | db1c6b0, ba6d9c2 | UAT failed: "yang server info ini ngebuat card sizenya tidak konsisten" (the OS lines made connected hosts' cards taller than the others); fix in development |
+| Host list as cards: a grid, 1 column on a phone and 3 on a tablet, not full width | Coordinator | 4bf1e4a | UAT passed |
+| The host-list tab chip reads "Home" with a home icon | Coordinator | e93419e | UAT passed |
 | Port forwards on the tablet (`ssh -L`): rules saved per host open 127.0.0.1:<port> on the tablet when a session connects, e.g. for a DB app | Coordinator | d8b0fe1, 9d719a0 | on tablet, UAT pending |
 | Theme in Settings: light/dark/system mode and a colour palette for the whole app | Coordinator | f3ad854 | on tablet, UAT pending |
-| Long-press a tab that failed to connect → Close tab (its ✕ is Reconnect then, so it could not be closed) | Coordinator | 6c77828 | on tablet, UAT pending |
+| Long-press a tab that failed to connect → Close tab (its ✕ is Reconnect then, so it could not be closed) | Coordinator | 6c77828 | UAT passed |
 | Security hardening: a new host key asks before it is trusted (fingerprint shown), a changed one shows old and new and can be replaced; no Google backup or device transfer of app data; `/tmp` uploads and editor saves never follow a planted link, and uploads are `0600`; release builds sign with `android/key.properties`; the private-key field stays out of keyboard learning | security audit codebase | 00f3aaa | on tablet, UAT pending |
 | Proxy jump: a host can connect through another saved host ("Jump host" in its edit page, like `ssh -J`; a jump host may have its own) | proxy jump settings | b8484f5 | UAT passed |
 | Tailnet forwarding: never forward debugger ports (9229 etc.), stop a forward as soon as its server stops, reuse the same tailnet port when it comes back (restarting `bun dev` stacked 3002–3005 and exposed the inspector) | Coordinator | 5ed4f74 | UAT passed |
