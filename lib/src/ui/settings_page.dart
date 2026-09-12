@@ -100,7 +100,7 @@ class AppTheme
     extends ValueNotifier<({ThemeMode mode, TerminalScheme scheme})> {
   AppTheme() : super(defaults);
 
-  /// Dark, in Clode's own colours: the way it looked before there was a
+  /// Dark, in Jeansh's own colours: the way it looked before there was a
   /// choice.
   static final defaults = (mode: ThemeMode.dark, scheme: terminalSchemes.first);
 
@@ -108,7 +108,7 @@ class AppTheme
   static const _schemeKey = 'sshbox.theme.scheme';
 
   /// Reads the saved choice. No theme saved, or one no longer offered, gives
-  /// Clode's; the palette an earlier version saved is not read.
+  /// Jeansh's; the palette an earlier version saved is not read.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     final id = prefs.getString(_schemeKey);
@@ -135,7 +135,7 @@ class AppTheme
 /// The app's one; `main` reads the saved choice into it.
 final appTheme = AppTheme();
 
-/// Clode's settings: a list of sections, each a header and its rows.
+/// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
@@ -435,7 +435,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Text(
-                'These fonts ship inside Clode, so they work offline. A glyph '
+                'These fonts ship inside Jeansh, so they work offline. A glyph '
                 'a font lacks, such as a prompt\'s powerline arrows, comes '
                 'from $nerdFontFamily.',
                 style: theme.textTheme.bodySmall?.copyWith(

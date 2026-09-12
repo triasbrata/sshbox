@@ -82,7 +82,7 @@ class PushMessaging {
       hostId: hostId,
       title: message.data['title'] as String? ??
           message.notification?.title ??
-          'Clode',
+          'Jeansh',
       body: message.data['body'] as String? ??
           message.notification?.body ??
           'Tap to return to your session',

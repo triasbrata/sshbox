@@ -31,7 +31,7 @@
          since its Keystore key never leaves the old device. allowBackup off
          covers Android 11 and older; from 12 the extraction rules decide. -->
     <application
-        android:label="Clode"
+        android:label="Jeansh"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
@@ -79,7 +79,7 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="sshbox"/>
             </intent-filter>
-            <!-- "Share with Clode" from any other app: the file goes to /tmp
+            <!-- "Share with Jeansh" from any other app: the file goes to /tmp
                  on the session you were last in. singleTop again — sharing into
                  a running app must resume the session, not restart it. -->
             <intent-filter>

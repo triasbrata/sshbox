@@ -98,7 +98,7 @@ class SessionKeepAlive {
 
     await FlutterForegroundTask.startService(
       serviceTypes: const [ForegroundServiceTypes.dataSync],
-      notificationTitle: 'Clode',
+      notificationTitle: 'Jeansh',
       notificationText: text,
     );
   }

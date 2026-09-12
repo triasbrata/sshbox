@@ -127,13 +127,31 @@ class _HostsPageState extends State<HostsPage> {
     await _reload();
   }
 
+  /// Under the app's name in the header.
+  static const _tagline = 'Terminal buddy in your pocket';
+
   @override
   Widget build(BuildContext context) {
     final hosts = _hosts;
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Clode'),
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Jeansh'),
+            Text(
+              _tagline,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: 'Copy FCM token',

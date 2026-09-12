@@ -14,7 +14,7 @@ double _contrast(Color a, Color b) {
 }
 
 void main() {
-  test('Clode keeps the terminal surface, text and cursor it had before '
+  test('Jeansh keeps the terminal surface, text and cursor it had before '
       'there were themes', () {
     final clode = terminalSchemes.first;
     expect(AppTheme.defaults.scheme, same(clode));
@@ -152,7 +152,7 @@ void main() {
       expect(appTheme.value.scheme, same(dracula));
     });
 
-    test('is Clode when none is saved, or one no longer offered', () async {
+    test('is Jeansh when none is saved, or one no longer offered', () async {
       // An earlier version's palette is not read.
       SharedPreferences.setMockInitialValues({'sshbox.theme.seed': 0xFF4A8FE7});
       appTheme.value = (mode: ThemeMode.dark, scheme: terminalSchemes.last);

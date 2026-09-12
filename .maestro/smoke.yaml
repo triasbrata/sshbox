@@ -15,7 +15,8 @@ env:
 - launchApp:
     clearState: false
 
-- assertVisible: "Clode"
+# The title and its tagline may read as one node, like the ListTile below.
+- assertVisible: "(?s)Jeansh.*"
 
 # Flutter merges a ListTile's title and subtitle into one accessibility node,
 # so the row reads as "WSL via …\ntriasbrata@… · password". Maestro

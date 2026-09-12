@@ -28,7 +28,7 @@ void main() {
       of: find.widgetWithText(Card, name),
       matching: find.byIcon(Icons.check_circle),
     );
-    expect(tickOn('Clode'), findsOneWidget);
+    expect(tickOn('Jeansh'), findsOneWidget);
 
     await tester.tap(find.text('Light'));
     await tester.tap(find.text('Dracula'));

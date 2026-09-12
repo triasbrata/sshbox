@@ -75,7 +75,7 @@ TerminalTheme _colors(String hex) {
   );
 }
 
-/// The themes Settings offers, Clode's own first: the one in use until
+/// The themes Settings offers, Jeansh's own first: the one in use until
 /// another is picked.
 ///
 /// Each scheme's published colours, light variants included, except where a
@@ -91,13 +91,13 @@ TerminalTheme _colors(String hex) {
 /// Dracula and Nord publish no light variant; theirs are the scheme's own
 /// colours on a light background, darkened the same way.
 final terminalSchemes = [
-  // The green Clode always had. Background, text, cursor and selection are
+  // The green Jeansh always had. Background, text, cursor and selection are
   // the Material surface, on-surface and primary it had before there were
   // themes; the ANSI colours are VS Code's: xterm2's default on dark, after
   // Light+ on light.
   TerminalScheme(
     'clode',
-    'Clode',
+    'Jeansh',
     const Color(0xFF4CC38A),
     // red cd3131 → d85a5a, blue 2472c8 → 3685db, magenta bc3fbc → c656c6,
     // bright black 666666 → 676767.

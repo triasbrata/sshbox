@@ -1,4 +1,4 @@
-# Clode
+# Jeansh
 
 A mobile-first SSH client built with Flutter, targeting Android and iOS.
 
@@ -593,10 +593,10 @@ Two things already in place are what make that declaration safe:
 The declared minimum is 320x280dp: the tab strip (44dp) and key bar (48dp)
 leave roughly eleven terminal rows between them.
 
-**One window, not two.** Dragging out a second Clode window gives it a second
+**One window, not two.** Dragging out a second Jeansh window gives it a second
 Flutter engine, and therefore its own `SessionManager` — the two windows would
 not share sessions. Sharing them means moving sessions out of the isolate, so
-Clode is meant to be one window beside another app, not beside itself.
+Jeansh is meant to be one window beside another app, not beside itself.
 
 ## tmux
 
@@ -739,7 +739,7 @@ from Android's picker and end up on a command line.
 
 ### Sharing into a session
 
-Any app's share sheet lists Clode. The file lands in `/tmp` on the session you
+Any app's share sheet lists Jeansh. The file lands in `/tmp` on the session you
 were last in, and its path is typed at the prompt — the same path the paperclip
 takes, so there is one upload routine and not two.
 

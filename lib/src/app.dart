@@ -99,7 +99,7 @@ class _SshboxAppState extends State<SshboxApp> {
       case 'notify' when kDebugMode:
         await _notifications.showForHost(
           hostId: hostId,
-          title: uri.queryParameters['title'] ?? 'Clode',
+          title: uri.queryParameters['title'] ?? 'Jeansh',
           body: uri.queryParameters['body'] ?? 'Tap to return to your session',
         );
     }
@@ -142,7 +142,7 @@ class _SshboxAppState extends State<SshboxApp> {
   /// Files shared into the app before there was anywhere to put them.
   final List<SharedFile> _pendingShares = [];
 
-  /// "Share with Clode" from another app.
+  /// "Share with Jeansh" from another app.
   ///
   /// Same two arrival paths as a link: a cold start leaves the files waiting on
   /// the Android side until we ask, a warm one pushes them at us.
@@ -207,7 +207,7 @@ class _SshboxAppState extends State<SshboxApp> {
           );
 
           return MaterialApp(
-            title: 'Clode',
+            title: 'Jeansh',
             debugShowCheckedModeBanner: false,
             navigatorKey: _navigator,
             scaffoldMessengerKey: _messengerKey,
