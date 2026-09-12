@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'src/app.dart';
+import 'src/session/session_log.dart';
 import 'src/ui/settings_page.dart';
 
 Future<void> main() async {
@@ -9,5 +10,8 @@ Future<void> main() async {
   // its chosen colours, rather than changing a moment later when they arrive.
   await terminalSettings.load();
   await appTheme.load();
+  // Before any session can connect, so its entry joins the saved log rather
+  // than being wiped by it.
+  await sessionLog.load();
   runApp(const SshboxApp());
 }

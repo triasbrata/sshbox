@@ -12,6 +12,7 @@ import 'models/host_profile.dart';
 import 'notifications/notification_gateway.dart';
 import 'notifications/push_messaging.dart';
 import 'session/session_keepalive.dart';
+import 'session/session_log.dart';
 import 'session/session_manager.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
@@ -47,6 +48,7 @@ class _SshboxAppState extends State<SshboxApp> {
   void initState() {
     super.initState();
     _keepAlive.attach();
+    sessionLog.follow(_sessions);
     unawaited(_startNotifications());
     unawaited(_listenForLinks());
     unawaited(_listenForShares());
