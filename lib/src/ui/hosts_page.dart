@@ -188,20 +188,26 @@ class _HostsPageState extends State<HostsPage> {
               }
 
               // Rows of cards rather than a grid, so a card is as tall as its
-              // text at any font size. The cards' 6 dp margins make the rest
-              // of the gutters.
+              // text at any font size, and every card in a row as tall as
+              // the tallest. The cards' 6 dp margins make the rest of the
+              // gutters.
               return ListView.builder(
                 padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
                 itemCount: (hosts.length / columns).ceil(),
-                itemBuilder: (context, row) => Row(
-                  children: [
-                    for (var i = row * columns; i < (row + 1) * columns; i++)
-                      Expanded(
-                        child: i < hosts.length
-                            ? card(hosts[i])
-                            : const SizedBox(),
-                      ),
-                  ],
+                itemBuilder: (context, row) => IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = row * columns;
+                          i < (row + 1) * columns;
+                          i++)
+                        Expanded(
+                          child: i < hosts.length
+                              ? card(hosts[i])
+                              : const SizedBox(),
+                        ),
+                    ],
+                  ),
                 ),
               );
             },
@@ -242,6 +248,7 @@ class _HostTile extends StatelessWidget {
       SshAuthMethod.privateKey => 'key',
       SshAuthMethod.tailscale => 'tailscale',
     };
+    final os = host.os?.summary ?? '';
 
     return Card(
       margin: const EdgeInsets.all(6),
@@ -278,14 +285,22 @@ class _HostTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         // A line each, so a long address ellipsizes without taking the
-        // session count with it on a narrow card.
+        // session count with it on a narrow card. Every card has the same
+        // three, so the grid stays even: a host not connected to yet keeps
+        // the OS line's place.
         subtitle: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text(
+              os.isEmpty ? 'OS not detected yet' : os,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: os.isEmpty
+                  ? TextStyle(color: theme.colorScheme.outline)
+                  : null,
+            ),
             for (final line in [
-              sshLine(host.username, host.os),
-              ?host.os?.summary,
               host.target,
               switch (activeCount) {
                 0 => authLabel,
