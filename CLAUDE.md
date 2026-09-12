@@ -70,8 +70,8 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
-| Logs: a history of past sessions (date, start–end, host with its distro icon, Saved bookmark), opened from the host list, like Termius | Coordinator | | in development |
-| Server OS info: read on every connect (os-release, uname, macOS, Windows) and saved on the host; the host list shows it with a distro/OS icon | Coordinator | | in development |
+| Logs: a history of past sessions (date, start–end, host with its distro icon, Saved bookmark), opened from the host list, like Termius | Coordinator | 6ce6441 | on tablet, UAT pending |
+| Server OS info: read on every connect (os-release, uname, macOS, Windows) and saved on the host; the host list shows it with a distro/OS icon | Coordinator | db1c6b0, ba6d9c2 | on tablet, UAT pending |
 | Host list as cards: a grid, 1 column on a phone and 3 on a tablet, not full width | Coordinator | 4bf1e4a | on tablet, UAT pending |
 | The host-list tab chip reads "Home" with a home icon | Coordinator | e93419e | on tablet, UAT pending |
 | Port forwards on the tablet (`ssh -L`): rules saved per host open 127.0.0.1:<port> on the tablet when a session connects, e.g. for a DB app | Coordinator | d8b0fe1, 9d719a0 | on tablet, UAT pending |
