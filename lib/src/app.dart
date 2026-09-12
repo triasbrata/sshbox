@@ -194,10 +194,7 @@ class _SshboxAppState extends State<SshboxApp> {
         builder: (context, look, _) {
           ThemeData themeOf(Brightness brightness) => ThemeData(
             useMaterial3: true,
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: look.scheme.accent,
-              brightness: brightness,
-            ),
+            colorScheme: look.scheme.colorScheme(brightness),
           );
 
           return MaterialApp(

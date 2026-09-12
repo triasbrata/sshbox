@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
-import 'package:xterm2/xterm.dart';
 
 /// WCAG's contrast ratio between two colours.
 double _contrast(Color a, Color b) {
@@ -14,47 +13,15 @@ double _contrast(Color a, Color b) {
   return (math.max(x, y) + 0.05) / (math.min(x, y) + 0.05);
 }
 
-List<Color> _ansi(TerminalTheme t) => [
-  t.black,
-  t.red,
-  t.green,
-  t.yellow,
-  t.blue,
-  t.magenta,
-  t.cyan,
-  t.white,
-  t.brightBlack,
-  t.brightRed,
-  t.brightGreen,
-  t.brightYellow,
-  t.brightBlue,
-  t.brightMagenta,
-  t.brightCyan,
-  t.brightWhite,
-];
-
-/// Published colours under 2.5:1 on their own background, kept as published.
-const _publishedFaint = {
-  'Gruvbox light yellow',
-  'Catppuccin light yellow',
-  'Catppuccin light magenta',
-};
-
 void main() {
-  test('Clode draws the terminal the way it did before there were themes', () {
+  test('Clode keeps the terminal surface, text and cursor it had before '
+      'there were themes', () {
     final clode = terminalSchemes.first;
     expect(AppTheme.defaults.scheme, same(clode));
     expect(clode.accent, const Color(0xFF4CC38A));
 
-    // The light ANSI set it had, after VS Code's Light+.
-    const lightAnsi = [
-      0xFF000000, 0xFFCD3131, 0xFF107C10, 0xFF946F00, //
-      0xFF0451A5, 0xFFBC05BC, 0xFF0A7F9E, 0xFF555555,
-      0xFF666666, 0xFFE04848, 0xFF148F14, 0xFFA88400,
-      0xFF2A6FD6, 0xFFC837C8, 0xFF0A93B3, 0xFF8C8C8C,
-    ];
     for (final brightness in Brightness.values) {
-      // Background, text, cursor and selection came from the app's colours.
+      // The app's colours then: Material's default scheme from the accent.
       final app = ColorScheme.fromSeed(
         seedColor: clode.accent,
         brightness: brightness,
@@ -67,7 +34,6 @@ void main() {
             theme.foreground,
             theme.cursor,
             theme.selection,
-            ..._ansi(theme),
           ])
             c.toARGB32(),
         ],
@@ -76,17 +42,13 @@ void main() {
           app.onSurface.toARGB32(),
           app.primary.toARGB32(),
           app.primary.withValues(alpha: 0.35).toARGB32(),
-          if (brightness == Brightness.dark)
-            for (final c in _ansi(TerminalThemes.defaultTheme)) c.toARGB32()
-          else
-            ...lightAnsi,
         ],
         reason: '$brightness',
       );
     }
   });
 
-  test('text, the six main colours and the accent read in every theme', () {
+  test('text, every colour and the accent read in every theme', () {
     for (final scheme in terminalSchemes) {
       for (final brightness in Brightness.values) {
         final theme = scheme.terminal(brightness);
@@ -96,34 +58,46 @@ void main() {
           brightness,
           reason: where,
         );
-        expect(
-          _contrast(theme.foreground, theme.background),
-          greaterThanOrEqualTo(4.5),
-          reason: where,
-        );
-        for (final (name, color) in [
-          ('red', theme.red),
-          ('green', theme.green),
-          ('yellow', theme.yellow),
-          ('blue', theme.blue),
-          ('magenta', theme.magenta),
-          ('cyan', theme.cyan),
+        // Black on dark and white on light are left out: programs paint
+        // backgrounds with them.
+        for (final (name, color, least) in [
+          ('text', theme.foreground, 7.0),
+          ('red', theme.red, 4.5),
+          ('green', theme.green, 4.5),
+          ('yellow', theme.yellow, 4.5),
+          ('blue', theme.blue, 4.5),
+          ('magenta', theme.magenta, 4.5),
+          ('cyan', theme.cyan, 4.5),
+          ('bright red', theme.brightRed, 4.5),
+          ('bright green', theme.brightGreen, 4.5),
+          ('bright yellow', theme.brightYellow, 4.5),
+          ('bright blue', theme.brightBlue, 4.5),
+          ('bright magenta', theme.brightMagenta, 4.5),
+          ('bright cyan', theme.brightCyan, 4.5),
+          // Comments, dim text and zsh's autosuggestions.
+          ('bright black', theme.brightBlack, 3.0),
         ]) {
           expect(
             _contrast(color, theme.background),
-            greaterThanOrEqualTo(
-              _publishedFaint.contains('$where $name') ? 2 : 2.5,
-            ),
+            greaterThanOrEqualTo(least),
             reason: '$where $name',
           );
         }
-        // The Ctrl-link underline and the focused tmux pane's border.
-        final accent = ColorScheme.fromSeed(
-          seedColor: scheme.accent,
-          brightness: brightness,
-        ).primary;
+
+        final app = scheme.colorScheme(brightness);
         expect(
-          _contrast(accent, theme.background),
+          _contrast(app.onSurface, app.surface),
+          greaterThanOrEqualTo(7),
+          reason: '$where app text',
+        );
+        expect(
+          _contrast(app.primary, app.surface),
+          greaterThanOrEqualTo(4.5),
+          reason: '$where app accent',
+        );
+        // The Ctrl-link underline and the focused tmux pane's border.
+        expect(
+          _contrast(app.primary, theme.background),
           greaterThanOrEqualTo(3),
           reason: '$where accent',
         );
