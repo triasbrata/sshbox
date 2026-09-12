@@ -13,6 +13,7 @@ import 'notifications/notification_gateway.dart';
 import 'notifications/push_messaging.dart';
 import 'session/session_keepalive.dart';
 import 'session/session_manager.dart';
+import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
 
 class SshboxApp extends StatefulWidget {
@@ -182,27 +183,47 @@ class _SshboxAppState extends State<SshboxApp> {
     // fourth pushes the oldest out rather than reaching down over the shell.
     return ToastificationWrapper(
       config: const ToastificationConfig(maxToastLimit: 3),
-      child: MaterialApp(
-        title: 'Clode',
-        debugShowCheckedModeBanner: false,
-        scaffoldMessengerKey: _messengerKey,
-        // A terminal is a dark surface; forcing dark keeps the app chrome from
-        // fighting the terminal's own palette.
-        themeMode: ThemeMode.dark,
-        darkTheme: ThemeData(
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF4CC38A),
-            brightness: Brightness.dark,
-          ),
-        ),
-        home: TabsShell(
-          repository: _repository,
-          secrets: _secrets,
-          sessions: _sessions,
-          onOpenHost: (hostId) => openHost(hostId, newSession: true),
-          pushToken: () => _push.token,
-        ),
+      // The mode and palette picked in Settings. A change rebuilds the app's
+      // theme only: every page keeps its state.
+      child: ValueListenableBuilder(
+        valueListenable: appTheme,
+        builder: (context, look, _) {
+          ThemeData themeOf(Brightness brightness) => ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: look.seed,
+              brightness: brightness,
+            ),
+          );
+
+          return MaterialApp(
+            title: 'Clode',
+            debugShowCheckedModeBanner: false,
+            scaffoldMessengerKey: _messengerKey,
+            themeMode: look.mode,
+            theme: themeOf(Brightness.light),
+            darkTheme: themeOf(Brightness.dark),
+            // Under the status bar is the tab strip, with no app bar to set
+            // the bar's icons, so they follow the theme from here: the
+            // system's white ones would vanish on a light theme.
+            builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+              value: SystemUiOverlayStyle(
+                statusBarIconBrightness:
+                    Theme.of(context).brightness == Brightness.dark
+                    ? Brightness.light
+                    : Brightness.dark,
+              ),
+              child: child!,
+            ),
+            home: TabsShell(
+              repository: _repository,
+              secrets: _secrets,
+              sessions: _sessions,
+              onOpenHost: (hostId) => openHost(hostId, newSession: true),
+              pushToken: () => _push.token,
+            ),
+          );
+        },
       ),
     );
   }
