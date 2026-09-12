@@ -185,7 +185,7 @@ class _SshboxAppState extends State<SshboxApp> {
     // fourth pushes the oldest out rather than reaching down over the shell.
     return ToastificationWrapper(
       config: const ToastificationConfig(maxToastLimit: 3),
-      // The mode and palette picked in Settings. A change rebuilds the app's
+      // The mode and theme picked in Settings. A change rebuilds the app's
       // theme only: every page keeps its state.
       child: ValueListenableBuilder(
         valueListenable: appTheme,
@@ -193,7 +193,7 @@ class _SshboxAppState extends State<SshboxApp> {
           ThemeData themeOf(Brightness brightness) => ThemeData(
             useMaterial3: true,
             colorScheme: ColorScheme.fromSeed(
-              seedColor: look.seed,
+              seedColor: look.scheme.accent,
               brightness: brightness,
             ),
           );

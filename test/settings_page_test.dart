@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
+import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:xterm2/xterm.dart';
 
 void main() {
@@ -19,15 +20,27 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
     expect(appTheme.value, AppTheme.defaults);
 
+    // A card for every theme, the one in use ticked.
+    for (final scheme in terminalSchemes) {
+      expect(find.text(scheme.name), findsOneWidget);
+    }
+    Finder tickOn(String name) => find.descendant(
+      of: find.widgetWithText(Card, name),
+      matching: find.byIcon(Icons.check_circle),
+    );
+    expect(tickOn('Clode'), findsOneWidget);
+
     await tester.tap(find.text('Light'));
-    await tester.tap(find.byTooltip('Blue'));
+    await tester.tap(find.text('Dracula'));
     await tester.pump();
-    final blue = appPalettes.firstWhere((p) => p.name == 'Blue').seed;
-    expect(appTheme.value, (mode: ThemeMode.light, seed: blue));
+    final dracula = terminalSchemes.firstWhere((s) => s.name == 'Dracula');
+    expect(appTheme.value, (mode: ThemeMode.light, scheme: dracula));
+    expect(tickOn('Dracula'), findsOneWidget);
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
 
     appTheme.value = AppTheme.defaults;
     await appTheme.load();
-    expect(appTheme.value, (mode: ThemeMode.light, seed: blue));
+    expect(appTheme.value, (mode: ThemeMode.light, scheme: dracula));
   });
 
   testWidgets('lists every font in its own face, and saves the one picked', (

@@ -64,7 +64,7 @@ class TmuxPaneLayout extends StatelessWidget {
           // The gaps between panes are the terminal's colour, not the page's,
           // so the window reads as one terminal cut up rather than several
           // floating on a card.
-          color: terminalThemeOf(theme.colorScheme).background,
+          color: terminalThemeOf(context).background,
           child: ClipRect(
             child: Stack(
               children: [
@@ -92,9 +92,9 @@ class TmuxPaneLayout extends StatelessWidget {
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           border: Border.all(
-                            // The terminal's cursor colour. Light primary
-                            // sits nearer its background, so this much of
-                            // it keeps the line at 3:1 there too.
+                            // The theme's accent. Light primary sits nearer
+                            // its background, so this much of it keeps the
+                            // line at 3:1 there too.
                             color: theme.colorScheme.primary.withValues(
                               alpha: 0.7,
                             ),

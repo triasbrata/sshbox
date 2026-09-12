@@ -346,7 +346,7 @@ class _TerminalPageState extends State<TerminalPage> {
     final ctrl = _ctrl;
     if (!mounted || ctrl == _ctrlShown) return;
     _ctrlShown = ctrl;
-    // The terminal's cursor colour, clear of its background in either
+    // The theme's accent, clear of the terminal's background in either
     // brightness.
     final color = Theme.of(context).colorScheme.primary;
     for (final view in _paneViews) {
@@ -846,9 +846,9 @@ class _PaneViewState extends State<_PaneView> {
           onTapUp: (_, cell) => widget.onTap(this, cell),
           padding: widget.padding,
           textStyle: widget.textStyle,
-          // Read from the app's theme, so a change in Settings repaints the
-          // shell at once, with no reconnect.
-          theme: terminalThemeOf(Theme.of(context).colorScheme),
+          // The theme picked in Settings: a new pick repaints the shell at
+          // once, with no reconnect.
+          theme: terminalThemeOf(context),
         ),
       ),
     );

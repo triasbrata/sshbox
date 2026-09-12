@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
 
 /// Where a Nerd Font glyph comes from, whichever font is picked.
@@ -46,82 +47,14 @@ TerminalStyle terminalStyleOf(String family, double size) => TerminalStyle(
   ],
 );
 
-/// The terminal's colours in [scheme]: background, text, cursor and selection
-/// from the app's palette, and the 16 ANSI colours from a set made for the
-/// scheme's brightness. Those are never tinted, so `ls`, `git diff` and vim
-/// read the same in every palette.
+/// The terminal's colours as the app is now: the theme picked in Settings, in
+/// its variant for the app's brightness.
 ///
-/// The same scheme gives back the same theme: xterm2 re-shapes every glyph on
-/// screen when its theme changes, and a page rebuilds far more often than the
-/// palette does.
-TerminalTheme terminalThemeOf(ColorScheme scheme) {
-  if (scheme == _themedScheme) return _terminalTheme!;
-  final ansi = scheme.brightness == Brightness.dark
-      ? TerminalThemes.defaultTheme
-      : _lightAnsi;
-  _themedScheme = scheme;
-  return _terminalTheme = TerminalTheme(
-    // Dark, about the #1E1E1E the terminal always had; light, an off-white.
-    background: scheme.surfaceContainerLow,
-    foreground: scheme.onSurface,
-    cursor: scheme.primary,
-    // Painted under the text, which xterm2 recolours where it would not show.
-    selection: scheme.primary.withValues(alpha: 0.35),
-    black: ansi.black,
-    red: ansi.red,
-    green: ansi.green,
-    yellow: ansi.yellow,
-    blue: ansi.blue,
-    magenta: ansi.magenta,
-    cyan: ansi.cyan,
-    white: ansi.white,
-    brightBlack: ansi.brightBlack,
-    brightRed: ansi.brightRed,
-    brightGreen: ansi.brightGreen,
-    brightYellow: ansi.brightYellow,
-    brightBlue: ansi.brightBlue,
-    brightMagenta: ansi.brightMagenta,
-    brightCyan: ansi.brightCyan,
-    brightWhite: ansi.brightWhite,
-    searchHitBackground: ansi.searchHitBackground,
-    searchHitBackgroundCurrent: ansi.searchHitBackgroundCurrent,
-    searchHitForeground: ansi.searchHitForeground,
-  );
-}
-
-ColorScheme? _themedScheme;
-TerminalTheme? _terminalTheme;
-
-/// The ANSI colours of a light terminal, after VS Code's Light+: dark enough
-/// to read on an off-white, where the dark set's yellow and cyan vanish. White
-/// is a dark grey and bright white a lighter one, so text a program writes in
-/// white still shows; black stays black, the colour programs also put their
-/// bars on. Only the ANSI colours are read: [terminalThemeOf] sets the rest.
-const _lightAnsi = TerminalTheme(
-  cursor: Color(0xFF000000),
-  selection: Color(0x40000000),
-  foreground: Color(0xFF1E1E1E),
-  background: Color(0xFFFFFFFF),
-  black: Color(0xFF000000),
-  red: Color(0xFFCD3131),
-  green: Color(0xFF107C10),
-  yellow: Color(0xFF946F00),
-  blue: Color(0xFF0451A5),
-  magenta: Color(0xFFBC05BC),
-  cyan: Color(0xFF0A7F9E),
-  white: Color(0xFF555555),
-  brightBlack: Color(0xFF666666),
-  brightRed: Color(0xFFE04848),
-  brightGreen: Color(0xFF148F14),
-  brightYellow: Color(0xFFA88400),
-  brightBlue: Color(0xFF2A6FD6),
-  brightMagenta: Color(0xFFC837C8),
-  brightCyan: Color(0xFF0A93B3),
-  brightWhite: Color(0xFF8C8C8C),
-  searchHitBackground: Color(0xFFFFFF2B),
-  searchHitBackgroundCurrent: Color(0xFF31FF26),
-  searchHitForeground: Color(0xFF000000),
-);
+/// Read through the app's theme, so every terminal repaints the moment either
+/// changes, with no reconnect: each theme has its own accent, so a new pick
+/// changes the app's theme too.
+TerminalTheme terminalThemeOf(BuildContext context) =>
+    appTheme.value.scheme.terminal(Theme.of(context).brightness);
 
 /// The terminal's font and size, as picked in Settings, in one value every
 /// terminal page listens to: a change reaches each open shell and tmux pane at
@@ -160,56 +93,42 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
 /// The app's one; `main` reads the saved choice into it.
 final terminalSettings = TerminalSettings();
 
-/// The palettes Settings offers, each the seed a whole colour scheme grows
-/// from. Only a seed's hue counts, so they sit apart round the colour wheel.
-/// The first is Clode's green, the only one it had before there was a choice.
-const appPalettes = <({String name, Color seed})>[
-  (name: 'Green', seed: Color(0xFF4CC38A)),
-  (name: 'Teal', seed: Color(0xFF26A69A)),
-  (name: 'Blue', seed: Color(0xFF4A8FE7)),
-  (name: 'Purple', seed: Color(0xFFA56CE0)),
-  (name: 'Pink', seed: Color(0xFFE85D9A)),
-  (name: 'Red', seed: Color(0xFFE5534B)),
-  (name: 'Orange', seed: Color(0xFFF0883E)),
-  (name: 'Yellow', seed: Color(0xFFD9B43A)),
-];
-
-/// Light, dark or the system's, and the palette, as picked in Settings.
+/// Light, dark or the system's, and the theme, as picked in Settings.
 /// `SshboxApp` builds its theme from this, so a change repaints every page at
 /// once, every terminal included: see [terminalThemeOf].
-class AppTheme extends ValueNotifier<({ThemeMode mode, Color seed})> {
+class AppTheme
+    extends ValueNotifier<({ThemeMode mode, TerminalScheme scheme})> {
   AppTheme() : super(defaults);
 
-  /// Dark and green, the way Clode looked before there was a choice.
-  static final defaults = (mode: ThemeMode.dark, seed: appPalettes.first.seed);
+  /// Dark, in Clode's own colours: the way it looked before there was a
+  /// choice.
+  static final defaults = (mode: ThemeMode.dark, scheme: terminalSchemes.first);
 
   static const _modeKey = 'sshbox.theme.mode';
-  static const _seedKey = 'sshbox.theme.seed';
+  static const _schemeKey = 'sshbox.theme.scheme';
 
-  /// Reads the saved choice. A palette no longer offered gives way to the
-  /// default, the way a font no longer bundled does.
+  /// Reads the saved choice. No theme saved, or one no longer offered, gives
+  /// Clode's; the palette an earlier version saved is not read.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedSeed = prefs.getInt(_seedKey);
+    final id = prefs.getString(_schemeKey);
     value = (
       mode:
           ThemeMode.values.asNameMap()[prefs.getString(_modeKey)] ??
           defaults.mode,
-      seed: appPalettes
-          .map((palette) => palette.seed)
-          .firstWhere(
-            (seed) => seed.toARGB32() == savedSeed,
-            orElse: () => defaults.seed,
-          ),
+      scheme: terminalSchemes.firstWhere(
+        (scheme) => scheme.id == id,
+        orElse: () => defaults.scheme,
+      ),
     );
   }
 
   /// Applies at once, and is saved for the next start.
-  Future<void> choose({ThemeMode? mode, Color? seed}) async {
-    value = (mode: mode ?? value.mode, seed: seed ?? value.seed);
+  Future<void> choose({ThemeMode? mode, TerminalScheme? scheme}) async {
+    value = (mode: mode ?? value.mode, scheme: scheme ?? value.scheme);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_modeKey, value.mode.name);
-    await prefs.setInt(_seedKey, value.seed.toARGB32());
+    await prefs.setString(_schemeKey, value.scheme.id);
   }
 }
 
@@ -252,15 +171,13 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// Light, dark or the system's, over a row of palettes, each drawn in the
-/// colour it would give the app as it is now, with a tick on the one in use.
+/// Light, dark or the system's, over a card for each theme, with a tick on
+/// the one in use.
 class _ThemeSection extends StatelessWidget {
   const _ThemeSection();
 
   @override
   Widget build(BuildContext context) {
-    final brightness = Theme.of(context).brightness;
-
     return ValueListenableBuilder(
       valueListenable: appTheme,
       builder: (context, look, _) => Column(
@@ -281,43 +198,128 @@ class _ThemeSection extends StatelessWidget {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final palette in appPalettes)
-                  _swatch(
-                    palette,
-                    brightness,
-                    chosen: palette.seed == look.seed,
-                  ),
-              ],
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            // Two to a row on a phone and four on a tablet, at the host
+            // list's breakpoint.
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final columns = constraints.maxWidth < 600 ? 2 : 4;
+                final width =
+                    ((constraints.maxWidth - 8 * (columns - 1)) / columns)
+                        .floorToDouble();
+                return Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final scheme in terminalSchemes)
+                      SizedBox(
+                        width: width,
+                        child: _SchemeCard(
+                          scheme,
+                          chosen: scheme == look.scheme,
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
         ],
       ),
     );
   }
+}
 
-  static Widget _swatch(
-    ({String name, Color seed}) palette,
-    Brightness brightness, {
-    required bool chosen,
-  }) {
-    final colors = ColorScheme.fromSeed(
-      seedColor: palette.seed,
-      brightness: brightness,
-    );
-    return IconButton.filled(
-      tooltip: palette.name,
-      isSelected: chosen,
-      onPressed: () => appTheme.choose(seed: palette.seed),
-      style: IconButton.styleFrom(
-        backgroundColor: colors.primary,
-        foregroundColor: colors.onPrimary,
+/// A theme's name over a few lines of a shell in its colours, as the
+/// terminal would draw them in the brightness in use: a prompt, a listing and
+/// a commit, in green, cyan, magenta, blue, red and yellow.
+class _SchemeCard extends StatelessWidget {
+  const _SchemeCard(this.scheme, {required this.chosen});
+
+  final TerminalScheme scheme;
+  final bool chosen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = scheme.terminal(theme.brightness);
+    TextSpan token(String text, Color color) =>
+        TextSpan(text: text, style: TextStyle(color: color));
+
+    return Semantics(
+      selected: chosen,
+      child: Card.outlined(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: chosen
+              ? BorderSide(color: theme.colorScheme.primary, width: 2)
+              : BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+        child: InkWell(
+          onTap: () => appTheme.choose(scheme: scheme),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        scheme.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall,
+                      ),
+                    ),
+                    if (chosen)
+                      Icon(
+                        Icons.check_circle,
+                        size: 18,
+                        color: theme.colorScheme.primary,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: colors.background,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Text.rich(
+                      TextSpan(
+                        style: TextStyle(
+                          color: colors.foreground,
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
+                        children: [
+                          token('➜ ', colors.green),
+                          token('~/src ', colors.cyan),
+                          token('main\n', colors.magenta),
+                          token('lib ', colors.blue),
+                          token('.env ', colors.red),
+                          const TextSpan(text: 'a.md\n'),
+                          token('a1b2c3d ', colors.yellow),
+                          const TextSpan(text: 'fix'),
+                        ],
+                      ),
+                      maxLines: 3,
+                      softWrap: false,
+                      overflow: TextOverflow.clip,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
-      icon: Icon(chosen ? Icons.check : null),
     );
   }
 }
@@ -373,7 +375,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
                     child: TerminalView(
                       _preview,
                       textStyle: style,
-                      theme: terminalThemeOf(theme.colorScheme),
+                      theme: terminalThemeOf(context),
                       padding: _previewPadding,
                       readOnly: true,
                     ),
