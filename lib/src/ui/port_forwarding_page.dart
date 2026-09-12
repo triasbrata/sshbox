@@ -220,40 +220,37 @@ class _EmptyState extends StatelessWidget {
 
 enum _Direction { tabletToRemote, remoteToTablet }
 
-/// One mapping's fields, as typed so far. A blank advanced field is its
-/// default: the same port, and each side's own loopback.
+/// One mapping's fields, as typed so far. The advanced ones hold their
+/// defaults until changed: the same port, and each side's own loopback. One
+/// cleared still means its default.
 class _Mapping {
   _Mapping([PortMapping? mapping]) {
     if (mapping is LocalForward) {
       port.text = '${mapping.localPort}';
-      if (mapping.destHost != 'localhost') remoteHost.text = mapping.destHost;
-      if (mapping.destPort != mapping.localPort) {
-        otherPort.text = '${mapping.destPort}';
-      }
+      remoteHost.text = mapping.destHost;
+      otherPort.text = '${mapping.destPort}';
     } else if (mapping is RemoteForward) {
       direction = _Direction.remoteToTablet;
       port.text = '${mapping.remotePort}';
-      if (mapping.remoteHost != 'localhost') {
-        listenHost.text = mapping.remoteHost;
-      }
-      if (mapping.tabletHost != '127.0.0.1') {
-        tabletHost.text = mapping.tabletHost;
-      }
-      if (mapping.tabletPort != mapping.remotePort) {
-        otherPort.text = '${mapping.tabletPort}';
-      }
+      listenHost.text = mapping.remoteHost;
+      tabletHost.text = mapping.tabletHost;
+      otherPort.text = '${mapping.tabletPort}';
     }
+    linked = otherPort.text == port.text;
     // What was set there shows.
-    advanced = [
-      remoteHost,
-      listenHost,
-      tabletHost,
-      otherPort,
-    ].any((field) => field.text.isNotEmpty);
+    advanced =
+        !linked ||
+        remoteHost.text != 'localhost' ||
+        listenHost.text != 'localhost' ||
+        tabletHost.text != '127.0.0.1';
   }
 
   var direction = _Direction.tabletToRemote;
   var advanced = false;
+
+  /// Whether [otherPort] follows [port] as it is typed: until the user types
+  /// a far port of their own.
+  var linked = true;
 
   /// The chip last tapped. The setting is named after it while [port]
   /// still holds its port.
@@ -263,17 +260,31 @@ class _Mapping {
   final port = TextEditingController();
 
   /// Tablet → Remote's destination, as the host reaches it.
-  final remoteHost = TextEditingController();
+  final remoteHost = TextEditingController(text: 'localhost');
 
   /// Remote → Tablet's address the host listens on, and its target as the
   /// tablet reaches it.
-  final listenHost = TextEditingController();
-  final tabletHost = TextEditingController();
+  final listenHost = TextEditingController(text: 'localhost');
+  final tabletHost = TextEditingController(text: '127.0.0.1');
 
   /// The far end's port, either way.
   final otherPort = TextEditingController();
 
   bool get tablet => direction == _Direction.tabletToRemote;
+
+  /// The far port back on [port], following it again, and each blank host
+  /// its default: after a chip or a direction. A host typed here stays.
+  void reset() {
+    otherPort.text = port.text;
+    linked = true;
+    for (final (field, blank) in [
+      (remoteHost, 'localhost'),
+      (listenHost, 'localhost'),
+      (tabletHost, '127.0.0.1'),
+    ]) {
+      if (field.text.trim().isEmpty) field.text = blank;
+    }
+  }
 
   /// What it forwards, once [port] is a number.
   PortMapping? get value {
@@ -470,8 +481,11 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         ),
       ],
       selected: {mapping.direction},
-      onSelectionChanged: (picked) =>
-          setState(() => mapping.direction = picked.single),
+      onSelectionChanged: (picked) => setState(
+        () => mapping
+          ..direction = picked.single
+          ..reset(),
+      ),
     );
     final portField = TextFormField(
       controller: mapping.port,
@@ -486,7 +500,9 @@ class _ForwardEditorState extends State<_ForwardEditor> {
       ),
       keyboardType: TextInputType.number,
       validator: (_) => _portError(mapping),
-      onChanged: (_) => setState(() {}),
+      onChanged: (text) => setState(() {
+        if (mapping.linked) mapping.otherPort.text = text;
+      }),
     );
     final chips = SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -497,12 +513,12 @@ class _ForwardEditorState extends State<_ForwardEditor> {
             ChoiceChip(
               label: Text('${snippet.name} ${snippet.port}'),
               selected: port == snippet.port,
-              // The far end follows the port; its hosts stay as they are.
+              // Both ports take it; a host typed there stays.
               onSelected: (_) => setState(() {
                 mapping
                   ..port.text = '${snippet.port}'
-                  ..otherPort.clear()
-                  ..snippet = snippet;
+                  ..snippet = snippet
+                  ..reset();
               }),
             ),
         ],
@@ -611,7 +627,7 @@ class _ForwardEditorState extends State<_ForwardEditor> {
             validator: (value) => (value ?? '').trim().isEmpty
                 ? null
                 : PortMapping.portError(value),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => setState(() => mapping.linked = false),
           ),
         ),
       ],

@@ -55,6 +55,10 @@ void main() {
   final tabletPort = find.widgetWithText(TextFormField, 'Tablet port');
   final remotePort = find.widgetWithText(TextFormField, 'Remote port');
 
+  /// What [field] holds.
+  String textOf(WidgetTester tester, Finder field) =>
+      tester.widget<TextFormField>(field).controller!.text;
+
   // A phone in portrait, and a tablet.
   for (final width in [400.0, 1200.0]) {
     testWidgets('adds a setting with two ports at $width dp, refusing a port '
@@ -165,8 +169,73 @@ void main() {
         RemoteForward(remoteHost: '0.0.0.0', remotePort: 8000, tabletPort: 9000),
       ]);
       expect(find.text('Remote 0.0.0.0:8000 → Tablet 9000'), findsOneWidget);
+
+      // Opened again, its fields hold what was saved.
+      await tester.tap(find.text('db box'));
+      await tester.pumpAndSettle();
+      expect(textOf(tester, remotePort), '8000');
+      expect(textOf(tester, listenOn), '0.0.0.0');
+      expect(
+        textOf(tester, find.widgetWithText(TextFormField, 'Tablet host')),
+        '127.0.0.1',
+      );
+      expect(textOf(tester, tabletPort), '9000');
     });
   }
+
+  testWidgets('Advanced holds real values: a chip fills both ports, Port '
+      'carries the far port until that is edited, and a direction brings its '
+      'own defaults', (tester) async {
+    await open(tester, 400);
+    await addOne(tester);
+    await tester.tap(find.text('PostgreSQL 5432'));
+    await tester.pump();
+    // Opened after the chip, it holds the chip's port already.
+    await tester.tap(find.text('Advanced'));
+    await tester.pumpAndSettle();
+    expect(textOf(tester, tabletPort), '5432');
+    expect(textOf(tester, remotePort), '5432');
+    expect(
+      textOf(tester, find.widgetWithText(TextFormField, 'Remote host')),
+      'localhost',
+    );
+
+    await tester.enterText(tabletPort, '6000');
+    await tester.pump();
+    expect(textOf(tester, remotePort), '6000');
+    final postgres = find.widgetWithText(ChoiceChip, 'PostgreSQL 5432');
+    expect(tester.widget<ChoiceChip>(postgres).selected, isFalse);
+
+    // Edited, the far port keeps its own.
+    await tester.enterText(remotePort, '7000');
+    await tester.enterText(tabletPort, '6001');
+    await tester.pump();
+    expect(textOf(tester, remotePort), '7000');
+
+    // A chip sets both again.
+    await tester.ensureVisible(find.text('Redis 6379'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Redis 6379'));
+    await tester.pump();
+    expect(textOf(tester, tabletPort), '6379');
+    expect(textOf(tester, remotePort), '6379');
+
+    // The other way, Port is the host's and the far port the tablet's.
+    await tester.enterText(remotePort, '7000');
+    await tester.tap(find.text('Remote → Tablet'));
+    await tester.pumpAndSettle();
+    expect(
+      textOf(tester, find.widgetWithText(TextFormField, 'Remote listens on')),
+      'localhost',
+    );
+    expect(
+      textOf(tester, find.widgetWithText(TextFormField, 'Tablet host')),
+      '127.0.0.1',
+    );
+    expect(textOf(tester, remotePort), '6379');
+    expect(textOf(tester, tabletPort), '6379');
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('a service chip fills the port, names the service, and names '
       'the setting after it', (tester) async {
