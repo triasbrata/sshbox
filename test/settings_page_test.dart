@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/data/host_repository.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:xterm2/xterm.dart';
@@ -17,7 +19,11 @@ void main() {
   testWidgets('saves the theme picked, and the next start reads it back', (
     tester,
   ) async {
-    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(repository: HostRepository(InMemorySecretStore())),
+      ),
+    );
     expect(appTheme.value, AppTheme.defaults);
 
     // A card for every theme, the one in use ticked.
@@ -48,7 +54,11 @@ void main() {
   ) async {
     await tester.binding.setSurfaceSize(const Size(800, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(repository: HostRepository(InMemorySecretStore())),
+      ),
+    );
 
     for (final font in terminalFonts) {
       final row = find.ancestor(

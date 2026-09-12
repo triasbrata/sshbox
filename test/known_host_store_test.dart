@@ -53,4 +53,39 @@ void main() {
       expect(await stores[0].pinnedKey('box$i', 22), 'SHA256:$i');
     }
   });
+
+  test('lists every pin, and a forgotten one is asked about again', () async {
+    final store = KnownHostStore();
+    // Full of colons: only the last one starts the port.
+    const v6 = HostProfile(
+      id: 'v6',
+      label: '',
+      host: 'fe80::1',
+      port: 2222,
+      username: 'me',
+    );
+    await store.trust(host, 'SHA256:a', (_) async => true);
+    await store.trust(v6, 'SHA256:b', (_) async => true);
+    expect(await store.pins(), [
+      (host: 'box', port: 22, fingerprint: 'SHA256:a'),
+      (host: 'fe80::1', port: 2222, fingerprint: 'SHA256:b'),
+    ]);
+
+    await store.forget('fe80::1', 2222);
+    expect(await store.pins(), [
+      (host: 'box', port: 22, fingerprint: 'SHA256:a'),
+    ]);
+
+    // Forgetting trusts nothing: the same key is asked about as a new one.
+    final asked = <HostKeyCheck>[];
+    expect(
+      await store.trust(v6, 'SHA256:b', (check) async {
+        asked.add(check);
+        return false;
+      }),
+      isFalse,
+    );
+    expect(asked.single.pinned, isNull);
+    expect(await store.pinnedKey('fe80::1', 2222), isNull);
+  });
 }
