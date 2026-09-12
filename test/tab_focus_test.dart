@@ -73,13 +73,16 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     manager = SessionManager();
     shell = _Shell();
-    manager.open(_host('host-1'), transport: shell);
+    manager.open(_host('host-1'), transport: (_, _) => shell);
   });
 
   tearDown(() => manager.closeAll());
 
   /// The app's one screen over [manager], its shells connected.
   Future<void> pumpTabs(WidgetTester tester) async {
+    for (final session in manager.sessions) {
+      await session.connect(secrets: _NoSecrets());
+    }
     await tester.pumpWidget(
       MaterialApp(
         home: TabsShell(
@@ -91,7 +94,7 @@ void main() {
         ),
       ),
     );
-    // A shell connects after its page's first frame.
+    // Each page's first frame, and the focus its terminal takes after it.
     await tester.pump();
     await tester.pump();
   }
@@ -170,7 +173,7 @@ void main() {
   testWidgets('a tab opened before a page leaves the page as it was', (
     tester,
   ) async {
-    final other = manager.open(_host('host-2'), transport: _Shell());
+    final other = manager.open(_host('host-2'), transport: (_, _) => _Shell());
     await pumpTabs(tester);
     State page() => tester.state(
       find.byWidgetPredicate(

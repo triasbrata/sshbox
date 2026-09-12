@@ -113,8 +113,8 @@ void main() {
     LiveSession? reconnected;
     void onReconnect(LiveSession session) => reconnected = session;
 
-    // Not asked to connect yet — the page does that after its first frame —
-    // so there is nothing to come back from.
+    // Not asked to connect yet — the connect sheet does that — so there is
+    // nothing to come back from.
     await _pump(tester, [tab], onReconnect: onReconnect);
     expect(find.byTooltip('Close box'), findsOneWidget);
     expect(find.byTooltip('Reconnect'), findsNothing);

@@ -106,7 +106,7 @@ void main() {
       final sessions = SessionManager();
       for (var i = 0; i < 2; i++) {
         await sessions
-            .open(connected, transport: _Shell())
+            .open(connected, transport: (_, _) => _Shell())
             .connect(secrets: secrets);
       }
 

@@ -117,11 +117,14 @@ void main() {
     final sessions = SessionManager();
     log.follow(sessions);
 
-    final refused = sessions.open(_host, transport: _Shell(refuse: true));
+    final refused = sessions.open(
+      _host,
+      transport: (_, _) => _Shell(refuse: true),
+    );
     await refused.connect(secrets: _NoSecrets());
     expect(log.entries, isEmpty);
 
-    final session = sessions.open(_host, transport: _Shell());
+    final session = sessions.open(_host, transport: (_, _) => _Shell());
     expect(log.entries, isEmpty);
     await session.connect(secrets: _NoSecrets());
     expect(log.entries.single.end, isNull);

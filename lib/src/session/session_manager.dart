@@ -19,6 +19,15 @@ import 'tmux.dart';
 /// by another app through the share sheet.
 typedef SharedFile = ({String path, String name});
 
+/// Makes the transport one connect goes through, handed that attempt's host
+/// key question and sign-in banner hook: SSH's own, unless a test brings a
+/// stand-in.
+typedef TransportMaker =
+    SessionTransport Function(
+      Future<bool> Function(HostKeyCheck check)? confirmHostKey,
+      void Function(String banner) onAuthBanner,
+    );
+
 /// What a session's terminal is running on the host, as
 /// [LiveSession.foreground] reads it: whether the shell itself has the
 /// terminal — sitting at a prompt rather than running something — the name of
@@ -49,10 +58,10 @@ class LiveSession extends ChangeNotifier {
 
   HostProfile _host;
 
-  /// What [connect] opens the shell with, when a test hands one in. Otherwise
-  /// each attempt makes its own SSH transport, carrying that attempt's host
-  /// key and banner callbacks.
-  final SessionTransport? _transport;
+  /// Makes what [connect] opens the shell with, when a test hands one in.
+  /// Otherwise each attempt makes its own SSH transport. Either way it
+  /// carries that attempt's host key and banner callbacks.
+  final TransportMaker? _transport;
 
   HostProfile get host => _host;
 
@@ -179,10 +188,8 @@ class LiveSession extends ChangeNotifier {
     return Uri.tryParse(raw);
   }
 
-  /// Where the transport hands over what the server said. Public only so a
-  /// test can hold a session at its sign-in without a server to send one.
-  @visibleForTesting
-  void onAuthBanner(String banner) {
+  /// Where the transport hands over what the server said.
+  void _onAuthBanner(String banner) {
     _authBanner = banner.trim();
     _authUrl = extractAuthUrl(banner);
     _notify();
@@ -195,10 +202,8 @@ class LiveSession extends ChangeNotifier {
   bool get isConnected =>
       _session?.status.value == SessionStatus.connected;
 
-  /// True once the shell has gone — closed by the far end, dropped, or never
-  /// reached — as opposed to not having been asked for yet. A new tab is not
-  /// connecting for the one frame before its page asks, and must not flash a
-  /// reconnect button in that frame.
+  /// True once the shell has gone — closed by the far end, dropped, never
+  /// reached, or given up on — as opposed to not having been asked for yet.
   bool get ended =>
       !isConnected && !_connecting && (_session != null || _error != null);
 
@@ -230,15 +235,10 @@ class LiveSession extends ChangeNotifier {
 
   /// A link already showing in one of this session's tabs returns that tab
   /// rather than opening a second, as a file does.
-  ///
-  /// The session's own sign-in link, opened while it waits at that sign-in,
-  /// is the check prompt's Open link. Its tab closes once the session is
-  /// through, and whoever was still on it lands back in the shell they were
-  /// signing in for.
   WebTab openWeb(Uri url) {
     final open = _webTabs.where((tab) => tab.url == url).firstOrNull;
     if (open != null) return open;
-    final tab = WebTab._(url).._signIn = _connecting && url == _authUrl;
+    final tab = WebTab._(url);
     _webTabs.add(tab);
     _notify();
     return tab;
@@ -294,8 +294,13 @@ class LiveSession extends ChangeNotifier {
     };
   }
 
-  /// Connects if there is no live shell. Calling this on an already-connected
-  /// session is a no-op, so a notification tap can route here unconditionally.
+  /// Bumped by every connect and by [abandon], so a connect that comes
+  /// through after it was given up on lets its connection go rather than
+  /// taking over the tab.
+  int _attempt = 0;
+
+  /// Connects if there is no live shell, and does nothing while one is up or
+  /// on its way.
   Future<void> connect({
     required SecretStore secrets,
     Future<bool> Function(HostKeyCheck check)? confirmHostKey,
@@ -306,6 +311,8 @@ class LiveSession extends ChangeNotifier {
     _wireTerminal();
     if (size != null) _size = size;
 
+    final attempt = ++_attempt;
+    bool current() => attempt == _attempt && !_disposed;
     _connecting = true;
     _error = null;
     _authBanner = null;
@@ -313,10 +320,16 @@ class LiveSession extends ChangeNotifier {
     _notify();
 
     try {
-      final transport = _transport ??
+      // A banner for an attempt given up on is not this one's sign-in.
+      void banner(String text) {
+        if (current()) _onAuthBanner(text);
+      }
+
+      final transport =
+          _transport?.call(confirmHostKey, banner) ??
           Dartssh2Transport(
             confirmHostKey: confirmHostKey,
-            onAuthBanner: onAuthBanner,
+            onAuthBanner: banner,
           );
       Future<TerminalSession> open({required bool shell}) => transport.connect(
         host: host,
@@ -327,33 +340,45 @@ class LiveSession extends ChangeNotifier {
       );
 
       var session = await open(shell: !host.useTmux);
-      if (host.useTmux && !await _attachTmux(session)) {
+      final tmux = host.useTmux ? await _attachTmux(session) : null;
+      if (host.useTmux && tmux == null) {
         // The plain shell the host would have had without the switch.
         await session.dispose();
         session = await open(shell: true);
       }
 
+      if (!current()) {
+        // Given up on while it connected, so nothing will ever show it. A
+        // tab that has closed takes its tmux session with it, as closing a
+        // tab always does; one still open keeps it for its next reconnect.
+        if (_disposed) await tmux?.kill();
+        tmux?.dispose();
+        await session.dispose();
+        return;
+      }
+
+      _tmux = tmux;
       _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
-      // Through the sign-in: its page has done its work.
-      _webTabs.removeWhere((tab) => tab._signIn);
       _syncForwarding();
       unawaited(_fetchHostname());
       unawaited(_saveOs(secrets));
     } on SshSessionException catch (error) {
-      _error = error.message;
+      if (current()) _error = error.message;
     } catch (error) {
-      _error = error.toString();
+      if (current()) _error = error.toString();
     } finally {
-      _connecting = false;
-      _notify();
+      if (current()) {
+        _connecting = false;
+        _notify();
+      }
     }
   }
 
   /// Starts this tab's tmux session on the connection [session] holds, and
   /// says why not when it cannot.
-  Future<bool> _attachTmux(TerminalSession session) async {
+  Future<TmuxSession?> _attachTmux(TerminalSession session) async {
     final TmuxSession tmux;
     try {
       final host = session as ChannelCapable;
@@ -368,7 +393,7 @@ class LiveSession extends ChangeNotifier {
       );
     } catch (error) {
       _tmuxProblem = '$error';
-      return false;
+      return null;
     }
     // A host that neither starts tmux nor says why must not leave the tab
     // spinning.
@@ -376,13 +401,10 @@ class LiveSession extends ChangeNotifier {
       const Duration(seconds: 20),
       onTimeout: () => false,
     );
-    if (attached) {
-      _tmux = tmux;
-      return true;
-    }
+    if (attached) return tmux;
     tmux.dispose();
     _tmuxProblem = tmux.problem ?? 'tmux did not answer.';
-    return false;
+    return null;
   }
 
   /// tmux ending is this tab's shell ending, however it came about — the last
@@ -648,6 +670,18 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     await connect(secrets: secrets, confirmHostKey: confirmHostKey);
   }
 
+  /// Gives up on the connect under way — what closing its sheet does. A host
+  /// key it was asking about has been refused by then, and a connection it
+  /// still makes is let go when it comes. The tab, if it has one, is left
+  /// ended, offering to reconnect.
+  void abandon() {
+    if (!_connecting) return;
+    _attempt++;
+    _connecting = false;
+    _error = 'Connection cancelled.';
+    _notify();
+  }
+
   @override
   void dispose() {
     // Flag first: teardown continues after this method returns, and anything
@@ -674,9 +708,6 @@ class WebTab {
 
   Uri _url;
   String? _title;
-
-  /// Opened by the session's sign-in — see [LiveSession.openWeb].
-  bool _signIn = false;
 
   /// Where the page is now: the link it opened at, until it moves on.
   Uri get url => _url;
@@ -808,27 +839,16 @@ class SessionManager extends ChangeNotifier {
     if (_activeWeb == web) select(id);
   }
 
-  /// Passes a session's change on to the tabs. A web tab the session closed
-  /// itself — a sign-in's, once the session is through it — lands on its
-  /// shell, as closing one by hand does, not on the host list.
-  void _onSessionChanged() {
-    final web = _activeWeb;
-    if (web != null && _active?.webTabs.contains(web) == false) {
-      select(_activeId);
-    } else {
-      notifyListeners();
-    }
-  }
-
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
 
   /// Every session open on this host, in tab order.
   List<LiveSession> sessionsFor(String hostId) =>
       _sessions.values.where((s) => s.host.id == hostId).toList();
 
-  /// Opens another terminal on this host, whatever it already has open, and
-  /// shows it. [transport] is a test's, as [LiveSession] takes one.
-  LiveSession open(HostProfile host, {SessionTransport? transport}) {
+  /// Another terminal on this host, with no tab yet: the connect sheet
+  /// connects it, and [add] gives it one once it is up. [transport] is a
+  /// test's, as [LiveSession] takes one.
+  LiveSession create(HostProfile host, {TransportMaker? transport}) {
     late final LiveSession created;
     created = LiveSession(
       host: host,
@@ -836,25 +856,38 @@ class SessionManager extends ChangeNotifier {
           .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
     );
-    created.addListener(_onSessionChanged);
-    _sessions[created.id] = created;
-    _active = created;
-    _activeId = created.id;
+    return created;
+  }
+
+  /// Gives [session] its tab, at the end of the strip, and shows it.
+  void add(LiveSession session) {
+    session.addListener(notifyListeners);
+    _sessions[session.id] = session;
+    _active = session;
+    _activeId = session.id;
     _activeKind = TabKind.terminal;
     _activePath = null;
     _activeWeb = null;
     notifyListeners();
-    return created;
+  }
+
+  /// [create] and [add] at once: a tab before its shell is up, which only a
+  /// test wants.
+  @visibleForTesting
+  LiveSession open(HostProfile host, {TransportMaker? transport}) {
+    final session = create(host, transport: transport);
+    add(session);
+    return session;
   }
 
   /// Takes the user back to a terminal on this host — the one they were last
-  /// in, else its newest — and opens one only when it has none.
-  LiveSession openOrCreate(HostProfile host) {
-    final existing = _active?.host.id == host.id
+  /// in, else its newest — and shows it. Null when it has none: a new one
+  /// connects in its sheet first.
+  LiveSession? resume(String hostId) {
+    final existing = _active?.host.id == hostId
         ? _active
-        : sessionsFor(host.id).lastOrNull;
-    if (existing == null) return open(host);
-    select(existing.id);
+        : sessionsFor(hostId).lastOrNull;
+    if (existing != null) select(existing.id);
     return existing;
   }
 
@@ -863,7 +896,7 @@ class SessionManager extends ChangeNotifier {
     final index = ids.indexOf(id);
     final session = _sessions.remove(id);
     if (session == null) return;
-    session.removeListener(_onSessionChanged);
+    session.removeListener(notifyListeners);
     session.dispose();
 
     // Closing the tab you are looking at lands on its left-hand neighbour,

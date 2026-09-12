@@ -8,11 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm2/xterm.dart';
 
-import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
+import 'connect_sheet.dart';
 import 'ctrl_click.dart';
 import 'file_browser_page.dart';
 import 'key_bar.dart';
@@ -111,19 +111,11 @@ class _TerminalPageState extends State<TerminalPage> {
     _keyBar.addListener(_syncCtrl);
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
 
-    // Connect after first layout so the PTY opens at the real on-screen size.
-    // A no-op when we are returning to a session that is already connected.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _session.connect(
-        secrets: widget.secrets,
-        confirmHostKey: _confirmHostKey,
-      );
-      // Files queued before this page existed. Connecting to an already-live
-      // session is a no-op and notifies nothing, so the drain cannot rely on
-      // the listener alone.
-      unawaited(_drainShared());
-    });
+    // The session connected in its sheet before this page was built — its
+    // PTY at a guessed size, which the terminal's first layout corrects —
+    // so what came of that is taken in after the first frame: a tmux
+    // problem to say, forwards already up, files shared into it.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onSessionChanged());
   }
 
   void _onSessionChanged() {
@@ -258,14 +250,6 @@ class _TerminalPageState extends State<TerminalPage> {
       view.selection.clearSelection();
     }
   }
-
-  Future<bool> _confirmHostKey(HostKeyCheck check) =>
-      confirmHostKey(context, check);
-
-  Future<void> _reconnect() => _session.reconnect(
-        secrets: widget.secrets,
-        confirmHostKey: _confirmHostKey,
-      );
 
   /// Opens the remote filesystem as a native listing.
   ///
@@ -575,7 +559,11 @@ class _TerminalPageState extends State<TerminalPage> {
   Widget _buildBody(TerminalStyle style) {
     final error = _session.error;
     if (error != null && !_session.isConnected) {
-      return _ConnectionError(message: error, onRetry: _reconnect);
+      return ConnectionError(
+        message: error,
+        onRetry: () =>
+            connectInSheet(context, _session, secrets: widget.secrets),
+      );
     }
 
     final tmux = _session.tmux;
@@ -605,21 +593,6 @@ class _TerminalPageState extends State<TerminalPage> {
               style,
               focused: focused,
               autoResize: false,
-            ),
-          ),
-        if (_session.connecting)
-          ColoredBox(
-            // The page's own surface: the terminal is drawn from the same
-            // palette, and the sign-in prompt's text reads on it in either
-            // brightness.
-            color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.8),
-            child: Center(
-              child: _session.authUrl == null
-                  ? const CircularProgressIndicator()
-                  : AuthCheckPrompt(
-                      url: _session.authUrl!,
-                      inTab: widget.onOpenWeb,
-                    ),
             ),
           ),
         // Along the terminal's bottom edge, just above the key bar, rather
@@ -845,71 +818,6 @@ class _PaneViewState extends State<_PaneView> {
   }
 }
 
-/// Asks whether to trust a host key that is not the one pinned for its host:
-/// the first connect to it, or a key that has changed since, shown beside
-/// the old one. Anything but a yes refuses the key. Shared by everything that
-/// connects a session: this page, and the reconnect on a tab whose shell has
-/// ended.
-Future<bool> confirmHostKey(BuildContext context, HostKeyCheck check) async {
-  if (!context.mounted) return false;
-  final host = check.host;
-  final where = host.port == 22 ? host.host : '${host.host}:${host.port}';
-  final pinned = check.pinned;
-  final error = Theme.of(context).colorScheme.error;
-  const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
-
-  final trusted = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      icon: pinned == null ? null : Icon(Icons.gpp_maybe, color: error),
-      title: Text(pinned == null ? 'Trust $where?' : 'Host key changed'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              pinned == null
-                  ? 'First connection to ${host.displayName}. Trust it only '
-                        'if this fingerprint matches the one '
-                        '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
-                        'prints on the server.'
-                  : '$where is not showing the key pinned for it. The server '
-                        'may have been rebuilt — or something may be '
-                        'intercepting the connection.',
-            ),
-            if (pinned != null) ...[
-              const SizedBox(height: 12),
-              const Text('Pinned'),
-              SelectableText(pinned, style: mono),
-            ],
-            const SizedBox(height: 12),
-            Text(pinned == null ? 'Fingerprint' : 'Now'),
-            SelectableText(check.fingerprint, style: mono),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        pinned == null
-            ? FilledButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Trust'),
-              )
-            : TextButton(
-                style: TextButton.styleFrom(foregroundColor: error),
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Replace key'),
-              ),
-      ],
-    ),
-  );
-  return trusted ?? false;
-}
-
 /// Opens a link without leaving the app. Every link the app opens goes
 /// through here — a Ctrl+tap, a forwarded port, a sign-in check.
 ///
@@ -950,80 +858,19 @@ Future<void> openUrl(
   }
 }
 
-/// Shown while a server is waiting for the user to prove who they are
-/// somewhere else — Tailscale SSH's check, for instance.
-///
-/// The connection is still open behind this; finishing the sign-in is what
-/// releases it, so there is nothing to submit here.
-///
-/// Its link opens in a web tab beside the shell, like every other link from a
-/// session, because that is where the user asked for it. Some identity
-/// providers, Google in particular, refuse to sign in inside an embedded web
-/// view; when one does, the tab's Open in browser is the way out. Nothing
-/// here passes the web view off as a browser to get past that refusal: the
-/// providers' policies forbid it. Once the session is through the check, the
-/// tab closes itself — see [LiveSession.openWeb].
-///
-/// Public only so a test can press that link without a server holding a
-/// session at its sign-in.
-@visibleForTesting
-class AuthCheckPrompt extends StatelessWidget {
-  const AuthCheckPrompt({super.key, required this.url, required this.inTab});
-
-  final Uri url;
-  final void Function(Uri url) inTab;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.verified_user_outlined,
-              size: 40, color: theme.colorScheme.primary),
-          const SizedBox(height: 16),
-          Text(
-            'This host wants you to sign in',
-            style: theme.textTheme.titleMedium,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Open the link, sign in, and this session continues on its own. '
-            'Later sessions will not ask again until the check expires.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 20),
-          FilledButton.icon(
-            onPressed: () => openUrl(context, url, inTab: inTab),
-            icon: const Icon(Icons.open_in_new),
-            label: const Text('Open link'),
-          ),
-          const SizedBox(height: 12),
-          SelectableText(
-            url.toString(),
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ConnectionError extends StatelessWidget {
-  const _ConnectionError({required this.message, required this.onRetry});
+/// Why the shell is not up, with Try again, and in the connect sheet a Close
+/// beside it, which gives the connect up.
+class ConnectionError extends StatelessWidget {
+  const ConnectionError({
+    super.key,
+    required this.message,
+    required this.onRetry,
+    this.onClose,
+  });
 
   final String message;
   final VoidCallback onRetry;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -1043,10 +890,19 @@ class _ConnectionError extends StatelessWidget {
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 20),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Try again'),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (onClose != null) ...[
+                  TextButton(onPressed: onClose, child: const Text('Close')),
+                  const SizedBox(width: 8),
+                ],
+                FilledButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try again'),
+                ),
+              ],
             ),
           ],
         ),

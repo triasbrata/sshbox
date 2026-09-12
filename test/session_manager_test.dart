@@ -24,10 +24,6 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
   final commands = <String>[];
   final reply = Completer<List<String>>();
 
-  /// What the host waits on before letting a connection through: nothing,
-  /// unless a test holds it at a sign-in.
-  Future<void> signIn = Future.value();
-
   @override
   Future<TerminalSession> connect({
     required HostProfile host,
@@ -35,10 +31,7 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
     required int columns,
     required int rows,
     bool shell = true,
-  }) async {
-    await signIn;
-    return this;
-  }
+  }) async => this;
 
   @override
   final status = ValueNotifier(SessionStatus.connected);
@@ -93,8 +86,8 @@ void main() {
     setUp(() => manager = SessionManager());
 
     test('returns the same session for a host that is already open', () {
-      final first = manager.openOrCreate(_host);
-      final second = manager.openOrCreate(_host);
+      final first = manager.open(_host);
+      final second = manager.resume(_host.id)!;
 
       // Identity matters, not equality: resuming means landing back on the
       // very same Terminal, with its scrollback intact.
@@ -103,11 +96,10 @@ void main() {
     });
 
     test('keeps sessions for different hosts apart', () {
-      final a = manager.openOrCreate(_host);
-      final b = manager.openOrCreate(_otherHost);
+      manager.open(_host);
 
-      expect(identical(a, b), isFalse);
-      expect(manager.sessions.length, 2);
+      expect(manager.resume(_otherHost.id), isNull);
+      expect(manager.sessions.length, 1);
     });
 
     test('opening a host from the list again starts another session', () {
@@ -124,26 +116,24 @@ void main() {
       final second = manager.open(_host);
 
       manager.select(first.id);
-      expect(identical(manager.openOrCreate(_host), first), isTrue);
+      expect(identical(manager.resume(_host.id), first), isTrue);
 
       // The host list leaves it standing as the one you were in.
       manager.select(null);
-      expect(identical(manager.openOrCreate(_host), first), isTrue);
+      expect(identical(manager.resume(_host.id), first), isTrue);
 
       // Coming from another host there is no "last", so the newest wins.
       manager.open(_otherHost);
-      expect(identical(manager.openOrCreate(_host), second), isTrue);
+      expect(identical(manager.resume(_host.id), second), isTrue);
       expect(manager.sessions, hasLength(3));
     });
 
-    test('creates a fresh session after the previous one is closed', () async {
-      final first = manager.openOrCreate(_host);
+    test('has nothing to resume once its only session is closed', () async {
+      final first = manager.open(_host);
       await manager.close(first.id);
 
       expect(manager.sessionsFor(_host.id), isEmpty);
-
-      final second = manager.openOrCreate(_host);
-      expect(identical(first, second), isFalse);
+      expect(manager.resume(_host.id), isNull);
     });
 
     test('reports no session before one is opened', () {
@@ -151,7 +141,7 @@ void main() {
     });
 
     test('an opened but unconnected session is not counted as live', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
 
       // The session exists, so a notification tap resumes it — but nothing is
       // attached yet, which is what the host list badge reflects.
@@ -163,14 +153,14 @@ void main() {
     test('tracks the session a shared file should go to', () async {
       expect(manager.active, isNull);
 
-      final first = manager.openOrCreate(_host);
+      final first = manager.open(_host);
       expect(identical(manager.active, first), isTrue);
 
-      final second = manager.openOrCreate(_otherHost);
+      final second = manager.open(_otherHost);
       expect(identical(manager.active, second), isTrue);
 
       // Resuming an older session makes it the active one again.
-      manager.openOrCreate(_host);
+      manager.resume(_host.id);
       expect(identical(manager.active, first), isTrue);
 
       await manager.close(first.id);
@@ -178,7 +168,7 @@ void main() {
     });
 
     test('hands queued shares over exactly once', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       expect(session.hasPendingUploads, isFalse);
 
       session.queueUploads([(path: '/cache/a.txt', name: 'a.txt')]);
@@ -193,21 +183,21 @@ void main() {
     test('opening a host makes it the showing tab', () {
       expect(manager.activeId, isNull);
 
-      final first = manager.openOrCreate(_host);
+      final first = manager.open(_host);
       expect(manager.activeId, first.id);
 
-      final second = manager.openOrCreate(_otherHost);
+      final second = manager.open(_otherHost);
       expect(manager.activeId, second.id);
 
       // Resuming is a selection too — this is the notification-tap path.
-      manager.openOrCreate(_host);
+      manager.resume(_host.id);
       expect(manager.activeId, first.id);
     });
 
     test('closing the showing tab falls back to its left neighbour', () async {
-      final first = manager.openOrCreate(_host);
-      final second = manager.openOrCreate(_otherHost);
-      final third = manager.openOrCreate(_thirdHost);
+      final first = manager.open(_host);
+      final second = manager.open(_otherHost);
+      final third = manager.open(_thirdHost);
 
       await manager.close(third.id);
       expect(manager.activeId, second.id);
@@ -221,8 +211,8 @@ void main() {
     });
 
     test('closing a tab you are not looking at keeps the selection', () async {
-      final first = manager.openOrCreate(_host);
-      final second = manager.openOrCreate(_otherHost);
+      final first = manager.open(_host);
+      final second = manager.open(_otherHost);
 
       await manager.close(first.id);
       expect(manager.activeId, second.id);
@@ -257,7 +247,7 @@ void main() {
     });
 
     test('a file picked in the drawer gets its own tab', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
 
       manager.openFile(session.id, '/etc/nginx/nginx.conf');
       expect(session.openFiles, ['/etc/nginx/nginx.conf']);
@@ -274,7 +264,7 @@ void main() {
     });
 
     test('a search result carries its line to the file tab it opens', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
 
       manager.openFile(session.id, '/etc/hosts', line: 12);
       expect(manager.activeLine, 12);
@@ -291,7 +281,7 @@ void main() {
     });
 
     test('picking the same file again returns to its tab', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       manager.openFile(session.id, '/etc/hosts');
       manager.select(session.id);
 
@@ -304,7 +294,7 @@ void main() {
     });
 
     test('several files from one session each get a tab, in order', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
 
       manager.openFile(session.id, '/etc/hosts');
       manager.openFile(session.id, '/var/log/syslog');
@@ -314,7 +304,7 @@ void main() {
 
     test('a file tab is named host · file, by the host list until connected',
         () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
 
       expect(
         session.fileTabTitle('/etc/nginx/nginx.conf'),
@@ -323,7 +313,7 @@ void main() {
     });
 
     test('closing a session takes its file tabs with it', () async {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       manager.openFile(session.id, '/etc/hosts');
 
       await manager.close(session.id);
@@ -336,7 +326,7 @@ void main() {
     });
 
     test('a link opens as a web tab beside its shell', () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       final url = Uri.parse('http://box.ts.net:3001/');
 
       manager.openWeb(session.id, url);
@@ -361,7 +351,7 @@ void main() {
 
     test('a web tab is named by its page title, and by its host till then',
         () {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       final page = session.openWeb(Uri.parse('https://vitejs.dev/guide/'));
       expect(page.title, 'vitejs.dev');
 
@@ -378,7 +368,7 @@ void main() {
     });
 
     test('a web tab stays open while its shell reconnects', () async {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       final page = session.openWeb(Uri.parse('https://dart.dev'));
 
       // No password saved, so this fails before a socket is opened — but the
@@ -389,7 +379,7 @@ void main() {
     });
 
     test('closing a session takes its web tabs with it', () async {
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       manager.openWeb(session.id, Uri.parse('https://dart.dev'));
 
       await manager.close(session.id);
@@ -401,40 +391,11 @@ void main() {
       expect(manager.activeWeb, isNull);
     });
 
-    test("a sign-in's tab closes once the session is through it", () async {
-      final signedIn = Completer<void>();
-      final session = manager.open(
-        _host,
-        transport: _Host()..signIn = signedIn.future,
-      );
-      final page = session.openWeb(Uri.parse('https://dart.dev'));
-      final connecting = session.connect(secrets: _NoSecrets());
-      session.onAuthBanner(
-        'To authenticate, visit: https://login.tailscale.com/a/1a2b3c',
-      );
-
-      // The check prompt's Open link.
-      manager.openWeb(session.id, session.authUrl!);
-      expect(session.webTabs, hasLength(2));
-      expect(manager.activeWeb, same(session.webTabs.last));
-
-      signedIn.complete();
-      await connecting;
-
-      // Back in the shell the user was signing in for; any other page the
-      // session opened stays.
-      expect(session.isConnected, isTrue);
-      expect(session.webTabs, [page]);
-      expect(manager.activeId, session.id);
-      expect(manager.activeKind, TabKind.terminal);
-      expect(manager.activeWeb, isNull);
-    });
-
     test('notifies listeners when a session opens and closes', () async {
       var notifications = 0;
       manager.addListener(() => notifications++);
 
-      final session = manager.openOrCreate(_host);
+      final session = manager.open(_host);
       expect(notifications, greaterThan(0));
 
       final afterOpen = notifications;
@@ -449,7 +410,7 @@ void main() {
 
     setUp(() async {
       host = _Host();
-      session = LiveSession(host: _host, transport: host);
+      session = LiveSession(host: _host, transport: (_, _) => host);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
     });

@@ -5,6 +5,7 @@ import '../data/secret_store.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
+import 'connect_sheet.dart';
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
@@ -203,12 +204,10 @@ class _TabsShellState extends State<TabsShell> {
                   tab.web!,
                 ),
               },
-              // What the terminal page's own "Try again" does, host key
-              // prompt and all.
-              onReconnect: (session) => session.reconnect(
-                secrets: widget.secrets,
-                confirmHostKey: (check) => confirmHostKey(context, check),
-              ),
+              // The connect sheet, over the tab, as the terminal page's own
+              // Try again opens it.
+              onReconnect: (session) =>
+                  connectInSheet(context, session, secrets: widget.secrets),
               // What a tap in the host list does: another shell on the host,
               // added at the end of the strip and shown.
               onDuplicate: widget.onOpenHost,
@@ -245,8 +244,7 @@ class _TabsShellState extends State<TabsShell> {
   }
 }
 
-/// Public only so a test can lay the strip out without the pages under it —
-/// a terminal page connects over SSH as soon as it is built.
+/// Public only so a test can lay the strip out without the pages under it.
 @visibleForTesting
 class TabStrip extends StatefulWidget {
   const TabStrip({

@@ -15,6 +15,7 @@ import 'session/port_forwards.dart';
 import 'session/session_keepalive.dart';
 import 'session/session_log.dart';
 import 'session/session_manager.dart';
+import 'ui/connect_sheet.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
 
@@ -30,6 +31,10 @@ class _SshboxAppState extends State<SshboxApp> {
   static const _shareChannel = MethodChannel('sshbox/share');
 
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+
+  /// What [openHost] opens a connect sheet from: it runs above the app's own
+  /// navigator, with no context under it.
+  final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
   final SessionManager _sessions = SessionManager();
   late final HostRepository _repository = HostRepository(_secrets);
@@ -100,15 +105,14 @@ class _SshboxAppState extends State<SshboxApp> {
     }
   }
 
-  /// "Take me back to my session, or start a new one":
-  /// [SessionManager.openOrCreate] returns a terminal already open on this
-  /// host, and only builds a new one when there isn't any — then makes it the
-  /// showing tab either way. That is what a notification tap wants.
+  /// "Take me back to my session, or start a new one": what a notification
+  /// tap wants. [SessionManager.resume] shows a terminal already open on this
+  /// host, and only when there is none does a new one connect, in its sheet.
   ///
   /// [newSession] is the host list's tap instead: another shell on the host,
-  /// however many it already has. Nothing is pushed on the navigator either
-  /// way: the tab strip is a view of the session registry, so selecting there
-  /// is the whole of "show me this session".
+  /// however many it already has. Either way the tab strip, a view of the
+  /// session registry, shows the session once it is up: nothing else is
+  /// pushed on the navigator.
   Future<void> openHost(String hostId, {bool newSession = false}) async {
     final hosts = await _repository.load();
     HostProfile? host;
@@ -120,9 +124,14 @@ class _SshboxAppState extends State<SshboxApp> {
     }
     if (host == null) return;
 
-    final session = newSession
-        ? _sessions.open(host)
-        : _sessions.openOrCreate(host);
+    var session = newSession ? null : _sessions.resume(host.id);
+    if (session == null) {
+      final context = _navigator.currentContext;
+      if (context == null || !context.mounted) return;
+      session = await openInSheet(context, _sessions, host, secrets: _secrets);
+      // Closed before it connected: the files wait for the next host opened.
+      if (session == null) return;
+    }
 
     // Handed over after the session has just been made the showing tab — so
     // the upload runs on the page the user is looking at.
@@ -200,6 +209,7 @@ class _SshboxAppState extends State<SshboxApp> {
           return MaterialApp(
             title: 'Clode',
             debugShowCheckedModeBanner: false,
+            navigatorKey: _navigator,
             scaffoldMessengerKey: _messengerKey,
             themeMode: look.mode,
             theme: themeOf(Brightness.light),

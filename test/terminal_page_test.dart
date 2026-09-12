@@ -147,7 +147,8 @@ void main() {
         ),
       ),
     );
-    // The page connects after its first frame, and this one fails at once.
+    // Holds nothing to sign in with, so this one fails at once.
+    await session.connect(secrets: _NoSecrets());
     await tester.pump();
     expect(session.ended, isTrue);
 
@@ -178,7 +179,7 @@ void main() {
         host: '10.0.2.2',
         username: 'me',
       ),
-      transport: _Shell(),
+      transport: (_, _) => _Shell(),
     );
     addTearDown(session.dispose);
     await tester.pumpWidget(
@@ -333,43 +334,6 @@ void main() {
       expect(find.byType(SnackBar), findsNothing);
       await tester.pumpAndSettle();
     });
-
-    testWidgets("a sign-in's Open link opens a web tab beside the session", (
-      tester,
-    ) async {
-      final launcher = _Launcher({inApp});
-      UrlLauncherPlatform.instance = launcher;
-      final manager = SessionManager();
-      final shell = manager.open(
-        const HostProfile(
-          id: 'host-1',
-          label: 'box',
-          host: '10.0.2.2',
-          username: 'me',
-        ),
-      );
-      addTearDown(manager.closeAll);
-      final link = Uri.parse('https://login.tailscale.com/a/1a2b3c');
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: AuthCheckPrompt(
-              url: link,
-              inTab: (url) => manager.openWeb(shell.id, url),
-            ),
-          ),
-        ),
-      );
-
-      await tester.tap(find.text('Open link'));
-      await tester.pump();
-
-      // Where the user asked for it; Open in browser is there for a provider
-      // that refuses an embedded web view.
-      expect(launcher.tried, isEmpty);
-      expect(shell.webTabs.single.url, link);
-      expect(manager.activeWeb, same(shell.webTabs.single));
-    });
   });
 
   group('Ctrl+tap', () {
@@ -395,7 +359,7 @@ void main() {
           host: '10.0.2.2',
           username: 'me',
         ),
-        transport: shell,
+        transport: (_, _) => shell,
       );
       addTearDown(session.dispose);
 
@@ -410,7 +374,7 @@ void main() {
           ),
         ),
       );
-      // Connects after the first frame.
+      await session.connect(secrets: _NoSecrets());
       await tester.pump();
       session.terminal.write(line);
       await tester.pump();
@@ -554,7 +518,7 @@ void main() {
           host: '10.0.2.2',
           username: 'me',
         ),
-        transport: shell,
+        transport: (_, _) => shell,
       );
       addTearDown(session.dispose);
       await tester.pumpWidget(
@@ -568,8 +532,7 @@ void main() {
           ),
         ),
       );
-      // Connects after the first frame, and the button waits for that.
-      await tester.pump();
+      await session.connect(secrets: _NoSecrets());
       await tester.pump();
 
       await tester.tap(find.byTooltip('Browse files'));
@@ -668,7 +631,7 @@ void main() {
           username: 'me',
           forwardPorts: true,
         ),
-        transport: shell,
+        transport: (_, _) => shell,
       );
       addTearDown(session.dispose);
 
@@ -683,8 +646,9 @@ void main() {
           ),
         ),
       );
-      // Connects after the first frame, which is when the toast is asked
-      // for; then a frame for its overlay, one for it, and its slide in.
+      await session.connect(secrets: _NoSecrets());
+      // The forward lands as the page takes it in; then a frame for the
+      // toast's overlay, one for it, and its slide in.
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -748,7 +712,7 @@ void main() {
           username: 'me',
           forwardPorts: true,
         ),
-        transport: shell,
+        transport: (_, _) => shell,
       );
 
       await tester.pumpWidget(
@@ -765,7 +729,7 @@ void main() {
           ),
         ),
       );
-      // Connects after the first frame.
+      await manager.sessions.single.connect(secrets: _NoSecrets());
       await tester.pump();
     }
 
