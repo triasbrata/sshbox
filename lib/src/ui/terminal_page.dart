@@ -207,6 +207,16 @@ class _TerminalPageState extends State<TerminalPage> {
     if (problem != null && _announced.add(problem)) {
       failed('Not forwarding ports', problem);
     }
+    // The host's port forwards to this tablet: each one opening, or why it
+    // could not. The session hands each over once.
+    for (final news in _session.localForwarder.takeNews()) {
+      showToast(
+        context,
+        news.message,
+        type: news.failed ? ToastificationType.error : ToastificationType.info,
+        duration: Duration(seconds: news.failed ? 8 : 3),
+      );
+    }
   }
 
   /// Uploads anything handed to the session from outside the terminal page.

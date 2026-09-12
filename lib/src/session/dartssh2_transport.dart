@@ -90,7 +90,8 @@ class _Dartssh2Session
         FileUploadCapable,
         FileBrowseCapable,
         CommandCapable,
-        ChannelCapable {
+        ChannelCapable,
+        ForwardCapable {
   _Dartssh2Session(
     this._knownHosts,
     this._confirmHostKey,
@@ -362,6 +363,22 @@ class _Dartssh2Session
       write: session.write,
       close: session.channel.destroy,
     );
+  }
+
+  /// A direct-tcpip channel on the connection the shell holds — through the
+  /// jump hosts too, when there are some, as the shell is.
+  @override
+  Future<Tunnel> forward(String host, int port) async {
+    final client = _client;
+    if (client == null || _status.value != SessionStatus.connected) {
+      throw const SshSessionException('Not connected.');
+    }
+    try {
+      final channel = await client.forwardLocal(host, port);
+      return (output: channel.stream, input: channel.sink);
+    } on SSHChannelOpenError catch (error) {
+      throw SshSessionException(error.description);
+    }
   }
 
   /// Everything lands in `/tmp`, named after the file the user picked.
