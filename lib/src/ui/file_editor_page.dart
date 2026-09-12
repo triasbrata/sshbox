@@ -61,7 +61,12 @@ const _prefsWordWrap = 'editor.wordWrap';
 class _FileEditorPageState extends State<FileEditorPage> {
   final _controller = CodeLineEditingController();
 
-  late final _codeTheme = codeThemeFor(widget.path);
+  /// One for a dark page and one for a light, each made once: re_editor
+  /// colours the whole file again whenever it is handed a different theme.
+  late final _codeThemes = {
+    for (final brightness in Brightness.values)
+      brightness: codeThemeFor(widget.path, brightness),
+  };
 
   late final _toolbar = MobileSelectionToolbarController(
     builder: _selectionMenu,
@@ -816,7 +821,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
                 // both are unreadable in a proportional face once alignment
                 // matters.
                 fontFamily: 'monospace',
-                codeTheme: _codeTheme,
+                codeTheme: _codeThemes[Theme.of(context).brightness],
               ),
               indicatorBuilder: (context, editing, chunks, notifier) =>
                   DefaultCodeLineNumber(

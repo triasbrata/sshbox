@@ -91,7 +91,9 @@ class TmuxPaneLayout extends StatelessWidget {
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           border: Border.all(
-                            color: theme.colorScheme.primary.withValues(
+                            // The dark theme's accent in any theme: it is
+                            // drawn on the terminal, which stays dark.
+                            color: theme.colorScheme.primaryFixedDim.withValues(
                               alpha: 0.55,
                             ),
                           ),

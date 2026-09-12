@@ -83,8 +83,64 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
 /// The app's one; `main` reads the saved choice into it.
 final terminalSettings = TerminalSettings();
 
-/// Clode's settings: a list of sections, each a header and its rows. Only the
-/// terminal's has anything in it yet.
+/// The palettes Settings offers, each the seed a whole colour scheme grows
+/// from. Only a seed's hue counts, so they sit apart round the colour wheel.
+/// The first is Clode's green, the only one it had before there was a choice.
+const appPalettes = <({String name, Color seed})>[
+  (name: 'Green', seed: Color(0xFF4CC38A)),
+  (name: 'Teal', seed: Color(0xFF26A69A)),
+  (name: 'Blue', seed: Color(0xFF4A8FE7)),
+  (name: 'Purple', seed: Color(0xFFA56CE0)),
+  (name: 'Pink', seed: Color(0xFFE85D9A)),
+  (name: 'Red', seed: Color(0xFFE5534B)),
+  (name: 'Orange', seed: Color(0xFFF0883E)),
+  (name: 'Yellow', seed: Color(0xFFD9B43A)),
+];
+
+/// Light, dark or the system's, and the palette, as picked in Settings.
+/// `SshboxApp` builds its theme from this, so a change repaints every page at
+/// once. The terminal keeps its own colours whatever is picked.
+class AppTheme extends ValueNotifier<({ThemeMode mode, Color seed})> {
+  AppTheme() : super(defaults);
+
+  /// Dark and green, the way Clode looked before there was a choice: a
+  /// terminal is a dark surface, and dark chrome does not fight it.
+  static final defaults = (mode: ThemeMode.dark, seed: appPalettes.first.seed);
+
+  static const _modeKey = 'sshbox.theme.mode';
+  static const _seedKey = 'sshbox.theme.seed';
+
+  /// Reads the saved choice. A palette no longer offered gives way to the
+  /// default, the way a font no longer bundled does.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedSeed = prefs.getInt(_seedKey);
+    value = (
+      mode:
+          ThemeMode.values.asNameMap()[prefs.getString(_modeKey)] ??
+          defaults.mode,
+      seed: appPalettes
+          .map((palette) => palette.seed)
+          .firstWhere(
+            (seed) => seed.toARGB32() == savedSeed,
+            orElse: () => defaults.seed,
+          ),
+    );
+  }
+
+  /// Applies at once, and is saved for the next start.
+  Future<void> choose({ThemeMode? mode, Color? seed}) async {
+    value = (mode: mode ?? value.mode, seed: seed ?? value.seed);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_modeKey, value.mode.name);
+    await prefs.setInt(_seedKey, value.seed.toARGB32());
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final appTheme = AppTheme();
+
+/// Clode's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
@@ -94,7 +150,7 @@ class SettingsPage extends StatelessWidget {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.only(bottom: 24),
-        children: const [_TerminalSection()],
+        children: const [_ThemeSection(), _TerminalSection()],
       ),
     );
   }
@@ -116,6 +172,76 @@ class _SectionHeader extends StatelessWidget {
           color: theme.colorScheme.primary,
         ),
       ),
+    );
+  }
+}
+
+/// Light, dark or the system's, over a row of palettes, each drawn in the
+/// colour it would give the app as it is now, with a tick on the one in use.
+class _ThemeSection extends StatelessWidget {
+  const _ThemeSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final brightness = Theme.of(context).brightness;
+
+    return ValueListenableBuilder(
+      valueListenable: appTheme,
+      builder: (context, look, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _SectionHeader('Theme'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: SegmentedButton(
+              segments: const [
+                ButtonSegment(value: ThemeMode.system, label: Text('System')),
+                ButtonSegment(value: ThemeMode.light, label: Text('Light')),
+                ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
+              ],
+              selected: {look.mode},
+              onSelectionChanged: (modes) =>
+                  appTheme.choose(mode: modes.single),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final palette in appPalettes)
+                  _swatch(
+                    palette,
+                    brightness,
+                    chosen: palette.seed == look.seed,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static Widget _swatch(
+    ({String name, Color seed}) palette,
+    Brightness brightness, {
+    required bool chosen,
+  }) {
+    final colors = ColorScheme.fromSeed(
+      seedColor: palette.seed,
+      brightness: brightness,
+    );
+    return IconButton.filled(
+      tooltip: palette.name,
+      isSelected: chosen,
+      onPressed: () => appTheme.choose(seed: palette.seed),
+      style: IconButton.styleFrom(
+        backgroundColor: colors.primary,
+        foregroundColor: colors.onPrimary,
+      ),
+      icon: Icon(chosen ? Icons.check : null),
     );
   }
 }

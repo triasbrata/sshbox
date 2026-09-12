@@ -1,3 +1,5 @@
+import 'dart:ui' show Brightness;
+
 import 'package:re_editor/re_editor.dart';
 import 'package:re_highlight/languages/bash.dart';
 import 'package:re_highlight/languages/css.dart';
@@ -20,20 +22,25 @@ import 'package:re_highlight/languages/xml.dart';
 import 'package:re_highlight/languages/yaml.dart';
 import 'package:re_highlight/re_highlight.dart';
 import 'package:re_highlight/styles/atom-one-dark.dart';
+import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../files/file_browser.dart';
 
-/// Syntax colouring for the file at [path], or null to leave it plain.
+/// Syntax colouring for the file at [path], or null to leave it plain, in
+/// Atom's colours for a page of [brightness]: the dark set's pastels are
+/// unreadable on a light page.
 ///
 /// Picked by name, never guessed from content: a guess is wrong often enough
-/// on config files to be worse than no colour at all. One dark theme, because
-/// the app has only the one.
-CodeHighlightTheme? codeThemeFor(String path) {
+/// on config files to be worse than no colour at all.
+CodeHighlightTheme? codeThemeFor(
+  String path, [
+  Brightness brightness = Brightness.dark,
+]) {
   final mode = _modeFor(path);
   if (mode == null) return null;
   return CodeHighlightTheme(
     languages: {'file': CodeHighlightThemeMode(mode: mode)},
-    theme: atomOneDarkTheme,
+    theme: brightness == Brightness.dark ? atomOneDarkTheme : atomOneLightTheme,
   );
 }
 

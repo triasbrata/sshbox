@@ -8,7 +8,27 @@ import 'package:xterm2/xterm.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
-  tearDown(() => terminalSettings.value = TerminalSettings.defaultStyle);
+  tearDown(() {
+    terminalSettings.value = TerminalSettings.defaultStyle;
+    appTheme.value = AppTheme.defaults;
+  });
+
+  testWidgets('saves the theme picked, and the next start reads it back', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    expect(appTheme.value, AppTheme.defaults);
+
+    await tester.tap(find.text('Light'));
+    await tester.tap(find.byTooltip('Blue'));
+    await tester.pump();
+    final blue = appPalettes.firstWhere((p) => p.name == 'Blue').seed;
+    expect(appTheme.value, (mode: ThemeMode.light, seed: blue));
+
+    appTheme.value = AppTheme.defaults;
+    await appTheme.load();
+    expect(appTheme.value, (mode: ThemeMode.light, seed: blue));
+  });
 
   testWidgets('lists every font in its own face, and saves the one picked', (
     tester,
