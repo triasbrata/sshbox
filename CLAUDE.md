@@ -70,9 +70,9 @@ through its sub-agents.
 
 | Feature | Responsible session | Commits | UAT |
 |---|---|---|---|
-| Known hosts in Settings: every trusted host fingerprint listed, and one can be forgotten so the next connection asks again | Coordinator | — | in development |
+| Known hosts in Settings: every trusted host fingerprint listed (address, the saved hosts using it, fingerprint), and Forget drops one so the next connection asks again | Coordinator | a9ea390 | on tablet, UAT pending |
 | Connect sheet: a new connection starts in a bottom sheet that shows progress, the host fingerprint to trust and the Tailscale sign-in link; the tab opens once connected | Coordinator | — | in development |
-| Host editor: Choose file reads a private key into its field (OpenSSH/PEM, 64 KB max; a public key or .ppk is refused with a hint); passphrase and password get a show/hide eye | Coordinator | 80a145e | merged, waiting for the tablet reload |
+| Host editor: Choose file reads a private key into its field (OpenSSH/PEM, 64 KB max; a public key or .ppk is refused with a hint); passphrase and password get a show/hide eye | Coordinator | 80a145e, c4fc025 | on tablet, UAT pending |
 | Theme contrast: stronger colours for every named theme (terminal text 7:1, ANSI colours 4.5:1, dim grey 3:1; app colours more contrasty and truer to each theme's accent) | Coordinator | 53c761e | UAT passed |
 | Logs: a history of past sessions (date, start–end, host with its distro icon, Saved bookmark), opened from the host list, like Termius | Coordinator | 6ce6441 | UAT passed |
 | Server OS info: read on every connect (os-release, uname, macOS, Windows) and saved on the host; the host list shows it with a distro/OS icon | Coordinator | db1c6b0, ba6d9c2, d80018f, 7260967, b74a50f | UAT passed (after three failed tries: "yang server info ini ngebuat card sizenya tidak konsisten", uneven cards; "mending tulisan Ubuntu 22.04.5 LTS dipindah di bawah logonya saja … arch version di takeout saja"; "tulisan ubuntunya di remove aja kan udah ada iconnya itu sudah cukup sih" and "terus tulisan versionnya di kecilkan lagi", so now only the version, in smaller text, under the logo) |
