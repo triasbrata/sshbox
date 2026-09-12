@@ -4,10 +4,12 @@ import 'package:flutter/services.dart';
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
+import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import 'host_edit_page.dart';
 import 'logs_page.dart';
 import 'os_icon.dart';
+import 'port_forwarding_page.dart';
 import 'settings_page.dart';
 
 class HostsPage extends StatefulWidget {
@@ -93,9 +95,7 @@ class _HostsPageState extends State<HostsPage> {
     }
 
     await Clipboard.setData(ClipboardData(text: token));
-    messenger.showSnackBar(
-      const SnackBar(content: Text('FCM token copied')),
-    );
+    messenger.showSnackBar(const SnackBar(content: Text('FCM token copied')));
   }
 
   Future<void> _confirmDelete(HostProfile host) async {
@@ -140,6 +140,23 @@ class _HostsPageState extends State<HostsPage> {
             icon: const Icon(Icons.key_outlined),
           ),
           IconButton(
+            tooltip: 'Port forwarding',
+            onPressed: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => PortForwardingPage(
+                    forwards: portForwards,
+                    repository: widget.repository,
+                    secrets: widget.secrets,
+                  ),
+                ),
+              );
+              // A host made there belongs here too.
+              await _reload();
+            },
+            icon: const Icon(Icons.swap_horiz),
+          ),
+          IconButton(
             tooltip: 'Logs',
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -169,49 +186,47 @@ class _HostsPageState extends State<HostsPage> {
         null => const Center(child: CircularProgressIndicator()),
         [] => const _EmptyState(),
         _ => LayoutBuilder(
-            builder: (context, constraints) {
-              // Material's compact breakpoint, as the tab strip uses: one
-              // column on a phone, three once there is a tablet's width.
-              final columns = constraints.maxWidth < 600 ? 1 : 3;
+          builder: (context, constraints) {
+            // Material's compact breakpoint, as the tab strip uses: one
+            // column on a phone, three once there is a tablet's width.
+            final columns = constraints.maxWidth < 600 ? 1 : 3;
 
-              Widget card(HostProfile host) {
-                final open = widget.sessions.sessionsFor(host.id);
-                return _HostTile(
-                  host: host,
-                  sessionCount: open.length,
-                  activeCount: open.where((s) => s.isConnected).length,
-                  onOpen: () => widget.onOpenHost(host.id),
-                  onEdit: () => _openEditor(existing: host),
-                  onDelete: () => _confirmDelete(host),
-                  onCloseSessions: () => widget.sessions.closeHost(host.id),
-                );
-              }
-
-              // Rows of cards rather than a grid, so a card is as tall as its
-              // text at any font size, and every card in a row as tall as
-              // the tallest. The cards' 6 dp margins make the rest of the
-              // gutters.
-              return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
-                itemCount: (hosts.length / columns).ceil(),
-                itemBuilder: (context, row) => IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = row * columns;
-                          i < (row + 1) * columns;
-                          i++)
-                        Expanded(
-                          child: i < hosts.length
-                              ? card(hosts[i])
-                              : const SizedBox(),
-                        ),
-                    ],
-                  ),
-                ),
+            Widget card(HostProfile host) {
+              final open = widget.sessions.sessionsFor(host.id);
+              return _HostTile(
+                host: host,
+                sessionCount: open.length,
+                activeCount: open.where((s) => s.isConnected).length,
+                onOpen: () => widget.onOpenHost(host.id),
+                onEdit: () => _openEditor(existing: host),
+                onDelete: () => _confirmDelete(host),
+                onCloseSessions: () => widget.sessions.closeHost(host.id),
               );
-            },
-          ),
+            }
+
+            // Rows of cards rather than a grid, so a card is as tall as its
+            // text at any font size, and every card in a row as tall as
+            // the tallest. The cards' 6 dp margins make the rest of the
+            // gutters.
+            return ListView.builder(
+              padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
+              itemCount: (hosts.length / columns).ceil(),
+              itemBuilder: (context, row) => IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var i = row * columns; i < (row + 1) * columns; i++)
+                      Expanded(
+                        child: i < hosts.length
+                            ? card(hosts[i])
+                            : const SizedBox(),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       },
     );
   }
@@ -251,7 +266,7 @@ class _HostTile extends StatelessWidget {
     final muted = theme.colorScheme.onSurfaceVariant;
 
     // By hand rather than a ListTile, whose leading is at most 56 dp tall:
-    // too short for the badge with its OS's name under it.
+    // too short for the badge with its version under it.
     return Card(
       margin: const EdgeInsets.all(6),
       clipBehavior: Clip.antiAlias,
@@ -284,7 +299,8 @@ class _HostTile extends StatelessWidget {
                                 // Cut out of the icon in the card's own
                                 // colour.
                                 border: Border.all(
-                                  color: theme.cardTheme.color ??
+                                  color:
+                                      theme.cardTheme.color ??
                                       theme.colorScheme.surfaceContainerLow,
                                   width: 2,
                                 ),
@@ -294,21 +310,24 @@ class _HostTile extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    // Always two lines' room, for a long name, a short one,
-                    // or none before the first connect, so every card is as
-                    // tall. The arch is saved, but not shown.
+                    // Only the version: the badge already says which OS.
+                    // Always a line's room, even blank before the first
+                    // connect or with no version (an empty Text is a little
+                    // shorter), so every badge sits as high.
                     DefaultTextStyle.merge(
+                      // A step under labelSmall's 11.
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: muted,
+                        fontSize: 9.5,
                       ),
                       textAlign: TextAlign.center,
-                      maxLines: 2,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       child: Stack(
                         alignment: Alignment.topCenter,
                         children: [
-                          const ExcludeSemantics(child: Text('\n')),
-                          Text(host.os?.summary ?? ''),
+                          const ExcludeSemantics(child: Text(' ')),
+                          Text(host.os?.version ?? ''),
                         ],
                       ),
                     ),

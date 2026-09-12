@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
+import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
+import 'toast.dart';
 import 'web_page.dart';
 
 /// One tab, named by what it shows rather than by an index — indices shift
@@ -56,12 +58,35 @@ class _TabsShellState extends State<TabsShell> {
   void initState() {
     super.initState();
     widget.sessions.addListener(_onSessionsChanged);
+    // A port forward has no page of its own on screen to ask about a host
+    // key from, or to speak through, and this shell always is.
+    portForwards
+      ..confirmHostKey = ((check) => confirmHostKey(context, check))
+      ..onNotice = _showForwardNotice;
   }
 
   @override
   void dispose() {
     widget.sessions.removeListener(_onSessionsChanged);
+    portForwards
+      ..confirmHostKey = null
+      ..onNotice = null;
     super.dispose();
+  }
+
+  void _showForwardNotice(ForwardNotice notice) {
+    if (!mounted) return;
+    final link = notice.link;
+    showToast(
+      context,
+      notice.message,
+      type: notice.failed ? ToastificationType.error : ToastificationType.info,
+      // Time to read a reason, or to reach for Open.
+      duration: Duration(seconds: notice.failed || link != null ? 8 : 3),
+      action: link == null
+          ? null
+          : (label: 'Open', onPressed: () => openUrl(context, link)),
+    );
   }
 
   void _onSessionsChanged() {

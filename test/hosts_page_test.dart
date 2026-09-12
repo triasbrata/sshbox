@@ -48,8 +48,7 @@ void main() {
       SharedPreferences.setMockInitialValues({});
       final secrets = InMemorySecretStore();
       final repository = HostRepository(secrets);
-      // Connected: it has said what it runs, a name that takes both of the
-      // label's lines, and has two shells up.
+      // Connected: it has said what it runs, and has two shells up.
       const connected = HostProfile(
         id: 'a',
         label: 'a',
@@ -62,14 +61,19 @@ void main() {
         ),
       );
       await repository.upsert(connected);
-      // Only its kernel: a name that fits on one line.
+      // A short version.
       await repository.upsert(
         const HostProfile(
           id: 'b',
           label: 'b',
           host: '10.0.0.2',
           username: 'me',
-          os: OsInfo(kernel: 'Linux', arch: 'aarch64'),
+          os: OsInfo(
+            id: 'alpine',
+            prettyName: 'Alpine Linux v3.20',
+            kernel: 'Linux',
+            arch: 'aarch64',
+          ),
         ),
       );
       // Never connected.
@@ -81,8 +85,8 @@ void main() {
           username: 'me',
         ),
       );
-      // Far too long for any card: it has to ellipsize, not overflow. On a
-      // tablet it is alone in the second row, with no OS either.
+      // Far too long for any card, and a long version: they have to
+      // ellipsize, not overflow. On a tablet it is alone in the second row.
       await repository.upsert(
         HostProfile(
           id: 'd',
@@ -90,6 +94,12 @@ void main() {
           host: 'build-${'x' * 80}.example.com',
           username: 'deploy',
           port: 2222,
+          os: const OsInfo(
+            id: 'fedora',
+            prettyName: 'Fedora Linux 40 (Workstation Edition)',
+            kernel: 'Linux',
+            arch: 'x86_64',
+          ),
         ),
       );
 
@@ -122,28 +132,51 @@ void main() {
       expect(corners.map((c) => c.dy).toSet(), hasLength((4 / columns).ceil()));
       // Off the screen's edge.
       expect(corners.first.dx, greaterThan(0));
-      // Whatever a host has said, and however long its OS's name, its card
+      // Whatever a host has said, and however long its version, its card
       // is as tall as the others, in its own row and the next...
-      expect(
-        {for (var i = 0; i < 4; i++) tester.getSize(cards.at(i)).height},
-        hasLength(1),
-      );
-      // ...though the names take different room under their badges.
-      expect(
-        tester.getSize(find.text('Ubuntu 22.04.5 LTS')).height,
-        greaterThan(tester.getSize(find.text('Linux')).height),
-      );
+      expect({
+        for (var i = 0; i < 4; i++) tester.getSize(cards.at(i)).height,
+      }, hasLength(1));
+      // ...with its badge as far down it: the version under the badge takes
+      // one line, long, short, or blank before the first connect.
+      expect({
+        for (var i = 0; i < 4; i++)
+          tester
+                  .getTopLeft(
+                    find.descendant(
+                      of: cards.at(i),
+                      matching: find.byType(OsBadge),
+                    ),
+                  )
+                  .dy -
+              tester.getTopLeft(cards.at(i)).dy,
+      }, hasLength(1));
+      expect({
+        for (final version in [
+          '22.04.5 LTS',
+          '3.20',
+          '40 (Workstation Edition)',
+        ])
+          tester.getSize(find.text(version)).height,
+      }, hasLength(1));
 
-      // The OS's name is under its badge, centred on it.
+      // The version is under its badge, centred on it, without the OS's
+      // name: the badge already shows it.
       final badge = tester.getRect(
         find.descendant(
-          of: find.widgetWithText(Card, 'Ubuntu 22.04.5 LTS'),
+          of: find.widgetWithText(Card, '22.04.5 LTS'),
           matching: find.byType(OsBadge),
         ),
       );
-      final name = tester.getRect(find.text('Ubuntu 22.04.5 LTS'));
-      expect(name.top, greaterThanOrEqualTo(badge.bottom));
-      expect(name.center.dx, moreOrLessEquals(badge.center.dx, epsilon: 0.5));
+      final version = tester.getRect(find.text('22.04.5 LTS'));
+      expect(version.top, greaterThanOrEqualTo(badge.bottom));
+      expect(
+        version.center.dx,
+        moreOrLessEquals(badge.center.dx, epsilon: 0.5),
+      );
+      for (final name in ['Ubuntu', 'Alpine', 'Fedora', 'Linux']) {
+        expect(find.textContaining(name), findsNothing);
+      }
 
       // The arch is saved, but on no card.
       for (final arch in ['x86_64', 'aarch64', '·']) {

@@ -11,13 +11,15 @@ import 'secret_store.dart';
 class HostRepository {
   HostRepository(this._secrets);
 
-  static const _storageKey = 'sshbox.hosts.v1';
+  /// Public for `PortForwards.load`, which reads what hosts kept before the
+  /// Port forwarding page from here.
+  static const storageKey = 'sshbox.hosts.v1';
 
   final SecretStore _secrets;
 
   Future<List<HostProfile>> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_storageKey);
+    final raw = prefs.getString(storageKey);
     if (raw == null || raw.isEmpty) return [];
 
     try {
@@ -35,7 +37,7 @@ class HostRepository {
   Future<void> _persist(List<HostProfile> hosts) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-      _storageKey,
+      storageKey,
       jsonEncode(hosts.map((host) => host.toJson()).toList()),
     );
   }

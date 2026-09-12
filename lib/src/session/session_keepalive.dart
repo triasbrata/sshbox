@@ -3,34 +3,45 @@ import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
+import 'port_forwards.dart';
 import 'session_manager.dart';
 
-/// Keeps the app's process alive while any session is connected.
+/// Keeps the app's process alive while any session is connected, or any
+/// port forward is switched on.
 ///
 /// Android freezes a backgrounded app, and its TCP connections die with it.
 /// That is not a theoretical concern here: opening the file picker to upload
 /// something was enough to drop a live shell, because picking a file
 /// backgrounds the app. A foreground service with a persistent notification is
-/// what Termux and Termius run for exactly this reason.
+/// what Termux and Termius run for exactly this reason. A port forward is for
+/// another app on the tablet, so the app is always in the background while
+/// it is used.
 ///
 /// There is no iOS equivalent — a suspended app there always has to reconnect,
 /// so this is a no-op off Android.
 class SessionKeepAlive {
-  SessionKeepAlive(this._sessions);
+  SessionKeepAlive(this._sessions, this._forwards);
 
   final SessionManager _sessions;
+  final PortForwards _forwards;
 
   bool _initialized = false;
 
-  /// Last count we acted on, so a rebuild that changes nothing does not churn
-  /// the service.
-  int _lastCount = -1;
+  /// The notification's text last acted on, so a rebuild that changes
+  /// nothing does not churn the service. Empty with the service stopped.
+  String? _lastText;
 
-  void attach() => _sessions.addListener(_onSessionsChanged);
+  void attach() {
+    _sessions.addListener(_onChanged);
+    _forwards.addListener(_onChanged);
+  }
 
-  void detach() => _sessions.removeListener(_onSessionsChanged);
+  void detach() {
+    _sessions.removeListener(_onChanged);
+    _forwards.removeListener(_onChanged);
+  }
 
-  void _onSessionsChanged() => unawaited(_sync());
+  void _onChanged() => unawaited(_sync());
 
   void _ensureInitialized() {
     if (_initialized) return;
@@ -62,20 +73,23 @@ class SessionKeepAlive {
   Future<void> _sync() async {
     if (!Platform.isAndroid) return;
 
-    final count = _sessions.liveCount;
-    if (count == _lastCount) return;
-    _lastCount = count;
+    final sessions = _sessions.liveCount;
+    final forwards = _forwards.onCount;
+    final text = [
+      if (sessions > 0) '$sessions session${sessions == 1 ? '' : 's'} connected',
+      if (forwards > 0) '$forwards port forward${forwards == 1 ? '' : 's'} on',
+    ].join(', ');
+    if (text == _lastText) return;
+    _lastText = text;
 
     _ensureInitialized();
 
-    if (count == 0) {
+    if (text.isEmpty) {
       if (await FlutterForegroundTask.isRunningService) {
         await FlutterForegroundTask.stopService();
       }
       return;
     }
-
-    final text = '$count session${count == 1 ? '' : 's'} connected';
 
     if (await FlutterForegroundTask.isRunningService) {
       await FlutterForegroundTask.updateService(notificationText: text);
