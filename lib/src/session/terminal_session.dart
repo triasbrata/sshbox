@@ -108,16 +108,26 @@ abstract class ChannelCapable {
   Future<CommandChannel> open(String command);
 }
 
-/// A TCP connection [ForwardCapable.forward] made from the host: the bytes
-/// the far end sends, and a sink for ours whose close says we are done.
+/// A TCP connection through the host — one [ForwardCapable.forward] made
+/// from it, or one made to a port it listens on for us: the bytes the far
+/// end sends, and a sink for ours whose close says we are done.
 typedef Tunnel = ({Stream<Uint8List> output, StreamSink<List<int>> input});
 
-/// Optional capability: a TCP connection made from the host, as `ssh -L`
-/// makes one — what `LocalForwarder` pipes a port on the tablet into.
+/// A port the host listens on for us — see [ForwardCapable.listen]: each
+/// connection made to it, and a way to stop listening.
+typedef RemotePort = ({Stream<Tunnel> connections, void Function() close});
+
+/// Optional capability: TCP connections through the host, as `ssh -L` and
+/// `ssh -R` make them — what `LocalForwarder` pipes a port on the tablet
+/// into, and `RemoteForwarder` pipes a port on the host out of.
 abstract class ForwardCapable {
   /// Connects to [host]:[port] as the host reaches it. Throws, with the
   /// host's reason, when it cannot.
   Future<Tunnel> forward(String host, int port);
+
+  /// Asks the host to listen on [host]:[port], and hand over each
+  /// connection made there. Throws, with a reason, when it will not.
+  Future<RemotePort> listen(String host, int port);
 }
 
 abstract class SessionTransport {

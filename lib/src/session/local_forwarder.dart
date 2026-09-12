@@ -108,26 +108,143 @@ class LocalForwarder {
       return;
     }
     onProblem(rule, null);
-    socket.listen(
-      tunnel.input.add,
-      onError: (Object _) => socket.destroy(),
-      onDone: () {
-        listener.sockets.remove(socket);
-        unawaited(tunnel.input.close());
-      },
-    );
-    unawaited(_pipe(tunnel.output, socket));
+    _join(socket, tunnel, () => listener.sockets.remove(socket));
+  }
+}
+
+/// A forward setting's ports on the host, opened the way `ssh -R` opens
+/// them: the host listens on each mapping's port, and every connection made
+/// there comes over the setting's connection to be piped to the mapping's
+/// target, reached from this tablet — a dev server on the tablet, reached
+/// with `curl localhost:3000` on the host.
+///
+/// Only that target is reached, whatever a connection asks for.
+class RemoteForwarder {
+  RemoteForwarder({required this.onProblem});
+
+  /// Why [RemoteForward]'s port could not open on the host, or why a
+  /// connection through it could not reach its target; null once one gets
+  /// through again.
+  final void Function(RemoteForward rule, String? problem) onProblem;
+
+  final _ports = <RemotePort>[];
+  final _subscriptions = <StreamSubscription<Tunnel>>[];
+  final _sockets = <Socket>{};
+
+  /// Bumped by [stop], so what finishes after it lets go instead.
+  var _generation = 0;
+
+  /// Asks [host] to listen on each of [rules]' ports: done once each is
+  /// listening, or has said why not.
+  Future<void> start(ForwardCapable host, List<RemoteForward> rules) {
+    final generation = _generation;
+    return Future.wait([
+      for (final rule in rules) _listen(host, rule, generation),
+    ]);
   }
 
-  /// The destination's bytes to the app, then its end closing when the
-  /// destination's does.
-  static Future<void> _pipe(Stream<List<int>> from, Socket to) async {
-    try {
-      await to.addStream(from);
-      await to.close();
-    } catch (_) {
-      to.destroy();
+  /// Stops listening on every port, and closes every connection through
+  /// them: the setting was switched off, or its connection dropped.
+  Future<void> stop() {
+    _generation++;
+    // Copies first: a socket destroyed takes itself out of [_sockets].
+    final ports = [..._ports];
+    final sockets = [..._sockets];
+    final subscriptions = [..._subscriptions];
+    _ports.clear();
+    _sockets.clear();
+    _subscriptions.clear();
+    for (final port in ports) {
+      port.close();
     }
+    for (final socket in sockets) {
+      socket.destroy();
+    }
+    return Future.wait([
+      for (final subscription in subscriptions) subscription.cancel(),
+    ]);
+  }
+
+  Future<void> _listen(
+    ForwardCapable host,
+    RemoteForward rule,
+    int generation,
+  ) async {
+    final RemotePort port;
+    try {
+      port = await host.listen(rule.remoteHost, rule.remotePort);
+    } catch (error) {
+      if (generation == _generation) onProblem(rule, '$error');
+      return;
+    }
+    if (generation != _generation) {
+      port.close();
+      return;
+    }
+    _ports.add(port);
+    _subscriptions.add(
+      port.connections.listen(
+        (tunnel) => unawaited(_accept(rule, tunnel, generation)),
+      ),
+    );
+  }
+
+  /// One connection to the host's port: a socket to the target for it, then
+  /// bytes both ways until either end closes, which closes the other. A
+  /// target that refuses costs this connection, not the port.
+  Future<void> _accept(RemoteForward rule, Tunnel tunnel, int generation) async {
+    final Socket socket;
+    try {
+      socket = await Socket.connect(rule.tabletHost, rule.tabletPort);
+    } catch (error) {
+      unawaited(tunnel.input.close());
+      if (generation == _generation) {
+        final reason = error is SocketException
+            ? error.osError?.message ?? error.message
+            : '$error';
+        onProblem(
+          rule,
+          'cannot reach ${rule.tabletHost}:${rule.tabletPort} on this '
+          'tablet: $reason',
+        );
+      }
+      return;
+    }
+    if (generation != _generation) {
+      socket.destroy();
+      unawaited(tunnel.input.close());
+      return;
+    }
+    onProblem(rule, null);
+    _sockets.add(socket);
+    // A failed write surfaces in [_pipe]; nothing else waits on this.
+    socket.done.ignore();
+    _join(socket, tunnel, () => _sockets.remove(socket));
+  }
+}
+
+/// Bytes both ways between [socket] and [tunnel] until either end closes,
+/// which closes the other; [onClosed] once [socket] has.
+void _join(Socket socket, Tunnel tunnel, void Function() onClosed) {
+  socket.listen(
+    tunnel.input.add,
+    onError: (Object _) => socket.destroy(),
+    onDone: () {
+      onClosed();
+      unawaited(tunnel.input.close());
+    },
+  );
+  unawaited(_pipe(tunnel.output, socket));
+}
+
+/// The far end's bytes to [to], then its end closing when the far end's
+/// does.
+Future<void> _pipe(Stream<List<int>> from, Socket to) async {
+  try {
+    await to.addStream(from);
+    await to.close();
+  } catch (_) {
+    to.destroy();
   }
 }
 

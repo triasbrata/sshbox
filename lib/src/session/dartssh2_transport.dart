@@ -381,6 +381,31 @@ class _Dartssh2Session
     }
   }
 
+  /// A tcpip-forward on the connection the shell holds. Its channels come
+  /// only from the port asked for: dartssh2 refuses any other.
+  @override
+  Future<RemotePort> listen(String host, int port) async {
+    final client = _client;
+    if (client == null || _status.value != SessionStatus.connected) {
+      throw const SshSessionException('Not connected.');
+    }
+    final forward = await client.forwardRemote(host: host, port: port);
+    if (forward == null) {
+      throw const SshSessionException(
+        'The host refused to open it: the port may be in use, below 1024 '
+        'without root, or port forwarding is off in its sshd.',
+      );
+    }
+    return (
+      connections: forward.connections.map(
+        (channel) => (output: channel.stream, input: channel.sink),
+      ),
+      // Not forward.close, which leaves its cancel failing unhandled once the
+      // connection has gone — and a connection going cancels it anyway.
+      close: () => client.cancelForwardRemote(forward).ignore(),
+    );
+  }
+
   /// Everything lands in `/tmp`, named after the file the user picked.
   ///
   /// The name is scrubbed down to a safe character set: it arrives from

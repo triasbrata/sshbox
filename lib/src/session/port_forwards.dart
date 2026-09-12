@@ -25,9 +25,12 @@ typedef ForwardNotice = ({String message, bool failed, Uri? link});
 class ForwardRun {
   ForwardRun._(
     this._setting,
-    void Function(ForwardRun run, LocalForward rule, String? problem) onProblem,
+    void Function(ForwardRun run, PortMapping rule, String? problem) onProblem,
   ) {
     _forwarder = LocalForwarder(
+      onProblem: (rule, problem) => onProblem(this, rule, problem),
+    );
+    _remote = RemoteForwarder(
       onProblem: (rule, problem) => onProblem(this, rule, problem),
     );
   }
@@ -36,12 +39,13 @@ class ForwardRun {
   ForwardStatus _status = ForwardStatus.stopped;
   String? _error;
   Uri? _signIn;
-  final _problems = <int, String>{};
+  final _problems = <String, String>{};
 
   /// What toasts call it: the setting's name, or its host's.
   String _name = '';
 
   late final LocalForwarder _forwarder;
+  late final RemoteForwarder _remote;
   TerminalSession? _connection;
   Timer? _retry;
   int _failures = 0;
@@ -59,8 +63,9 @@ class ForwardRun {
   /// A sign-in the host is waiting on — Tailscale SSH's check.
   Uri? get signIn => _signIn;
 
-  /// Why a port could not open or reach its destination, by tablet port.
-  Map<int, String> get problems => Map.unmodifiable(_problems);
+  /// Why a port could not open or reach its destination, by where it
+  /// listens: `Tablet 5432`, `Remote 3000`.
+  Map<String, String> get problems => Map.unmodifiable(_problems);
 
   /// Switched on: connecting, running, or reconnecting.
   bool get on => switch (_status) {
@@ -201,7 +206,7 @@ class PortForwards extends ChangeNotifier {
     run._retry = null;
     final connection = run._connection;
     run._connection = null;
-    await run._forwarder.stop();
+    await Future.wait([run._forwarder.stop(), run._remote.stop()]);
     await connection?.dispose();
   }
 
@@ -261,14 +266,20 @@ class PortForwards extends ChangeNotifier {
       run
         .._signIn = null
         .._problems.clear();
-      await run._forwarder.sync(
-        connection as ForwardCapable,
-        run.setting.mappings,
-      );
+      final mappings = run.setting.mappings;
+      final through = connection as ForwardCapable;
+      await Future.wait([
+        run._forwarder.sync(through, [...mappings.whereType<LocalForward>()]),
+        run._remote.start(through, [...mappings.whereType<RemoteForward>()]),
+      ]);
       if (!current()) return;
       final opened = [
-        for (final mapping in run.setting.mappings)
-          if (!run._problems.containsKey(mapping.localPort)) mapping.localPort,
+        for (final mapping in mappings)
+          if (!run._problems.containsKey(mapping.side))
+            switch (mapping) {
+              LocalForward(:final localPort) => 'tablet $localPort → remote',
+              RemoteForward(:final remotePort) => 'remote $remotePort → tablet',
+            },
       ];
       if (opened.isEmpty) {
         throw const SshSessionException('No port could open.');
@@ -278,7 +289,7 @@ class PortForwards extends ChangeNotifier {
         .._error = null
         .._failures = 0;
       notifyListeners();
-      _say('Forwarding 127.0.0.1:${opened.join(', ')}');
+      _say('Forwarding ${opened.join(', ')}');
     } catch (error) {
       if (!current()) return;
       _failed(
@@ -308,15 +319,15 @@ class PortForwards extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _onProblem(ForwardRun run, LocalForward rule, String? problem) {
-    final port = rule.localPort;
+  void _onProblem(ForwardRun run, PortMapping rule, String? problem) {
+    final side = rule.side;
     if (problem == null) {
-      if (run._problems.remove(port) != null) notifyListeners();
+      if (run._problems.remove(side) != null) notifyListeners();
       return;
     }
-    run._problems[port] = problem;
+    run._problems[side] = problem;
     notifyListeners();
-    _say('${run._name}\n$port: $problem', failed: true);
+    _say('${run._name}\n$side: $problem', failed: true);
   }
 
   void _say(String message, {bool failed = false, Uri? link}) =>
