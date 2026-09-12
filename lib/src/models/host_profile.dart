@@ -1,3 +1,5 @@
+import 'os_info.dart';
+
 /// How we authenticate to a host. The secret itself never lives here — only
 /// the choice of method. See [SecretStore] for where the secret goes.
 enum SshAuthMethod {
@@ -24,6 +26,7 @@ class HostProfile {
     this.forwardPorts = false,
     this.useTmux = false,
     this.jumpHostId = '',
+    this.os,
   });
 
   final String id;
@@ -52,6 +55,10 @@ class HostProfile {
   /// it. Blank connects directly. A jump host may have one of its own.
   final String jumpHostId;
 
+  /// What the host said it runs at its last connect, for the host list's
+  /// badge. Null until it first connects — see `LiveSession`.
+  final OsInfo? os;
+
   /// What we show under the label, e.g. `root@10.0.2.2` or `me@box:2222`.
   String get target =>
       '$username@$host${port == 22 ? '' : ':$port'}';
@@ -69,6 +76,7 @@ class HostProfile {
     bool? forwardPorts,
     bool? useTmux,
     String? jumpHostId,
+    OsInfo? os,
   }) {
     return HostProfile(
       id: id,
@@ -81,6 +89,7 @@ class HostProfile {
       forwardPorts: forwardPorts ?? this.forwardPorts,
       useTmux: useTmux ?? this.useTmux,
       jumpHostId: jumpHostId ?? this.jumpHostId,
+      os: os ?? this.os,
     );
   }
 
@@ -95,6 +104,7 @@ class HostProfile {
         'forwardPorts': forwardPorts,
         'useTmux': useTmux,
         'jumpHostId': jumpHostId,
+        'os': ?os?.toJson(),
       };
 
   factory HostProfile.fromJson(Map<String, dynamic> json) {
@@ -112,6 +122,10 @@ class HostProfile {
       forwardPorts: json['forwardPorts'] as bool? ?? false,
       useTmux: json['useTmux'] as bool? ?? false,
       jumpHostId: json['jumpHostId'] as String? ?? '',
+      os: switch (json['os']) {
+        final Map<String, dynamic> os => OsInfo.fromJson(os),
+        _ => null,
+      },
     );
   }
 }

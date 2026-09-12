@@ -6,6 +6,7 @@ import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/session_manager.dart';
 import 'host_edit_page.dart';
+import 'os_icon.dart';
 import 'settings_page.dart';
 
 class HostsPage extends StatefulWidget {
@@ -236,7 +237,7 @@ class _HostTile extends StatelessWidget {
         leading: Stack(
           clipBehavior: Clip.none,
           children: [
-            const Icon(Icons.dns_outlined),
+            OsBadge(host.os),
             if (activeCount > 0)
               Positioned(
                 right: -2,
@@ -270,6 +271,11 @@ class _HostTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             for (final line in [
+              // As Termius puts it: `ssh, me, ubuntu`.
+              ['ssh', host.username, ?host.os?.id]
+                  .where((part) => part.isNotEmpty)
+                  .join(', '),
+              ?host.os?.summary,
               host.target,
               switch (activeCount) {
                 0 => authLabel,

@@ -460,7 +460,7 @@ void main() {
 
       // Asked on connect, not when a tab is drawn; the host list's name holds
       // the place until the answer comes.
-      expect(host.commands, ['uname -n']);
+      expect(host.commands, contains('uname -n'));
       expect(session.fileTabTitle('/home/me/main.dart'), 'box · main.dart');
 
       host.reply.complete(['DESKTOP-L2EPDPG']);

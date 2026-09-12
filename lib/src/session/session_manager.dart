@@ -4,10 +4,12 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../models/host_profile.dart';
+import '../models/os_info.dart';
 import 'dartssh2_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
@@ -338,6 +340,7 @@ class LiveSession extends ChangeNotifier {
       _webTabs.removeWhere((tab) => tab._signIn);
       _syncForwarding();
       unawaited(_fetchHostname());
+      unawaited(_saveOs(secrets));
     } on SshSessionException catch (error) {
       _error = error.message;
     } catch (error) {
@@ -523,6 +526,22 @@ class LiveSession extends ChangeNotifier {
       _notify();
     } catch (_) {
       // Only a tab's name rides on it, and that has its fallback.
+    }
+  }
+
+  /// Asks the host what it runs and saves that on its profile for the host
+  /// list, on every connect: an edited address may reach another machine.
+  /// Silent: the connection never waits on it, and a failure is no answer.
+  Future<void> _saveOs(SecretStore secrets) async {
+    final session = _session;
+    if (session is! CommandCapable) return;
+    try {
+      final os = await OsInfo.detect((session as CommandCapable).run);
+      if (os != null && await HostRepository(secrets).saveOs(host.id, os)) {
+        _notify();
+      }
+    } catch (_) {
+      // The host list keeps what it had.
     }
   }
 

@@ -146,6 +146,8 @@ class _HostEditPageState extends State<HostEditPage> {
       forwardPorts: _forwardPorts,
       useTmux: _useTmux,
       jumpHostId: _jumpHostId,
+      // Not the form's: the host says it again on its next connect.
+      os: widget.existing?.os,
     );
 
     await widget.repository.upsert(profile);

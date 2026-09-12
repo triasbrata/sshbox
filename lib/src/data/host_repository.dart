@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/host_profile.dart';
+import '../models/os_info.dart';
 import 'secret_store.dart';
 
 /// Persists the non-secret half of a host profile. The matching secrets live
@@ -50,6 +51,17 @@ class HostRepository {
     }
     await _persist(hosts);
     return hosts;
+  }
+
+  /// Saves what a host said it runs, and says whether that changed anything:
+  /// a reconnect to the same machine writes nothing.
+  Future<bool> saveOs(String hostId, OsInfo os) async {
+    final hosts = await load();
+    final index = hosts.indexWhere((host) => host.id == hostId);
+    if (index < 0 || hosts[index].os == os) return false;
+    hosts[index] = hosts[index].copyWith(os: os);
+    await _persist(hosts);
+    return true;
   }
 
   Future<List<HostProfile>> delete(String hostId) async {
