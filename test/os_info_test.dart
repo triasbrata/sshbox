@@ -176,10 +176,28 @@ PRETTY_NAME="Rocky Linux 9.4 (Blue Onyx)"
     });
   });
 
-  test("the name under a host's badge, without the arch", () {
-    const ubuntu = OsInfo(prettyName: 'Ubuntu 24.04.1 LTS', arch: 'x86_64');
-    expect(ubuntu.summary, 'Ubuntu 24.04.1 LTS');
-    expect(const OsInfo(kernel: 'FreeBSD', arch: 'amd64').summary, 'FreeBSD');
+  test("the version under a host's badge, without the OS's name", () {
+    for (final (prettyName, version) in [
+      ('Ubuntu 22.04.5 LTS', '22.04.5 LTS'),
+      ('Debian GNU/Linux 12 (bookworm)', '12 (bookworm)'),
+      ('Fedora Linux 40 (Workstation Edition)', '40 (Workstation Edition)'),
+      ('Alpine Linux v3.20', '3.20'),
+      ('macOS 14.5', '14.5'),
+      ('Windows 10.0.22631', '10.0.22631'),
+    ]) {
+      final os = OsInfo(prettyName: prettyName, versionId: '0', arch: 'x86_64');
+      expect(os.version, version);
+    }
+    // A rolling release's name has no version in it.
+    const arch = OsInfo(id: 'arch', prettyName: 'Arch Linux', kernel: 'Linux');
+    expect(arch.version, '');
+    expect(
+      const OsInfo(prettyName: 'Arch Linux', versionId: '20240901').version,
+      '20240901',
+    );
+    // Never the kernel, and nothing when nothing was said.
+    expect(const OsInfo(kernel: 'FreeBSD', arch: 'amd64').version, '');
+    expect(const OsInfo().version, '');
   });
 
   test('Tux for another Linux, the generic badge for the unknown', () {
