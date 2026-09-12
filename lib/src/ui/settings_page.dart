@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
-import '../data/host_repository.dart';
-import 'known_hosts_page.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
 
@@ -139,10 +137,7 @@ final appTheme = AppTheme();
 
 /// Clode's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.repository});
-
-  /// Only for Known hosts, to name the saved hosts behind each key.
-  final HostRepository repository;
+  const SettingsPage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -150,22 +145,7 @@ class SettingsPage extends StatelessWidget {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.only(bottom: 24),
-        children: [
-          const _ThemeSection(),
-          const _TerminalSection(),
-          const _SectionHeader('Security'),
-          ListTile(
-            leading: const Icon(Icons.fingerprint),
-            title: const Text('Known hosts'),
-            subtitle: const Text('The host keys you have trusted'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => KnownHostsPage(repository: repository),
-              ),
-            ),
-          ),
-        ],
+        children: const [_ThemeSection(), _TerminalSection()],
       ),
     );
   }

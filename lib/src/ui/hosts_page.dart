@@ -7,6 +7,7 @@ import '../models/host_profile.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import 'host_edit_page.dart';
+import 'known_hosts_page.dart';
 import 'logs_page.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart';
@@ -169,11 +170,18 @@ class _HostsPageState extends State<HostsPage> {
             icon: const Icon(Icons.history),
           ),
           IconButton(
-            tooltip: 'Settings',
+            tooltip: 'Known hosts',
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => SettingsPage(repository: widget.repository),
+                builder: (_) => KnownHostsPage(repository: widget.repository),
               ),
+            ),
+            icon: const Icon(Icons.fingerprint),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
             ),
             icon: const Icon(Icons.settings_outlined),
           ),
