@@ -100,6 +100,12 @@ class SessionKeepAlive {
       serviceTypes: const [ForegroundServiceTypes.dataSync],
       notificationTitle: 'Jeansh',
       notificationText: text,
+      // The same white icon FCM uses, from the manifest. Without one the
+      // plugin falls back to the launcher picture, which Android shows as a
+      // filled square.
+      notificationIcon: const NotificationIcon(
+        metaDataName: 'com.google.firebase.messaging.default_notification_icon',
+      ),
     );
   }
 

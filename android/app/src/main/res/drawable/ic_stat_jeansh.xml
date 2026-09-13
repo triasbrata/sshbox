@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The notification icon: a terminal peeking out of a jeans pocket.
+     Android draws a notification's small icon from its alpha channel alone,
+     so the opaque launcher picture came out as a filled square. This one is
+     white on transparent. The prompt and the stitches are wound the other way
+     round from their outline, which cuts them out without needing fillType. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9,2H15A2,2 0 0 1 17,4V10H7V4A2,2 0 0 1 9,2Z M9,4.2L9,5.4L9.93,6L9,6.6L9,7.8L11.8,6Z M12.6,6.9V7.8H15V6.9Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4,11H20V17Q20,18.6 18.5,19.3L12,22L5.5,19.3Q4,18.6 4,17Z M6,12.6V13.4H7.6V12.6Z M8.6,12.6V13.4H10.2V12.6Z M11.2,12.6V13.4H12.8V12.6Z M13.8,12.6V13.4H15.4V12.6Z M16.4,12.6V13.4H18V12.6Z" />
+</vector>

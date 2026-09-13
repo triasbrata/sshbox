@@ -1,10 +1,14 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'key_bar.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
+import 'toast.dart';
 
 /// Where a Nerd Font glyph comes from, whichever font is picked.
 ///
@@ -136,6 +140,90 @@ class AppTheme
 /// The app's one; `main` reads the saved choice into it.
 final appTheme = AppTheme();
 
+/// One of the terminal key bar's items, in the place Settings put it, and
+/// whether the bar shows it.
+typedef KeyBarItem = ({String id, bool shown});
+
+/// The terminal's key bar as arranged in Settings: every item in order, a
+/// hidden one kept in its place so that showing it again puts it back where
+/// it was. Every terminal page's bar listens, so a change reaches each open
+/// shell at once.
+class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
+  KeyBarSettings() : super(defaults);
+
+  /// The bar as it has always been.
+  static final defaults = List<KeyBarItem>.unmodifiable([
+    for (final id in terminalKeyBarDefault) (id: id, shown: true),
+  ]);
+
+  /// A JSON list of `{"id": "esc", "shown": true}`, one per item in order.
+  static const _key = 'sshbox.keyBar.v1';
+
+  /// The ids the bar shows, in order.
+  List<String> get shown => [
+    for (final item in value)
+      if (item.shown) item.id,
+  ];
+
+  /// Reads the saved arrangement. Nothing saved, or a list this build cannot
+  /// read, is the bar as it has always been. An id this build does not know
+  /// is dropped, and a key the list never saw, one a later version added,
+  /// joins at the end, shown.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    Object? saved;
+    try {
+      saved = jsonDecode(prefs.getString(_key) ?? 'null');
+    } on FormatException {
+      saved = null;
+    }
+    if (saved is! List) {
+      value = defaults;
+      return;
+    }
+
+    final items = <KeyBarItem>[];
+    for (final entry in saved) {
+      // Only the divider may come twice; a key saved twice keeps its first
+      // place.
+      if (entry case {'id': final String id, 'shown': final bool shown}
+          when terminalKeys.containsKey(id) &&
+              (id == keyBarDivider || !items.any((item) => item.id == id))) {
+        items.add((id: id, shown: shown));
+      }
+    }
+    for (final id in terminalKeyBarDefault) {
+      if (!items.any((item) => item.id == id)) {
+        items.add((id: id, shown: true));
+      }
+    }
+    value = items;
+  }
+
+  /// Applies at once, and is saved for the next start.
+  Future<void> choose(List<KeyBarItem> items) async {
+    value = items;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _key,
+      jsonEncode([
+        for (final item in items) {'id': item.id, 'shown': item.shown},
+      ]),
+    );
+  }
+
+  /// The bar as it ships. Nothing is left saved, so a later version's own
+  /// arrangement is the one it gets.
+  Future<void> reset() async {
+    value = defaults;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_key);
+  }
+}
+
+/// The app's one; `main` reads the saved arrangement into it.
+final keyBarSettings = KeyBarSettings();
+
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.pushToken});
@@ -153,6 +241,21 @@ class SettingsPage extends StatelessWidget {
         children: [
           const _ThemeSection(),
           const _TerminalSection(),
+          const _SectionHeader('Keyboard'),
+          ListTile(
+            leading: const Icon(Icons.keyboard_outlined),
+            title: const Text('Key bar'),
+            subtitle: const Text(
+              'The keys above the keyboard in a terminal: which ones, and in '
+              'what order',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const KeyBarSettingsPage(),
+              ),
+            ),
+          ),
           _NotificationsSection(pushToken),
         ],
       ),
@@ -459,6 +562,152 @@ class _TerminalSectionState extends State<_TerminalSection> {
   }
 }
 
+/// The terminal's key bar item by item, each with a handle to drag it to a
+/// new place and a switch to show or hide it, under the bar as a terminal
+/// will draw it.
+class KeyBarSettingsPage extends StatefulWidget {
+  const KeyBarSettingsPage({super.key});
+
+  @override
+  State<KeyBarSettingsPage> createState() => _KeyBarSettingsPageState();
+}
+
+class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
+  /// The preview's own, with no shell behind it: its keys light up and
+  /// scroll, and send nothing anywhere.
+  final _previewKeys = KeyBarController();
+  final _previewTerminal = Terminal();
+
+  @override
+  void dispose() {
+    _previewKeys.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reset() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset the key bar?'),
+        content: const Text(
+          'Every key goes back to its first place, and hidden keys come back.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) await keyBarSettings.reset();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Key bar'),
+        actions: [
+          IconButton(
+            tooltip: 'Reset to default',
+            onPressed: _reset,
+            icon: const Icon(Icons.restart_alt),
+          ),
+        ],
+      ),
+      body: ValueListenableBuilder(
+        valueListenable: keyBarSettings,
+        builder: (context, items, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // At the top of the page rather than the foot of the screen, so
+            // the system's inset down there is not the bar's to pad.
+            MediaQuery.removePadding(
+              context: context,
+              removeBottom: true,
+              child: TerminalKeyBar(
+                controller: _previewKeys,
+                terminal: _previewTerminal,
+                onEmit: (_) {},
+                keys: keyBarSettings.shown,
+                // Files and upload, as a terminal has them: the page's own,
+                // so always first and not the bar's to move.
+                leading: const [
+                  IconButton(
+                    onPressed: null,
+                    icon: Icon(Icons.folder_outlined),
+                  ),
+                  IconButton(onPressed: null, icon: Icon(Icons.attach_file)),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Text(
+                'Files and upload always come first. Drag a key by its handle '
+                'to move it.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            Expanded(
+              child: ReorderableListView.builder(
+                buildDefaultDragHandles: false,
+                padding: const EdgeInsets.only(bottom: 24),
+                itemCount: items.length,
+                onReorderItem: (from, to) => keyBarSettings.choose(
+                  [...items]
+                    ..removeAt(from)
+                    ..insert(to, items[from]),
+                ),
+                itemBuilder: (context, index) {
+                  final item = items[index];
+                  return ListTile(
+                    // Dividers repeat, so each is known by how many came
+                    // before it.
+                    key: ValueKey((
+                      item.id,
+                      items.take(index).where((i) => i.id == item.id).length,
+                    )),
+                    leading: ReorderableDragStartListener(
+                      index: index,
+                      child: const Icon(Icons.drag_handle),
+                    ),
+                    title: Text(
+                      terminalKeys[item.id]!.label,
+                      style: item.id == keyBarDivider
+                          ? null
+                          : const TextStyle(
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w600,
+                            ),
+                    ),
+                    trailing: Switch(
+                      value: item.shown,
+                      onChanged: (shown) => keyBarSettings.choose(
+                        [...items]..[index] = (id: item.id, shown: shown),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// The device's push token, to copy by hand for a host that will not take
 /// it the usual way, as `LC_SSHBOX_TOKEN` with every shell: see
 /// `LiveSession.connect`.
@@ -469,17 +718,19 @@ class _NotificationsSection extends StatelessWidget {
 
   Future<void> _copy(BuildContext context) async {
     final token = pushToken?.call();
-    final messenger = ScaffoldMessenger.of(context);
-
     if (token == null) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('No FCM token yet — push is unavailable')),
+      showToast(
+        context,
+        'No FCM token yet — push is unavailable',
+        type: ToastificationType.warning,
       );
       return;
     }
 
     await Clipboard.setData(ClipboardData(text: token));
-    messenger.showSnackBar(const SnackBar(content: Text('FCM token copied')));
+    if (context.mounted) {
+      showToast(context, 'FCM token copied', type: ToastificationType.success);
+    }
   }
 
   @override

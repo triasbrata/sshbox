@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
+import 'toast.dart';
+
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
 /// form; sending CSI there produces stray characters instead of movement.
 String cursorKey(Terminal terminal, String finalChar) =>
@@ -181,6 +183,49 @@ class CursorPad {
   }
 }
 
+/// Every item the terminal's key bar can show, by the id Settings saves its
+/// place under, so an id never changes once shipped.
+///
+/// [send] is read at tap time, so cursor keys follow the mode the application
+/// has put the terminal in. CTRL, ALT, SPACE and the divider do more than
+/// send, or nothing at all, and the bar builds them itself.
+final Map<String, ({String label, String Function(Terminal)? send})>
+    terminalKeys = {
+  'esc': (label: 'ESC', send: (_) => '\x1b'),
+  'tab': (label: 'TAB', send: (_) => '\t'),
+  'ctrl': (label: 'CTRL', send: null),
+  'alt': (label: 'ALT', send: null),
+  'left': (label: '←', send: (t) => cursorKey(t, 'D')),
+  'down': (label: '↓', send: (t) => cursorKey(t, 'B')),
+  'up': (label: '↑', send: (t) => cursorKey(t, 'A')),
+  'right': (label: '→', send: (t) => cursorKey(t, 'C')),
+  'space': (label: 'SPACE', send: null),
+  'ctrl-c': (label: '^C', send: (_) => '\x03'),
+  'ctrl-d': (label: '^D', send: (_) => '\x04'),
+  'ctrl-z': (label: '^Z', send: (_) => '\x1a'),
+  'home': (label: 'HOME', send: (t) => cursorKey(t, 'H')),
+  'end': (label: 'END', send: (t) => cursorKey(t, 'F')),
+  'pgup': (label: 'PGUP', send: (_) => '\x1b[5~'),
+  'pgdn': (label: 'PGDN', send: (_) => '\x1b[6~'),
+  // Symbols the stock keyboard buries two layers deep, each its own id.
+  for (final symbol in const ['-', '/', '|', '~', ':', '*'])
+    symbol: (label: symbol, send: (_) => symbol),
+  keyBarDivider: (label: 'Divider', send: null),
+};
+
+/// The one item that may appear more than once.
+const keyBarDivider = 'divider';
+
+/// The bar as it has always been, and as it stays until Settings rearranges
+/// it: modifiers, then movement, then job control, then paging, then symbols.
+const terminalKeyBarDefault = [
+  'esc', 'tab', 'ctrl', 'alt', keyBarDivider, //
+  'left', 'down', 'up', 'right', 'space', keyBarDivider,
+  'ctrl-c', 'ctrl-d', 'ctrl-z', keyBarDivider,
+  'home', 'end', 'pgup', 'pgdn', keyBarDivider,
+  '-', '/', '|', '~', ':', '*',
+];
+
 /// The accessory row that sits directly above the soft keyboard.
 ///
 /// Without this the app cannot send Esc, Tab, Ctrl or arrows at all, which
@@ -194,6 +239,7 @@ class TerminalKeyBar extends StatelessWidget {
     required this.onEmit,
     this.leading = const [],
     this.showKeys = true,
+    this.keys = terminalKeyBarDefault,
   });
 
   final KeyBarController controller;
@@ -212,11 +258,48 @@ class TerminalKeyBar extends StatelessWidget {
   /// showed its buttons, greyed out until there was something to reach.
   final bool showKeys;
 
+  /// The ids from [terminalKeys] to show, in order: the arrangement picked in
+  /// Settings. [leading] and the divider after it are the page's own, and
+  /// always come first.
+  final List<String> keys;
+
   String _cursor(String finalChar) => cursorKey(terminal, finalChar);
+
+  Widget _key(String id) => switch (id) {
+        keyBarDivider => const _KeyDivider(),
+        'ctrl' => _KeyButton(
+            label: 'CTRL',
+            active: controller.ctrl,
+            onTap: controller.toggleCtrl,
+          ),
+        'alt' => _KeyButton(
+            label: 'ALT',
+            active: controller.alt,
+            onTap: controller.toggleAlt,
+          ),
+        'space' => _SpacePad(
+            onSpace: () => onEmit(' '),
+            onCursor: (finalChar) => onEmit(_cursor(finalChar)),
+          ),
+        _ => _KeyButton(
+            label: terminalKeys[id]!.label,
+            onTap: () => onEmit(terminalKeys[id]!.send!(terminal)),
+          ),
+      };
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // A divider only ever between two keys: a group hidden whole leaves no
+    // double line, and none trails at the end. The first is [leading]'s own.
+    final shown = <String>[];
+    for (final id in keys) {
+      if (id != keyBarDivider ||
+          (shown.isNotEmpty && shown.last != keyBarDivider)) {
+        shown.add(id);
+      }
+    }
+    if (shown.lastOrNull == keyBarDivider) shown.removeLast();
 
     return Material(
       color: theme.colorScheme.surfaceContainerHighest,
@@ -232,48 +315,9 @@ class TerminalKeyBar extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 children: [
                   for (final button in leading) _IconKey(button),
-                  if (showKeys) ...[
+                  if (showKeys && shown.isNotEmpty) ...[
                     const _KeyDivider(),
-                    _KeyButton(label: 'ESC', onTap: () => onEmit('\x1b')),
-                    _KeyButton(label: 'TAB', onTap: () => onEmit('\t')),
-                    _KeyButton(
-                      label: 'CTRL',
-                      active: controller.ctrl,
-                      onTap: controller.toggleCtrl,
-                    ),
-                    _KeyButton(
-                      label: 'ALT',
-                      active: controller.alt,
-                      onTap: controller.toggleAlt,
-                    ),
-                    const _KeyDivider(),
-                    _KeyButton(label: '←', onTap: () => onEmit(_cursor('D'))),
-                    _KeyButton(label: '↓', onTap: () => onEmit(_cursor('B'))),
-                    _KeyButton(label: '↑', onTap: () => onEmit(_cursor('A'))),
-                    _KeyButton(label: '→', onTap: () => onEmit(_cursor('C'))),
-                    _SpacePad(
-                      onSpace: () => onEmit(' '),
-                      onCursor: (finalChar) => onEmit(_cursor(finalChar)),
-                    ),
-                    const _KeyDivider(),
-                    _KeyButton(label: '^C', onTap: () => onEmit('\x03')),
-                    _KeyButton(label: '^D', onTap: () => onEmit('\x04')),
-                    _KeyButton(label: '^Z', onTap: () => onEmit('\x1a')),
-                    const _KeyDivider(),
-                    _KeyButton(
-                      label: 'HOME',
-                      onTap: () => onEmit(_cursor('H')),
-                    ),
-                    _KeyButton(
-                      label: 'END',
-                      onTap: () => onEmit(_cursor('F')),
-                    ),
-                    _KeyButton(label: 'PGUP', onTap: () => onEmit('\x1b[5~')),
-                    _KeyButton(label: 'PGDN', onTap: () => onEmit('\x1b[6~')),
-                    const _KeyDivider(),
-                    // Symbols the stock keyboard buries two layers deep.
-                    for (final symbol in const ['-', '/', '|', '~', ':', '*'])
-                      _KeyButton(label: symbol, onTap: () => onEmit(symbol)),
+                    for (final id in shown) _key(id),
                   ],
                 ],
               );
@@ -896,9 +940,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
       Clipboard.setData(
         ClipboardData(text: widget.terminal.buffer.getText(range, true)),
       );
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)),
-      );
+      showToast(context, 'Copied', type: ToastificationType.success);
     }
     widget.controller.clearSelection();
   }

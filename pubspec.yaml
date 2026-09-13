@@ -67,24 +67,40 @@ dev_dependencies:
   # Draws the launcher icon from the flutter_launcher_icons block below.
   flutter_launcher_icons: ^0.14.4
 
-# The Android launcher icon, legacy and adaptive, from the tile in
-# assets/branding/app_icon.png. After changing the tile or these values, run
+# The launcher icon, Android (legacy and adaptive) and iOS, from the tile in
+# assets/branding/app_icon.png: a 500 px squircle centred in a 512 px image,
+# with a 6 px transparent margin. iOS takes assets/branding/app_icon_ios.png,
+# cut from the same tile with
+#   ffmpeg -i assets/branding/app_icon.png -vf "crop=432:432:40:40,format=gbrp,scale=1024:1024:flags=lanczos+accurate_rnd,format=rgb24" assets/branding/app_icon_ios.png
+# After changing the tile or these values, run
 #   dart run flutter_launcher_icons
-# and commit what it writes under android/app/src/main/res. iOS keeps
-# Flutter's default icon.
+# and commit what it writes under android/app/src/main/res and
+# ios/Runner/Assets.xcassets/AppIcon.appiconset. Undo its change to
+# ios/Runner.xcodeproj/project.pbxproj: 0.14.4 sets every ASSETCATALOG_*
+# setting to AppIcon, including GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES.
 flutter_launcher_icons:
   android: true
+  ios: true
   image_path: assets/branding/app_icon.png
   adaptive_icon_foreground: assets/branding/app_icon.png
   # The violet-blue denim just inside the tile's edge (its average all round).
-  adaptive_icon_background: "#373965"
-  # 16% a side draws the tile at 73.4 of the 108 dp layer, a little over the
-  # 72 dp a launcher shows, so the tile's own rounded corners fall outside both
-  # a circle and a rounded-square mask. It is also the smallest whole inset at
-  # which the whole pocket fits inside a circle mask (its bottom corners reach
-  # 70.5 of the 72 dp), so a bigger inset would show the tile's edge and a
-  # smaller one would trim the pocket.
-  adaptive_icon_foreground_inset: 16
+  adaptive_icon_background: "#373964"
+  # 14% a side draws the image at 77.8 of the 108 dp layer, so the tile's
+  # straight edges fall 2 dp past the 72 dp a launcher shows, and its rounded
+  # corners stay outside a circle mask and outside a rounded-square mask whose
+  # corner radius is 16% of the side or more. The whole pocket still fits
+  # inside a circle mask, 2 dp clear of its edge. At 15% the tile's corners
+  # show under a rounded square below a 20% radius, and at 16% its transparent
+  # margin shows under every mask.
+  adaptive_icon_foreground_inset: 14
+  # iOS wants a full-bleed square with no alpha (the App Store rejects alpha on
+  # the 1024 icon) and draws its own continuous corners over it. So the iOS
+  # source is the tile cropped 40 px in from each side, inside its rounded
+  # corners, so denim fills the whole square and the pocket stays whole, then
+  # upscaled from 432 to 1024 px with Lanczos. It is RGB, so remove_alpha_ios
+  # is only a guard.
+  image_path_ios: assets/branding/app_icon_ios.png
+  remove_alpha_ios: true
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
