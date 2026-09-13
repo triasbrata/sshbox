@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart';
 import 'code_languages.dart';
+import 'file_download.dart';
 import 'key_bar.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
@@ -229,6 +230,9 @@ class _FileEditorPageState extends State<FileEditorPage> {
   bool _loading = true;
   bool _saving = false;
   bool _saved = false;
+
+  /// The download under way, and how far along it is.
+  ({String label, double? progress})? _transfer;
 
   bool get _embedded => widget.onClose != null;
 
@@ -727,6 +731,48 @@ class _FileEditorPageState extends State<FileEditorPage> {
     _leave();
   }
 
+  /// Saves the file on the phone as the host has it, the way the files
+  /// drawer's Download does. An edit not saved yet is not in that, so it
+  /// asks first.
+  Future<void> _download() async {
+    if (_dirty) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: const Text(
+            "The download is the version on the server; your unsaved edits "
+            "aren't in it.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Download'),
+            ),
+          ],
+        ),
+      );
+      if (go != true) return;
+    }
+    if (!mounted) return;
+    await downloadFile(
+      context,
+      widget.browser,
+      widget.path,
+      // Opened through sudo, while a download reads as the login.
+      denied: _asRoot
+          ? 'Could not download ${RemotePath.basename(widget.path)}: your '
+              'login may not read it, and a download does not go through sudo.'
+          : null,
+      onTransfer: (transfer) {
+        if (mounted) setState(() => _transfer = transfer);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final canSave = _canSave;
@@ -801,6 +847,14 @@ class _FileEditorPageState extends State<FileEditorPage> {
               tooltip: 'More',
               onSelected: (action) => action(),
               itemBuilder: (context) => [
+                // Only the path is needed, so a file that would not open as
+                // text can still be saved on the phone.
+                PopupMenuItem(
+                  value: _download,
+                  enabled: _transfer == null,
+                  child: const Text('Download'),
+                ),
+                const PopupMenuDivider(),
                 if (!_loading && _error == null) ...[
                   PopupMenuItem(
                     value: () => _inSource(_find.replaceMode),
@@ -829,7 +883,13 @@ class _FileEditorPageState extends State<FileEditorPage> {
             ),
           ],
         ),
-        body: _buildBody(),
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_transfer case final transfer?) TransferBar(transfer),
+            Expanded(child: _buildBody()),
+          ],
+        ),
         bottomNavigationBar: _loading || _error != null || _preview
             ? null
             : EditorKeyBar(controller: _controller, useTabs: _useTabs),

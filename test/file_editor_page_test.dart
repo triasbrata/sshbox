@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -11,6 +13,7 @@ import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
+import 'fake_file_picker.dart';
 
 Future<void> _pumpEditor(
   WidgetTester tester,
@@ -30,6 +33,21 @@ bool _canSave(WidgetTester tester) => tester
 
 CodeLineEditingController _editor(WidgetTester tester) =>
     tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!;
+
+/// Picks Download from the editor's menu. Not settled after, which would wait
+/// out the toast it ends with.
+Future<void> _download(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('More'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Download'));
+  await tester.pump();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
+const _unsavedWarning =
+    "The download is the version on the server; your unsaved edits aren't "
+    'in it.';
 
 void main() {
   // The editor reads its text size and wrap setting when it opens.
@@ -722,6 +740,98 @@ void main() {
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
     expect(closed, isTrue);
+  });
+
+  group('download', () {
+    testWidgets('is on the menu in the preview and in Source',
+        (tester) async {
+      const readme = '/home/me/README.md';
+      final browser = FakeFileBrowser()..contents[readme] = '# Title\n';
+      await _pumpEditor(tester, browser, path: readme);
+      Future<void> expectOnMenu() async {
+        await tester.tap(find.byTooltip('More'));
+        await tester.pumpAndSettle();
+        expect(find.text('Download'), findsOneWidget);
+        await tester.tapAt(Offset.zero);
+        await tester.pumpAndSettle();
+      }
+
+      expect(find.byType(Markdown), findsOneWidget);
+      await expectOnMenu();
+      await tester.tap(find.byTooltip('Show source'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Markdown), findsNothing);
+      await expectOnMenu();
+    });
+
+    testWidgets('saves the bytes on the host, without asking when clean',
+        (tester) async {
+      final picker = useFakePicker();
+      // CRLF, which the editor holds as LF: what is saved is the host's.
+      final browser = FakeFileBrowser()
+        ..contents['/home/me/notes.txt'] = 'one\r\ntwo\r\n';
+      await _pumpEditor(tester, browser);
+
+      await _download(tester);
+      expect(find.text(_unsavedWarning), findsNothing);
+      expect(picker.saved?.name, 'notes.txt');
+      expect(picker.saved?.bytes, utf8.encode('one\r\ntwo\r\n'));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Saved notes.txt'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('with unsaved edits, asks first and saves the host version',
+        (tester) async {
+      final picker = useFakePicker();
+      await _pumpEditor(tester, FakeFileBrowser());
+      _editor(tester).text = 'edited\n';
+      await tester.pumpAndSettle();
+
+      await _download(tester);
+      expect(find.text(_unsavedWarning), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(picker.saved, isNull);
+
+      await _download(tester);
+      await tester.tap(find.widgetWithText(FilledButton, 'Download'));
+      await tester.pumpAndSettle();
+      expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+      // The edit stays, still unsaved.
+      expect(_editor(tester).text, 'edited\n');
+      expect(_canSave(tester), isTrue);
+    });
+
+    testWidgets('a file opened with sudo the login may not read says so',
+        (tester) async {
+      final picker = useFakePicker();
+      final browser = SudoFakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          'Could not open: permission denied.',
+          fault: FileBrowserFault.permissionDenied,
+        )
+        ..sudoPassword = null;
+      await _pumpEditor(tester, browser);
+      await tester.tap(find.text('Open with sudo'));
+      await tester.pumpAndSettle();
+
+      await _download(tester);
+      expect(picker.saved, isNull);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.textContaining('a download does not go through sudo'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
   });
 
   group('markdown', () {

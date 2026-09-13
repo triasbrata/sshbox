@@ -13,6 +13,7 @@ import 'package:sshbox/src/ui/terminal_link.dart';
 import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
+import 'fake_file_picker.dart';
 
 /// The pages, driven by a filesystem that is not SFTP.
 ///
@@ -746,7 +747,7 @@ void main() {
 
   testWidgets('uploads what the phone picks into the folder it was asked for',
       (tester) async {
-    _usePicker().next = [_PhoneFile('photo.jpg'), _PhoneFile('song.mp3')];
+    useFakePicker().next = [_PhoneFile('photo.jpg'), _PhoneFile('song.mp3')];
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
@@ -763,7 +764,7 @@ void main() {
 
   testWidgets('a name already there asks: replace, keep both or skip',
       (tester) async {
-    _usePicker().next = [_PhoneFile('notes.txt')];
+    useFakePicker().next = [_PhoneFile('notes.txt')];
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
 
@@ -795,7 +796,7 @@ void main() {
   });
 
   testWidgets('an upload the host refuses says why', (tester) async {
-    _usePicker().next = [_PhoneFile('photo.jpg')];
+    useFakePicker().next = [_PhoneFile('photo.jpg')];
     const refused = 'Could not upload photo.jpg to /home/me/dev: '
         'permission denied.';
     final browser = FakeFileBrowser()
@@ -824,7 +825,7 @@ void main() {
 
   testWidgets('downloads a file through the save dialog, byte for byte',
       (tester) async {
-    final picker = _usePicker();
+    final picker = useFakePicker();
     await _pumpBrowser(tester, FakeFileBrowser());
 
     await _rowAction(tester, 'notes.txt', 'Download');
@@ -832,46 +833,6 @@ void main() {
     expect(picker.saved?.name, 'notes.txt');
     expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
   });
-}
-
-/// The phone's file picker and save dialog, answered without asking anyone.
-class _FakePicker extends FilePickerPlatform {
-  /// What the next pick hands over.
-  List<PlatformFile> next = const [];
-
-  /// What the save dialog was last handed.
-  ({String name, Uint8List bytes})? saved;
-
-  @override
-  Future<List<PlatformFile>> pickFiles({
-    String? dialogTitle,
-    String? initialDirectory,
-    FileType type = FileType.any,
-    List<String>? allowedExtensions,
-    Function(FilePickerStatus)? onFileLoading,
-    int compressionQuality = 0,
-    AndroidOptions androidOptions = const AndroidOptions(),
-    DarwinOptions darwinOptions = const DarwinOptions(),
-    WindowsOptions windowsOptions = const WindowsOptions(),
-    LinuxOptions linuxOptions = const LinuxOptions(),
-    WebOptions webOptions = const WebOptions(),
-  }) async => next;
-
-  @override
-  Future<Uri?> saveFile({
-    required String fileName,
-    required Uint8List bytes,
-    required String mimeType,
-    String? dialogTitle,
-    String? initialDirectory,
-    Function(FilePickerStatus)? onFileSaving,
-    WindowsOptions windowsOptions = const WindowsOptions(),
-    LinuxOptions linuxOptions = const LinuxOptions(),
-    WebOptions webOptions = const WebOptions(),
-  }) async {
-    saved = (name: fileName, bytes: bytes);
-    return Uri.parse('content://downloads/$fileName');
-  }
 }
 
 /// A file on the phone, as the picker hands one over: a copy with a path.
@@ -898,13 +859,4 @@ final class _PhoneFile extends PlatformFile {
 
   @override
   Stream<Uint8List> readAsByteStream() => const Stream.empty();
-}
-
-/// A [_FakePicker] in place of the phone's own until the test ends.
-_FakePicker _usePicker() {
-  final picker = _FakePicker();
-  final real = FilePickerPlatform.instance;
-  FilePickerPlatform.instance = picker;
-  addTearDown(() => FilePickerPlatform.instance = real);
-  return picker;
 }
