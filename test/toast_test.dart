@@ -10,10 +10,12 @@ void main() {
   late BuildContext context;
   final navigator = GlobalKey<NavigatorState>();
 
-  /// A screen in [mode], wrapped the way the app wraps its own.
+  /// A screen in [mode] showing [under], wrapped the way the app wraps its
+  /// own.
   Future<void> pumpApp(
     WidgetTester tester, {
     ThemeMode mode = ThemeMode.light,
+    Widget under = const SizedBox(),
   }) => tester.pumpWidget(
     ToastificationWrapper(
       config: toastConfig,
@@ -22,10 +24,11 @@ void main() {
         themeMode: mode,
         theme: ThemeData(brightness: Brightness.light),
         darkTheme: ThemeData(brightness: Brightness.dark),
+        builder: (context, child) => ToastLayer(child: child!),
         home: Builder(
           builder: (built) {
             context = built;
-            return const SizedBox();
+            return under;
           },
         ),
       ),
@@ -241,5 +244,96 @@ void main() {
       isFalse,
     );
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('a touch beside a toast, or between two, goes through to what '
+      'is under them; one on a toast does not', (tester) async {
+    var tabTaps = 0;
+    final through = <Offset>[];
+    await pumpApp(
+      tester,
+      under: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapUp: (details) => through.add(details.globalPosition),
+            ),
+          ),
+          // A tab, say: under the column the toasts stack in, beside them.
+          Positioned(
+            left: 100,
+            top: 16,
+            width: 120,
+            height: 48,
+            child: TextButton(
+              onPressed: () => tabTaps++,
+              child: const Text('Tab'),
+            ),
+          ),
+        ],
+      ),
+    );
+    showToast(context, 'Copied');
+    showToast(context, 'Saved notes.txt');
+    await slideIn(tester);
+
+    Rect drawnOn(String message) => tester.getRect(
+      find
+          .ancestor(of: find.text(message), matching: find.byType(Material))
+          .first,
+    );
+    final [upper, lower] = [drawnOn('Copied'), drawnOn('Saved notes.txt')]
+      ..sort((a, b) => a.top.compareTo(b.top));
+    final tab = tester.getCenter(find.text('Tab'));
+    final between = Offset(upper.center.dx, (upper.bottom + lower.top) / 2);
+    // Both where the package's list lies, which would take them, and on
+    // neither card.
+    final column = tester.getRect(find.byType(AnimatedList));
+    for (final point in [tab, between]) {
+      expect(column.contains(point), isTrue);
+      expect(upper.contains(point) || lower.contains(point), isFalse);
+    }
+
+    await tester.tap(find.text('Tab'));
+    expect(tabTaps, 1);
+    await tester.tapAt(between);
+    expect(through, [between]);
+
+    // On a toast, the toast has it.
+    await tester.tapAt(upper.center);
+    expect(through, [between]);
+    expect(tabTaps, 1);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets("a toast's own button still takes a tap, and a swipe still "
+      'sends it away', (tester) async {
+    await pumpApp(tester);
+    var retried = false;
+    showToast(
+      context,
+      'Upload failed: gone',
+      type: ToastificationType.error,
+      action: (label: 'Retry', onPressed: () => retried = true),
+    );
+    await slideIn(tester);
+
+    await tester.tap(find.text('Retry'));
+    expect(retried, isTrue);
+    // Long before its five seconds were up.
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(find.text('Upload failed: gone'), findsNothing);
+
+    // Up for a minute, so only the swipe can have sent it.
+    showToast(context, 'Saved notes.txt', duration: const Duration(minutes: 1));
+    await slideIn(tester);
+    await tester.fling(card('Saved notes.txt'), const Offset(600, 0), 2000);
+    // Its slide off and its fold away: a second or so, not its minute.
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(ToastCard), findsNothing);
   });
 }

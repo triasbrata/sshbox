@@ -226,7 +226,9 @@ class _SshboxAppState extends State<SshboxApp> {
                     ? Brightness.light
                     : Brightness.dark,
               ),
-              child: child!,
+              // Toasts over every page, taking only the touches that land on
+              // one.
+              child: ToastLayer(child: child!),
             ),
             home: TabsShell(
               repository: _repository,

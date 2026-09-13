@@ -769,6 +769,7 @@ void main() {
         ToastificationWrapper(
           config: toastConfig,
           child: MaterialApp(
+            builder: (context, child) => ToastLayer(child: child!),
             home: TabsShell(
               repository: HostRepository(_NoSecrets()),
               secrets: _NoSecrets(),

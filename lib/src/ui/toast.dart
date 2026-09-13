@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:toastification/toastification.dart';
 
 /// What a toast is about — info, success, warning or error — which picks its
@@ -19,8 +20,8 @@ const _errorDuration = Duration(seconds: 5);
 /// Three toasts at most, so a fourth pushes the oldest out rather than
 /// reaching down over the shell. They stack in the middle four fifths of the
 /// window, which is as wide as a long message gets before it wraps: the
-/// package's own fixed 400 would cut one short on a tablet, and the edges
-/// stay free to tap.
+/// package's own fixed 400 would cut one short on a tablet. What of that
+/// column no toast covers still takes a tap: see [ToastLayer].
 const toastConfig = ToastificationConfig(
   maxToastLimit: 3,
   itemWidth: double.infinity,
@@ -32,6 +33,60 @@ const toastConfig = ToastificationConfig(
 EdgeInsetsGeometry _column(BuildContext context, AlignmentGeometry _) {
   final side = MediaQuery.sizeOf(context).width / 10;
   return EdgeInsets.fromLTRB(side, 12, side, 0);
+}
+
+/// The overlay a [ToastLayer] draws toasts in, while there is one.
+final _layer = GlobalKey<OverlayState>();
+
+/// Where the app's toasts are drawn: an overlay of their own over [child],
+/// which takes a touch only where it lands on a toast.
+///
+/// The package stacks toasts in a list as wide as the column [toastConfig]
+/// gives it, and that list, like the hover region round each toast, takes
+/// every touch across the whole of it while a toast is up. Over the tab
+/// strip, a short "Copied" would eat the taps meant for most of the tabs.
+/// Here a touch beside a toast, or between two, goes through to what is
+/// underneath; one on a toast still reaches its button, its × and its swipe.
+///
+/// Laid over the app's navigator by `SshboxApp`. Without one, as in a test of
+/// a single page, toasts go to the root navigator's overlay instead.
+class ToastLayer extends StatelessWidget {
+  const ToastLayer({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      child,
+      _ToastsOnly(child: Overlay(key: _layer)),
+    ],
+  );
+}
+
+/// Takes a touch only where a [ToastCard]'s card is under it, and lets every
+/// other one through to what is beneath.
+class _ToastsOnly extends SingleChildRenderObjectWidget {
+  const _ToastsOnly({required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) => _RenderToastsOnly();
+}
+
+class _RenderToastsOnly extends RenderProxyBox {
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    // Tried once to see what is under the touch, and for real only if a card
+    // is.
+    final under = BoxHitTestResult();
+    return super.hitTest(under, position: position) &&
+        under.path.any((entry) {
+          final target = entry.target;
+          return target is RenderMetaData && target.metaData == ToastCard;
+        }) &&
+        super.hitTest(result, position: position);
+  }
 }
 
 /// The toasts still counting down, by what they say.
@@ -71,9 +126,12 @@ void showToast(
   _showing[message] = toastification.showCustom(
     context: context,
     // The top of the screen, not of whatever overlay the caller sits in: the
-    // root navigator's, which the navigator's own context finds too, for a
-    // message that comes from no page.
-    overlayState: Navigator.of(context, rootNavigator: true).overlay,
+    // toasts' own layer where the app has one, and otherwise the root
+    // navigator's, which the navigator's own context finds too, for a message
+    // that comes from no page.
+    overlayState:
+        _layer.currentState ??
+        Navigator.of(context, rootNavigator: true).overlay,
     alignment: Alignment.topCenter,
     autoCloseDuration:
         duration ??
@@ -126,83 +184,87 @@ class ToastCard extends StatelessWidget {
       dragToClose: true,
       callbacks: const ToastificationCallbacks(),
       child: Center(
-        child: Material(
-          color: scheme.surfaceContainerHigh,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: scheme.outlineVariant),
-          ),
-          clipBehavior: Clip.antiAlias,
-          // As wide as the row of what it says, with the countdown laid along
-          // the bottom of whatever width that came to.
-          child: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsetsDirectional.fromSTEB(16, 8, 4, 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(_icon(type), color: ink),
-                    const SizedBox(width: 12),
-                    Flexible(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            heading,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              color: ink,
-                            ),
-                          ),
-                          if (rest.isNotEmpty)
+        // What a [ToastLayer] lets a touch land on.
+        child: MetaData(
+          metaData: ToastCard,
+          child: Material(
+            color: scheme.surfaceContainerHigh,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: scheme.outlineVariant),
+            ),
+            clipBehavior: Clip.antiAlias,
+            // As wide as the row of what it says, with the countdown laid
+            // along the bottom of whatever width that came to.
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsetsDirectional.fromSTEB(16, 8, 4, 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(_icon(type), color: ink),
+                      const SizedBox(width: 12),
+                      Flexible(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Text(
-                              rest.join('\n'),
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: ink.withValues(alpha: .8),
+                              heading,
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                color: ink,
                               ),
                             ),
-                        ],
+                            if (rest.isNotEmpty)
+                              Text(
+                                rest.join('\n'),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: ink.withValues(alpha: .8),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
-                    ),
-                    if (action != null)
-                      TextButton(
-                        style: TextButton.styleFrom(foregroundColor: ink),
-                        onPressed: () {
-                          close();
-                          action.onPressed();
-                        },
-                        child: Text(action.label),
+                      if (action != null)
+                        TextButton(
+                          style: TextButton.styleFrom(foregroundColor: ink),
+                          onPressed: () {
+                            close();
+                            action.onPressed();
+                          },
+                          child: Text(action.label),
+                        ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: close,
+                        icon: Icon(
+                          Icons.close,
+                          size: 18,
+                          color: ink.withValues(alpha: .6),
+                        ),
                       ),
-                    IconButton(
-                      tooltip: 'Close',
-                      onPressed: close,
-                      icon: Icon(
-                        Icons.close,
-                        size: 18,
-                        color: ink.withValues(alpha: .6),
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: ToastTimerAnimationBuilder(
-                  item: item,
-                  builder: (context, elapsed, child) => FractionallySizedBox(
-                    alignment: AlignmentDirectional.centerStart,
-                    widthFactor: 1 - elapsed,
-                    child: SizedBox(
-                      height: 2,
-                      child: ColoredBox(color: ink.withValues(alpha: .3)),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: ToastTimerAnimationBuilder(
+                    item: item,
+                    builder: (context, elapsed, child) => FractionallySizedBox(
+                      alignment: AlignmentDirectional.centerStart,
+                      widthFactor: 1 - elapsed,
+                      child: SizedBox(
+                        height: 2,
+                        child: ColoredBox(color: ink.withValues(alpha: .3)),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
