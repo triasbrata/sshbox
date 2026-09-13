@@ -34,6 +34,12 @@ abstract class SecretStore {
 ///
 /// `first_unlock_this_device` on iOS keeps keys off iCloud Keychain and makes
 /// them unavailable until the device has been unlocked once after boot.
+///
+/// macOS uses the login keychain rather than the data protection keychain,
+/// which is the plugin's default. The data protection keychain only answers an
+/// app signed with a provisioning profile that grants it a keychain access
+/// group; the macOS build from tools/build_apple.sh is signed ad hoc, so every
+/// read and write there would fail with errSecMissingEntitlement.
 class KeystoreSecretStore implements SecretStore {
   KeystoreSecretStore([FlutterSecureStorage? storage])
       : _storage = storage ??
@@ -41,6 +47,10 @@ class KeystoreSecretStore implements SecretStore {
               aOptions: AndroidOptions(),
               iOptions: IOSOptions(
                 accessibility: KeychainAccessibility.first_unlock_this_device,
+              ),
+              mOptions: MacOsOptions(
+                accessibility: KeychainAccessibility.first_unlock_this_device,
+                usesDataProtectionKeychain: false,
               ),
             );
 

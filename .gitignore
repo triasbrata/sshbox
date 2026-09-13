@@ -32,6 +32,10 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# tools/build_apple.sh writes its packages here.
+/dist/
+# fvm's link to the SDK pinned in .fvmrc.
+.fvm/
 
 # Symbolication related
 app.*.symbols

@@ -7,6 +7,10 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
 import 'package:xterm2/xterm.dart';
 
+/// Where tmux may live: Homebrew on Apple silicon puts it in /opt/homebrew/bin,
+/// which a bare environment's PATH would otherwise miss.
+const _path = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
+
 /// Runs what a tab runs on its host, here, the way an SSH exec channel runs
 /// it: no tty, a bare environment, and a tmux server of its own under [dir]
 /// so the machine's own sessions are never touched.
@@ -20,7 +24,7 @@ import 'package:xterm2/xterm.dart';
 Future<(Process, CommandChannel)> _start(
   String name,
   Directory dir, {
-  String path = '/usr/local/bin:/usr/bin:/bin',
+  String path = _path,
   Map<String, String> environment = const {},
 }) async {
   final process = await Process.start(
@@ -52,7 +56,7 @@ Future<ProcessResult> _tmux(Directory dir, List<String> args) => Process.run(
   'tmux',
   args,
   environment: {
-    'PATH': '/usr/local/bin:/usr/bin:/bin',
+    'PATH': _path,
     'TMUX_TMPDIR': dir.path,
   },
   includeParentEnvironment: false,
