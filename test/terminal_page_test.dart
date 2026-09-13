@@ -218,6 +218,45 @@ void main() {
     expect(session.terminal.viewWidth, lessThan(columns));
   });
 
+  testWidgets('a key hidden in Settings leaves the open terminal\'s bar at '
+      'once', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    addTearDown(() => keyBarSettings.value = KeyBarSettings.defaults);
+    final session = LiveSession(
+      host: const HostProfile(
+        id: 'host-1',
+        label: 'box',
+        host: '10.0.2.2',
+        username: 'me',
+      ),
+      transport: (_, _) => _Shell(),
+    );
+    addTearDown(session.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TerminalPage(
+          session: session,
+          secrets: _NoSecrets(),
+          onOpenFile: (_, {line}) {},
+          onOpenWeb: (_) {},
+          onSaveFileRoot: (_) async {},
+        ),
+      ),
+    );
+    await session.connect(secrets: _NoSecrets());
+    await tester.pump();
+    expect(find.text('ESC'), findsOneWidget);
+
+    await keyBarSettings.choose([
+      for (final item in KeyBarSettings.defaults)
+        item.id == 'esc' ? (id: 'esc', shown: false) : item,
+    ]);
+    await tester.pump();
+
+    expect(find.text('ESC'), findsNothing);
+    expect(find.text('TAB'), findsOneWidget);
+  });
+
   group('openUrl', () {
     /// Opens [url] on a phone that can open it only the [ways] given, and
     /// returns every way that was tried.

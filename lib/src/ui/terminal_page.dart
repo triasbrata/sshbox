@@ -526,30 +526,35 @@ class _TerminalPageState extends State<TerminalPage> {
         builder: (context, style, _) => _buildBody(style),
       ),
       // In the Scaffold's own slot rather than the body so it rides above the
-      // soft keyboard and the button below floats clear of it.
-      bottomNavigationBar: TerminalKeyBar(
-        controller: _keyBar,
-        terminal: _session.terminal,
-        onEmit: _send,
-        showKeys: _session.isConnected,
-        leading: [
-          IconButton(
-            tooltip: 'Browse files',
-            onPressed: (_session.isConnected && _session.canBrowseFiles)
-                ? _openFiles
-                : null,
-            icon: const Icon(Icons.folder_outlined),
-          ),
-          IconButton(
-            tooltip: 'Upload a file to /tmp',
-            onPressed: (_session.isConnected &&
-                    _session.canUploadFiles &&
-                    !_uploading)
-                ? _attachFile
-                : null,
-            icon: const Icon(Icons.attach_file),
-          ),
-        ],
+      // soft keyboard and the button below floats clear of it. Its keys are
+      // the ones Settings arranged, redrawn the moment they change there.
+      bottomNavigationBar: ValueListenableBuilder(
+        valueListenable: keyBarSettings,
+        builder: (context, _, _) => TerminalKeyBar(
+          controller: _keyBar,
+          terminal: _session.terminal,
+          onEmit: _send,
+          showKeys: _session.isConnected,
+          keys: keyBarSettings.shown,
+          leading: [
+            IconButton(
+              tooltip: 'Browse files',
+              onPressed: (_session.isConnected && _session.canBrowseFiles)
+                  ? _openFiles
+                  : null,
+              icon: const Icon(Icons.folder_outlined),
+            ),
+            IconButton(
+              tooltip: 'Upload a file to /tmp',
+              onPressed: (_session.isConnected &&
+                      _session.canUploadFiles &&
+                      !_uploading)
+                  ? _attachFile
+                  : null,
+              icon: const Icon(Icons.attach_file),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -251,10 +251,15 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     await tester.tap(copy);
-    await tester.pumpAndSettle();
+    // A frame for the toast's overlay, one to start its slide, and the slide.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
     expect(copied, [
       {'text': 'device-token'},
     ]);
     expect(find.text('FCM token copied'), findsOneWidget);
+    // The toast's countdown run out, rather than left running past the test.
+    await tester.pumpAndSettle();
   });
 }

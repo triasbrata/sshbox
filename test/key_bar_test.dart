@@ -206,7 +206,6 @@ void main() {
       addTearDown(scroll.dispose);
 
       await tester.pumpWidget(MaterialApp(
-        // For the snack bar Copy puts up.
         home: Scaffold(
           body: SwipeKeyPad(
             terminal: terminal,
@@ -400,7 +399,10 @@ void main() {
       expect(find.text('Select all'), findsOneWidget);
 
       await tester.tap(find.text('Copy'));
+      // A frame for the toast's overlay, one to start its slide, and the slide.
       await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
 
       expect(copied, [
         {'text': 'line'},
@@ -408,6 +410,8 @@ void main() {
       expect(selection.selection, isNull);
       expect(find.text('Copied'), findsOneWidget);
       expect(find.text('Copy'), findsNothing);
+      // The toast's countdown run out, rather than left running past the test.
+      await tester.pumpAndSettle();
     });
 
     testWidgets('a plain drag scrolls and sends nothing', (tester) async {
