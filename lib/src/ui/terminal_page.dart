@@ -561,8 +561,12 @@ class _TerminalPageState extends State<TerminalPage> {
     if (error != null && !_session.isConnected) {
       return ConnectionError(
         message: error,
-        onRetry: () =>
-            connectInSheet(context, _session, secrets: widget.secrets),
+        onRetry: () => connectInSheet(
+          context,
+          _session,
+          secrets: widget.secrets,
+          inTab: widget.onOpenWeb,
+        ),
       );
     }
 
@@ -593,6 +597,26 @@ class _TerminalPageState extends State<TerminalPage> {
               style,
               focused: focused,
               autoResize: false,
+            ),
+          ),
+        // Still at a sign-in once the connect sheet has sent it to a web
+        // tab: the way back to that tab, rather than a blank terminal. Not
+        // while a sheet is over the page, showing its own.
+        if (_session.authUrl case final url?
+            when _session.connecting &&
+                ModalRoute.of(context)?.isCurrent != false)
+          ColoredBox(
+            // The page's own surface, which the prompt's text reads on in
+            // either brightness.
+            color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.8),
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: AuthCheckPrompt(
+                  url: url,
+                  onOpen: () => widget.onOpenWeb(url),
+                ),
+              ),
             ),
           ),
         // Along the terminal's bottom edge, just above the key bar, rather

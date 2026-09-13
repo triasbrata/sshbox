@@ -6,92 +6,7 @@ import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
-/// Stands in for Android System WebView, which does not run under
-/// `flutter test`: it loads nothing and remembers what it was asked to, and
-/// the test plays the page's side through the callbacks it was handed.
-class _Platform extends WebViewPlatform {
-  late _View view;
-
-  @override
-  PlatformWebViewController createPlatformWebViewController(
-    PlatformWebViewControllerCreationParams params,
-  ) => view = _View(params);
-
-  @override
-  PlatformNavigationDelegate createPlatformNavigationDelegate(
-    PlatformNavigationDelegateCreationParams params,
-  ) => _Delegate(params);
-
-  @override
-  PlatformWebViewWidget createPlatformWebViewWidget(
-    PlatformWebViewWidgetCreationParams params,
-  ) => _Widget(params);
-}
-
-class _View extends PlatformWebViewController {
-  _View(super.params) : super.implementation();
-
-  final loaded = <Uri>[];
-  late _Delegate page;
-  String? title;
-
-  @override
-  Future<void> setJavaScriptMode(JavaScriptMode javaScriptMode) async {}
-
-  @override
-  Future<void> setPlatformNavigationDelegate(
-    PlatformNavigationDelegate handler,
-  ) async => page = handler as _Delegate;
-
-  @override
-  Future<void> loadRequest(LoadRequestParams params) async =>
-      loaded.add(params.uri);
-
-  @override
-  Future<bool> canGoBack() async => false;
-
-  @override
-  Future<bool> canGoForward() async => false;
-
-  @override
-  Future<String?> currentUrl() async => '${loaded.last}';
-
-  @override
-  Future<String?> getTitle() async => title;
-}
-
-class _Delegate extends PlatformNavigationDelegate {
-  _Delegate(super.params) : super.implementation();
-
-  late NavigationRequestCallback navigate;
-  late PageEventCallback started;
-  late PageEventCallback finished;
-
-  @override
-  Future<void> setOnNavigationRequest(NavigationRequestCallback c) async =>
-      navigate = c;
-
-  @override
-  Future<void> setOnPageStarted(PageEventCallback c) async => started = c;
-
-  @override
-  Future<void> setOnPageFinished(PageEventCallback c) async => finished = c;
-
-  @override
-  Future<void> setOnProgress(ProgressCallback c) async {}
-
-  @override
-  Future<void> setOnUrlChange(UrlChangeCallback c) async {}
-}
-
-class _Widget extends PlatformWebViewWidget {
-  _Widget(super.params) : super.implementation();
-
-  /// Holding focus, as the real view does once the page has been touched.
-  @override
-  Widget build(BuildContext context) =>
-      const Focus(autofocus: true, child: SizedBox.expand());
-}
+import 'fake_web_view.dart';
 
 /// Opens everything, and remembers how it was asked to.
 class _Launcher extends UrlLauncherPlatform {
@@ -108,12 +23,12 @@ class _Launcher extends UrlLauncherPlatform {
 }
 
 void main() {
-  late _Platform platform;
+  late FakeWebViewPlatform platform;
   late _Launcher launcher;
   late List<(Uri, String?)> reported;
 
   Future<void> pumpPage(WidgetTester tester, String url) async {
-    WebViewPlatform.instance = platform = _Platform();
+    WebViewPlatform.instance = platform = FakeWebViewPlatform();
     UrlLauncherPlatform.instance = launcher = _Launcher();
     reported = [];
     await tester.pumpWidget(

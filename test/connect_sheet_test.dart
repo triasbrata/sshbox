@@ -12,8 +12,12 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/connect_sheet.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:sshbox/src/ui/web_page.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
+
+import 'fake_web_view.dart';
 
 class _NoSecrets implements SecretStore {
   @override
@@ -49,7 +53,9 @@ class _Host implements SessionTransport, TerminalSession {
 
   /// The key it shows. Null for a host whose key is not asked about.
   String? fingerprint;
-  final Completer<void>? signIn;
+
+  /// Replaced by a test to hold the next connect at a sign-in of its own.
+  Completer<void>? signIn;
   bool refuse;
 
   /// This attempt's, as the session hands them to SSH.
@@ -128,6 +134,8 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    // What a sign-in's web tab is drawn by.
+    WebViewPlatform.instance = FakeWebViewPlatform();
     manager = SessionManager();
   });
 
@@ -224,28 +232,125 @@ void main() {
     expect(await pinned(), isNull);
   });
 
-  testWidgets('a sign-in shows its link in the sheet, opens it in the '
-      'browser over the app, and carries on once done', (tester) async {
+  testWidgets("a sign-in's Open link closes the sheet and carries on: the "
+      'session gets its tab and the link a web tab beside it, shown, which '
+      'closes once through; on Reconnect it opens beside the same tab', (
+    tester,
+  ) async {
     final launcher = _Launcher();
     UrlLauncherPlatform.instance = launcher;
-    final signIn = Completer<void>();
-    await openBox(tester, _Host(signIn: signIn));
+    final host = _Host(signIn: Completer());
+    await openBox(tester, host);
 
     expect(find.text('This host wants you to sign in'), findsOneWidget);
     expect(find.text(_signInUrl), findsOneWidget);
     expect(manager.sessions, isEmpty);
 
     await tester.tap(find.text('Open link'));
+    await tester.pumpAndSettle();
+
+    final session = (await opening)!;
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(session.connecting, isTrue);
+    expect(manager.sessions, [session]);
+    final page = session.webTabs.single;
+    expect(page.url, Uri.parse(_signInUrl));
+    expect(manager.activeWeb, same(page));
+    expect(find.byType(WebPage), findsOneWidget);
+    // In a tab of the app's own, not the phone's browser: the tab's Open in
+    // browser is there for a provider that refuses a web view.
+    expect(launcher.tried, isEmpty);
+
+    host.signIn!.complete();
+    await tester.pumpAndSettle();
+
+    // Back in the shell it was signing in for, which is told the size its
+    // page was laid out at while it waited.
+    expect(session.isConnected, isTrue);
+    expect(session.webTabs, isEmpty);
+    expect(manager.activeId, session.id);
+    expect(manager.activeKind, TabKind.terminal);
+    expect(find.text('This host wants you to sign in'), findsNothing);
+    final terminal = session.terminal;
+    expect(host.sizes.first, (80, 24));
+    expect(host.sizes.last, (terminal.viewWidth, terminal.viewHeight));
+    expect(host.sizes.last, isNot((80, 24)));
+
+    // The shell drops, and the host asks again.
+    host
+      ..signIn = Completer()
+      ..status.value = SessionStatus.closed;
     await tester.pump();
-    // There is no tab yet to put a web tab beside.
-    expect(launcher.tried, [
-      (_signInUrl, PreferredLaunchMode.inAppBrowserView),
-    ]);
+    await tester.tap(find.byTooltip('Reconnect'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open link'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(manager.sessions, [session]);
+    expect(manager.activeWeb, same(session.webTabs.single));
+
+    host.signIn!.complete();
+    await tester.pumpAndSettle();
+    expect(session.isConnected, isTrue);
+    expect(session.webTabs, isEmpty);
+    expect(manager.activeKind, TabKind.terminal);
+  });
+
+  testWidgets('closing the sign-in tab does not give the connect up: the '
+      'shell shows the sign-in, and its Open link opens the tab again', (
+    tester,
+  ) async {
+    final signIn = Completer<void>();
+    await openBox(tester, _Host(signIn: signIn));
+    await tester.tap(find.text('Open link'));
+    await tester.pumpAndSettle();
+    final session = (await opening)!;
+
+    await tester.tap(find.byTooltip('Close login.tailscale.com'));
+    await tester.pumpAndSettle();
+
+    expect(session.webTabs, isEmpty);
+    expect(session.connecting, isTrue);
+    expect(manager.activeId, session.id);
+    expect(manager.activeKind, TabKind.terminal);
+    expect(find.text('This host wants you to sign in'), findsOneWidget);
+
+    await tester.tap(find.text('Open link'));
+    await tester.pumpAndSettle();
+    expect(manager.activeWeb, same(session.webTabs.single));
 
     signIn.complete();
     await tester.pumpAndSettle();
-    expect(manager.sessions, [await opening]);
+    expect(session.isConnected, isTrue);
+    expect(session.webTabs, isEmpty);
+    expect(manager.activeKind, TabKind.terminal);
     expect(find.text('This host wants you to sign in'), findsNothing);
+  });
+
+  testWidgets('closing the shell tab while it waits on a sign-in disposes '
+      'the session, and the connection that comes through after is let go', (
+    tester,
+  ) async {
+    final signIn = Completer<void>();
+    final host = _Host(signIn: signIn);
+    await openBox(tester, host);
+    await tester.tap(find.text('Open link'));
+    await tester.pumpAndSettle();
+    final session = (await opening)!;
+
+    await tester.tap(find.byTooltip('Close box'));
+    await tester.pumpAndSettle();
+    expect(manager.sessions, isEmpty);
+    expect(
+      () => ChangeNotifier.debugAssertNotDisposed(session),
+      throwsFlutterError,
+    );
+
+    signIn.complete();
+    await tester.pump();
+    expect(host.attempts, 1);
+    expect(host.disposed, isTrue);
   });
 
   testWidgets('closed while it waits on a sign-in, it gets no tab, and the '

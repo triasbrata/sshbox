@@ -203,9 +203,13 @@ class _TabsShellState extends State<TabsShell> {
                 ),
               },
               // The connect sheet, over the tab, as the terminal page's own
-              // Try again opens it.
-              onReconnect: (session) =>
-                  connectInSheet(context, session, secrets: widget.secrets),
+              // Try again opens it; a sign-in opens beside the tab.
+              onReconnect: (session) => connectInSheet(
+                context,
+                session,
+                secrets: widget.secrets,
+                inTab: (url) => widget.sessions.openWeb(session.id, url),
+              ),
               // What a tap in the host list does: another shell on the host,
               // added at the end of the strip and shown.
               onDuplicate: widget.onOpenHost,

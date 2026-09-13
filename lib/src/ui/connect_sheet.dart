@@ -6,13 +6,14 @@ import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/session_manager.dart';
-import 'terminal_page.dart' show ConnectionError, openUrl;
+import 'terminal_page.dart' show ConnectionError;
 
 /// Another terminal on [host], connected in a sheet and given its tab by
-/// [sessions] only once it is up: what a tap on a host's card does, and a
-/// notification tap for a host with nothing open. Null when the sheet was
-/// closed first: the session is let go, and never had a tab. [transport] is
-/// a test's, as [SessionManager.create] takes one.
+/// [sessions] once it is up, or once its sign-in has gone to a web tab beside
+/// it: what a tap on a host's card does, and a notification tap for a host
+/// with nothing open. Null when the sheet was closed first: the session is
+/// let go, and never had a tab. [transport] is a test's, as
+/// [SessionManager.create] takes one.
 Future<LiveSession?> openInSheet(
   BuildContext context,
   SessionManager sessions,
@@ -21,11 +22,21 @@ Future<LiveSession?> openInSheet(
   TransportMaker? transport,
 }) async {
   final session = sessions.create(host, transport: transport);
-  if (!await connectInSheet(context, session, secrets: secrets)) {
+  final kept = await connectInSheet(
+    context,
+    session,
+    secrets: secrets,
+    // A tab of its own first, for its sign-in's to open beside.
+    inTab: (url) => sessions
+      ..add(session)
+      ..openWeb(session.id, url),
+  );
+  if (!kept) {
     session.dispose();
     return null;
   }
-  sessions.add(session);
+  // Up in the sheet. One sent to sign in has its tab already.
+  if (!sessions.sessions.contains(session)) sessions.add(session);
   return session;
 }
 
@@ -34,23 +45,34 @@ Future<LiveSession?> openInSheet(
 /// is going — a host key to rule on, a sign-in to finish, or why it failed,
 /// with Try again — and closes by itself once the shell is up.
 ///
-/// True once connected. Closed before that — swiped away, Close, or Cancel
-/// on a host key — the connect is given up: see [LiveSession.abandon].
+/// A sign-in's Open link closes it too, and the connect carries on without
+/// it: [inTab] opens the link in a web tab beside the session's shell, which
+/// closes itself once the session is through — see [LiveSession.openWeb].
+///
+/// True once connected, or carrying on at a sign-in. Closed before that —
+/// swiped away, Close, or Cancel on a host key — the connect is given up: see
+/// [LiveSession.abandon].
 Future<bool> connectInSheet(
   BuildContext context,
   LiveSession session, {
   required SecretStore secrets,
+  required void Function(Uri url) inTab,
 }) async {
-  final connected = await showModalBottomSheet<bool>(
+  final kept = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
     useSafeArea: true,
     builder: (_) => _ConnectSheet(session: session, secrets: secrets),
   );
-  if (connected == true) return true;
-  session.abandon();
-  return false;
+  if (kept != true) {
+    session.abandon();
+    return false;
+  }
+  // Closed by Open link, with the connect still going: its sign-in.
+  final url = session.authUrl;
+  if (session.connecting && url != null) inTab(url);
+  return true;
 }
 
 /// Asks in a sheet of its own whether to trust a host key that is not the
@@ -182,7 +204,12 @@ class _ConnectSheetState extends State<_ConnectSheet> {
               onClose: () => Navigator.of(context).pop(false),
             )
           else if (url != null)
-            _AuthCheckPrompt(url: url)
+            // Closed with a yes: the connect carries on, and the link opens
+            // beside the session's tab — see [connectInSheet].
+            AuthCheckPrompt(
+              url: url,
+              onOpen: () => Navigator.of(context).pop(true),
+            )
           else
             Row(
               children: [
@@ -284,17 +311,22 @@ class _HostKeyPrompt extends StatelessWidget {
 }
 
 /// Shown while a server waits for the user to prove who they are somewhere
-/// else — Tailscale SSH's check, for instance. The connection is still open
-/// behind it, and finishing the sign-in is what lets it through, so there is
-/// nothing to submit here: the sheet carries on by itself.
+/// else — Tailscale SSH's check, for instance — in the connect sheet, and on
+/// the shell's page while it still waits once the sheet has gone. The
+/// connection is still open behind it, and finishing the sign-in is what
+/// lets it through, so there is nothing to submit here.
 ///
-/// Its link opens in the phone's browser, over the app, where Google accepts
-/// a sign-in it refuses inside an embedded web view, and Back returns to the
-/// sheet. There is no tab yet to open a web tab beside.
-class _AuthCheckPrompt extends StatelessWidget {
-  const _AuthCheckPrompt({required this.url});
+/// [onOpen] takes the link to a web tab beside the session's shell, where
+/// the user asked for it, and the connect carries on. Some identity
+/// providers, Google in particular, refuse to sign in inside an embedded web
+/// view; the tab's Open in browser is the way out then. Nothing here passes
+/// the web view off as a browser to get past that: the providers' policies
+/// forbid it.
+class AuthCheckPrompt extends StatelessWidget {
+  const AuthCheckPrompt({super.key, required this.url, required this.onOpen});
 
   final Uri url;
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -325,7 +357,7 @@ class _AuthCheckPrompt extends StatelessWidget {
         ),
         const SizedBox(height: 20),
         FilledButton.icon(
-          onPressed: () => openUrl(context, url),
+          onPressed: onOpen,
           icon: const Icon(Icons.open_in_new),
           label: const Text('Open link'),
         ),

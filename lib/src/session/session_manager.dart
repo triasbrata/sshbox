@@ -240,10 +240,15 @@ class LiveSession extends ChangeNotifier {
 
   /// A link already showing in one of this session's tabs returns that tab
   /// rather than opening a second, as a file does.
+  ///
+  /// The session's own sign-in link, opened while it waits at that sign-in,
+  /// is the sign-in prompt's Open link, in the connect sheet or on the
+  /// shell's page. Its tab closes once the session is through, and whoever
+  /// was still on it lands back in the shell they were signing in for.
   WebTab openWeb(Uri url) {
     final open = _webTabs.where((tab) => tab.url == url).firstOrNull;
     if (open != null) return open;
-    final tab = WebTab._(url);
+    final tab = WebTab._(url).._signIn = _connecting && url == _authUrl;
     _webTabs.add(tab);
     _notify();
     return tab;
@@ -348,14 +353,19 @@ class LiveSession extends ChangeNotifier {
           'LC_SSHBOX_HOST_ID': host.id,
         },
       };
-      Future<TerminalSession> open({required bool shell}) => transport.connect(
-        host: host,
-        secrets: secrets,
-        columns: _size.$1,
-        rows: _size.$2,
-        shell: shell,
-        environment: environment,
-      );
+      // What the shell is opened at, to be put right once it is up.
+      var opened = _size;
+      Future<TerminalSession> open({required bool shell}) {
+        opened = _size;
+        return transport.connect(
+          host: host,
+          secrets: secrets,
+          columns: _size.$1,
+          rows: _size.$2,
+          shell: shell,
+          environment: environment,
+        );
+      }
 
       var session = await open(shell: !host.useTmux);
       final tmux = host.useTmux ? await _attachTmux(session) : null;
@@ -379,6 +389,11 @@ class LiveSession extends ChangeNotifier {
       _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
+      // A page laid out while this waited — at a sign-in, beside its web
+      // tab — had no shell yet to tell its size to.
+      if (_size != opened) session.resize(_size.$1, _size.$2, 0, 0);
+      // Through the sign-in: its page has done its work.
+      _webTabs.removeWhere((tab) => tab._signIn);
       _syncForwarding();
       unawaited(_fetchHostname());
       unawaited(_saveOs(secrets));
@@ -727,6 +742,9 @@ class WebTab {
   Uri _url;
   String? _title;
 
+  /// Opened by the session's sign-in — see [LiveSession.openWeb].
+  bool _signIn = false;
+
   /// Where the page is now: the link it opened at, until it moves on.
   Uri get url => _url;
 
@@ -865,6 +883,18 @@ class SessionManager extends ChangeNotifier {
     if (_activeWeb == web) select(id);
   }
 
+  /// Passes a session's change on to the tabs. A web tab the session closed
+  /// itself — a sign-in's, once the session is through it — lands on its
+  /// shell, as closing one by hand does, not on the host list.
+  void _onSessionChanged() {
+    final web = _activeWeb;
+    if (web != null && _active?.webTabs.contains(web) == false) {
+      select(_activeId);
+    } else {
+      notifyListeners();
+    }
+  }
+
   int get liveCount => _sessions.values.where((s) => s.isConnected).length;
 
   /// Every session open on this host, in tab order.
@@ -872,8 +902,9 @@ class SessionManager extends ChangeNotifier {
       _sessions.values.where((s) => s.host.id == hostId).toList();
 
   /// Another terminal on this host, with no tab yet: the connect sheet
-  /// connects it, and [add] gives it one once it is up. [transport] is a
-  /// test's, as [LiveSession] takes one.
+  /// connects it, and [add] gives it one once it is up, or once its sign-in
+  /// has gone to a web tab beside it. [transport] is a test's, as
+  /// [LiveSession] takes one.
   LiveSession create(HostProfile host, {TransportMaker? transport}) {
     late final LiveSession created;
     created = LiveSession(
@@ -888,7 +919,7 @@ class SessionManager extends ChangeNotifier {
 
   /// Gives [session] its tab, at the end of the strip, and shows it.
   void add(LiveSession session) {
-    session.addListener(notifyListeners);
+    session.addListener(_onSessionChanged);
     _sessions[session.id] = session;
     _active = session;
     _activeId = session.id;
@@ -923,7 +954,7 @@ class SessionManager extends ChangeNotifier {
     final index = ids.indexOf(id);
     final session = _sessions.remove(id);
     if (session == null) return;
-    session.removeListener(notifyListeners);
+    session.removeListener(_onSessionChanged);
     session.dispose();
 
     // Closing the tab you are looking at lands on its left-hand neighbour,
