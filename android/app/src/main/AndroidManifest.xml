@@ -100,6 +100,13 @@
             android:exported="false"
             android:stopWithTask="true" />
 
+        <!-- The small icon FCM gives a push that arrives with the app in the
+             background. The session keep-alive notification reads this same
+             entry, so both stay on one icon. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_jeansh" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
