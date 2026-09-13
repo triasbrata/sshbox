@@ -30,6 +30,10 @@ List<String> _barOrder(WidgetTester tester) {
     for (final MapEntry(key: id, value: key) in terminalKeys.entries)
       if (inBar(find.text(key.label)).evaluate().isNotEmpty)
         (tester.getCenter(inBar(find.text(key.label))).dx, id),
+    for (final MapEntry(key: id, value: key)
+        in keyBarSettings.customKeys.entries)
+      if (inBar(find.text(key.label)).evaluate().isNotEmpty)
+        (tester.getCenter(inBar(find.text(key.label))).dx, id),
   ]..sort((a, b) => a.$1.compareTo(b.$1));
   return [for (final (_, id) in placed) id];
 }
@@ -40,7 +44,12 @@ Future<void> _wide(WidgetTester tester) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
 }
 
-Future<void> _pumpBar(WidgetTester tester, List<String> keys) async {
+Future<void> _pumpBar(
+  WidgetTester tester,
+  List<String> keys, {
+  Map<String, CustomKey> customKeys = const {},
+  void Function(String data)? onEmit,
+}) async {
   await _wide(tester);
   await tester.pumpWidget(
     MaterialApp(
@@ -48,13 +57,27 @@ Future<void> _pumpBar(WidgetTester tester, List<String> keys) async {
         bottomNavigationBar: TerminalKeyBar(
           controller: KeyBarController(),
           terminal: Terminal(),
-          onEmit: (_) {},
+          onEmit: onEmit ?? (_) {},
           keys: keys,
+          customKeys: customKeys,
         ),
       ),
     ),
   );
 }
+
+/// Opens Add key and picks [choice] from it.
+Future<void> _addFromSheet(WidgetTester tester, String choice) async {
+  await tester.tap(find.text('Add key'));
+  await tester.pumpAndSettle();
+  await tester.tap(
+    find.descendant(of: find.byType(BottomSheet), matching: find.text(choice)),
+  );
+  // Settled, which also sits out the toast that says where it went.
+  await tester.pumpAndSettle();
+}
+
+Finder _field(String label) => find.widgetWithText(TextFormField, label);
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -203,7 +226,7 @@ void main() {
       await keyBarSettings.load();
       expect(keyBarSettings.value, KeyBarSettings.defaults);
 
-      await _pumpBar(tester, keyBarSettings.shown);
+      await _pumpBar(tester, keyBarSettings.keys);
       expect(_barOrder(tester), _today);
     });
 
@@ -223,22 +246,43 @@ void main() {
           {'id': 'divider', 'shown': true},
           {'id': 'esc', 'shown': true},
           {'id': 'tab', 'shown': true},
+          {'id': 'custom:a', 'shown': true, 'label': 'LS', 'send': r'ls\n'},
+          // A custom key with nothing to type is no key.
+          {'id': 'custom:b', 'shown': true, 'label': 'X'},
         ]),
       });
       await keyBarSettings.load();
       expect(keyBarSettings.value, [
-        (id: 'tab', shown: false),
-        (id: 'divider', shown: true),
-        (id: 'esc', shown: true),
+        (id: 'divider', custom: null),
+        (id: 'esc', custom: null),
+        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+        // TAB stays off, as its first entry has it; the rest are new to it.
         for (final id in terminalKeyBarDefault)
           if (!const {'tab', 'divider', 'esc'}.contains(id))
-            (id: id, shown: true),
+            (id: id, custom: null),
       ]);
 
       // One this build cannot read at all is the bar as it ships.
       SharedPreferences.setMockInitialValues({'sshbox.keyBar.v1': '[{oops'});
       await keyBarSettings.load();
       expect(keyBarSettings.value, KeyBarSettings.defaults);
+    });
+
+    test('a key hidden by the switch before is off the bar now', () async {
+      // v1's list as the switches left it: ESC, and the divider after ALT,
+      // switched off.
+      const hidden = {0, 4};
+      SharedPreferences.setMockInitialValues({
+        'sshbox.keyBar.v1': jsonEncode([
+          for (final (i, id) in terminalKeyBarDefault.indexed)
+            {'id': id, 'shown': !hidden.contains(i)},
+        ]),
+      });
+      await keyBarSettings.load();
+      expect(keyBarSettings.keys, [
+        for (final (i, id) in terminalKeyBarDefault.indexed)
+          if (!hidden.contains(i)) id,
+      ]);
     });
 
     testWidgets('Keyboard › Key bar opens every item under a preview', (
@@ -263,27 +307,191 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.descendant(of: esc, matching: find.byType(Switch)),
+        find.descendant(of: esc, matching: find.byTooltip('Remove')),
         findsOneWidget,
       );
+      // Taken off rather than hidden: no switch is left.
+      expect(find.byType(Switch), findsNothing);
+      expect(find.text('Add key'), findsOneWidget);
     });
 
-    testWidgets('a key switched off leaves the bar, and stays off', (
-      tester,
-    ) async {
+    testWidgets('a key removed leaves the bar and stays off, and Add key puts '
+        'it back on the end', (tester) async {
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
       final esc = find.widgetWithText(ListTile, 'ESC');
 
-      await tester.tap(find.descendant(of: esc, matching: find.byType(Switch)));
+      await tester.tap(find.descendant(of: esc, matching: find.byTooltip('Remove')));
       await tester.pump();
 
       expect(_barOrder(tester), [..._today]..remove('esc'));
-      // Its row stays, in its place, to switch back on.
-      expect(esc, findsOneWidget);
+      expect(esc, findsNothing);
       final prefs = await SharedPreferences.getInstance();
       final saved = jsonDecode(prefs.getString('sshbox.keyBar.v1')!) as List;
-      expect(saved.first, {'id': 'esc', 'shown': false});
+      expect(saved, contains(equals({'id': 'esc', 'shown': false})));
+      // Not taken, at the next start, for a key a later version added.
+      await keyBarSettings.load();
+      expect(keyBarSettings.keys, isNot(contains('esc')));
+
+      await tester.tap(find.text('Add key'));
+      await tester.pumpAndSettle();
+      // Offered as the bar draws it, and alone: the rest are on the bar.
+      final offered = find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(KeyButton),
+      );
+      expect(offered, findsOneWidget);
+      expect(
+        find.descendant(of: offered, matching: find.text('ESC')),
+        findsOneWidget,
+      );
+      await tester.tap(offered);
+      await tester.pumpAndSettle();
+
+      expect(keyBarSettings.keys.last, 'esc');
+      expect(_barOrder(tester), [..._today]..remove('esc')..add('esc'));
+    });
+
+    testWidgets('a divider goes on as many times as you like', (tester) async {
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+
+      await _addFromSheet(tester, 'Divider');
+      await _addFromSheet(tester, 'Divider');
+
+      expect(keyBarSettings.keys, [
+        ...terminalKeyBarDefault,
+        keyBarDivider,
+        keyBarDivider,
+      ]);
+    });
+
+    testWidgets('a key of your own, made in the form, joins the bar and types '
+        'what it says', (tester) async {
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+
+      await _addFromSheet(tester, 'Custom key…');
+      await tester.enterText(_field('Label'), 'F5');
+      await tester.enterText(_field('Sends'), r'\e[15~');
+      await tester.tap(find.text('Add'));
+      await tester.pumpAndSettle();
+
+      final id = keyBarSettings.keys.last;
+      expect(id, startsWith('custom:'));
+      expect(keyBarSettings.customKeys, {id: (label: 'F5', send: r'\e[15~')});
+      expect(_barOrder(tester).last, id);
+      // Saved as typed, for the form to show back as it was written.
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getString('sshbox.keyBar.v1')!) as List;
+      expect(
+        saved,
+        contains(
+          equals({'id': id, 'shown': true, 'label': 'F5', 'send': r'\e[15~'}),
+        ),
+      );
+
+      // A terminal's bar sends it decoded.
+      final sent = <String>[];
+      await _pumpBar(
+        tester,
+        keyBarSettings.keys,
+        customKeys: keyBarSettings.customKeys,
+        onEmit: sent.add,
+      );
+      await tester.tap(find.text('F5'));
+      expect(sent, ['\x1b[15~']);
+    });
+
+    testWidgets('the form refuses a key with no label, or an escape it does '
+        'not know, and cuts a long label to fit', (tester) async {
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+      await _addFromSheet(tester, 'Custom key…');
+
+      await tester.tap(find.text('Add'));
+      await tester.pump();
+      expect(find.text('Give the key a label'), findsOneWidget);
+      expect(find.text('Type what the key sends'), findsOneWidget);
+
+      await tester.enterText(_field('Label'), 'LISTING!!');
+      await tester.enterText(_field('Sends'), r'ls\q');
+      await tester.tap(find.text('Add'));
+      await tester.pump();
+      expect(find.textContaining(r'Unknown escape \q'), findsOneWidget);
+      // Still open, and nothing added.
+      expect(find.text('New custom key'), findsOneWidget);
+      expect(keyBarSettings.keys, terminalKeyBarDefault);
+
+      await tester.enterText(_field('Sends'), r'ls\n');
+      await tester.tap(find.text('Add'));
+      await tester.pumpAndSettle();
+      expect(keyBarSettings.customKeys.values, [
+        (label: 'LISTING!', send: r'ls\n'),
+      ]);
+    });
+
+    testWidgets('a tap on a key of your own opens it in the form to change', (
+      tester,
+    ) async {
+      await keyBarSettings.choose([
+        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+        ...KeyBarSettings.defaults,
+      ]);
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+
+      await tester.tap(find.widgetWithText(ListTile, 'LS'));
+      await tester.pumpAndSettle();
+      expect(find.text('Change custom key'), findsOneWidget);
+      // As it was typed, escapes and all.
+      expect(
+        tester.widget<TextFormField>(_field('Sends')).controller!.text,
+        r'ls\n',
+      );
+      await tester.enterText(_field('Sends'), r'ls -la\n');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(keyBarSettings.value.first, (
+        id: 'custom:a',
+        custom: (label: 'LS', send: r'ls -la\n'),
+      ));
+      final sent = <String>[];
+      await _pumpBar(
+        tester,
+        keyBarSettings.keys,
+        customKeys: keyBarSettings.customKeys,
+        onEmit: sent.add,
+      );
+      await tester.tap(find.text('LS'));
+      expect(sent, ['ls -la\r']);
+    });
+
+    testWidgets('a key of your own removed is deleted, with an Undo', (
+      tester,
+    ) async {
+      const ls = (id: 'custom:a', custom: (label: 'LS', send: r'ls\n'));
+      await keyBarSettings.choose([ls, ...KeyBarSettings.defaults]);
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+
+      await tester.tap(
+        find.descendant(
+          of: find.widgetWithText(ListTile, 'LS'),
+          matching: find.byTooltip('Remove'),
+        ),
+      );
+      // A frame for the toast's overlay, one to start its slide, and the slide.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(keyBarSettings.customKeys, isEmpty);
+      expect(find.text('Deleted LS'), findsOneWidget);
+
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+      expect(keyBarSettings.value, [ls, ...KeyBarSettings.defaults]);
     });
 
     testWidgets('a key dragged by its handle moves along the bar', (
@@ -308,16 +516,16 @@ void main() {
       await drag.up();
       await tester.pumpAndSettle();
 
-      expect(keyBarSettings.shown.take(2), ['tab', 'esc']);
+      expect(keyBarSettings.keys.take(2), ['tab', 'esc']);
       expect(_barOrder(tester).take(3), ['divider', 'tab', 'esc']);
     });
 
-    testWidgets('Reset to default asks first, then brings the bar back', (
-      tester,
-    ) async {
+    testWidgets('Reset to default asks first, then brings the bar back, '
+        'custom keys gone', (tester) async {
       await keyBarSettings.choose([
         for (final item in KeyBarSettings.defaults)
-          item.id == 'esc' ? (id: 'esc', shown: false) : item,
+          if (item.id != 'esc') item,
+        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
       ]);
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
@@ -326,7 +534,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
-      expect(keyBarSettings.shown, isNot(contains('esc')));
+      expect(keyBarSettings.keys, isNot(contains('esc')));
+      expect(keyBarSettings.customKeys, isNotEmpty);
 
       await tester.tap(find.byTooltip('Reset to default'));
       await tester.pumpAndSettle();
@@ -334,6 +543,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(keyBarSettings.value, KeyBarSettings.defaults);
+      expect(keyBarSettings.customKeys, isEmpty);
       expect(_barOrder(tester), _today);
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getString('sshbox.keyBar.v1'), isNull);

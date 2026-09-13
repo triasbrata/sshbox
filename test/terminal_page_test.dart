@@ -219,10 +219,11 @@ void main() {
     expect(session.terminal.viewWidth, lessThan(columns));
   });
 
-  testWidgets('a key hidden in Settings leaves the open terminal\'s bar at '
-      'once', (tester) async {
+  testWidgets('a key taken off in Settings leaves the open terminal\'s bar at '
+      'once, and a key of your own types into the shell', (tester) async {
     SharedPreferences.setMockInitialValues({});
     addTearDown(() => keyBarSettings.value = KeyBarSettings.defaults);
+    final shell = _Shell();
     final session = LiveSession(
       host: const HostProfile(
         id: 'host-1',
@@ -230,7 +231,7 @@ void main() {
         host: '10.0.2.2',
         username: 'me',
       ),
-      transport: (_, _) => _Shell(),
+      transport: (_, _) => shell,
     );
     addTearDown(session.dispose);
     await tester.pumpWidget(
@@ -249,13 +250,18 @@ void main() {
     expect(find.text('ESC'), findsOneWidget);
 
     await keyBarSettings.choose([
+      // First, so it is in sight on a bar as wide as a phone.
+      (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
       for (final item in KeyBarSettings.defaults)
-        item.id == 'esc' ? (id: 'esc', shown: false) : item,
+        if (item.id != 'esc') item,
     ]);
     await tester.pump();
 
     expect(find.text('ESC'), findsNothing);
     expect(find.text('TAB'), findsOneWidget);
+    await tester.tap(find.text('LS'));
+    await tester.pump();
+    expect(shell.sent, ['ls\r']);
   });
 
   group('openUrl', () {

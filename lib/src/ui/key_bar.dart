@@ -226,6 +226,34 @@ const terminalKeyBarDefault = [
   '-', '/', '|', '~', ':', '*',
 ];
 
+/// A key the user made in Settings: the [label] it shows, and the text it
+/// types as written in its form, escapes and all, so the form shows it back
+/// the way it was written. [decodeKeyText] reads it at tap time.
+typedef CustomKey = ({String label, String send});
+
+/// Enter is a carriage return, as the Enter key sends it: a program that reads
+/// keys one at a time, such as fzf or vim, takes a line feed for Ctrl+J.
+const _keyEscapes = {'n': '\r', 'r': '\r', 't': '\t', 'e': '\x1b', r'\': r'\'};
+
+/// The text a custom key types, from what its form says: the text as written,
+/// but for a backslash, which starts an escape for a key with no character of
+/// its own. `\n` is Enter, as is `\r`; `\t` is Tab, `\e` is Esc, `\\` is a
+/// backslash, and `\xHH` is the character with that hex code, `\x03` being
+/// Ctrl+C. Any other backslash throws a [FormatException] that says which.
+String decodeKeyText(String typed) => typed.replaceAllMapped(
+      RegExp(r'\\(x[0-9a-fA-F]{2}|.?)'),
+      (match) {
+        final escape = match[1]!;
+        if (escape.length == 3) {
+          return String.fromCharCode(int.parse(escape.substring(1), radix: 16));
+        }
+        return _keyEscapes[escape] ??
+            (throw FormatException(
+              'Unknown escape \\$escape: use \\n, \\r, \\t, \\e, \\\\ or \\xHH',
+            ));
+      },
+    );
+
 /// The accessory row that sits directly above the soft keyboard.
 ///
 /// Without this the app cannot send Esc, Tab, Ctrl or arrows at all, which
@@ -240,6 +268,7 @@ class TerminalKeyBar extends StatelessWidget {
     this.leading = const [],
     this.showKeys = true,
     this.keys = terminalKeyBarDefault,
+    this.customKeys = const {},
   });
 
   final KeyBarController controller;
@@ -258,21 +287,24 @@ class TerminalKeyBar extends StatelessWidget {
   /// showed its buttons, greyed out until there was something to reach.
   final bool showKeys;
 
-  /// The ids from [terminalKeys] to show, in order: the arrangement picked in
-  /// Settings. [leading] and the divider after it are the page's own, and
-  /// always come first.
+  /// The ids from [terminalKeys] and [customKeys] to show, in order: the
+  /// arrangement picked in Settings. [leading] and the divider after it are
+  /// the page's own, and always come first.
   final List<String> keys;
+
+  /// The keys the user made, by the ids [keys] names them with.
+  final Map<String, CustomKey> customKeys;
 
   String _cursor(String finalChar) => cursorKey(terminal, finalChar);
 
   Widget _key(String id) => switch (id) {
         keyBarDivider => const _KeyDivider(),
-        'ctrl' => _KeyButton(
+        'ctrl' => KeyButton(
             label: 'CTRL',
             active: controller.ctrl,
             onTap: controller.toggleCtrl,
           ),
-        'alt' => _KeyButton(
+        'alt' => KeyButton(
             label: 'ALT',
             active: controller.alt,
             onTap: controller.toggleAlt,
@@ -281,9 +313,15 @@ class TerminalKeyBar extends StatelessWidget {
             onSpace: () => onEmit(' '),
             onCursor: (finalChar) => onEmit(_cursor(finalChar)),
           ),
-        _ => _KeyButton(
-            label: terminalKeys[id]!.label,
-            onTap: () => onEmit(terminalKeys[id]!.send!(terminal)),
+        // A custom key goes out the way the built-in ones do, through
+        // [onEmit], so the page lets go of a selection for it and sends it to
+        // the pane in use, and armed modifiers wait for the keyboard.
+        _ => KeyButton(
+            label: customKeys[id]?.label ?? terminalKeys[id]!.label,
+            onTap: () => onEmit(switch (customKeys[id]) {
+              final key? => decodeKeyText(key.send),
+              null => terminalKeys[id]!.send!(terminal),
+            }),
           ),
       };
 
@@ -365,7 +403,7 @@ class EditorKeyBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    Widget arrow(String label, String key) => _KeyButton(
+    Widget arrow(String label, String key) => KeyButton(
           label: label,
           onTap: () => controller.moveCursor(_arrows[key]!),
         );
@@ -395,13 +433,13 @@ class EditorKeyBar extends StatelessWidget {
                   icon: const Icon(Icons.redo),
                 )),
                 const _KeyDivider(),
-                _KeyButton(
+                KeyButton(
                   label: 'TAB',
                   onTap: useTabs
                       ? () => controller.replaceSelection('\t')
                       : controller.applyIndent,
                 ),
-                _KeyButton(label: '⇤', onTap: controller.applyOutdent),
+                KeyButton(label: '⇤', onTap: controller.applyOutdent),
                 const _KeyDivider(),
                 arrow('←', 'D'),
                 arrow('↓', 'B'),
@@ -412,14 +450,14 @@ class EditorKeyBar extends StatelessWidget {
                   onCursor: (key) => controller.moveCursor(_arrows[key]!),
                 ),
                 const _KeyDivider(),
-                _KeyButton(
+                KeyButton(
                   label: 'HOME',
                   onTap: controller.moveCursorToLineStart,
                 ),
-                _KeyButton(label: 'END', onTap: controller.moveCursorToLineEnd),
+                KeyButton(label: 'END', onTap: controller.moveCursorToLineEnd),
                 const _KeyDivider(),
                 for (final symbol in _symbols)
-                  _KeyButton(
+                  KeyButton(
                     label: symbol,
                     onTap: () => controller.replaceSelection(symbol),
                   ),
@@ -432,8 +470,11 @@ class EditorKeyBar extends StatelessWidget {
   }
 }
 
-class _KeyButton extends StatelessWidget {
-  const _KeyButton({
+/// A key of a bar. Public so Settings can offer a key the way it will look on
+/// the bar.
+class KeyButton extends StatelessWidget {
+  const KeyButton({
+    super.key,
     required this.label,
     required this.onTap,
     this.active = false,
@@ -531,7 +572,7 @@ class _SpacePadState extends State<_SpacePad> {
       },
       onLongPressEnd: (_) => _stopMoving(),
       onLongPressCancel: _stopMoving,
-      child: _KeyButton(
+      child: KeyButton(
         label: _moving ? '↔ MOVE' : 'SPACE',
         active: _moving,
         minWidth: 96,

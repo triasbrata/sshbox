@@ -140,35 +140,45 @@ class AppTheme
 /// The app's one; `main` reads the saved choice into it.
 final appTheme = AppTheme();
 
-/// One of the terminal key bar's items, in the place Settings put it, and
-/// whether the bar shows it.
-typedef KeyBarItem = ({String id, bool shown});
+/// One of the terminal key bar's items, in the place Settings put it: a key
+/// from [terminalKeys] by its id, or one the user made, under an id of its
+/// own that starts with [customKeyPrefix].
+typedef KeyBarItem = ({String id, CustomKey? custom});
 
-/// The terminal's key bar as arranged in Settings: every item in order, a
-/// hidden one kept in its place so that showing it again puts it back where
-/// it was. Every terminal page's bar listens, so a change reaches each open
-/// shell at once.
+/// How the id of every key the user makes starts, and no built-in one's.
+const customKeyPrefix = 'custom:';
+
+/// The terminal's key bar as arranged in Settings: the items it shows, in
+/// order. A built-in key taken off it waits in Add key to go back on; a
+/// custom one is deleted. Every terminal page's bar listens, so a change
+/// reaches each open shell at once.
 class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   KeyBarSettings() : super(defaults);
 
   /// The bar as it has always been.
   static final defaults = List<KeyBarItem>.unmodifiable([
-    for (final id in terminalKeyBarDefault) (id: id, shown: true),
+    for (final id in terminalKeyBarDefault) (id: id, custom: null),
   ]);
 
-  /// A JSON list of `{"id": "esc", "shown": true}`, one per item in order.
+  /// Still v1's JSON list: `{"id": "esc", "shown": true}` for each item on the
+  /// bar, in order, a custom key's with its `label` and its `send` as typed,
+  /// then `{"id": "tab", "shown": false}` for each built-in key off it. Those
+  /// tell a key taken off from one a later version adds, which joins the bar.
+  /// v1 hid a key in the same words, so a key hidden then is off the bar now.
   static const _key = 'sshbox.keyBar.v1';
 
   /// The ids the bar shows, in order.
-  List<String> get shown => [
-    for (final item in value)
-      if (item.shown) item.id,
-  ];
+  List<String> get keys => [for (final item in value) item.id];
+
+  /// The keys the user made, by their ids.
+  Map<String, CustomKey> get customKeys => {
+    for (final item in value) item.id: ?item.custom,
+  };
 
   /// Reads the saved arrangement. Nothing saved, or a list this build cannot
   /// read, is the bar as it has always been. An id this build does not know
-  /// is dropped, and a key the list never saw, one a later version added,
-  /// joins at the end, shown.
+  /// is dropped, and a key the list never mentions, one a later version
+  /// added, joins at the end.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     Object? saved;
@@ -183,18 +193,28 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
     }
 
     final items = <KeyBarItem>[];
+    // Every key the list mentions, on the bar or off it.
+    final mentioned = <String>{};
     for (final entry in saved) {
+      if (entry is! Map) continue;
+      final id = entry['id'];
       // Only the divider may come twice; a key saved twice keeps its first
-      // place.
-      if (entry case {'id': final String id, 'shown': final bool shown}
-          when terminalKeys.containsKey(id) &&
-              (id == keyBarDivider || !items.any((item) => item.id == id))) {
-        items.add((id: id, shown: shown));
+      // entry.
+      if (id is! String || (id != keyBarDivider && !mentioned.add(id))) {
+        continue;
+      }
+      if (entry['shown'] == false) continue;
+      if (terminalKeys.containsKey(id)) {
+        items.add((id: id, custom: null));
+      } else if (entry
+          case {'label': final String label, 'send': final String send}
+          when id.startsWith(customKeyPrefix)) {
+        items.add((id: id, custom: (label: label, send: send)));
       }
     }
     for (final id in terminalKeyBarDefault) {
-      if (!items.any((item) => item.id == id)) {
-        items.add((id: id, shown: true));
+      if (id != keyBarDivider && !mentioned.contains(id)) {
+        items.add((id: id, custom: null));
       }
     }
     value = items;
@@ -207,7 +227,18 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
     await prefs.setString(
       _key,
       jsonEncode([
-        for (final item in items) {'id': item.id, 'shown': item.shown},
+        for (final item in items)
+          {
+            'id': item.id,
+            'shown': true,
+            if (item.custom case final key?) ...{
+              'label': key.label,
+              'send': key.send,
+            },
+          },
+        for (final id in terminalKeys.keys)
+          if (id != keyBarDivider && !items.any((item) => item.id == id))
+            {'id': id, 'shown': false},
       ]),
     );
   }
@@ -563,8 +594,9 @@ class _TerminalSectionState extends State<_TerminalSection> {
 }
 
 /// The terminal's key bar item by item, each with a handle to drag it to a
-/// new place and a switch to show or hide it, under the bar as a terminal
-/// will draw it.
+/// new place and a button to take it off, under the bar as a terminal will
+/// draw it. Add key puts a key back on, adds a divider, or makes a key of the
+/// user's own, which a tap on its row changes.
 class KeyBarSettingsPage extends StatefulWidget {
   const KeyBarSettingsPage({super.key});
 
@@ -590,7 +622,8 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
       builder: (context) => AlertDialog(
         title: const Text('Reset the key bar?'),
         content: const Text(
-          'Every key goes back to its first place, and hidden keys come back.',
+          'The keys it came with go back in their first places, and custom '
+          'keys are deleted.',
         ),
         actions: [
           TextButton(
@@ -608,6 +641,113 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
     if (confirmed == true) await keyBarSettings.reset();
   }
 
+  static String _label(KeyBarItem item) =>
+      item.custom?.label ?? terminalKeys[item.id]!.label;
+
+  /// Takes the item at [index] off the bar. A built-in key waits in Add key
+  /// to go back on, but a custom one is deleted with it, so that gets an Undo.
+  void _remove(int index) {
+    final items = keyBarSettings.value;
+    final item = items[index];
+    keyBarSettings.choose([...items]..removeAt(index));
+
+    final key = item.custom;
+    if (key == null) return;
+    showToast(
+      context,
+      'Deleted ${key.label}',
+      duration: const Duration(seconds: 5),
+      action: (
+        label: 'Undo',
+        onPressed: () {
+          final now = keyBarSettings.value;
+          keyBarSettings.choose(
+            [...now]..insert(index.clamp(0, now.length), item),
+          );
+        },
+      ),
+    );
+  }
+
+  /// A key of the user's own, from the form: a new one, or [key] changed.
+  /// Null if the form was cancelled.
+  Future<CustomKey?> _customKey([CustomKey? key]) => showDialog<CustomKey>(
+    context: context,
+    builder: (_) => _CustomKeyDialog(key),
+  );
+
+  /// Offers what the bar has not got: each built-in key taken off it, drawn
+  /// as the bar draws it, a divider, which may go on any number of times, and
+  /// a key of the user's own. What is picked goes on the end.
+  Future<void> _add() async {
+    final items = keyBarSettings.value;
+    final off = [
+      for (final id in terminalKeys.keys)
+        if (id != keyBarDivider && !items.any((item) => item.id == id)) id,
+    ];
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        void pick(String id) => Navigator.of(context).pop(id);
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              if (off.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 13),
+                  child: Wrap(
+                    children: [
+                      for (final id in off)
+                        KeyButton(
+                          label: terminalKeys[id]!.label,
+                          onTap: () => pick(id),
+                        ),
+                    ],
+                  ),
+                ),
+              ListTile(
+                leading: const Icon(Icons.more_vert),
+                title: const Text('Divider'),
+                onTap: () => pick(keyBarDivider),
+              ),
+              ListTile(
+                leading: const Icon(Icons.add),
+                title: const Text('Custom key…'),
+                subtitle: const Text('A label, and the text it types'),
+                onTap: () => pick(customKeyPrefix),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (picked == null || !mounted) return;
+
+    final KeyBarItem item;
+    if (picked == customKeyPrefix) {
+      final key = await _customKey();
+      if (key == null) return;
+      final made = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+      item = (id: '$customKeyPrefix$made', custom: key);
+    } else {
+      item = (id: picked, custom: null);
+    }
+    await keyBarSettings.choose([...keyBarSettings.value, item]);
+    // The end of the list is usually out of sight.
+    if (mounted) showToast(context, '${_label(item)} added at the end');
+  }
+
+  Future<void> _edit(KeyBarItem item) async {
+    final key = await _customKey(item.custom);
+    if (key == null) return;
+    await keyBarSettings.choose([
+      for (final other in keyBarSettings.value)
+        other.id == item.id ? (id: other.id, custom: key) : other,
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -623,6 +763,11 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _add,
+        icon: const Icon(Icons.add),
+        label: const Text('Add key'),
+      ),
       body: ValueListenableBuilder(
         valueListenable: keyBarSettings,
         builder: (context, items, _) => Column(
@@ -637,7 +782,8 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                 controller: _previewKeys,
                 terminal: _previewTerminal,
                 onEmit: (_) {},
-                keys: keyBarSettings.shown,
+                keys: keyBarSettings.keys,
+                customKeys: keyBarSettings.customKeys,
                 // Files and upload, as a terminal has them: the page's own,
                 // so always first and not the bar's to move.
                 leading: const [
@@ -653,7 +799,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
               child: Text(
                 'Files and upload always come first. Drag a key by its handle '
-                'to move it.',
+                'to move it, and tap a key of your own to change it.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -662,7 +808,8 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
             Expanded(
               child: ReorderableListView.builder(
                 buildDefaultDragHandles: false,
-                padding: const EdgeInsets.only(bottom: 24),
+                // Clear of Add key, so the last row's button is not under it.
+                padding: const EdgeInsets.only(bottom: 88),
                 itemCount: items.length,
                 onReorderItem: (from, to) => keyBarSettings.choose(
                   [...items]
@@ -671,6 +818,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                 ),
                 itemBuilder: (context, index) {
                   final item = items[index];
+                  final custom = item.custom;
                   return ListTile(
                     // Dividers repeat, so each is known by how many came
                     // before it.
@@ -683,7 +831,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                       child: const Icon(Icons.drag_handle),
                     ),
                     title: Text(
-                      terminalKeys[item.id]!.label,
+                      _label(item),
                       style: item.id == keyBarDivider
                           ? null
                           : const TextStyle(
@@ -691,11 +839,20 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                               fontWeight: FontWeight.w600,
                             ),
                     ),
-                    trailing: Switch(
-                      value: item.shown,
-                      onChanged: (shown) => keyBarSettings.choose(
-                        [...items]..[index] = (id: item.id, shown: shown),
-                      ),
+                    // What a key of the user's own types, as written.
+                    subtitle: custom == null
+                        ? null
+                        : Text(
+                            custom.send,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontFamily: 'monospace'),
+                          ),
+                    onTap: custom == null ? null : () => _edit(item),
+                    trailing: IconButton(
+                      tooltip: 'Remove',
+                      onPressed: () => _remove(index),
+                      icon: const Icon(Icons.remove_circle_outline),
                     ),
                   );
                 },
@@ -704,6 +861,101 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The form for a key of the user's own: the label it shows, short enough
+/// for a key, and the text it types, escapes and all. Pops with the key, or
+/// with nothing on Cancel.
+class _CustomKeyDialog extends StatefulWidget {
+  const _CustomKeyDialog(this.initial);
+
+  /// The key being changed, or null for a new one.
+  final CustomKey? initial;
+
+  @override
+  State<_CustomKeyDialog> createState() => _CustomKeyDialogState();
+}
+
+class _CustomKeyDialogState extends State<_CustomKeyDialog> {
+  final _form = GlobalKey<FormState>();
+  late final _label = TextEditingController(text: widget.initial?.label);
+  late final _send = TextEditingController(text: widget.initial?.send);
+
+  @override
+  void dispose() {
+    _label.dispose();
+    _send.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (!_form.currentState!.validate()) return;
+    Navigator.of(context).pop((label: _label.text.trim(), send: _send.text));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isNew = widget.initial == null;
+
+    return AlertDialog(
+      scrollable: true,
+      title: Text(isNew ? 'New custom key' : 'Change custom key'),
+      content: Form(
+        key: _form,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              controller: _label,
+              autofocus: true,
+              // Twice PGUP, the widest built-in key.
+              maxLength: 8,
+              decoration: const InputDecoration(
+                labelText: 'Label',
+                helperText: 'What the key shows',
+              ),
+              validator: (label) =>
+                  label!.trim().isEmpty ? 'Give the key a label' : null,
+            ),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: _send,
+              style: const TextStyle(fontFamily: 'monospace'),
+              // Commands and escapes rather than words, and nothing for the
+              // keyboard to learn: a key may well type a password.
+              autocorrect: false,
+              enableSuggestions: false,
+              enableIMEPersonalizedLearning: false,
+              decoration: const InputDecoration(
+                labelText: 'Sends',
+                helperText:
+                    r'\n Enter, \t Tab, \e Esc, \\ backslash, \xHH any code. '
+                    r'For example git status\n, or \e[15~ for F5',
+                helperMaxLines: 4,
+              ),
+              validator: (send) {
+                if (send!.isEmpty) return 'Type what the key sends';
+                try {
+                  decodeKeyText(send);
+                } on FormatException catch (error) {
+                  return error.message;
+                }
+                return null;
+              },
+              onFieldSubmitted: (_) => _save(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _save, child: Text(isNew ? 'Add' : 'Save')),
+      ],
     );
   }
 }

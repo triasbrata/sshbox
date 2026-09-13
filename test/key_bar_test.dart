@@ -464,6 +464,52 @@ void main() {
     });
   });
 
+  group('decodeKeyText', () {
+    test('reads the escapes for keys with no character of their own', () {
+      // Enter is a carriage return, as the Enter key sends it.
+      expect(decodeKeyText(r'ls\n'), 'ls\r');
+      expect(decodeKeyText(r'\e[15~'), '\x1b[15~');
+      expect(decodeKeyText(r'a\tb\rc\\d\x03\x7F'), 'a\tb\rc\\d\x03\x7f');
+      expect(decodeKeyText('git status'), 'git status');
+    });
+
+    test('refuses an escape it does not know, and says which', () {
+      for (final typed in [r'ls\q', r'\x4', r'\xZZ', r'trailing\']) {
+        expect(() => decodeKeyText(typed), throwsFormatException,
+            reason: typed);
+      }
+      expect(
+        () => decodeKeyText(r'ls\q'),
+        throwsA(isA<FormatException>()
+            .having((e) => e.message, 'message', contains(r'\q'))),
+      );
+    });
+  });
+
+  testWidgets('a custom key shows its label, and types its text decoded',
+      (tester) async {
+    final sent = <String>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        bottomNavigationBar: TerminalKeyBar(
+          controller: KeyBarController(),
+          terminal: Terminal(),
+          onEmit: sent.add,
+          keys: const ['custom:ls', 'esc', 'custom:f5'],
+          customKeys: const {
+            'custom:ls': (label: 'LS', send: r'ls\n'),
+            'custom:f5': (label: 'F5', send: r'\e[15~'),
+          },
+        ),
+      ),
+    ));
+
+    await tester.tap(find.text('LS'));
+    await tester.tap(find.text('ESC'));
+    await tester.tap(find.text('F5'));
+    expect(sent, ['ls\r', '\x1b', '\x1b[15~']);
+  });
+
   group('CursorPad', () {
     late CursorPad pad;
 
