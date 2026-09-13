@@ -5,6 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:xterm2/xterm.dart';
 
+KeyCombo _combo(
+  String key, {
+  bool ctrl = false,
+  bool alt = false,
+  bool shift = false,
+}) =>
+    (key: key, ctrl: ctrl, alt: alt, shift: shift);
+
 void main() {
   group('KeyBarController.applyModifiers', () {
     late KeyBarController controller;
@@ -486,19 +494,26 @@ void main() {
     });
   });
 
-  testWidgets('a custom key shows its label, and types its text decoded',
-      (tester) async {
+  testWidgets(
+      'a custom key sends its combination, read at tap time, and one made '
+      'before the picker types its text', (tester) async {
     final sent = <String>[];
+    final terminal = Terminal();
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         bottomNavigationBar: TerminalKeyBar(
           controller: KeyBarController(),
-          terminal: Terminal(),
+          terminal: terminal,
           onEmit: sent.add,
-          keys: const ['custom:ls', 'esc', 'custom:f5'],
-          customKeys: const {
-            'custom:ls': (label: 'LS', send: r'ls\n'),
-            'custom:f5': (label: 'F5', send: r'\e[15~'),
+          keys: const ['custom:ls', 'esc', 'custom:up', 'custom:f5'],
+          customKeys: {
+            'custom:ls': (label: 'LS', send: r'ls\n', combo: null),
+            'custom:up': (label: '↑', send: '\x1b[A', combo: _combo('↑')),
+            'custom:f5': (
+              label: 'S-F5',
+              send: '\x1b[15;2~',
+              combo: _combo('F5', shift: true),
+            ),
           },
         ),
       ),
@@ -506,8 +521,93 @@ void main() {
 
     await tester.tap(find.text('LS'));
     await tester.tap(find.text('ESC'));
-    await tester.tap(find.text('F5'));
-    expect(sent, ['ls\r', '\x1b', '\x1b[15~']);
+    await tester.tap(find.text('S-F5'));
+    await tester.tap(find.text('↑'));
+    // vim asks for application cursor keys, and the key follows.
+    terminal.write('\x1b[?1h');
+    await tester.tap(find.text('↑'));
+    expect(sent, ['ls\r', '\x1b', '\x1b[15;2~', '\x1b[A', '\x1bOA']);
+  });
+
+  group('key combinations', () {
+    String send(KeyCombo combo) => encodeKeyCombo(Terminal(), combo);
+
+    test('go out as xterm sends them', () {
+      final expected = {
+        _combo('R', ctrl: true): '\x12',
+        _combo('B', alt: true): '\x1bb',
+        _combo('→', ctrl: true): '\x1b[1;5C',
+        _combo('F5', shift: true): '\x1b[15;2~',
+        _combo('F1'): '\x1bOP',
+        _combo('R', ctrl: true, alt: true): '\x1b\x12',
+        _combo('R', ctrl: true, shift: true): '\x12',
+        _combo('A', shift: true): 'A',
+        _combo('A'): 'a',
+        _combo('1', shift: true): '!',
+        // Ctrl with @ [ \ ] ^ _ and Space, the ones with no letter.
+        _combo('2', ctrl: true, shift: true): '\x00',
+        _combo('[', ctrl: true): '\x1b',
+        _combo(r'\', ctrl: true): '\x1c',
+        _combo(']', ctrl: true): '\x1d',
+        _combo('6', ctrl: true, shift: true): '\x1e',
+        _combo('-', ctrl: true, shift: true): '\x1f',
+        _combo('SPACE', ctrl: true): '\x00',
+        _combo('TAB', shift: true): '\x1b[Z',
+        _combo('ENTER', alt: true): '\x1b\r',
+        _combo('BKSP'): '\x7f',
+        _combo('F1', shift: true): '\x1b[1;2P',
+        _combo('F12', ctrl: true, alt: true): '\x1b[24;7~',
+        _combo('PGUP', ctrl: true): '\x1b[5;5~',
+        _combo('DEL'): '\x1b[3~',
+        _combo('↑', alt: true): '\x1b[1;3A',
+        _combo('HOME', shift: true): '\x1b[1;2H',
+      };
+      for (final MapEntry(key: combo, value: bytes) in expected.entries) {
+        expect(send(combo), bytes, reason: keyComboName(combo));
+      }
+    });
+
+    test('arrows, HOME and END with no modifier follow cursor-keys mode', () {
+      final terminal = Terminal();
+      expect(encodeKeyCombo(terminal, _combo('←')), '\x1b[D');
+      expect(encodeKeyCombo(terminal, _combo('END')), '\x1b[F');
+      terminal.write('\x1b[?1h');
+      expect(encodeKeyCombo(terminal, _combo('←')), '\x1bOD');
+      expect(encodeKeyCombo(terminal, _combo('END')), '\x1bOF');
+      // A modifier says which it is, whatever the mode.
+      expect(encodeKeyCombo(terminal, _combo('←', ctrl: true)), '\x1b[1;5D');
+    });
+
+    test('read back from their names, every key the picker has', () {
+      expect(keyComboName(_combo('R', ctrl: true, alt: true)), 'Ctrl+Alt+R');
+      for (final key in keyComboRows.expand((row) => row)) {
+        final combo = _combo(key, ctrl: true, shift: true);
+        expect(parseKeyCombo(keyComboName(combo)), combo, reason: key);
+      }
+      expect(parseKeyCombo('Shift+='), _combo('=', shift: true));
+      // A key or a modifier this build does not know is no combination.
+      expect(parseKeyCombo('Ctrl+F13'), isNull);
+      expect(parseKeyCombo('Hyper+R'), isNull);
+    });
+
+    test('get labels in the style of the built-in keys', () {
+      final expected = {
+        _combo('R', ctrl: true): '^R',
+        _combo('R', ctrl: true, alt: true): 'M-^R',
+        _combo('2', ctrl: true, shift: true): '^@',
+        _combo('B', alt: true): 'M-b',
+        _combo('2', shift: true): '@',
+        _combo('→', ctrl: true): 'C-→',
+        _combo('F5', shift: true): 'S-F5',
+        _combo('PGUP'): 'PGUP',
+        _combo('ESC'): 'ESC',
+        // Cut to fit a label.
+        _combo('ENTER', ctrl: true, alt: true, shift: true): 'C-M-S-EN',
+      };
+      for (final MapEntry(key: combo, value: label) in expected.entries) {
+        expect(keyComboLabel(combo), label, reason: keyComboName(combo));
+      }
+    });
   });
 
   group('CursorPad', () {

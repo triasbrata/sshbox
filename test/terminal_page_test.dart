@@ -251,7 +251,7 @@ void main() {
 
     await keyBarSettings.choose([
       // First, so it is in sight on a bar as wide as a phone.
-      (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+      (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
       for (final item in KeyBarSettings.defaults)
         if (item.id != 'esc') item,
     ]);

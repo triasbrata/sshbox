@@ -161,8 +161,10 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   ]);
 
   /// Still v1's JSON list: `{"id": "esc", "shown": true}` for each item on the
-  /// bar, in order, a custom key's with its `label` and its `send` as typed,
-  /// then `{"id": "tab", "shown": false}` for each built-in key off it. Those
+  /// bar, in order, a custom key's with its `label`, its `send` and its
+  /// `combo` as [keyComboName] writes it, `Ctrl+Alt+R`; `send` is all an
+  /// earlier version reads, and all a key made before the picker has. Then
+  /// `{"id": "tab", "shown": false}` for each built-in key off it. Those
   /// tell a key taken off from one a later version adds, which joins the bar.
   /// v1 hid a key in the same words, so a key hidden then is off the bar now.
   static const _key = 'sshbox.keyBar.v1';
@@ -209,7 +211,18 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
       } else if (entry
           case {'label': final String label, 'send': final String send}
           when id.startsWith(customKeyPrefix)) {
-        items.add((id: id, custom: (label: label, send: send)));
+        items.add((
+          id: id,
+          custom: (
+            label: label,
+            send: send,
+            // A key a later version has and this one does not types its text.
+            combo: switch (entry['combo']) {
+              final String saved => parseKeyCombo(saved),
+              _ => null,
+            },
+          ),
+        ));
       }
     }
     for (final id in terminalKeyBarDefault) {
@@ -234,6 +247,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
             if (item.custom case final key?) ...{
               'label': key.label,
               'send': key.send,
+              if (key.combo case final combo?) 'combo': keyComboName(combo),
             },
           },
         for (final id in terminalKeys.keys)
@@ -715,7 +729,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
               ListTile(
                 leading: const Icon(Icons.add),
                 title: const Text('Custom key…'),
-                subtitle: const Text('A label, and the text it types'),
+                subtitle: const Text('Any key, with Ctrl, Alt or Shift'),
                 onTap: () => pick(customKeyPrefix),
               ),
             ],
@@ -839,11 +853,15 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                               fontWeight: FontWeight.w600,
                             ),
                     ),
-                    // What a key of the user's own types, as written.
+                    // What a key of the user's own stands for, `Ctrl+Alt+R`,
+                    // or for one made before the picker, its text as written.
                     subtitle: custom == null
                         ? null
                         : Text(
-                            custom.send,
+                            switch (custom.combo) {
+                              final combo? => keyComboName(combo),
+                              null => custom.send,
+                            },
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontFamily: 'monospace'),
@@ -865,13 +883,16 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
   }
 }
 
-/// The form for a key of the user's own: the label it shows, short enough
-/// for a key, and the text it types, escapes and all. Pops with the key, or
-/// with nothing on Cancel.
+/// The picker for a key of the user's own: Ctrl, Alt and Shift to hold, a
+/// keyboard to tap the key on, the combination as it is built, and the label
+/// the key shows, filled in from the combination until the user writes one.
+/// Pops with the key, or with nothing on Cancel.
 class _CustomKeyDialog extends StatefulWidget {
   const _CustomKeyDialog(this.initial);
 
-  /// The key being changed, or null for a new one.
+  /// The key being changed, or null for a new one. One made before the
+  /// picker, with only the text it types, opens with no key picked and its
+  /// label kept.
   final CustomKey? initial;
 
   @override
@@ -879,83 +900,167 @@ class _CustomKeyDialog extends StatefulWidget {
 }
 
 class _CustomKeyDialogState extends State<_CustomKeyDialog> {
-  final _form = GlobalKey<FormState>();
   late final _label = TextEditingController(text: widget.initial?.label);
-  late final _send = TextEditingController(text: widget.initial?.send);
+  late String? _key = widget.initial?.combo?.key;
+  late bool _ctrl = widget.initial?.combo?.ctrl ?? false;
+  late bool _alt = widget.initial?.combo?.alt ?? false;
+  late bool _shift = widget.initial?.combo?.shift ?? false;
+
+  /// The label the combination last filled in, so one the user wrote is left
+  /// alone.
+  late String? _filled = switch (widget.initial?.combo) {
+    final combo? => keyComboLabel(combo),
+    null => null,
+  };
+
+  KeyCombo? get _combo => switch (_key) {
+    final key? => (key: key, ctrl: _ctrl, alt: _alt, shift: _shift),
+    null => null,
+  };
 
   @override
   void dispose() {
     _label.dispose();
-    _send.dispose();
     super.dispose();
   }
 
+  /// Makes [change] to the combination, and fills the label in from it.
+  void _change(VoidCallback change) => setState(() {
+    change();
+    if (_combo case final combo?) {
+      final label = keyComboLabel(combo);
+      if (_label.text.trim().isEmpty || _label.text == _filled) {
+        _label.text = label;
+      }
+      _filled = label;
+    }
+  });
+
   void _save() {
-    if (!_form.currentState!.validate()) return;
-    Navigator.of(context).pop((label: _label.text.trim(), send: _send.text));
+    final combo = _combo!;
+    final label = _label.text.trim();
+    Navigator.of(context).pop((
+      label: label.isEmpty ? keyComboLabel(combo) : label,
+      // What an earlier version, which knows no combinations, types for it:
+      // xterm's sequence as a fresh terminal has it, with each backslash
+      // escaped for decodeKeyText.
+      send: encodeKeyCombo(Terminal(), combo).replaceAll(r'\', r'\\'),
+      combo: combo,
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final isNew = widget.initial == null;
+    final blank = _key == null && !_ctrl && !_alt && !_shift;
+    Widget modifier(String name, bool held, void Function(bool) hold) =>
+        FilterChip(
+          label: Text(name),
+          selected: held,
+          onSelected: (held) => _change(() => hold(held)),
+        );
 
-    return AlertDialog(
-      scrollable: true,
-      title: Text(isNew ? 'New custom key' : 'Change custom key'),
-      content: Form(
-        key: _form,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              controller: _label,
-              autofocus: true,
-              // Twice PGUP, the widest built-in key.
-              maxLength: 8,
-              decoration: const InputDecoration(
-                labelText: 'Label',
-                helperText: 'What the key shows',
+    return Dialog(
+      // Close to the edges on a phone, where a keyboard needs the width; a
+      // card of its own on a tablet.
+      insetPadding: const EdgeInsets.all(16),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                isNew ? 'New custom key' : 'Change custom key',
+                style: theme.textTheme.headlineSmall,
               ),
-              validator: (label) =>
-                  label!.trim().isEmpty ? 'Give the key a label' : null,
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _send,
-              style: const TextStyle(fontFamily: 'monospace'),
-              // Commands and escapes rather than words, and nothing for the
-              // keyboard to learn: a key may well type a password.
-              autocorrect: false,
-              enableSuggestions: false,
-              enableIMEPersonalizedLearning: false,
-              decoration: const InputDecoration(
-                labelText: 'Sends',
-                helperText:
-                    r'\n Enter, \t Tab, \e Esc, \\ backslash, \xHH any code. '
-                    r'For example git status\n, or \e[15~ for F5',
-                helperMaxLines: 4,
+              const SizedBox(height: 12),
+              // The combination as it is built, in sight while the keys
+              // below scroll.
+              Text(
+                blank
+                    ? 'Pick a key, with Ctrl, Alt or Shift if you like'
+                    : keyComboName((
+                        key: _key ?? '…',
+                        ctrl: _ctrl,
+                        alt: _alt,
+                        shift: _shift,
+                      )),
+                textAlign: TextAlign.center,
+                style: blank
+                    ? theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      )
+                    : theme.textTheme.titleLarge?.copyWith(
+                        fontFamily: 'monospace',
+                      ),
               ),
-              validator: (send) {
-                if (send!.isEmpty) return 'Type what the key sends';
-                try {
-                  decodeKeyText(send);
-                } on FormatException catch (error) {
-                  return error.message;
-                }
-                return null;
-              },
-              onFieldSubmitted: (_) => _save(),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                children: [
+                  modifier('Ctrl', _ctrl, (held) => _ctrl = held),
+                  modifier('Alt', _alt, (held) => _alt = held),
+                  modifier('Shift', _shift, (held) => _shift = held),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      for (final row in keyComboRows)
+                        SizedBox(
+                          height: 44,
+                          child: Row(
+                            children: [
+                              for (final key in row)
+                                Expanded(
+                                  child: KeyButton(
+                                    // With Shift held, what Shift types.
+                                    label: keyCapOf(key, shift: _shift),
+                                    active: key == _key,
+                                    minWidth: 0,
+                                    onTap: () => _change(() => _key = key),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              TextField(
+                controller: _label,
+                maxLength: customKeyLabelMax,
+                decoration: const InputDecoration(
+                  labelText: 'Label',
+                  helperText: 'What the key shows',
+                ),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _key == null ? null : _save,
+                    child: Text(isNew ? 'Add' : 'Save'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _save, child: Text(isNew ? 'Add' : 'Save')),
-      ],
     );
   }
 }

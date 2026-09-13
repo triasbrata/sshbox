@@ -107,28 +107,33 @@ class KeyBarController extends ChangeNotifier {
   String applyModifiers(String data) {
     if (data.isEmpty || (!_ctrl && !_alt)) return data;
 
-    var result = data;
-
-    if (_ctrl && data.length == 1) {
-      final control = _toControlCode(data.codeUnitAt(0));
-      if (control != null) result = String.fromCharCode(control);
-    }
-
-    // Alt is transmitted the way every terminal does it: ESC then the key.
-    if (_alt) result = '\x1b$result';
-
+    final result = withModifiers(data, ctrl: _ctrl, alt: _alt);
     _disarm();
     return result;
   }
+}
 
-  /// Maps a printable character to the C0 code a hardware Ctrl chord sends.
-  int? _toControlCode(int code) {
-    if (code >= 0x61 && code <= 0x7a) return code - 0x60; // a-z
-    if (code >= 0x40 && code <= 0x5f) return code - 0x40; // @ A-Z [ \ ] ^ _
-    if (code == 0x20) return 0x00; // Ctrl-Space sends NUL
-    if (code == 0x3f) return 0x7f; // Ctrl-? sends DEL
-    return null;
+/// [data] as a keyboard sends it with Ctrl or Alt held. Ctrl turns a lone
+/// character into the C0 code a hardware chord sends; text longer than that
+/// keeps it, since autocomplete and paste arrive as a run of characters and
+/// mangling the first would corrupt them. Alt goes out the way every terminal
+/// sends it: ESC, then the key.
+String withModifiers(String data, {bool ctrl = false, bool alt = false}) {
+  var result = data;
+  if (ctrl && data.length == 1) {
+    final control = _controlCode(data.codeUnitAt(0));
+    if (control != null) result = String.fromCharCode(control);
   }
+  return alt ? '\x1b$result' : result;
+}
+
+/// Maps a printable character to the C0 code a hardware Ctrl chord sends.
+int? _controlCode(int code) {
+  if (code >= 0x61 && code <= 0x7a) return code - 0x60; // a-z
+  if (code >= 0x40 && code <= 0x5f) return code - 0x40; // @ A-Z [ \ ] ^ _
+  if (code == 0x20) return 0x00; // Ctrl-Space sends NUL
+  if (code == 0x3f) return 0x7f; // Ctrl-? sends DEL
+  return null;
 }
 
 /// Turns a drag into cursor-key steps.
@@ -226,10 +231,147 @@ const terminalKeyBarDefault = [
   '-', '/', '|', '~', ':', '*',
 ];
 
-/// A key the user made in Settings: the [label] it shows, and the text it
-/// types as written in its form, escapes and all, so the form shows it back
-/// the way it was written. [decodeKeyText] reads it at tap time.
-typedef CustomKey = ({String label, String send});
+/// A key the user made in Settings: the [label] it shows, the [combo] it
+/// stands for, and [send], the same as text, escapes and all, for
+/// [decodeKeyText]. That text is all an earlier version of the app reads, and
+/// all a key made before there was a picker has: its [combo] is null, and it
+/// types its text.
+typedef CustomKey = ({String label, String send, KeyCombo? combo});
+
+/// The longest label a key of the user's own may have: twice PGUP, the widest
+/// built-in key.
+const customKeyLabelMax = 8;
+
+/// A key and the modifiers held with it, as the custom key picker builds it.
+/// [key] is the key's cap, from [keyComboRows].
+typedef KeyCombo = ({String key, bool ctrl, bool alt, bool shift});
+
+/// The keys that type a character, by cap, row by row as a US keyboard has
+/// them, and what each types with Shift.
+const _typingRows = [
+  '1234567890', 'QWERTYUIOP', 'ASDFGHJKL;', 'ZXCVBNM,./', "`-=[]\\'", //
+];
+const _typingRowsShifted = [
+  r'!@#$%^&*()', 'QWERTYUIOP', 'ASDFGHJKL:', 'ZXCVBNM<>?', '~_+{}|"', //
+];
+
+/// What each typing key types with Shift, by cap.
+final _shifted = {
+  for (final (row, caps) in _typingRows.indexed)
+    for (var i = 0; i < caps.length; i++) caps[i]: _typingRowsShifted[row][i],
+};
+
+/// Keys that type a character with no cap of its own.
+const _charKeys = {
+  'ESC': '\x1b',
+  'TAB': '\t',
+  'ENTER': '\r',
+  'BKSP': '\x7f',
+  'SPACE': ' ',
+};
+
+/// The rest: what xterm sends after CSI for each, `~` and all.
+const _csiKeys = {
+  'INS': '2~', 'DEL': '3~', 'HOME': 'H', 'END': 'F', 'PGUP': '5~', 'PGDN': '6~',
+  '←': 'D', '↓': 'B', '↑': 'A', '→': 'C', //
+  'F1': 'P', 'F2': 'Q', 'F3': 'R', 'F4': 'S', 'F5': '15~', 'F6': '17~',
+  'F7': '18~', 'F8': '19~', 'F9': '20~', 'F10': '21~', 'F11': '23~',
+  'F12': '24~',
+};
+
+/// Every key a custom key can be, by cap, row by row as the picker lays them
+/// out: the typing keys as a US keyboard has them, then the rest.
+final keyComboRows = [
+  for (final caps in _typingRows) caps.split(''),
+  _charKeys.keys.toList(),
+  ['INS', 'DEL', 'HOME', 'END', 'PGUP', 'PGDN'],
+  ['←', '↓', '↑', '→'],
+  ['F1', 'F2', 'F3', 'F4', 'F5', 'F6'],
+  ['F7', 'F8', 'F9', 'F10', 'F11', 'F12'],
+];
+
+/// What the cap of [key] shows: the character a typing key types, the one
+/// above it with Shift, or the name of any other key.
+String keyCapOf(String key, {bool shift = false}) => switch (_shifted[key]) {
+      final upper? => shift ? upper : key.toLowerCase(),
+      null => key,
+    };
+
+/// What [combo] sends, as xterm sends it. Shift picks a typing key's upper
+/// character, and Ctrl and Alt fold into a character the way the key bar's
+/// own sticky CTRL and ALT do. Any other key with a modifier gets xterm's
+/// modifier parameter: 1, plus 1 for Shift, 2 for Alt and 4 for Ctrl, so
+/// Ctrl+→ is `ESC [1;5C`. Without one, the arrows, HOME and END follow the
+/// terminal's cursor-keys mode, read now, as the bar's own arrows do.
+String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
+  final (:key, :ctrl, :alt, :shift) = combo;
+  final csi = _csiKeys[key];
+  if (csi == null) {
+    // Shift+Tab is its own key to a terminal, the back tab.
+    final typed = key == 'TAB' && shift
+        ? '\x1b[Z'
+        : _charKeys[key] ?? keyCapOf(key, shift: shift);
+    return withModifiers(typed, ctrl: ctrl, alt: alt);
+  }
+
+  final modifier = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0);
+  if (csi.endsWith('~')) {
+    return modifier == 1
+        ? '\x1b[$csi'
+        : '\x1b[${csi.substring(0, csi.length - 1)};$modifier~';
+  }
+  if (modifier > 1) return '\x1b[1;$modifier$csi';
+  return 'PQRS'.contains(csi) ? '\x1bO$csi' : cursorKey(terminal, csi);
+}
+
+/// How [combo] reads, `Ctrl+Alt+R`, which is also how a custom key saves it
+/// for [parseKeyCombo].
+String keyComboName(KeyCombo combo) => [
+      if (combo.ctrl) 'Ctrl',
+      if (combo.alt) 'Alt',
+      if (combo.shift) 'Shift',
+      combo.key,
+    ].join('+');
+
+/// The combination [saved] names, as [keyComboName] wrote it, or null for one
+/// with a key this build does not have.
+KeyCombo? parseKeyCombo(String saved) {
+  final parts = saved.split('+');
+  final key = parts.removeLast();
+  final modifiers = parts.toSet();
+  final known = _shifted.containsKey(key) ||
+      _charKeys.containsKey(key) ||
+      _csiKeys.containsKey(key);
+  if (!known || !const {'Ctrl', 'Alt', 'Shift'}.containsAll(modifiers)) {
+    return null;
+  }
+  return (
+    key: key,
+    ctrl: modifiers.contains('Ctrl'),
+    alt: modifiers.contains('Alt'),
+    shift: modifiers.contains('Shift'),
+  );
+}
+
+/// A label for [combo]'s button, in the style of the built-in keys and no
+/// longer than [customKeyLabelMax]: the character it types, a Ctrl chord in
+/// the caret form a terminal shows it in, `^R`, or the cap, `PGUP`, behind
+/// Emacs's `C-` for Ctrl, `M-` for Alt and `S-` for Shift.
+String keyComboLabel(KeyCombo combo) {
+  final (:key, :ctrl, :alt, :shift) = combo;
+  final typing = _shifted.containsKey(key);
+  final cap = keyCapOf(key, shift: shift);
+  final control = ctrl && typing ? _controlCode(cap.codeUnitAt(0)) : null;
+  final label = [
+    if (ctrl && control == null) 'C-',
+    if (alt) 'M-',
+    if (shift && !typing) 'S-',
+    control == null ? cap : '^${String.fromCharCode(control ^ 0x40)}',
+  ].join();
+  return label.length > customKeyLabelMax
+      ? label.substring(0, customKeyLabelMax)
+      : label;
+}
 
 /// Enter is a carriage return, as the Enter key sends it: a program that reads
 /// keys one at a time, such as fzf or vim, takes a line feed for Ctrl+J.
@@ -319,7 +461,10 @@ class TerminalKeyBar extends StatelessWidget {
         _ => KeyButton(
             label: customKeys[id]?.label ?? terminalKeys[id]!.label,
             onTap: () => onEmit(switch (customKeys[id]) {
-              final key? => decodeKeyText(key.send),
+              final key? => switch (key.combo) {
+                  final combo? => encodeKeyCombo(terminal, combo),
+                  null => decodeKeyText(key.send),
+                },
               null => terminalKeys[id]!.send!(terminal),
             }),
           ),

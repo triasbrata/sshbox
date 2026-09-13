@@ -77,7 +77,26 @@ Future<void> _addFromSheet(WidgetTester tester, String choice) async {
   await tester.pumpAndSettle();
 }
 
-Finder _field(String label) => find.widgetWithText(TextFormField, label);
+/// The picker's cap that reads [label].
+Finder _cap(String label) => find.descendant(
+  of: find.byType(Dialog),
+  matching: find.widgetWithText(KeyButton, label),
+);
+
+/// The combination as the picker shows it.
+Finder _shown(String text) =>
+    find.descendant(of: find.byType(Dialog), matching: find.text(text));
+
+final _labelField = find.widgetWithText(TextField, 'Label');
+
+String _labelText(WidgetTester tester) =>
+    tester.widget<TextField>(_labelField).controller!.text;
+
+/// Whether the picker's Add or Save can be pressed.
+bool _canSave(WidgetTester tester, String button) =>
+    tester.widget<FilledButton>(find.widgetWithText(FilledButton, button))
+        .onPressed !=
+    null;
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -249,13 +268,37 @@ void main() {
           {'id': 'custom:a', 'shown': true, 'label': 'LS', 'send': r'ls\n'},
           // A custom key with nothing to type is no key.
           {'id': 'custom:b', 'shown': true, 'label': 'X'},
+          {
+            'id': 'custom:c',
+            'shown': true,
+            'label': '^R',
+            'send': '\x12',
+            'combo': 'Ctrl+R',
+          },
+          // A key a later version has: its text is what it types here.
+          {
+            'id': 'custom:d',
+            'shown': true,
+            'label': 'F13',
+            'send': r'\e[1;2P',
+            'combo': 'F13',
+          },
         ]),
       });
       await keyBarSettings.load();
       expect(keyBarSettings.value, [
         (id: 'divider', custom: null),
         (id: 'esc', custom: null),
-        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
+        (
+          id: 'custom:c',
+          custom: (
+            label: '^R',
+            send: '\x12',
+            combo: (key: 'R', ctrl: true, alt: false, shift: false),
+          ),
+        ),
+        (id: 'custom:d', custom: (label: 'F13', send: r'\e[1;2P', combo: null)),
         // TAB stays off, as its first entry has it; the rest are new to it.
         for (final id in terminalKeyBarDefault)
           if (!const {'tab', 'divider', 'esc'}.contains(id))
@@ -366,32 +409,52 @@ void main() {
       ]);
     });
 
-    testWidgets('a key of your own, made in the form, joins the bar and types '
-        'what it says', (tester) async {
+    testWidgets('a key of your own, picked on the keyboard, joins the bar and '
+        'sends the combination', (tester) async {
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
 
       await _addFromSheet(tester, 'Custom key…');
-      await tester.enterText(_field('Label'), 'F5');
-      await tester.enterText(_field('Sends'), r'\e[15~');
+      // No text to type what it sends, and nothing to add until a key is
+      // picked.
+      expect(find.widgetWithText(TextField, 'Sends'), findsNothing);
+      expect(_canSave(tester, 'Add'), isFalse);
+
+      await tester.tap(find.widgetWithText(FilterChip, 'Ctrl'));
+      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.pump();
+      expect(_shown('Ctrl+Alt+…'), findsOneWidget);
+      expect(_canSave(tester, 'Add'), isFalse);
+
+      await tester.tap(_cap('r'));
+      await tester.pump();
+      expect(_shown('Ctrl+Alt+R'), findsOneWidget);
+      expect(_labelText(tester), 'M-^R');
       await tester.tap(find.text('Add'));
       await tester.pumpAndSettle();
 
       final id = keyBarSettings.keys.last;
       expect(id, startsWith('custom:'));
-      expect(keyBarSettings.customKeys, {id: (label: 'F5', send: r'\e[15~')});
+      const combo = (key: 'R', ctrl: true, alt: true, shift: false);
+      expect(keyBarSettings.customKeys, {
+        id: (label: 'M-^R', send: '\x1b\x12', combo: combo),
+      });
       expect(_barOrder(tester).last, id);
-      // Saved as typed, for the form to show back as it was written.
       final prefs = await SharedPreferences.getInstance();
       final saved = jsonDecode(prefs.getString('sshbox.keyBar.v1')!) as List;
       expect(
         saved,
         contains(
-          equals({'id': id, 'shown': true, 'label': 'F5', 'send': r'\e[15~'}),
+          equals({
+            'id': id,
+            'shown': true,
+            'label': 'M-^R',
+            'send': '\x1b\x12',
+            'combo': 'Ctrl+Alt+R',
+          }),
         ),
       );
 
-      // A terminal's bar sends it decoded.
       final sent = <String>[];
       await _pumpBar(
         tester,
@@ -399,64 +462,99 @@ void main() {
         customKeys: keyBarSettings.customKeys,
         onEmit: sent.add,
       );
-      await tester.tap(find.text('F5'));
-      expect(sent, ['\x1b[15~']);
+      await tester.tap(find.text('M-^R'));
+      expect(sent, ['\x1b\x12']);
     });
 
-    testWidgets('the form refuses a key with no label, or an escape it does '
-        'not know, and cuts a long label to fit', (tester) async {
-      await _wide(tester);
+    testWidgets('on a phone the picker scrolls to every key, Shift shows what '
+        'it types, and a label written by hand stays', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(400, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
       await _addFromSheet(tester, 'Custom key…');
 
-      await tester.tap(find.text('Add'));
+      await tester.enterText(_labelField, 'BS');
+      await tester.tap(find.widgetWithText(FilterChip, 'Shift'));
       await tester.pump();
-      expect(find.text('Give the key a label'), findsOneWidget);
-      expect(find.text('Type what the key sends'), findsOneWidget);
+      expect(_cap('@'), findsOneWidget);
+      expect(_cap('2'), findsNothing);
 
-      await tester.enterText(_field('Label'), 'LISTING!!');
-      await tester.enterText(_field('Sends'), r'ls\q');
-      await tester.tap(find.text('Add'));
+      final keys = find
+          .descendant(of: find.byType(Dialog), matching: find.byType(Scrollable))
+          .first;
+      await tester.scrollUntilVisible(_cap('F12'), 100, scrollable: keys);
+      await tester.tap(_cap('F12'));
       await tester.pump();
-      expect(find.textContaining(r'Unknown escape \q'), findsOneWidget);
-      // Still open, and nothing added.
-      expect(find.text('New custom key'), findsOneWidget);
-      expect(keyBarSettings.keys, terminalKeyBarDefault);
+      expect(_shown('Shift+F12'), findsOneWidget);
 
-      await tester.enterText(_field('Sends'), r'ls\n');
+      await tester.tap(find.widgetWithText(FilterChip, 'Shift'));
+      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.scrollUntilVisible(_cap(r'\'), -100, scrollable: keys);
+      await tester.tap(_cap(r'\'));
+      await tester.pump();
+      expect(_shown(r'Alt+\'), findsOneWidget);
+      expect(_labelText(tester), 'BS');
+
       await tester.tap(find.text('Add'));
       await tester.pumpAndSettle();
-      expect(keyBarSettings.customKeys.values, [
-        (label: 'LISTING!', send: r'ls\n'),
-      ]);
+      final key = keyBarSettings.customKeys.values.single;
+      expect(key.label, 'BS');
+      expect(key.combo, (key: r'\', ctrl: false, alt: true, shift: false));
+      // Escaped, for an earlier version to read back as ESC and a backslash.
+      expect(decodeKeyText(key.send), '\x1b\\');
     });
 
-    testWidgets('a tap on a key of your own opens it in the form to change', (
-      tester,
-    ) async {
+    testWidgets('a key of your own opens in the picker showing its '
+        'combination, and its label follows a change', (tester) async {
       await keyBarSettings.choose([
-        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+        (
+          id: 'custom:a',
+          custom: (
+            label: 'C-→',
+            send: '\x1b[1;5C',
+            combo: (key: '→', ctrl: true, alt: false, shift: false),
+          ),
+        ),
         ...KeyBarSettings.defaults,
       ]);
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
 
-      await tester.tap(find.widgetWithText(ListTile, 'LS'));
+      // Its combination, under its label.
+      expect(find.widgetWithText(ListTile, 'Ctrl+→'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ListTile, 'C-→'));
       await tester.pumpAndSettle();
       expect(find.text('Change custom key'), findsOneWidget);
-      // As it was typed, escapes and all.
-      expect(
-        tester.widget<TextFormField>(_field('Sends')).controller!.text,
-        r'ls\n',
-      );
-      await tester.enterText(_field('Sends'), r'ls -la\n');
+      expect(_shown('Ctrl+→'), findsOneWidget);
+      expect(tester.widget<KeyButton>(_cap('→')).active, isTrue);
+
+      await tester.tap(find.widgetWithText(FilterChip, 'Ctrl'));
+      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.pump();
+      expect(_shown('Alt+→'), findsOneWidget);
+      expect(_labelText(tester), 'M-→');
       await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
 
       expect(keyBarSettings.value.first, (
         id: 'custom:a',
-        custom: (label: 'LS', send: r'ls -la\n'),
+        custom: (
+          label: 'M-→',
+          send: '\x1b[1;3C',
+          combo: (key: '→', ctrl: false, alt: true, shift: false),
+        ),
       ));
+    });
+
+    testWidgets('a key made before the picker still types its text, and opens '
+        'in the picker empty with its label kept', (tester) async {
+      await keyBarSettings.choose([
+        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
+        ...KeyBarSettings.defaults,
+      ]);
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+
       final sent = <String>[];
       await _pumpBar(
         tester,
@@ -465,13 +563,45 @@ void main() {
         onEmit: sent.add,
       );
       await tester.tap(find.text('LS'));
-      expect(sent, ['ls -la\r']);
+      expect(sent, ['ls\r']);
+
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+      // Its text, as written, under its label.
+      expect(find.widgetWithText(ListTile, r'ls\n'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ListTile, 'LS'));
+      await tester.pumpAndSettle();
+      expect(find.text('Change custom key'), findsOneWidget);
+      expect(
+        _shown('Pick a key, with Ctrl, Alt or Shift if you like'),
+        findsOneWidget,
+      );
+      expect(_labelText(tester), 'LS');
+      expect(_canSave(tester, 'Save'), isFalse);
+
+      await tester.tap(find.widgetWithText(FilterChip, 'Ctrl'));
+      await tester.tap(_cap('l'));
+      await tester.pump();
+      expect(_labelText(tester), 'LS');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(keyBarSettings.value.first, (
+        id: 'custom:a',
+        custom: (
+          label: 'LS',
+          send: '\x0c',
+          combo: (key: 'L', ctrl: true, alt: false, shift: false),
+        ),
+      ));
     });
 
     testWidgets('a key of your own removed is deleted, with an Undo', (
       tester,
     ) async {
-      const ls = (id: 'custom:a', custom: (label: 'LS', send: r'ls\n'));
+      const ls = (
+        id: 'custom:a',
+        custom: (label: 'LS', send: r'ls\n', combo: null),
+      );
       await keyBarSettings.choose([ls, ...KeyBarSettings.defaults]);
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
@@ -525,7 +655,7 @@ void main() {
       await keyBarSettings.choose([
         for (final item in KeyBarSettings.defaults)
           if (item.id != 'esc') item,
-        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
       ]);
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
