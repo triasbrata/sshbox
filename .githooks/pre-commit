@@ -1,0 +1,40 @@
+#!/bin/sh
+# Bumps the build number, the N after "+" on pubspec.yaml's version line
+# (Android versionCode, iOS CFBundleVersion), in every commit that changes the
+# app: lib/, android/, ios/, assets/, pubspec.lock, or pubspec.yaml beyond its
+# version line. Docs, tests, tool/ or CLAUDE.md alone leave it as it is.
+#
+# N comes from the index, not the working copy: the index is what this commit
+# records, and the working copy may hold unstaged pubspec.yaml edits that must
+# not ride along, as `git add pubspec.yaml` would make them. So the new line
+# goes into the index directly, and into the working copy, whose other edits
+# stay unstaged.
+#
+# A merge that conflicted is committed through here and bumps again.
+# ponytail: a merge git commits by itself skips this hook (and a
+# pre-merge-commit hook's index changes miss its tree), so two branches that
+# each bumped to the same N merge into a second build N. The next app commit
+# moves past it; Play refuses the repeat loudly if it is ever uploaded.
+#
+# On for a clone with: git config core.hooksPath .githooks
+set -eu
+
+f=pubspec.yaml
+git cat-file -e ":$f" 2>/dev/null || exit 0
+
+if ! git diff --cached --name-only |
+    grep -qE '^(lib|android|ios|assets)/|^pubspec\.lock$' &&
+  ! git diff --cached -U0 -- "$f" |
+    awk '/^@@/ { h = 1; next } h && /^[-+]/ && !/^[-+]version:/ { y = 1 } END { exit !y }'; then
+  exit 0
+fi
+
+n=$(git show ":$f" | sed -n 's/^version:[^+]*+\([0-9][0-9]*\).*/\1/p' | head -n 1)
+[ -n "$n" ] || { echo "pre-commit: $f's version line has no +N build number" >&2; exit 1; }
+n=$((n + 1))
+setbuild() { sed "s/^\(version:[^+]*+\)[0-9][0-9]*/\1$n/"; }
+
+blob=$(git show ":$f" | setbuild | git hash-object -w --stdin)
+git update-index --cacheinfo "100644,$blob,$f"
+setbuild < "$f" > "$f.bump.$$" && mv "$f.bump.$$" "$f"
+echo "--> app changed: build number is now $n"

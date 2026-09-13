@@ -20,7 +20,11 @@ the user has tried it.
 ## Finishing a change
 
 1. Work on a branch in a worktree. Merge `main` into it, and get
-   `flutter analyze` and `flutter test` clean.
+   `flutter analyze` and `flutter test` clean. Every commit that changes the
+   app bumps the build number, the `+N` on `pubspec.yaml`'s `version:` line
+   (`.githooks/pre-commit`), so merging `main` often conflicts on that line:
+   keep the higher number, and the hook bumps it again when the merge is
+   committed.
 2. Fast-forward `main` to the branch and push. The coordinator does this step for
    sub-agents, because git against the main checkout is blocked from their
    worktrees. If `main` moved in the meantime, merge it into the branch again and
