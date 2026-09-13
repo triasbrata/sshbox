@@ -39,6 +39,7 @@ class _Shell implements SessionTransport, TerminalSession, FileBrowseCapable {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async => this;
 
   @override

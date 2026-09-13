@@ -49,6 +49,7 @@ class _Host implements ForwardCapable {
     if (refusal != null) throw refusal;
     final connections = listening['$host:$port'] = StreamController<Tunnel>();
     return (
+      port: port,
       connections: connections.stream,
       close: () => unlistened.add('$host:$port'),
     );
@@ -85,6 +86,7 @@ class _Connection extends _Host implements SessionTransport, TerminalSession {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     shells.add(shell);
     disposed = false;

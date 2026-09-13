@@ -10,6 +10,8 @@ import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import '../models/os_info.dart';
+import '../notifications/direct_notify.dart';
+import '../notifications/notify_key.dart';
 import 'dartssh2_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
@@ -27,6 +29,15 @@ typedef TransportMaker =
       Future<bool> Function(HostKeyCheck check)? confirmHostKey,
       void Function(String banner) onAuthBanner,
     );
+
+/// Posts a notification that opens [hostId] when tapped, as a push does:
+/// `NotificationGateway.showForHost`.
+typedef ShowNotification =
+    Future<void> Function({
+      required String hostId,
+      required String title,
+      required String body,
+    });
 
 /// What a session's terminal is running on the host, as
 /// [LiveSession.foreground] reads it: whether the shell itself has the
@@ -46,7 +57,8 @@ class LiveSession extends ChangeNotifier {
     required this._host,
     bool Function(int port)? forwardedElsewhere,
     this._transport,
-    this._pushToken,
+    this._notifyKey,
+    this._onNotify,
   }) {
     forwarder = TailnetForwarder(
       onChanged: _notify,
@@ -64,9 +76,13 @@ class LiveSession extends ChangeNotifier {
   /// carries that attempt's host key and banner callbacks.
   final TransportMaker? _transport;
 
-  /// Reads the device's push token, at every connect: FCM replaces it now
-  /// and then. See [SessionManager.pushToken].
-  final String? Function()? _pushToken;
+  /// This device's relay key, read at every connect: see
+  /// [SessionManager.notifyKey].
+  final NotifyKey? _notifyKey;
+
+  /// Shows what a host sent down this session's connection: see
+  /// [SessionManager.onNotify].
+  final ShowNotification? _onNotify;
 
   HostProfile get host => _host;
 
@@ -341,15 +357,17 @@ class LiveSession extends ChangeNotifier {
             confirmHostKey: confirmHostKey,
             onAuthBanner: banner,
           );
-      // Which device to notify and which host a tap opens, for
-      // `sshbox-notify` on the host to read rather than anyone copying them
-      // over by hand; nothing without a token. `LC_` because sshd takes only
-      // the names its AcceptEnv lists, and Debian, Ubuntu and macOS ship
-      // `AcceptEnv LANG LC_*`: how iTerm2's `LC_TERMINAL` gets through.
-      final token = _pushToken?.call();
+      // The relay key a server sends a push with and the host a tap opens,
+      // for a script on the host to read rather than anyone copying them
+      // over by hand; nothing without a key, and never the FCM token. `LC_`
+      // because sshd takes only the names its AcceptEnv lists, and Debian,
+      // Ubuntu and macOS ship `AcceptEnv LANG LC_*`: how iTerm2's
+      // `LC_TERMINAL` gets through. The direct way's two join them from
+      // [_openNotifyPort].
+      final key = _notifyKey?.forConnect();
       final environment = {
-        if (token != null) ...{
-          'LC_SSHBOX_TOKEN': token,
+        if (key != null) ...{
+          'LC_SSHBOX_TOKEN': key,
           'LC_SSHBOX_HOST_ID': host.id,
         },
       };
@@ -364,6 +382,7 @@ class LiveSession extends ChangeNotifier {
           rows: _size.$2,
           shell: shell,
           environment: environment,
+          beforeShell: _onNotify == null ? null : _openNotifyPort,
         );
       }
 
@@ -406,6 +425,34 @@ class LiveSession extends ChangeNotifier {
         _connecting = false;
         _notify();
       }
+    }
+  }
+
+  /// Asks the host for a port on its loopback that comes down this
+  /// connection, for a server to notify the phone straight through it with
+  /// no FCM: see [DirectNotify]. What it returns joins the shell's
+  /// variables. A host that will not — `AllowTcpForwarding no`, or anything
+  /// else — leaves this connection without them, and nothing is said.
+  ///
+  /// Asked for on every connection that opens a shell or tmux, before it
+  /// does, and gone with that connection: the host stops listening when it
+  /// ends, and no channel comes after.
+  Future<Map<String, String>> _openNotifyPort(ForwardCapable connection) async {
+    final show = _onNotify!;
+    try {
+      // The shell waits on this, so a host that never answers must not
+      // hold it up.
+      final port = await connection
+          .listen('127.0.0.1', 0)
+          .timeout(const Duration(seconds: 10));
+      final direct = DirectNotify(
+        (title, body) => show(hostId: host.id, title: title, body: body),
+      );
+      // A caller that hangs up before its answer is nobody's problem.
+      port.connections.listen((tunnel) => direct.serve(tunnel).ignore());
+      return direct.environment(port.port);
+    } catch (_) {
+      return const {};
     }
   }
 
@@ -769,13 +816,17 @@ class WebTab {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
-  SessionManager({this.pushToken = _noToken});
+  SessionManager({this.notifyKey, this.onNotify});
 
-  /// Reads the device's push token, or null while it has none: what each
-  /// connection hands its host, and what Settings copies for a host that
-  /// will not take it.
-  final String? Function() pushToken;
-  static String? _noToken() => null;
+  /// This device's relay key: what each connection hands its host as
+  /// `LC_SSHBOX_TOKEN`, and what Settings copies and resets. Null where push
+  /// is not wired, as in most tests, and then no connection hands one.
+  final NotifyKey? notifyKey;
+
+  /// Shows a notification a host sent straight down one of its connections
+  /// — see [DirectNotify] — as a push is shown, a tap opening the host.
+  /// Null, and no connection offers the host that way.
+  final ShowNotification? onNotify;
 
   /// Insertion-ordered, and that order is the tab order.
   final Map<int, LiveSession> _sessions = {};
@@ -912,7 +963,8 @@ class SessionManager extends ChangeNotifier {
       forwardedElsewhere: (port) => sessionsFor(created.host.id)
           .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
-      pushToken: pushToken,
+      notifyKey: notifyKey,
+      onNotify: onNotify,
     );
     return created;
   }

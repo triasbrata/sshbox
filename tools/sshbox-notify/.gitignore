@@ -1,6 +1,0 @@
-# The compiled binary — build it per target instead of committing one.
-sshbox-notify
-
-# Never commit a service account; it can push to every device in the project.
-*service-account*.json
-*firebase-adminsdk*.json

@@ -194,6 +194,10 @@ void main() {
       // Listed once, however often a tab attaches.
       final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
       expect('LC_SSHBOX_TOKEN'.allMatches('${listed.stdout}'), hasLength(1));
+      expect(
+        'LC_SSHBOX_NOTIFY_SECRET'.allMatches('${listed.stdout}'),
+        hasLength(1),
+      );
 
       tmux.dispose();
       await process.exitCode;

@@ -36,6 +36,7 @@ class _Shell implements SessionTransport, TerminalSession {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     if (refuse) throw const SshSessionException('Connection refused.');
     return this;

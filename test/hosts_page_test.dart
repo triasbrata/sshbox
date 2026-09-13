@@ -6,11 +6,14 @@ import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/models/os_info.dart';
+import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/known_hosts_page.dart';
 import 'package:sshbox/src/ui/os_icon.dart';
+
+import 'fake_relay.dart';
 
 /// A shell that is up the moment it is asked for.
 class _Shell implements SessionTransport, TerminalSession {
@@ -25,6 +28,7 @@ class _Shell implements SessionTransport, TerminalSession {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async => this;
 
   @override
@@ -214,7 +218,7 @@ void main() {
     expect(find.text('Nothing trusted yet'), findsOneWidget);
   });
 
-  testWidgets('the push token is copied in Settings, no longer on Home', (
+  testWidgets('the notification key is copied in Settings, not on Home', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -228,12 +232,14 @@ void main() {
       () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
     );
     final secrets = InMemorySecretStore();
+    final notifyKey = NotifyKey(secrets, relay: FakeRelay());
+    await notifyKey.useFcmToken('fcm-token');
     await tester.pumpWidget(
       MaterialApp(
         home: HostsPage(
           repository: HostRepository(secrets),
           secrets: secrets,
-          sessions: SessionManager(pushToken: () => 'device-token'),
+          sessions: SessionManager(notifyKey: notifyKey),
           onOpenHost: (_) async {},
         ),
       ),
@@ -243,7 +249,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Settings'));
     await tester.pumpAndSettle();
-    final copy = find.text('Copy notification token');
+    final copy = find.text('Copy notification key');
     // Settings' own list, not its preview terminal's.
     await tester.scrollUntilVisible(
       copy,
@@ -255,10 +261,11 @@ void main() {
     await tester.pump();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
+    // The relay key, never the FCM token.
     expect(copied, [
-      {'text': 'device-token'},
+      {'text': 'jnk_1'},
     ]);
-    expect(find.text('FCM token copied'), findsOneWidget);
+    expect(find.text('Notification key copied'), findsOneWidget);
     // The toast's countdown run out, rather than left running past the test.
     await tester.pumpAndSettle();
   });
