@@ -16,10 +16,17 @@ import 'package:sshbox/src/session/terminal_session.dart';
 /// characters and all. Every page in the browser rests on that, so it is worth
 /// a test that needs a server to run.
 ///
-/// Skips itself unless there is an sshd on the configured host and an
-/// unencrypted key that can log into it, so it stays harmless on a machine or
-/// CI runner without either. Override the defaults with SSHBOX_LIVE_HOST,
-/// SSHBOX_LIVE_PORT, SSHBOX_LIVE_USER and SSHBOX_LIVE_KEY.
+/// Opt-in, because it logs into a real host with a real private key, which no
+/// test run should do unasked: it is skipped unless SSHBOX_LIVE_KEY names an
+/// unencrypted key for the host. There is no default key, and nothing under
+/// ~/.ssh is ever read on its own. The host is 127.0.0.1:22 as $USER unless
+/// SSHBOX_LIVE_HOST, SSHBOX_LIVE_PORT and SSHBOX_LIVE_USER say otherwise:
+///
+///     SSHBOX_LIVE_KEY=/path/to/test_key flutter test test/sftp_file_browser_live_test.dart
+///
+/// It works in a folder of its own under the login's home, plus a file in
+/// this machine's temp directory and one in the host's /tmp, and removes all
+/// of them when it is done, failed or not.
 String get _host => Platform.environment['SSHBOX_LIVE_HOST'] ?? '127.0.0.1';
 
 int get _port =>
@@ -30,47 +37,19 @@ String get _user =>
     Platform.environment['USER'] ??
     'root';
 
-String get _keyPath =>
-    Platform.environment['SSHBOX_LIVE_KEY'] ??
-    '${Platform.environment['HOME']}/.ssh/id_rsa';
-
-Future<String?> _readUsableKey() async {
-  final file = File(_keyPath);
-  if (!file.existsSync()) return null;
-  final pem = await file.readAsString();
-  // An encrypted key would need a passphrase this test has no business
-  // holding, so treat it the same as no key at all.
-  if (pem.contains('ENCRYPTED')) return null;
-  return pem;
-}
-
-Future<bool> _sshdReachable() async {
-  try {
-    final socket = await Socket.connect(
-      _host,
-      _port,
-      timeout: const Duration(seconds: 2),
-    );
-    socket.destroy();
-    return true;
-  } on Exception {
-    return false;
-  }
-}
+String? get _keyPath => Platform.environment['SSHBOX_LIVE_KEY'];
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('reads, writes and rearranges files on a real host', () async {
-    if (!await _sshdReachable()) {
-      printOnFailure('skipped: nothing listening on $_host:$_port');
-      return;
-    }
-    final pem = await _readUsableKey();
-    if (pem == null) {
-      printOnFailure('skipped: no usable private key at $_keyPath');
-      return;
-    }
+    final pem = await File(_keyPath!).readAsString();
+    // A passphrase is something this test has no business holding.
+    expect(
+      pem,
+      isNot(contains('ENCRYPTED')),
+      reason: 'SSHBOX_LIVE_KEY must name an unencrypted key',
+    );
 
     SharedPreferences.setMockInitialValues({});
 
@@ -266,6 +245,8 @@ void main() {
       // went, over the chunk size so the loop turns more than once.
       final phone = File('${Directory.systemTemp.path}/sshbox-live-phone-$pid')
         ..writeAsBytesSync(List.generate(300 * 1024, (i) => i % 251));
+      final small = File('${phone.path}.kecil')..writeAsBytesSync([1, 2, 3]);
+      String? tmp;
       try {
         final uploaded = RemotePath.join(root, 'unggah.bin');
         await browser.upload(phone.path, uploaded);
@@ -288,13 +269,11 @@ void main() {
           ),
         );
 
-        final small = File('${phone.path}.kecil')..writeAsBytesSync([1, 2, 3]);
         await browser.upload(small.path, uploaded, replace: true);
         expect(await browser.readBytes(uploaded, maxBytes: 3), [1, 2, 3]);
-        small.deleteSync();
 
         // The key bar's upload to /tmp sends the same way.
-        final tmp = await (session as FileUploadCapable).uploadToTmp(
+        tmp = await (session as FileUploadCapable).uploadToTmp(
           localPath: phone.path,
           fileName: 'sshbox-live-tmp-$pid.bin',
         );
@@ -302,7 +281,6 @@ void main() {
           await browser.readBytes(tmp, maxBytes: 1 << 20),
           phone.readAsBytesSync(),
         );
-        await browser.delete(tmp);
 
         if (local) {
           expect(File(uploaded).statSync().mode & 0x1ff, 0x180);
@@ -330,6 +308,10 @@ void main() {
         );
       } finally {
         phone.deleteSync();
+        small.deleteSync();
+        // Best effort, as for the folder below: a failed check above must not
+        // leave the upload in the host's /tmp.
+        if (tmp != null) await browser.delete(tmp).catchError((Object _) {});
       }
 
       // Deleting a directory with things in it has to fail loudly rather than
