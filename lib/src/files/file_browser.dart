@@ -12,6 +12,8 @@
 /// chatty round-trip-per-entry shape and throw away the one advantage it has.
 library;
 
+import 'dart:typed_data';
+
 /// What kind of thing a listing row is.
 ///
 /// An enum rather than a pair of booleans, because a symlink is not a third
@@ -168,6 +170,30 @@ abstract class FileBrowser {
   Future<void> delete(String path, {bool recursive = false});
 
   Future<void> makeDirectory(String path);
+
+  /// Sends the phone's file at [localPath] to [path], telling [onProgress]
+  /// how far it has got.
+  ///
+  /// It arrives private to the login, and never goes through a link found
+  /// under the name. Without [replace] a name already taken fails the upload;
+  /// with it, what is there is replaced, and stays whole until the new file
+  /// is.
+  Future<void> upload(
+    String localPath,
+    String path, {
+    bool replace = false,
+    void Function(int sent, int total)? onProgress,
+  });
+
+  /// The whole file at [path], as bytes to save on the phone.
+  ///
+  /// Throws [FileBrowserFault.tooLarge] for one over [maxBytes], rather than
+  /// holding it all in memory.
+  Future<Uint8List> readBytes(
+    String path, {
+    required int maxBytes,
+    void Function(int received, int total)? onProgress,
+  });
 
   /// Releases whatever the implementation is holding open.
   Future<void> close();

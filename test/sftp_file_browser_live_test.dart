@@ -261,6 +261,77 @@ void main() {
         ),
       );
 
+      // Uploads: to a free name only, never through a link planted under it,
+      // private, and a replace swapped in whole. The bytes come back as they
+      // went, over the chunk size so the loop turns more than once.
+      final phone = File('${Directory.systemTemp.path}/sshbox-live-phone-$pid')
+        ..writeAsBytesSync(List.generate(300 * 1024, (i) => i % 251));
+      try {
+        final uploaded = RemotePath.join(root, 'unggah.bin');
+        await browser.upload(phone.path, uploaded);
+        expect(
+          await browser.readBytes(uploaded, maxBytes: 1 << 20),
+          phone.readAsBytesSync(),
+        );
+        await expectLater(
+          browser.upload(phone.path, uploaded),
+          throwsA(isA<FileBrowserException>()),
+        );
+        await expectLater(
+          browser.readBytes(uploaded, maxBytes: 1024),
+          throwsA(
+            isA<FileBrowserException>().having(
+              (error) => error.fault,
+              'fault',
+              FileBrowserFault.tooLarge,
+            ),
+          ),
+        );
+
+        final small = File('${phone.path}.kecil')..writeAsBytesSync([1, 2, 3]);
+        await browser.upload(small.path, uploaded, replace: true);
+        expect(await browser.readBytes(uploaded, maxBytes: 3), [1, 2, 3]);
+        small.deleteSync();
+
+        // The key bar's upload to /tmp sends the same way.
+        final tmp = await (session as FileUploadCapable).uploadToTmp(
+          localPath: phone.path,
+          fileName: 'sshbox-live-tmp-$pid.bin',
+        );
+        expect(
+          await browser.readBytes(tmp, maxBytes: 1 << 20),
+          phone.readAsBytesSync(),
+        );
+        await browser.delete(tmp);
+
+        if (local) {
+          expect(File(uploaded).statSync().mode & 0x1ff, 0x180);
+          // A link planted under the name is refused, and a replace swaps
+          // the link for the file: what it points at is never written.
+          final victim = File(RemotePath.join(root, 'korban.txt'))
+            ..writeAsStringSync('asli');
+          final trap = Link(RemotePath.join(root, 'jebakan.bin'))
+            ..createSync(victim.path);
+          await expectLater(
+            browser.upload(phone.path, trap.path),
+            throwsA(isA<FileBrowserException>()),
+          );
+          await browser.upload(phone.path, trap.path, replace: true);
+          expect(FileSystemEntity.isLinkSync(trap.path), isFalse);
+          expect(victim.readAsStringSync(), 'asli');
+        }
+
+        // No half-sent or swapped-out copy left beside them.
+        expect(
+          (await browser.list(root))
+              .map((entry) => entry.name)
+              .where((name) => name.contains('sshbox')),
+          isEmpty,
+        );
+      } finally {
+        phone.deleteSync();
+      }
+
       // Deleting a directory with things in it has to fail loudly rather than
       // quietly taking the contents with it.
       await expectLater(

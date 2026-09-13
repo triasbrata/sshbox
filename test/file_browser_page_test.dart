@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -724,4 +727,184 @@ void main() {
 
     expect(find.text('Save root to host config'), findsNothing);
   });
+
+  testWidgets('a folder offers Upload here…, a file Download', (tester) async {
+    await _pumpBrowser(tester, FakeFileBrowser());
+
+    await tester.longPress(_row('dev'));
+    await tester.pumpAndSettle();
+    expect(find.text('Upload here…'), findsOneWidget);
+    expect(find.text('Download'), findsNothing);
+    await tester.tapAt(Offset.zero);
+    await tester.pumpAndSettle();
+
+    await tester.longPress(_row('notes.txt'));
+    await tester.pumpAndSettle();
+    expect(find.text('Download'), findsOneWidget);
+    expect(find.text('Upload here…'), findsNothing);
+  });
+
+  testWidgets('uploads what the phone picks into the folder it was asked for',
+      (tester) async {
+    _usePicker().next = [_PhoneFile('photo.jpg'), _PhoneFile('song.mp3')];
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    await _rowAction(tester, 'dev', 'Upload here…');
+
+    expect(browser.uploads, [
+      (from: '/phone/photo.jpg', to: '/home/me/dev/photo.jpg', replace: false),
+      (from: '/phone/song.mp3', to: '/home/me/dev/song.mp3', replace: false),
+    ]);
+    // The folder opened and read again, so what arrived is in sight.
+    expect(_row('photo.jpg'), findsOneWidget);
+    expect(_row('song.mp3'), findsOneWidget);
+  });
+
+  testWidgets('a name already there asks: replace, keep both or skip',
+      (tester) async {
+    _usePicker().next = [_PhoneFile('notes.txt')];
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    Future<void> uploadAnswering(String answer) async {
+      await tester.tap(find.byTooltip('Upload here'));
+      // Not settled: the tree's busy bar runs until the question is answered.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('notes.txt is already there'), findsOneWidget);
+      await tester.tap(find.text(answer));
+      await tester.pumpAndSettle();
+    }
+
+    await uploadAnswering('Skip');
+    expect(browser.uploads, isEmpty);
+
+    await uploadAnswering('Replace');
+    expect(browser.uploads, [
+      (from: '/phone/notes.txt', to: '/home/me/notes.txt', replace: true),
+    ]);
+
+    await uploadAnswering('Keep both');
+    await uploadAnswering('Keep both');
+    expect(browser.uploads.skip(1), [
+      (from: '/phone/notes.txt', to: '/home/me/notes (1).txt', replace: false),
+      (from: '/phone/notes.txt', to: '/home/me/notes (2).txt', replace: false),
+    ]);
+    expect(_row('notes (2).txt'), findsOneWidget);
+  });
+
+  testWidgets('an upload the host refuses says why', (tester) async {
+    _usePicker().next = [_PhoneFile('photo.jpg')];
+    const refused = 'Could not upload photo.jpg to /home/me/dev: '
+        'permission denied.';
+    final browser = FakeFileBrowser()
+      ..failWriteWith = const FileBrowserException(
+        refused,
+        fault: FileBrowserFault.permissionDenied,
+      );
+    await _pumpBrowser(tester, browser);
+
+    await tester.longPress(_row('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Upload here…'));
+    // Not settled, which would wait out the toast: its overlay, the toast,
+    // and its slide in.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(
+      find.descendant(of: find.byType(ToastCard), matching: find.text(refused)),
+      findsOneWidget,
+    );
+    expect(browser.uploads, isEmpty);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('downloads a file through the save dialog, byte for byte',
+      (tester) async {
+    final picker = _usePicker();
+    await _pumpBrowser(tester, FakeFileBrowser());
+
+    await _rowAction(tester, 'notes.txt', 'Download');
+
+    expect(picker.saved?.name, 'notes.txt');
+    expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+  });
+}
+
+/// The phone's file picker and save dialog, answered without asking anyone.
+class _FakePicker extends FilePickerPlatform {
+  /// What the next pick hands over.
+  List<PlatformFile> next = const [];
+
+  /// What the save dialog was last handed.
+  ({String name, Uint8List bytes})? saved;
+
+  @override
+  Future<List<PlatformFile>> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    int compressionQuality = 0,
+    AndroidOptions androidOptions = const AndroidOptions(),
+    DarwinOptions darwinOptions = const DarwinOptions(),
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async => next;
+
+  @override
+  Future<Uri?> saveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required String mimeType,
+    String? dialogTitle,
+    String? initialDirectory,
+    Function(FilePickerStatus)? onFileSaving,
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async {
+    saved = (name: fileName, bytes: bytes);
+    return Uri.parse('content://downloads/$fileName');
+  }
+}
+
+/// A file on the phone, as the picker hands one over: a copy with a path.
+final class _PhoneFile extends PlatformFile {
+  _PhoneFile(this.name);
+
+  @override
+  final String name;
+
+  @override
+  Uri get uri => Uri.file('/phone/$name');
+
+  @override
+  get xFile => throw UnimplementedError();
+
+  @override
+  int? lengthSync() => 0;
+
+  @override
+  Future<int> length() async => 0;
+
+  @override
+  Future<Uint8List> readAsBytes() async => Uint8List(0);
+
+  @override
+  Stream<Uint8List> readAsByteStream() => const Stream.empty();
+}
+
+/// A [_FakePicker] in place of the phone's own until the test ends.
+_FakePicker _usePicker() {
+  final picker = _FakePicker();
+  final real = FilePickerPlatform.instance;
+  FilePickerPlatform.instance = picker;
+  addTearDown(() => FilePickerPlatform.instance = real);
+  return picker;
 }

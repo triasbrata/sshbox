@@ -453,17 +453,16 @@ class _Dartssh2Session
       throw const SshSessionException('Not connected.');
     }
 
-    final source = File(localPath);
-    final total = await source.length();
     var remotePath = _remotePathFor(fileName);
 
     final sftp = await client.sftp();
     try {
-      // Exclusive, and 0600 before the bytes go in: /tmp is shared, so a link
-      // planted under the name would aim this write at another file, and
-      // whatever is left readable there every login on the host can read. An
-      // earlier upload of ours under the name is replaced; someone else's,
-      // which we cannot remove, makes way for a name nobody can guess.
+      // Exclusive, and 0600 before the bytes go in (see
+      // [SftpFileBrowser.sendFile]): /tmp is shared, so a link planted under
+      // the name would aim this write at another file, and whatever is left
+      // readable there every login on the host can read. An earlier upload of
+      // ours under the name is replaced; someone else's, which we cannot
+      // remove, makes way for a name nobody can guess.
       Future<SftpFile> create(String path) => sftp.open(
             path,
             mode: SftpFileOpenMode.create |
@@ -479,28 +478,7 @@ class _Dartssh2Session
             '${remotePath.substring('/tmp/'.length)}';
         remote = await create(remotePath);
       }
-      await remote.setStat(
-        SftpFileAttrs(mode: const SftpFileMode.value(0x180)),
-      );
-      final handle = await source.open();
-
-      try {
-        // dartssh2 offers no streaming write, so we chunk by hand against the
-        // file offset. Reading a whole video into memory first is not
-        // something a phone forgives.
-        const chunkSize = 256 * 1024;
-        var offset = 0;
-        while (offset < total) {
-          final chunk = await handle.read(chunkSize);
-          if (chunk.isEmpty) break;
-          await remote.writeBytes(chunk, offset: offset);
-          offset += chunk.length;
-          onProgress?.call(offset, total);
-        }
-      } finally {
-        await handle.close();
-        await remote.close();
-      }
+      await SftpFileBrowser.sendFile(remote, localPath, onProgress: onProgress);
     } finally {
       sftp.close();
     }

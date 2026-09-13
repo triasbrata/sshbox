@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:sshbox/src/files/file_browser.dart';
 
 /// A filesystem in a map.
@@ -187,6 +190,51 @@ class FakeFileBrowser implements FileBrowser {
       path: path,
       kind: RemoteEntryKind.directory,
     ));
+  }
+
+  /// Every upload, in order: the phone's file, where it went, and whether it
+  /// could replace what was there.
+  final List<({String from, String to, bool replace})> uploads = [];
+
+  /// Fails with [failWriteWith], as a folder the login cannot write to does.
+  @override
+  Future<void> upload(
+    String localPath,
+    String path, {
+    bool replace = false,
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final failure = failWriteWith;
+    if (failure != null) throw failure;
+    // As SFTP's exclusive open does: a name already taken is refused.
+    final siblings = _tree[RemotePath.parent(path)] ?? const [];
+    if (!replace && siblings.any((entry) => entry.path == path)) {
+      throw FileBrowserException(
+        'Could not upload ${RemotePath.basename(path)}: it is already there.',
+      );
+    }
+    uploads.add((from: localPath, to: path, replace: replace));
+    onProgress?.call(1, 1);
+    _write(path, 'sent from $localPath', null);
+  }
+
+  @override
+  Future<Uint8List> readBytes(
+    String path, {
+    required int maxBytes,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final failure = failReadWith;
+    if (failure != null) throw failure;
+    final bytes = utf8.encode(_read(path).text);
+    if (bytes.length > maxBytes) {
+      throw const FileBrowserException(
+        'Too large to download.',
+        fault: FileBrowserFault.tooLarge,
+      );
+    }
+    onProgress?.call(bytes.length, bytes.length);
+    return bytes;
   }
 
   @override

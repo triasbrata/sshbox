@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -369,6 +370,130 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   Future<void> makeDirectory(String path) => _guard(
         'create ${RemotePath.basename(path)}',
         () async => (await _channel()).mkdir(path),
+      );
+
+  @override
+  Future<void> upload(
+    String localPath,
+    String path, {
+    bool replace = false,
+    void Function(int sent, int total)? onProgress,
+  }) =>
+      _guard(
+        'upload ${RemotePath.basename(path)} to ${RemotePath.parent(path)}',
+        () async {
+          final sftp = await _channel();
+          // Straight to the name when it is free: exclusive, so a name taken
+          // since it was looked at, by a file or by a link planted there,
+          // fails the upload rather than being written over or through. A
+          // replace goes in beside it and is renamed over it, which swaps a
+          // link for the file rather than following it, and leaves the old
+          // file whole until the new one is.
+          final target = replace
+              ? RemotePath.join(
+                  RemotePath.parent(path),
+                  '.${RemotePath.basename(path)}.${randomName()}'
+                  '.sshbox-upload',
+                )
+              : path;
+          final file = await sftp.open(
+            target,
+            mode: SftpFileOpenMode.create |
+                SftpFileOpenMode.exclusive |
+                SftpFileOpenMode.write,
+          );
+          try {
+            await sendFile(file, localPath, onProgress: onProgress);
+            if (replace) {
+              try {
+                await sftp.rename(target, path);
+              } on SftpStatusError {
+                // No posix-rename on this server, and a plain rename will not
+                // land on a name that is taken: the old file goes first.
+                await sftp.remove(path);
+                await sftp.rename(target, path);
+              }
+            }
+          } catch (_) {
+            // Ours, made just now: half a file is no use to anyone.
+            await _removeQuietly(sftp, target);
+            rethrow;
+          }
+        },
+      );
+
+  /// Fills [remote], a file of ours just made by an exclusive open, from the
+  /// phone's file at [localPath], then closes it.
+  ///
+  /// Private (0600) before any byte goes in: whatever is left readable there,
+  /// every login that can see the directory can read. The one way a file
+  /// goes up: the key bar's upload to /tmp and the tree's both end here.
+  static Future<void> sendFile(
+    SftpFile remote,
+    String localPath, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    try {
+      await remote.setStat(
+        SftpFileAttrs(mode: const SftpFileMode.value(0x180)),
+      );
+      final source = File(localPath);
+      final total = await source.length();
+      final handle = await source.open();
+      try {
+        // A chunk at a time against the file offset: reading a whole video
+        // into memory first is not something a phone forgives.
+        const chunkSize = 256 * 1024;
+        var offset = 0;
+        while (offset < total) {
+          final chunk = await handle.read(chunkSize);
+          if (chunk.isEmpty) break;
+          await remote.writeBytes(chunk, offset: offset);
+          offset += chunk.length;
+          onProgress?.call(offset, total);
+        }
+      } finally {
+        await handle.close();
+      }
+    } finally {
+      await remote.close();
+    }
+  }
+
+  @override
+  Future<Uint8List> readBytes(
+    String path, {
+    required int maxBytes,
+    void Function(int received, int total)? onProgress,
+  }) =>
+      _guard('download ${RemotePath.basename(path)}', () async {
+        final sftp = await _channel();
+        final size = (await sftp.stat(path)).size ?? 0;
+        if (size > maxBytes) throw _tooBigToDownload(path, maxBytes);
+
+        final file = await sftp.open(path);
+        try {
+          final bytes = BytesBuilder(copy: false);
+          // One byte past the limit is enough to catch a file grown since the
+          // stat, a log say, without reading all of it.
+          await for (final chunk in file.read(
+            length: maxBytes + 1,
+            onProgress: (received) => onProgress?.call(received, size),
+          )) {
+            bytes.add(chunk);
+          }
+          if (bytes.length > maxBytes) throw _tooBigToDownload(path, maxBytes);
+          return bytes.takeBytes();
+        } finally {
+          await file.close();
+        }
+      });
+
+  static FileBrowserException _tooBigToDownload(String path, int maxBytes) =>
+      FileBrowserException(
+        '${RemotePath.basename(path)} is over ${_formatBytes(maxBytes)}, the '
+        'most a download here can hold. Use scp for a file this size.',
+        fault: FileBrowserFault.tooLarge,
       );
 
   @override
