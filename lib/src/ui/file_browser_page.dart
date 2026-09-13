@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../files/file_browser.dart';
+import 'file_download.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
 import 'terminal_link.dart';
@@ -169,15 +170,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// The upload or download under way: what it is, and how far along it is,
   /// null while that is not known yet.
   ({String label, double? progress})? _transfer;
-
-  /// The most a download takes. The phone's save dialog wants the whole file
-  /// at once (file_picker's saveFile takes bytes, not a stream), so it is
-  /// held in memory here and again on Android's Java side, whose heap is
-  /// often capped at 256 MB.
-  ///
-  /// ponytail: a cap, not a stream. A save that takes a stream into a SAF
-  /// document lifts it.
-  static const _downloadLimit = 100 * 1024 * 1024;
 
   final _filterController = TextEditingController();
   bool _filtering = false;
@@ -779,40 +771,21 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         ),
       );
 
-  /// Brings [entry] down to the phone and hands it to the system's save
-  /// dialog, under its own name.
+  /// Brings [entry] down to the phone through [downloadFile], as a file tab
+  /// does.
   Future<void> _download(RemoteEntry entry) async {
-    final say = _sayAnyway();
-    final label = 'Downloading ${entry.name}';
     setState(() => _busy = true);
-    _showTransfer(label, 0, 0);
     try {
-      final bytes = await widget.browser.readBytes(
+      await downloadFile(
+        context,
+        widget.browser,
         entry.path,
-        maxBytes: _downloadLimit,
-        onProgress: (done, total) => _showTransfer(label, done, total),
-      );
-      if (mounted) setState(() => _transfer = null);
-      final saved = await FilePicker.saveFile(
-        fileName: entry.name,
-        bytes: bytes,
-      );
-      // Null is the dialog dismissed, which says enough on its own.
-      if (saved != null) say('Saved ${entry.name}', ToastificationType.success);
-    } on FileBrowserException catch (error) {
-      say(error.message, ToastificationType.error);
-    } on PlatformException catch (error) {
-      say(
-        'Could not save ${entry.name}: ${error.message ?? error.code}',
-        ToastificationType.error,
+        onTransfer: (transfer) {
+          if (mounted) setState(() => _transfer = transfer);
+        },
       );
     } finally {
-      if (mounted) {
-        setState(() {
-          _busy = false;
-          _transfer = null;
-        });
-      }
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -888,7 +861,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         body: Column(
           children: [
             if (root != null) _buildRootHeader(root),
-            if (_transfer case final transfer?) _buildTransfer(transfer),
+            if (_transfer case final transfer?) TransferBar(transfer),
             Expanded(child: _buildBody()),
           ],
         ),
@@ -1075,29 +1048,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             const SizedBox(width: 4),
           ],
         ),
-      ),
-    );
-  }
-
-  /// What is on its way up or down, and how far along it is.
-  Widget _buildTransfer(({String label, double? progress}) transfer) {
-    final progress = transfer.progress;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            progress == null
-                ? transfer.label
-                : '${transfer.label}  ${(progress * 100).floor()}%',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 4),
-          LinearProgressIndicator(value: progress),
-        ],
       ),
     );
   }
