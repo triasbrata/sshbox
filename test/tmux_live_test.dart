@@ -81,6 +81,15 @@ String _text(TmuxPane pane) => pane.terminal.buffer.getText();
 void main() {
   final hasTmux =
       Process.runSync('sh', ['-c', 'command -v tmux']).exitCode == 0;
+  // Where a host's tmux is looked for off PATH, in this machine's own tree.
+  final tmuxInPlace = [
+    '/opt/homebrew/bin/tmux',
+    '/usr/local/bin/tmux',
+    '/opt/local/bin/tmux',
+    '/home/linuxbrew/.linuxbrew/bin/tmux',
+    '/run/current-system/sw/bin/tmux',
+    '/snap/bin/tmux',
+  ].where((path) => File(path).existsSync()).firstOrNull;
   late Directory dir;
 
   setUp(() async => dir = await Directory.systemTemp.createTemp('sshbox-tmux'));
@@ -205,15 +214,100 @@ void main() {
     skip: hasTmux ? false : 'tmux is not installed here',
   );
 
-  test('a host without tmux says so rather than hanging', () async {
-    // A PATH with a shell on it and nothing else.
-    final bin = await Directory('${dir.path}/bin').create();
-    await Link('${bin.path}/sh').create('/bin/sh');
-    final (process, channel) = await _start('sshbox-none', dir, path: bin.path);
-    final tmux = _session('sshbox-none', channel);
-    expect(await tmux.attached, isFalse);
-    expect(tmux.problem, 'tmux is not installed on this host');
-    tmux.dispose();
-    await process.exitCode;
-  });
+  group(
+    'on a host whose exec channel has no tmux on PATH',
+    () {
+      /// The channel as a Mac gives it: no tmux on PATH, only what the script
+      /// needs besides, and a login shell whose profile greets first, then
+      /// prints [loginFinds] for `command -v tmux`.
+      Future<Map<String, String>> bareHost({String loginFinds = ''}) async {
+        final bin = await Directory('${dir.path}/bin').create();
+        for (final tool in ['/bin/sh', '/usr/bin/tail', '/usr/bin/grep']) {
+          await Link('${bin.path}/${tool.split('/').last}').create(tool);
+        }
+        return {
+          'HOME': dir.path,
+          'PATH': bin.path,
+          'SHELL': await _script(
+            '${dir.path}/login-shell',
+            'echo Last login: today\necho $loginFinds',
+          ),
+        };
+      }
+
+      /// A tmux that only notes how it was run, a line per run.
+      Future<String> fakeTmux(String path) =>
+          _script(path, 'echo "\$*" >> ${dir.path}/calls');
+
+      /// How the fake tmux was run, once the tab has given up on it for not
+      /// speaking control mode — and with nothing else on the channel.
+      Future<List<String>> ran(Map<String, String> host) async {
+        final (process, channel) = await _start(
+          'sshbox-found',
+          dir,
+          environment: host,
+        );
+        final tmux = _session('sshbox-found', channel);
+        expect(await tmux.attached, isFalse);
+        expect(tmux.problem, 'tmux did not start on this host.');
+        tmux.dispose();
+        await process.exitCode;
+        return File('${dir.path}/calls').readAsLines();
+      }
+
+      final everyRun = [
+        'show -gv update-environment',
+        allOf(
+          startsWith('-u -C set -ga update-environment'),
+          endsWith('new-session -A -s sshbox-found'),
+        ),
+      ];
+
+      test(
+        'finds it in ~/.local/bin, and runs every tmux from there',
+        () async {
+          final host = await bareHost();
+          await fakeTmux('${dir.path}/.local/bin/tmux');
+          expect(await ran(host), everyRun);
+        },
+      );
+
+      test(
+        "finds it on the login shell's PATH, past what the profile says",
+        () async {
+          final tmux = await fakeTmux('${dir.path}/brew/bin/tmux');
+          expect(await ran(await bareHost(loginFinds: tmux)), everyRun);
+        },
+      );
+
+      test('says tmux is nowhere rather than hanging', () async {
+        // A name, not a path: not taken for tmux.
+        final host = await bareHost(loginFinds: 'tmux');
+        final (process, channel) = await _start(
+          'sshbox-none',
+          dir,
+          environment: host,
+        );
+        final tmux = _session('sshbox-none', channel);
+        expect(await tmux.attached, isFalse);
+        expect(
+          tmux.problem,
+          'tmux is not installed on this host '
+          '(looked on PATH, in Homebrew and the other usual places)',
+        );
+        tmux.dispose();
+        await process.exitCode;
+      });
+    },
+    // A real one there is found before anything these tests put down.
+    skip: tmuxInPlace == null ? false : 'tmux is at $tmuxInPlace',
+  );
+}
+
+/// A shell script at [path], ready to run.
+Future<String> _script(String path, String body) async {
+  await File(path).create(recursive: true);
+  await File(path).writeAsString('#!/bin/sh\n$body\n');
+  await Process.run('chmod', ['+x', path]);
+  return path;
 }
