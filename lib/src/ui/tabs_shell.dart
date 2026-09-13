@@ -148,6 +148,7 @@ class _TabsShellState extends State<TabsShell> {
       // By host rather than session: a draft is for after the app was killed,
       // when the session it was typed in is long gone.
       draftKey: '${tab.session.host.id}:${tab.path}',
+      onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       line: tab.session.id == widget.sessions.activeId &&
               tab.path == widget.sessions.activePath
           ? widget.sessions.activeLine

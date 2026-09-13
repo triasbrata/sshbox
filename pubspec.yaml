@@ -49,6 +49,7 @@ dependencies:
   re_highlight: ^0.0.3
   webview_flutter: ^4.14.1
   toastification: ^3.2.0
+  flutter_markdown_plus: ^1.0.12
 
 dev_dependencies:
   flutter_test:
