@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:toastification/toastification.dart';
 
 import 'fake_file_browser.dart';
 
@@ -111,10 +112,21 @@ void main() {
     _editor(tester).text = 'rewritten\n';
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
-    await tester.pumpAndSettle();
+    // Not settled, which would wait out the toast: its overlay, the toast,
+    // and its slide in.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
 
     expect(browser.contents['/home/me/notes.txt'], 'rewritten\n');
-    expect(find.text('Saved notes.txt'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BuiltInToastBuilder),
+        matching: find.text('Saved notes.txt'),
+      ),
+      findsOneWidget,
+    );
+    await tester.pumpAndSettle();
     expect(_canSave(tester), isFalse);
 
     // The save moved the file on; the next one must start from there rather
@@ -311,6 +323,10 @@ void main() {
       if (holding != null) await tester.sendKeyDownEvent(holding);
       await tester.sendKeyEvent(key);
       if (holding != null) await tester.sendKeyUpEvent(holding);
+      // A frame first, for a toast the key raised: the package takes it in on
+      // the frame after, and a second's jump before that would run out its
+      // countdown with nothing on screen to close, leaving it up for good.
+      await tester.pump();
       // A moved caret restarts its blink on a timer; let it run out.
       await tester.pump(const Duration(seconds: 1));
     }
@@ -540,10 +556,18 @@ void main() {
       _editor(tester).text = 'edited\n';
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
-      await tester.pumpAndSettle();
+      // Not settled, which would wait out the toast the offer is on.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
       expect(browser.contents['/home/me/notes.txt'], 'first line\nsecond line\n');
 
-      await tester.tap(find.text('Save with sudo'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(BuiltInToastBuilder),
+          matching: find.text('Save with sudo'),
+        ),
+      );
       await untilPrompted(tester);
       await tester.enterText(passwordField, 'hunter2');
       await tester.tap(find.text('Continue'));

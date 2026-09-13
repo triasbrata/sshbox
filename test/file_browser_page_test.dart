@@ -7,6 +7,7 @@ import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/terminal_link.dart';
+import 'package:toastification/toastification.dart';
 
 import 'fake_file_browser.dart';
 
@@ -287,16 +288,24 @@ void main() {
       fault: FileBrowserFault.permissionDenied,
     );
     await tester.tap(_row('dev'));
-    await tester.pumpAndSettle();
+    // Not settled, which would wait out the toast: its overlay, the toast,
+    // and its slide in.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
 
     expect(
-      find.text('Could not list /home/me/dev: permission denied.'),
+      find.descendant(
+        of: find.byType(BuiltInToastBuilder),
+        matching: find.text('Could not list /home/me/dev: permission denied.'),
+      ),
       findsOneWidget,
     );
     // The rest of the tree was fine, so it stays rather than turning into the
     // whole-page error.
     expect(_row('notes.txt'), findsOneWidget);
     expect(find.byIcon(Icons.expand_more), findsNothing);
+    await tester.pumpAndSettle();
   });
 
   testWidgets('creates inside the folder whose menu it came from',
@@ -319,12 +328,23 @@ void main() {
     await _pumpBrowser(tester, browser);
 
     await tester.tap(_row('dangling'));
-    await tester.pumpAndSettle();
+    // Not settled, which would wait out the toast: its overlay, the toast,
+    // and its slide in.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
 
     // Still in the same directory: nothing traversed, no editor opened onto a
     // file that is not there.
     expect(_row('notes.txt'), findsOneWidget);
-    expect(find.text('dangling is a link that points nowhere.'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BuiltInToastBuilder),
+        matching: find.text('dangling is a link that points nowhere.'),
+      ),
+      findsOneWidget,
+    );
+    await tester.pumpAndSettle();
   });
 
   testWidgets('filters the listing by name', (tester) async {

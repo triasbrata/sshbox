@@ -7,6 +7,7 @@ import '../files/file_browser.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
 import 'terminal_link.dart';
+import 'toast.dart';
 
 /// One visible line of the tree: an entry, and how many open folders deep it
 /// sits below the root.
@@ -283,7 +284,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     setState(() => _expanded.add(path));
     _reportExpanded();
     final error = await _loadFolder(path);
-    if (error != null && mounted) _say(error);
+    if (error != null && mounted) _say(error, ToastificationType.error);
   }
 
   void _collapseAll() {
@@ -356,14 +357,17 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       return;
     }
     if (entry.kind == RemoteEntryKind.other) {
-      _say('${entry.name} is not a regular file.');
+      _say('${entry.name} is not a regular file.', ToastificationType.error);
       return;
     }
     if (entry.kind == RemoteEntryKind.symlink) {
       // Traversable links were handled above, so what is left is a link whose
       // target could not be followed. Opening the editor on it would show
       // "it is no longer there", which is true but blames the wrong thing.
-      _say('${entry.name} is a link that points nowhere.');
+      _say(
+        '${entry.name} is a link that points nowhere.',
+        ToastificationType.error,
+      );
       return;
     }
     await _openEditor(entry.path);
@@ -435,10 +439,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     try {
       await action();
       if (!mounted) return;
-      _say(success);
+      _say(success, ToastificationType.success);
       await _refresh();
     } on FileBrowserException catch (error) {
-      if (mounted) _say(error.message);
+      if (mounted) _say(error.message, ToastificationType.error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -455,11 +459,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
-  void _say(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
+  void _say(String message, ToastificationType type) =>
+      showToast(context, message, type: type);
 
   /// Asks before writing the root into the host's config: unlike everything
   /// else in this drawer it outlives the session, and changes where every
@@ -494,9 +495,19 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
     try {
       await save(root);
-      if (mounted) _say('${widget.title} now opens its files at $root');
+      if (mounted) {
+        _say(
+          '${widget.title} now opens its files at $root',
+          ToastificationType.success,
+        );
+      }
     } catch (error) {
-      if (mounted) _say('Could not update the host config: $error');
+      if (mounted) {
+        _say(
+          'Could not update the host config: $error',
+          ToastificationType.error,
+        );
+      }
     }
   }
 
@@ -551,7 +562,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       // half-finished action; what they wanted was to write something in it.
       await _openEditor(target);
     } on FileBrowserException catch (error) {
-      if (mounted) _say(error.message);
+      if (mounted) _say(error.message, ToastificationType.error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -643,7 +654,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         ],
         item('Copy path', () {
           Clipboard.setData(ClipboardData(text: entry.path));
-          _say('Path copied');
+          _say('Path copied', ToastificationType.success);
         }),
         const PopupMenuDivider(),
         item('Rename…', () => _promptRename(entry)),

@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../files/file_browser.dart';
 import 'code_languages.dart';
 import 'key_bar.dart';
+import 'toast.dart';
 
 /// Opens one remote file for reading and, if you want, changing.
 ///
@@ -564,8 +565,10 @@ class _FileEditorPageState extends State<FileEditorPage> {
         _asRoot = asRoot;
       });
       if (!_dirty) unawaited(_clearDraft());
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved ${RemotePath.basename(widget.path)}')),
+      showToast(
+        context,
+        'Saved ${RemotePath.basename(widget.path)}',
+        type: ToastificationType.success,
       );
     } on FileBrowserException catch (error) {
       if (!mounted) return;
@@ -577,18 +580,18 @@ class _FileEditorPageState extends State<FileEditorPage> {
         final offerSudo = error.fault == FileBrowserFault.permissionDenied &&
             !asRoot &&
             _sudo != null;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(error.message),
-            action: offerSudo
-                ? SnackBarAction(
-                    label: 'Save with sudo',
-                    onPressed: () {
-                      if (mounted) _save(root: true);
-                    },
-                  )
-                : null,
-          ),
+        showToast(
+          context,
+          error.message,
+          type: ToastificationType.error,
+          action: offerSudo
+              ? (
+                  label: 'Save with sudo',
+                  onPressed: () {
+                    if (mounted) _save(root: true);
+                  },
+                )
+              : null,
         );
       }
     } finally {

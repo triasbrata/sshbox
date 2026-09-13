@@ -18,6 +18,7 @@ import 'session/session_manager.dart';
 import 'ui/connect_sheet.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
+import 'ui/toast.dart';
 
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key});
@@ -30,10 +31,9 @@ class _SshboxAppState extends State<SshboxApp> {
   /// Files another app handed us, waiting for a session to send them to.
   static const _shareChannel = MethodChannel('sshbox/share');
 
-  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
-
-  /// What [openHost] opens a connect sheet from: it runs above the app's own
-  /// navigator, with no context under it.
+  /// What [openHost] opens a connect sheet from, and what a shared file with
+  /// nowhere to go is said from: both run above the app's own navigator, with
+  /// no context under them.
   final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
   late final SessionManager _sessions = SessionManager(
@@ -174,12 +174,14 @@ class _SshboxAppState extends State<SshboxApp> {
       unawaited(openHost(active.host.id));
       return;
     }
-    _messengerKey.currentState?.showSnackBar(
-      SnackBar(
-        content: Text(
-          'Open a host to upload ${_pendingShares.length} shared file(s)',
-        ),
-      ),
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    // Three seconds rather than a remark's one: it is said as the app comes
+    // back from the one the files were shared from.
+    showToast(
+      context,
+      'Open a host to upload ${_pendingShares.length} shared file(s)',
+      duration: const Duration(seconds: 3),
     );
   }
 
@@ -212,7 +214,6 @@ class _SshboxAppState extends State<SshboxApp> {
             title: 'Jeansh',
             debugShowCheckedModeBanner: false,
             navigatorKey: _navigator,
-            scaffoldMessengerKey: _messengerKey,
             themeMode: look.mode,
             theme: themeOf(Brightness.light),
             darkTheme: themeOf(Brightness.dark),

@@ -10,20 +10,25 @@ export 'package:toastification/toastification.dart' show ToastificationType;
 /// to take in one line in passing.
 const toastDuration = Duration(seconds: 1);
 
+/// How long an error stays unless its caller says otherwise: time to read
+/// what went wrong, and to reach for a way round it, like Save with sudo.
+const _errorDuration = Duration(seconds: 5);
+
 /// The toasts still counting down, by what they say.
 final _showing = <String, ToastificationItem>{};
 
 /// Says something in passing: a card in [type]'s colour and icon that slides
 /// in at the top of the screen, under the status bar, with the time it has
-/// left running out along its bottom. It goes by itself after [duration]; a
-/// touch holds it, and a swipe or its × sends it away sooner.
+/// left running out along its bottom. It goes by itself after [duration]: a
+/// second, or five for an error. A touch holds it, and a swipe or its × sends
+/// it away sooner.
 ///
-/// For a remark that wants no answer, where a snack bar would be too much.
-/// Toasts stack rather than queue, so a burst of them is on screen at once
-/// instead of each waiting its turn, and the app keeps at most three (see
-/// `SshboxApp`). One that says the same as a toast still counting down adds
-/// nothing: following, every folder tapped while `claude` runs is refused in
-/// the same words.
+/// Every message the app shows goes through here, never a snack bar, which
+/// would come up at the other end of the screen. Toasts stack rather than
+/// queue, so a burst of them is on screen at once instead of each waiting its
+/// turn, and the app keeps at most three (see `SshboxApp`). One that says the
+/// same as a toast still counting down adds nothing: following, every folder
+/// tapped while `claude` runs is refused in the same words.
 ///
 /// [action] puts a button on it, the way a snack bar's does, and pressing it
 /// closes the toast.
@@ -40,7 +45,7 @@ void showToast(
   String message, {
   ToastificationType type = ToastificationType.info,
   ({String label, VoidCallback onPressed})? action,
-  Duration duration = toastDuration,
+  Duration? duration,
 }) {
   _showing.removeWhere((_, toast) => !toast.isRunning);
   if (_showing.containsKey(message)) return;
@@ -49,14 +54,18 @@ void showToast(
   late final ToastificationItem toast;
   toast = _showing[message] = toastification.show(
     context: context,
-    // The top of the screen, not of whatever overlay the caller sits in.
-    overlayState: Overlay.of(context, rootOverlay: true),
+    // The top of the screen, not of whatever overlay the caller sits in: the
+    // root navigator's, which the navigator's own context finds too, for a
+    // message that comes from no page.
+    overlayState: Navigator.of(context, rootNavigator: true).overlay,
     alignment: Alignment.topCenter,
     // Type colour and white whatever the theme, so it reads the same on a
     // light screen as on this dark one.
     style: ToastificationStyle.fillColored,
     type: type,
-    autoCloseDuration: duration,
+    autoCloseDuration:
+        duration ??
+        (type == ToastificationType.error ? _errorDuration : toastDuration),
     showProgressBar: true,
     title: action == null
         ? Text(heading)

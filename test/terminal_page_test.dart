@@ -297,7 +297,7 @@ void main() {
       final gone = tester.element(find.byType(SizedBox));
       await tester.pumpWidget(const MaterialApp(home: Placeholder()));
 
-      // A snack bar's Open, pressed after its tab closed.
+      // A toast's Open, pressed after its tab closed.
       final tabbed = <Uri>[];
       await openUrl(gone, Uri.parse('https://dart.dev'), inTab: tabbed.add);
 
@@ -475,14 +475,23 @@ void main() {
       expect(find.byType(FileBrowserPage), findsNothing);
     });
 
-    testWidgets('a path that is not there says so', (tester) async {
+    testWidgets('a path that is not there says so in a red toast', (
+      tester,
+    ) async {
       await pumpPage(tester);
       await tester.tap(find.text('CTRL'));
       await tester.pump();
       await tapColumn(tester, 35);
+      // The toast's slide in.
+      await tester.pump(const Duration(milliseconds: 600));
 
-      expect(find.text('Not found: /home/me/missing/x'), findsOneWidget);
+      expect(
+        _toast('Not found: /home/me/missing/x', ToastificationType.error),
+        findsOneWidget,
+      );
+      expect(find.byType(SnackBar), findsNothing);
       expect(opened, isEmpty);
+      await tester.pumpAndSettle();
     });
 
     testWidgets('without Ctrl a tap opens nothing and raises the keyboard', (

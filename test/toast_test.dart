@@ -76,4 +76,32 @@ void main() {
     expect(find.text('first'), findsNothing);
     expect(find.text('second'), findsNothing);
   });
+
+  testWidgets('an error stays five seconds', (tester) async {
+    await pumpApp(tester);
+    showToast(context, 'broken', type: ToastificationType.error);
+    await slideIn(tester);
+
+    // Four seconds in, still up.
+    await tester.pump(const Duration(milliseconds: 3400));
+    expect(find.text('broken'), findsOneWidget);
+    // At five it goes.
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pump();
+    expect(find.text('broken'), findsNothing);
+  });
+
+  testWidgets("the navigator's own context will do, for a message from no "
+      'page', (tester) async {
+    final navigator = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(
+      MaterialApp(navigatorKey: navigator, home: const SizedBox()),
+    );
+    showToast(navigator.currentContext!, 'hello');
+    await slideIn(tester);
+
+    expect(typeOf(tester, 'hello'), ToastificationType.info);
+    await tester.pumpAndSettle();
+  });
 }

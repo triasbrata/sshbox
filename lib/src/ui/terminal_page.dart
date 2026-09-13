@@ -137,8 +137,10 @@ class _TerminalPageState extends State<TerminalPage> {
     _announceForwards();
     final tmuxProblem = _session.takeTmuxProblem();
     if (tmuxProblem != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Not using tmux: $tmuxProblem')),
+      showToast(
+        context,
+        'Not using tmux: $tmuxProblem',
+        type: ToastificationType.error,
       );
     }
     // A file shared from another app may have been queued before this page
@@ -359,7 +361,6 @@ class _TerminalPageState extends State<TerminalPage> {
     }
     if (!_session.isConnected || !_session.canBrowseFiles) return;
 
-    final messenger = ScaffoldMessenger.of(context);
     final browser = _session.fileBrowser;
     final relative = !target.startsWith('/') && !target.startsWith('~');
     try {
@@ -381,27 +382,27 @@ class _TerminalPageState extends State<TerminalPage> {
         case RemoteEntryKind.file:
           _openFileTab(path);
         case RemoteEntryKind.other || RemoteEntryKind.symlink:
-          messenger.showSnackBar(
-            SnackBar(content: Text('Not a file or a folder: $path')),
+          showToast(
+            context,
+            'Not a file or a folder: $path',
+            type: ToastificationType.error,
           );
         case null:
           // A bare name only counted if it was there, so a miss on one is
           // nothing under the tap.
           if (link.kind == LinkKind.name) return;
-          messenger.showSnackBar(
-            SnackBar(
-              content: Text(
-                relative && cwd == null
-                    ? 'Not found: $path\nTaken from home: the host did not '
-                          'say where the terminal is.'
-                    : 'Not found: $path',
-              ),
-            ),
+          showToast(
+            context,
+            relative && cwd == null
+                ? 'Not found: $path\nTaken from home: the host did not '
+                      'say where the terminal is.'
+                : 'Not found: $path',
+            type: ToastificationType.error,
           );
       }
     } on FileBrowserException catch (error) {
       if (mounted) {
-        messenger.showSnackBar(SnackBar(content: Text(error.message)));
+        showToast(context, error.message, type: ToastificationType.error);
       }
     }
   }
@@ -476,7 +477,6 @@ class _TerminalPageState extends State<TerminalPage> {
   Future<void> _upload(SharedFile file) async {
     if (!mounted) return;
 
-    final messenger = ScaffoldMessenger.of(context);
     setState(() => _uploading = true);
 
     try {
@@ -492,13 +492,21 @@ class _TerminalPageState extends State<TerminalPage> {
       // A trailing space so the path is ready to be followed by arguments.
       _session.sendRaw('$remotePath ');
 
-      messenger.showSnackBar(
-        SnackBar(content: Text('Uploaded to $remotePath')),
-      );
+      if (mounted) {
+        showToast(
+          context,
+          'Uploaded to $remotePath',
+          type: ToastificationType.success,
+        );
+      }
     } catch (error) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('Upload failed: $error')),
-      );
+      if (mounted) {
+        showToast(
+          context,
+          'Upload failed: $error',
+          type: ToastificationType.error,
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {

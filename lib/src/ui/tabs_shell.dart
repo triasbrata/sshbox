@@ -320,9 +320,7 @@ class _TabStripState extends State<TabStrip> {
       await command();
     } on TmuxException catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('tmux: $error')),
-      );
+      showToast(context, 'tmux: $error', type: ToastificationType.error);
     }
   }
 
