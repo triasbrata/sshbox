@@ -348,5 +348,9 @@ void main() {
       await browser.close();
       await session.dispose();
     }
-  }, timeout: const Timeout(Duration(seconds: 90)));
+  },
+      skip: _keyPath == null
+          ? 'opt-in: set SSHBOX_LIVE_KEY to a key for a test host to run it'
+          : false,
+      timeout: const Timeout(Duration(seconds: 90)));
 }
