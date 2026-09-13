@@ -14,7 +14,8 @@
   - magic key, dua cincin tombol di bawah jempol Anda;
   - tombol panah lewat tekan lama di area kosong.
 - **File:**
-  - pohon file ala VS Code untuk setiap server;
+  - pohon file ala VS Code untuk setiap server, dengan unggah ke folder mana
+    pun dan unduh ke ponsel;
   - editor kode dengan warna sintaks, cari dan ganti, lompat ke baris, draf,
     dan simpan dengan sudo;
   - file Markdown tampil ter-render.

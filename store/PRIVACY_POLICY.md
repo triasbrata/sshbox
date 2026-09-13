@@ -47,7 +47,8 @@ Everything you do in a session goes to the server you're connected to, over
 SSH, and is encrypted between your device and that server. That includes:
 
 - what you type, and what the server prints;
-- files you upload or open;
+- files you upload, open or download. A download is saved wherever you pick
+  in the system's save dialog;
 - commands the app runs for you there: reading the server's operating system,
   watching for servers you start when tailnet forwarding is on, and tmux.
 

@@ -50,7 +50,8 @@ Semua yang Anda lakukan dalam sesi dikirim ke server yang sedang tersambung,
 lewat SSH, dan dienkripsi antara perangkat Anda dan server itu. Termasuk:
 
 - apa yang Anda ketik, dan apa yang ditampilkan server;
-- file yang Anda unggah atau buka;
+- file yang Anda unggah, buka, atau unduh. File yang diunduh disimpan di
+  tempat yang Anda pilih di dialog simpan sistem;
 - perintah yang dijalankan aplikasi untuk Anda di sana: membaca sistem operasi
   server, memantau server yang Anda jalankan saat penerusan tailnet menyala,
   dan tmux.

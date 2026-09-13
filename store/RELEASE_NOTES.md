@@ -14,7 +14,8 @@
   - the magic key, two rings of keys under your thumb;
   - arrow keys from a long press on blank space.
 - **Files:**
-  - a VS Code-style tree for each server;
+  - a VS Code-style tree for each server, with uploads into any folder and
+    downloads to the phone;
   - a code editor with syntax colours, find and replace, go to line, drafts
     and sudo save;
   - Markdown opens rendered.

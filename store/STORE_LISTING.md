@@ -1,8 +1,8 @@
 # Jeansh: Play Store listing (en-US)
 
 This claims only what has passed the user's test on the tablet ("UAT passed"
-in CLAUDE.md, Features). Server notifications, file download, sharing into a
-session and custom keys come in once theirs pass.
+in CLAUDE.md, Features). Server notifications, sharing into a session and
+custom keys come in once theirs pass.
 
 ## App name (max 30 characters)
 
@@ -33,7 +33,7 @@ Files
 • Open a folder in the terminal, or have the terminal follow the folders you tap
 • A code editor with line numbers, syntax colours, find and replace, go to line, drafts that survive a restart, and sudo open and save
 • Markdown files open rendered, with a switch to the source
-• Upload a file from your phone to the server
+• Upload files from your phone into any folder on the server, and download files to your phone
 
 Connections
 • Sign in with a password or a private key (OpenSSH or PEM, read from a file), with a passphrase

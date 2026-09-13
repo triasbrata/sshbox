@@ -1,8 +1,8 @@
 # Jeansh: listing Play Store (id-ID)
 
 Hanya fitur yang sudah lolos uji pengguna di tablet ("UAT passed" di
-CLAUDE.md, Features) yang disebut di sini. Notifikasi dari server, unduh
-file, berbagi ke sesi, dan tombol kustom menyusul setelah lolos.
+CLAUDE.md, Features) yang disebut di sini. Notifikasi dari server, berbagi
+ke sesi, dan tombol kustom menyusul setelah lolos.
 
 ## Nama aplikasi (maks. 30 karakter)
 
@@ -33,7 +33,7 @@ File
 • Buka folder di terminal, atau biarkan terminal mengikuti folder yang Anda ketuk
 • Editor kode dengan nomor baris, warna sintaks, cari dan ganti, lompat ke baris, draf yang tetap ada setelah aplikasi dibuka ulang, serta buka dan simpan dengan sudo
 • File Markdown tampil ter-render, dengan sakelar ke teks sumbernya
-• Unggah file dari ponsel ke server
+• Unggah file dari ponsel ke folder mana pun di server, dan unduh file ke ponsel
 
 Koneksi
 • Masuk dengan kata sandi atau private key (OpenSSH atau PEM, dibaca dari file), dengan passphrase
