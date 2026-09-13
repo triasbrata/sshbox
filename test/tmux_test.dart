@@ -62,6 +62,37 @@ void main() {
     },
   );
 
+  test('tmux is looked for beyond PATH, and every tmux runs from there', () {
+    final command = TmuxSession.command('sshbox-abc');
+    // One quoted argument: a quote inside would end it early.
+    expect(command, startsWith("sh -c '"));
+    expect(command.substring(7, command.length - 1), isNot(contains("'")));
+
+    // PATH first, then where package managers put it, then the login shell.
+    final at = [
+      for (final place in [
+        r't=$(command -v tmux)',
+        '/opt/homebrew/bin/tmux',
+        '/usr/local/bin/tmux',
+        '/opt/local/bin/tmux',
+        '/home/linuxbrew/.linuxbrew/bin/tmux',
+        r'"$HOME/.nix-profile/bin/tmux"',
+        '/run/current-system/sw/bin/tmux',
+        r'"$HOME/.local/bin/tmux"',
+        '/snap/bin/tmux',
+        r'"$SHELL" -lc "command -v tmux" </dev/null 2>/dev/null | tail -n 1',
+      ])
+        command.indexOf(place),
+    ];
+    expect(at, everyElement(isNonNegative));
+    expect(at, orderedEquals([...at]..sort()));
+
+    expect(command, contains(r'"$t" show -gv update-environment'));
+    expect(command, contains(r'exec "$t" -u -C "$@" new-session'));
+    // None by name, which is what missed Homebrew's.
+    expect(command.split(' '), isNot(contains('tmux')));
+  });
+
   test('%output unescapes to the bytes the pane wrote', () {
     final written = <int>[];
     final client = TmuxClient(

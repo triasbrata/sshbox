@@ -400,14 +400,31 @@ class TmuxSession {
   /// 1000 names, and looked for by the newest name, so a server that
   /// listed only the first two for an earlier version gets the rest; a name
   /// listed twice is harmless.
+  ///
+  /// tmux is found once, as an absolute path `$t`, and every tmux here runs
+  /// from it. An exec channel's shell is not a login shell, so its PATH
+  /// lacks what a profile adds: on a Mac it is `/usr/bin:/bin:/usr/sbin:/sbin`
+  /// and Homebrew's tmux is not on it. So after PATH come the places package
+  /// managers put tmux, then the login shell's own PATH — asked with nothing
+  /// on stdin, its errors dropped and only its last line kept, so whatever a
+  /// profile prints never reaches the channel, let alone control mode.
   static String command(String name) =>
-      "sh -c 'command -v tmux >/dev/null || "
-      "{ echo tmux is not installed on this host; exit 1; }; "
-      'tmux show -gv update-environment 2>/dev/null | '
+      "sh -c '"
+      r'ok() { case $1 in /*) [ -f "$1" ] && [ -x "$1" ];; *) return 1;; esac; }; '
+      r't=$(command -v tmux); '
+      r'ok "$t" || for t in /opt/homebrew/bin/tmux /usr/local/bin/tmux '
+      r'/opt/local/bin/tmux /home/linuxbrew/.linuxbrew/bin/tmux '
+      r'"$HOME/.nix-profile/bin/tmux" /run/current-system/sw/bin/tmux '
+      r'"$HOME/.local/bin/tmux" /snap/bin/tmux; do ok "$t" && break; t=; done; '
+      r'ok "$t" || t=$("$SHELL" -lc "command -v tmux" </dev/null 2>/dev/null '
+      '| tail -n 1); '
+      r'ok "$t" || { echo "tmux is not installed on this host (looked on PATH, '
+      'in Homebrew and the other usual places)"; exit 1; }; '
+      r'"$t" show -gv update-environment 2>/dev/null | '
       'grep -q LC_SSHBOX_NOTIFY_SECRET || '
       r'set -- set -ga update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID '
       r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
-      r'\;; exec tmux -u -C "$@" '
+      r'\;; exec "$t" -u -C "$@" '
       "new-session -A -s $name 2>&1'";
 
   /// How far back a pane's history reaches when it is filled in on attach.
