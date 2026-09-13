@@ -935,6 +935,101 @@ hits as it finds them. Having two implementations of unequal quality is exactly
 why search is stated as a separate capability rather than folded into
 `FileBrowser`.
 
+## Releasing
+
+### Build numbers
+
+`pubspec.yaml`'s `version: X.Y.Z+N` holds the version name and the build
+number, which is Android's `versionCode` and iOS's `CFBundleVersion`.
+
+Every commit that changes the app raises N by one, through
+`.githooks/pre-commit`. These count as changes to the app:
+- anything in `lib/`, `android/`, `ios/` or `assets/`;
+- `pubspec.lock`;
+- a `pubspec.yaml` change beyond its version line.
+
+Docs, tests and `tool/` don't. A commit that changes the version line gets
+`[build vN]` in its message, placed above any trailers.
+
+The hooks stay off until a clone turns them on, once. Worktrees share the
+setting:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`tool/test_hooks.sh` runs the hooks against a throwaway repo. Parallel
+branches collide on the version line: keep the higher number, and the hook
+raises it again on the merge commit.
+
+### A release from this machine
+
+Without `android/key.properties`, a release build falls back to the debug key,
+and Play refuses a bundle signed with it. So make an upload key once. Keep it
+outside the repo, and back it up: if it's lost, only Play support can reset
+it.
+
+```sh
+keytool -genkeypair -v -keystore ~/keys/jeansh-upload.jks \
+  -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+Then write `android/key.properties`, which git ignores. It's a Java
+properties file, so double any backslash in a password.
+
+```properties
+storeFile=/home/you/keys/jeansh-upload.jks
+storePassword=…
+keyAlias=upload
+keyPassword=…
+```
+
+Then, from a clean tree:
+
+```sh
+tool/release.sh                # or: tool/release.sh --name 1.1.0
+```
+
+The script:
+1. refuses to run without the key, or with uncommitted changes;
+2. builds `build/app/outputs/bundle/release/app-release.aab`;
+3. checks that the bundle isn't debug-signed;
+4. prints the bundle's versionName and versionCode.
+
+`--name` first rewrites the version name in `pubspec.yaml`. Commit that change
+afterwards.
+
+### From CI
+
+`.github/workflows/release-android.yml` runs on a `v*` tag
+(`git tag v1.0.0 && git push origin v1.0.0`), or by hand from the Actions tab.
+It tests, builds the signed bundle, keeps it as a run artifact, and uploads it
+to Play's internal testing track as a draft. It needs these repository
+secrets:
+
+| Secret | Holds |
+| --- | --- |
+| `ANDROID_UPLOAD_KEYSTORE_BASE64` | the upload keystore, from `base64 -w0 jeansh-upload.jks` (`base64 -i` on macOS) |
+| `ANDROID_UPLOAD_STORE_PASSWORD` | the keystore's password |
+| `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
+| `ANDROID_UPLOAD_KEY_PASSWORD` | the key's password |
+| `PLAY_SERVICE_ACCOUNT_JSON` | the JSON key of a Google Cloud service account that the Play Console lets release to testing tracks |
+
+### The first upload, by hand
+
+Play's API can't upload to an app that has never had a bundle, so the first
+one goes through the Play Console:
+1. create the app;
+2. upload the bundle from `tool/release.sh` to Internal testing;
+3. accept Play App Signing.
+
+After that, tags release through CI.
+
+`store/` holds the listing, the privacy policy and the release notes, in
+English and Indonesian. `store/PLAY_CONSOLE.md` walks through the rest of the
+Console: Data safety, the foreground service declaration, content rating and
+testing.
+
 ## Not done yet
 
 - **APNs / iOS push.** Only FCM on Android is wired.
