@@ -3,12 +3,15 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart';
 import 'code_languages.dart';
 import 'key_bar.dart';
+import 'settings_page.dart' show terminalSettings;
+import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 
 /// Opens one remote file for reading and, if you want, changing.
@@ -23,10 +26,15 @@ class FileEditorPage extends StatefulWidget {
     this.onClose,
     this.draftKey,
     this.line,
+    this.onOpenWeb,
   });
 
   final FileBrowser browser;
   final String path;
+
+  /// Opens a web link from the Markdown preview in a tab beside the shell,
+  /// as a link in the terminal opens. Null sends it to the phone's browser.
+  final void Function(Uri url)? onOpenWeb;
 
   /// Dismisses the editor when it is a pane rather than a screen.
   ///
@@ -171,6 +179,16 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
   bool _dirty = false;
 
+  /// Whether this is a Markdown file, which can be read rendered as well.
+  late final _markdown = RegExp(
+    r'\.(md|markdown)$',
+    caseSensitive: false,
+  ).hasMatch(widget.path);
+
+  /// Whether the file shows rendered rather than as written. A Markdown file
+  /// opens that way, unless it was opened at a line.
+  late bool _preview = _markdown && widget.line == null;
+
   /// Whether the key bar's Tab types a tab rather than spaces.
   bool _useTabs = false;
 
@@ -287,14 +305,18 @@ class _FileEditorPageState extends State<FileEditorPage> {
     // connection, which re_editor opens with that token. Leave the token if a
     // soft keyboard on every switch to a file is the lesser evil.
     final shown = Visibility.of(context);
-    if (shown && _shown == false) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _loading || _error != null) return;
-        _editorFocus.requestFocus();
-        _editorFocus.consumeKeyboardToken();
-      });
-    }
+    if (shown && _shown == false) _focusText();
     _shown = shown;
+  }
+
+  /// Hands the text the keys after the frame, without the soft keyboard: see
+  /// [didChangeDependencies]. Never while the preview hides the text.
+  void _focusText() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _loading || _error != null || _preview) return;
+      _editorFocus.requestFocus();
+      _editorFocus.consumeKeyboardToken();
+    });
   }
 
   @override
@@ -302,6 +324,8 @@ class _FileEditorPageState extends State<FileEditorPage> {
     super.didUpdateWidget(oldWidget);
     final line = widget.line;
     if (line != null && line != oldWidget.line && !_loading && _error == null) {
+      // A line is a place in the text, so a Markdown file shows its source.
+      _preview = false;
       _jumpTo(line);
     }
   }
@@ -328,6 +352,38 @@ class _FileEditorPageState extends State<FileEditorPage> {
     );
     final line = int.tryParse(answer?.trim() ?? '');
     if (line != null && mounted) _jumpTo(line);
+  }
+
+  /// Rendered or as written. Source comes back with its cursor and scroll
+  /// position as they were: the text stays built behind the preview.
+  void _setPreview(bool preview) {
+    setState(() => _preview = preview);
+    _focusText();
+  }
+
+  /// Runs [action], which works on the text, bringing Source back first if
+  /// the preview is up: then after the frame, once the text can take focus.
+  void _inSource(VoidCallback action) {
+    if (!_preview) {
+      action();
+      return;
+    }
+    setState(() => _preview = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) action();
+    });
+  }
+
+  /// A link tapped in the preview. A web address opens the way a link in the
+  /// terminal does. Anything relative is a file on the host or a heading in
+  /// this one, so it is named rather than fetched.
+  void _openPreviewLink(String text, String? href, String title) {
+    final url = Uri.tryParse(href ?? '');
+    if (url != null && url.hasScheme) {
+      unawaited(openUrl(context, url, inTab: widget.onOpenWeb));
+      return;
+    }
+    showToast(context, 'Not opened: ${href ?? text} is relative to this file');
   }
 
   /// The controller reports every caret move as well as every edit, so the
@@ -716,9 +772,19 @@ class _FileEditorPageState extends State<FileEditorPage> {
                 )
               : null,
           actions: [
+            if (_markdown)
+              IconButton(
+                tooltip: _preview ? 'Show source' : 'Show preview',
+                onPressed: _loading || _error != null
+                    ? null
+                    : () => _setPreview(!_preview),
+                icon: Icon(_preview ? Icons.code : Icons.preview_outlined),
+              ),
             IconButton(
               tooltip: 'Find',
-              onPressed: _loading || _error != null ? null : _find.findMode,
+              onPressed: _loading || _error != null
+                  ? null
+                  : () => _inSource(_find.findMode),
               icon: const Icon(Icons.search),
             ),
             IconButton(
@@ -737,11 +803,11 @@ class _FileEditorPageState extends State<FileEditorPage> {
               itemBuilder: (context) => [
                 if (!_loading && _error == null) ...[
                   PopupMenuItem(
-                    value: _find.replaceMode,
+                    value: () => _inSource(_find.replaceMode),
                     child: const Text('Find and replace'),
                   ),
                   PopupMenuItem(
-                    value: _goToLine,
+                    value: () => _inSource(_goToLine),
                     child: const Text('Go to line…'),
                   ),
                   const PopupMenuDivider(),
@@ -764,7 +830,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
           ],
         ),
         body: _buildBody(),
-        bottomNavigationBar: _loading || _error != null
+        bottomNavigationBar: _loading || _error != null || _preview
             ? null
             : EditorKeyBar(controller: _controller, useTabs: _useTabs),
       ),
@@ -804,34 +870,55 @@ class _FileEditorPageState extends State<FileEditorPage> {
             ],
           ),
         Expanded(
-          // re_editor opens the keyboard with autocorrect, smart punctuation
-          // and capitalisation all off, as a plain text file needs.
-          child: Focus(
-            // Not a stop of its own: it only hears the keys the text lets by.
-            canRequestFocus: false,
-            skipTraversal: true,
-            onKeyEvent: _onHardwareKey,
-            child: CodeEditor(
-              controller: _controller,
-              focusNode: _editorFocus,
-              wordWrap: _wordWrap,
-              toolbarController: _toolbar,
-              findController: _find,
-              findBuilder: (context, find, readOnly) => _FindBar(find),
-              style: CodeEditorStyle(
-                fontSize: _fontSize,
-                // Files are code and config far more often than prose, and
-                // both are unreadable in a proportional face once alignment
-                // matters.
-                fontFamily: 'monospace',
-                codeTheme: _codeThemes[Theme.of(context).brightness],
+          // The text stays built behind the preview, so Source comes back
+          // with its cursor and scroll position; out of focus meanwhile, so
+          // no key reaches text nobody can see.
+          child: IndexedStack(
+            index: _preview ? 1 : 0,
+            sizing: StackFit.expand,
+            children: [
+              ExcludeFocus(
+                excluding: _preview,
+                // re_editor opens the keyboard with autocorrect, smart
+                // punctuation and capitalisation all off, as a plain text
+                // file needs.
+                child: Focus(
+                  // Not a stop of its own: it only hears the keys the text
+                  // lets by.
+                  canRequestFocus: false,
+                  skipTraversal: true,
+                  onKeyEvent: _onHardwareKey,
+                  child: CodeEditor(
+                    controller: _controller,
+                    focusNode: _editorFocus,
+                    wordWrap: _wordWrap,
+                    toolbarController: _toolbar,
+                    findController: _find,
+                    findBuilder: (context, find, readOnly) => _FindBar(find),
+                    style: CodeEditorStyle(
+                      fontSize: _fontSize,
+                      // Files are code and config far more often than prose,
+                      // and both are unreadable in a proportional face once
+                      // alignment matters.
+                      fontFamily: 'monospace',
+                      codeTheme: _codeThemes[Theme.of(context).brightness],
+                    ),
+                    indicatorBuilder: (context, editing, chunks, notifier) =>
+                        DefaultCodeLineNumber(
+                      controller: editing,
+                      notifier: notifier,
+                    ),
+                  ),
+                ),
               ),
-              indicatorBuilder: (context, editing, chunks, notifier) =>
-                  DefaultCodeLineNumber(
-                controller: editing,
-                notifier: notifier,
-              ),
-            ),
+              if (_preview)
+                _MarkdownPreview(
+                  text: _controller.text,
+                  onTapLink: _openPreviewLink,
+                )
+              else
+                const SizedBox.shrink(),
+            ],
           ),
         ),
       ],
@@ -919,6 +1006,104 @@ class _EditorError extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A Markdown file as it reads, from the text in the editor rather than the
+/// host, so an edit not yet saved shows too. Read-only, since editing is
+/// Source's, and selectable across blocks.
+///
+/// Images are never fetched: a relative one is a file on the host, and a web
+/// one is as often a tracking badge. Each shows as its alt text.
+class _MarkdownPreview extends StatelessWidget {
+  const _MarkdownPreview({required this.text, required this.onTapLink});
+
+  final String text;
+  final MarkdownTapLinkCallback onTapLink;
+
+  /// ponytail: flutter_markdown_plus parses and builds the whole document on
+  /// the UI thread, 0.6 s a megabyte on a desktop and slower on the tablet, so
+  /// the preview stops here. Parse in an isolate and build the blocks lazily
+  /// if longer files must render in full.
+  static const _limit = 100 * 1024;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final body = theme.textTheme.bodyMedium!;
+    var shown = text;
+    if (text.length > _limit) {
+      final end = text.lastIndexOf('\n', _limit);
+      shown = text.substring(0, end > 0 ? end : _limit);
+    }
+
+    return ValueListenableBuilder(
+      // Code in the terminal's font, following Settings as it changes.
+      valueListenable: terminalSettings,
+      builder: (context, terminal, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (shown.length < text.length)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Text(
+                'Only the first 100 KB is shown here. Source has the whole '
+                'file.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          Expanded(
+            child: SelectionArea(
+              child: Markdown(
+                data: shown,
+                onTapLink: onTapLink,
+                imageBuilder: (uri, title, alt) => Text.rich(
+                  TextSpan(
+                    children: [
+                      const WidgetSpan(
+                        alignment: PlaceholderAlignment.middle,
+                        child: Icon(Icons.image_outlined, size: 16),
+                      ),
+                      TextSpan(
+                        text: ' ${alt == null || alt.isEmpty ? uri : alt}',
+                      ),
+                    ],
+                  ),
+                  style: body.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+                // The package's own picks a fixed blue for links and a
+                // colour that vanishes on a dark page for checkboxes.
+                styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                  a: TextStyle(
+                    color: scheme.primary,
+                    decoration: TextDecoration.underline,
+                    decorationColor: scheme.primary,
+                  ),
+                  code: body.copyWith(
+                    fontFamily: terminal.fontFamily,
+                    fontFamilyFallback: terminal.fontFamilyFallback,
+                    fontSize: body.fontSize! * 0.9,
+                    backgroundColor: scheme.surfaceContainerHighest,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  checkbox: body.copyWith(color: scheme.primary),
+                  // Sized to what they hold, so a wide one scrolls sideways
+                  // the way a code block does, rather than squeezing.
+                  tableColumnWidth: const IntrinsicColumnWidth(),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

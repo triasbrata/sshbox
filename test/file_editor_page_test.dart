@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
@@ -720,5 +722,166 @@ void main() {
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
     expect(closed, isTrue);
+  });
+
+  group('markdown', () {
+    const readme = '/home/me/README.md';
+
+    Future<void> pumpReadme(
+      WidgetTester tester,
+      String text, {
+      void Function(Uri url)? onOpenWeb,
+    }) async {
+      final browser = FakeFileBrowser()..contents[readme] = text;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FileEditorPage(
+            browser: browser,
+            path: readme,
+            onOpenWeb: onOpenWeb,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> toggle(WidgetTester tester, String tooltip) async {
+      await tester.tap(find.byTooltip(tooltip));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('only a Markdown file has a preview, and opens in it',
+        (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+      expect(find.byTooltip('Show preview'), findsNothing);
+      expect(find.byTooltip('Show source'), findsNothing);
+      expect(find.byType(Markdown), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+      await pumpReadme(tester, '# Title\n');
+      expect(find.byType(Markdown), findsOneWidget);
+      expect(find.text('Title'), findsOneWidget);
+      // Read-only, so nothing to type with.
+      expect(find.byType(EditorKeyBar), findsNothing);
+
+      await toggle(tester, 'Show source');
+      expect(find.byType(Markdown), findsNothing);
+      expect(find.byType(EditorKeyBar), findsOneWidget);
+    });
+
+    testWidgets('previews unsaved edits, and Source keeps them',
+        (tester) async {
+      await pumpReadme(tester, '# Title\n\nfirst paragraph\n');
+      await toggle(tester, 'Show source');
+      final editor = tester.state(find.byType(CodeEditor));
+      _editor(tester)
+        ..text = '# Edited\n\nsecond paragraph\n'
+        ..selection = const CodeLineSelection.collapsed(index: 2, offset: 3);
+      await tester.pumpAndSettle();
+
+      await toggle(tester, 'Show preview');
+      expect(find.text('Edited'), findsOneWidget);
+      expect(find.text('second paragraph'), findsOneWidget);
+      expect(find.text('Title'), findsNothing);
+      expect(_canSave(tester), isTrue);
+
+      await toggle(tester, 'Show source');
+      expect(_editor(tester).text, '# Edited\n\nsecond paragraph\n');
+      expect(_editor(tester).selection.extentIndex, 2);
+      expect(_editor(tester).selection.extentOffset, 3);
+      // The same editor rather than a new one, so its scroll came back too.
+      expect(tester.state(find.byType(CodeEditor)), same(editor));
+    });
+
+    testWidgets('a web link opens in a web tab, a relative one opens nothing',
+        (tester) async {
+      final opened = <Uri>[];
+      await pumpReadme(
+        tester,
+        'See [the docs](https://example.com/docs) or [setup](docs/setup.md).\n',
+        onOpenWeb: opened.add,
+      );
+
+      await tester.tapOnText(find.textRange.ofSubstring('the docs'));
+      await tester.pumpAndSettle();
+      expect(opened, [Uri.parse('https://example.com/docs')]);
+
+      await tester.tapOnText(find.textRange.ofSubstring('setup'));
+      // Not settled, which would wait out the toast.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(opened, hasLength(1));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.textContaining('docs/setup.md'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('renders a table, code, tasks, and an image as its alt text',
+        (tester) async {
+      terminalSettings.value = terminalStyleOf('JetBrains Mono', 13);
+      addTearDown(
+        () => terminalSettings.value = TerminalSettings.defaultStyle,
+      );
+      await pumpReadme(tester, '''
+| Name | Value |
+|------|-------|
+| a    | 1     |
+
+```sh
+echo hello
+```
+
+- [x] done
+- [ ] todo
+
+![the logo](img/logo.png)
+''');
+
+      bool sideways(Widget widget) =>
+          widget is SingleChildScrollView &&
+          widget.scrollDirection == Axis.horizontal;
+      expect(
+        find.ancestor(
+          of: find.byType(Table),
+          matching: find.byWidgetPredicate(sideways),
+        ),
+        findsOneWidget,
+      );
+      final code = find.text('echo hello');
+      expect(
+        find.ancestor(of: code, matching: find.byWidgetPredicate(sideways)),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<Text>(code).textSpan!.style!.fontFamily,
+        'JetBrains Mono',
+      );
+      expect(find.byIcon(Icons.check_box), findsOneWidget);
+      expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
+      // Named, never fetched.
+      expect(find.textContaining('the logo'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+    });
+
+    testWidgets('Find from the preview finds in Source', (tester) async {
+      await pumpReadme(tester, '# Title\n');
+
+      await tester.tap(find.byTooltip('Find'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Markdown), findsNothing);
+      expect(find.widgetWithText(TextField, 'Find'), findsOneWidget);
+    });
+
+    testWidgets('previews only the start of a very long file',
+        (tester) async {
+      await pumpReadme(tester, 'word ' * 30000);
+      expect(find.textContaining('Only the first 100 KB'), findsOneWidget);
+    });
   });
 }
