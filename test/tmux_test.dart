@@ -50,8 +50,14 @@ void main() {
       final command = TmuxSession.command('sshbox-abc');
       expect(
         command,
-        contains('update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID"'),
+        contains(
+          'update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID '
+          'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET"',
+        ),
       );
+      // A server that listed only the first two for an earlier version gets
+      // the rest.
+      expect(command, contains('grep -q LC_SSHBOX_NOTIFY_SECRET ||'));
       expect(command, endsWith("new-session -A -s sshbox-abc 2>&1'"));
     },
   );

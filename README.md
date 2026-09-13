@@ -99,9 +99,10 @@ round-trip-per-entry shape and throw away the one advantage it has.
   debug manifest, so a release build would otherwise ship unable to connect.
 - **Cleartext HTTP is allowed** (`network_security_config.xml`), for the web
   tabs: a dev server on a host, or one forwarded to the tailnet, is plain
-  `http`, which the WebView otherwise refuses outright. Nothing else in the
-  app speaks HTTP — SSH is its own socket — so it changes what a web tab may
-  load and nothing more.
+  `http`, which the WebView otherwise refuses outright. The only other HTTP
+  in the app is HTTPS to the notification relay, and the direct
+  notifications' tiny server, which answers inside SSH channels rather than
+  on a socket — so it changes what a web tab may load and nothing more.
 - **Editing a host leaves blank credential fields alone**, so changing a port
   cannot silently wipe a stored key.
 
@@ -675,10 +676,11 @@ over a message, the gateway does the rest.
 A `notification` block would let Android post its own notification while the
 app is backgrounded, and that one carries no payload to route with.
 
-The device's registration token goes to every host it connects to, as
-`LC_SSHBOX_TOKEN`: see [Sending one from a server](#sending-one-from-a-server).
-**Settings → Notifications → Copy notification token** copies it for a host
-that won't take it, and a debug build prints it to logcat at startup.
+Every shell the app opens is told two ways to reach the phone: a port on the
+host that comes straight down its own connection, and a key for the relay
+that sends the push. See [Sending one from a server](#sending-one-from-a-server).
+**Settings → Notifications → Copy notification key** copies the relay key
+for a host that won't take it.
 
 **Testing without a server:** `sshbox://notify/<hostId>` posts a notification
 locally, so the whole notify → tap → resume path can be exercised with adb:
@@ -693,72 +695,112 @@ Firebase config lives in `android/app/google-services.json` and the
 
 ### Sending one from a server
 
-`tools/sshbox-notify` is a Go binary to drop on any server you SSH into:
+Two ways, and neither needs anything on the server but curl: straight down
+the SSH connection while its session is open, and through the relay
+otherwise.
+
+**Straight down the connection.** Before a connection opens its shell, it
+asks the host to listen on a port of the host's own loopback for us — `ssh
+-R` on `127.0.0.1`, a port the host picks. What connects there comes down
+that connection to the app, which answers it itself, as a tiny HTTP server
+would, and shows it as a notification that opens the host when tapped. No
+FCM, no relay, no internet: it works while the session is open, in the
+background too. Nothing listens on the phone.
 
 ```sh
-cd tools/sshbox-notify && go build -o sshbox-notify .
-scp sshbox-notify server:/usr/local/bin/
-
-# then, at the end of something slow:
-sshbox-notify "build selesai"
-sshbox-notify -title Deploy -host <hostId> "selesai dalam 4m"
+curl --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
+  -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
+  --data-urlencode "title=Build" \
+  --data-urlencode "body=build done"
 ```
 
-It is a compiled binary rather than a curl one-liner because FCM HTTP v1
-requires OAuth2 with a service account, and signing an RS256 JWT in shell is
-not worth the evening. Static, no runtime dependencies, and it cross-compiles
-for linux/amd64, linux/arm64 and darwin/arm64.
+Only `POST /v1/send` is answered, with the connection's secret as its bearer
+token. The body is a form, as there, or JSON: `body` is required and cut at
+1000 characters, and `title` is "Jeansh" when left out, cut at 100. It
+answers 200 `{"ok":true}`; 401 for a wrong secret; 400, 404, 405, or 413
+past 16 KB otherwise; and hangs up on a request that has not arrived in five
+seconds. A host that will not forward — `AllowTcpForwarding no`, say — still
+connects, and its shells get neither variable.
 
-It notifies the device the shell it runs in was opened from, and a tap opens
-the host that shell came through. Jeansh passes both with every shell it
-opens, plain or tmux:
+**Through the relay.** [jeansh-notify](https://github.com/triasbrata/jeansh-notify),
+a Cloudflare Worker at `https://jeansh-notify.brata.cloud`, holds the Firebase
+credentials and sends a push, which reaches the phone with no session open:
+
+```sh
+curl -fsS https://jeansh-notify.brata.cloud/v1/send \
+  -H "Authorization: Bearer $LC_SSHBOX_TOKEN" \
+  --data-urlencode "host=$LC_SSHBOX_HOST_ID" \
+  --data-urlencode "title=Build" \
+  --data-urlencode "body=build done"
+```
+
+`LC_SSHBOX_TOKEN` is the phone's relay key, never its FCM token. The app
+trades the FCM token for it with the relay (`POST /v1/register`) at launch,
+and again when FCM replaces the token, revoking the key it replaces; the key
+is kept in the keystore with the token it was registered for. With the relay
+out of reach it tries again at the next launch or connect, and until then a
+shell gets no `LC_SSHBOX_TOKEN` at all. **Settings → Notifications → Reset
+notification key** revokes the key and registers a new one, for when it has
+got out: every server holding the old key can no longer notify, and open
+sessions keep it until they reconnect.
+
+The two together, the direct way first:
+
+```sh
+notify() {
+  curl -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
+    -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
+    --data-urlencode "title=$1" --data-urlencode "body=$2" >/dev/null ||
+  curl -fsS https://jeansh-notify.brata.cloud/v1/send \
+    -H "Authorization: Bearer $LC_SSHBOX_TOKEN" \
+    --data-urlencode "host=$LC_SSHBOX_HOST_ID" \
+    --data-urlencode "title=$1" --data-urlencode "body=$2" >/dev/null
+}
+
+# then, at the end of something slow:
+make build; notify Build "build selesai"
+```
+
+Jeansh passes these with every shell it opens, plain or tmux:
 
 | Variable | Holds |
 | --- | --- |
-| `LC_SSHBOX_TOKEN` | the device's FCM registration token |
-| `LC_SSHBOX_HOST_ID` | the id of the saved host, which a tap opens |
+| `LC_SSHBOX_NOTIFY_URL` | `http://127.0.0.1:<port>/v1/send`, the port the host listens on for this connection |
+| `LC_SSHBOX_NOTIFY_SECRET` | this connection's own secret, 32 random bytes in base64url |
+| `LC_SSHBOX_TOKEN` | the phone's relay key |
+| `LC_SSHBOX_HOST_ID` | the id of the saved host, which a tap on the push opens |
 
-Neither is sent while the device has no token, as when Firebase did not
-start. `-token` and `-host` still win over them.
+The first two only when the host listens for us, the last two only while the
+phone has a relay key.
 
 **The server has to accept them.** OpenSSH takes only the variables its
 `AcceptEnv` lists. Debian, Ubuntu and macOS ship `AcceptEnv LANG LC_*`, which
-is why both names start with `LC_`, the trick iTerm2's `LC_TERMINAL` uses.
+is why every name starts with `LC_`, the trick iTerm2's `LC_TERMINAL` uses.
 Elsewhere, add `AcceptEnv LC_SSHBOX_*` (or `LC_*`) to `sshd_config` and reload
 sshd. Tailscale SSH passes them only when the tailnet policy's SSH rule lists
 them in `acceptEnv`, as in `"acceptEnv": ["LC_SSHBOX_*"]`, on Tailscale 1.76
 or later. A server that refuses them still connects, and
-`echo $LC_SSHBOX_TOKEN` prints nothing there; put the token in the config
-instead, from **Settings → Notifications → Copy notification token**.
+`echo $LC_SSHBOX_TOKEN` prints nothing there; export `LC_SSHBOX_TOKEN` in its
+shell's profile instead, from **Settings → Notifications → Copy notification
+key**, with `LC_SSHBOX_HOST_ID` for the host a tap opens. The direct way
+cannot be set by hand: its port and secret are new with each connection.
 
-In tmux mode a tab adds the two names to tmux's `update-environment`, once per
-tmux server, so tmux copies them into the tab's session when it makes it and
-at every reattach. A new pane gets this connection's values even when the
+In tmux mode a tab adds the four names to tmux's `update-environment`, once
+per tmux server, so tmux copies them into the tab's session when it makes it
+and at every reattach. A new pane gets this connection's values even when the
 tmux server was started by something else; a pane already running keeps the
-ones it started with.
+ones it started with, whose direct URL went with the connection that gave it
+— which is what the relay in `notify` above is for.
 
-**The token goes to every host you connect to.** It tells FCM which device to
-reach, but sending to it also takes the Firebase service account, which stays
-on the machine that runs `sshbox-notify`.
+**The relay key goes to every host you connect to.** It sends notifications
+to this phone and does nothing else; if it gets out, reset it.
 
-Config lives at `~/.config/sshbox-notify/config.json`, and all it needs is the
-service account. `tokens` and `host_id` stand in for a shell without the
-variables:
-
-```json
-{
-  "service_account": "/etc/sshbox/service-account.json",
-  "tokens": ["<token from Settings → Notifications in Jeansh>"],
-  "host_id": "<the sshbox host entry for this server>"
-}
-```
-
-The service account comes from the Firebase console under
-**Project Settings → Service Accounts → Generate new private key**. It is a
-credential that can send messages to every device in the project — keep it
-readable only by the user running the command, and do not commit it.
-
-Running with no config prints the exact commands to create one.
+**The direct way's ceiling.** The port is on the host's loopback, so on a
+server others log in to, once the connection has ended another local user can
+listen on that port and read what a shell left over from the connection sends
+to it. They get the text of that one message and nothing more: the secret
+stops them sending anything to the phone. It is also why `LC_SSHBOX_TOKEN`
+never goes to the direct URL — whoever held the port would hold the key.
 
 ## Uploading files
 
@@ -896,7 +938,10 @@ why search is stated as a separate capability rather than folded into
 ## Not done yet
 
 - **APNs / iOS push.** Only FCM on Android is wired.
-- **A relay**, so servers hold a token rather than a service-account JSON.
+- **Your own relay.** Its address is one constant, `notifyRelay` in
+  `notifications/notify_key.dart`; a self-hosted
+  [jeansh-notify](https://github.com/triasbrata/jeansh-notify) means changing
+  it and building.
 - **mosh.** The seam is in place, the transport is not. No mature mosh
   implementation exists in Dart, so this is real work, not a wiring job.
 - **Downloading a file to the phone.** The browser reads and writes text in

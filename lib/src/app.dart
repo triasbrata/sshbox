@@ -10,6 +10,7 @@ import 'data/host_repository.dart';
 import 'data/secret_store.dart';
 import 'models/host_profile.dart';
 import 'notifications/notification_gateway.dart';
+import 'notifications/notify_key.dart';
 import 'notifications/push_messaging.dart';
 import 'session/port_forwards.dart';
 import 'session/session_keepalive.dart';
@@ -36,8 +37,10 @@ class _SshboxAppState extends State<SshboxApp> {
   /// no context under them.
   final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
+  late final NotifyKey _notifyKey = NotifyKey(_secrets);
   late final SessionManager _sessions = SessionManager(
-    pushToken: () => _push.token,
+    notifyKey: _notifyKey,
+    onNotify: _notifications.showForHost,
   );
   late final HostRepository _repository = HostRepository(_secrets);
 
@@ -48,6 +51,7 @@ class _SshboxAppState extends State<SshboxApp> {
   late final PushMessaging _push = PushMessaging(
     notifications: _notifications,
     onOpenLink: _handleLink,
+    notifyKey: _notifyKey,
   );
 
   late final SessionKeepAlive _keepAlive =

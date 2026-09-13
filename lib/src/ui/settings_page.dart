@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../notifications/notify_key.dart';
 import 'key_bar.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
@@ -271,11 +272,11 @@ final keyBarSettings = KeyBarSettings();
 
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, this.pushToken});
+  const SettingsPage({super.key, this.notifyKey});
 
-  /// Reads the device's push token, for Notifications to copy. Left out,
-  /// there is none to copy.
-  final String? Function()? pushToken;
+  /// This device's relay key, for Notifications to copy and reset. Left
+  /// out, there is none.
+  final NotifyKey? notifyKey;
 
   @override
   Widget build(BuildContext context) {
@@ -301,7 +302,7 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           ),
-          _NotificationsSection(pushToken),
+          _NotificationsSection(notifyKey),
         ],
       ),
     );
@@ -1065,45 +1066,112 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
   }
 }
 
-/// The device's push token, to copy by hand for a host that will not take
-/// it the usual way, as `LC_SSHBOX_TOKEN` with every shell: see
-/// `LiveSession.connect`.
+/// The device's relay key: copied by hand for a host that will not take it
+/// the usual way, as `LC_SSHBOX_TOKEN` with every shell (see
+/// `LiveSession.connect`), and reset when it has got out.
 class _NotificationsSection extends StatelessWidget {
-  const _NotificationsSection(this.pushToken);
+  const _NotificationsSection(this.notifyKey);
 
-  final String? Function()? pushToken;
+  final NotifyKey? notifyKey;
 
   Future<void> _copy(BuildContext context) async {
-    final token = pushToken?.call();
-    if (token == null) {
+    final key = notifyKey?.key;
+    if (key == null) {
       showToast(
         context,
-        'No FCM token yet — push is unavailable',
+        'No notification key yet',
         type: ToastificationType.warning,
       );
       return;
     }
 
-    await Clipboard.setData(ClipboardData(text: token));
+    await Clipboard.setData(ClipboardData(text: key));
     if (context.mounted) {
-      showToast(context, 'FCM token copied', type: ToastificationType.success);
+      showToast(
+        context,
+        'Notification key copied',
+        type: ToastificationType.success,
+      );
+    }
+  }
+
+  Future<void> _reset(BuildContext context, NotifyKey notifyKey) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset notification key?'),
+        content: const Text(
+          'Every server holding the current key can no longer notify this '
+          'device. Open sessions keep the old key until they reconnect.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await notifyKey.reset();
+    } catch (_) {
+      if (context.mounted) {
+        showToast(
+          context,
+          'Could not reach the relay — the old key still works',
+          type: ToastificationType.error,
+        );
+      }
+      return;
+    }
+    if (!context.mounted) return;
+    if (notifyKey.key != null) {
+      showToast(
+        context,
+        'New notification key ready',
+        type: ToastificationType.success,
+      );
+    } else {
+      showToast(
+        context,
+        'No new key yet — Jeansh tries again at the next connect',
+        type: ToastificationType.warning,
+        duration: const Duration(seconds: 3),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final notifyKey = this.notifyKey;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionHeader('Notifications'),
         ListTile(
           leading: const Icon(Icons.key_outlined),
-          title: const Text('Copy notification token'),
+          title: const Text('Copy notification key'),
           subtitle: const Text(
             'Normally sent to hosts automatically as LC_SSHBOX_TOKEN. Copy '
             'it only for a server that does not accept it.',
           ),
           onTap: () => _copy(context),
+        ),
+        ListTile(
+          leading: const Icon(Icons.restart_alt),
+          title: const Text('Reset notification key'),
+          subtitle: const Text(
+            'Revoke the current key, for when it has got out, and register '
+            'a new one',
+          ),
+          enabled: notifyKey != null,
+          onTap: notifyKey == null ? null : () => _reset(context, notifyKey),
         ),
       ],
     );

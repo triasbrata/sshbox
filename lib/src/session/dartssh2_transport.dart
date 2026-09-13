@@ -45,6 +45,7 @@ class Dartssh2Transport implements SessionTransport {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     final session = _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner)
       .._environment = environment;
@@ -54,6 +55,7 @@ class Dartssh2Transport implements SessionTransport {
       columns: columns,
       rows: rows,
       shell: shell,
+      beforeShell: beforeShell,
     );
     return session;
   }
@@ -138,6 +140,7 @@ class _Dartssh2Session
     required int columns,
     required int rows,
     required bool shell,
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     // The host being signed in to, so a failure on a jump host says so.
     var hop = host;
@@ -172,10 +175,13 @@ class _Dartssh2Session
         );
       }
       _client = client;
+      // What opening a shell would otherwise wait out, and fail on.
+      await client.authenticated;
+      if (beforeShell != null) {
+        _environment = {..._environment, ...await beforeShell(this)};
+      }
 
       if (!shell) {
-        // What opening a shell would otherwise wait out, and fail on.
-        await _client!.authenticated;
         unawaited(
           _client!.done.catchError((Object _) {}).whenComplete(_markClosed),
         );
@@ -406,11 +412,15 @@ class _Dartssh2Session
   }
 
   /// A tcpip-forward on the connection the shell holds. Its channels come
-  /// only from the port asked for: dartssh2 refuses any other.
+  /// only from the port asked for, or the one the host picked for port 0:
+  /// dartssh2 refuses any other.
+  ///
+  /// While connecting too: a shell's notification port is asked for before
+  /// the shell starts — see [SessionTransport.connect]'s `beforeShell`.
   @override
   Future<RemotePort> listen(String host, int port) async {
     final client = _client;
-    if (client == null || _status.value != SessionStatus.connected) {
+    if (client == null || _status.value == SessionStatus.closed) {
       throw const SshSessionException('Not connected.');
     }
     final forward = await client.forwardRemote(host: host, port: port);
@@ -421,6 +431,7 @@ class _Dartssh2Session
       );
     }
     return (
+      port: forward.port,
       connections: forward.connections.map(
         (channel) => (output: channel.stream, input: channel.sink),
       ),

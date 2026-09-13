@@ -76,6 +76,7 @@ class _Host implements SessionTransport, TerminalSession {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     attempts++;
     final key = fingerprint;

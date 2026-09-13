@@ -175,7 +175,7 @@ class _HostsPageState extends State<HostsPage> {
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) =>
-                    SettingsPage(pushToken: widget.sessions.pushToken),
+                    SettingsPage(notifyKey: widget.sessions.notifyKey),
               ),
             ),
             icon: const Icon(Icons.settings_outlined),

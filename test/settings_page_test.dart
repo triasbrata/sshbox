@@ -4,10 +4,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:xterm2/xterm.dart';
+
+import 'fake_relay.dart';
 
 /// The terminal's key bar as it has always been: the divider after files and
 /// upload, then every key in its place.
@@ -214,18 +218,18 @@ void main() {
     }
   });
 
-  testWidgets('with no push token yet, copying says push is unavailable', (
+  testWidgets('with no notification key yet, copying says so', (
     tester,
   ) async {
     await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-    final copy = find.text('Copy notification token');
+    final copy = find.text('Copy notification key');
     // The page's own list, not the preview terminal's.
     await tester.scrollUntilVisible(
       copy,
       300,
       scrollable: find.byType(Scrollable).first,
     );
-    // Why the row is there at all, when hosts get the token by themselves.
+    // Why the row is there at all, when hosts get the key by themselves.
     expect(find.textContaining('LC_SSHBOX_TOKEN'), findsOneWidget);
 
     await tester.tap(copy);
@@ -233,9 +237,82 @@ void main() {
     await tester.pump();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
-    expect(find.text('No FCM token yet — push is unavailable'), findsOneWidget);
+    expect(find.text('No notification key yet'), findsOneWidget);
     // The toast's countdown run out, rather than left running past the test.
     await tester.pumpAndSettle();
+  });
+
+  group('reset notification key', () {
+    late FakeRelay relay;
+    late NotifyKey notifyKey;
+
+    /// Settings, down at the row, with the dialog it opens up.
+    Future<void> openDialog(WidgetTester tester) async {
+      relay = FakeRelay();
+      notifyKey = NotifyKey(InMemorySecretStore(), relay: relay);
+      await notifyKey.useFcmToken('fcm-token');
+      await tester.pumpWidget(
+        MaterialApp(home: SettingsPage(notifyKey: notifyKey)),
+      );
+      final reset = find.text('Reset notification key');
+      await tester.scrollUntilVisible(
+        reset,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(reset);
+      await tester.pumpAndSettle();
+    }
+
+    /// Resets in the dialog, and waits for the toast that says how it went.
+    Future<void> confirm(WidgetTester tester) async {
+      await tester.tap(find.widgetWithText(FilledButton, 'Reset'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('asks first, saying what the old key stops doing', (
+      tester,
+    ) async {
+      await openDialog(tester);
+      expect(
+        find.textContaining('can no longer notify this device'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('keep the old key until they reconnect'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await tester.pumpAndSettle();
+      expect(relay.revoked, isEmpty);
+      expect(notifyKey.key, 'jnk_1');
+    });
+
+    testWidgets('revokes the key and registers a new one', (tester) async {
+      await openDialog(tester);
+      await confirm(tester);
+      expect(relay.revoked, ['jnk_1']);
+      expect(notifyKey.key, 'jnk_2');
+      expect(find.text('New notification key ready'), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('keeps the old key when the relay is out of reach', (
+      tester,
+    ) async {
+      await openDialog(tester);
+      relay.down = true;
+      await confirm(tester);
+      expect(notifyKey.key, 'jnk_1');
+      expect(
+        find.text('Could not reach the relay — the old key still works'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
   });
 
   group('key bar', () {
