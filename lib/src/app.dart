@@ -196,10 +196,9 @@ class _SshboxAppState extends State<SshboxApp> {
 
   @override
   Widget build(BuildContext context) {
-    // Toasts (see `showToast`) stack under the status bar, three at most: a
-    // fourth pushes the oldest out rather than reaching down over the shell.
+    // Toasts (see `showToast`), stacked the way `toastConfig` says.
     return ToastificationWrapper(
-      config: const ToastificationConfig(maxToastLimit: 3),
+      config: toastConfig,
       // The mode and theme picked in Settings. A change rebuilds the app's
       // theme only: every page keeps its state.
       child: ValueListenableBuilder(

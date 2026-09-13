@@ -7,7 +7,7 @@ import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/terminal_link.dart';
-import 'package:toastification/toastification.dart';
+import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
 
@@ -296,7 +296,7 @@ void main() {
 
     expect(
       find.descendant(
-        of: find.byType(BuiltInToastBuilder),
+        of: find.byType(ToastCard),
         matching: find.text('Could not list /home/me/dev: permission denied.'),
       ),
       findsOneWidget,
@@ -339,7 +339,7 @@ void main() {
     expect(_row('notes.txt'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(BuiltInToastBuilder),
+        of: find.byType(ToastCard),
         matching: find.text('dangling is a link that points nowhere.'),
       ),
       findsOneWidget,

@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
-import 'package:toastification/toastification.dart';
+import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
 
@@ -121,7 +121,7 @@ void main() {
     expect(browser.contents['/home/me/notes.txt'], 'rewritten\n');
     expect(
       find.descendant(
-        of: find.byType(BuiltInToastBuilder),
+        of: find.byType(ToastCard),
         matching: find.text('Saved notes.txt'),
       ),
       findsOneWidget,
@@ -564,7 +564,7 @@ void main() {
 
       await tester.tap(
         find.descendant(
-          of: find.byType(BuiltInToastBuilder),
+          of: find.byType(ToastCard),
           matching: find.text('Save with sudo'),
         ),
       );

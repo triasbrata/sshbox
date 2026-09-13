@@ -17,6 +17,7 @@ import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
 import 'package:sshbox/src/ui/tmux_panes.dart';
+import 'package:sshbox/src/ui/toast.dart';
 import 'package:toastification/toastification.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
@@ -119,7 +120,7 @@ class _Shell
 Finder _toast(String message, ToastificationType type) => find.ancestor(
       of: find.text(message),
       matching: find.byWidgetPredicate(
-        (widget) => widget is BuiltInToastBuilder && widget.type == type,
+        (widget) => widget is ToastCard && widget.type == type,
       ),
     );
 
@@ -727,7 +728,7 @@ void main() {
 
       await tester.pumpWidget(
         ToastificationWrapper(
-          config: const ToastificationConfig(maxToastLimit: 3),
+          config: toastConfig,
           child: MaterialApp(
             home: TabsShell(
               repository: HostRepository(_NoSecrets()),
@@ -816,7 +817,7 @@ void main() {
         beside: ['0100007F:240D 1000'], // 127.0.0.1:9229
       );
       expect(_toast(said, ToastificationType.info), findsOneWidget);
-      expect(find.byType(BuiltInToastBuilder), findsOneWidget);
+      expect(find.byType(ToastCard), findsOneWidget);
       await tester.pumpAndSettle();
     });
 
