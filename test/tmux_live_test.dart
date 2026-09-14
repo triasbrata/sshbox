@@ -167,30 +167,30 @@ void main() {
         'elsewhere',
       ]);
       const name = 'sshbox-env';
-      Future<(Process, CommandChannel)> start(String token) => _start(
+      Future<(Process, CommandChannel)> start(String key) => _start(
         name,
         dir,
-        environment: {'LC_SSHBOX_TOKEN': token, 'LC_SSHBOX_HOST_ID': 'host-1'},
+        environment: {'LC_SSHBOX_KEY': key, 'LC_SSHBOX_HOST_ID': 'host-1'},
       );
       // What the focused pane's shell has, and not the line typed to ask.
       Future<void> printed(TmuxSession tmux, String values) async {
         tmux.send(
-          r'echo "<$LC_SSHBOX_TOKEN $LC_SSHBOX_HOST_ID>"'
+          r'echo "<$LC_SSHBOX_KEY $LC_SSHBOX_HOST_ID>"'
           '\r',
         );
         await _until(() => _text(tmux.focused!).contains('<$values>'));
       }
 
-      var (process, channel) = await start('token-1');
+      var (process, channel) = await start('key-1');
       var tmux = _session(name, channel);
       expect(await tmux.attached, isTrue);
       await _until(() => tmux.panes.length == 1);
-      await printed(tmux, 'token-1 host-1');
+      await printed(tmux, 'key-1 host-1');
 
-      // Back after a reconnect, with a token FCM has replaced since.
+      // Back after a reconnect, with a key a reset has replaced since.
       tmux.dispose();
       await process.exitCode;
-      (process, channel) = await start('token-2');
+      (process, channel) = await start('key-2');
       tmux = _session(name, channel);
       expect(await tmux.attached, isTrue);
       await _until(() => tmux.panes.length == 1);
@@ -198,11 +198,11 @@ void main() {
       await _until(
         () => tmux.panes.length == 2 && tmux.focused == tmux.panes.last,
       );
-      await printed(tmux, 'token-2 host-1');
+      await printed(tmux, 'key-2 host-1');
 
       // Listed once, however often a tab attaches.
       final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
-      expect('LC_SSHBOX_TOKEN'.allMatches('${listed.stdout}'), hasLength(1));
+      expect('LC_SSHBOX_KEY'.allMatches('${listed.stdout}'), hasLength(1));
       expect(
         'LC_SSHBOX_NOTIFY_SECRET'.allMatches('${listed.stdout}'),
         hasLength(1),

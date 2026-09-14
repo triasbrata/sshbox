@@ -25,15 +25,15 @@ class PushMessaging {
   PushMessaging({
     required this.notifications,
     required this.onOpenLink,
-    required this.notifyKey,
+    required this.notifyKeys,
   });
 
   final NotificationGateway notifications;
   final Future<void> Function(Uri uri) onOpenLink;
 
-  /// Given every registration token FCM hands over, to trade with the relay
-  /// for the key servers hold: the token itself goes to no server.
-  final NotifyKey notifyKey;
+  /// Given every registration token FCM hands over, to register each host's
+  /// key for with the relay: the token itself goes to no server.
+  final NotifyKeys notifyKeys;
 
   Future<void> initialize() async {
     try {
@@ -55,12 +55,12 @@ class PushMessaging {
     // Never logged: debugPrint reaches logcat in a release build too.
     try {
       final token = await messaging.getToken();
-      if (token != null) unawaited(notifyKey.useFcmToken(token));
+      if (token != null) unawaited(notifyKeys.useFcmToken(token));
     } catch (error) {
       debugPrint('sshbox: FCM registration failed, will retry on next launch ($error)');
     }
     messaging.onTokenRefresh.listen(
-      (token) => unawaited(notifyKey.useFcmToken(token)),
+      (token) => unawaited(notifyKeys.useFcmToken(token)),
     );
 
     // App in the foreground: FCM hands us the message and posts nothing, so we

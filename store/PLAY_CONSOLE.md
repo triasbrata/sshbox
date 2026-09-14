@@ -111,13 +111,13 @@ to children", which keeps the app out of the Families policy.
 | Collects or shares required user data types? | Yes |
 | All collected data encrypted in transit? | Yes (HTTPS to the relay, TLS to FCM) |
 | Account creation | The app doesn't let users create an account |
-| Users can request that their data is deleted? | Yes: Settings → Notifications → Reset notification key, or email (see the privacy policy) |
+| Users can request that their data is deleted? | Yes: deleting a host, Settings → Notifications → Reset notification keys, or email (see the privacy policy) |
 
 **Data types:**
 
 | Data type | Collected | Shared | Ephemeral | Required | Purpose |
 |---|---|---|---|---|---|
-| Device or other IDs (the FCM registration token, stored on the jeansh-notify relay under a hash of the key, and the Firebase installation ID used by FCM) | Yes | No (Google and Cloudflare are service providers) | No | Yes (registered at launch, no switch) | App functionality |
+| Device or other IDs (the FCM registration token, stored on the jeansh-notify relay with the public half of each host's key, and the Firebase installation ID used by FCM) | Yes | No (Google and Cloudflare are service providers) | No | Yes (registered at launch, no switch) | App functionality |
 
 **Not declared, and why:**
 

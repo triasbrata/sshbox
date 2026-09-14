@@ -507,34 +507,36 @@ void main() {
       return connection.environment;
     }
 
-    Future<NotifyKey> registered(FakeRelay relay) async {
-      final notifyKey = NotifyKey(InMemorySecretStore(), relay: relay);
-      await notifyKey.useFcmToken('fcm-token');
-      return notifyKey;
+    /// The relay keys, once FCM has given its token.
+    Future<NotifyKeys> withToken(FakeRelay relay) async {
+      final notifyKeys = NotifyKeys(InMemorySecretStore(), relay: relay);
+      await notifyKeys.useFcmToken('fcm-token');
+      return notifyKeys;
     }
 
-    test('its relay key and the host id, never the FCM token', () async {
-      final environment = await sent(
-        SessionManager(notifyKey: await registered(FakeRelay())),
-      );
+    test("the host's own relay key, registered as it connects, and its id; "
+        'never the FCM token, nor the bearer key of old', () async {
+      final notifyKeys = await withToken(FakeRelay());
+      final environment = await sent(SessionManager(notifyKeys: notifyKeys));
       expect(environment, {
-        'LC_SSHBOX_TOKEN': 'jnk_1',
+        'LC_SSHBOX_KEY': await notifyKeys.valueFor('host-1'),
         'LC_SSHBOX_HOST_ID': 'host-1',
       });
-      expect(environment!.values, isNot(contains('fcm-token')));
+      expect(environment!['LC_SSHBOX_KEY'], startsWith('jnk_'));
+      expect(environment.keys, isNot(contains('LC_SSHBOX_TOKEN')));
+      expect(environment.values, isNot(contains('fcm-token')));
     });
 
     test('no key while the relay is out of reach, and one at the next '
         'connect', () async {
       final relay = FakeRelay()..down = true;
-      final manager = SessionManager(notifyKey: await registered(relay));
-      relay.down = false;
+      final manager = SessionManager(notifyKeys: await withToken(relay));
 
       expect(await sent(manager), isEmpty);
-      await pumpEventQueue();
-      expect(await sent(manager), {
-        'LC_SSHBOX_TOKEN': 'jnk_1',
-        'LC_SSHBOX_HOST_ID': 'host-1',
+      relay.down = false;
+      expect((await sent(manager))!.keys, {
+        'LC_SSHBOX_KEY',
+        'LC_SSHBOX_HOST_ID',
       });
     });
 
@@ -574,11 +576,11 @@ void main() {
 
       test('beside the relay key when there is one', () async {
         final both = SessionManager(
-          notifyKey: await registered(FakeRelay()),
+          notifyKeys: await withToken(FakeRelay()),
           onNotify: manager.onNotify,
         );
         expect((await sent(both))!.keys, {
-          'LC_SSHBOX_TOKEN',
+          'LC_SSHBOX_KEY',
           'LC_SSHBOX_HOST_ID',
           'LC_SSHBOX_NOTIFY_URL',
           'LC_SSHBOX_NOTIFY_SECRET',

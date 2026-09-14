@@ -10,9 +10,10 @@ Jeansh is an SSH client. It connects from your device straight to the servers
 you add. Nothing you type, read, upload or edit in a session passes through a
 server of ours.
 
-Only one thing reaches us: your device's push-notification token. The app
-trades it with our notification relay for a key that your servers use to
-notify you. There are no accounts, ads, analytics or crash reports.
+Only your device's push-notification token reaches us, with the public half
+of a key for each server you connect to: the app registers them with our
+notification relay, so that your servers can notify you. There are no
+accounts, ads, analytics or crash reports.
 
 ## What stays on your device
 
@@ -32,8 +33,8 @@ Jeansh keeps the following in its private app storage on your device:
   256 KB a file, kept until you save or discard them.
 - **Settings:** theme, fonts, key bar, the magic key's position and the
   editor's look.
-- **Notification key:** the relay key described below, with the token it was
-  issued for, encrypted like the secrets above.
+- **Notification keys:** a key pair for each saved host, described below,
+  with the token each was registered for, encrypted like the secrets above.
 - **Web tabs:** pages you open in a web tab, such as a Tailscale sign-in,
   keep their cookies and cache in the app's web view storage.
 
@@ -54,7 +55,7 @@ SSH, and is encrypted between your device and that server. That includes:
 
 Each shell also gets four environment variables:
 
-- `LC_SSHBOX_TOKEN`: your notification key;
+- `LC_SSHBOX_KEY`: that host's notification key;
 - `LC_SSHBOX_HOST_ID`: the id of the saved host;
 - `LC_SSHBOX_NOTIFY_URL` and `LC_SSHBOX_NOTIFY_SECRET`: for notifications
   straight down that connection.
@@ -76,29 +77,30 @@ neither Google nor any server of ours.
   Google's push service, which gives the device a registration token. Google
   processes it under the [Google Privacy Policy](https://policies.google.com/privacy)
   and [Firebase's privacy terms](https://firebase.google.com/support/privacy).
-- The app sends that token to **jeansh-notify**, our relay at
-  `jeansh-notify.brata.cloud` (a Cloudflare Worker), and gets back a random
-  notification key. It does this again only when FCM replaces the token.
-- The relay stores one entry per key, in Cloudflare Workers KV: a SHA-256 hash
-  of the key, pointing to the FCM token and the time it was created. It stores
-  no key itself, and never logs keys, tokens or messages.
-- When a server sends a notification with the key, the relay passes its title,
-  text and host id to FCM, which delivers it to your device. The relay keeps
-  nothing of the message.
+- The first time you connect to a saved host, the app makes a key pair for
+  it and sends **jeansh-notify**, our relay at `jeansh-notify.brata.cloud` (a
+  Cloudflare Worker), that token, the key's public half and the saved host's
+  id. It sends them again, for every key, when FCM replaces the token. The
+  private half stays on your device and goes only to that host.
+- The relay stores one entry per key, in Cloudflare Workers KV: the public
+  key, pointing to the FCM token and the host id. It never gets a private key,
+  and never logs keys, tokens or messages.
+- When a server sends a notification signed with a host's key, the relay
+  checks the signature and passes the title, text and host id to FCM, which
+  delivers it to your device. The relay keeps nothing of the message.
 - The relay counts registrations by IP address to limit abuse, and doesn't
   store the address. Cloudflare, which runs the relay, processes request data
   such as IP addresses under the
   [Cloudflare Privacy Policy](https://www.cloudflare.com/privacypolicy/).
 
-**Deleting the relay's entry.** You have three routes:
+**Deleting the relay's entries.** You have three routes:
 
-- **Settings → Notifications → Reset notification key** deletes the relay's
-  entry for your key and issues a new one.
+- Deleting a host deletes the relay's entry for its key.
+- **Settings → Notifications → Reset notification keys** deletes the relay's
+  entries for every key. Each host gets a new one when it next connects.
 - When FCM reports that a token is no longer valid, for example after you
-  uninstall the app, the relay deletes its entry the next time a server tries
-  to use it.
-- To have your entry deleted without getting a new one, email us the key from
-  **Settings → Notifications → Copy notification key**.
+  uninstall the app, the relay deletes its entries the next time a server
+  tries to use them.
 
 ## What we don't collect
 
@@ -142,16 +144,18 @@ children.
 
 SSH encrypts every session. The app asks before it trusts a new host key and
 warns when a known one changes. Secrets are encrypted with the Android
-Keystore. The relay holds only a hash of each key.
+Keystore. The relay holds only the public half of each key.
 
 ## Your rights and choices
 
 - **On your device:** revoke the notification permission in Android's
   settings at any time. Clear the app's storage, or uninstall it, to remove
   everything the app keeps.
-- **On the relay:** the relay entry is the only data of yours we hold. To get
-  a copy or have it erased, including under the GDPR or the CCPA, email us
-  with the key from **Settings → Notifications → Copy notification key**.
+- **On the relay:** the relay entries are the only data of yours we hold. To
+  get a copy or have them erased, including under the GDPR or the CCPA, email
+  us the key ids: the start of each key that **Copy notification key** on a
+  host's edit page copies, `jnk_` up to the colon. Never send what follows
+  the colon, which is the private key.
 
 ## Changes to this policy
 

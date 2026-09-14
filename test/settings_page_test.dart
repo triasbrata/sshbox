@@ -219,43 +219,24 @@ void main() {
     }
   });
 
-  testWidgets('with no notification key yet, copying says so', (
-    tester,
-  ) async {
-    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-    final copy = find.text('Copy notification key');
-    // The page's own list, not the preview terminal's.
-    await tester.scrollUntilVisible(
-      copy,
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    // Why the row is there at all, when hosts get the key by themselves.
-    expect(find.textContaining('LC_SSHBOX_TOKEN'), findsOneWidget);
-
-    await tester.tap(copy);
-    // A frame for the toast's overlay, one to start its slide, and the slide.
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(find.text('No notification key yet'), findsOneWidget);
-    // The toast's countdown run out, rather than left running past the test.
-    await tester.pumpAndSettle();
-  });
-
-  group('reset notification key', () {
+  group('reset notification keys', () {
     late FakeRelay relay;
-    late NotifyKey notifyKey;
+    late NotifyKeys notifyKeys;
 
-    /// Settings, down at the row, with the dialog it opens up.
+    /// Settings, down at the row, with the dialog it opens up, and two hosts
+    /// with a key each.
     Future<void> openDialog(WidgetTester tester) async {
       relay = FakeRelay();
-      notifyKey = NotifyKey(InMemorySecretStore(), relay: relay);
-      await notifyKey.useFcmToken('fcm-token');
+      notifyKeys = NotifyKeys(InMemorySecretStore(), relay: relay);
+      await notifyKeys.useFcmToken('fcm-token');
+      await notifyKeys.forConnect('host-1');
+      await notifyKeys.forConnect('host-2');
       await tester.pumpWidget(
-        MaterialApp(home: SettingsPage(notifyKey: notifyKey)),
+        MaterialApp(home: SettingsPage(notifyKeys: notifyKeys)),
       );
-      final reset = find.text('Reset notification key');
+      // A host's own key is copied from its page, not from here.
+      expect(find.text('Copy notification key'), findsNothing);
+      final reset = find.text('Reset notification keys');
       await tester.scrollUntilVisible(
         reset,
         300,
@@ -273,43 +254,44 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
     }
 
-    testWidgets('asks first, saying what the old key stops doing', (
-      tester,
-    ) async {
+    testWidgets('asks first, saying servers holding an old key stop until '
+        'their host reconnects', (tester) async {
       await openDialog(tester);
       expect(
-        find.textContaining('can no longer notify this device'),
+        find.textContaining('Servers holding an old key stop notifying'),
         findsOneWidget,
       );
       expect(
-        find.textContaining('keep the old key until they reconnect'),
+        find.textContaining('until their host reconnects'),
         findsOneWidget,
       );
 
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       await tester.pumpAndSettle();
       expect(relay.revoked, isEmpty);
-      expect(notifyKey.key, 'jnk_1');
+      expect(await notifyKeys.valueFor('host-1'), isNotNull);
     });
 
-    testWidgets('revokes the key and registers a new one', (tester) async {
+    testWidgets("revokes every host's key and drops it", (tester) async {
       await openDialog(tester);
+      final ids = relay.registered.map((r) => r.keyId);
       await confirm(tester);
-      expect(relay.revoked, ['jnk_1']);
-      expect(notifyKey.key, 'jnk_2');
-      expect(find.text('New notification key ready'), findsOneWidget);
+      expect(relay.revoked, ids);
+      expect(await notifyKeys.valueFor('host-1'), isNull);
+      expect(await notifyKeys.valueFor('host-2'), isNull);
+      expect(find.textContaining('Notification keys reset'), findsOneWidget);
       await tester.pumpAndSettle();
     });
 
-    testWidgets('keeps the old key when the relay is out of reach', (
+    testWidgets('keeps the keys when the relay is out of reach', (
       tester,
     ) async {
       await openDialog(tester);
       relay.down = true;
       await confirm(tester);
-      expect(notifyKey.key, 'jnk_1');
+      expect(await notifyKeys.valueFor('host-1'), isNotNull);
       expect(
-        find.text('Could not reach the relay — the old key still works'),
+        find.text('Could not reach the relay — some old keys still work'),
         findsOneWidget,
       );
       await tester.pumpAndSettle();

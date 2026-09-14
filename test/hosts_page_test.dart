@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
@@ -218,55 +217,41 @@ void main() {
     expect(find.text('Nothing trusted yet'), findsOneWidget);
   });
 
-  testWidgets('the notification key is copied in Settings, not on Home', (
-    tester,
-  ) async {
+  testWidgets('deleting a host revokes its notification key', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    final copied = <Object?>[];
-    final platform = tester.binding.defaultBinaryMessenger;
-    platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-      if (call.method == 'Clipboard.setData') copied.add(call.arguments);
-      return null;
-    });
-    addTearDown(
-      () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
-    );
     final secrets = InMemorySecretStore();
-    final notifyKey = NotifyKey(secrets, relay: FakeRelay());
-    await notifyKey.useFcmToken('fcm-token');
+    final repository = HostRepository(secrets);
+    await repository.upsert(
+      const HostProfile(id: 'box', label: 'box', host: '10.0.0.5', username: 'me'),
+    );
+    final relay = FakeRelay();
+    final notifyKeys = NotifyKeys(secrets, relay: relay);
+    await notifyKeys.useFcmToken('fcm-token');
+    final key = await notifyKeys.forConnect('box');
     await tester.pumpWidget(
       MaterialApp(
         home: HostsPage(
-          repository: HostRepository(secrets),
+          repository: repository,
           secrets: secrets,
-          sessions: SessionManager(notifyKey: notifyKey),
+          sessions: SessionManager(notifyKeys: notifyKeys),
           onOpenHost: (_) async {},
         ),
       ),
     );
     await tester.pumpAndSettle();
+    // Nothing of it on Home: a host's own is copied from its edit page.
     expect(find.byIcon(Icons.key_outlined), findsNothing);
 
-    await tester.tap(find.byTooltip('Settings'));
+    await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
-    final copy = find.text('Copy notification key');
-    // Settings' own list, not its preview terminal's.
-    await tester.scrollUntilVisible(
-      copy,
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(copy);
-    // A frame for the toast's overlay, one to start its slide, and the slide.
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
-    // The relay key, never the FCM token.
-    expect(copied, [
-      {'text': 'jnk_1'},
-    ]);
-    expect(find.text('Notification key copied'), findsOneWidget);
-    // The toast's countdown run out, rather than left running past the test.
+    await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
+    expect(find.textContaining('notification key is revoked'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    expect(relay.revoked, [key!.split(':').first]);
+    expect(await notifyKeys.valueFor('box'), isNull);
+    expect(await repository.load(), isEmpty);
   });
 }

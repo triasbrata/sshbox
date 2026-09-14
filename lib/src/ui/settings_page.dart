@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -293,11 +292,11 @@ final keyBarSettings = KeyBarSettings();
 
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, this.notifyKey});
+  const SettingsPage({super.key, this.notifyKeys});
 
-  /// This device's relay key, for Notifications to copy and reset. Left
-  /// out, there is none.
-  final NotifyKey? notifyKey;
+  /// The relay keys, one per host, for Notifications to reset. Left out,
+  /// there are none.
+  final NotifyKeys? notifyKeys;
 
   @override
   Widget build(BuildContext context) {
@@ -323,7 +322,7 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           ),
-          _NotificationsSection(notifyKey),
+          _NotificationsSection(notifyKeys),
         ],
       ),
     );
@@ -1149,43 +1148,23 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
   }
 }
 
-/// The device's relay key: copied by hand for a host that will not take it
-/// the usual way, as `LC_SSHBOX_TOKEN` with every shell (see
-/// `LiveSession.connect`), and reset when it has got out.
+/// The relay keys, one per host, that its shells get as `LC_SSHBOX_KEY` (see
+/// `LiveSession.connect`): reset, every one, when one has got out. A host's
+/// own is copied from its edit page.
 class _NotificationsSection extends StatelessWidget {
-  const _NotificationsSection(this.notifyKey);
+  const _NotificationsSection(this.notifyKeys);
 
-  final NotifyKey? notifyKey;
+  final NotifyKeys? notifyKeys;
 
-  Future<void> _copy(BuildContext context) async {
-    final key = notifyKey?.key;
-    if (key == null) {
-      showToast(
-        context,
-        'No notification key yet',
-        type: ToastificationType.warning,
-      );
-      return;
-    }
-
-    await Clipboard.setData(ClipboardData(text: key));
-    if (context.mounted) {
-      showToast(
-        context,
-        'Notification key copied',
-        type: ToastificationType.success,
-      );
-    }
-  }
-
-  Future<void> _reset(BuildContext context, NotifyKey notifyKey) async {
+  Future<void> _reset(BuildContext context, NotifyKeys notifyKeys) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Reset notification key?'),
+        title: const Text('Reset notification keys?'),
         content: const Text(
-          'Every server holding the current key can no longer notify this '
-          'device. Open sessions keep the old key until they reconnect.',
+          "Every host's key is revoked. Servers holding an old key stop "
+          'notifying this device until their host reconnects and gets a new '
+          'one.',
         ),
         actions: [
           TextButton(
@@ -1202,29 +1181,23 @@ class _NotificationsSection extends StatelessWidget {
     if (confirmed != true) return;
 
     try {
-      await notifyKey.reset();
+      await notifyKeys.reset();
     } catch (_) {
       if (context.mounted) {
         showToast(
           context,
-          'Could not reach the relay — the old key still works',
+          'Could not reach the relay — some old keys still work',
           type: ToastificationType.error,
         );
       }
       return;
     }
-    if (!context.mounted) return;
-    if (notifyKey.key != null) {
+    if (context.mounted) {
       showToast(
         context,
-        'New notification key ready',
+        'Notification keys reset\nEach host gets a new one when it next '
+        'connects.',
         type: ToastificationType.success,
-      );
-    } else {
-      showToast(
-        context,
-        'No new key yet — Jeansh tries again at the next connect',
-        type: ToastificationType.warning,
         duration: const Duration(seconds: 3),
       );
     }
@@ -1232,29 +1205,20 @@ class _NotificationsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final notifyKey = this.notifyKey;
+    final notifyKeys = this.notifyKeys;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionHeader('Notifications'),
         ListTile(
-          leading: const Icon(Icons.key_outlined),
-          title: const Text('Copy notification key'),
-          subtitle: const Text(
-            'Normally sent to hosts automatically as LC_SSHBOX_TOKEN. Copy '
-            'it only for a server that does not accept it.',
-          ),
-          onTap: () => _copy(context),
-        ),
-        ListTile(
           leading: const Icon(Icons.restart_alt),
-          title: const Text('Reset notification key'),
+          title: const Text('Reset notification keys'),
           subtitle: const Text(
-            'Revoke the current key, for when it has got out, and register '
-            'a new one',
+            "Revoke every host's key, for when one has got out. A host's own "
+            'is copied from its edit page.',
           ),
-          enabled: notifyKey != null,
-          onTap: notifyKey == null ? null : () => _reset(context, notifyKey),
+          enabled: notifyKeys != null,
+          onTap: notifyKeys == null ? null : () => _reset(context, notifyKeys),
         ),
       ],
     );

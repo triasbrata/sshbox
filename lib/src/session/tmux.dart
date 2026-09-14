@@ -389,7 +389,7 @@ class TmuxSession {
   ///
   /// The device's variables (see `LiveSession.connect`) reach the client with
   /// the channel, but a pane gets the tmux server's environment: what it
-  /// started with, perhaps nothing, or a token since replaced. Listed in
+  /// started with, perhaps nothing, or a key since replaced. Listed in
   /// `update-environment`, tmux copies them from the client into the session
   /// when it makes it and at every attach, so the first pane, and any split
   /// off after a reconnect, has this connection's; a pane already running
@@ -398,8 +398,8 @@ class TmuxSession {
   /// `new-session -e`, which tmux before 3.0 refuses and which would show
   /// the values in `ps`. Added once per server, since the list holds at most
   /// 1000 names, and looked for by the newest name, so a server that
-  /// listed only the first two for an earlier version gets the rest; a name
-  /// listed twice is harmless.
+  /// listed an earlier version's names gets the new ones; a name listed
+  /// twice is harmless.
   ///
   /// tmux is found once, as an absolute path `$t`, and every tmux here runs
   /// from it. An exec channel's shell is not a login shell, so its PATH
@@ -421,8 +421,8 @@ class TmuxSession {
       r'ok "$t" || { echo "tmux is not installed on this host (looked on PATH, '
       'in Homebrew and the other usual places)"; exit 1; }; '
       r'"$t" show -gv update-environment 2>/dev/null | '
-      'grep -q LC_SSHBOX_NOTIFY_SECRET || '
-      r'set -- set -ga update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID '
+      'grep -q LC_SSHBOX_KEY || '
+      r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
       r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
       r'\;; exec "$t" -u -C "$@" '
       "new-session -A -s $name 2>&1'";

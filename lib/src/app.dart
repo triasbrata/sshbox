@@ -37,9 +37,9 @@ class _SshboxAppState extends State<SshboxApp> {
   /// no context under them.
   final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
-  late final NotifyKey _notifyKey = NotifyKey(_secrets);
+  late final NotifyKeys _notifyKeys = NotifyKeys(_secrets);
   late final SessionManager _sessions = SessionManager(
-    notifyKey: _notifyKey,
+    notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
   );
   late final HostRepository _repository = HostRepository(_secrets);
@@ -51,7 +51,7 @@ class _SshboxAppState extends State<SshboxApp> {
   late final PushMessaging _push = PushMessaging(
     notifications: _notifications,
     onOpenLink: _handleLink,
-    notifyKey: _notifyKey,
+    notifyKeys: _notifyKeys,
   );
 
   late final SessionKeepAlive _keepAlive =

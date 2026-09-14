@@ -57,7 +57,7 @@ class LiveSession extends ChangeNotifier {
     required this._host,
     bool Function(int port)? forwardedElsewhere,
     this._transport,
-    this._notifyKey,
+    this._notifyKeys,
     this._onNotify,
   }) {
     forwarder = TailnetForwarder(
@@ -76,9 +76,9 @@ class LiveSession extends ChangeNotifier {
   /// carries that attempt's host key and banner callbacks.
   final TransportMaker? _transport;
 
-  /// This device's relay key, read at every connect: see
-  /// [SessionManager.notifyKey].
-  final NotifyKey? _notifyKey;
+  /// The relay keys, one per host, read at every connect: see
+  /// [SessionManager.notifyKeys].
+  final NotifyKeys? _notifyKeys;
 
   /// Shows what a host sent down this session's connection: see
   /// [SessionManager.onNotify].
@@ -357,20 +357,30 @@ class LiveSession extends ChangeNotifier {
             confirmHostKey: confirmHostKey,
             onAuthBanner: banner,
           );
-      // The relay key a server sends a push with and the host a tap opens,
-      // for a script on the host to read rather than anyone copying them
-      // over by hand; nothing without a key, and never the FCM token. `LC_`
-      // because sshd takes only the names its AcceptEnv lists, and Debian,
-      // Ubuntu and macOS ship `AcceptEnv LANG LC_*`: how iTerm2's
-      // `LC_TERMINAL` gets through. The direct way's two join them from
-      // [_openNotifyPort].
-      final key = _notifyKey?.forConnect();
-      final environment = {
-        if (key != null) ...{
-          'LC_SSHBOX_TOKEN': key,
-          'LC_SSHBOX_HOST_ID': host.id,
-        },
-      };
+      // The key this host's servers sign a push to the relay with, and the
+      // host a tap opens, for a script on the host to read rather than anyone
+      // copying them over by hand; never the FCM token. A host's first
+      // connect registers its key while SSH signs in, and the shell waits a
+      // little more for it at most: a relay out of reach leaves it to the
+      // next connect, and this one goes without. `LC_` because sshd takes
+      // only the names its AcceptEnv lists, and Debian, Ubuntu and macOS ship
+      // `AcceptEnv LANG LC_*`: how iTerm2's `LC_TERMINAL` gets through. The
+      // direct way's two join them from [_openNotifyPort].
+      final key = _notifyKeys?.forConnect(host.id);
+      Future<Map<String, String>> environment(ForwardCapable connection) async {
+        final value = await key?.timeout(
+          const Duration(seconds: 3),
+          onTimeout: () => null,
+        );
+        return {
+          if (value != null) ...{
+            'LC_SSHBOX_KEY': value,
+            'LC_SSHBOX_HOST_ID': host.id,
+          },
+          if (_onNotify != null) ...await _openNotifyPort(connection),
+        };
+      }
+
       // What the shell is opened at, to be put right once it is up.
       var opened = _size;
       Future<TerminalSession> open({required bool shell}) {
@@ -381,8 +391,7 @@ class LiveSession extends ChangeNotifier {
           columns: _size.$1,
           rows: _size.$2,
           shell: shell,
-          environment: environment,
-          beforeShell: _onNotify == null ? null : _openNotifyPort,
+          beforeShell: environment,
         );
       }
 
@@ -816,12 +825,13 @@ class WebTab {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
-  SessionManager({this.notifyKey, this.onNotify});
+  SessionManager({this.notifyKeys, this.onNotify});
 
-  /// This device's relay key: what each connection hands its host as
-  /// `LC_SSHBOX_TOKEN`, and what Settings copies and resets. Null where push
-  /// is not wired, as in most tests, and then no connection hands one.
-  final NotifyKey? notifyKey;
+  /// The relay keys, one per host: what each connection hands its host as
+  /// `LC_SSHBOX_KEY`, what a host's edit page copies and what Settings
+  /// resets. Null where push is not wired, as in most tests, and then no
+  /// connection hands one.
+  final NotifyKeys? notifyKeys;
 
   /// Shows a notification a host sent straight down one of its connections
   /// — see [DirectNotify] — as a push is shown, a tap opening the host.
@@ -963,7 +973,7 @@ class SessionManager extends ChangeNotifier {
       forwardedElsewhere: (port) => sessionsFor(created.host.id)
           .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
-      notifyKey: notifyKey,
+      notifyKeys: notifyKeys,
       onNotify: onNotify,
     );
     return created;

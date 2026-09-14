@@ -10,10 +10,10 @@ Jeansh adalah klien SSH. Aplikasi ini tersambung langsung dari perangkat Anda
 ke server yang Anda tambahkan. Apa pun yang Anda ketik, baca, unggah, atau
 edit dalam sesi tidak melewati server kami.
 
-Hanya satu hal yang sampai ke kami: token notifikasi push perangkat Anda.
-Aplikasi menukarnya ke relay notifikasi kami dengan sebuah kunci yang dipakai
-server Anda untuk mengirim notifikasi. Tidak ada akun, iklan, analitik,
-maupun laporan crash.
+Hanya token notifikasi push perangkat Anda yang sampai ke kami, beserta
+bagian publik dari sebuah kunci untuk setiap server yang Anda sambungkan:
+aplikasi mendaftarkannya ke relay notifikasi kami, supaya server Anda bisa
+mengirim notifikasi. Tidak ada akun, iklan, analitik, maupun laporan crash.
 
 ## Yang tetap di perangkat Anda
 
@@ -35,8 +35,9 @@ Anda:
   hingga 256 KB per file, disimpan sampai Anda menyimpan atau membuangnya.
 - **Pengaturan:** tema, font, bilah tombol, posisi magic key, dan tampilan
   editor.
-- **Kunci notifikasi:** kunci relay yang dijelaskan di bawah, beserta token
-  yang dipakai untuk menerbitkannya, dienkripsi seperti rahasia di atas.
+- **Kunci notifikasi:** sepasang kunci untuk setiap host yang disimpan, yang
+  dijelaskan di bawah, beserta token tempat masing-masing didaftarkan,
+  dienkripsi seperti rahasia di atas.
 - **Tab web:** halaman yang Anda buka di tab web, misalnya halaman masuk
   Tailscale, menyimpan cookie dan cache-nya di penyimpanan web view aplikasi.
 
@@ -58,7 +59,7 @@ lewat SSH, dan dienkripsi antara perangkat Anda dan server itu. Termasuk:
 
 Setiap shell juga menerima empat variabel lingkungan:
 
-- `LC_SSHBOX_TOKEN`: kunci notifikasi Anda;
+- `LC_SSHBOX_KEY`: kunci notifikasi host itu;
 - `LC_SSHBOX_HOST_ID`: id host yang disimpan;
 - `LC_SSHBOX_NOTIFY_URL` dan `LC_SSHBOX_NOTIFY_SECRET`: untuk notifikasi
   langsung lewat koneksi itu.
@@ -80,16 +81,20 @@ server kami.
   layanan push Google, yang memberi perangkat sebuah token pendaftaran. Google
   memprosesnya menurut [Kebijakan Privasi Google](https://policies.google.com/privacy)
   dan [ketentuan privasi Firebase](https://firebase.google.com/support/privacy).
-- Aplikasi mengirim token itu ke **jeansh-notify**, relay kami di
-  `jeansh-notify.brata.cloud` (sebuah Cloudflare Worker), dan menerima sebuah
-  kunci notifikasi acak. Ini diulang hanya saat FCM mengganti tokennya.
-- Relay menyimpan satu entri per kunci, di Cloudflare Workers KV: hash
-  SHA-256 dari kunci itu, yang menunjuk ke token FCM dan waktu pembuatannya.
-  Kuncinya sendiri tidak disimpan, dan relay tidak pernah mencatat kunci,
-  token, maupun pesan ke log.
-- Saat server mengirim notifikasi dengan kunci itu, relay meneruskan judul,
-  isi, dan id host ke FCM, yang mengantarkannya ke perangkat Anda. Relay tidak
-  menyimpan apa pun dari pesannya.
+- Saat pertama kali Anda tersambung ke sebuah host yang disimpan, aplikasi
+  membuat sepasang kunci untuknya dan mengirim token itu, bagian publik
+  kuncinya, dan id host tersebut ke **jeansh-notify**, relay kami di
+  `jeansh-notify.brata.cloud` (sebuah Cloudflare Worker). Semuanya dikirim
+  ulang, untuk setiap kunci, saat FCM mengganti tokennya. Bagian privatnya
+  tetap di perangkat Anda dan hanya dikirim ke host itu.
+- Relay menyimpan satu entri per kunci, di Cloudflare Workers KV: kunci
+  publiknya, yang menunjuk ke token FCM dan id host. Relay tidak pernah
+  menerima kunci privat, dan tidak pernah mencatat kunci, token, maupun pesan
+  ke log.
+- Saat server mengirim notifikasi yang ditandatangani dengan kunci sebuah
+  host, relay memeriksa tanda tangannya lalu meneruskan judul, isi, dan id
+  host ke FCM, yang mengantarkannya ke perangkat Anda. Relay tidak menyimpan
+  apa pun dari pesannya.
 - Relay menghitung pendaftaran per alamat IP untuk mencegah penyalahgunaan,
   dan tidak menyimpan alamat itu. Cloudflare, yang menjalankan relay,
   memproses data permintaan seperti alamat IP menurut
@@ -97,14 +102,12 @@ server kami.
 
 **Menghapus entri di relay.** Ada tiga cara:
 
-- **Pengaturan → Notifikasi → Reset notification key** menghapus entri relay
-  untuk kunci Anda dan menerbitkan kunci baru.
+- Menghapus sebuah host menghapus entri relay untuk kuncinya.
+- **Pengaturan → Notifikasi → Reset notification keys** menghapus entri relay
+  untuk setiap kunci. Setiap host mendapat kunci baru saat tersambung lagi.
 - Saat FCM melaporkan bahwa token tidak berlaku lagi, misalnya setelah
   aplikasi dicopot, relay menghapus entrinya saat ada server yang mencoba
   memakainya.
-- Untuk menghapus entri tanpa menerbitkan kunci baru, kirimkan kunci Anda
-  lewat email kepada kami, dari **Pengaturan → Notifikasi → Copy notification
-  key**.
 
 ## Yang tidak kami kumpulkan
 
@@ -149,8 +152,8 @@ ditujukan untuk anak-anak.
 
 SSH mengenkripsi setiap sesi. Aplikasi bertanya dulu sebelum memercayai host
 key baru, dan memperingatkan saat host key yang sudah dikenal berubah. Rahasia
-dienkripsi dengan Android Keystore. Relay hanya menyimpan hash dari setiap
-kunci.
+dienkripsi dengan Android Keystore. Relay hanya menyimpan bagian publik dari
+setiap kunci.
 
 ## Hak dan pilihan Anda
 
@@ -159,8 +162,10 @@ kunci.
   semua yang disimpan aplikasi.
 - **Di relay:** entri relay adalah satu-satunya data Anda yang kami simpan.
   Untuk meminta salinan atau penghapusannya, termasuk berdasarkan GDPR atau
-  CCPA, kirim email kepada kami beserta kunci dari **Pengaturan → Notifikasi →
-  Copy notification key**.
+  CCPA, kirim email kepada kami beserta id kuncinya: awal dari kunci yang
+  disalin **Copy notification key** di halaman edit host, dari `jnk_` sampai
+  sebelum titik dua. Jangan pernah mengirim bagian setelah titik dua, karena
+  itu kunci privatnya.
 
 ## Perubahan kebijakan ini
 

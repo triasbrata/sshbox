@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
@@ -69,6 +71,7 @@ class _HostsPageState extends State<HostsPage> {
           repository: widget.repository,
           secrets: widget.secrets,
           existing: existing,
+          notifyKeys: widget.sessions.notifyKeys,
         ),
       ),
     );
@@ -84,8 +87,9 @@ class _HostsPageState extends State<HostsPage> {
       builder: (context) => AlertDialog(
         title: Text('Delete ${host.displayName}?'),
         content: const Text(
-          'Every open session for this host is closed, and its saved password '
-          'or private key is removed from the device keystore.',
+          'Every open session for this host is closed, its saved password or '
+          'private key is removed from the device keystore, and its '
+          'notification key is revoked.',
         ),
         actions: [
           TextButton(
@@ -102,6 +106,9 @@ class _HostsPageState extends State<HostsPage> {
 
     if (confirmed != true) return;
     await widget.sessions.closeHost(host.id);
+    // Not waited for: the relay may be slow or out of reach, and the key is
+    // dropped either way.
+    unawaited(widget.sessions.notifyKeys?.revoke(host.id));
     await widget.repository.delete(host.id);
     await _reload();
   }
@@ -175,7 +182,7 @@ class _HostsPageState extends State<HostsPage> {
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) =>
-                    SettingsPage(notifyKey: widget.sessions.notifyKey),
+                    SettingsPage(notifyKeys: widget.sessions.notifyKeys),
               ),
             ),
             icon: const Icon(Icons.settings_outlined),

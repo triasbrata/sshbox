@@ -677,10 +677,10 @@ A `notification` block would let Android post its own notification while the
 app is backgrounded, and that one carries no payload to route with.
 
 Every shell the app opens is told two ways to reach the phone: a port on the
-host that comes straight down its own connection, and a key for the relay
-that sends the push. See [Sending one from a server](#sending-one-from-a-server).
-**Settings → Notifications → Copy notification key** copies the relay key
-for a host that won't take it.
+host that comes straight down its own connection, and the host's own key for
+the relay that sends the push. See [Sending one from a server](#sending-one-from-a-server).
+**Copy notification key** on a host's edit page copies its relay key for a
+server that won't take it.
 
 **Testing without a server:** `sshbox://notify/<hostId>` posts a notification
 locally, so the whole notify → tap → resume path can be exercised with adb:
@@ -724,25 +724,65 @@ connects, and its shells get neither variable.
 
 **Through the relay.** [jeansh-notify](https://github.com/triasbrata/jeansh-notify),
 a Cloudflare Worker at `https://jeansh-notify.brata.cloud`, holds the Firebase
-credentials and sends a push, which reaches the phone with no session open:
+credentials and sends a push, which reaches the phone with no session open.
+Every request to it is signed, the way Indonesia's SNAP payment API signs
+one, with a key only that host holds:
+
+| Header | Holds |
+| --- | --- |
+| `X-PARTNER-ID` | the key id: `LC_SSHBOX_KEY` up to its colon |
+| `X-TIMESTAMP` | the time, `yyyy-MM-ddTHH:mm:ssTZD`, as in `2026-09-14T08:15:30+07:00` |
+| `X-EXTERNAL-ID` | 16 to 64 of `A-Z a-z 0-9 -`, new for each request |
+| `X-SIGNATURE` | the ECDSA P-256 SHA-256 signature, DER, in standard base64 |
+
+What is signed is
+`<METHOD>:<PATH>:<lowercase hex SHA-256 of the body>:<X-TIMESTAMP>:<X-EXTERNAL-ID>`;
+an empty body hashes the empty string. The relay checks the signature with
+the key's public half and sends the push for the host the key belongs to.
+With openssl and curl:
 
 ```sh
-curl -fsS https://jeansh-notify.brata.cloud/v1/send \
-  -H "Authorization: Bearer $LC_SSHBOX_TOKEN" \
-  --data-urlencode "host=$LC_SSHBOX_HOST_ID" \
-  --data-urlencode "title=Build" \
-  --data-urlencode "body=build done"
+# A push through the relay, signed with this host's LC_SSHBOX_KEY. Title and
+# body on one line each.
+relay_notify() {
+  esc() { printf %s "$1" | sed 's/[\\"]/\\&/g'; }
+  body=$(printf '{"title":"%s","body":"%s"}' "$(esc "$1")" "$(esc "$2")")
+  ts=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+  id=$(openssl rand -hex 16)
+  hash=$(printf %s "$body" | openssl dgst -sha256 -r | cut -d' ' -f1)
+  # The key reaches openssl on a file descriptor: never on disk or in ps.
+  sig=$(printf 'POST:/v1/send:%s:%s:%s' "$hash" "$ts" "$id" |
+    openssl dgst -sha256 -sign /dev/fd/3 3<<EOF | openssl base64 -A
+-----BEGIN PRIVATE KEY-----
+$(printf %s "${LC_SSHBOX_KEY#*:}" | fold -w 64)
+-----END PRIVATE KEY-----
+EOF
+  )
+  curl -fsS https://jeansh-notify.brata.cloud/v1/send \
+    -H 'Content-Type: application/json' \
+    -H "X-PARTNER-ID: ${LC_SSHBOX_KEY%%:*}" -H "X-TIMESTAMP: $ts" \
+    -H "X-EXTERNAL-ID: $id" -H "X-SIGNATURE: $sig" \
+    --data-binary "$body"
+}
 ```
 
-`LC_SSHBOX_TOKEN` is the phone's relay key, never its FCM token. The app
-trades the FCM token for it with the relay (`POST /v1/register`) at launch,
-and again when FCM replaces the token, revoking the key it replaces; the key
-is kept in the keystore with the token it was registered for. With the relay
-out of reach it tries again at the next launch or connect, and until then a
-shell gets no `LC_SSHBOX_TOKEN` at all. **Settings → Notifications → Reset
-notification key** revokes the key and registers a new one, for when it has
-got out: every server holding the old key can no longer notify, and open
-sessions keep it until they reconnect.
+The relay repo's [notify.sh](https://github.com/triasbrata/jeansh-notify/blob/main/notify.sh)
+does the same, after trying the direct way, and installs as `sshbox-notify`.
+
+**One key per host.** `LC_SSHBOX_KEY` is `<key id>:<private key>`, the
+private key PKCS#8 DER in standard base64. Each saved host has its own: a
+P-256 key pair the app makes at the host's first connect and registers with
+the relay (`POST /v1/register`, with the phone's FCM token, the public key's
+SPKI DER in base64 and the host id). The key id is `jnk_` and the first 32
+characters of the base64url SHA-256 of that SPKI, worked out on both sides.
+The relay gets only the public half; the FCM token goes to no server. When
+FCM replaces the token, every key is registered again for the new one and
+keeps its id, so servers holding it carry on. With the relay out of reach, a
+connect goes without `LC_SSHBOX_KEY` and the next one tries again. Deleting a
+host revokes its key (`DELETE /v1/key`, signed with that key). **Settings →
+Notifications → Reset notification keys** revokes every host's key, for when
+one has got out: servers holding an old key stop notifying until their host
+reconnects and gets a new one.
 
 The two together, the direct way first:
 
@@ -751,10 +791,7 @@ notify() {
   curl -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
     -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
     --data-urlencode "title=$1" --data-urlencode "body=$2" >/dev/null ||
-  curl -fsS https://jeansh-notify.brata.cloud/v1/send \
-    -H "Authorization: Bearer $LC_SSHBOX_TOKEN" \
-    --data-urlencode "host=$LC_SSHBOX_HOST_ID" \
-    --data-urlencode "title=$1" --data-urlencode "body=$2" >/dev/null
+  relay_notify "$1" "$2" >/dev/null
 }
 
 # then, at the end of something slow:
@@ -767,11 +804,11 @@ Jeansh passes these with every shell it opens, plain or tmux:
 | --- | --- |
 | `LC_SSHBOX_NOTIFY_URL` | `http://127.0.0.1:<port>/v1/send`, the port the host listens on for this connection |
 | `LC_SSHBOX_NOTIFY_SECRET` | this connection's own secret, 32 random bytes in base64url |
-| `LC_SSHBOX_TOKEN` | the phone's relay key |
-| `LC_SSHBOX_HOST_ID` | the id of the saved host, which a tap on the push opens |
+| `LC_SSHBOX_KEY` | this host's relay key: its id, a colon, and its private key |
+| `LC_SSHBOX_HOST_ID` | the id of the saved host; the relay needs only the key, which names its host |
 
-The first two only when the host listens for us, the last two only while the
-phone has a relay key.
+The first two only when the host listens for us, the last two only once the
+host has a relay key.
 
 **The server has to accept them.** OpenSSH takes only the variables its
 `AcceptEnv` lists. Debian, Ubuntu and macOS ship `AcceptEnv LANG LC_*`, which
@@ -780,9 +817,9 @@ Elsewhere, add `AcceptEnv LC_SSHBOX_*` (or `LC_*`) to `sshd_config` and reload
 sshd. Tailscale SSH passes them only when the tailnet policy's SSH rule lists
 them in `acceptEnv`, as in `"acceptEnv": ["LC_SSHBOX_*"]`, on Tailscale 1.76
 or later. A server that refuses them still connects, and
-`echo $LC_SSHBOX_TOKEN` prints nothing there; export `LC_SSHBOX_TOKEN` in its
-shell's profile instead, from **Settings → Notifications → Copy notification
-key**, with `LC_SSHBOX_HOST_ID` for the host a tap opens. The direct way
+`echo $LC_SSHBOX_KEY` prints nothing there; export `LC_SSHBOX_KEY` in its
+shell's profile instead, from **Copy notification key** on the host's edit
+page. The direct way
 cannot be set by hand: its port and secret are new with each connection.
 
 In tmux mode a tab adds the four names to tmux's `update-environment`, once
@@ -792,14 +829,16 @@ tmux server was started by something else; a pane already running keeps the
 ones it started with, whose direct URL went with the connection that gave it
 — which is what the relay in `notify` above is for.
 
-**The relay key goes to every host you connect to.** It sends notifications
-to this phone and does nothing else; if it gets out, reset it.
+**A host's key goes to that host only.** It signs notifications to this
+phone and does nothing else, and the relay sends them as that host's, so a
+key that gets out of one host cannot speak for another. Deleting the host
+revokes it; if one gets out, reset them.
 
 **The direct way's ceiling.** The port is on the host's loopback, so on a
 server others log in to, once the connection has ended another local user can
 listen on that port and read what a shell left over from the connection sends
 to it. They get the text of that one message and nothing more: the secret
-stops them sending anything to the phone. It is also why `LC_SSHBOX_TOKEN`
+stops them sending anything to the phone. It is also why `LC_SSHBOX_KEY`
 never goes to the direct URL — whoever held the port would hold the key.
 
 ## Uploading files
