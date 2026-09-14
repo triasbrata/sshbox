@@ -243,6 +243,19 @@ class _Dartssh2Session
       authTimeout: isTailscale ? const Duration(minutes: 5) : null,
       onVerifyHostKey: (type, fingerprint) =>
           _verifyHostKey(host, utf8.decode(fingerprint)),
+      // OpenSSH's own order. dartssh2 puts AES-GCM first, and pointycastle's
+      // GCM runs about 1.3 MB/s, some 30 times slower than ChaCha20 or
+      // AES-CTR, all of it on the UI isolate: a 70 MB download held it for
+      // a minute and Android called the app not responding.
+      algorithms: const SSHAlgorithms(
+        cipher: [
+          SSHCipherType.chacha20poly1305,
+          SSHCipherType.aes128ctr,
+          SSHCipherType.aes256ctr,
+          SSHCipherType.aes128gcm,
+          SSHCipherType.aes256gcm,
+        ],
+      ),
     );
   }
 

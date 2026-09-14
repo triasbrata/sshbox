@@ -7,6 +7,7 @@ import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
+import 'databases_page.dart';
 import 'host_edit_page.dart';
 import 'known_hosts_page.dart';
 import 'logs_page.dart';
@@ -139,6 +140,18 @@ class _HostsPageState extends State<HostsPage> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Databases',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => DatabasesPage(
+                  repository: widget.repository,
+                  secrets: widget.secrets,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.storage),
+          ),
           IconButton(
             tooltip: 'Port forwarding',
             onPressed: () async {

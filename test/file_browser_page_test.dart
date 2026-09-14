@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -832,6 +833,42 @@ void main() {
 
     expect(picker.saved?.name, 'notes.txt');
     expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+    // Handed over as the app's own copy, which goes once it is saved.
+    expect(File(picker.savedFrom!).existsSync(), isFalse);
+  });
+
+  testWidgets('leaves no copy on the phone when not saved', (tester) async {
+    final picker = useFakePicker()..save = false;
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    // Dismissed: the dialog had the whole file, and nothing is said.
+    await _rowAction(tester, 'notes.txt', 'Download');
+    expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+    expect(File(picker.savedFrom!).existsSync(), isFalse);
+    expect(find.byType(ToastCard), findsNothing);
+
+    // Failed with the bytes in: no dialog, and the copy goes all the same.
+    picker.saved = null;
+    const lost = 'The connection to the host was lost.';
+    browser.failReadWith = const FileBrowserException(
+      lost,
+      fault: FileBrowserFault.disconnected,
+    );
+    await tester.longPress(_row('notes.txt'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Download'));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(picker.saved, isNull);
+    expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
+    expect(
+      find.descendant(of: find.byType(ToastCard), matching: find.text(lost)),
+      findsOneWidget,
+    );
+    await tester.pumpAndSettle();
   });
 }
 
