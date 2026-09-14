@@ -79,9 +79,24 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="sshbox"/>
             </intent-filter>
-            <!-- "Share with Jeansh" from any other app: the file goes to /tmp
-                 on the session you were last in. singleTop again — sharing into
-                 a running app must resume the session, not restart it. -->
+        </activity>
+        <!-- "Share with Jeansh" from any other app: the file goes to /tmp on
+             the session you were last in. Not on MainActivity: the share sheet
+             starts its target inside the sending app's task, and singleTop
+             only reuses an instance at the top of the same task, so sharing
+             started a second MainActivity with an empty engine. This one
+             forwards the share to MainActivity's own task and finishes; see
+             ShareActivity.kt. singleTask on MainActivity would not do: a
+             launcher tap would then close a file picker or Custom Tab left
+             open over it, and a sender that asks for a result still gets a
+             new copy in its own task. No window, and never a Recents entry of
+             its own. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>
                 <action android:name="android.intent.action.SEND_MULTIPLE"/>
