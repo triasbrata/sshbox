@@ -283,17 +283,21 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('keeps the keys when the relay is out of reach', (
-      tester,
-    ) async {
+    testWidgets('with the relay out of reach, hands the old keys to no host '
+        'and leaves them to be revoked later', (tester) async {
       await openDialog(tester);
+      final ids = relay.registered.map((r) => r.keyId).toList();
       relay.down = true;
       await confirm(tester);
-      expect(await notifyKeys.valueFor('host-1'), isNotNull);
+      expect(await notifyKeys.valueFor('host-1'), isNull);
       expect(
-        find.text('Could not reach the relay — some old keys still work'),
+        find.textContaining('Some old keys are not revoked yet'),
         findsOneWidget,
       );
+
+      relay.down = false;
+      await notifyKeys.useFcmToken('fcm-token');
+      expect(relay.revoked, ids);
       await tester.pumpAndSettle();
     });
   });
