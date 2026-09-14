@@ -27,11 +27,27 @@ class FakeWebView extends PlatformWebViewController {
   FakeWebView(super.params) : super.implementation();
 
   final loaded = <Uri>[];
+  final assets = <String>[];
+  final scripts = <String>[];
+  final channels = <String, JavaScriptChannelParams>{};
   late FakeNavigationDelegate page;
   String? title;
 
   @override
   Future<void> setJavaScriptMode(JavaScriptMode javaScriptMode) async {}
+
+  @override
+  Future<void> loadFlutterAsset(String key) async => assets.add(key);
+
+  @override
+  Future<void> runJavaScript(String javaScript) async => scripts.add(javaScript);
+
+  @override
+  Future<void> addJavaScriptChannel(JavaScriptChannelParams params) async =>
+      channels[params.name] = params;
+
+  @override
+  Future<void> setBackgroundColor(Color color) async {}
 
   @override
   Future<void> setPlatformNavigationDelegate(

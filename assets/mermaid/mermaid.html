@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- One Mermaid diagram in the Markdown preview (lib/src/ui/mermaid_view.dart).
+     Its source comes from a file on the user's server, so the page loads
+     nothing but its own two scripts: no network, no frames, no forms.
+     Mermaid styles the SVG it draws inline. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { margin: 0; }
+  /* As wide as the diagram and at least as wide as the page: a narrow one
+     sits in the middle, a wide one scrolls sideways. */
+  #d { box-sizing: border-box; width: max-content; min-width: 100%; padding: 12px; }
+  #d svg { display: block; margin: 0 auto; }
+  pre { margin: 0; font: 13px/1.4 monospace; }
+  pre + pre { margin-top: 12px; }
+</style>
+<script src="mermaid.min.js"></script>
+<script src="render.js"></script>
+</head>
+<body><div id="d"></div></body>
+</html>

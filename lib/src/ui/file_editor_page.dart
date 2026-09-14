@@ -11,6 +11,7 @@ import '../files/file_browser.dart';
 import 'code_languages.dart';
 import 'file_download.dart';
 import 'key_bar.dart';
+import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
@@ -1120,6 +1121,7 @@ class _MarkdownPreview extends StatelessWidget {
               child: Markdown(
                 data: shown,
                 onTapLink: onTapLink,
+                builders: {'code': MermaidBuilder()},
                 imageBuilder: (uri, title, alt) => Text.rich(
                   TextSpan(
                     children: [
