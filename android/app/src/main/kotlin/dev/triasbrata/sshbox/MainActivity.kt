@@ -1,7 +1,9 @@
 package dev.triasbrata.sshbox
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -22,8 +24,37 @@ class MainActivity : FlutterActivity() {
     // asks — the same shape as app_links' getInitialLink.
     private var pending: List<Map<String, String>>? = null
 
+    // A launcher tap that Android answered with a second MainActivity on top
+    // of ours, instead of bringing our task back. It does that when a file
+    // picker or Custom Tab is open over ours and the task was last started or
+    // resumed by an intent other than the launcher's: a share, or a
+    // notification tap that cold-started the app. Finishing at once shows the
+    // task as it was. finish() goes before super.onCreate, which is where
+    // FlutterActivity makes its engine and starts Dart.
+    override fun onCreate(savedInstanceState: Bundle?) {
+        if (!isTaskRoot && intent.action == Intent.ACTION_MAIN &&
+            intent.hasCategory(Intent.CATEGORY_LAUNCHER)
+        ) {
+            finish()
+        }
+        super.onCreate(savedInstanceState)
+    }
+
+    // The copy finished above gets an engine with no plugins that never runs
+    // Dart, so nothing of the app starts for it, and it is destroyed with the
+    // copy. Every other start gets FlutterActivity's own engine, as before.
+    override fun provideFlutterEngine(context: Context): FlutterEngine? =
+        if (isFinishing) FlutterEngine(context, null, false)
+        else super.provideFlutterEngine(context)
+
+    override fun shouldDestroyEngineWithHost(): Boolean =
+        isFinishing || super.shouldDestroyEngineWithHost()
+
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        // The copy finished in onCreate: it must not clear the cache the
+        // running Jeansh may still be uploading shared files from.
+        if (isFinishing) return
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "takeShared") {
