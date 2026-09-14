@@ -1,0 +1,10 @@
+{
+  "name": "jeansh-store-graphics",
+  "private": true,
+  "scripts": {
+    "generate": "bun generate.ts"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
