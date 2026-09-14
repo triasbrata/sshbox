@@ -662,6 +662,8 @@ A notification carries a `sshbox://host/<hostId>` payload, so tapping one goes
 through the same router as a deep link — there is no second code path to keep
 in sync.
 
+The whole flow, as sequence diagrams: [docs/notification-architecture.md](docs/notification-architecture.md).
+
 `notifications/notification_gateway.dart` displays them and handles taps,
 including `getNotificationAppLaunchDetails()` for a tap that cold-starts the
 app. `notifications/push_messaging.dart` is only the delivery half: FCM hands
