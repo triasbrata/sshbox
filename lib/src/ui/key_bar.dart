@@ -243,8 +243,34 @@ typedef CustomKey = ({String label, String send, KeyCombo? combo});
 const customKeyLabelMax = 8;
 
 /// A key and the modifiers held with it, as the custom key picker builds it.
-/// [key] is the key's cap, from [keyComboRows].
-typedef KeyCombo = ({String key, bool ctrl, bool alt, bool shift});
+/// [key] is the key's cap, from [keyComboRows]. [superKey] is Super on a PC
+/// and Command on a Mac. [mac] is the layout it was picked on: macOS names
+/// the modifiers ⌃ ⌥ ⇧ ⌘, and a few of its text-editing combinations send
+/// what a shell's line editor takes for them, [macTextEditing].
+typedef KeyCombo = ({
+  String key,
+  bool ctrl,
+  bool alt,
+  bool shift,
+  bool superKey,
+  bool mac,
+});
+
+/// On the macOS layout, what these send in place of xterm's sequence, as
+/// iTerm2's Natural Text Editing has them: line start and end, a word back
+/// and forward, and deleting the line or the word before the cursor. By
+/// [keyComboName].
+const macTextEditing = {
+  'Super+←': '\x01',
+  'Super+→': '\x05',
+  'Alt+←': '\x1bb',
+  'Alt+→': '\x1bf',
+  'Super+BKSP': '\x15',
+  'Alt+BKSP': '\x17',
+};
+
+/// The keys a Mac marks with a symbol rather than a name.
+const _macCaps = {'BKSP': '⌫', 'DEL': '⌦'};
 
 /// The keys that type a character, by cap, row by row as a US keyboard has
 /// them, and what each types with Shift.
@@ -291,21 +317,38 @@ final keyComboRows = [
 ];
 
 /// What the cap of [key] shows: the character a typing key types, the one
-/// above it with Shift, or the name of any other key.
-String keyCapOf(String key, {bool shift = false}) => switch (_shifted[key]) {
+/// above it with Shift, or the name of any other key, or on a [mac] its
+/// symbol.
+String keyCapOf(String key, {bool shift = false, bool mac = false}) =>
+    switch (_shifted[key]) {
       final upper? => shift ? upper : key.toLowerCase(),
-      null => key,
+      null => mac ? _macCaps[key] ?? key : key,
     };
 
 /// What [combo] sends, as xterm sends it. Shift picks a typing key's upper
 /// character, and Ctrl and Alt fold into a character the way the key bar's
 /// own sticky CTRL and ALT do. Any other key with a modifier gets xterm's
-/// modifier parameter: 1, plus 1 for Shift, 2 for Alt and 4 for Ctrl, so
-/// Ctrl+→ is `ESC [1;5C`. Without one, the arrows, HOME and END follow the
-/// terminal's cursor-keys mode, read now, as the bar's own arrows do.
+/// modifier parameter: 1, plus 1 for Shift, 2 for Alt, 4 for Ctrl and 8 for
+/// Super, so Ctrl+→ is `ESC [1;5C`. Without one, the arrows, HOME and END
+/// follow the terminal's cursor-keys mode, read now, as the bar's own arrows
+/// do. Super has no character to fold into, so a key that types one goes out
+/// in the CSI u form, `ESC [115;9u` for Super+S: the key's own character and
+/// the same parameter. On the macOS layout, [macTextEditing] comes first.
 String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
-  final (:key, :ctrl, :alt, :shift) = combo;
+  final (:key, :ctrl, :alt, :shift, :superKey, :mac) = combo;
+  if (mac) {
+    if (macTextEditing[keyComboName(combo)] case final edit?) return edit;
+  }
+  final modifier = 1 +
+      (shift ? 1 : 0) +
+      (alt ? 2 : 0) +
+      (ctrl ? 4 : 0) +
+      (superKey ? 8 : 0);
   final csi = _csiKeys[key];
+  if (csi == null && superKey) {
+    final code = (_charKeys[key] ?? keyCapOf(key)).codeUnitAt(0);
+    return '\x1b[$code;${modifier}u';
+  }
   if (csi == null) {
     // Shift+Tab is its own key to a terminal, the back tab.
     final typed = key == 'TAB' && shift
@@ -314,7 +357,6 @@ String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
     return withModifiers(typed, ctrl: ctrl, alt: alt);
   }
 
-  final modifier = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0);
   if (csi.endsWith('~')) {
     return modifier == 1
         ? '\x1b[$csi'
@@ -324,25 +366,40 @@ String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
   return 'PQRS'.contains(csi) ? '\x1bO$csi' : cursorKey(terminal, csi);
 }
 
-/// How [combo] reads, `Ctrl+Alt+R`, which is also how a custom key saves it
-/// for [parseKeyCombo].
+/// How [combo] reads on a PC, `Ctrl+Alt+R`, whatever its layout: how a custom
+/// key saves it for [parseKeyCombo], and what [macTextEditing] goes by.
 String keyComboName(KeyCombo combo) => [
       if (combo.ctrl) 'Ctrl',
       if (combo.alt) 'Alt',
       if (combo.shift) 'Shift',
+      if (combo.superKey) 'Super',
       combo.key,
     ].join('+');
 
-/// The combination [saved] names, as [keyComboName] wrote it, or null for one
-/// with a key this build does not have.
-KeyCombo? parseKeyCombo(String saved) {
+/// How [combo] reads in its own layout: [keyComboName] on a PC, and on a Mac
+/// the symbols in the Mac's order, `⌃⌥⇧⌘`, then the key, `⌘→`.
+String keyComboText(KeyCombo combo) => combo.mac
+    ? [
+        if (combo.ctrl) '⌃',
+        if (combo.alt) '⌥',
+        if (combo.shift) '⇧',
+        if (combo.superKey) '⌘',
+        _macCaps[combo.key] ?? combo.key,
+      ].join()
+    : keyComboName(combo);
+
+/// The combination [saved] names, as [keyComboName] wrote it, on the [mac]
+/// layout or a PC's, or null for one with a key or a modifier this build does
+/// not have.
+KeyCombo? parseKeyCombo(String saved, {bool mac = false}) {
   final parts = saved.split('+');
   final key = parts.removeLast();
   final modifiers = parts.toSet();
   final known = _shifted.containsKey(key) ||
       _charKeys.containsKey(key) ||
       _csiKeys.containsKey(key);
-  if (!known || !const {'Ctrl', 'Alt', 'Shift'}.containsAll(modifiers)) {
+  if (!known ||
+      !const {'Ctrl', 'Alt', 'Shift', 'Super'}.containsAll(modifiers)) {
     return null;
   }
   return (
@@ -350,24 +407,32 @@ KeyCombo? parseKeyCombo(String saved) {
     ctrl: modifiers.contains('Ctrl'),
     alt: modifiers.contains('Alt'),
     shift: modifiers.contains('Shift'),
+    superKey: modifiers.contains('Super'),
+    mac: mac,
   );
 }
 
-/// A label for [combo]'s button, in the style of the built-in keys and no
-/// longer than [customKeyLabelMax]: the character it types, a Ctrl chord in
-/// the caret form a terminal shows it in, `^R`, or the cap, `PGUP`, behind
-/// Emacs's `C-` for Ctrl, `M-` for Alt and `S-` for Shift.
+/// A label for [combo]'s button, no longer than [customKeyLabelMax]. On a Mac
+/// it is [keyComboText], `⌥B`. On a PC it is in the style of the built-in
+/// keys: the character it types, a Ctrl chord in the caret form a terminal
+/// shows it in, `^R`, or the cap, `PGUP`, behind Emacs's `C-` for Ctrl, `M-`
+/// for Alt, `S-` for Shift and `s-` for Super. With Super held a Ctrl chord is
+/// no control character, so it gets `C-` too.
 String keyComboLabel(KeyCombo combo) {
-  final (:key, :ctrl, :alt, :shift) = combo;
+  final (:key, :ctrl, :alt, :shift, :superKey, :mac) = combo;
   final typing = _shifted.containsKey(key);
   final cap = keyCapOf(key, shift: shift);
-  final control = ctrl && typing ? _controlCode(cap.codeUnitAt(0)) : null;
-  final label = [
-    if (ctrl && control == null) 'C-',
-    if (alt) 'M-',
-    if (shift && !typing) 'S-',
-    control == null ? cap : '^${String.fromCharCode(control ^ 0x40)}',
-  ].join();
+  final control =
+      ctrl && typing && !superKey ? _controlCode(cap.codeUnitAt(0)) : null;
+  final label = mac
+      ? keyComboText(combo)
+      : [
+          if (ctrl && control == null) 'C-',
+          if (alt) 'M-',
+          if (shift && !typing) 'S-',
+          if (superKey) 's-',
+          control == null ? cap : '^${String.fromCharCode(control ^ 0x40)}',
+        ].join();
   return label.length > customKeyLabelMax
       ? label.substring(0, customKeyLabelMax)
       : label;

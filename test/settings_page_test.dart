@@ -108,6 +108,7 @@ void main() {
     terminalSettings.value = TerminalSettings.defaultStyle;
     appTheme.value = AppTheme.defaults;
     keyBarSettings.value = KeyBarSettings.defaults;
+    keyBarSettings.macLayout = false;
   });
 
   testWidgets('saves the theme picked, and the next start reads it back', (
@@ -360,6 +361,15 @@ void main() {
             'send': r'\e[1;2P',
             'combo': 'F13',
           },
+          // One picked on the macOS layout.
+          {
+            'id': 'custom:e',
+            'shown': true,
+            'label': '⌘←',
+            'send': '\x01',
+            'combo': 'Super+←',
+            'layout': 'mac',
+          },
         ]),
       });
       await keyBarSettings.load();
@@ -372,10 +382,25 @@ void main() {
           custom: (
             label: '^R',
             send: '\x12',
-            combo: (key: 'R', ctrl: true, alt: false, shift: false),
+            combo: (key: 'R', ctrl: true, alt: false, shift: false, superKey: false, mac: false),
           ),
         ),
         (id: 'custom:d', custom: (label: 'F13', send: r'\e[1;2P', combo: null)),
+        (
+          id: 'custom:e',
+          custom: (
+            label: '⌘←',
+            send: '\x01',
+            combo: (
+              key: '←',
+              ctrl: false,
+              alt: false,
+              shift: false,
+              superKey: true,
+              mac: true,
+            ),
+          ),
+        ),
         // TAB stays off, as its first entry has it; the rest are new to it.
         for (final id in terminalKeyBarDefault)
           if (!const {'tab', 'divider', 'esc'}.contains(id))
@@ -512,7 +537,7 @@ void main() {
 
       final id = keyBarSettings.keys.last;
       expect(id, startsWith('custom:'));
-      const combo = (key: 'R', ctrl: true, alt: true, shift: false);
+      const combo = (key: 'R', ctrl: true, alt: true, shift: false, superKey: false, mac: false);
       expect(keyBarSettings.customKeys, {
         id: (label: 'M-^R', send: '\x1b\x12', combo: combo),
       });
@@ -576,7 +601,7 @@ void main() {
       await tester.pumpAndSettle();
       final key = keyBarSettings.customKeys.values.single;
       expect(key.label, 'BS');
-      expect(key.combo, (key: r'\', ctrl: false, alt: true, shift: false));
+      expect(key.combo, (key: r'\', ctrl: false, alt: true, shift: false, superKey: false, mac: false));
       // Escaped, for an earlier version to read back as ESC and a backslash.
       expect(decodeKeyText(key.send), '\x1b\\');
     });
@@ -589,7 +614,7 @@ void main() {
           custom: (
             label: 'C-→',
             send: '\x1b[1;5C',
-            combo: (key: '→', ctrl: true, alt: false, shift: false),
+            combo: (key: '→', ctrl: true, alt: false, shift: false, superKey: false, mac: false),
           ),
         ),
         ...KeyBarSettings.defaults,
@@ -618,7 +643,7 @@ void main() {
         custom: (
           label: 'M-→',
           send: '\x1b[1;3C',
-          combo: (key: '→', ctrl: false, alt: true, shift: false),
+          combo: (key: '→', ctrl: false, alt: true, shift: false, superKey: false, mac: false),
         ),
       ));
     });
@@ -649,7 +674,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Change custom key'), findsOneWidget);
       expect(
-        _shown('Pick a key, with Ctrl, Alt or Shift if you like'),
+        _shown('Pick a key, with Ctrl, Alt, Shift or Super if you like'),
         findsOneWidget,
       );
       expect(_labelText(tester), 'LS');
@@ -667,9 +692,159 @@ void main() {
         custom: (
           label: 'LS',
           send: '\x0c',
-          combo: (key: 'L', ctrl: true, alt: false, shift: false),
+          combo: (key: 'L', ctrl: true, alt: false, shift: false, superKey: false, mac: false),
         ),
       ));
+    });
+
+    testWidgets('Clear lets go of the key, every modifier and the label, and '
+        'the next key fills the label in again', (tester) async {
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+      await _addFromSheet(tester, 'Custom key…');
+
+      for (final name in ['Ctrl', 'Alt', 'Shift', 'Super']) {
+        await tester.tap(find.widgetWithText(FilterChip, name));
+      }
+      await tester.tap(_cap('F5'));
+      await tester.pump();
+      expect(_shown('Ctrl+Alt+Shift+Super+F5'), findsOneWidget);
+      // Super is for apps that read extended keys, and the picker says so.
+      expect(find.textContaining('extended keys'), findsOneWidget);
+      await tester.enterText(_labelField, 'MINE');
+      expect(_canSave(tester, 'Add'), isTrue);
+
+      await tester.tap(find.text('Clear'));
+      await tester.pump();
+      expect(
+        _shown('Pick a key, with Ctrl, Alt, Shift or Super if you like'),
+        findsOneWidget,
+      );
+      expect(
+        tester.widgetList<FilterChip>(find.byType(FilterChip)).map(
+          (chip) => chip.selected,
+        ),
+        everyElement(isFalse),
+      );
+      expect(
+        tester
+            .widgetList<KeyButton>(
+              find.descendant(
+                of: find.byType(Dialog),
+                matching: find.byType(KeyButton),
+              ),
+            )
+            .where((key) => key.active),
+        isEmpty,
+      );
+      expect(find.textContaining('extended keys'), findsNothing);
+      expect(_labelText(tester), isEmpty);
+      expect(_canSave(tester, 'Add'), isFalse);
+
+      await tester.tap(_cap('F5'));
+      await tester.pump();
+      expect(_labelText(tester), 'F5');
+    });
+
+    testWidgets('the macOS layout names the modifiers the Mac way, is kept '
+        'for the next key, and a key picked on it reopens on it', (
+      tester,
+    ) async {
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
+      await _addFromSheet(tester, 'Custom key…');
+
+      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.tap(_cap('b'));
+      await tester.pump();
+      expect(_labelText(tester), 'M-b');
+
+      await tester.tap(find.text('macOS'));
+      await tester.pump();
+      expect(find.widgetWithText(FilterChip, 'Alt'), findsNothing);
+      expect(
+        tester
+            .widget<FilterChip>(find.widgetWithText(FilterChip, '⌥ Option'))
+            .selected,
+        isTrue,
+      );
+      // The combination, and the label it filled in.
+      expect(_shown('⌥B'), findsNWidgets(2));
+      expect(_labelText(tester), '⌥B');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('sshbox.keyBar.layout'), 'mac');
+
+      // ⌘⌫ deletes the line, with a plain control character: no word about
+      // extended keys.
+      await tester.tap(find.widgetWithText(FilterChip, '⌥ Option'));
+      await tester.tap(find.widgetWithText(FilterChip, '⌘ Command'));
+      await tester.tap(_cap('⌫'));
+      await tester.pump();
+      expect(_labelText(tester), '⌘⌫');
+      expect(find.textContaining('extended keys'), findsNothing);
+      await tester.tap(find.text('Add'));
+      await tester.pumpAndSettle();
+
+      final id = keyBarSettings.keys.last;
+      const combo = (
+        key: 'BKSP',
+        ctrl: false,
+        alt: false,
+        shift: false,
+        superKey: true,
+        mac: true,
+      );
+      expect(keyBarSettings.customKeys[id], (
+        label: '⌘⌫',
+        send: '\x15',
+        combo: combo,
+      ));
+      final saved = jsonDecode(prefs.getString('sshbox.keyBar.v1')!) as List;
+      expect(
+        saved,
+        contains(
+          equals({
+            'id': id,
+            'shown': true,
+            'label': '⌘⌫',
+            'send': '\x15',
+            'combo': 'Super+BKSP',
+            'layout': 'mac',
+          }),
+        ),
+      );
+      // The next start reads both back.
+      keyBarSettings.macLayout = false;
+      await keyBarSettings.load();
+      expect(keyBarSettings.customKeys[id]!.combo, combo);
+      expect(keyBarSettings.macLayout, isTrue);
+      // It went on the end, out of sight below the rest.
+      await tester.drag(
+        find.byType(ReorderableListView),
+        const Offset(0, -3000),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(ListTile, '⌘⌫').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Change custom key'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilterChip>(find.widgetWithText(FilterChip, '⌘ Command'))
+            .selected,
+        isTrue,
+      );
+      expect(tester.widget<KeyButton>(_cap('⌫')).active, isTrue);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      // A new key opens on the layout last picked, and PC is kept too.
+      await _addFromSheet(tester, 'Custom key…');
+      expect(find.widgetWithText(FilterChip, '⌃ Control'), findsOneWidget);
+      await tester.tap(find.text('PC'));
+      await tester.pump();
+      expect(find.widgetWithText(FilterChip, 'Ctrl'), findsOneWidget);
+      expect(prefs.getString('sshbox.keyBar.layout'), 'pc');
     });
 
     testWidgets('a key of your own removed is deleted, with an Undo', (
