@@ -24,6 +24,9 @@ class MainActivity : FlutterActivity() {
     // asks — the same shape as app_links' getInitialLink.
     private var pending: List<Map<String, String>>? = null
 
+    // A download waiting in the save dialog: Dart's copy, and who to tell.
+    private var saving: Pair<File, MethodChannel.Result>? = null
+
     // A launcher tap that Android answered with a second MainActivity on top
     // of ours, instead of bringing our task back. It does that when a file
     // picker or Custom Tab is open over ours and the task was last started or
@@ -60,6 +63,8 @@ class MainActivity : FlutterActivity() {
                 if (call.method == "takeShared") {
                     result.success(pending)
                     pending = null
+                } else if (call.method == "saveAs") {
+                    saveAs(call.argument("path")!!, call.argument("name")!!, result)
                 } else {
                     result.notImplemented()
                 }
@@ -79,6 +84,59 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
         val files = filesIn(intent) ?: return
         channel?.invokeMethod("shared", files)
+    }
+
+    // A download, the other way. file_picker's saveFile wants the whole file
+    // as bytes over the channel, which froze the app on a big one; Dart
+    // streams it to a file of its own instead and hands over the path. The
+    // answer is true once it is copied into the picked document, false when
+    // the dialog is dismissed. The copy is Dart's to delete either way.
+    private fun saveAs(path: String, name: String, result: MethodChannel.Result) {
+        if (saving != null) {
+            result.error("busy", "another download is waiting to be saved", null)
+            return
+        }
+        saving = File(path) to result
+        startActivityForResult(
+            Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                // file_picker's type for it too: a specific one lets some
+                // providers put an extension of their own on the name.
+                .setType("application/octet-stream")
+                .putExtra(Intent.EXTRA_TITLE, name),
+            SAVE_AS,
+        )
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != SAVE_AS) return
+        val (file, result) = saving ?: return
+        saving = null
+        val target = data?.data
+        if (resultCode != RESULT_OK || target == null) {
+            result.success(false)
+            return
+        }
+        // Off the main thread, which is Flutter's UI thread too: 70 MB copied
+        // there is an "isn't responding".
+        Thread {
+            val error = try {
+                file.inputStream().use { input ->
+                    contentResolver.openOutputStream(target)!!.use { input.copyTo(it) }
+                }
+                null
+            } catch (e: Exception) {
+                e
+            }
+            runOnUiThread {
+                if (error == null) {
+                    result.success(true)
+                } else {
+                    result.error("save_failed", error.message ?: error.toString(), null)
+                }
+            }
+        }.start()
     }
 
     private fun filesIn(intent: Intent?): List<Map<String, String>>? {
@@ -131,5 +189,8 @@ class MainActivity : FlutterActivity() {
 
     private companion object {
         const val CHANNEL = "sshbox/share"
+
+        // Ours alone among the request codes plugins pass through here.
+        const val SAVE_AS = 0x5a5e
     }
 }

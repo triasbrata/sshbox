@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:sshbox/src/files/file_browser.dart';
 
@@ -218,23 +218,23 @@ class FakeFileBrowser implements FileBrowser {
     _write(path, 'sent from $localPath', null);
   }
 
+  /// Every download, in order: the host's file and the phone's copy.
+  final List<({String from, String to})> downloads = [];
+
+  /// Fails with [failReadWith] once the bytes are in, as a connection lost
+  /// near the end leaves them.
   @override
-  Future<Uint8List> readBytes(
-    String path, {
-    required int maxBytes,
+  Future<void> download(
+    String path,
+    String localPath, {
     void Function(int received, int total)? onProgress,
   }) async {
+    downloads.add((from: path, to: localPath));
+    final bytes = utf8.encode(_read(path).text);
+    File(localPath).writeAsBytesSync(bytes);
+    onProgress?.call(bytes.length, bytes.length);
     final failure = failReadWith;
     if (failure != null) throw failure;
-    final bytes = utf8.encode(_read(path).text);
-    if (bytes.length > maxBytes) {
-      throw const FileBrowserException(
-        'Too large to download.',
-        fault: FileBrowserFault.tooLarge,
-      );
-    }
-    onProgress?.call(bytes.length, bytes.length);
-    return bytes;
   }
 
   @override

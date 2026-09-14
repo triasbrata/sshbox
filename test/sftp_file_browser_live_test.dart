@@ -247,40 +247,35 @@ void main() {
         ..writeAsBytesSync(List.generate(300 * 1024, (i) => i % 251));
       final small = File('${phone.path}.kecil')..writeAsBytesSync([1, 2, 3]);
       String? tmp;
+      // What the host holds, fetched back the way a download brings it.
+      Future<List<int>> fetch(String remote) async {
+        final copy = File('${phone.path}.balik');
+        try {
+          await browser.download(remote, copy.path);
+          return copy.readAsBytesSync();
+        } finally {
+          if (copy.existsSync()) copy.deleteSync();
+        }
+      }
+
       try {
         final uploaded = RemotePath.join(root, 'unggah.bin');
         await browser.upload(phone.path, uploaded);
-        expect(
-          await browser.readBytes(uploaded, maxBytes: 1 << 20),
-          phone.readAsBytesSync(),
-        );
+        expect(await fetch(uploaded), phone.readAsBytesSync());
         await expectLater(
           browser.upload(phone.path, uploaded),
           throwsA(isA<FileBrowserException>()),
         );
-        await expectLater(
-          browser.readBytes(uploaded, maxBytes: 1024),
-          throwsA(
-            isA<FileBrowserException>().having(
-              (error) => error.fault,
-              'fault',
-              FileBrowserFault.tooLarge,
-            ),
-          ),
-        );
 
         await browser.upload(small.path, uploaded, replace: true);
-        expect(await browser.readBytes(uploaded, maxBytes: 3), [1, 2, 3]);
+        expect(await fetch(uploaded), [1, 2, 3]);
 
         // The key bar's upload to /tmp sends the same way.
         tmp = await (session as FileUploadCapable).uploadToTmp(
           localPath: phone.path,
           fileName: 'sshbox-live-tmp-$pid.bin',
         );
-        expect(
-          await browser.readBytes(tmp, maxBytes: 1 << 20),
-          phone.readAsBytesSync(),
-        );
+        expect(await fetch(tmp), phone.readAsBytesSync());
 
         if (local) {
           expect(File(uploaded).statSync().mode & 0x1ff, 0x180);

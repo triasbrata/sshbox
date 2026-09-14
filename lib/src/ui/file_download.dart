@@ -1,22 +1,26 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart' show FilePicker;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../files/file_browser.dart';
 import 'toast.dart';
 
-/// The most a download takes. The phone's save dialog wants the whole file
-/// at once (file_picker's saveFile takes bytes, not a stream), so it is
-/// held in memory here and again on Android's Java side, whose heap is
-/// often capped at 256 MB.
-///
-/// ponytail: a cap, not a stream. A save that takes a stream into a SAF
-/// document lifts it.
-const _downloadLimit = 100 * 1024 * 1024;
+/// MainActivity's save dialog, which takes a download as a file of ours
+/// rather than as bytes over the channel.
+const _android = MethodChannel('sshbox/share');
 
 /// Brings [path] down from [browser], byte for byte as the host has it, and
 /// hands it to the system's save dialog under its own name. The files drawer
 /// and a file tab both download through here.
+///
+/// It lands in a file of the app's own first, a chunk at a time, and only
+/// that file's path crosses to Android, which copies it into the document
+/// picked there off the main thread. So nothing is held in memory, and no
+/// size is refused but what the phone has room for twice over. The copy goes
+/// again whatever happens.
 ///
 /// [onTransfer] is told how far along it is, and null once the bytes are in
 /// and the dialog takes over. [denied] stands in for the host's words when
@@ -41,18 +45,38 @@ Future<void> downloadFile(
   final name = RemotePath.basename(path);
   final label = 'Downloading $name';
   onTransfer((label: label, progress: null));
+  // On Android, Flutter points systemTemp at the app's own code cache.
+  final temp = Directory.systemTemp.createTempSync('download');
+  final copy = '${temp.path}/file';
   try {
-    final bytes = await browser.readBytes(
+    var shown = -1;
+    await browser.download(
       path,
-      maxBytes: _downloadLimit,
-      onProgress: (done, total) => onTransfer(
-        (label: label, progress: total > 0 ? done / total : null),
-      ),
+      copy,
+      // A rebuild of the page per percent, rather than per packet.
+      onProgress: (done, total) {
+        final percent = total > 0 ? done * 100 ~/ total : -1;
+        if (percent == shown) return;
+        shown = percent;
+        onTransfer((label: label, progress: percent / 100));
+      },
     );
     onTransfer(null);
-    final saved = await FilePicker.saveFile(fileName: name, bytes: bytes);
-    // Null is the dialog dismissed, which says enough on its own.
-    if (saved != null) say('Saved $name', ToastificationType.success);
+    final saved = defaultTargetPlatform == TargetPlatform.android
+        ? await _android.invokeMethod<bool>(
+              'saveAs',
+              {'path': copy, 'name': name},
+            ) ==
+            true
+        // ponytail: elsewhere file_picker still takes the whole file as
+        // bytes. A native save like Android's lifts that.
+        : await FilePicker.saveFile(
+              fileName: name,
+              bytes: await File(copy).readAsBytes(),
+            ) !=
+            null;
+    // Not saved is the dialog dismissed, which says enough on its own.
+    if (saved) say('Saved $name', ToastificationType.success);
   } on FileBrowserException catch (error) {
     final refused = error.fault == FileBrowserFault.permissionDenied;
     say(
@@ -66,6 +90,7 @@ Future<void> downloadFile(
     );
   } finally {
     onTransfer(null);
+    temp.deleteSync(recursive: true);
   }
 }
 

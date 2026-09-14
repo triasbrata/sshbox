@@ -461,40 +461,31 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   }
 
   @override
-  Future<Uint8List> readBytes(
-    String path, {
-    required int maxBytes,
+  Future<void> download(
+    String path,
+    String localPath, {
     void Function(int received, int total)? onProgress,
   }) =>
       _guard('download ${RemotePath.basename(path)}', () async {
         final sftp = await _channel();
         final size = (await sftp.stat(path)).size ?? 0;
-        if (size > maxBytes) throw _tooBigToDownload(path, maxBytes);
-
         final file = await sftp.open(path);
+        final local = File(localPath).openWrite();
         try {
-          final bytes = BytesBuilder(copy: false);
-          // One byte past the limit is enough to catch a file grown since the
-          // stat, a log say, without reading all of it.
-          await for (final chunk in file.read(
-            length: maxBytes + 1,
+          // Every reply is decrypted on the UI isolate (dartssh2 is pure
+          // Dart), so what is in flight is what can land in one go: half a
+          // megabyte keeps that burst short and the frames coming.
+          await file.downloadTo(
+            local,
             onProgress: (received) => onProgress?.call(received, size),
-          )) {
-            bytes.add(chunk);
-          }
-          if (bytes.length > maxBytes) throw _tooBigToDownload(path, maxBytes);
-          return bytes.takeBytes();
+            chunkSize: 32 * 1024,
+            maxPendingRequests: 16,
+          );
         } finally {
+          await local.close();
           await file.close();
         }
       });
-
-  static FileBrowserException _tooBigToDownload(String path, int maxBytes) =>
-      FileBrowserException(
-        '${RemotePath.basename(path)} is over ${_formatBytes(maxBytes)}, the '
-        'most a download here can hold. Use scp for a file this size.',
-        fault: FileBrowserFault.tooLarge,
-      );
 
   @override
   Future<void> delete(String path, {bool recursive = false}) => _guard(
