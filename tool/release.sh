@@ -35,12 +35,21 @@ if [ -n "$name" ]; then
   mv pubspec.yaml.tmp pubspec.yaml
 fi
 
+# keytool checks the signer below. Gradle finds Java by itself, so keytool is
+# often not on PATH: look where Flutter's Java is before a long build, not after.
+keytool=$(command -v keytool || true)
+if [ -z "$keytool" ] && [ -x "${JAVA_HOME:-}/bin/keytool" ]; then keytool=$JAVA_HOME/bin/keytool; fi
+if [ -z "$keytool" ]; then
+  keytool=$(flutter doctor -v 2>/dev/null | sed -n 's/.*Java binary at: \(.*\)\/java$/\1\/keytool/p' | head -n 1)
+fi
+[ -x "${keytool:-}" ] || die "no keytool: put the JDK's bin on PATH or set JAVA_HOME"
+
 flutter build appbundle --release
 aab=build/app/outputs/bundle/release/app-release.aab
 
 # Also catches a key.properties that Gradle reads as empty, which falls back
 # to the debug key just the same.
-signer=$(keytool -printcert -jarfile "$aab" | sed -n 's/^Owner: //p' | head -n 1)
+signer=$("$keytool" -printcert -jarfile "$aab" | sed -n 's/^Owner: //p' | head -n 1)
 case $signer in '' | *'Android Debug'*) die "$aab is not signed with the upload key (signer: ${signer:-none})" ;; esac
 
 local_prop() { sed -n "s/^flutter\.$1=//p" android/local.properties; }
