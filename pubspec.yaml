@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+5
+version: 1.0.0+6
 
 environment:
   sdk: ^3.13.2
@@ -53,6 +53,9 @@ dependencies:
   # Already here under dartssh2, pure Dart: signs relay requests with each
   # host's P-256 key.
   pointycastle: ^4.0.0
+  # Already here under uuid, pure Dart: SCRAM and MD5 for the database
+  # browser's PostgreSQL and MongoDB sign-ins.
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
