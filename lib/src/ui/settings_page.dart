@@ -163,12 +163,26 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
 
   /// Still v1's JSON list: `{"id": "esc", "shown": true}` for each item on the
   /// bar, in order, a custom key's with its `label`, its `send` and its
-  /// `combo` as [keyComboName] writes it, `Ctrl+Alt+R`; `send` is all an
-  /// earlier version reads, and all a key made before the picker has. Then
+  /// `combo` as [keyComboName] writes it, `Ctrl+Alt+R`, and `"layout": "mac"`
+  /// for one picked on the macOS layout; `send` is all an earlier version
+  /// reads, and all a key made before the picker has. Then
   /// `{"id": "tab", "shown": false}` for each built-in key off it. Those
   /// tell a key taken off from one a later version adds, which joins the bar.
   /// v1 hid a key in the same words, so a key hidden then is off the bar now.
   static const _key = 'sshbox.keyBar.v1';
+
+  /// `mac` or `pc`: the layout the custom key picker was last switched to.
+  static const _layoutKey = 'sshbox.keyBar.layout';
+
+  /// Whether the custom key picker opens a new key on the macOS layout.
+  bool macLayout = false;
+
+  /// Saved for the next key, and the next start.
+  Future<void> chooseLayout({required bool mac}) async {
+    macLayout = mac;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_layoutKey, mac ? 'mac' : 'pc');
+  }
 
   /// The ids the bar shows, in order.
   List<String> get keys => [for (final item in value) item.id];
@@ -184,6 +198,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   /// added, joins at the end.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
+    macLayout = prefs.getString(_layoutKey) == 'mac';
     Object? saved;
     try {
       saved = jsonDecode(prefs.getString(_key) ?? 'null');
@@ -219,7 +234,10 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
             send: send,
             // A key a later version has and this one does not types its text.
             combo: switch (entry['combo']) {
-              final String saved => parseKeyCombo(saved),
+              final String saved => parseKeyCombo(
+                saved,
+                mac: entry['layout'] == 'mac',
+              ),
               _ => null,
             },
           ),
@@ -248,7 +266,10 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
             if (item.custom case final key?) ...{
               'label': key.label,
               'send': key.send,
-              if (key.combo case final combo?) 'combo': keyComboName(combo),
+              if (key.combo case final combo?) ...{
+                'combo': keyComboName(combo),
+                if (combo.mac) 'layout': 'mac',
+              },
             },
           },
         for (final id in terminalKeys.keys)
@@ -730,7 +751,10 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
               ListTile(
                 leading: const Icon(Icons.add),
                 title: const Text('Custom key…'),
-                subtitle: const Text('Any key, with Ctrl, Alt or Shift'),
+                subtitle: const Text(
+                  'Any key, with Ctrl, Alt, Shift or Super, on a PC or '
+                  'macOS layout',
+                ),
                 onTap: () => pick(customKeyPrefix),
               ),
             ],
@@ -854,13 +878,14 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                               fontWeight: FontWeight.w600,
                             ),
                     ),
-                    // What a key of the user's own stands for, `Ctrl+Alt+R`,
-                    // or for one made before the picker, its text as written.
+                    // What a key of the user's own stands for, `Ctrl+Alt+R`
+                    // or `⌥⌫`, or for one made before the picker, its text as
+                    // written.
                     subtitle: custom == null
                         ? null
                         : Text(
                             switch (custom.combo) {
-                              final combo? => keyComboName(combo),
+                              final combo? => keyComboText(combo),
                               null => custom.send,
                             },
                             maxLines: 1,
@@ -884,9 +909,10 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
   }
 }
 
-/// The picker for a key of the user's own: Ctrl, Alt and Shift to hold, a
-/// keyboard to tap the key on, the combination as it is built, and the label
-/// the key shows, filled in from the combination until the user writes one.
+/// The picker for a key of the user's own: a PC or macOS layout, Ctrl, Alt,
+/// Shift and Super to hold, or on a Mac ⌃ ⌥ ⇧ ⌘, a keyboard to tap the key
+/// on, the combination as it is built, and the label the key shows, filled in
+/// from the combination until the user writes one. Clear starts it over.
 /// Pops with the key, or with nothing on Cancel.
 class _CustomKeyDialog extends StatefulWidget {
   const _CustomKeyDialog(this.initial);
@@ -906,6 +932,10 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
   late bool _ctrl = widget.initial?.combo?.ctrl ?? false;
   late bool _alt = widget.initial?.combo?.alt ?? false;
   late bool _shift = widget.initial?.combo?.shift ?? false;
+  late bool _super = widget.initial?.combo?.superKey ?? false;
+
+  /// A key's own layout, or for a new one the layout last picked.
+  late bool _mac = widget.initial?.combo?.mac ?? keyBarSettings.macLayout;
 
   /// The label the combination last filled in, so one the user wrote is left
   /// alone.
@@ -914,10 +944,17 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
     null => null,
   };
 
-  KeyCombo? get _combo => switch (_key) {
-    final key? => (key: key, ctrl: _ctrl, alt: _alt, shift: _shift),
-    null => null,
-  };
+  /// The combination so far, `…` standing in for a key not picked yet.
+  KeyCombo get _shown => (
+    key: _key ?? '…',
+    ctrl: _ctrl,
+    alt: _alt,
+    shift: _shift,
+    superKey: _super,
+    mac: _mac,
+  );
+
+  KeyCombo? get _combo => _key == null ? null : _shown;
 
   @override
   void dispose() {
@@ -937,6 +974,14 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
     }
   });
 
+  /// No key, no modifier, and a label the next key fills in. The layout stays.
+  void _clear() => setState(() {
+    _key = null;
+    _ctrl = _alt = _shift = _super = false;
+    _label.clear();
+    _filled = null;
+  });
+
   void _save() {
     final combo = _combo!;
     final label = _label.text.trim();
@@ -954,13 +999,22 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isNew = widget.initial == null;
-    final blank = _key == null && !_ctrl && !_alt && !_shift;
-    Widget modifier(String name, bool held, void Function(bool) hold) =>
+    final blank = _key == null && !_ctrl && !_alt && !_shift && !_super;
+    // In the same places on both: Ctrl is Control, Alt is Option and Super
+    // is Command, and that is the Mac's own order.
+    final names = _mac
+        ? const ['⌃ Control', '⌥ Option', '⇧ Shift', '⌘ Command']
+        : const ['Ctrl', 'Alt', 'Shift', 'Super'];
+    Widget modifier(int index, bool held, void Function(bool) hold) =>
         FilterChip(
-          label: Text(name),
+          label: Text(names[index]),
           selected: held,
           onSelected: (held) => _change(() => hold(held)),
         );
+    // A Mac's line-editing combinations are plain control characters, which
+    // any shell reads.
+    final extended =
+        _super && !(_mac && macTextEditing.containsKey(keyComboName(_shown)));
 
     return Dialog(
       // Close to the edges on a phone, where a keyboard needs the width; a
@@ -979,17 +1033,27 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                 style: theme.textTheme.headlineSmall,
               ),
               const SizedBox(height: 12),
+              Center(
+                child: SegmentedButton(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('PC')),
+                    ButtonSegment(value: true, label: Text('macOS')),
+                  ],
+                  selected: {_mac},
+                  onSelectionChanged: (picked) {
+                    _change(() => _mac = picked.single);
+                    keyBarSettings.chooseLayout(mac: _mac);
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
               // The combination as it is built, in sight while the keys
               // below scroll.
               Text(
                 blank
-                    ? 'Pick a key, with Ctrl, Alt or Shift if you like'
-                    : keyComboName((
-                        key: _key ?? '…',
-                        ctrl: _ctrl,
-                        alt: _alt,
-                        shift: _shift,
-                      )),
+                    ? 'Pick a key, with ${names.take(3).join(', ')} or '
+                          '${names.last} if you like'
+                    : keyComboText(_shown),
                 textAlign: TextAlign.center,
                 style: blank
                     ? theme.textTheme.bodyMedium?.copyWith(
@@ -1004,11 +1068,25 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                 alignment: WrapAlignment.center,
                 spacing: 8,
                 children: [
-                  modifier('Ctrl', _ctrl, (held) => _ctrl = held),
-                  modifier('Alt', _alt, (held) => _alt = held),
-                  modifier('Shift', _shift, (held) => _shift = held),
+                  modifier(0, _ctrl, (held) => _ctrl = held),
+                  modifier(1, _alt, (held) => _alt = held),
+                  modifier(2, _shift, (held) => _shift = held),
+                  modifier(3, _super, (held) => _super = held),
                 ],
               ),
+              if (extended)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Only apps that read extended keys act on '
+                    '${_mac ? '⌘' : 'Super'}: tmux with extended-keys on, '
+                    'neovim, and apps that speak the kitty keyboard protocol.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
               const SizedBox(height: 8),
               Flexible(
                 child: SingleChildScrollView(
@@ -1023,7 +1101,11 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                                 Expanded(
                                   child: KeyButton(
                                     // With Shift held, what Shift types.
-                                    label: keyCapOf(key, shift: _shift),
+                                    label: keyCapOf(
+                                      key,
+                                      shift: _shift,
+                                      mac: _mac,
+                                    ),
                                     active: key == _key,
                                     minWidth: 0,
                                     onTap: () => _change(() => _key = key),
@@ -1045,8 +1127,9 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                 ),
               ),
               Row(
-                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  TextButton(onPressed: _clear, child: const Text('Clear')),
+                  const Spacer(),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
                     child: const Text('Cancel'),

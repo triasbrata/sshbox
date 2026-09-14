@@ -10,8 +10,17 @@ KeyCombo _combo(
   bool ctrl = false,
   bool alt = false,
   bool shift = false,
+  bool superKey = false,
+  bool mac = false,
 }) =>
-    (key: key, ctrl: ctrl, alt: alt, shift: shift);
+    (
+      key: key,
+      ctrl: ctrl,
+      alt: alt,
+      shift: shift,
+      superKey: superKey,
+      mac: mac,
+    );
 
 void main() {
   group('KeyBarController.applyModifiers', () {
@@ -567,6 +576,51 @@ void main() {
       }
     });
 
+    test('with Super, the parameter gains 8, and a key that types a character '
+        'goes out in the CSI u form', () {
+      final expected = {
+        _combo('→', superKey: true): '\x1b[1;9C',
+        _combo('→', superKey: true, shift: true): '\x1b[1;10C',
+        _combo('S', superKey: true): '\x1b[115;9u',
+        // The key's own character, whatever Shift would make it.
+        _combo('S', superKey: true, shift: true): '\x1b[115;10u',
+        _combo('R', superKey: true, ctrl: true): '\x1b[114;13u',
+        _combo('F5', ctrl: true, superKey: true): '\x1b[15;13~',
+        _combo('F1', superKey: true): '\x1b[1;9P',
+        _combo('ENTER', superKey: true): '\x1b[13;9u',
+        _combo('TAB', superKey: true, shift: true): '\x1b[9;10u',
+        _combo('BKSP', superKey: true): '\x1b[127;9u',
+        _combo('ESC', superKey: true): '\x1b[27;9u',
+        _combo('SPACE', superKey: true, alt: true): '\x1b[32;11u',
+      };
+      for (final MapEntry(key: combo, value: bytes) in expected.entries) {
+        expect(send(combo), bytes, reason: keyComboName(combo));
+      }
+    });
+
+    test('on the macOS layout, the line-editing combinations send what a '
+        'shell reads for them, and the rest is as on a PC', () {
+      final expected = {
+        _combo('←', superKey: true, mac: true): '\x01',
+        _combo('→', superKey: true, mac: true): '\x05',
+        _combo('←', alt: true, mac: true): '\x1bb',
+        _combo('→', alt: true, mac: true): '\x1bf',
+        _combo('BKSP', superKey: true, mac: true): '\x15',
+        _combo('BKSP', alt: true, mac: true): '\x17',
+        // One more modifier, and it is xterm's again.
+        _combo('←', superKey: true, shift: true, mac: true): '\x1b[1;10D',
+        _combo('S', superKey: true, mac: true): '\x1b[115;9u',
+        _combo('R', ctrl: true, mac: true): '\x12',
+        // On a PC the same keys are xterm's.
+        _combo('→', alt: true): '\x1b[1;3C',
+        _combo('←', superKey: true): '\x1b[1;9D',
+        _combo('BKSP', alt: true): '\x1b\x7f',
+      };
+      for (final MapEntry(key: combo, value: bytes) in expected.entries) {
+        expect(send(combo), bytes, reason: keyComboText(combo));
+      }
+    });
+
     test('arrows, HOME and END with no modifier follow cursor-keys mode', () {
       final terminal = Terminal();
       expect(encodeKeyCombo(terminal, _combo('←')), '\x1b[D');
@@ -580,9 +634,15 @@ void main() {
 
     test('read back from their names, every key the picker has', () {
       expect(keyComboName(_combo('R', ctrl: true, alt: true)), 'Ctrl+Alt+R');
+      expect(
+        keyComboName(_combo('S', ctrl: true, superKey: true, mac: true)),
+        'Ctrl+Super+S',
+      );
       for (final key in keyComboRows.expand((row) => row)) {
         final combo = _combo(key, ctrl: true, shift: true);
         expect(parseKeyCombo(keyComboName(combo)), combo, reason: key);
+        final mac = _combo(key, alt: true, superKey: true, mac: true);
+        expect(parseKeyCombo(keyComboName(mac), mac: true), mac, reason: key);
       }
       expect(parseKeyCombo('Shift+='), _combo('=', shift: true));
       // A key or a modifier this build does not know is no combination.
@@ -603,10 +663,25 @@ void main() {
         _combo('ESC'): 'ESC',
         // Cut to fit a label.
         _combo('ENTER', ctrl: true, alt: true, shift: true): 'C-M-S-EN',
+        // Emacs's s- for Super, and with it a Ctrl chord is no caret.
+        _combo('S', superKey: true): 's-s',
+        _combo('→', superKey: true): 's-→',
+        _combo('R', ctrl: true, superKey: true): 'C-s-r',
+        // A Mac's symbols, in the Mac's order.
+        _combo('→', superKey: true, mac: true): '⌘→',
+        _combo('B', alt: true, mac: true): '⌥B',
+        _combo('BKSP', superKey: true, mac: true): '⌘⌫',
+        _combo('R', ctrl: true, alt: true, shift: true, superKey: true,
+            mac: true): '⌃⌥⇧⌘R',
       };
       for (final MapEntry(key: combo, value: label) in expected.entries) {
         expect(keyComboLabel(combo), label, reason: keyComboName(combo));
       }
+    });
+
+    test('read on a Mac in its symbols, and on a PC by name', () {
+      expect(keyComboText(_combo('BKSP', alt: true, mac: true)), '⌥⌫');
+      expect(keyComboText(_combo('→', superKey: true)), 'Super+→');
     });
   });
 
