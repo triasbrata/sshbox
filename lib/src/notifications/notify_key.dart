@@ -133,14 +133,16 @@ Map<String, String> _signed(
   };
 }
 
-/// The relay's two calls the app makes. Its `POST /v1/send` is the servers'.
+/// The relay's two calls the app makes, each signed with the key it is about.
+/// Its `POST /v1/send` is the servers'.
 class RelayClient {
   const RelayClient([this._base = notifyRelay]);
 
   /// Where the relay is: [notifyRelay], or a test's own server.
   final String _base;
 
-  /// Has the relay send what [key] signs to [token], as [host]'s. Again with
+  /// Has the relay send what [key] signs to [token], as [host]'s. [key] signs
+  /// this request too, so only its holder can point it at a phone. Again with
   /// a new token, it moves the key there.
   Future<void> register({
     required String token,
@@ -148,6 +150,7 @@ class RelayClient {
     required String host,
   }) async {
     final (status, reply) = await _call(
+      key,
       'POST',
       '/v1/register',
       utf8.encode(
@@ -166,27 +169,47 @@ class RelayClient {
     }
   }
 
-  /// Stops [key] from sending, in a request [key] signs. A key the relay does
-  /// not know (404) or takes no signature from (401) sends nothing either,
-  /// so that is no error.
+  /// Stops [key] from sending, in a request [key] signs. Done only when the
+  /// relay says so: 204, or 401 `unknown key` for a key it has no more (never
+  /// registered, revoked before, or deleted after FCM's 410). Anything else
+  /// throws, the key still working: a relay out of reach, say, or 401
+  /// `stale or bad timestamp` from a phone clock more than 5 minutes off.
   Future<void> revoke(RelayKey key) async {
-    final (status, _) = await _call('DELETE', '/v1/key', const [], key: key);
-    if (status >= 300 && status != 401 && status != 404) {
+    final (status, reply) = await _call(key, 'DELETE', '/v1/key');
+    final gone =
+        status == 401 &&
+        switch (jsonDecode(reply)) {
+          {'error': 'unknown key'} => true,
+          _ => false,
+        };
+    if (status != 204 && !gone) {
       throw HttpException('The relay answered $status');
     }
   }
 
+  /// [method] [path] with [body], signed with [key]: the relay's status and
+  /// reply.
   Future<(int, String)> _call(
+    RelayKey key,
+    String method,
+    String path, [
+    List<int> body = const [],
+  ]) => exchange(method, path, _signed(key, method, path, body), body);
+
+  /// Sends one request to the relay, and gives back its status and reply:
+  /// where a test's fake relay answers instead.
+  @visibleForTesting
+  Future<(int, String)> exchange(
     String method,
     String path,
-    List<int> body, {
-    RelayKey? key,
-  }) async {
+    Map<String, String> headers,
+    List<int> body,
+  ) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
     try {
       final request = await client.openUrl(method, Uri.parse('$_base$path'));
-      if (key != null) _signed(key, method, path, body).forEach(request.headers.set);
+      headers.forEach(request.headers.set);
       if (body.isNotEmpty) request.headers.contentType = ContentType.json;
       request
         ..contentLength = body.length
@@ -210,12 +233,19 @@ class RelayClient {
 /// key is registered again when FCM replaces the token, keeping its id, so
 /// servers holding it carry on. A relay out of reach is tried again at the
 /// next connect or token, never in a loop of its own.
+///
+/// A key dropped, with its host or by a reset, goes to no host from then on.
+/// Until the relay confirms its revoke it waits in [pendingKey], tried again
+/// at each launch (FCM's first token), host delete and reset.
 class NotifyKeys {
   NotifyKeys(this._secrets, {this._relay = const RelayClient()});
 
   /// Where the keys are kept: JSON, from host id to its key's id, PKCS#8 and
   /// the FCM token it was registered for.
   static const storageKey = 'sshbox.notify.keys';
+
+  /// Where dropped keys wait for their revoke: JSON, from key id to PKCS#8.
+  static const pendingKey = 'sshbox.notify.revoke';
 
   final SecretStore _secrets;
   final RelayClient _relay;
@@ -226,6 +256,9 @@ class NotifyKeys {
   /// Every registered key, by host id, with the FCM token it was registered
   /// for.
   final _held = <String, ({RelayKey key, String fcmToken})>{};
+
+  /// Keys dropped and not revoked yet, by id.
+  final _pending = <String, RelayKey>{};
 
   late final Future<void> _loaded = _load();
 
@@ -246,11 +279,14 @@ class NotifyKeys {
   }
 
   /// FCM's token at launch, and each one it replaces it with: every key is
-  /// registered for it.
+  /// registered for it, and every key waiting is revoked.
   Future<void> useFcmToken(String token) async {
     _fcmToken = token;
     await _loaded;
-    await Future.wait([for (final hostId in _held.keys.toList()) _sync(hostId)]);
+    await Future.wait([
+      _retryRevokes(),
+      for (final hostId in _held.keys.toList()) _sync(hostId),
+    ]);
   }
 
   /// Registers [hostId]'s key for FCM's current token, making one when it
@@ -284,66 +320,108 @@ class NotifyKeys {
     }
   }
 
-  /// Drops [hostId]'s key, and revokes it, for a host being deleted. Best
-  /// effort: dropped whether or not the relay can be reached.
+  /// Drops [hostId]'s key, for a host being deleted, and revokes it. The key
+  /// goes to no host from now on, and waits until the relay confirms. Never
+  /// throws.
   Future<void> revoke(String hostId) async {
     await _loaded;
     await _syncing[hostId];
     final held = _held.remove(hostId);
     if (held == null) return;
+    _pending[held.key.id] = held.key;
     await _save();
-    try {
-      await _relay.revoke(held.key);
-    } catch (_) {
-      // It names a host there is no more.
-    }
+    await _retryRevokes();
   }
 
-  /// Revokes every host's key and drops it: each host registers a new one at
-  /// its next connect. Throws when the relay cannot be reached, keeping the
-  /// keys not revoked yet, which still work.
+  /// Drops every host's key and revokes it, with every key still waiting:
+  /// each host registers a new one at its next connect. Throws when the
+  /// relay does not confirm them all; those left wait.
   Future<void> reset() async {
     await _loaded;
     await Future.wait(_syncing.values.toList());
+    for (final held in _held.values) {
+      _pending[held.key.id] = held.key;
+    }
+    _held.clear();
+    await _save();
+    await _revokePending();
+  }
+
+  /// Revokes the keys waiting, one at a time, forgetting each the relay
+  /// confirms. Throws at the first it does not, which waits with the rest.
+  Future<void> _revokePending() async {
+    if (_pending.isEmpty) return;
     try {
-      for (final MapEntry(key: hostId, value: held) in _held.entries.toList()) {
-        await _relay.revoke(held.key);
-        _held.remove(hostId);
+      for (final key in _pending.values.toList()) {
+        await _relay.revoke(key);
+        _pending.remove(key.id);
       }
     } finally {
       await _save();
     }
   }
 
-  Future<void> _save() => _secrets.write(
-    storageKey,
-    _held.isEmpty
-        ? null
-        : jsonEncode({
-            for (final MapEntry(key: hostId, value: held) in _held.entries)
-              hostId: {
-                'keyId': held.key.id,
-                'privateKey': base64.encode(held.key.pkcs8),
-                'fcmToken': held.fcmToken,
-              },
-          }),
-  );
+  /// [_revokePending], a failure logged by its kind only, never a key.
+  Future<void> _retryRevokes() => _revokePending().catchError((Object error) {
+    debugPrint(
+      'sshbox: a notification key is not revoked yet, trying again at the '
+      'next launch (${error is HttpException ? error.message : error.runtimeType})',
+    );
+  });
+
+  Future<void> _save() async {
+    // The waiting keys first: stopped between the two writes, a key just
+    // dropped is in both, and [_load] keeps it waiting.
+    await _secrets.write(
+      pendingKey,
+      _pending.isEmpty
+          ? null
+          : jsonEncode({
+              for (final key in _pending.values)
+                key.id: base64.encode(key.pkcs8),
+            }),
+    );
+    await _secrets.write(
+      storageKey,
+      _held.isEmpty
+          ? null
+          : jsonEncode({
+              for (final MapEntry(key: hostId, value: held) in _held.entries)
+                hostId: {
+                  'keyId': held.key.id,
+                  'privateKey': base64.encode(held.key.pkcs8),
+                  'fcmToken': held.fcmToken,
+                },
+            }),
+    );
+  }
 
   Future<void> _load() async {
     // The one device-wide bearer key an earlier version kept, which the
     // relay takes no more.
     await _secrets.write('sshbox.notify.key', null);
     try {
+      final waiting =
+          jsonDecode(await _secrets.read(pendingKey) ?? '{}') as Map;
+      for (final der in waiting.values) {
+        final key = RelayKey.fromPkcs8(base64.decode(der as String));
+        _pending[key.id] = key;
+      }
+    } catch (_) {
+      // Unreadable, so lost: such a key works until FCM retires this
+      // phone's token.
+    }
+    try {
       final saved = jsonDecode(await _secrets.read(storageKey) ?? '{}') as Map;
-      for (final MapEntry(:key, :value) in saved.entries) {
+      for (final MapEntry(key: hostId, :value) in saved.entries) {
         if (value case {
           'privateKey': final String der,
           'fcmToken': final String fcmToken,
         }) {
-          _held[key as String] = (
-            key: RelayKey.fromPkcs8(base64.decode(der)),
-            fcmToken: fcmToken,
-          );
+          final key = RelayKey.fromPkcs8(base64.decode(der));
+          // Dropped, and stopped before this side was saved.
+          if (_pending.containsKey(key.id)) continue;
+          _held[hostId as String] = (key: key, fcmToken: fcmToken);
         }
       }
     } catch (_) {

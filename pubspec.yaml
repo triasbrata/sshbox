@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+7
+version: 1.0.0+9
 
 environment:
   sdk: ^3.13.2
@@ -50,6 +50,8 @@ dependencies:
   webview_flutter: ^4.14.1
   toastification: ^3.2.0
   flutter_markdown_plus: ^1.0.12
+  # Already here under flutter_markdown_plus, whose builders take its nodes.
+  markdown: ^7.3.1
   # Already here under dartssh2, pure Dart: signs relay requests with each
   # host's P-256 key.
   pointycastle: ^4.0.0
@@ -150,6 +152,12 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+  # The Markdown preview's Mermaid diagrams (lib/src/ui/mermaid_view.dart):
+  # the page, its script, and dist/mermaid.min.js from the npm package
+  # mermaid 11.17.2, MIT, with its LICENSE.
+  assets:
+    - assets/mermaid/
 
   # The terminal's fonts, picked in Settings (lib/src/ui/settings_page.dart,
   # which names them by these families). Static Regular and Bold only; each

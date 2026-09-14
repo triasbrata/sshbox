@@ -1186,8 +1186,10 @@ class _NotificationsSection extends StatelessWidget {
       if (context.mounted) {
         showToast(
           context,
-          'Could not reach the relay — some old keys still work',
-          type: ToastificationType.error,
+          'Some old keys are not revoked yet\nNo host gets them again, and '
+          'Jeansh tries again when it next starts.',
+          type: ToastificationType.warning,
+          duration: const Duration(seconds: 3),
         );
       }
       return;

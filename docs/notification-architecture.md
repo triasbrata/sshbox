@@ -9,8 +9,8 @@ How a server puts a notification on the tablet. There are two ways, and
    jeansh-notify Cloudflare Worker, which pushes it through FCM. It works with
    no session open.
 
-The diagrams follow the code at app commit `493ba25` and jeansh-notify
-`a493c69`. Paths that start with `relay:` are in
+The diagrams follow the app's code as of this file's last change, and
+jeansh-notify `a686159`. Paths that start with `relay:` are in
 [jeansh-notify](https://github.com/triasbrata/jeansh-notify); the rest are in
 this repo.
 
@@ -20,7 +20,7 @@ this repo.
 flowchart LR
   subgraph Tablet
     App["Jeansh app"]
-    Store[("Secret store<br/>sshbox.notify.keys")]
+    Store[("Secret store<br/>sshbox.notify.keys<br/>sshbox.notify.revoke")]
   end
   subgraph Server["SSH server"]
     SSHD["sshd or Tailscale SSH"]
@@ -41,7 +41,7 @@ flowchart LR
   SSHD --> Shell --> Notify
   Notify -->|"1 direct: HTTP to 127.0.0.1:port,<br/>down the SSH connection"| SSHD
   Notify -->|"2 fallback: signed POST /v1/send"| Relay
-  App -->|"POST /v1/register,<br/>signed DELETE /v1/key"| Relay
+  App -->|"signed POST /v1/register<br/>and DELETE /v1/key"| Relay
   Relay --- KV
   Relay -->|"service-account JWT"| OAuth
   Relay -->|"messages:send"| FCM
@@ -51,17 +51,19 @@ flowchart LR
 | Where | Holds | Code |
 |---|---|---|
 | App, secret store `sshbox.notify.keys` | for each host id: the key id, the P-256 private key (PKCS#8 DER, base64) and the FCM token it is registered for | `NotifyKeys._save`, `lib/src/notifications/notify_key.dart` |
+| App, secret store `sshbox.notify.revoke` | the keys dropped with their host or by a reset whose revoke the relay has not confirmed: key id → PKCS#8 DER, base64. None goes to a host again | `NotifyKeys._save`, `_revokePending` |
 | App, memory only | FCM's current token; each connection's direct secret | `NotifyKeys._fcmToken`; `DirectNotify.secret`, `lib/src/notifications/direct_notify.dart` |
 | Server, the shell's environment | `LC_SSHBOX_KEY` = `<keyId>:<base64 PKCS#8>`, `LC_SSHBOX_HOST_ID`, `LC_SSHBOX_NOTIFY_URL`, `LC_SSHBOX_NOTIFY_SECRET` | `LiveSession.connect`, `lib/src/session/session_manager.dart` |
 | Server, during one relay send | the key as a PEM file, created under `umask 077` and deleted on exit | `relay: notify.sh` |
 | Relay, Worker secret `FCM_SERVICE_ACCOUNT` | the Firebase service account JSON with its RSA key; the access token it buys, cached until 5 minutes before it expires | `accessToken`, `relay: src/index.ts` |
-| Relay, Workers KV `KEYS` | `k:<keyId>` → `{publicKey, token, host, created}`; `n:<keyId>:<X-EXTERNAL-ID>` → `"1"` for 600 s | `register`, `verified`, `relay: src/index.ts` |
+| Relay, Workers KV `KEYS` | `k:<keyId>` → `{publicKey, token, host, created}`; `n:<keyId>:<X-EXTERNAL-ID>` → `"1"` for 600 s, for every register, send and revoke let through | `register`, `unsigned`, `relay: src/index.ts` |
 | Google | the device's FCM registration behind the token | — |
 
 ## 1. Per-host key registration
 
 A host gets its key pair at its first connect once FCM has given the app a
-token. Only the public half leaves the phone.
+token. Only the public half leaves the phone, in a request signed with the
+private half, so only a holder of the key can point it at a phone.
 
 ```mermaid
 sequenceDiagram
@@ -72,7 +74,7 @@ sequenceDiagram
   participant KV as Workers KV
   participant FCM as Google OAuth and FCM
 
-  App->>Store: once per launch (_load): read sshbox.notify.keys,<br/>delete the old bearer key sshbox.notify.key
+  App->>Store: once per launch (_load): read sshbox.notify.revoke, then sshbox.notify.keys<br/>(a key in both stays waiting only), delete the old bearer key sshbox.notify.key
   Note over App: NotifyKeys.forConnect(hostId) at a connect,<br/>or useFcmToken for the hosts that have a key (diagram 7)
   App->>App: _sync(hostId): one registration per host at a time
   alt no FCM token yet, or the key is registered for this token
@@ -80,7 +82,8 @@ sequenceDiagram
   else a key to register
     App->>App: the host's key, or RelayKey.generate(): a P-256 scalar from Random.secure()
     App->>App: keyId = jnk_ + first 32 chars of base64url SHA-256(SPKI DER)
-    App->>Relay: POST /v1/register {token: FCM token, publicKey: base64 SPKI DER, host: hostId}
+    App->>App: _signed(key): X-PARTNER-ID = keyId, X-TIMESTAMP, X-EXTERNAL-ID and X-SIGNATURE,<br/>the key's own signature over POST:/v1/register:hex SHA-256 of body:X-TIMESTAMP:X-EXTERNAL-ID
+    App->>Relay: POST /v1/register {token: FCM token, publicKey: base64 SPKI DER, host: hostId},<br/>with the four headers
     Relay->>Relay: REGISTER_LIMIT, by cf-connecting-ip, 10 per 60 s
     break over the limit
       Relay-->>App: 429 too many requests
@@ -88,6 +91,11 @@ sequenceDiagram
     break token not 1 to 4096 chars, host not 1 to 100, or publicKey not SPKI P-256
       Relay-->>App: 400
     end
+    Relay->>Relay: keyId = jnk_ + base64url SHA-256(SPKI DER), first 32
+    break X-PARTNER-ID missing, or not keyId
+      Relay-->>App: 401 X-PARTNER-ID is not publicKey's key id
+    end
+    Relay->>KV: unsigned(): a send's checks after its key (diagram 4), against publicKey<br/>from the body. 401 stale or bad timestamp, 400 X-EXTERNAL-ID,<br/>401 bad signature, 409 duplicate X-EXTERNAL-ID, 429 SEND_LIMIT.<br/>Then put n:keyId:externalId for 600 s
     Relay->>FCM: messages:send {validate_only: true, message: {token}}<br/>(access token as in diagram 4)
     break 404, INVALID_ARGUMENT, UNREGISTERED or SENDER_ID_MISMATCH
       Relay-->>App: 400 FCM does not accept this token
@@ -95,7 +103,6 @@ sequenceDiagram
     break any other failure
       Relay-->>App: 502 FCM returned HTTP status and code
     end
-    Relay->>Relay: keyId = jnk_ + base64url SHA-256(SPKI DER), first 32
     Relay->>KV: put k:keyId = {publicKey, token, host, created}, no expiry
     Relay-->>App: 200 {keyId}
     App->>App: keyId must equal the app's own, else HttpException
@@ -105,9 +112,9 @@ sequenceDiagram
 ```
 
 Code: `lib/src/notifications/notify_key.dart` (`NotifyKeys.forConnect`,
-`_sync`, `_register`, `_save`, `_load`; `RelayKey.generate`, `spki`, `id`;
-`RelayClient.register`), `relay: src/index.ts` (`register`, `fcm`),
-`relay: wrangler.jsonc` (`REGISTER_LIMIT`).
+`_sync`, `_register`, `_save`, `_load`; `RelayKey.generate`, `spki`, `id`,
+`sign`; `_signed`; `RelayClient.register`), `relay: src/index.ts` (`register`,
+`unsigned`, `fcm`), `relay: wrangler.jsonc` (`REGISTER_LIMIT`, `SEND_LIMIT`).
 
 ## 2. Connect
 
@@ -218,7 +225,7 @@ sequenceDiagram
   N->>N: stamp = date -u +%Y-%m-%dT%H:%M:%S+00:00<br/>id = openssl rand -hex 16<br/>hash = hex SHA-256 of data
   N->>N: sig = base64 of openssl dgst -sha256 -sign PEM<br/>over POST:/v1/send:hash:stamp:id
   N->>Relay: POST /v1/send, body data, headers read from stdin:<br/>X-PARTNER-ID = LC_SSHBOX_KEY before the colon, X-TIMESTAMP = stamp,<br/>X-EXTERNAL-ID = id, X-SIGNATURE = sig, Content-Type: application/json
-  Note over Relay: verified()
+  Note over Relay: verified() finds the key, then unsigned() checks the rest
   Relay->>KV: get k:keyId, only if X-PARTNER-ID is jnk_ and 32 base64url chars
   break no such key
     Relay-->>N: 401 unknown key
@@ -237,7 +244,7 @@ sequenceDiagram
   break seen within the last 600 s
     Relay-->>N: 409 duplicate X-EXTERNAL-ID
   end
-  Relay->>Relay: SEND_LIMIT, by key id, 30 per 60 s
+  Relay->>Relay: SEND_LIMIT, by key id, 30 per 60 s, sends and registers together
   break over the limit
     Relay-->>N: 429 too many requests
   end
@@ -273,7 +280,7 @@ sequenceDiagram
 ```
 
 Code: `relay: notify.sh`, `relay: src/index.ts` (`send`, `verified`,
-`verify`, `derToRaw`, `readMessage`, `fcm`, `accessToken`, `signJwt`),
+`unsigned`, `verify`, `derToRaw`, `readMessage`, `fcm`, `accessToken`, `signJwt`),
 `relay: wrangler.jsonc` (`SEND_LIMIT`), `lib/src/notifications/push_messaging.dart`
 (`_showFrom`).
 
@@ -316,6 +323,10 @@ key's entry).
 
 ## 6. Revoke
 
+A key leaves every host the moment it is dropped. It then waits in
+`sshbox.notify.revoke`, never registered again, until the relay confirms the
+revoke.
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -328,39 +339,42 @@ sequenceDiagram
   alt delete a host (HostsPage._confirmDelete)
     User->>App: Delete, confirmed
     App->>App: closeHost(hostId), then NotifyKeys.revoke(hostId), not awaited
-    App->>App: wait for any registration under way for this host
-    App->>Store: drop the key and save, before the relay is asked
-    App->>Relay: signed DELETE /v1/key, best effort, errors ignored
+    App->>App: wait for any registration under way for this host, then move<br/>its key to the waiting keys (a host with none: nothing more)
   else Settings, Reset notification keys (_NotificationsSection._reset)
     User->>App: Reset, confirmed
-    App->>App: NotifyKeys.reset(): wait for every registration under way
-    loop each key, one at a time
-      App->>Relay: signed DELETE /v1/key
-      App->>App: drop the key once revoked
+    App->>App: NotifyKeys.reset(): wait for every registration under way,<br/>then move every host's key to the waiting keys
+  else launch, and each FCM token after it (NotifyKeys.useFcmToken)
+    App->>App: the keys still waiting from before
+  end
+  App->>Store: save sshbox.notify.revoke, then sshbox.notify.keys without them
+  Note over App: From here no waiting key goes to a host or is registered again.<br/>Stopped between the two writes, _load finds a key in both and keeps it waiting.
+  loop each waiting key, one at a time (_revokePending)
+    App->>Relay: DELETE /v1/key, no body, the four headers from _signed,<br/>over DELETE:/v1/key:hex SHA-256 of nothing:X-TIMESTAMP:X-EXTERNAL-ID
+    Relay->>KV: verified(): the checks of a send, in the same order (diagram 4),<br/>writing n:keyId:externalId, but never counted against SEND_LIMIT
+    alt every check passes
+      Relay->>KV: delete k:keyId
+      Relay-->>App: 204
+      App->>App: done, forget the key
+    else the key is gone already (revoked, or deleted after a 410)
+      Relay-->>App: 401 unknown key
+      App->>App: done, forget the key
+    else no answer, or any other (401 stale or bad timestamp, 401 bad signature, 404, 409, 429, 5xx)
+      App->>App: RelayClient.revoke throws. Stop, this key and the rest keep waiting
     end
-    App->>Store: save what is left, after a failure too
-    Note over App: A failure stops the loop, and a toast says some old keys still work
   end
-  Note over App,Relay: RelayClient.revoke: no body, the four headers from _signed,<br/>over DELETE:/v1/key:hex SHA-256 of nothing:X-TIMESTAMP:X-EXTERNAL-ID
-  Relay->>KV: verified(): the checks of a send, in the same order (diagram 4),<br/>so it also writes n:keyId:externalId and counts against SEND_LIMIT
-  alt every check passes
-    Relay->>KV: delete k:keyId
-    Relay-->>App: 204
-  else the key is already gone
-    Relay-->>App: 401 unknown key. RelayClient.revoke counts 401 and 404 as done
-  else anything else from 300 up
-    Relay-->>App: HttpException: ignored after a delete, thrown by reset
-  end
-  Note over Relay: A server still holding the old LC_SSHBOX_KEY now gets 401 unknown key
+  App->>Store: save the keys still waiting
+  Note over App: After a delete or at launch a failure is logged by its kind only.<br/>A reset throws, and a toast says some old keys are not revoked yet,<br/>no host gets them again, and Jeansh tries again when it next starts.
+  Note over Relay: A server still holding a revoked LC_SSHBOX_KEY now gets 401 unknown key
 ```
 
 After a reset each host gets a new key pair at its next connect (diagram 1).
 
 Code: `lib/src/ui/hosts_page.dart` (`_confirmDelete`),
 `lib/src/ui/settings_page.dart` (`_NotificationsSection._reset`),
-`lib/src/notifications/notify_key.dart` (`NotifyKeys.revoke`, `reset`;
+`lib/src/notifications/notify_key.dart` (`NotifyKeys.revoke`, `reset`,
+`useFcmToken`, `_revokePending`, `_retryRevokes`, `_save`, `_load`;
 `RelayClient.revoke`, `_signed`), `relay: src/index.ts` (`revoke`,
-`verified`).
+`verified`, `unsigned`).
 
 ## 7. FCM token refresh
 
@@ -375,10 +389,10 @@ sequenceDiagram
 
   Note over FCM,App: PushMessaging.initialize: getToken() at launch, then every onTokenRefresh
   FCM->>App: token T2, replacing T1
-  App->>App: NotifyKeys.useFcmToken(T2): _fcmToken = T2
+  App->>App: NotifyKeys.useFcmToken(T2): _fcmToken = T2,<br/>and the keys waiting for a revoke are tried again (diagram 6)
   loop every host with a key, all at once (Future.wait)
     App->>App: _sync(hostId): registered for T1, not T2
-    App->>Relay: POST /v1/register {token: T2, publicKey: the same SPKI, host: hostId}
+    App->>Relay: POST /v1/register {token: T2, publicKey: the same SPKI, host: hostId},<br/>signed with that key (diagram 1)
     Relay->>KV: put k:keyId, the same keyId, now with token T2
     Relay-->>App: 200 {keyId}, the same id
     App->>Store: save the key with fcmToken T2
@@ -387,56 +401,81 @@ sequenceDiagram
 ```
 
 Code: `lib/src/notifications/push_messaging.dart` (`initialize`),
-`lib/src/notifications/notify_key.dart` (`NotifyKeys.useFcmToken`, `_register`).
+`lib/src/notifications/notify_key.dart` (`NotifyKeys.useFcmToken`, `_register`,
+`_retryRevokes`).
 
 ## Security properties
 
+- **A push goes only to the phone that registered its key.** The relay sends
+  to the FCM token stored with the key, and only a request signed with that
+  key's private half can store or change it: the phone, and that host's
+  servers, which are given the key to sign their sends.
 - **A leaked relay KV** gives public keys, FCM tokens, host ids and recent
   external ids. It holds no private key and no Firebase credential (that is a
-  Worker secret), so nothing in it can sign a send or push to a phone.
+  Worker secret), so nothing in it can sign a send, register a key again, or
+  push to a phone.
 - **A compromised server** holds its own host's private key, and the direct
   secret of each of its connections while that connection lasts. It can
-  notify this phone as its own host and no other: the relay takes the host
-  from the key, and the direct handler from the connection. Through the relay
-  it can send at most 30 a minute. It never sees the phone's FCM token, and
-  nothing listens on the phone.
+  notify this phone as its own host, at most 30 a minute through the relay:
+  the relay takes the host from the key, and the direct handler from the
+  connection. It never sees the phone's FCM token, and nothing listens on the
+  phone. It can also register its key again, which moves that one key only:
+  to another FCM token, a Jeansh install of its own, which then gets this
+  host's relay pushes instead of this phone, or to another host id, which a
+  tap then opens. No other host's key or pushes. Deleting the host, or a
+  reset, revokes the key and ends it.
 - **Replay protection** covers a signed request sent again. Within the 300 s
   window the `n:` record, kept for 600 s, answers 409; after the window the
   timestamp answers 401. The signature binds method, path, body hash, time
   and external id, so a captured send can't come back as a `DELETE` or with
-  another body. `POST /v1/register` is not signed. The direct way has no
-  replay check: its secret stays on one server, for one connection.
-- **Known limits**, from the relay's `ponytail:` notes:
+  another body, and a captured register can't come back with another token,
+  nor bring back a key revoked since. The direct way has no replay check: its
+  secret stays on one server, for one connection.
+- **A revoke holds.** A key dropped with its host or by a reset goes to no
+  host from that moment, and waits in `sshbox.notify.revoke` until the relay
+  answers 204, or 401 `unknown key` for a key it has no more. Anything else,
+  a relay out of reach or a phone clock more than 5 minutes off (401 `stale
+  or bad timestamp`) included, keeps it waiting for the next launch, delete
+  or reset. A revoke is never rate-limited, so a server sending at its key's
+  limit can't hold off its own revoke.
+- **Closed** by the signed register and the reliable revoke (jeansh-notify
+  `a686159` and the app change alongside it):
+  - `POST /v1/register` took a public key with no signature, so anyone holding
+    one, from a leaked KV or worked out from a server's private key, could
+    register it with the FCM token of their own Jeansh install and get that
+    host's pushes. A register is now signed with the key it registers, and an
+    unsigned one is refused.
+  - Deleting a host dropped its key before the relay confirmed the revoke, so
+    a relay out of reach left the key live for good, and `RelayClient.revoke`
+    took every 401 (a stale phone clock too) and a 404 as done. Now only 204
+    or 401 `unknown key` is done, and anything else waits and is tried again.
+- **Known limits:**
+  - Whoever holds a host's private key, that is its servers, can still
+    re-bind that one key to another token or host id, as under a compromised
+    server. From the relay's `ponytail:` note: a device key of the app's own,
+    never handed to a server, signing registers instead would close that.
   - KV is eventually consistent, so a replay that lands on another Cloudflare
     location within about a minute may pass. A Durable Object would make the
-    check strict.
-  - Whoever holds a public key can register it again with another FCM token
-    from the same Firebase project (any install of Jeansh has one), and with
-    another host id, which sends that key's pushes to them. The relay counts
-    on the public key never leaving the phone and the relay. A leaked KV
-    breaks that, and so does a server, which can work out the public key from
-    its private one, though a server can redirect only its own host's pushes.
-    The phone registers again only when its FCM token changes, or after a
-    reset.
-- **Also in the code:**
-  - Deleting a host drops its key before revoking it. With the relay out of
-    reach, the key stays live and the phone has nothing left to revoke it
-    with; it goes when FCM rejects the token (410).
-  - `RelayClient.revoke` counts every 401 as done, including "stale or bad
-    timestamp" from a phone clock more than 5 minutes off.
+    check strict (also a `ponytail:` note).
+  - A waiting key lost with an unreadable secret store stays live until FCM
+    retires the phone's token.
+  - Registering now needs the phone's clock within 5 minutes of the relay's,
+    as a revoke always did. A register refused for it is tried again at the
+    next connect or token.
 - **The KV write quota:** Cloudflare's free plan allows 1,000 KV writes a day,
-  and 1,000 deletes. Each accepted send or revoke writes an `n:` record, and
-  each registration a `k:` record, so the relay handles about 1,000 of those a
-  day for all users together. Past that, `put` throws and the request fails.
-  One key sending at its 30-a-minute limit uses up the day in about half an
-  hour.
+  and 1,000 deletes. Each accepted send, register or revoke writes an `n:`
+  record, and each registration a `k:` record too, so the relay handles about
+  1,000 of those a day for all users together. Past that, `put` throws and the
+  request fails. One key sending at its 30-a-minute limit uses up the day in
+  about half an hour.
 
 ## Where each piece lives
 
 - `lib/src/notifications/notify_key.dart`: the relay address; `RelayKey` (the
-  P-256 pair, SPKI and PKCS#8, key id, signing); `_signed` (the SNAP headers);
-  `RelayClient` (register, revoke); `NotifyKeys` (keys per host, stored,
-  registered, revoked, reset).
+  P-256 pair, SPKI and PKCS#8, key id, signing); `_signed` (the SNAP headers
+  on both calls); `RelayClient` (register, revoke, and `exchange`, the HTTP a
+  test's `FakeRelay` stands in for); `NotifyKeys` (keys per host, stored,
+  registered, revoked, reset, and the keys waiting for a revoke).
 - `lib/src/notifications/direct_notify.dart`: `DirectNotify`, the HTTP handler
   and secret for one connection.
 - `lib/src/notifications/push_messaging.dart`: FCM tokens to `NotifyKeys`, a
@@ -448,11 +487,12 @@ Code: `lib/src/notifications/push_messaging.dart` (`initialize`),
 - `lib/src/session/dartssh2_transport.dart`: `beforeShell` after auth, `listen`
   (the remote forward), `_withEnvironment` (the retry without variables).
 - `lib/src/session/tmux.dart`: `TmuxSession.command` and `update-environment`.
-- `lib/src/ui/hosts_page.dart`: deleting a host revokes its key.
+- `lib/src/ui/hosts_page.dart`: deleting a host revokes its key, until the
+  relay confirms.
 - `lib/src/ui/host_edit_page.dart`: Copy notification key.
 - `lib/src/ui/settings_page.dart`: Reset notification keys.
 - `lib/src/app.dart`: the wiring, `_handleLink` and `openHost`.
 - `relay: src/index.ts`: the Worker: `register`, `send`, `revoke`, `verified`,
-  `fcm`, `accessToken`, `signJwt`.
+  `unsigned`, `fcm`, `accessToken`, `signJwt`.
 - `relay: wrangler.jsonc`: the route, the KV binding and both rate limits.
 - `relay: notify.sh`: `sshbox-notify`, direct first, then the relay.

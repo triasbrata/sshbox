@@ -9,11 +9,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
+import 'fake_web_view.dart';
 
 Future<void> _pumpEditor(
   WidgetTester tester,
@@ -977,6 +980,35 @@ echo hello
       // Named, never fetched.
       expect(find.textContaining('the logo'), findsOneWidget);
       expect(find.byType(Image), findsNothing);
+    });
+
+    testWidgets('draws a mermaid block as a diagram, and leaves other code be',
+        (tester) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await pumpReadme(tester, '''
+```mermaid
+flowchart LR
+  A --> B
+```
+
+```sh
+echo hello
+```
+
+Run `make` first.
+''');
+
+      expect(
+        tester.widget<MermaidView>(find.byType(MermaidView)).source,
+        'flowchart LR\n  A --> B\n',
+      );
+      expect(find.textContaining('A --> B'), findsNothing);
+      expect(find.text('echo hello'), findsOneWidget);
+      expect(find.textContaining('make first'), findsOneWidget);
+
+      await toggle(tester, 'Show source');
+      expect(find.byType(MermaidView), findsNothing);
+      expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
     });
 
     testWidgets('Find from the preview finds in Source', (tester) async {
