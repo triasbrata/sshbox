@@ -1,6 +1,7 @@
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The phone's file picker and save dialog, answered without asking anyone.
@@ -10,6 +11,13 @@ class FakeFilePicker extends FilePickerPlatform {
 
   /// What the save dialog was last handed.
   ({String name, Uint8List bytes})? saved;
+
+  /// The app's own copy a download handed Android's save dialog, which the
+  /// download should have removed by the time it is done.
+  String? savedFrom;
+
+  /// False to have the user dismiss Android's save dialog.
+  bool save = true;
 
   @override
   Future<List<PlatformFile>> pickFiles({
@@ -43,11 +51,28 @@ class FakeFilePicker extends FilePickerPlatform {
   }
 }
 
-/// A [FakeFilePicker] in place of the phone's own until the test ends.
+/// A [FakeFilePicker] in place of the phone's own until the test ends, and
+/// in place of MainActivity's save dialog, which downloads on Android go to
+/// instead of file_picker's: it is handed a path, read here while it is there.
 FakeFilePicker useFakePicker() {
   final picker = FakeFilePicker();
   final real = FilePickerPlatform.instance;
   FilePickerPlatform.instance = picker;
   addTearDown(() => FilePickerPlatform.instance = real);
+
+  const android = MethodChannel('sshbox/share');
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(android, (call) async {
+    if (call.method != 'saveAs') return null;
+    final arguments = call.arguments as Map<Object?, Object?>;
+    final from = picker.savedFrom = arguments['path']! as String;
+    picker.saved = (
+      name: arguments['name']! as String,
+      bytes: File(from).readAsBytesSync(),
+    );
+    return picker.save;
+  });
+  addTearDown(() => messenger.setMockMethodCallHandler(android, null));
   return picker;
 }

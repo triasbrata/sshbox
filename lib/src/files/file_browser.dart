@@ -12,8 +12,6 @@
 /// chatty round-trip-per-entry shape and throw away the one advantage it has.
 library;
 
-import 'dart:typed_data';
-
 /// What kind of thing a listing row is.
 ///
 /// An enum rather than a pair of booleans, because a symlink is not a third
@@ -185,13 +183,12 @@ abstract class FileBrowser {
     void Function(int sent, int total)? onProgress,
   });
 
-  /// The whole file at [path], as bytes to save on the phone.
-  ///
-  /// Throws [FileBrowserFault.tooLarge] for one over [maxBytes], rather than
-  /// holding it all in memory.
-  Future<Uint8List> readBytes(
-    String path, {
-    required int maxBytes,
+  /// Brings the file at [path] down into the phone's file at [localPath],
+  /// byte for byte, a chunk at a time, telling [onProgress] how far it has
+  /// got. Nothing is held in memory, so only the phone's disk bounds it.
+  Future<void> download(
+    String path,
+    String localPath, {
     void Function(int received, int total)? onProgress,
   });
 
