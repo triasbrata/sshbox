@@ -1,12 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pointycastle/api.dart';
 import 'package:pointycastle/digests/sha256.dart';
-import 'package:pointycastle/ecc/api.dart';
-import 'package:pointycastle/ecc/curves/prime256v1.dart';
-import 'package:pointycastle/signers/ecdsa_signer.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/notifications/notify_key.dart';
 
@@ -34,34 +31,13 @@ final _hasOpenssl =
 String _hex(List<int> bytes) =>
     bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
 
-BigInt _unsigned(List<int> bytes) => BigInt.parse(_hex(bytes), radix: 16);
-
-/// Whether [signature], DER, signs [text] for the key in [spki]: checked as
-/// the relay checks it, from the SubjectPublicKeyInfo alone.
-bool _verifies(List<int> spki, String text, List<int> signature) {
-  final p256 = ECCurve_prime256v1();
-  // The point, after the SPKI's 26 bytes of head.
-  final q = p256.curve.decodePoint(spki.sublist(26))!;
-  // SEQUENCE { INTEGER r, INTEGER s }.
-  expect(signature[0], 0x30);
-  expect(signature[1], signature.length - 2);
-  final rEnd = 4 + signature[3];
-  expect([signature[2], signature[rEnd]], [0x02, 0x02]);
-  expect(signature[rEnd + 1], signature.length - rEnd - 2);
-  final r = signature.sublist(4, rEnd);
-  final s = signature.sublist(rEnd + 2);
-  // DER's integers are minimal and positive: a 0x00 only before a high bit.
-  for (final integer in [r, s]) {
-    expect(integer.first, lessThan(0x80));
-    if (integer.first == 0) expect(integer[1], greaterThanOrEqualTo(0x80));
-  }
-  final verifier = ECDSASigner(SHA256Digest())
-    ..init(false, PublicKeyParameter<ECPublicKey>(ECPublicKey(q, p256)));
-  return verifier.verifySignature(
-    utf8.encode(text),
-    ECSignature(_unsigned(r), _unsigned(s)),
-  );
-}
+/// A request the test's relay was sent.
+typedef _Request = ({
+  String method,
+  String path,
+  HttpHeaders headers,
+  List<int> body,
+});
 
 /// A key's id, from its `LC_SSHBOX_KEY` value.
 String _id(String? value) => value!.split(':').first;
@@ -88,8 +64,8 @@ void main() {
       expect(back.id, key.id);
       expect(back.spki, key.spki);
       const text = 'POST:/v1/send:$_emptyHash:2026-09-14T08:15:30+07:00:abc';
-      expect(_verifies(key.spki, text, back.sign(text)), isTrue);
-      expect(_verifies(key.spki, '$text.', back.sign(text)), isFalse);
+      expect(verifies(key.spki, text, back.sign(text)), isTrue);
+      expect(verifies(key.spki, '$text.', back.sign(text)), isFalse);
 
       // A key whose public point is not its own is no key of ours.
       final mangled = key.pkcs8..last ^= 1;
@@ -116,7 +92,7 @@ void main() {
         'dgst', '-sha256', '-sign', private.path, message.path, //
       ], stdoutEncoding: null);
       expect(byOpenssl.exitCode, 0, reason: '${byOpenssl.stderr}');
-      expect(_verifies(key.spki, text, byOpenssl.stdout as List<int>), isTrue);
+      expect(verifies(key.spki, text, byOpenssl.stdout as List<int>), isTrue);
 
       final signature = File('${dir.path}/sig')..writeAsBytesSync(key.sign(text));
       final checked = await Process.run('openssl', [
@@ -129,8 +105,7 @@ void main() {
 
   group('the relay, over HTTP', () {
     late HttpServer server;
-    late List<({String method, String path, HttpHeaders headers, List<int> body})>
-    requests;
+    late List<_Request> requests;
 
     /// What it answers every request with.
     late int status;
@@ -157,8 +132,37 @@ void main() {
 
     RelayClient relay() => RelayClient('http://127.0.0.1:${server.port}');
 
-    test('registers the FCM token, the SPKI and the host, and wants its own '
-        'key id back', () async {
+    /// That [request] carries [key]'s SNAP headers, [key]'s signature over
+    /// its method, path and body among them.
+    void expectSigned(_Request request, RelayKey key) {
+      String header(String name) => request.headers.value(name)!;
+      expect(header('X-PARTNER-ID'), key.id);
+      final timestamp = header('X-TIMESTAMP');
+      expect(
+        timestamp,
+        matches(RegExp(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$')),
+      );
+      expect(
+        DateTime.parse(timestamp).difference(DateTime.now()).abs(),
+        lessThan(const Duration(minutes: 1)),
+      );
+      final externalId = header('X-EXTERNAL-ID');
+      expect(externalId, matches(RegExp(r'^[A-Za-z0-9-]{16,64}$')));
+      final hash = _hex(
+        SHA256Digest().process(Uint8List.fromList(request.body)),
+      );
+      expect(
+        verifies(
+          key.spki,
+          '${request.method}:${request.path}:$hash:$timestamp:$externalId',
+          base64.decode(header('X-SIGNATURE')),
+        ),
+        isTrue,
+      );
+    }
+
+    test('registers the FCM token, the SPKI and the host in a request the '
+        'key signs, and wants its own key id back', () async {
       final key = RelayKey.generate();
       status = 200;
       reply = jsonEncode({'keyId': key.id});
@@ -172,6 +176,7 @@ void main() {
         'publicKey': base64.encode(key.spki),
         'host': 'host-1',
       });
+      expectSigned(request, key);
 
       reply = jsonEncode({'keyId': 'jnk_someone-else'});
       await expectLater(
@@ -195,27 +200,7 @@ void main() {
       for (final request in requests) {
         expect('${request.method} ${request.path}', 'DELETE /v1/key');
         expect(request.body, isEmpty);
-        String header(String name) => request.headers.value(name)!;
-        expect(header('X-PARTNER-ID'), key.id);
-        final timestamp = header('X-TIMESTAMP');
-        expect(
-          timestamp,
-          matches(RegExp(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$')),
-        );
-        expect(
-          DateTime.parse(timestamp).difference(DateTime.now()).abs(),
-          lessThan(const Duration(minutes: 1)),
-        );
-        final externalId = header('X-EXTERNAL-ID');
-        expect(externalId, matches(RegExp(r'^[A-Za-z0-9-]{16,64}$')));
-        expect(
-          _verifies(
-            key.spki,
-            'DELETE:/v1/key:$_emptyHash:$timestamp:$externalId',
-            base64.decode(header('X-SIGNATURE')),
-          ),
-          isTrue,
-        );
+        expectSigned(request, key);
       }
       // Unique to each request.
       expect(
@@ -224,14 +209,25 @@ void main() {
       );
     });
 
-    test('a key the relay no longer knows is revoked all the same; a relay '
-        'that fails is an error', () async {
+    test('a revoke is done only on 204, or on 401 unknown key for a key the '
+        'relay has no more; any other answer is an error', () async {
       final key = RelayKey.generate();
-      reply = '';
-      for (status in [401, 404]) {
+      String error(String text) => jsonEncode({'error': text});
+      for (final (answer, text) in [(204, ''), (401, error('unknown key'))]) {
+        status = answer;
+        reply = text;
         await relay().revoke(key);
       }
-      for (status in [429, 500]) {
+      for (final (answer, text) in [
+        // A phone clock more than 5 minutes off.
+        (401, error('stale or bad timestamp')),
+        (401, error('bad signature')),
+        (404, error('not found')),
+        (429, error('too many requests')),
+        (500, ''),
+      ]) {
+        status = answer;
+        reply = text;
         await expectLater(relay().revoke(key), throwsA(isA<HttpException>()));
       }
     });
@@ -246,6 +242,12 @@ void main() {
     Future<Map<String, Object?>> stored() async =>
         jsonDecode(await secrets.read(NotifyKeys.storageKey) ?? '{}')
             as Map<String, Object?>;
+
+    /// The ids of the keys the keystore holds waiting for their revoke.
+    Future<List<Object?>> waiting() async =>
+        (jsonDecode(await secrets.read(NotifyKeys.pendingKey) ?? '{}') as Map)
+            .keys
+            .toList();
 
     setUp(() {
       relay = FakeRelay();
@@ -333,21 +335,70 @@ void main() {
       expect(relay.registered, isEmpty);
     });
 
-    test("a deleted host's key is revoked and dropped, dropped even with the "
-        'relay out of reach', () async {
+    test("a deleted host's key is revoked and dropped; one the relay does not "
+        'confirm goes to no host, and waits for the next launch', () async {
       await keys.useFcmToken('fcm-1');
       final one = await keys.forConnect('host-1');
-      await keys.forConnect('host-2');
+      final two = await keys.forConnect('host-2');
 
       await keys.revoke('host-1');
       expect(relay.revoked, [_id(one)]);
       expect(await keys.valueFor('host-1'), isNull);
       expect((await stored()).keys, ['host-2']);
+      expect(await waiting(), isEmpty);
 
       relay.down = true;
       await keys.revoke('host-2');
       expect(await keys.valueFor('host-2'), isNull);
       expect(await stored(), isEmpty);
+      expect(await waiting(), [_id(two)]);
+
+      // Nor is a 401 for a phone clock more than 5 minutes off.
+      relay
+        ..down = false
+        ..clockOff = true;
+      await NotifyKeys(secrets, relay: relay).useFcmToken('fcm-1');
+      expect(await waiting(), [_id(two)]);
+
+      relay.clockOff = false;
+      final relaunched = NotifyKeys(secrets, relay: relay);
+      await relaunched.useFcmToken('fcm-1');
+      expect(relay.revoked, [_id(one), _id(two)]);
+      expect(await waiting(), isEmpty);
+      // Never registered again, nor handed to a host, meanwhile.
+      expect(relay.registered, hasLength(2));
+      expect(await relaunched.valueFor('host-2'), isNull);
+    });
+
+    test('a waiting key the relay no longer knows, as after FCM\'s 410, '
+        'counts as revoked', () async {
+      await keys.useFcmToken('fcm-1');
+      await keys.forConnect('host-1');
+      relay.down = true;
+      await keys.revoke('host-1');
+      expect(await waiting(), hasLength(1));
+
+      final forgetful = FakeRelay();
+      await NotifyKeys(secrets, relay: forgetful).useFcmToken('fcm-1');
+      expect(await waiting(), isEmpty);
+      expect(forgetful.revoked, isEmpty);
+    });
+
+    test('a key found both held and waiting, the app stopped between the two '
+        'writes, stays waiting and goes to no host', () async {
+      await keys.useFcmToken('fcm-1');
+      final one = await keys.forConnect('host-1');
+      final held = await secrets.read(NotifyKeys.storageKey);
+      relay.down = true;
+      await keys.revoke('host-1');
+      await secrets.write(NotifyKeys.storageKey, held);
+
+      final relaunched = NotifyKeys(secrets, relay: relay);
+      expect(await relaunched.valueFor('host-1'), isNull);
+      relay.down = false;
+      await relaunched.useFcmToken('fcm-1');
+      expect(relay.revoked, [_id(one)]);
+      expect(_id(await relaunched.forConnect('host-1')), isNot(_id(one)));
     });
 
     test('reset revokes and drops every key, and each host registers a new '
@@ -360,18 +411,25 @@ void main() {
       expect(relay.revoked, [_id(one), _id(two)]);
       expect(await keys.valueFor('host-1'), isNull);
       expect(await stored(), isEmpty);
+      expect(await waiting(), isEmpty);
 
       expect(_id(await keys.forConnect('host-1')), isNot(_id(one)));
     });
 
-    test('a reset the relay cannot take keeps the keys, which still work', () async {
+    test('a reset the relay cannot take hands the old keys to no host, and '
+        'revokes them at the next launch', () async {
       await keys.useFcmToken('fcm-1');
       final one = await keys.forConnect('host-1');
       relay.down = true;
 
       await expectLater(keys.reset(), throwsA(isA<SocketException>()));
-      expect(await keys.valueFor('host-1'), one);
-      expect((await stored()).keys, ['host-1']);
+      expect(await keys.valueFor('host-1'), isNull);
+      expect(await waiting(), [_id(one)]);
+
+      relay.down = false;
+      await NotifyKeys(secrets, relay: relay).useFcmToken('fcm-1');
+      expect(relay.revoked, [_id(one)]);
+      expect(await waiting(), isEmpty);
     });
 
     test('the bearer key an earlier version kept is dropped', () async {

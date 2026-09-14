@@ -107,8 +107,9 @@ class _HostsPageState extends State<HostsPage> {
 
     if (confirmed != true) return;
     await widget.sessions.closeHost(host.id);
-    // Not waited for: the relay may be slow or out of reach, and the key is
-    // dropped either way.
+    // Not waited for: the relay may be slow or out of reach. The key goes to
+    // no host from now on either way, and waits to be revoked until the
+    // relay confirms.
     unawaited(widget.sessions.notifyKeys?.revoke(host.id));
     await widget.repository.delete(host.id);
     await _reload();
