@@ -169,12 +169,17 @@ change: the manifest's service type, the permission, and
 
 **Text:** from `STORE_LISTING.md` (en-US) and `STORE_LISTING.id.md` (id-ID).
 
-**Graphics:**
+**Graphics**, in `store/graphics/`. Each is drawn on a canvas in `src/` and
+captured by `generate.ts` in headless Chromium, which also checks its size,
+dimensions and alpha. To redraw them, run `bun install && bun run generate`
+there.
 
-- **App icon, 512 × 512 PNG:** Play applies its own mask, so use a
-  full-bleed square. `assets/branding/app_icon_ios.png` (1024 px, no alpha)
-  scaled to 512 is the right source. `app_icon.png` has transparent corners.
-- **Feature graphic, 1024 × 500:** not made yet.
+- **App icon, 512 × 512 PNG:** `icon-512.png`, 32-bit. Play applies its own
+  mask, so it's a full-bleed square: `assets/branding/app_icon.png` cut the
+  way `app_icon_ios.png` is, 40 px in from each side.
+- **Feature graphic, 1024 × 500:** `feature-graphic-1024x500.png`, 24-bit
+  with no alpha. It has the icon, the name, the tagline and a terminal in Tokyo
+  Night colours, on the promo site's indigo and amber.
 - **Screenshots:**
   - phone: 2 to 8;
   - 7-inch and 10-inch tablet: worth it for a tablet-first app.
