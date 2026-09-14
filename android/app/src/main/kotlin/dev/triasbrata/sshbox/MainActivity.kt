@@ -17,8 +17,8 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
 
-    // A cold start is the common case: the app was dead, so the share is what
-    // launched us and Dart is not listening yet. The files wait here until Dart
+    // A cold start: the app was dead, so the share, forwarded by ShareActivity,
+    // is what launched us and Dart is not listening yet. The files wait here until Dart
     // asks — the same shape as app_links' getInitialLink.
     private var pending: List<Map<String, String>>? = null
 
@@ -45,8 +45,9 @@ class MainActivity : FlutterActivity() {
         pending = filesIn(intent)
     }
 
-    // launchMode is singleTop, so a share while we are already running lands
-    // here rather than restarting the app — and Dart is listening by now.
+    // A share while we are already running: ShareActivity brings our task
+    // forward and, with launchMode singleTop, delivers it here rather than to
+    // a new instance. Dart is listening by now.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
