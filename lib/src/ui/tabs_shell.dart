@@ -11,7 +11,7 @@ import '../session/session_manager.dart';
 import '../session/tmux.dart';
 import 'connect_sheet.dart';
 import 'db_browser_page.dart';
-import 'db_editor_page.dart' show dbIcon;
+import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
@@ -537,7 +537,8 @@ class _TabStripState extends State<TabStrip> {
       for (final (index, tab) in databases.indexed)
         _TabChip(
           key: _keys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
-          icon: dbIcon(tab.db.kind),
+          icon: Icons.storage,
+          mark: DbBadge(tab.db.kind, size: _TabChip._iconSize),
           label: tab.title,
           selected: tabs.length + index + 1 == widget.activeIndex,
           expand: single,
@@ -610,6 +611,7 @@ class _TabChip extends StatelessWidget {
   const _TabChip({
     super.key,
     required this.icon,
+    this.mark,
     required this.label,
     required this.selected,
     required this.onTap,
@@ -627,6 +629,10 @@ class _TabChip extends StatelessWidget {
   final String? label;
   final String? tooltip;
   final IconData icon;
+
+  /// Drawn in [icon]'s place when it isn't null: a database tab's brand mark,
+  /// which carries its own colour rather than the chip's.
+  final Widget? mark;
   final bool selected;
   final bool connected;
 
@@ -726,11 +732,14 @@ class _TabChip extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(
-                icon,
-                size: _iconSize,
-                color: connected ? theme.colorScheme.primary : foreground,
-              ),
+              mark ??
+                  Icon(
+                    icon,
+                    size: _iconSize,
+                    color: connected
+                        ? theme.colorScheme.primary
+                        : foreground,
+                  ),
               if (title != null) ...[
                 const SizedBox(width: 6),
                 if (expand)

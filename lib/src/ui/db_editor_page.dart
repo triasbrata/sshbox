@@ -8,12 +8,76 @@ import '../models/forward_setting.dart' show PortMapping;
 import '../models/host_profile.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart' show pageGutters;
+import 'settings_page.dart' show nerdFontFamily;
 
-IconData dbIcon(DbKind kind) => switch (kind) {
-  DbKind.postgres => Icons.table_chart_outlined,
-  DbKind.mongo => Icons.data_object,
-  DbKind.redis => Icons.bolt,
+/// A database's own brand mark — PostgreSQL's elephant, MongoDB's leaf,
+/// Redis's stack — as a devicon glyph of the bundled Nerd Font, the same font
+/// the host OS logos in [OsBadge] are drawn from, and the brand's own colour,
+/// dark enough that a white mark on it has 3:1 contrast or better
+/// (PostgreSQL 6.0:1, MongoDB 3.2:1, Redis 4.5:1), in either theme.
+typedef DbBrand = ({int glyph, Color color});
+
+const _brands = <DbKind, DbBrand>{
+  DbKind.postgres: (glyph: 0xe76e, color: Color(0xFF336791)),
+  DbKind.mongo: (glyph: 0xe7a4, color: Color(0xFF47A248)),
+  DbKind.redis: (glyph: 0xe76d, color: Color(0xFFDC382D)),
 };
+
+/// [kind]'s brand mark, or null for a kind added to [DbKind] without one.
+DbBrand? dbBrand(DbKind kind) => _brands[kind];
+
+/// A database's brand as a rounded square in its own colour with the mark in
+/// white, the way [OsBadge] shows a host's OS, so a database and a host read
+/// as one family on Home. A kind without a mark of its own gets a plain badge
+/// in the theme's colours with a database in it.
+class DbBadge extends StatelessWidget {
+  const DbBadge(this.kind, {super.key, this.size = 40});
+
+  final DbKind kind;
+
+  /// The badge's side. The mark scales with it.
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = dbBrand(kind);
+    final scheme = Theme.of(context).colorScheme;
+
+    return ExcludeSemantics(
+      child: Container(
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: brand?.color ?? scheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(size / 4),
+        ),
+        child: brand == null
+            ? Icon(
+                Icons.storage,
+                size: size * 0.55,
+                color: scheme.onSecondaryContainer,
+              )
+            // Text rather than an IconData: release builds shrink every font
+            // a const IconData names down to the glyphs named, and the
+            // terminal draws with this one.
+            : Text(
+                String.fromCharCode(brand.glyph),
+                textScaler: TextScaler.noScaling,
+                style: TextStyle(
+                  fontFamily: nerdFontFamily,
+                  // The Mono font fits a logo into one cell, 0.6 em wide.
+                  fontSize: size * 0.95,
+                  height: 1,
+                  color: Colors.white,
+                  // Whatever the page around it says, e.g. no Material.
+                  decoration: TextDecoration.none,
+                ),
+              ),
+      ),
+    );
+  }
+}
 
 /// What the editor closes with: the database saved, or the one deleted.
 typedef _Edit = ({DbConnection db, bool deleted});
@@ -293,7 +357,11 @@ class _DbEditorState extends State<_DbEditor> {
                 showSelectedIcon: false,
                 segments: [
                   for (final kind in DbKind.values)
-                    ButtonSegment(value: kind, label: Text(kind.label)),
+                    ButtonSegment(
+                      value: kind,
+                      icon: DbBadge(kind, size: 18),
+                      label: Text(kind.label),
+                    ),
                 ],
                 selected: {_kind},
                 onSelectionChanged: (picked) => _pickKind(picked.single),

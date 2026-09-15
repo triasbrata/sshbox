@@ -595,11 +595,7 @@ class _DatabaseTile extends StatelessWidget {
               // As wide as a host's badge, so the names line up.
               SizedBox(
                 width: 80,
-                child: Icon(
-                  dbIcon(db.kind),
-                  size: 40,
-                  color: theme.colorScheme.primary,
-                ),
+                child: Center(child: DbBadge(db.kind)),
               ),
               const SizedBox(width: 8),
               Expanded(
