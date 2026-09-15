@@ -7,6 +7,7 @@ import 'package:xterm2/xterm.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
+import '../db/db_session.dart';
 import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import '../models/os_info.dart';
@@ -814,6 +815,22 @@ class WebTab {
   }
 }
 
+/// A database open in a tab of its own — see `DbBrowserPage`. It keeps its
+/// own connection, so it hangs off no session, and its tab comes after every
+/// session's.
+class DbTab {
+  DbTab._(this.db, this.title);
+
+  /// Names the tab for as long as it is open.
+  final int id = _nextId++;
+  static int _nextId = 0;
+
+  final DbConnection db;
+
+  /// What the tab is called: the database's name, or its kind and host.
+  final String title;
+}
+
 /// Registry of open terminals, keyed by session id. A host can have any number
 /// of them: each tap in the host list opens another.
 ///
@@ -877,28 +894,67 @@ class SessionManager extends ChangeNotifier {
   /// when another tab is shown, so coming back does not move the cursor.
   int? get activeLine => _activeLine;
 
-  /// null selects the pinned host list.
+  /// Databases open in tabs of their own, after every session's: see
+  /// [openDb].
+  final List<DbTab> _dbTabs = [];
+
+  List<DbTab> get dbTabs => List.unmodifiable(_dbTabs);
+
+  /// The database whose tab is showing. [activeId] is null then, as for the
+  /// host list: a database's tab hangs off no session.
+  DbTab? _activeDb;
+
+  DbTab? get activeDb => _activeDb;
+
+  /// null selects the pinned host list, or with [db], that database's tab.
   void select(
     int? id, {
     TabKind kind = TabKind.terminal,
     String? path,
     WebTab? web,
+    DbTab? db,
   }) {
     if (_activeId == id &&
         _activeKind == kind &&
         _activePath == path &&
-        _activeWeb == web) {
+        _activeWeb == web &&
+        _activeDb == db) {
       return;
     }
     _activeId = id;
     _activeKind = kind;
     _activePath = kind == TabKind.file ? path : null;
     _activeWeb = kind == TabKind.web ? web : null;
+    _activeDb = id == null ? db : null;
     _activeLine = null;
     // Going back to the host list leaves the last session standing as the
     // active one: a file shared from another app still has somewhere to go.
     if (id != null) _active = _sessions[id];
     notifyListeners();
+  }
+
+  /// Opens [db] in a tab of its own, named [title], after every session's,
+  /// and shows it. A database already open just goes back to its tab.
+  void openDb(DbConnection db, String title) {
+    var tab = _dbTabs.where((tab) => tab.db.id == db.id).firstOrNull;
+    if (tab == null) _dbTabs.add(tab = DbTab._(db, title));
+    select(null, db: tab);
+  }
+
+  /// Closes a database's tab, which lets its connection go. The one showing
+  /// lands on its left-hand neighbour: the database before it, else the last
+  /// session's shell, else the host list.
+  void closeDb(DbTab tab) {
+    final index = _dbTabs.indexOf(tab);
+    if (index < 0) return;
+    _dbTabs.removeAt(index);
+    if (_activeDb != tab) {
+      notifyListeners();
+    } else if (index > 0) {
+      select(null, db: _dbTabs[index - 1]);
+    } else {
+      select(_sessions.keys.lastOrNull);
+    }
   }
 
   /// Opens a file picked in the drawer as a tab of its own, and shows it.
@@ -988,6 +1044,7 @@ class SessionManager extends ChangeNotifier {
     _activeKind = TabKind.terminal;
     _activePath = null;
     _activeWeb = null;
+    _activeDb = null;
     notifyListeners();
   }
 

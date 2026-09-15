@@ -6,12 +6,12 @@ import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/db/wire.dart';
 import 'package:sshbox/src/models/host_profile.dart';
-import 'package:sshbox/src/ui/databases_page.dart';
+import 'package:sshbox/src/session/session_manager.dart';
+import 'package:sshbox/src/ui/tabs_shell.dart';
 
 /// A database with one table, that answers any SQL with two rows and fails
 /// on `boom`.
 class _FakeSession extends DbSession {
-  final ran = <String>[];
   var closed = false;
 
   @override
@@ -28,7 +28,6 @@ class _FakeSession extends DbSession {
 
   @override
   Future<DbResult> run(String query) async {
-    ran.add(query);
     if (query.contains('boom')) throw const DbException('ERROR: boom');
     return const DbResult(
       columns: ['id', 'name'],
@@ -48,14 +47,52 @@ class _FakeSession extends DbSession {
 }
 
 void main() {
+  test('a database opened twice has one tab, and closing the one showing '
+      'lands on its left-hand neighbour, then on the host list', () {
+    final sessions = SessionManager();
+    const a = DbConnection(
+      id: 'a',
+      kind: DbKind.redis,
+      hostId: 'box',
+      port: 6379,
+    );
+    const b = DbConnection(
+      id: 'b',
+      kind: DbKind.mongo,
+      hostId: 'box',
+      port: 27017,
+    );
+    sessions
+      ..openDb(a, 'A')
+      ..openDb(b, 'B')
+      ..openDb(a, 'A again');
+    expect([for (final tab in sessions.dbTabs) tab.title], ['A', 'B']);
+    expect(sessions.activeDb?.title, 'A');
+
+    sessions
+      ..select(null, db: sessions.dbTabs.last)
+      ..closeDb(sessions.dbTabs.last);
+    expect(sessions.activeDb?.title, 'A');
+    sessions.closeDb(sessions.dbTabs.single);
+    expect(sessions.activeDb, isNull);
+    expect(sessions.activeId, isNull);
+  });
+
   final queryBox = find.byWidgetPredicate(
     (widget) => widget is TextField && widget.decoration?.hintText == 'SQL',
   );
+  // On Home, not the tab chip that shares its name.
+  final card = find.descendant(
+    of: find.byType(Card),
+    matching: find.text('PostgreSQL on db box'),
+  );
+  final closeTab = find.byTooltip('Close PostgreSQL on db box');
 
   // A phone in portrait, and a tablet.
   for (final width in [400.0, 1200.0]) {
-    testWidgets('adds a database at $width dp, browses it, runs SQL, shows '
-        'its error, and deletes it', (tester) async {
+    testWidgets('at $width dp: Add offers Host and Database above it, a '
+        'saved database is on Home and opens in a tab, and is deleted from '
+        'its card', (tester) async {
       tester.view.physicalSize = Size(width, 900);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
@@ -70,36 +107,45 @@ void main() {
           username: 'me',
         ),
       );
+      final sessions = SessionManager();
       final session = _FakeSession();
-      DbConnection? opened;
+      var opens = 0;
       await tester.pumpWidget(
         MaterialApp(
-          home: DatabasesPage(
+          home: TabsShell(
             repository: repository,
             secrets: secrets,
-            open: (db, {required confirmHostKey, required onSignIn}) async {
-              opened = db;
+            sessions: sessions,
+            onOpenHost: (_) async {},
+            openDatabase: (db, {required confirmHostKey, required onSignIn}) async {
+              opens++;
               return session;
             },
           ),
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('No databases yet'), findsOneWidget);
+      // Hosts alone read as they always have: no headings.
+      expect(find.text('db box'), findsOneWidget);
+      expect(find.text('Hosts'), findsNothing);
 
-      // The only host is picked; Redis's port comes and goes with it.
-      await tester.tap(find.byTooltip('Add database'));
+      // Add stacks Database over Host over itself; a tap elsewhere puts
+      // them away.
+      expect(find.text('Host'), findsNothing);
+      await tester.tap(find.text('Add'));
       await tester.pumpAndSettle();
-      final port = find.widgetWithText(TextFormField, 'Port');
-      String portText() =>
-          tester.widget<TextFormField>(port).controller!.text;
-      expect(portText(), '5432');
-      await tester.tap(find.text('Redis'));
+      Rect fab(String label) =>
+          tester.getRect(find.widgetWithText(FloatingActionButton, label));
+      expect(fab('Host').bottom, lessThanOrEqualTo(fab('Add').top));
+      expect(fab('Database').bottom, lessThanOrEqualTo(fab('Host').top));
+      await tester.tap(find.text('Jeansh'));
       await tester.pumpAndSettle();
-      expect(portText(), '6379');
-      await tester.tap(find.text('PostgreSQL'));
+      expect(find.text('Host'), findsNothing);
+
+      await tester.tap(find.text('Add'));
       await tester.pumpAndSettle();
-      expect(portText(), '5432');
+      await tester.tap(find.text('Database'));
+      await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Password'),
         's3cret',
@@ -107,65 +153,56 @@ void main() {
       await tester.tap(find.byTooltip('Save'));
       await tester.pumpAndSettle();
 
-      expect(find.text('PostgreSQL on db box'), findsOneWidget);
-      expect(find.textContaining('localhost:5432'), findsOneWidget);
+      expect(find.text('Hosts'), findsOneWidget);
+      expect(find.text('Databases'), findsOneWidget);
+      expect(card, findsOneWidget);
+      expect(find.text('PostgreSQL · localhost:5432'), findsOneWidget);
       final saved = (await loadDatabases()).single;
       expect(await secrets.read(DbConnection.passwordKey(saved.id)), 's3cret');
 
-      await tester.tap(find.text('PostgreSQL on db box'));
+      await tester.tap(card);
       await tester.pumpAndSettle();
-      expect(opened?.id, saved.id);
+      expect(closeTab, findsOneWidget);
+      expect(sessions.activeDb?.db.id, saved.id);
       if (width < 720) {
-        expect(find.text('users'), findsNothing);
         await tester.tap(find.byTooltip('Tables'));
         await tester.pumpAndSettle();
       }
-      expect(find.text('public'), findsOneWidget);
       await tester.tap(find.text('users'));
       await tester.pumpAndSettle();
-
       expect(
         tester.widget<TextField>(queryBox).controller!.text,
         'SELECT * FROM public.users;',
       );
-      expect(session.ran, ['SELECT * FROM public.users;']);
-      expect(find.text('SELECT 2'), findsOneWidget);
       expect(find.text('ann'), findsOneWidget);
-      expect(find.text('NULL'), findsOneWidget);
-
-      // A row whole, as column: value.
-      await tester.tap(find.text('ann'));
-      await tester.pumpAndSettle();
-      expect(find.text('id: 1\nname: ann'), findsOneWidget);
-      await tester.tap(find.text('Close'));
-      await tester.pumpAndSettle();
-
       await tester.enterText(queryBox, 'select boom');
       await tester.tap(find.text('Run'));
       await tester.pumpAndSettle();
       expect(find.text('ERROR: boom'), findsOneWidget);
-      expect(find.text('ann'), findsNothing);
 
-      await tester.pageBack();
+      // Home and back: the same tab, on the same connection, as it was left.
+      await tester.tap(find.byTooltip('Home'));
+      await tester.pumpAndSettle();
+      await tester.tap(card);
+      await tester.pumpAndSettle();
+      expect(closeTab, findsOneWidget);
+      expect(opens, 1);
+      expect(find.text('ERROR: boom'), findsOneWidget);
+
+      // Its close button lets the connection go, and lands on Home.
+      await tester.tap(closeTab);
       await tester.pumpAndSettle();
       expect(session.closed, isTrue);
+      expect(closeTab, findsNothing);
+      expect(card, findsOneWidget);
 
-      await tester.tap(find.byTooltip('Edit'));
+      await tester.tap(find.byType(PopupMenuButton<String>).last);
       await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<TextFormField>(
-              find.widgetWithText(TextFormField, 'Password'),
-            )
-            .controller!
-            .text,
-        's3cret',
-      );
-      await tester.tap(find.byTooltip('Delete'));
+      await tester.tap(find.text('Delete'));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
       await tester.pumpAndSettle();
-      expect(find.text('No databases yet'), findsOneWidget);
+      expect(find.text('Databases'), findsNothing);
       expect(await loadDatabases(), isEmpty);
       expect(await secrets.read(DbConnection.passwordKey(saved.id)), isNull);
     });

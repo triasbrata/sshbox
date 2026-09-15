@@ -4,10 +4,11 @@ import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
+import '../db/db_session.dart';
 import '../models/host_profile.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
-import 'databases_page.dart';
+import 'db_editor_page.dart';
 import 'host_edit_page.dart';
 import 'known_hosts_page.dart';
 import 'logs_page.dart';
@@ -38,6 +39,7 @@ class HostsPage extends StatefulWidget {
 
 class _HostsPageState extends State<HostsPage> {
   List<HostProfile>? _hosts;
+  List<DbConnection>? _databases;
 
   @override
   void initState() {
@@ -61,8 +63,12 @@ class _HostsPageState extends State<HostsPage> {
 
   Future<void> _reload() async {
     final hosts = await widget.repository.load();
+    final databases = await loadDatabases();
     if (!mounted) return;
-    setState(() => _hosts = hosts);
+    setState(() {
+      _hosts = hosts;
+      _databases = databases;
+    });
   }
 
   Future<void> _openEditor({HostProfile? existing}) async {
@@ -115,12 +121,40 @@ class _HostsPageState extends State<HostsPage> {
     await _reload();
   }
 
+  /// The database editor, for a new one or [existing].
+  Future<void> _editDatabase([DbConnection? existing]) async {
+    final changed = await editDatabase(
+      context,
+      hosts: _hosts ?? const [],
+      secrets: widget.secrets,
+      existing: existing,
+    );
+    if (changed) await _afterDatabaseChange();
+  }
+
+  Future<void> _deleteDatabase(DbConnection db) async {
+    if (await deleteDatabase(context, db, widget.secrets)) {
+      await _afterDatabaseChange();
+    }
+  }
+
+  /// Re-reads the list, and closes the tab of a database no longer saved:
+  /// it would only keep its connection open.
+  Future<void> _afterDatabaseChange() async {
+    await _reload();
+    final saved = {for (final db in _databases ?? const []) db.id};
+    for (final tab in widget.sessions.dbTabs) {
+      if (!saved.contains(tab.db.id)) widget.sessions.closeDb(tab);
+    }
+  }
+
   /// Under the app's name in the header.
   static const _tagline = 'Terminal buddy in your pocket';
 
   @override
   Widget build(BuildContext context) {
     final hosts = _hosts;
+    final databases = _databases;
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -141,18 +175,6 @@ class _HostsPageState extends State<HostsPage> {
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: 'Databases',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => DatabasesPage(
-                  repository: widget.repository,
-                  secrets: widget.secrets,
-                ),
-              ),
-            ),
-            icon: const Icon(Icons.storage),
-          ),
           IconButton(
             tooltip: 'Port forwarding',
             onPressed: () async {
@@ -203,57 +225,163 @@ class _HostsPageState extends State<HostsPage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openEditor(),
-        icon: const Icon(Icons.add),
-        label: const Text('Host'),
+      floatingActionButton: _AddButton(
+        onHost: () => _openEditor(),
+        onDatabase: () => _editDatabase(),
       ),
-      body: switch (hosts) {
-        null => const Center(child: CircularProgressIndicator()),
-        [] => const _EmptyState(),
-        _ => LayoutBuilder(
-          builder: (context, constraints) {
-            // Material's compact breakpoint, as the tab strip uses: one
-            // column on a phone, three once there is a tablet's width.
-            final columns = constraints.maxWidth < 600 ? 1 : 3;
+      body: hosts == null || databases == null
+          ? const Center(child: CircularProgressIndicator())
+          : hosts.isEmpty && databases.isEmpty
+          ? const _EmptyState()
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                // Material's compact breakpoint, as the tab strip uses: one
+                // column on a phone, three once there is a tablet's width.
+                final columns = constraints.maxWidth < 600 ? 1 : 3;
 
-            Widget card(HostProfile host) {
-              final open = widget.sessions.sessionsFor(host.id);
-              return _HostTile(
-                host: host,
-                sessionCount: open.length,
-                activeCount: open.where((s) => s.isConnected).length,
-                onOpen: () => widget.onOpenHost(host.id),
-                onEdit: () => _openEditor(existing: host),
-                onDelete: () => _confirmDelete(host),
-                onCloseSessions: () => widget.sessions.closeHost(host.id),
-              );
-            }
+                Widget hostCard(HostProfile host) {
+                  final open = widget.sessions.sessionsFor(host.id);
+                  return _HostTile(
+                    host: host,
+                    sessionCount: open.length,
+                    activeCount: open.where((s) => s.isConnected).length,
+                    onOpen: () => widget.onOpenHost(host.id),
+                    onEdit: () => _openEditor(existing: host),
+                    onDelete: () => _confirmDelete(host),
+                    onCloseSessions: () => widget.sessions.closeHost(host.id),
+                  );
+                }
 
-            // Rows of cards rather than a grid, so a card is as tall as its
-            // text at any font size, and every card in a row as tall as
-            // the tallest. The cards' 6 dp margins make the rest of the
-            // gutters.
-            return ListView.builder(
-              padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
-              itemCount: (hosts.length / columns).ceil(),
-              itemBuilder: (context, row) => IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    for (var i = row * columns; i < (row + 1) * columns; i++)
-                      Expanded(
-                        child: i < hosts.length
-                            ? card(hosts[i])
-                            : const SizedBox(),
+                Widget databaseCard(DbConnection db) {
+                  final host = hosts
+                      .where((host) => host.id == db.hostId)
+                      .firstOrNull;
+                  return _DatabaseTile(
+                    db: db,
+                    host: host,
+                    onOpen: () =>
+                        widget.sessions.openDb(db, db.displayName(host)),
+                    onEdit: () => _editDatabase(db),
+                    onDelete: () => _deleteDatabase(db),
+                  );
+                }
+
+                // Rows of cards rather than a grid, so a card is as tall as
+                // its text at any font size, and every card in a row as tall
+                // as the tallest. The cards' 6 dp margins make the rest of
+                // the gutters.
+                List<Widget> rows(List<Widget> cards) => [
+                  for (var start = 0; start < cards.length; start += columns)
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (var i = start; i < start + columns; i++)
+                            Expanded(
+                              child: i < cards.length
+                                  ? cards[i]
+                                  : const SizedBox(),
+                            ),
+                        ],
                       ),
+                    ),
+                ];
+
+                // Headed only once there are databases too: hosts alone read
+                // as they always have.
+                final items = [
+                  if (hosts.isNotEmpty && databases.isNotEmpty)
+                    const _SectionHeader('Hosts'),
+                  ...rows([for (final host in hosts) hostCard(host)]),
+                  if (databases.isNotEmpty) ...[
+                    const _SectionHeader('Databases'),
+                    ...rows([for (final db in databases) databaseCard(db)]),
                   ],
+                ];
+                return ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
+                  itemCount: items.length,
+                  itemBuilder: (context, i) => items[i],
+                );
+              },
+            ),
+    );
+  }
+}
+
+/// Home's one add button. A tap stacks Host and Database above it; a second
+/// tap, or a tap anywhere else, puts them away.
+class _AddButton extends StatefulWidget {
+  const _AddButton({required this.onHost, required this.onDatabase});
+
+  final VoidCallback onHost;
+  final VoidCallback onDatabase;
+
+  @override
+  State<_AddButton> createState() => _AddButtonState();
+}
+
+class _AddButtonState extends State<_AddButton> {
+  var _open = false;
+
+  void _close() {
+    if (_open) setState(() => _open = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TapRegion(
+      onTapOutside: (_) => _close(),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (_open)
+            for (final (label, icon, onPressed) in [
+              ('Database', Icons.storage, widget.onDatabase),
+              ('Host', Icons.dns_outlined, widget.onHost),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: FloatingActionButton.extended(
+                  // No hero: only the Add button stays on screen.
+                  heroTag: null,
+                  onPressed: () {
+                    _close();
+                    onPressed();
+                  },
+                  icon: Icon(icon),
+                  label: Text(label),
                 ),
               ),
-            );
-          },
+          FloatingActionButton.extended(
+            onPressed: () => setState(() => _open = !_open),
+            icon: Icon(_open ? Icons.close : Icons.add),
+            label: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader(this.title);
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 12, 10, 4),
+      child: Text(
+        title,
+        style: theme.textTheme.titleSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
         ),
-      },
+      ),
     );
   }
 }
@@ -412,6 +540,94 @@ class _HostTile extends StatelessWidget {
                     ),
                   const PopupMenuItem(value: 'edit', child: Text('Edit')),
                   const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A saved database, laid out as a host's card is: a tap opens it in a tab
+/// of its own.
+class _DatabaseTile extends StatelessWidget {
+  const _DatabaseTile({
+    required this.db,
+    required this.host,
+    required this.onOpen,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final DbConnection db;
+
+  /// Null once its host was deleted.
+  final HostProfile? host;
+  final VoidCallback onOpen;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+
+    return Card(
+      margin: const EdgeInsets.all(6),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
+          child: Row(
+            children: [
+              // As wide as a host's badge, so the names line up.
+              SizedBox(
+                width: 80,
+                child: Icon(
+                  dbIcon(db.kind),
+                  size: 40,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      db.displayName(host),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                    for (final line in [
+                      '${db.kind.label} · ${db.summary}',
+                      'via ${host?.displayName ?? 'a deleted host'}',
+                    ])
+                      Text(
+                        line,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: muted,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (action) => switch (action) {
+                  'edit' => onEdit(),
+                  'delete' => onDelete(),
+                  _ => null,
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  PopupMenuItem(value: 'delete', child: Text('Delete')),
                 ],
               ),
             ],

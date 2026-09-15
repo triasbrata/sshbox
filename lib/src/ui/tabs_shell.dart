@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
+import '../db/db_session.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
 import 'connect_sheet.dart';
+import 'db_browser_page.dart';
+import 'db_editor_page.dart' show dbIcon;
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
@@ -24,7 +27,8 @@ typedef TabRef = ({
 
 /// The app's one screen: a pinned host list on the left, then a tab per open
 /// session, and beside each session a tab for every file opened from its
-/// files drawer and every web page opened from a link in it.
+/// files drawer and every web page opened from a link in it. After them all,
+/// a tab for every database opened from the host list.
 ///
 /// Tabs are a view of [SessionManager] rather than a list of their own —
 /// which tab exists, in what order, and which one is showing all come from
@@ -41,12 +45,17 @@ class TabsShell extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
+    this.openDatabase,
   });
 
   final HostRepository repository;
   final SecretStore secrets;
   final SessionManager sessions;
   final Future<void> Function(String hostId) onOpenHost;
+
+  /// What a database's tab connects with: [DbSession.open], unless a test
+  /// brings a stand-in.
+  final DbOpener? openDatabase;
 
   @override
   State<TabsShell> createState() => _TabsShellState();
@@ -162,26 +171,45 @@ class _TabsShellState extends State<TabsShell> {
     ),
   };
 
+  /// A database's tab. Its page connects when first built, and lets the
+  /// connection go when the tab closes.
+  Widget _databasePage(DbTab tab) => DbBrowserPage(
+    key: _pageKeys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
+    db: tab.db,
+    title: tab.title,
+    open:
+        widget.openDatabase ??
+        (db, {required confirmHostKey, required onSignIn}) => DbSession.open(
+          db,
+          secrets: widget.secrets,
+          confirmHostKey: confirmHostKey,
+          onSignIn: onSignIn,
+        ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final tabs = _tabs();
-    final ids = tabs.map(_idOf).toSet();
+    final databases = widget.sessions.dbTabs;
+    final ids = {...tabs.map(_idOf), ...databases.map(_dbIdOf)};
     _pageKeys.removeWhere((id, _) => !ids.contains(id));
     final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
     final activePath = widget.sessions.activePath;
     final activeWeb = widget.sessions.activeWeb;
-    // A tab that no longer exists falls back to the host list rather than an
-    // out-of-range index.
-    final activeIndex =
-        tabs.indexWhere(
-          (tab) =>
-              tab.session.id == activeId &&
-              tab.kind == activeKind &&
-              tab.path == activePath &&
-              tab.web == activeWeb,
-        ) +
-        1;
+    final activeDb = widget.sessions.activeDb;
+    // A database's tab comes after every session's. A tab that no longer
+    // exists falls back to the host list rather than an out-of-range index.
+    final activeIndex = activeDb != null && databases.contains(activeDb)
+        ? tabs.length + 1 + databases.indexOf(activeDb)
+        : tabs.indexWhere(
+                (tab) =>
+                    tab.session.id == activeId &&
+                    tab.kind == activeKind &&
+                    tab.path == activePath &&
+                    tab.web == activeWeb,
+              ) +
+              1;
 
     return Scaffold(
       body: SafeArea(
@@ -190,8 +218,10 @@ class _TabsShellState extends State<TabsShell> {
           children: [
             TabStrip(
               tabs: tabs,
+              databases: databases,
               activeIndex: activeIndex,
               onSelect: widget.sessions.select,
+              onSelectDatabase: (tab) => widget.sessions.select(null, db: tab),
               onClose: (tab) => switch (tab.kind) {
                 TabKind.terminal => widget.sessions.close(tab.session.id),
                 TabKind.file => widget.sessions.closeFile(
@@ -203,6 +233,7 @@ class _TabsShellState extends State<TabsShell> {
                   tab.web!,
                 ),
               },
+              onCloseDatabase: widget.sessions.closeDb,
               // The connect sheet, over the tab, as the terminal page's own
               // Try again opens it; a sign-in opens beside the tab.
               onReconnect: (session) => connectInSheet(
@@ -227,6 +258,7 @@ class _TabsShellState extends State<TabsShell> {
                       onOpenHost: widget.onOpenHost,
                     ),
                     ...tabs.map(_pageFor),
+                    ...databases.map(_databasePage),
                   ].indexed)
                     // Every page stays in the tree so its terminal keeps
                     // scroll, key bar and connection — but only the visible
@@ -252,18 +284,26 @@ class TabStrip extends StatefulWidget {
   const TabStrip({
     super.key,
     required this.tabs,
+    this.databases = const [],
     required this.activeIndex,
     required this.onSelect,
+    this.onSelectDatabase,
     required this.onClose,
+    this.onCloseDatabase,
     required this.onReconnect,
     required this.onDuplicate,
   });
 
   final List<TabRef> tabs;
+
+  /// The databases open in tabs of their own, after every session's tabs.
+  final List<DbTab> databases;
   final int activeIndex;
   final void Function(int? id, {TabKind kind, String? path, WebTab? web})
   onSelect;
+  final void Function(DbTab tab)? onSelectDatabase;
   final void Function(TabRef tab) onClose;
+  final void Function(DbTab tab)? onCloseDatabase;
   final void Function(LiveSession session) onReconnect;
   final void Function(String hostId) onDuplicate;
 
@@ -274,6 +314,9 @@ class TabStrip extends StatefulWidget {
 /// Names a tab for as long as it is open, whatever index it is at.
 String _idOf(TabRef tab) =>
     '${tab.kind.name}:${tab.session.id}:${tab.path ?? tab.web?.id ?? ''}';
+
+/// The same, for a database's tab.
+String _dbIdOf(DbTab tab) => 'database:${tab.id}';
 
 class _TabStripState extends State<TabStrip> {
   /// One key per tab, so the selected one can be scrolled into view.
@@ -290,13 +333,17 @@ class _TabStripState extends State<TabStrip> {
   /// Otherwise a notification tap selects a tab that is off the right-hand
   /// edge, and from the strip nothing appears to have happened.
   void _revealActive() {
+    final ids = [
+      ...widget.tabs.map(_idOf),
+      ...widget.databases.map(_dbIdOf),
+    ];
     final index = widget.activeIndex - 1;
-    if (index < 0 || index >= widget.tabs.length) {
+    if (index < 0 || index >= ids.length) {
       _shown = null;
       return;
     }
 
-    final id = _idOf(widget.tabs[index]);
+    final id = ids[index];
     if (id == _shown) return;
     _shown = id;
 
@@ -352,13 +399,14 @@ class _TabStripState extends State<TabStrip> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final tabs = widget.tabs;
-    final ids = tabs.map(_idOf).toSet();
+    final databases = widget.databases;
+    final ids = {...tabs.map(_idOf), ...databases.map(_dbIdOf)};
     _keys.removeWhere((id, _) => !ids.contains(id));
 
     // A lone tab takes the whole strip, the way Terminus lays it out: there
     // is nothing to scroll to or to make room for, so capping it would only
     // cut short the one name on the strip.
-    final single = tabs.length == 1;
+    final single = ids.length == 1;
 
     final addTab = _TabChip(
       icon: Icons.add,
@@ -400,6 +448,16 @@ class _TabStripState extends State<TabStrip> {
               ? () => widget.onReconnect(tab.session)
               : null,
           menu: tab.kind == TabKind.terminal ? _menuFor(tab) : const [],
+        ),
+      for (final (index, tab) in databases.indexed)
+        _TabChip(
+          key: _keys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
+          icon: dbIcon(tab.db.kind),
+          label: tab.title,
+          selected: tabs.length + index + 1 == widget.activeIndex,
+          expand: single,
+          onTap: () => widget.onSelectDatabase?.call(tab),
+          onClose: () => widget.onCloseDatabase?.call(tab),
         ),
     ];
 
@@ -489,8 +547,7 @@ class _TabChip extends StatelessWidget {
 
   /// What a long press on the tab offers — a press it had no other use for:
   /// another session on a shell's host, and tmux's pane commands. Empty on a
-  /// file or web tab, which hang off their shell and have nothing of their
-  /// own.
+  /// file, web or database tab, which have nothing of their own to offer.
   final List<(String, VoidCallback)> menu;
 
   /// How much of a name a tab may show.

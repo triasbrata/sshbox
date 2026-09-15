@@ -2,12 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../models/forward_setting.dart' show PortMapping;
 import '../models/host_profile.dart';
-import 'db_browser_page.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart' show pageGutters;
 
@@ -17,191 +15,80 @@ IconData dbIcon(DbKind kind) => switch (kind) {
   DbKind.redis => Icons.bolt,
 };
 
-/// The saved databases: PostgreSQL, MongoDB and Redis that a saved host
-/// reaches, each opened in the database browser through its SSH connection.
-class DatabasesPage extends StatefulWidget {
-  const DatabasesPage({
-    super.key,
-    required this.repository,
-    required this.secrets,
-    this.open,
-  });
-
-  final HostRepository repository;
-  final SecretStore secrets;
-
-  /// A test's, in place of [DbSession.open].
-  final DbOpener? open;
-
-  @override
-  State<DatabasesPage> createState() => _DatabasesPageState();
-}
-
 /// What the editor closes with: the database saved, or the one deleted.
 typedef _Edit = ({DbConnection db, bool deleted});
 
-class _DatabasesPageState extends State<DatabasesPage> {
-  List<HostProfile>? _hosts;
-  List<DbConnection>? _databases;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_reload());
-  }
-
-  Future<void> _reload() async {
-    final hosts = await widget.repository.load();
-    final databases = await loadDatabases();
-    if (!mounted) return;
-    setState(() {
-      _hosts = hosts;
-      _databases = databases;
-    });
-  }
-
-  Future<void> _edit(List<HostProfile> hosts, [DbConnection? existing]) async {
-    final edit = await Navigator.of(context).push<_Edit>(
-      MaterialPageRoute(
-        builder: (_) => _DbEditor(
-          hosts: hosts,
-          secrets: widget.secrets,
-          existing: existing,
-        ),
-      ),
-    );
-    if (edit == null) return;
-    final databases = [...?_databases];
-    final at = databases.indexWhere((db) => db.id == edit.db.id);
-    if (edit.deleted) {
-      if (at >= 0) databases.removeAt(at);
-      await widget.secrets.write(DbConnection.passwordKey(edit.db.id), null);
-    } else if (at < 0) {
-      databases.add(edit.db);
-    } else {
-      databases[at] = edit.db;
-    }
-    await saveDatabases(databases);
-    if (mounted) setState(() => _databases = databases);
-  }
-
-  void _browse(DbConnection db, HostProfile? host) => unawaited(
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => DbBrowserPage(
-          db: db,
-          title: db.displayName(host),
-          open:
-              widget.open ??
-              (db, {required confirmHostKey, required onSignIn}) =>
-                  DbSession.open(
-                    db,
-                    secrets: widget.secrets,
-                    confirmHostKey: confirmHostKey,
-                    onSignIn: onSignIn,
-                  ),
-        ),
-      ),
+/// The database editor, for a new database or [existing]. What it closes
+/// with is saved: the database and its password, or its deletion. True when
+/// anything changed.
+Future<bool> editDatabase(
+  BuildContext context, {
+  required List<HostProfile> hosts,
+  required SecretStore secrets,
+  DbConnection? existing,
+}) async {
+  final edit = await Navigator.of(context).push<_Edit>(
+    MaterialPageRoute(
+      builder: (_) =>
+          _DbEditor(hosts: hosts, secrets: secrets, existing: existing),
     ),
   );
-
-  @override
-  Widget build(BuildContext context) {
-    final hosts = _hosts;
-    final databases = _databases;
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Databases')),
-      floatingActionButton: hosts == null
-          ? null
-          : FloatingActionButton(
-              tooltip: 'Add database',
-              onPressed: () => _edit(hosts),
-              child: const Icon(Icons.add),
-            ),
-      body: switch ((hosts, databases)) {
-        (final hosts?, final databases?) when databases.isNotEmpty =>
-          LayoutBuilder(
-            builder: (context, constraints) => ListView(
-              padding: pageGutters(constraints.maxWidth, bottom: 88),
-              children: [
-                for (final db in databases)
-                  _card(
-                    db,
-                    hosts.where((host) => host.id == db.hostId).firstOrNull,
-                    hosts,
-                  ),
-              ],
-            ),
-          ),
-        (_?, _?) => const _EmptyState(),
-        _ => const Center(child: CircularProgressIndicator()),
-      },
-    );
+  if (edit == null) return false;
+  if (edit.deleted) {
+    await _forget(edit.db, secrets);
+    return true;
   }
-
-  Widget _card(DbConnection db, HostProfile? host, List<HostProfile> hosts) =>
-      Card(
-        margin: const EdgeInsets.symmetric(vertical: 6),
-        clipBehavior: Clip.antiAlias,
-        child: ListTile(
-          leading: Icon(dbIcon(db.kind)),
-          title: Text(
-            db.displayName(host),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle: Text(
-            '${db.kind.label} · ${db.summary}\n'
-            'via ${host?.displayName ?? 'a deleted host'}',
-          ),
-          isThreeLine: true,
-          trailing: IconButton(
-            tooltip: 'Edit',
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: () => _edit(hosts, db),
-          ),
-          onTap: () => _browse(db, host),
-        ),
-      );
+  final databases = await loadDatabases();
+  final at = databases.indexWhere((db) => db.id == edit.db.id);
+  if (at < 0) {
+    databases.add(edit.db);
+  } else {
+    databases[at] = edit.db;
+  }
+  await saveDatabases(databases);
+  return true;
 }
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+/// Asks first, then deletes [db] and its saved password. True once deleted.
+Future<bool> deleteDatabase(
+  BuildContext context,
+  DbConnection db,
+  SecretStore secrets,
+) async {
+  if (!await _confirmDelete(context)) return false;
+  await _forget(db, secrets);
+  return true;
+}
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+Future<void> _forget(DbConnection db, SecretStore secrets) async {
+  await saveDatabases([
+    for (final saved in await loadDatabases())
+      if (saved.id != db.id) saved,
+  ]);
+  await secrets.write(DbConnection.passwordKey(db.id), null);
+}
 
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.storage,
-              size: 48,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: 16),
-            Text('No databases yet', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              'Add PostgreSQL, MongoDB or Redis running on one of your hosts, '
-              'or one it can reach, to browse it through the host\'s SSH '
-              'connection.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
+Future<bool> _confirmDelete(BuildContext context) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete this database?'),
+        content: const Text(
+          'Its saved password goes too. Nothing changes on the server.',
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
       ),
-    );
-  }
-}
+    ) ==
+    true;
 
 class _DbEditor extends StatefulWidget {
   const _DbEditor({required this.hosts, required this.secrets, this.existing});
@@ -291,26 +178,7 @@ class _DbEditorState extends State<_DbEditor> {
   }
 
   Future<void> _delete() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete this database?'),
-        content: const Text(
-          'Its saved password goes too. Nothing changes on the server.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
+    if (!await _confirmDelete(context) || !mounted) return;
     Navigator.of(context).pop<_Edit>((db: widget.existing!, deleted: true));
   }
 
@@ -367,7 +235,7 @@ class _DbEditorState extends State<_DbEditor> {
                 decoration: InputDecoration(
                   labelText: 'Host',
                   helperText: widget.hosts.isEmpty
-                      ? 'Add a host on Home first.'
+                      ? 'Add a host first: Add, then Host, on Home.'
                       : 'Reached through its SSH connection, and its jump '
                             'host too.',
                   helperMaxLines: 2,
