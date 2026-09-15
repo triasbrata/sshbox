@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show min;
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
@@ -155,10 +156,12 @@ class _Dartssh2Session
       var client = await _login(
         hop,
         secrets,
-        () => SSHSocket.connect(
-          hop.host,
-          hop.port,
-          timeout: const Duration(seconds: 15),
+        () async => _PacedSocket(
+          await SSHSocket.connect(
+            hop.host,
+            hop.port,
+            timeout: const Duration(seconds: 15),
+          ),
         ),
       );
       for (final next in chain.skip(1)) {
@@ -471,6 +474,7 @@ class _Dartssh2Session
     required String localPath,
     required String fileName,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     final client = _client;
     if (client == null || _status.value != SessionStatus.connected) {
@@ -502,7 +506,19 @@ class _Dartssh2Session
             '${remotePath.substring('/tmp/'.length)}';
         remote = await create(remotePath);
       }
-      await SftpFileBrowser.sendFile(remote, localPath, onProgress: onProgress);
+      try {
+        await SftpFileBrowser.sendFile(
+          remote,
+          localPath,
+          onProgress: onProgress,
+          cancel: cancel,
+        );
+      } catch (_) {
+        // Ours, made just now, and in a sticky /tmp nobody else can have
+        // swapped it since: half a file is no use to anyone.
+        await sftp.remove(remotePath).catchError((Object _) {});
+        rethrow;
+      }
     } finally {
       sftp.close();
     }
@@ -564,4 +580,51 @@ class _Dartssh2Session
     }
     return error.toString();
   }
+}
+
+/// The socket a connection is dialled on, handing dartssh2 what arrives no
+/// more than [_piece] at a time, each piece in an event-loop turn of its own.
+///
+/// dartssh2 decrypts and frames all a socket hands it in one go, on the UI
+/// isolate, and a transfer keeps half a megabyte in flight: a read that
+/// brought much of it held every frame back until it was through, up to
+/// 16 ms on a desktop in JIT, 24 ms in AOT, and several times that on the
+/// tablet. A piece at a time is 2 to 4 ms there, and the transfer is no
+/// slower for it: see tool/transfer_bench.dart. The hosts behind a jump host
+/// are reached through this one socket, so pacing it paces them too.
+class _PacedSocket implements SSHSocket {
+  _PacedSocket(this._socket);
+
+  final SSHSocket _socket;
+
+  /// One full SSH packet, the most a host sends in one.
+  static const _piece = 32 * 1024;
+
+  @override
+  late final Stream<Uint8List> stream = _pace(_socket.stream);
+
+  static Stream<Uint8List> _pace(Stream<Uint8List> source) async* {
+    await for (final data in source) {
+      for (var at = 0; at < data.length; at += _piece) {
+        // Between the pieces of one read; the next read is a turn of its own.
+        if (at > 0) await Future<void>.delayed(Duration.zero);
+        yield Uint8List.sublistView(data, at, min(at + _piece, data.length));
+      }
+    }
+  }
+
+  @override
+  StreamSink<List<int>> get sink => _socket.sink;
+
+  @override
+  Future<void> get done => _socket.done;
+
+  @override
+  Future<void> close() => _socket.close();
+
+  @override
+  void destroy() => _socket.destroy();
+
+  @override
+  Future<void> flush() => _socket.flush();
 }

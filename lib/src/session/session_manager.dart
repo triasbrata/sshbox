@@ -793,6 +793,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     required String localPath,
     required String fileName,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     final session = _session;
     // `is!` already rules out null. The explicit cast that follows is what
@@ -806,6 +807,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
       localPath: localPath,
       fileName: fileName,
       onProgress: onProgress,
+      cancel: cancel,
     );
   }
 
@@ -990,19 +992,36 @@ class SessionManager extends ChangeNotifier {
 
   DbTab? get activeDb => _activeDb;
 
-  /// null selects the pinned host list, or with [db], that database's tab.
+  /// Whether the Transfers tab is on the strip, after every other: see
+  /// [showTransfers]. Not saved with the tabs: what it lists ends with the
+  /// app.
+  bool _transfersTab = false;
+
+  bool get transfersTab => _transfersTab;
+
+  /// Whether the Transfers tab is the one showing. [activeId] is null then,
+  /// as for the host list.
+  bool _transfersActive = false;
+
+  bool get transfersActive => _transfersActive;
+
+  /// null selects the pinned host list, or with [db], that database's tab,
+  /// or with [transfers], the Transfers tab.
   void select(
     int? id, {
     TabKind kind = TabKind.terminal,
     String? path,
     WebTab? web,
     DbTab? db,
+    bool transfers = false,
   }) {
+    final showTransfers = id == null && db == null && transfers;
     if (_activeId == id &&
         _activeKind == kind &&
         _activePath == path &&
         _activeWeb == web &&
-        _activeDb == db) {
+        _activeDb == db &&
+        _transfersActive == showTransfers) {
       return;
     }
     _activeId = id;
@@ -1010,6 +1029,8 @@ class SessionManager extends ChangeNotifier {
     _activePath = kind == TabKind.file ? path : null;
     _activeWeb = kind == TabKind.web ? web : null;
     _activeDb = id == null ? db : null;
+    _transfersActive = showTransfers;
+    if (showTransfers) _transfersTab = true;
     _activeLine = null;
     // Going back to the host list leaves the last session standing as the
     // active one: a file shared from another app still has somewhere to go.
@@ -1036,6 +1057,33 @@ class SessionManager extends ChangeNotifier {
       notifyListeners();
     } else if (index > 0) {
       select(null, db: _dbTabs[index - 1]);
+    } else {
+      select(_sessions.keys.lastOrNull);
+    }
+  }
+
+  /// Puts the Transfers tab on the strip, after every other, and with
+  /// [select], shows it.
+  void showTransfers({bool select = false}) {
+    if (select) {
+      this.select(null, transfers: true);
+    } else if (!_transfersTab) {
+      _transfersTab = true;
+      notifyListeners();
+    }
+  }
+
+  /// Takes the Transfers tab off the strip; what it lists carries on. The
+  /// one showing lands on its left-hand neighbour: the last database, else
+  /// the last session's shell, else the host list.
+  void closeTransfers() {
+    if (!_transfersTab) return;
+    _transfersTab = false;
+    final db = _dbTabs.lastOrNull;
+    if (!_transfersActive) {
+      notifyListeners();
+    } else if (db != null) {
+      select(null, db: db);
     } else {
       select(_sessions.keys.lastOrNull);
     }
@@ -1139,6 +1187,7 @@ class SessionManager extends ChangeNotifier {
     _activePath = null;
     _activeWeb = null;
     _activeDb = null;
+    _transfersActive = false;
     notifyListeners();
   }
 

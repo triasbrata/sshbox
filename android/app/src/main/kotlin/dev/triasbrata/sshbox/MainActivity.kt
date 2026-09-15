@@ -1,12 +1,14 @@
 package dev.triasbrata.sshbox
 
 import android.app.ActivityManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -101,6 +103,8 @@ class MainActivity : FlutterActivity() {
                     pending = null
                 } else if (call.method == "saveAs") {
                     saveAs(call.argument("path")!!, call.argument("name")!!, result)
+                } else if (call.method == "open") {
+                    result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
                 } else {
                     result.notImplemented()
                 }
@@ -126,8 +130,9 @@ class MainActivity : FlutterActivity() {
     // A download, the other way. file_picker's saveFile wants the whole file
     // as bytes over the channel, which froze the app on a big one; Dart
     // streams it to a file of its own instead and hands over the path. The
-    // answer is true once it is copied into the picked document, false when
-    // the dialog is dismissed. The copy is Dart's to delete either way.
+    // answer is the picked document's URI once the copy is in it, for Open
+    // in the Transfers tab, and null when the dialog is dismissed. The copy
+    // is Dart's to delete either way.
     private fun saveAs(path: String, name: String, result: MethodChannel.Result) {
         if (saving != null) {
             result.error("busy", "another download is waiting to be saved", null)
@@ -152,7 +157,7 @@ class MainActivity : FlutterActivity() {
         saving = null
         val target = data?.data
         if (resultCode != RESULT_OK || target == null) {
-            result.success(false)
+            result.success(null)
             return
         }
         // Off the main thread, which is Flutter's UI thread too: 70 MB copied
@@ -168,12 +173,34 @@ class MainActivity : FlutterActivity() {
             }
             runOnUiThread {
                 if (error == null) {
-                    result.success(true)
+                    result.success(target.toString())
                 } else {
                     result.error("save_failed", error.message ?: error.toString(), null)
                 }
             }
         }.start()
+    }
+
+    // A finished download, in whatever app the phone has for its kind: the
+    // document the save dialog made, which that app reads through the grant
+    // the dialog gave us. Its kind comes from its name, since the dialog was
+    // asked for a plain octet stream. False when no app will, or the grant
+    // has gone.
+    private fun open(uri: Uri, name: String): Boolean = try {
+        val type = MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+            ?: contentResolver.getType(uri)
+            ?: "*/*"
+        startActivity(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, type)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+        )
+        true
+    } catch (e: ActivityNotFoundException) {
+        false
+    } catch (e: SecurityException) {
+        false
     }
 
     private fun filesIn(intent: Intent?): List<Map<String, String>>? {

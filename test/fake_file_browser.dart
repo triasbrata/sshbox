@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -196,6 +197,17 @@ class FakeFileBrowser implements FileBrowser {
   /// could replace what was there.
   final List<({String from, String to, bool replace})> uploads = [];
 
+  /// Set to hold uploads and downloads part way, as a big file on a slow
+  /// link does, until it completes or the transfer is cancelled.
+  Completer<void>? hold;
+
+  Future<void> _midway(Future<void>? cancel) async {
+    final held = hold;
+    if (held == null) return;
+    await Future.any([held.future, ?cancel]);
+    if (!held.isCompleted) throw FileBrowserException.cancelled;
+  }
+
   /// Fails with [failWriteWith], as a folder the login cannot write to does.
   @override
   Future<void> upload(
@@ -203,6 +215,7 @@ class FakeFileBrowser implements FileBrowser {
     String path, {
     bool replace = false,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     final failure = failWriteWith;
     if (failure != null) throw failure;
@@ -213,6 +226,8 @@ class FakeFileBrowser implements FileBrowser {
         'Could not upload ${RemotePath.basename(path)}: it is already there.',
       );
     }
+    onProgress?.call(0, 1);
+    await _midway(cancel);
     uploads.add((from: localPath, to: path, replace: replace));
     onProgress?.call(1, 1);
     _write(path, 'sent from $localPath', null);
@@ -228,10 +243,13 @@ class FakeFileBrowser implements FileBrowser {
     String path,
     String localPath, {
     void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     downloads.add((from: path, to: localPath));
     final bytes = utf8.encode(_read(path).text);
     File(localPath).writeAsBytesSync(bytes);
+    onProgress?.call(bytes.length ~/ 2, bytes.length);
+    await _midway(cancel);
     onProgress?.call(bytes.length, bytes.length);
     final failure = failReadWith;
     if (failure != null) throw failure;

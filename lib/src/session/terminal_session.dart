@@ -48,11 +48,13 @@ abstract class TerminalSession {
 /// a transport that lacks it simply does not implement it.
 abstract class FileUploadCapable {
   /// Uploads a local file into `/tmp` on the remote host and returns the
-  /// absolute remote path, ready to be typed into the shell.
+  /// absolute remote path, ready to be typed into the shell. [cancel]
+  /// completing stops it part way, and what was sent goes.
   Future<String> uploadToTmp({
     required String localPath,
     required String fileName,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   });
 }
 
