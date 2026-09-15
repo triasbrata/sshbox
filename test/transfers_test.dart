@@ -14,6 +14,7 @@ import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
+import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/transfers_page.dart';
@@ -408,7 +409,12 @@ void main() {
         ),
       );
       await tester.pump();
-      expect(find.text('Transfers'), findsNothing);
+      // The tab's chip on the strip: Home names its own way in to it too.
+      final chip = find.descendant(
+        of: find.byType(TabStrip),
+        matching: find.text('Transfers'),
+      );
+      expect(chip, findsNothing);
 
       final hold = Completer<void>();
       final running = transfers.run(
@@ -421,12 +427,12 @@ void main() {
         },
       );
       await tester.pump();
-      expect(find.text('Transfers'), findsOneWidget);
+      expect(chip, findsOneWidget);
       // Home is still what shows.
       expect(sessions.transfersActive, isFalse);
       expect(find.text('big.aab'), findsNothing);
 
-      await tester.tap(find.text('Transfers'));
+      await tester.tap(chip);
       await tester.pump();
       expect(sessions.transfersActive, isTrue);
       expect(find.text('big.aab'), findsOneWidget);
@@ -461,7 +467,12 @@ void main() {
       expect(sessions.transfersTab, isFalse);
 
       // Nothing has ever been transferred: the tab still opens, and says so.
-      await tester.tap(find.byTooltip('Transfers'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(HostsPage),
+          matching: find.text('Transfers'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect((sessions.transfersTab, sessions.transfersActive), (true, true));
       expect(find.text('Downloads and uploads show here.'), findsOneWidget);
@@ -470,7 +481,12 @@ void main() {
       // Asked for again from Home: the same tab, not a second one.
       sessions.select(null);
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Transfers'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(HostsPage),
+          matching: find.text('Transfers'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(sessions.transfersActive, isTrue);
       expect(find.byTooltip('Close Transfers'), findsOneWidget);

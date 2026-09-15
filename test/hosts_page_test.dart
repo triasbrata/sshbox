@@ -187,7 +187,8 @@ void main() {
       for (final arch in ['x86_64', 'aarch64', '·']) {
         expect(find.textContaining(arch), findsNothing);
       }
-      expect(find.text('2 active sessions'), findsOneWidget);
+      // Said once, on its own card, as a pill beside the name.
+      expect(find.text('2 active'), findsOneWidget);
       expect(find.text('OS not detected yet'), findsNothing);
       // The user and the OS are on the card once each, not again in an
       // `ssh, me, ubuntu` line.
@@ -211,7 +212,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Known hosts'));
+    // Named on Home now, rather than an icon with a tooltip.
+    await tester.tap(find.text('Known hosts'));
     await tester.pumpAndSettle();
     expect(find.byType(KnownHostsPage), findsOneWidget);
     expect(find.text('Nothing trusted yet'), findsOneWidget);
