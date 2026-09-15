@@ -1,8 +1,11 @@
 #!/bin/sh
-# Bumps the build number, the N after "+" on pubspec.yaml's version line
-# (Android versionCode, iOS CFBundleVersion), in every commit that changes the
-# app: lib/, android/, ios/, assets/, pubspec.lock, or pubspec.yaml beyond its
-# version line. Docs, tests, tool/ or CLAUDE.md alone leave it as it is.
+# Bumps the build number N on pubspec.yaml's version line, X.Y.N+N, in every
+# commit that changes the app: lib/, android/, ios/, assets/, pubspec.lock, or
+# pubspec.yaml beyond its version line. Docs, tests, tool/ or CLAUDE.md alone
+# leave it as it is. N is the version name's last number as well as the build
+# number after "+" (Android versionName and versionCode, iOS
+# CFBundleShortVersionString and CFBundleVersion), so 1.0.13+13 becomes
+# 1.0.14+14. X.Y stay as found, and an old 1.0.0+13 becomes 1.0.14+14 too.
 #
 # N comes from the index, not the working copy: the index is what this commit
 # records, and the working copy may hold unstaged pubspec.yaml edits that must
@@ -29,10 +32,10 @@ if ! git diff --cached --name-only |
   exit 0
 fi
 
-n=$(git show ":$f" | sed -n 's/^version:[^+]*+\([0-9][0-9]*\).*/\1/p' | head -n 1)
-[ -n "$n" ] || { echo "pre-commit: $f's version line has no +N build number" >&2; exit 1; }
+n=$(git show ":$f" | sed -n 's/^version:[^0-9]*[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*+\([0-9][0-9]*\).*/\1/p' | head -n 1)
+[ -n "$n" ] || { echo "pre-commit: $f's version line isn't X.Y.N+N" >&2; exit 1; }
 n=$((n + 1))
-setbuild() { sed "s/^\(version:[^+]*+\)[0-9][0-9]*/\1$n/"; }
+setbuild() { sed "s/^\(version:[^0-9]*[0-9][0-9]*\.[0-9][0-9]*\.\)[0-9][0-9]*+[0-9][0-9]*/\1$n+$n/"; }
 
 blob=$(git show ":$f" | setbuild | git hash-object -w --stdin)
 git update-index --cacheinfo "100644,$blob,$f"

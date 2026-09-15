@@ -1,21 +1,21 @@
 #!/bin/sh
 # Builds the bundle to upload to Google Play, signed with the upload key:
-#   tool/release.sh [--name X.Y.Z]
-# --name first sets the version name in pubspec.yaml, keeping the build
-# number; commit that after. The build number is whatever the pre-commit hook
-# last made it, and Play takes each one only once.
+#   tool/release.sh [--name X.Y]
+# --name first sets X.Y of pubspec.yaml's version, X.Y.N+N, keeping the build
+# number N; commit that after. N is whatever the pre-commit hook last made it,
+# and Play takes each one only once.
 set -eu
 cd "$(dirname "$0")/.."
 
 die() { echo "release: $*" >&2; exit 1; }
-usage() { die "usage: tool/release.sh [--name X.Y.Z]"; }
+usage() { die "usage: tool/release.sh [--name X.Y]"; }
 
 name=
 case $# in
   0) ;;
   2) [ "$1" = --name ] || usage
      name=$2
-     printf '%s\n' "$name" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+' || usage ;;
+     printf '%s\n' "$name" | grep -qxE '[0-9]+\.[0-9]+' || usage ;;
   *) usage ;;
 esac
 
@@ -31,7 +31,7 @@ case $store in /*) ;; *) store=android/app/$store ;; esac # Gradle reads it from
   die "the working tree has changes: commit or stash them, so the bundle matches a commit"
 
 if [ -n "$name" ]; then
-  sed "s/^version:[^+]*+/version: $name+/" pubspec.yaml > pubspec.yaml.tmp
+  sed "s/^\(version:[^0-9]*\)[^+]*+\([0-9][0-9]*\)/\1$name.\2+\2/" pubspec.yaml > pubspec.yaml.tmp
   mv pubspec.yaml.tmp pubspec.yaml
 fi
 
@@ -58,4 +58,4 @@ echo "AAB          $aab"
 echo "versionName  $(local_prop versionName)"
 echo "versionCode  $(local_prop versionCode)"
 echo "signed by    $signer"
-[ -z "$name" ] || echo "pubspec.yaml now says $name: commit it, git commit -m 'Version $name' pubspec.yaml"
+[ -z "$name" ] || echo "pubspec.yaml now says $(local_prop versionName): commit it, git commit -m 'Version $name' pubspec.yaml"

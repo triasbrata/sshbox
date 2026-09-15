@@ -980,11 +980,14 @@ why search is stated as a separate capability rather than folded into
 
 ### Build numbers
 
-`pubspec.yaml`'s `version: X.Y.Z+N` holds the version name and the build
-number, which is Android's `versionCode` and iOS's `CFBundleVersion`.
+`pubspec.yaml`'s `version: X.Y.N+N` holds the version name, X.Y.N, and the
+build number, N, which is Android's `versionCode` and iOS's
+`CFBundleVersion`. The name ends in the build number, so build 13 is version
+1.0.13.
 
-Every commit that changes the app raises N by one, through
-`.githooks/pre-commit`. These count as changes to the app:
+Every commit that changes the app raises N by one in both places, through
+`.githooks/pre-commit`; X.Y stay as they are. These count as changes to the
+app:
 - anything in `lib/`, `android/`, `ios/` or `assets/`;
 - `pubspec.lock`;
 - a `pubspec.yaml` change beyond its version line.
@@ -1000,8 +1003,8 @@ git config core.hooksPath .githooks
 ```
 
 `tool/test_hooks.sh` runs the hooks against a throwaway repo. Parallel
-branches collide on the version line: keep the higher number, and the hook
-raises it again on the merge commit.
+branches collide on the version line, X.Y.N+N on both sides: keep the line
+with the higher N, and the hook raises it again on the merge commit.
 
 ### A release from this machine
 
@@ -1028,7 +1031,7 @@ keyPassword=…
 Then, from a clean tree:
 
 ```sh
-tool/release.sh                # or: tool/release.sh --name 1.1.0
+tool/release.sh                # or: tool/release.sh --name 1.1
 ```
 
 The script:
@@ -1037,13 +1040,13 @@ The script:
 3. checks that the bundle isn't debug-signed;
 4. prints the bundle's versionName and versionCode.
 
-`--name` first rewrites the version name in `pubspec.yaml`. Commit that change
-afterwards.
+`--name` first sets X.Y in `pubspec.yaml` and keeps N: `--name 1.1` turns
+1.0.13+13 into 1.1.13+13. Commit that change afterwards.
 
 ### From CI
 
 `.github/workflows/release-android.yml` runs on a `v*` tag
-(`git tag v1.0.0 && git push origin v1.0.0`), or by hand from the Actions tab.
+(`git tag v1.0.13 && git push origin v1.0.13`), or by hand from the Actions tab.
 It tests, builds the signed bundle, keeps it as a run artifact, and uploads it
 to Play's internal testing track as a draft. It needs these repository
 secrets:

@@ -1,6 +1,6 @@
 # Jeansh: catatan rilis
 
-## 1.0.0: rilis pertama
+## 1.0: rilis pertama
 
 **Teman terminal di saku Anda.**
 
@@ -39,7 +39,7 @@
 
 ### "Yang baru" di Play Store (di bawah 500 karakter)
 
-> Jeansh 1.0.0, rilis pertama: terminal SSH untuk ponsel dan tablet Anda.
+> Jeansh 1.0, rilis pertama: terminal SSH untuk ponsel dan tablet Anda.
 > • Tab, beberapa sesi per host, panel split tmux asli
 > • Bilah tombol yang bisa diatur, dan magic key untuk panah, Esc, dan Ctrl+C
 > • Pohon file dan editor kode dengan simpan sudo

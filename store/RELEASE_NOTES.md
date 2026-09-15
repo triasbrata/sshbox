@@ -1,6 +1,6 @@
 # Jeansh: release notes
 
-## 1.0.0: first release
+## 1.0: first release
 
 **Terminal buddy in your pocket.**
 
@@ -40,7 +40,7 @@
 
 ### Play Store "What's new" (under 500 characters)
 
-> Jeansh 1.0.0, the first release: an SSH terminal for your phone and tablet.
+> Jeansh 1.0, the first release: an SSH terminal for your phone and tablet.
 > • Tabs, several sessions per host, native tmux split panes
 > • A key bar you can arrange, and the magic key for arrows, Esc and Ctrl+C
 > • A file tree and a code editor with sudo save
