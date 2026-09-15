@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,13 +19,70 @@ import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 
+/// One remote file in a tab: an image in a viewer, anything else in the
+/// editor.
+///
+/// The choice is made by name alone, so it costs no round trip and survives an
+/// app restart for free — the open tabs are saved as paths, and a path that
+/// named an image still names one when it comes back.
+class FileEditorPage extends StatelessWidget {
+  const FileEditorPage({
+    super.key,
+    required this.browser,
+    required this.path,
+    this.onClose,
+    this.draftKey,
+    this.line,
+    this.onOpenWeb,
+    this.host,
+  });
+
+  final FileBrowser browser;
+  final String path;
+  final String? host;
+  final void Function(Uri url)? onOpenWeb;
+  final VoidCallback? onClose;
+  final String? draftKey;
+  final int? line;
+
+  @override
+  Widget build(BuildContext context) => _isImage(path)
+      ? _ImageFileTab(
+          browser: browser,
+          path: path,
+          host: host,
+          onClose: onClose,
+        )
+      : _TextFileTab(
+          browser: browser,
+          path: path,
+          host: host,
+          onClose: onClose,
+          draftKey: draftKey,
+          line: line,
+          onOpenWeb: onOpenWeb,
+        );
+}
+
+/// The images Flutter decodes on its own.
+///
+/// Deliberately not the files drawer's image icon list, which also marks svg
+/// and ico: dart:ui draws neither without a package, and heic and tiff go the
+/// same way. Those stay editor files and say "This looks like a binary file",
+/// which already offers Download — better than a viewer that can only fail.
+final _imageNames = RegExp(
+  r'\.(png|jpe?g|gif|webp|bmp|wbmp)$',
+  caseSensitive: false,
+);
+
+bool _isImage(String path) => _imageNames.hasMatch(path);
+
 /// Opens one remote file for reading and, if you want, changing.
 ///
 /// Pops `true` when something was actually saved, so the listing behind it
 /// knows to reload the size and timestamp it is showing.
-class FileEditorPage extends StatefulWidget {
-  const FileEditorPage({
-    super.key,
+class _TextFileTab extends StatefulWidget {
+  const _TextFileTab({
     required this.browser,
     required this.path,
     this.onClose,
@@ -61,7 +120,7 @@ class FileEditorPage extends StatefulWidget {
   final int? line;
 
   @override
-  State<FileEditorPage> createState() => _FileEditorPageState();
+  State<_TextFileTab> createState() => _TextFileTabState();
 }
 
 enum _Conflict { overwrite, reload }
@@ -75,7 +134,7 @@ String _draftPrefsKey(String key) => 'editor.draft.$key';
 const _prefsFontSize = 'editor.fontSize';
 const _prefsWordWrap = 'editor.wordWrap';
 
-class _FileEditorPageState extends State<FileEditorPage> {
+class _TextFileTabState extends State<_TextFileTab> {
   final _controller = CodeLineEditingController();
 
   /// One for a dark page and one for a light, each made once: re_editor
@@ -331,7 +390,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
   }
 
   @override
-  void didUpdateWidget(FileEditorPage oldWidget) {
+  void didUpdateWidget(_TextFileTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     final line = widget.line;
     if (line != null && line != oldWidget.line && !_loading && _error == null) {
@@ -1028,6 +1087,336 @@ class _FileEditorPageState extends State<FileEditorPage> {
             },
           ),
       ],
+    );
+  }
+}
+
+/// One image in a file tab: fitted to the tab, pinch to zoom and pan, and a
+/// double-tap between the whole image and every one of its pixels.
+///
+/// There is nothing here to edit, so the editor's Save, Find, Go to line and
+/// Markdown toggle are not offered and there is no key bar. Download is, since
+/// that only ever needed the path — an image the app cannot draw can still be
+/// saved on the phone and opened by something that can.
+class _ImageFileTab extends StatefulWidget {
+  const _ImageFileTab({
+    required this.browser,
+    required this.path,
+    this.host,
+    this.onClose,
+  });
+
+  final FileBrowser browser;
+  final String path;
+
+  /// The host the file is on, as its tab names it, for the Transfers tab to
+  /// say where a download came from.
+  final String? host;
+
+  /// Dismisses the tab when it is a pane rather than a screen: see
+  /// [FileEditorPage.onClose].
+  final VoidCallback? onClose;
+
+  @override
+  State<_ImageFileTab> createState() => _ImageFileTabState();
+}
+
+class _ImageFileTabState extends State<_ImageFileTab> {
+  /// ponytail: 20 MB. Every screenshot and camera photo is a small fraction of
+  /// that, and the file is only half the cost — to draw it, Flutter decodes it
+  /// to width × height × 4 bytes of pixels, which no cap on the file can bound
+  /// tightly. Raise it when somebody has a real image bigger than this.
+  static const _limit = 20 * 1024 * 1024;
+
+  /// The app's own copy and the directory holding it. The file comes down a
+  /// chunk at a time, as a download does, so nothing but the decoded image is
+  /// ever held in memory, and the copy goes when the tab does.
+  Directory? _temp;
+  FileImage? _image;
+
+  /// What the host says the file is, and what it turned out to be.
+  int _bytes = 0;
+  int? _width;
+  int? _height;
+
+  String? _error;
+  FileBrowserFault? _fault;
+  bool _loading = true;
+
+  /// Stops the copy part way: the tab closed, or the file is past [_limit].
+  final _stop = Completer<void>();
+  bool _tooLarge = false;
+
+  /// The download under way from the ⋮ menu, which its bar follows.
+  Transfer? _transfer;
+
+  final _view = TransformationController();
+
+  /// Where the last double-tap landed, which the zoom keeps under the finger.
+  Offset _tapped = Offset.zero;
+
+  bool get _embedded => widget.onClose != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    if (!_stop.isCompleted) _stop.complete();
+    _view.dispose();
+    // The decoded pixels are cached under the copy's path, and that path goes
+    // with the copy.
+    final image = _image;
+    if (image != null) unawaited(image.evict());
+    // Still loading, and the copy is the download's to clear up on its way
+    // out: see the end of [_load].
+    if (!_loading) _cleanup();
+    super.dispose();
+  }
+
+  /// Removes the app's copy. Idempotent, so whichever of the tab closing and
+  /// the copy finishing comes last does it, and neither has to know.
+  void _cleanup() {
+    final temp = _temp;
+    _temp = null;
+    try {
+      temp?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Already gone, or never made.
+    }
+  }
+
+  Future<void> _load() async {
+    // On Android, Flutter points systemTemp at the app's own code cache.
+    final temp = Directory.systemTemp.createTempSync('image');
+    _temp = temp;
+    final copy = '${temp.path}/file';
+    try {
+      await widget.browser.download(
+        widget.path,
+        copy,
+        onProgress: (received, total) {
+          _bytes = total;
+          // The size lands with the first chunk, so a file past the cap is
+          // stopped there rather than pulled down in full to be turned away.
+          if (total > _limit && !_stop.isCompleted) {
+            _tooLarge = true;
+            _stop.complete();
+          }
+        },
+        cancel: _stop.future,
+      );
+      if (!mounted) return;
+      // Checked again for a transport that finishes rather than stopping.
+      if (_tooLarge || _bytes > _limit) return _refuse();
+
+      final image = FileImage(File(copy));
+      final size = await _sizeOf(image);
+      if (!mounted) return;
+      setState(() {
+        _image = image;
+        _width = size.width.round();
+        _height = size.height.round();
+        _loading = false;
+      });
+    } on FileBrowserException catch (error) {
+      if (!mounted) return;
+      if (_tooLarge) return _refuse();
+      setState(() {
+        _error = error.message;
+        _fault = error.fault;
+        _loading = false;
+      });
+    } catch (_) {
+      // Whatever the decoder made of it, the answer is the same: this is not
+      // an image we can draw. Its own words are for a log, not for a page.
+      if (!mounted) return;
+      setState(() {
+        _error =
+            'Could not show ${RemotePath.basename(widget.path)}: it is not an '
+            'image this app can open. Download it to open it on the phone.';
+        _loading = false;
+      });
+    } finally {
+      // The tab went while this was in flight, so dispose left the copy alone.
+      if (!mounted) _cleanup();
+    }
+  }
+
+  void _refuse() {
+    setState(() {
+      _error =
+          '${formatBytes(_bytes)} is too large to show here. Download it to '
+          'open it on the phone.';
+      _fault = FileBrowserFault.tooLarge;
+      _loading = false;
+    });
+  }
+
+  /// The image's own pixel size, which is also its decode: a failure here is a
+  /// file that is not an image, and what is drawn comes back from the same
+  /// cached decode rather than a second one.
+  Future<Size> _sizeOf(ImageProvider provider) {
+    final done = Completer<Size>();
+    final stream = provider.resolve(ImageConfiguration.empty);
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        stream.removeListener(listener);
+        final size = Size(
+          info.image.width.toDouble(),
+          info.image.height.toDouble(),
+        );
+        info.dispose();
+        if (!done.isCompleted) done.complete(size);
+      },
+      onError: (error, _) {
+        stream.removeListener(listener);
+        if (!done.isCompleted) done.completeError(error);
+      },
+    );
+    stream.addListener(listener);
+    return done.future;
+  }
+
+  void _leave() {
+    final close = widget.onClose;
+    if (close != null) {
+      close();
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
+  /// The same save dialog the files drawer and the editor use.
+  Future<void> _download() => downloadFile(
+    context,
+    widget.browser,
+    widget.path,
+    host: widget.host ?? '',
+    onTransfer: (transfer) {
+      if (mounted) setState(() => _transfer = transfer);
+    },
+  );
+
+  /// Double-tap: every pixel, at the point tapped, or back to the whole image.
+  void _toggleZoom(Size viewport) {
+    if (_view.value.getMaxScaleOnAxis() > 1.01) {
+      _view.value = Matrix4.identity();
+      return;
+    }
+    final width = _width;
+    if (width == null || _height == null) return;
+    // 1 is the image fitted to the tab, so 100% is however much larger than
+    // that its own pixels are on this screen's.
+    final fitted = applyBoxFit(
+      BoxFit.contain,
+      Size(width.toDouble(), _height!.toDouble()),
+      viewport,
+    ).destination;
+    final full =
+        width / (fitted.width * MediaQuery.devicePixelRatioOf(context));
+    // Already showing every pixel, or more: there is nothing to zoom to.
+    if (full <= 1.01) return;
+    final scale = math.min(full, 8.0);
+    _view.value = Matrix4.identity()
+      ..translateByDouble(
+        -_tapped.dx * (scale - 1),
+        -_tapped.dy * (scale - 1),
+        0,
+        1,
+      )
+      ..scaleByDouble(scale, scale, scale, 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = _width == null
+        ? RemotePath.parent(widget.path)
+        : '$_width × $_height · ${formatBytes(_bytes)}';
+
+    return Scaffold(
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          tooltip: _embedded ? 'Close file' : 'Back',
+          icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
+          onPressed: _leave,
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              RemotePath.basename(widget.path),
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              size,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          PopupMenuButton<VoidCallback>(
+            tooltip: 'More',
+            onSelected: (action) => action(),
+            itemBuilder: (context) => [
+              // Only the path is needed, so an image that would not open here
+              // can still be saved on the phone.
+              PopupMenuItem(
+                value: _download,
+                enabled: _transfer == null,
+                child: const Text('Download'),
+              ),
+            ],
+          ),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_transfer case final transfer?) TransferBar(transfer),
+          Expanded(child: _buildBody()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+
+    final error = _error;
+    if (error != null) return _EditorError(message: error, fault: _fault);
+
+    // A mid grey behind it: what a transparent PNG leaves showing is as often
+    // white as black, and this is the one ground neither disappears into,
+    // light theme or dark.
+    return ColoredBox(
+      color: const Color(0xFF6E6E6E),
+      child: LayoutBuilder(
+        builder: (context, box) => GestureDetector(
+          onDoubleTapDown: (details) => _tapped = details.localPosition,
+          onDoubleTap: () => _toggleZoom(box.biggest),
+          child: InteractiveViewer(
+            transformationController: _view,
+            maxScale: 8,
+            child: Image(
+              image: _image!,
+              fit: BoxFit.contain,
+              // The decode already worked once, so this is a copy that went
+              // away under us rather than a file that was never an image.
+              errorBuilder: (context, _, _) => const Center(
+                child: Icon(Icons.broken_image_outlined, size: 40),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

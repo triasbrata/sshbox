@@ -88,6 +88,43 @@ class _HostsPageState extends State<HostsPage> {
     await _reload();
   }
 
+  /// Copies [host] into a saved host of its own, so a variant of it needs no
+  /// retyping. Every field the editor shows comes along — [HostProfile.copyWith]
+  /// carries the whole profile, so one added later is not silently dropped —
+  /// and so do the password, private key and passphrase, under the new id, for
+  /// a copy that connects without the secret being typed again.
+  ///
+  /// What belongs to the original alone stays there: the copy is a new host,
+  /// with no open session, no history of its own in the logs, and no
+  /// notification key until it first connects, when it gets one of its own.
+  Future<void> _duplicate(HostProfile host) async {
+    final copy = host.copyWith(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      label: _copyName(host.displayName),
+    );
+    // Both lists in the same order, so a secret added to SecretKeys travels
+    // with a duplicate too. Read and written, never logged or shown.
+    final from = SecretKeys.allFor(host.id);
+    final to = SecretKeys.allFor(copy.id);
+    for (var i = 0; i < from.length; i++) {
+      await widget.secrets.write(to[i], await widget.secrets.read(from[i]));
+    }
+    await widget.repository.upsert(copy);
+    await _reload();
+  }
+
+  /// `<name> (copy)`, or `(copy 2)` and on while that is taken — compared
+  /// against what the cards show, so no two hosts on Home read alike.
+  String _copyName(String name) {
+    final taken = {
+      for (final host in _hosts ?? const <HostProfile>[]) host.displayName,
+    };
+    for (var n = 1; ; n++) {
+      final candidate = n == 1 ? '$name (copy)' : '$name (copy $n)';
+      if (!taken.contains(candidate)) return candidate;
+    }
+  }
+
   Future<void> _confirmDelete(HostProfile host) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -256,6 +293,7 @@ class _HostsPageState extends State<HostsPage> {
                     activeCount: open.where((s) => s.isConnected).length,
                     onOpen: () => widget.onOpenHost(host.id),
                     onEdit: () => _openEditor(existing: host),
+                    onDuplicate: () => _duplicate(host),
                     onDelete: () => _confirmDelete(host),
                     onCloseSessions: () => widget.sessions.closeHost(host.id),
                   );
@@ -402,6 +440,7 @@ class _HostTile extends StatelessWidget {
     required this.activeCount,
     required this.onOpen,
     required this.onEdit,
+    required this.onDuplicate,
     required this.onDelete,
     required this.onCloseSessions,
   });
@@ -415,6 +454,7 @@ class _HostTile extends StatelessWidget {
   final int activeCount;
   final VoidCallback onOpen;
   final VoidCallback onEdit;
+  final VoidCallback onDuplicate;
   final VoidCallback onDelete;
   final VoidCallback onCloseSessions;
 
@@ -533,6 +573,7 @@ class _HostTile extends StatelessWidget {
               PopupMenuButton<String>(
                 onSelected: (action) => switch (action) {
                   'edit' => onEdit(),
+                  'duplicate' => onDuplicate(),
                   'delete' => onDelete(),
                   'close' => onCloseSessions(),
                   _ => null,
@@ -548,6 +589,10 @@ class _HostTile extends StatelessWidget {
                       ),
                     ),
                   const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  const PopupMenuItem(
+                    value: 'duplicate',
+                    child: Text('Duplicate'),
+                  ),
                   const PopupMenuItem(value: 'delete', child: Text('Delete')),
                 ],
               ),
@@ -595,11 +640,7 @@ class _DatabaseTile extends StatelessWidget {
               // As wide as a host's badge, so the names line up.
               SizedBox(
                 width: 80,
-                child: Icon(
-                  dbIcon(db.kind),
-                  size: 40,
-                  color: theme.colorScheme.primary,
-                ),
+                child: Center(child: DbBadge(db.kind)),
               ),
               const SizedBox(width: 8),
               Expanded(

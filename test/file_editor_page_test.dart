@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1024,6 +1025,113 @@ Run `make` first.
         (tester) async {
       await pumpReadme(tester, 'word ' * 30000);
       expect(find.textContaining('Only the first 100 KB'), findsOneWidget);
+    });
+  });
+
+  group('image', () {
+    // A real 1×1 PNG: the engine decodes it for real here, which is what the
+    // viewer's failure state turns on.
+    final png = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEh'
+      'QGAhKmMIQAAAABJRU5ErkJggg==',
+    );
+    const shot = '/home/me/shot.png';
+
+    /// Pumps the tab and waits out the copy and its decode, which are real
+    /// file work rather than anything on the test's fake clock.
+    Future<void> pumpImage(
+      WidgetTester tester,
+      FakeFileBrowser browser, {
+      String path = shot,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(home: FileEditorPage(browser: browser, path: path)),
+      );
+      for (var i = 0;
+          i < 100 &&
+              find.byType(CircularProgressIndicator).evaluate().isNotEmpty;
+          i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+    }
+
+    testWidgets('an image opens in the viewer rather than the editor',
+        (tester) async {
+      final browser = FakeFileBrowser()..binary[shot] = png;
+      await pumpImage(tester, browser);
+
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(find.byType(Image), findsOneWidget);
+      // Nothing that only means anything for text.
+      expect(find.byType(CodeEditor), findsNothing);
+      expect(find.byType(EditorKeyBar), findsNothing);
+      expect(
+        find.widgetWithIcon(IconButton, Icons.save_outlined),
+        findsNothing,
+      );
+      expect(find.byTooltip('Find'), findsNothing);
+      expect(find.byTooltip('Show preview'), findsNothing);
+      // What it is and how big, out of the way in the title.
+      expect(find.text('shot.png'), findsOneWidget);
+      expect(find.text('1 × 1 · ${png.length} B'), findsOneWidget);
+    });
+
+    testWidgets('a text file still opens the editor', (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsNothing);
+    });
+
+    testWidgets('one past the cap says so instead of opening it',
+        (tester) async {
+      final browser = FakeFileBrowser()
+        ..binary[shot] = png
+        ..statedSize[shot] = 21 * 1024 * 1024;
+      await pumpImage(tester, browser);
+
+      expect(find.textContaining('too large to show here'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+      // Download is still the way to get at it.
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      expect(find.text('Download'), findsOneWidget);
+    });
+
+    testWidgets('one that will not decode says so, and still downloads',
+        (tester) async {
+      final picker = useFakePicker();
+      final browser = FakeFileBrowser()
+        ..binary[shot] = utf8.encode('not really a png');
+      await pumpImage(tester, browser);
+
+      expect(
+        find.textContaining('not an image this app can open'),
+        findsOneWidget,
+      );
+      expect(find.byType(InteractiveViewer), findsNothing);
+
+      await _download(tester);
+      expect(picker.saved?.name, 'shot.png');
+      expect(picker.saved?.bytes, utf8.encode('not really a png'));
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('the copy it brought down goes when the tab closes',
+        (tester) async {
+      final browser = FakeFileBrowser()..binary[shot] = png;
+      await pumpImage(tester, browser);
+      final copy = File(browser.downloads.single.to);
+      expect(copy.existsSync(), isTrue);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+
+      expect(copy.existsSync(), isFalse);
+      expect(copy.parent.existsSync(), isFalse);
     });
   });
 }

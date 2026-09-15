@@ -236,6 +236,15 @@ class FakeFileBrowser implements FileBrowser {
   /// Every download, in order: the host's file and the phone's copy.
   final List<({String from, String to})> downloads = [];
 
+  /// Files whose bytes are not text — an image, say. [download] sends these
+  /// as they are, where anything else goes down as its text.
+  final Map<String, List<int>> binary = {};
+
+  /// A size to report for a download without holding that many bytes, as SFTP
+  /// stats the file before streaming it: for the cap a viewer puts on what it
+  /// will open.
+  final Map<String, int> statedSize = {};
+
   /// Fails with [failReadWith] once the bytes are in, as a connection lost
   /// near the end leaves them.
   @override
@@ -246,11 +255,12 @@ class FakeFileBrowser implements FileBrowser {
     Future<void>? cancel,
   }) async {
     downloads.add((from: path, to: localPath));
-    final bytes = utf8.encode(_read(path).text);
+    final bytes = binary[path] ?? utf8.encode(_read(path).text);
+    final size = statedSize[path] ?? bytes.length;
     File(localPath).writeAsBytesSync(bytes);
-    onProgress?.call(bytes.length ~/ 2, bytes.length);
+    onProgress?.call(bytes.length ~/ 2, size);
     await _midway(cancel);
-    onProgress?.call(bytes.length, bytes.length);
+    onProgress?.call(bytes.length, size);
     final failure = failReadWith;
     if (failure != null) throw failure;
   }
