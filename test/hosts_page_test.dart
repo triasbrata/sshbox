@@ -254,4 +254,83 @@ void main() {
     expect(await notifyKeys.valueFor('box'), isNull);
     expect(await repository.load(), isEmpty);
   });
+
+  testWidgets('Duplicate copies a host into one of its own, its secrets with '
+      'it, and leaves the original as it was', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final secrets = InMemorySecretStore();
+    final repository = HostRepository(secrets);
+    // Every field the editor shows set to something other than its default,
+    // so one left behind stands out.
+    const original = HostProfile(
+      id: 'box',
+      label: 'wsl windows',
+      host: '10.0.0.9',
+      username: 'me',
+      port: 2222,
+      authMethod: SshAuthMethod.privateKey,
+      fileRoot: '/srv',
+      forwardPorts: true,
+      useTmux: true,
+      jumpHostId: 'gate',
+      os: OsInfo(
+        id: 'ubuntu',
+        prettyName: 'Ubuntu 22.04.5 LTS',
+        arch: 'x86_64',
+      ),
+    );
+    await repository.upsert(original);
+    for (final key in SecretKeys.allFor('box')) {
+      await secrets.write(key, 'secret at $key');
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostsPage(
+          repository: repository,
+          secrets: secrets,
+          sessions: SessionManager(),
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate'));
+    await tester.pumpAndSettle();
+
+    final hosts = await repository.load();
+    expect(hosts, hasLength(2));
+    final copy = hosts.last;
+    // A host of its own, under a name that says where it came from.
+    expect(copy.id, isNot('box'));
+    expect(copy.label, 'wsl windows (copy)');
+    // The original is untouched.
+    expect(hosts.first.toJson(), original.toJson());
+    // Everything else comes along. Compared whole, so a field added to
+    // HostProfile and not carried over fails here rather than going missing.
+    expect(
+      copy.toJson()
+        ..remove('id')
+        ..remove('label'),
+      original.toJson()
+        ..remove('id')
+        ..remove('label'),
+    );
+    // The password, private key and passphrase are readable under the new id.
+    final from = SecretKeys.allFor('box');
+    final to = SecretKeys.allFor(copy.id);
+    for (var i = 0; i < from.length; i++) {
+      expect(await secrets.read(to[i]), 'secret at ${from[i]}');
+    }
+
+    // A second copy of the same host takes the next name free.
+    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate'));
+    await tester.pumpAndSettle();
+    expect((await repository.load()).last.label, 'wsl windows (copy 2)');
+  });
 }

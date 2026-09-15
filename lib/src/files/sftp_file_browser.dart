@@ -438,10 +438,16 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   ///
   /// Streamed, never the whole file in memory: the phone's file is read
   /// 64 KB at a time, each read an event-loop turn of its own, so what is
-  /// sealed on the UI isolate between two frames is one read's worth. 16
-  /// writes wait on the host at most, which keeps a link 30 ms away busy,
-  /// where 256 KB handed over at a time and each waited out left it idle in
-  /// between: see tool/transfer_bench.dart.
+  /// sealed on the UI isolate between two frames is one read's worth.
+  ///
+  /// 64 writes wait on the host at most, 2 MB in flight. An upload never
+  /// reaches the paced socket — the acknowledgements that free the next write
+  /// are far too small to fill a read, so a 16 MB upload stands aside for two
+  /// event-loop turns where a download of the same file gives up five hundred
+  /// — so what bounds it is how much is allowed on the wire at once. On a
+  /// link 30 ms away, which is what the tailnet is, 16 writes ran at
+  /// 10.5 MB/s and 64 at 38.4; on a local link both reach about 50 and the
+  /// wider window costs nothing: see tool/transfer_bench.dart.
   static Future<void> sendFile(
     SftpFile remote,
     String localPath, {
@@ -459,7 +465,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         onProgress: (sent) => onProgress?.call(sent, total),
         // One SSH packet each, headers and all, in the 32 KB a host takes.
         chunkSize: 32 * 1024 - 64,
-        maxPendingRequests: 16,
+        maxPendingRequests: 64,
       );
       var stopped = false;
       unawaited(
@@ -490,15 +496,18 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         var stopped = false;
         unawaited(cancel?.then((_) => stopped = true));
         try {
-          // Half a megabyte in flight keeps a link 30 ms away busy, where a
-          // quarter of it halves the speed. Every reply is decrypted on the
+          // 64 reads at once, 2 MB in flight. Every reply is decrypted on the
           // UI isolate, dartssh2 being pure Dart, and the paced socket in
-          // dartssh2_transport.dart hands it over a packet at a time, so the
-          // frames keep coming however much of it lands at once.
+          // paced_socket.dart bounds what one event-loop turn spends on that
+          // by time rather than by bytes — so how much is in flight no longer
+          // decides how long a turn runs, and the window can be opened for
+          // the link instead. On one 30 ms away that is worth 14.5 MB/s
+          // against 8.8 for the half megabyte this held before, and the
+          // stalls are unmoved: see tool/transfer_bench.dart.
           var received = 0;
           await for (final chunk in file.read(
             chunkSize: 32 * 1024,
-            maxPendingRequests: 16,
+            maxPendingRequests: 64,
           )) {
             if (stopped) throw FileBrowserException.cancelled;
             local.add(chunk);
