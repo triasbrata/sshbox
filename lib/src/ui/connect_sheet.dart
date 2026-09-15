@@ -1,11 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
+import '../session/dartssh2_transport.dart' show jumpChain;
 import '../session/session_manager.dart';
+import 'settings_page.dart' show uiMonoFamily;
 import 'terminal_page.dart' show ConnectionError;
 
 /// Another terminal on [host], connected in a sheet and given its tab by
@@ -115,12 +119,55 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   HostKeyCheck? _check;
   Completer<bool>? _answer;
 
+  /// The saved hosts the connect goes through, this one last: loaded as the
+  /// sheet opens, and only for a host behind a jump host.
+  List<HostProfile>? _route;
+
   LiveSession get _session => widget.session;
+
+  /// The chain the transport dials, worked out the way it works it out.
+  Future<void> _loadRoute() async {
+    final host = _session.host;
+    if (host.jumpHostId.isEmpty) return;
+    try {
+      final hosts = await HostRepository(widget.secrets).load();
+      final chain = jumpChain(host, hosts);
+      if (mounted) setState(() => _route = [...chain, host]);
+    } catch (_) {
+      // A jump host no longer saved, or one that loops back: the connect
+      // fails on it and says why, which says more than a route could.
+    }
+  }
+
+  /// How far along [route] the connect is, from what the sheet can see: the
+  /// hop whose key it is asked about, or the one a failure names. Until one
+  /// of those is known, every hop waits.
+  List<_Hop> _hops(List<HostProfile> route) {
+    final error = _session.connecting ? null : _session.error;
+    var at = route.indexWhere((hop) => hop.id == _check?.host.id);
+    if (error != null) {
+      // A jump host's failure says "Through <name>: ...", the host's own
+      // says nothing of where.
+      at = route.indexWhere(
+        (hop) => error.startsWith('Through ${hop.displayName}:'),
+      );
+      if (at < 0) at = route.length - 1;
+    }
+    return [
+      for (var i = 0; i < route.length; i++)
+        _session.isConnected || (at >= 0 && i < at)
+            ? _Hop.done
+            : i == at
+            ? (error != null ? _Hop.failed : _Hop.current)
+            : _Hop.waiting,
+    ];
+  }
 
   @override
   void initState() {
     super.initState();
     _session.addListener(_onSessionChanged);
+    unawaited(_loadRoute());
     // After the frame: connecting tells whatever shows the session — the
     // tabs, and a reconnecting tab's page — which must not hear of it while
     // this sheet is being built.
@@ -191,9 +238,16 @@ class _ConnectSheetState extends State<_ConnectSheet> {
           Text(
             '${host.username}@${host.host}:${host.port}',
             style: theme.textTheme.bodyMedium?.copyWith(
+              fontFamily: uiMonoFamily,
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
+          // Only behind a jump host: straight to a host there is one stop,
+          // and nothing for a route to say.
+          if (_route case final route?) ...[
+            const SizedBox(height: 14),
+            _Route(hops: route, states: _hops(route)),
+          ],
           const SizedBox(height: 20),
           if (check != null)
             _HostKeyPrompt(check: check, onAnswer: _rule)
@@ -233,6 +287,88 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   }
 }
 
+/// Where a connect is at one stop of its route: through it, being asked
+/// about, failed there, or not reached yet.
+enum _Hop { done, current, failed, waiting }
+
+/// The saved hosts a connect goes through, this device first: each stop a
+/// chip marked by how far the connect has got, joined by a line.
+class _Route extends StatelessWidget {
+  const _Route({required this.hops, required this.states});
+
+  final List<HostProfile> hops;
+  final List<_Hop> states;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final faint = scheme.outlineVariant.withValues(alpha: 0.6);
+
+    Widget stop(String name, {IconData? icon, _Hop state = _Hop.done}) {
+      final color = switch (state) {
+        _Hop.current => scheme.primary,
+        _Hop.failed => scheme.error,
+        _Hop.done => scheme.onSurface,
+        _Hop.waiting => scheme.onSurfaceVariant,
+      };
+      final mark = switch (state) {
+        _Hop.done => Icons.check,
+        _Hop.failed => Icons.close,
+        _Hop.current || _Hop.waiting => null,
+      };
+      final lit = state == _Hop.current || state == _Hop.failed;
+      return Container(
+        height: 30,
+        padding: const EdgeInsetsDirectional.fromSTEB(10, 0, 12, 0),
+        decoration: ShapeDecoration(
+          color: state == _Hop.current
+              ? scheme.primary.withValues(alpha: 0.08)
+              : null,
+          shape: StadiumBorder(
+            side: BorderSide(
+              color: lit ? color.withValues(alpha: 0.6) : faint,
+            ),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon ?? mark case final glyph?) ...[
+              Icon(
+                glyph,
+                size: 14,
+                color: icon != null ? scheme.onSurfaceVariant : color,
+              ),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              name,
+              style: TextStyle(
+                fontFamily: uiMonoFamily,
+                fontSize: 12.5,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final line = Container(width: 20, height: 1.5, color: faint);
+    return Wrap(
+      crossAxisAlignment: WrapCrossAlignment.center,
+      runSpacing: 8,
+      children: [
+        stop('this device', icon: Icons.devices),
+        for (final (i, hop) in hops.indexed) ...[
+          line,
+          stop(hop.displayName, state: states[i]),
+        ],
+      ],
+    );
+  }
+}
+
 /// A host key that is not the one pinned for its host: the first connect to
 /// it, or a key that has changed since, shown beside the old one. Named by
 /// its host, because a jump host and the host behind it can ask one after
@@ -244,6 +380,39 @@ class _HostKeyPrompt extends StatelessWidget {
   final HostKeyCheck check;
   final void Function(bool trusted) onAnswer;
 
+  /// What prints a host's ed25519 fingerprint on the host itself.
+  static const _keygen = 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub';
+
+  /// [fingerprint] in groups of four, every other one in the lighter ink, so
+  /// two can be compared a group at a time. Every character is there and
+  /// nothing between them: selected or copied, it is the fingerprint as the
+  /// host prints it.
+  static TextSpan _grouped(String fingerprint, ThemeData theme) {
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final colon = fingerprint.indexOf(':');
+    final body = fingerprint.substring(colon + 1);
+    return TextSpan(
+      style: TextStyle(
+        fontFamily: uiMonoFamily,
+        fontSize: 15,
+        height: 1.5,
+        letterSpacing: 0.5,
+        color: theme.colorScheme.onSurface,
+      ),
+      children: [
+        TextSpan(
+          text: fingerprint.substring(0, colon + 1),
+          style: TextStyle(color: muted, fontSize: 12),
+        ),
+        for (var i = 0; i < body.length; i += 4)
+          TextSpan(
+            text: body.substring(i, i + 4 > body.length ? body.length : i + 4),
+            style: (i ~/ 4).isOdd ? TextStyle(color: muted) : null,
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -251,7 +420,7 @@ class _HostKeyPrompt extends StatelessWidget {
     final where = host.port == 22 ? host.host : '${host.host}:${host.port}';
     final pinned = check.pinned;
     final error = theme.colorScheme.error;
-    const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    final muted = theme.colorScheme.onSurfaceVariant;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -275,8 +444,7 @@ class _HostKeyPrompt extends StatelessWidget {
         Text(
           pinned == null
               ? 'First connection to ${host.displayName}. Trust it only if '
-                    'this fingerprint matches the one '
-                    '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
+                    'this fingerprint matches the one the command below '
                     'prints on the server.'
               : '${host.displayName} is not showing the key pinned for it. '
                     'The server may have been rebuilt — or something may be '
@@ -285,11 +453,45 @@ class _HostKeyPrompt extends StatelessWidget {
         if (pinned != null) ...[
           const SizedBox(height: 12),
           const Text('Pinned'),
-          SelectableText(pinned, style: mono),
+          SelectableText.rich(_grouped(pinned, theme)),
         ],
         const SizedBox(height: 12),
         Text(pinned == null ? 'Fingerprint' : 'Now'),
-        SelectableText(check.fingerprint, style: mono),
+        SelectableText.rich(_grouped(check.fingerprint, theme)),
+        // Where the fingerprint to compare with comes from, to copy and run.
+        const SizedBox(height: 8),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '\$ $_keygen',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: uiMonoFamily,
+                    fontSize: 12.5,
+                    color: muted,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Copy the command',
+                onPressed: () => unawaited(
+                  Clipboard.setData(const ClipboardData(text: _keygen)),
+                ),
+                icon: const Icon(Icons.copy, size: 18),
+              ),
+            ],
+          ),
+        ),
         const SizedBox(height: 16),
         Row(
           mainAxisAlignment: MainAxisAlignment.end,

@@ -233,6 +233,63 @@ void main() {
     expect(await pinned(), isNull);
   });
 
+  testWidgets('a host behind a jump host shows its route in the sheet, '
+      'with the hop whose key is asked about', (tester) async {
+    const gate = HostProfile(
+      id: 'gate',
+      label: 'gate',
+      host: '10.0.2.3',
+      username: 'me',
+    );
+    const inner = HostProfile(
+      id: 'inner',
+      label: 'inner',
+      host: '10.0.2.4',
+      username: 'me',
+      jumpHostId: 'gate',
+    );
+    final repository = HostRepository(_NoSecrets());
+    await repository.upsert(gate);
+    await repository.upsert(inner);
+    final host = _Host(fingerprint: _key);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TabsShell(
+          repository: repository,
+          secrets: _NoSecrets(),
+          sessions: manager,
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    opening = openInSheet(
+      tester.element(find.byType(TabsShell)),
+      manager,
+      inner,
+      secrets: _NoSecrets(),
+      transport: (confirm, banner) => host
+        ..confirm = confirm
+        ..banner = banner,
+    );
+    await tester.pumpAndSettle();
+
+    final sheet = find.byType(BottomSheet);
+    for (final stop in ['this device', 'gate', 'inner']) {
+      expect(
+        find.descendant(of: sheet, matching: find.text(stop)),
+        findsWidgets,
+        reason: stop,
+      );
+    }
+    // The fake dials the host itself, so it is the last hop that asks.
+    expect(find.text('Trust 10.0.2.4?'), findsOneWidget);
+
+    // Cancel rather than Trust: only one test here may pin a key.
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(await opening, isNull);
+  });
+
   testWidgets("a sign-in's Open link closes the sheet and carries on: the "
       'session gets its tab and the link a web tab beside it, shown, which '
       'closes once through; on Reconnect it opens beside the same tab', (

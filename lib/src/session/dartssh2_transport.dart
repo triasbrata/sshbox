@@ -63,8 +63,8 @@ class Dartssh2Transport implements SessionTransport {
 }
 
 /// The jump hosts [host] is reached through, from [hosts], the one dialled
-/// directly first. Empty when [host] has none.
-@visibleForTesting
+/// directly first. Empty when [host] has none. The connect sheet draws its
+/// route from the same chain, so the one on screen is the one dialled.
 List<HostProfile> jumpChain(HostProfile host, List<HostProfile> hosts) {
   final chain = <HostProfile>[];
   var hop = host;
