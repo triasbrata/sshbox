@@ -181,7 +181,16 @@ class TerminalTextInputState extends State<TerminalTextInput>
         widget.terminal.keyInput(TerminalKey.backspace);
       }
     } else {
-      widget.terminal.textInput(_insertedText(value.text, growth));
+      // A newline in the IME buffer is the Enter key, not text. A hardware
+      // Shift+Enter reaches xterm2 as a key already (→ ESC CR), and the soft
+      // keyboard's Enter comes through performAction below; Android also
+      // inserts a '\n' here for the same Shift+Enter, so sending it as text
+      // too is what doubled the newline.
+      // ponytail: strips '\n' from any insert, so a soft-keyboard paste of
+      // multiline text loses its breaks — split on '\n' + keyInput(enter) if
+      // that ever matters.
+      final text = _insertedText(value.text, growth).replaceAll('\n', '');
+      if (text.isNotEmpty) widget.terminal.textInput(text);
     }
 
     widget.onInput?.call();
