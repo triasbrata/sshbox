@@ -18,14 +18,10 @@
 <canvas id="c" width="1024" height="500"></canvas>
 <script type="module">
   // The promo site's look (jeansh-web, src/styles.css): the icon's indigo,
-  // its amber stitching, a dark terminal. The terminal takes the app's
-  // Tokyo Night dark colours (lib/src/ui/terminal_schemes.dart).
+  // its amber stitching, a dark terminal.
   const W = 1024, H = 500;
   const brand = '#373964', stitch = '#e0a458', text = '#f3f3fb';
-  const t = {
-    bg: '#1a1b26', chrome: '#16161e', fg: '#c0caf5', dim: '#5b6591',
-    green: '#9ece6a', blue: '#7aa2f7', yellow: '#e0af68',
-  };
+  const t = { chrome: '#16161e' };
   const mono = (size, bold) => `${bold ? 700 : 400} ${size}px "JetBrains Mono"`;
 
   for (const w of [400, 700]) {
@@ -36,6 +32,12 @@
   const icon = new Image();
   icon.src = '../../../assets/branding/app_icon.png';
   await icon.decode();
+
+  // The app itself, photographed on the emulator rather than drawn here, so
+  // the graphic shows what a buyer will actually see (store/sc).
+  const shot = new Image();
+  shot.src = '../../sc/02-file-tree.png';
+  await shot.decode();
 
   const ctx = document.getElementById('c').getContext('2d');
 
@@ -80,8 +82,10 @@
   ctx.fillText('Terminal buddy', 96, 368);
   ctx.fillText('in your pocket', 96, 408);
 
-  // Right: a Jeansh tab, as the app draws it.
-  const x = 480, y = 78, w = 456, h = 344, r = 16;
+  // Right: the screenshot in a rounded frame. The frame keeps the shot's own
+  // 2560 × 1600, so nothing is cropped and no bars are left over.
+  const x = 480, w = 456, h = Math.round(w * shot.height / shot.width);
+  const y = Math.round(78 + (344 - h) / 2), r = 16;
   shadow('rgba(6,6,24,0.6)', 40, 18, () => {
     ctx.fillStyle = t.chrome;
     roundRect(x, y, w, h, r);
@@ -90,103 +94,7 @@
   ctx.save();
   roundRect(x, y, w, h, r);
   ctx.clip();
-
-  // Tabs.
-  ctx.font = mono(13);
-  ctx.textBaseline = 'middle';
-  let tx = x + 10;
-  for (const [label, active] of [['Home'], ['box', true], ['box · app.ts']]) {
-    const tw = ctx.measureText(label).width + (active ? 36 : 20);
-    if (active) {
-      ctx.fillStyle = 'rgba(255,255,255,0.1)';
-      roundRect(tx, y + 7, tw, 26, 7);
-      ctx.fill();
-      ctx.fillStyle = t.green;
-      ctx.beginPath();
-      ctx.arc(tx + 13, y + 20, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.fillStyle = active ? t.fg : t.dim;
-    ctx.fillText(label, tx + (active ? 24 : 10), y + 20.5);
-    tx += tw + 6;
-  }
-
-  // The shell.
-  const top = y + 40, keysTop = y + h - 44;
-  ctx.fillStyle = t.bg;
-  ctx.fillRect(x, top, w, keysTop - top);
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.fillRect(x, top, w, 1);
-  ctx.fillRect(x, keysTop, w, 1);
-
-  const prompt = [[t.green, 'you@box'], [t.fg, ':'], [t.blue, '~/app'], [t.fg, '$ ']];
-  const lines = [
-    [...prompt, [t.fg, 'git log --oneline -3']],
-    [[t.yellow, 'a41b9e0 '], [t.fg, 'key bar: custom keys']],
-    [[t.yellow, '8f3c2d1 '], [t.fg, 'editor: find and replace']],
-    [[t.yellow, '51be07a '], [t.fg, 'tabs: duplicate session']],
-    [...prompt, [t.fg, 'bun run build']],
-    [[t.green, 'done '], [t.dim, 'in '], [t.fg, '2.41s']],
-    [...prompt],
-  ];
-  // One cell at a time, as a terminal draws it, so no ligature joins "--".
-  ctx.font = mono(16);
-  ctx.textBaseline = 'alphabetic';
-  const cell = ctx.measureText('M').width;
-  let ly = top + 34;
-  let cx = 0;
-  for (const line of lines) {
-    cx = x + 18;
-    for (const [color, s] of line) {
-      ctx.fillStyle = color;
-      for (const ch of s) {
-        ctx.fillText(ch, cx, ly);
-        cx += cell;
-      }
-    }
-    ly += 25;
-  }
-  ctx.fillStyle = t.fg;
-  ctx.fillRect(cx, ly - 25 - 15, 9, 19);
-
-  // The magic key, bottom right of the shell.
-  const mx = x + w - 40, my = keysTop - 38;
-  ctx.globalAlpha = 0.9;
-  ctx.fillStyle = brand;
-  ctx.beginPath();
-  ctx.arc(mx, my, 23, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(mx + 8, my - 8);
-  ctx.lineTo(mx + 8, my + 3);
-  ctx.lineTo(mx - 9, my + 3);
-  ctx.moveTo(mx - 4, my - 2);
-  ctx.lineTo(mx - 9, my + 3);
-  ctx.lineTo(mx - 4, my + 8);
-  ctx.stroke();
-
-  // The key bar, CTRL held.
-  ctx.font = mono(12, true);
-  ctx.textBaseline = 'middle';
-  let kx = x + 10;
-  for (const k of ['ESC', 'TAB', 'CTRL', 'ALT', '↑', '↓', '←', '→', '|', '~', '/']) {
-    const kw = Math.max(30, ctx.measureText(k).width + 18);
-    const on = k === 'CTRL';
-    ctx.fillStyle = on ? stitch : 'rgba(255,255,255,0.08)';
-    roundRect(kx, keysTop + 9, kw, 26, 6);
-    ctx.fill();
-    ctx.fillStyle = on ? t.bg : t.fg;
-    ctx.fillText(k, kx + (kw - ctx.measureText(k).width) / 2, keysTop + 22.5);
-    kx += kw + 6;
-  }
+  ctx.drawImage(shot, x, y, w, h);
   ctx.restore();
   ctx.strokeStyle = 'rgba(255,255,255,0.1)';
   ctx.lineWidth = 1;
