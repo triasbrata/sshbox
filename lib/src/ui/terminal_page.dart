@@ -336,8 +336,21 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
+  /// The key bar's keyboard button: the way back to the soft keyboard, which
+  /// a tap on the terminal is not once a hardware key has shut it. The pane
+  /// being typed into gets it, or the first one when none holds focus.
+  void _showKeyboard() {
+    _PaneViewState? target;
+    for (final view in _paneViews) {
+      target ??= view;
+      if (view.hasFocus) target = view;
+    }
+    target?.showKeyboard();
+  }
+
   /// With Ctrl, opens the link under the tap and types nothing; without, asks
-  /// for the keyboard back, the way a tap always has.
+  /// for focus — and for the soft keyboard too, unless a hardware keyboard has
+  /// typed, in which case reopening it would double the next key.
   void _onTerminalTap(_PaneViewState view, CellOffset cell) {
     if (!_ctrl) {
       view.requestKeyboard();
@@ -571,6 +584,15 @@ class _TerminalPageState extends State<TerminalPage> {
                   : null,
               icon: const Icon(Icons.attach_file),
             ),
+            // The only way back to the soft keyboard once a hardware key has
+            // shut it: a tap on the terminal cannot reopen it without making
+            // the next key arrive twice. Always here, so a tablet out of its
+            // keyboard case is never left without one.
+            IconButton(
+              tooltip: 'Show the keyboard',
+              onPressed: _showKeyboard,
+              icon: const Icon(Icons.keyboard_outlined),
+            ),
           ],
         ),
       ),
@@ -803,6 +825,11 @@ class _PaneViewState extends State<_PaneView> {
   }
 
   void requestKeyboard() => _inputKey.currentState?.requestKeyboard();
+
+  bool get hasFocus => _focusNode.hasFocus;
+
+  /// The keyboard button's ask, which outranks a hardware keyboard.
+  void showKeyboard() => _inputKey.currentState?.showKeyboard();
 
   /// Typing anywhere in the scrollback should snap back to the prompt.
   void _scrollToBottom() {

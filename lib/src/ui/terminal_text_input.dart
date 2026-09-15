@@ -15,9 +15,10 @@ import 'key_bar.dart' show CursorPad;
 /// xterm2's — hardware keys, shortcuts, selection gestures — untouched.
 ///
 /// The connection is the soft keyboard's alone: the first hardware key shuts
-/// it, and only an explicit ask — [requestKeyboard], a tap on the terminal —
-/// opens it again. Held open under a hardware keyboard it is what makes one
-/// press arrive twice; see [_onHardwareKey].
+/// it, and from then on only [showKeyboard] — the keyboard button in the key
+/// bar — opens it again. A tap on the terminal gives focus and nothing more.
+/// Held open under a hardware keyboard it is what makes one press arrive
+/// twice; see [_onHardwareKey].
 class TerminalTextInput extends StatefulWidget {
   const TerminalTextInput({
     super.key,
@@ -75,10 +76,18 @@ class TerminalTextInputState extends State<TerminalTextInput>
     'D': TerminalKey.arrowLeft,
   };
 
-  /// Set by the first hardware key seen anywhere in the app, and cleared by an
-  /// explicit ask for the keyboard. App-wide on purpose: a keyboard plugged
-  /// into the tablet types into every tab, so a new one must not raise the
-  /// soft keyboard either.
+  /// Set by the first hardware key seen anywhere in the app, and cleared only
+  /// by [showKeyboard]. App-wide on purpose: a keyboard plugged into the
+  /// tablet types into every tab, so a new one must not raise the soft
+  /// keyboard either.
+  ///
+  /// Latched for the run of the app rather than expiring. Android tells
+  /// Flutter nothing when a keyboard is unplugged, and the only signals we
+  /// could read — no keys currently held, or a while since the last one — are
+  /// true between every two keystrokes, so a reset built on them would put the
+  /// double straight back. Latched is also what a user predicts: the soft
+  /// keyboard stays out of the way until the keyboard button is pressed, and
+  /// one press is the whole way back.
   static var _hardwareKeyboard = false;
 
   final _pad = CursorPad();
@@ -113,22 +122,41 @@ class TerminalTextInputState extends State<TerminalTextInput>
   /// Brings the keyboard back after it has been dismissed. The view below
   /// already holds focus at that point, so focus alone will not do it.
   ///
-  /// An ask this plain — a tap on the terminal — outranks the hardware
-  /// keyboard, so a tablet taken out of its keyboard case types again; the
-  /// next hardware key shuts the connection right back.
+  /// Once a hardware key has been seen this run, a tap gives focus and no
+  /// keyboard. A tap used to outrank the hardware keyboard, and that is what
+  /// was left of the double: reopening the connection let the very next key
+  /// through both of Android's paths again, so the first key after every tap
+  /// arrived twice — and the terminal is tapped all the time, to focus a pane
+  /// or let go of a selection. [showKeyboard] is the way back.
   void requestKeyboard() {
-    _hardwareKeyboard = false;
-    if (widget.focusNode.hasFocus) {
-      _openConnection();
-    } else {
+    if (!widget.focusNode.hasFocus) {
       widget.focusNode.requestFocus();
+    } else if (!_hardwareKeyboard) {
+      _openConnection();
     }
   }
 
+  /// The one ask that outranks the hardware keyboard: the keyboard button in
+  /// the key bar, for a tablet taken out of its keyboard case — or anyone who
+  /// wants the soft keyboard on purpose.
+  ///
+  /// The next hardware key shuts the connection again, and that one key can
+  /// still arrive twice: Android has decided both deliveries before any Dart
+  /// runs, and the close only reaches the platform — and the IME, which is a
+  /// process of its own — afterwards. Every key after it is single. This
+  /// button is now the only thing that opens the connection once a hardware
+  /// keyboard has typed, so it is the only moment that can happen, and the
+  /// user asked for it.
+  void showKeyboard() {
+    _hardwareKeyboard = false;
+    requestKeyboard();
+  }
+
   /// Focus raises the keyboard only when it was asked for, the way a text
-  /// field decides: a tap, a new shell, a tmux pane taking over. A tab shown
-  /// again takes the keyboard token straight back, and gets focus alone,
-  /// which is all a hardware keyboard needs: xterm2 reads its keys itself.
+  /// field decides: a new shell, a tmux pane taking over. A tab shown again
+  /// takes the keyboard token straight back, and gets focus alone, which is
+  /// all a hardware keyboard needs: xterm2 reads its keys itself. Once one
+  /// has typed, no focus raises it — only [showKeyboard] does.
   void _onFocusChange() {
     if (!widget.focusNode.hasFocus) {
       _closeConnection();
