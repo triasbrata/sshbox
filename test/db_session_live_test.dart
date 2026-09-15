@@ -59,6 +59,75 @@ void main() {
     expect(shown.note, 'SELECT 2');
   });
 
+  test('PostgreSQL: saves what the grid changed, all or nothing', () async {
+    final tunnel = await _dial(55432);
+    if (tunnel == null) return printOnFailure('skipped: no server on 55432');
+    final session = await DbSession.over(
+      tunnel,
+      const DbConnection(
+        id: 'pg',
+        kind: DbKind.postgres,
+        hostId: 'box',
+        port: 55432,
+      ),
+      'pgsecret',
+    );
+    addTearDown(session.close);
+
+    await session.run(
+      'DROP TABLE IF EXISTS "Jeansh Edit", jeansh_nokey; '
+      'CREATE TABLE "Jeansh Edit" '
+      '(id serial PRIMARY KEY, "Name" text, n int DEFAULT 7); '
+      "INSERT INTO \"Jeansh Edit\" (\"Name\") VALUES ('ann'), ('bob'), ('cy'); "
+      'CREATE TABLE jeansh_nokey (x int)',
+    );
+    addTearDown(() => session.run('DROP TABLE "Jeansh Edit", jeansh_nokey'));
+
+    // No primary key, or two tables: nothing to edit.
+    expect((await session.run('SELECT * FROM jeansh_nokey')).table, isNull);
+    expect(
+      (await session.run(
+        'SELECT e.id, k.x FROM "Jeansh Edit" e, jeansh_nokey k',
+      )).table,
+      isNull,
+    );
+
+    // An alias still edits its own column.
+    final shown = await session.run(
+      'SELECT id, "Name" AS who FROM "Jeansh Edit" ORDER BY id',
+    );
+    expect(shown.table?.name, 'public."Jeansh Edit"');
+    expect(shown.table?.columns, ['id', '"Name"']);
+    expect(shown.table?.key, [0]);
+
+    final changes = DbChanges()
+      ..set(shown.rows, 0, 1, r"it's a \ back\slash")
+      ..set(shown.rows, 1, 1, null)
+      ..deleted.add(2)
+      ..added.add({1: 'dee'})
+      ..added.add({});
+    await session.run(changes.sql(shown));
+    final all = 'SELECT id, "Name", n FROM "Jeansh Edit" ORDER BY id';
+    final saved = [
+      ['1', r"it's a \ back\slash", '7'],
+      ['2', null, '7'],
+      ['4', 'dee', '7'],
+      ['5', null, '7'],
+    ];
+    expect((await session.run(all)).rows, saved);
+
+    // One change refused makes none of them.
+    final again = await session.run('SELECT * FROM "Jeansh Edit" ORDER BY id');
+    final refused = DbChanges()
+      ..set(again.rows, 0, 1, 'not kept')
+      ..set(again.rows, 1, 2, 'not a number');
+    await expectLater(
+      session.run(refused.sql(again)),
+      throwsA(isA<Exception>()),
+    );
+    expect((await session.run(all)).rows, saved);
+  });
+
   test('MongoDB: lists collections by database and finds in one', () async {
     final tunnel = await _dial(57017);
     if (tunnel == null) return printOnFailure('skipped: no server on 57017');

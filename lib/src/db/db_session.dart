@@ -200,6 +200,7 @@ class DbResult {
     this.rows = const [],
     this.note = '',
     this.details,
+    this.table,
   });
 
   final List<String> columns;
@@ -211,6 +212,9 @@ class DbResult {
   /// Each row's document, as indented JSON: MongoDB's.
   final List<String>? details;
 
+  /// The table its rows can be edited in, if any.
+  final DbTable? table;
+
   /// Row [index] as indented JSON: its document, or its columns and values
   /// as the database gave them.
   ///
@@ -221,6 +225,79 @@ class DbResult {
       const JsonEncoder.withIndent('  ').convert({
         for (var c = 0; c < columns.length; c++) columns[c]: rows[index][c],
       });
+}
+
+/// A table a result's rows can be edited in: PostgreSQL's, when every
+/// column is the table's and its primary key is among them.
+class DbTable {
+  const DbTable({required this.name, required this.columns, required this.key});
+
+  /// With its schema, and quoted: `public."Jeansh People"`.
+  final String name;
+
+  /// Each result column's own name in the table, quoted: an alias's too.
+  final List<String> columns;
+
+  /// Which result columns hold the primary key.
+  final List<int> key;
+}
+
+/// What the grid has changed in a [DbResult] and not saved yet. It goes with
+/// the result: a run, or a tap on a table, reads the rows afresh.
+class DbChanges {
+  /// Row, then column, then its new value: null for NULL.
+  final edits = <int, Map<int, String?>>{};
+  final deleted = <int>{};
+
+  /// Each new row's columns given a value. The rest take their default.
+  final added = <Map<int, String?>>[];
+
+  int get count => {...edits.keys, ...deleted}.length + added.length;
+
+  bool get isEmpty => count == 0;
+
+  /// Column [c] of row [r] set to [value]: no change when [rows] hold it.
+  void set(List<List<String?>> rows, int r, int c, String? value) {
+    final cells = edits[r] ??= {};
+    if (value == rows[r][c]) {
+      cells.remove(c);
+      if (cells.isEmpty) edits.remove(r);
+    } else {
+      cells[c] = value;
+    }
+  }
+
+  /// The statements that make these changes in [result]'s table, to run as
+  /// one transaction: deletes, updates, then inserts, each row found by its
+  /// primary key as it was read.
+  String sql(DbResult result) {
+    final table = result.table!;
+    String where(int r) => [
+      for (final c in table.key)
+        '${table.columns[c]} = ${_literal(result.rows[r][c])}',
+    ].join(' AND ');
+    return [
+      for (final r in deleted) 'DELETE FROM ${table.name} WHERE ${where(r)};',
+      for (final MapEntry(key: r, value: cells) in edits.entries)
+        if (!deleted.contains(r))
+          'UPDATE ${table.name} SET ${[
+            for (final MapEntry(key: c, :value) in cells.entries)
+              '${table.columns[c]} = ${_literal(value)}',
+          ].join(', ')} WHERE ${where(r)};',
+      for (final cells in added)
+        cells.isEmpty
+            ? 'INSERT INTO ${table.name} DEFAULT VALUES;'
+            : 'INSERT INTO ${table.name} '
+                  '(${[for (final c in cells.keys) table.columns[c]].join(', ')}) '
+                  'VALUES (${cells.values.map(_literal).join(', ')});',
+    ].join('\n');
+  }
+
+  /// [value] as an escape string, which reads the same whatever
+  /// standard_conforming_strings says.
+  static String _literal(String? value) => value == null
+      ? 'NULL'
+      : "E'${value.replaceAll(r'\', r'\\').replaceAll("'", "''")}'";
 }
 
 /// An open database, and the SSH connection it goes through: what the
@@ -417,7 +494,50 @@ class _PostgresSession extends DbSession {
         for (final result in results) result.tag,
         if (shown.truncated) 'first ${PostgresClient.maxRows} rows shown',
       ].join(' · '),
+      table: await _table(shown),
     );
+  }
+
+  /// The table [result]'s rows can be edited in: the one every column is
+  /// from, when its primary key is among them. Null otherwise, and when the
+  /// catalog cannot say.
+  Future<DbTable?> _table(PgResult result) async {
+    final tables = {for (final (table, _) in result.origins) table};
+    if (tables.length != 1 || tables.single == 0) return null;
+    final oid = tables.single;
+    try {
+      final [table, attributes] = await _client.query(
+        "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c "
+        'JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $oid; '
+        'SELECT a.attnum, quote_ident(a.attname), a.attnum = ANY(i.indkey) '
+        'FROM pg_attribute a LEFT JOIN pg_index i '
+        'ON i.indrelid = a.attrelid AND i.indisprimary '
+        'WHERE a.attrelid = $oid',
+      );
+      final name = table.rows.firstOrNull?.first;
+      final names = {
+        for (final [number, name, _] in attributes.rows)
+          int.parse(number!): name!,
+      };
+      final key = {
+        for (final [number, _, primary] in attributes.rows)
+          if (primary == 't') int.parse(number!),
+      };
+      final numbers = [for (final (_, number) in result.origins) number];
+      if (name == null || key.isEmpty || !numbers.toSet().containsAll(key)) {
+        return null;
+      }
+      return DbTable(
+        name: name,
+        columns: [for (final number in numbers) names[number]!],
+        key: [
+          for (final (c, number) in numbers.indexed)
+            if (key.contains(number)) c,
+        ],
+      );
+    } on DbException {
+      return null;
+    }
   }
 
   @override

@@ -7,10 +7,12 @@ import '../session/terminal_session.dart' show Tunnel;
 import 'wire.dart';
 
 /// One statement's result: its columns and rows as PostgreSQL writes them
-/// in text, its command tag (`SELECT 3`, `UPDATE 1`), and whether rows past
-/// [PostgresClient.maxRows] were dropped.
+/// in text, where each column is from (its table's oid and its number
+/// there, zeros for one that is no table's), its command tag (`SELECT 3`,
+/// `UPDATE 1`), and whether rows past [PostgresClient.maxRows] were dropped.
 typedef PgResult = ({
   List<String> columns,
+  List<(int, int)> origins,
   List<List<String?>> rows,
   String tag,
   bool truncated,
@@ -119,6 +121,7 @@ class PostgresClient {
     _send('Q', [...utf8.encode(sql), 0]);
     final results = <PgResult>[];
     var columns = <String>[];
+    var origins = <(int, int)>[];
     var rows = <List<String?>>[];
     var truncated = false;
     String? error;
@@ -126,7 +129,7 @@ class PostgresClient {
       final (type, data) = await _message();
       switch (type) {
         case 'T':
-          columns = _columns(data);
+          (columns, origins) = _columns(data);
           rows = [];
           truncated = false;
         case 'D':
@@ -138,11 +141,13 @@ class PostgresClient {
         case 'C':
           results.add((
             columns: columns,
+            origins: origins,
             rows: rows,
             tag: _strings(data).firstOrNull ?? '',
             truncated: truncated,
           ));
           columns = [];
+          origins = [];
           rows = [];
           truncated = false;
         case 'E':
@@ -187,17 +192,20 @@ class PostgresClient {
     return out;
   }
 
-  /// A RowDescription's column names: each is followed by 18 bytes of its
-  /// table and type.
-  static List<String> _columns(Uint8List data) {
+  /// A RowDescription's column names, and where each is from: after its
+  /// name, its table's oid and its number there, then 12 bytes of its type.
+  static (List<String>, List<(int, int)>) _columns(Uint8List data) {
+    final view = ByteData.sublistView(data);
     final names = <String>[];
+    final origins = <(int, int)>[];
     var at = 2;
-    for (var i = ByteData.sublistView(data).getInt16(0); i > 0; i--) {
+    for (var i = view.getInt16(0); i > 0; i--) {
       final end = data.indexOf(0, at);
       names.add(utf8.decode(data.sublist(at, end), allowMalformed: true));
+      origins.add((view.getUint32(end + 1), view.getInt16(end + 5)));
       at = end + 1 + 18;
     }
-    return names;
+    return (names, origins);
   }
 
   static List<String?> _row(Uint8List data) {

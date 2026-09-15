@@ -23,7 +23,8 @@ typedef DbOpener =
 
 /// One database, open: its tables, collections or keys at the side (in a
 /// drawer on a phone), and a box to type SQL, a database command or a Redis
-/// command into, with what it gave back under it: in a grid, or as JSON.
+/// command into, with what it gave back under it: in a grid, or as JSON. A
+/// PostgreSQL table's rows can be changed in the grid, and saved together.
 class DbBrowserPage extends StatefulWidget {
   const DbBrowserPage({
     super.key,
@@ -59,6 +60,13 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
 
   DbResult? _result;
   String? _runError;
+
+  /// The query [_result] came from, which a save runs again.
+  var _shownQuery = '';
+
+  /// What has been changed in [_result] and not saved, or null when it
+  /// cannot be edited.
+  DbChanges? _changes;
 
   /// Whether a result shows as JSON, a card a row, rather than a grid.
   var _asJson = false;
@@ -146,21 +154,30 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
     await _run();
   }
 
-  Future<void> _run() async {
+  /// Runs [query], or what the box holds. Its result drops whatever was
+  /// changed in the one before and not saved.
+  Future<void> _run([String? query]) async {
     final session = _session;
-    final query = _query.text;
-    if (session == null || _running || query.trim().isEmpty) return;
+    final text = query ?? _query.text;
+    if (session == null || _running || text.trim().isEmpty) return;
     setState(() {
       _running = true;
       _runError = null;
     });
     try {
-      final result = await session.run(query);
-      if (mounted) setState(() => _result = result);
+      final result = await session.run(text);
+      if (mounted) {
+        setState(() {
+          _result = result;
+          _shownQuery = text;
+          _changes = result.table == null ? null : DbChanges();
+        });
+      }
     } catch (error) {
       if (mounted) {
         setState(() {
           _result = null;
+          _changes = null;
           _runError = '$error';
         });
       }
@@ -168,6 +185,43 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
       if (mounted) setState(() => _running = false);
     }
   }
+
+  /// Makes every change in one transaction, then reads the rows back. When
+  /// the database refuses one it makes none, and they all stay, to fix or
+  /// discard.
+  Future<void> _save() async {
+    final session = _session;
+    final result = _result;
+    final changes = _changes;
+    if (session == null ||
+        result == null ||
+        changes == null ||
+        changes.isEmpty ||
+        _running) {
+      return;
+    }
+    setState(() => _running = true);
+    try {
+      await session.run(changes.sql(result));
+    } catch (error) {
+      if (mounted) {
+        setState(() => _running = false);
+        showToast(context, 'Not saved\n$error', type: ToastificationType.error);
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _running = false);
+    showToast(
+      context,
+      'Saved ${_count(changes.count)}',
+      type: ToastificationType.success,
+    );
+    await _run(_shownQuery);
+  }
+
+  static String _count(int changes) =>
+      '$changes change${changes == 1 ? '' : 's'}';
 
   @override
   Widget build(BuildContext context) {
@@ -349,21 +403,27 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
     final theme = Theme.of(context);
     final result = _result;
     final error = _runError;
+    // What is changed is edited in the grid, and saved from over it.
+    final changes = _asJson ? null : _changes;
     const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    final note = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-          // Ctrl+Enter runs it from a hardware keyboard; Redis's one line
-          // runs on Enter.
-          child: CallbackShortcuts(
-            bindings: {
-              const SingleActivator(LogicalKeyboardKey.enter, control: true):
-                  _run,
-              const SingleActivator(LogicalKeyboardKey.enter, meta: true): _run,
-            },
+    // From a hardware keyboard, Ctrl+Enter runs the query and Ctrl+S saves
+    // the changes; Redis's one line runs on Enter.
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): _run,
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true): _run,
+        const SingleActivator(LogicalKeyboardKey.keyS, control: true): _save,
+        const SingleActivator(LogicalKeyboardKey.keyS, meta: true): _save,
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: TextField(
               controller: _query,
               style: mono,
@@ -381,70 +441,110 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
               ),
             ),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  result?.note ?? '',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    result?.note ?? '',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: note,
                   ),
                 ),
-              ),
-              if (result != null && result.rows.isNotEmpty) ...[
-                SegmentedButton<bool>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(
-                      value: false,
-                      icon: Icon(Icons.table_rows_outlined),
-                      tooltip: 'Table',
-                    ),
-                    ButtonSegment(
-                      value: true,
-                      icon: Icon(Icons.data_object),
-                      tooltip: 'JSON',
-                    ),
-                  ],
-                  selected: {_asJson},
-                  onSelectionChanged: (picked) =>
-                      setState(() => _asJson = picked.single),
+                if (result != null && result.rows.isNotEmpty) ...[
+                  SegmentedButton<bool>(
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(
+                        value: false,
+                        icon: Icon(Icons.table_rows_outlined),
+                        tooltip: 'Table',
+                      ),
+                      ButtonSegment(
+                        value: true,
+                        icon: Icon(Icons.data_object),
+                        tooltip: 'JSON',
+                      ),
+                    ],
+                    selected: {_asJson},
+                    onSelectionChanged: (picked) =>
+                        setState(() => _asJson = picked.single),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                FilledButton.icon(
+                  onPressed: _running ? null : _run,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Run'),
                 ),
-                const SizedBox(width: 8),
               ],
-              FilledButton.icon(
-                onPressed: _running ? null : _run,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Run'),
-              ),
-            ],
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        _running
-            ? const LinearProgressIndicator()
-            : const Divider(height: 4, thickness: 1),
-        Expanded(
-          child: error != null
-              ? SingleChildScrollView(
-                  padding: const EdgeInsets.all(12),
-                  child: SelectableText(
-                    error,
-                    style: mono.copyWith(color: theme.colorScheme.error),
+          if (changes != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      changes.isEmpty
+                          ? 'Tap a cell to edit it, hold a row to delete it'
+                          : '${_count(changes.count)} not saved',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: note,
+                    ),
                   ),
-                )
-              : result == null
-              ? const SizedBox()
-              : _asJson
-              ? _ResultJson(result)
-              : _ResultGrid(result),
-        ),
-      ],
+                  IconButton(
+                    tooltip: 'Add row',
+                    onPressed: _running
+                        ? null
+                        : () => setState(() => changes.added.add({})),
+                    icon: const Icon(Icons.add),
+                  ),
+                  if (!changes.isEmpty)
+                    TextButton(
+                      onPressed: _running
+                          ? null
+                          : () => setState(() => _changes = DbChanges()),
+                      child: const Text('Discard'),
+                    ),
+                  const SizedBox(width: 4),
+                  FilledButton.icon(
+                    onPressed: _running || changes.isEmpty ? null : _save,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('Save'),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 8),
+          _running
+              ? const LinearProgressIndicator()
+              : const Divider(height: 4, thickness: 1),
+          Expanded(
+            child: error != null
+                ? SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: SelectableText(
+                      error,
+                      style: mono.copyWith(color: theme.colorScheme.error),
+                    ),
+                  )
+                : result == null
+                ? const SizedBox()
+                : _asJson
+                ? _ResultJson(result)
+                : _ResultGrid(
+                    result,
+                    changes: _changes,
+                    update: _running ? null : setState,
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -618,11 +718,20 @@ class _JsonNode extends StatelessWidget {
 }
 
 /// A result's rows under its column names, scrolling both ways. A tap on a
-/// row shows it whole.
+/// row shows it whole; or, when [changes] can be made to it, a tap on a
+/// cell edits it and holding a row deletes it, and what is not saved shows
+/// in colour, new rows on top.
 class _ResultGrid extends StatelessWidget {
-  const _ResultGrid(this.result);
+  const _ResultGrid(this.result, {this.changes, this.update});
 
   final DbResult result;
+
+  /// What has been changed in [result] and not saved, when it can be edited.
+  final DbChanges? changes;
+
+  /// Makes a change and shows it: the page's setState. Null while a save
+  /// runs, so nothing changes under it.
+  final void Function(VoidCallback change)? update;
 
   static const _mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
 
@@ -660,13 +769,92 @@ class _ResultGrid extends StatelessWidget {
     );
   }
 
+  /// Asks for a new value for column [c] of row [d] as shown, new rows
+  /// first.
+  Future<void> _editCell(BuildContext context, int d, int c) async {
+    final changes = this.changes!;
+    final isNew = d < changes.added.length;
+    final r = d - changes.added.length;
+    final cells = isNew
+        ? changes.added[d]
+        : changes.edits[r] ?? const <int, String?>{};
+    final picked = await showDialog<(String?,)>(
+      context: context,
+      builder: (context) => _CellEditor(
+        column: result.columns[c],
+        value: cells.containsKey(c)
+            ? cells[c]
+            : isNew
+            ? null
+            : result.rows[r][c],
+        hint: isNew && !cells.containsKey(c) ? 'DEFAULT' : 'NULL',
+      ),
+    );
+    if (picked == null || !context.mounted) return;
+    update?.call(() {
+      if (isNew) {
+        changes.added[d][c] = picked.$1;
+      } else {
+        changes.set(result.rows, r, c, picked.$1);
+      }
+    });
+  }
+
+  /// Row [d]'s menu, where it was held: show it, and delete or restore it,
+  /// or take a new one out.
+  Future<void> _rowMenu(BuildContext context, int d, Offset at) async {
+    final changes = this.changes!;
+    final isNew = d < changes.added.length;
+    final r = d - changes.added.length;
+    final deleted = changes.deleted.contains(r);
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final action = await showMenu<VoidCallback>(
+      context: context,
+      position: RelativeRect.fromRect(
+        overlay.globalToLocal(at) & Size.zero,
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        if (!isNew)
+          PopupMenuItem(
+            value: () => _showRow(context, r),
+            child: const Text('Show row'),
+          ),
+        PopupMenuItem(
+          value: () => update?.call(() {
+            if (isNew) {
+              changes.added.removeAt(d);
+            } else if (deleted) {
+              changes.deleted.remove(r);
+            } else {
+              changes.deleted.add(r);
+            }
+          }),
+          child: Text(
+            isNew
+                ? 'Remove new row'
+                : deleted
+                ? 'Restore row'
+                : 'Delete row',
+          ),
+        ),
+      ],
+    );
+    // Once the menu is gone, so the row's dialog is not stacked on it.
+    if (context.mounted) action?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final columns = result.columns;
     final rows = result.rows;
     if (columns.isEmpty) return const SizedBox();
-    final muted = theme.colorScheme.onSurfaceVariant;
+    final changes = this.changes;
+    final added = changes?.added ?? const <Map<int, String?>>[];
+    final muted = scheme.onSurfaceVariant;
 
     // Room for its name and the longest of its first 100 values' first
     // lines, between 64 and 320 dp.
@@ -681,26 +869,85 @@ class _ResultGrid extends StatelessWidget {
             .clamp(64.0, 320.0),
     ];
 
-    Widget line(List<String?> values, {bool header = false}) => Row(
-      children: [
-        for (var c = 0; c < columns.length; c++)
-          SizedBox(
-            width: widths[c],
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Text(
-                values[c] ?? 'NULL',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: _mono.copyWith(
-                  fontWeight: header ? FontWeight.bold : null,
-                  color: values[c] == null ? muted : null,
+    // Column [c]'s value, or [empty] for none, on a fill and in its ink
+    // when it is changed.
+    Widget cell(
+      int c,
+      String? value, {
+      bool header = false,
+      String empty = 'NULL',
+      (Color, Color)? fill,
+      bool struck = false,
+    }) {
+      final text = Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Text(
+          value ?? empty,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _mono.copyWith(
+            fontWeight: header ? FontWeight.bold : null,
+            color: value == null ? muted : fill?.$2,
+            decoration: struck ? TextDecoration.lineThrough : null,
+          ),
+        ),
+      );
+      return SizedBox(
+        width: widths[c],
+        child: fill == null ? text : ColoredBox(color: fill.$1, child: text),
+      );
+    }
+
+    Widget line(BuildContext context, int d) {
+      final r = d - added.length;
+      if (changes == null) {
+        return InkWell(
+          onTap: () => _showRow(context, r),
+          child: Row(
+            children: [
+              for (var c = 0; c < columns.length; c++) cell(c, rows[r][c]),
+            ],
+          ),
+        );
+      }
+      final isNew = r < 0;
+      final deleted = changes.deleted.contains(r);
+      final cells = isNew
+          ? added[d]
+          : changes.edits[r] ?? const <int, String?>{};
+      return GestureDetector(
+        onLongPressStart: update == null
+            ? null
+            : (details) => _rowMenu(context, d, details.globalPosition),
+        child: Row(
+          children: [
+            for (var c = 0; c < columns.length; c++)
+              InkWell(
+                onTap: update == null || deleted
+                    ? null
+                    : () => _editCell(context, d, c),
+                child: cell(
+                  c,
+                  cells.containsKey(c)
+                      ? cells[c]
+                      : isNew
+                      ? null
+                      : rows[r][c],
+                  empty: isNew && !cells.containsKey(c) ? 'DEFAULT' : 'NULL',
+                  fill: deleted
+                      ? (scheme.errorContainer, scheme.onErrorContainer)
+                      : isNew
+                      ? (scheme.primaryContainer, scheme.onPrimaryContainer)
+                      : cells.containsKey(c)
+                      ? (scheme.tertiaryContainer, scheme.onTertiaryContainer)
+                      : null,
+                  struck: deleted,
                 ),
               ),
-            ),
-          ),
-      ],
-    );
+          ],
+        ),
+      );
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) => Scrollbar(
@@ -715,17 +962,19 @@ class _ResultGrid extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ColoredBox(
-                  color: theme.colorScheme.surfaceContainerHigh,
-                  child: line(columns, header: true),
+                  color: scheme.surfaceContainerHigh,
+                  child: Row(
+                    children: [
+                      for (var c = 0; c < columns.length; c++)
+                        cell(c, columns[c], header: true),
+                    ],
+                  ),
                 ),
                 const Divider(height: 1),
                 Expanded(
                   child: ListView.builder(
-                    itemCount: rows.length,
-                    itemBuilder: (context, i) => InkWell(
-                      onTap: () => _showRow(context, i),
-                      child: line(rows[i]),
-                    ),
+                    itemCount: added.length + rows.length,
+                    itemBuilder: line,
                   ),
                 ),
               ],
@@ -733,6 +982,72 @@ class _ResultGrid extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A cell's new value: what is typed, or NULL. It pops a record of one, so
+/// a NULL is told apart from Cancel's null.
+class _CellEditor extends StatefulWidget {
+  const _CellEditor({
+    required this.column,
+    required this.value,
+    required this.hint,
+  });
+
+  final String column;
+  final String? value;
+
+  /// What an empty box stands for: NULL, or a new row's DEFAULT.
+  final String hint;
+
+  @override
+  State<_CellEditor> createState() => _CellEditorState();
+}
+
+class _CellEditorState extends State<_CellEditor> {
+  late final _text = TextEditingController(text: widget.value);
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _ok() => Navigator.of(context).pop(
+    // An empty box left empty keeps its NULL or DEFAULT.
+    widget.value == null && _text.text.isEmpty ? null : (_text.text,),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    // One line, where Enter is OK, unless the value has more: a one-line
+    // box takes line breaks out of what is edited in it.
+    final lines = widget.value?.contains('\n') ?? false;
+    return AlertDialog(
+      title: Text(widget.column),
+      content: TextField(
+        controller: _text,
+        autofocus: true,
+        style: _ResultGrid._mono,
+        minLines: 1,
+        maxLines: lines ? 8 : 1,
+        autocorrect: false,
+        enableSuggestions: false,
+        onSubmitted: lines ? null : (_) => _ok(),
+        decoration: InputDecoration(hintText: widget.hint),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop((null,)),
+          child: const Text('Set NULL'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _ok, child: const Text('OK')),
+      ],
     );
   }
 }
