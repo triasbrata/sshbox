@@ -23,8 +23,10 @@ typedef DbOpener =
 
 /// One database, open: its tables, collections or keys at the side (in a
 /// drawer on a phone), and a box to type SQL, a database command or a Redis
-/// command into, with what it gave back under it: in a grid, or as JSON. A
-/// PostgreSQL table's rows can be changed in the grid, and saved together.
+/// command into, with what it gave back under it: in a grid, or as JSON.
+/// Rows the database lets be changed — a PostgreSQL table's, a MongoDB
+/// find's, the key a Redis view shows — are changed in the grid, and saved
+/// together.
 class DbBrowserPage extends StatefulWidget {
   const DbBrowserPage({
     super.key,
@@ -97,6 +99,9 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
       _session = null;
       _error = null;
       _signIn = null;
+      // Its rows would be saved through the connection let go of.
+      _result = null;
+      _changes = null;
     });
     unawaited(old?.close());
     try {
@@ -170,7 +175,7 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
         setState(() {
           _result = result;
           _shownQuery = text;
-          _changes = result.table == null ? null : DbChanges();
+          _changes = result.edit == null ? null : DbChanges();
         });
       }
     } catch (error) {
@@ -186,23 +191,19 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
     }
   }
 
-  /// Makes every change in one transaction, then reads the rows back. When
-  /// the database refuses one it makes none, and they all stay, to fix or
-  /// discard.
+  /// Makes every change, then reads the rows back. When the database
+  /// refuses the first it makes none, and they all stay, to fix or discard;
+  /// one refused after others were made is said.
   Future<void> _save() async {
-    final session = _session;
-    final result = _result;
+    final edit = _result?.edit;
     final changes = _changes;
-    if (session == null ||
-        result == null ||
-        changes == null ||
-        changes.isEmpty ||
-        _running) {
+    if (edit == null || changes == null || changes.isEmpty || _running) {
       return;
     }
     setState(() => _running = true);
+    final String? missed;
     try {
-      await session.run(changes.sql(result));
+      missed = await edit.save(changes);
     } catch (error) {
       if (mounted) {
         setState(() => _running = false);
@@ -214,8 +215,10 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
     setState(() => _running = false);
     showToast(
       context,
-      'Saved ${_count(changes.count)}',
-      type: ToastificationType.success,
+      missed == null ? 'Saved ${_count(changes.count)}' : 'Not all saved\n$missed',
+      type: missed == null
+          ? ToastificationType.success
+          : ToastificationType.warning,
     );
     await _run(_shownQuery);
   }
@@ -404,7 +407,8 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
     final result = _result;
     final error = _runError;
     // What is changed is edited in the grid, and saved from over it.
-    final changes = _asJson ? null : _changes;
+    final edit = _asJson ? null : result?.edit;
+    final changes = edit == null ? null : _changes;
     const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
     final note = theme.textTheme.bodySmall?.copyWith(
       color: theme.colorScheme.onSurfaceVariant,
@@ -482,7 +486,7 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
               ],
             ),
           ),
-          if (changes != null)
+          if (edit != null && changes != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
               child: Row(
@@ -497,13 +501,14 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
                       style: note,
                     ),
                   ),
-                  IconButton(
-                    tooltip: 'Add row',
-                    onPressed: _running
-                        ? null
-                        : () => setState(() => changes.added.add({})),
-                    icon: const Icon(Icons.add),
-                  ),
+                  if (edit.adds)
+                    IconButton(
+                      tooltip: 'Add row',
+                      onPressed: _running
+                          ? null
+                          : () => setState(() => changes.added.add({})),
+                      icon: const Icon(Icons.add),
+                    ),
                   if (!changes.isEmpty)
                     TextButton(
                       onPressed: _running
@@ -772,22 +777,18 @@ class _ResultGrid extends StatelessWidget {
   /// Asks for a new value for column [c] of row [d] as shown, new rows
   /// first.
   Future<void> _editCell(BuildContext context, int d, int c) async {
+    final edit = result.edit!;
     final changes = this.changes!;
     final isNew = d < changes.added.length;
     final r = d - changes.added.length;
-    final cells = isNew
-        ? changes.added[d]
-        : changes.edits[r] ?? const <int, String?>{};
+    final unset = isNew && !changes.added[d].containsKey(c);
     final picked = await showDialog<(String?,)>(
       context: context,
       builder: (context) => _CellEditor(
         column: result.columns[c],
-        value: cells.containsKey(c)
-            ? cells[c]
-            : isNew
-            ? null
-            : result.rows[r][c],
-        hint: isNew && !cells.containsKey(c) ? 'DEFAULT' : 'NULL',
+        value: isNew ? changes.added[d][c] : changes.value(result.rows, r, c),
+        hint: unset ? edit.unset : 'NULL',
+        nulls: edit.nulls,
       ),
     );
     if (picked == null || !context.mounted) return;
@@ -853,6 +854,8 @@ class _ResultGrid extends StatelessWidget {
     final rows = result.rows;
     if (columns.isEmpty) return const SizedBox();
     final changes = this.changes;
+    final locked = result.edit?.locked ?? const <int>{};
+    final unset = result.edit?.unset ?? 'NULL';
     final added = changes?.added ?? const <Map<int, String?>>[];
     final muted = scheme.onSurfaceVariant;
 
@@ -923,17 +926,13 @@ class _ResultGrid extends StatelessWidget {
           children: [
             for (var c = 0; c < columns.length; c++)
               InkWell(
-                onTap: update == null || deleted
+                onTap: update == null || deleted || locked.contains(c)
                     ? null
                     : () => _editCell(context, d, c),
                 child: cell(
                   c,
-                  cells.containsKey(c)
-                      ? cells[c]
-                      : isNew
-                      ? null
-                      : rows[r][c],
-                  empty: isNew && !cells.containsKey(c) ? 'DEFAULT' : 'NULL',
+                  isNew ? cells[c] : changes.value(rows, r, c),
+                  empty: isNew && !cells.containsKey(c) ? unset : 'NULL',
                   fill: deleted
                       ? (scheme.errorContainer, scheme.onErrorContainer)
                       : isNew
@@ -986,20 +985,24 @@ class _ResultGrid extends StatelessWidget {
   }
 }
 
-/// A cell's new value: what is typed, or NULL. It pops a record of one, so
-/// a NULL is told apart from Cancel's null.
+/// A cell's new value: what is typed, or NULL where there is one. It pops a
+/// record of one, so a NULL is told apart from Cancel's null.
 class _CellEditor extends StatefulWidget {
   const _CellEditor({
     required this.column,
     required this.value,
     required this.hint,
+    required this.nulls,
   });
 
   final String column;
   final String? value;
 
-  /// What an empty box stands for: NULL, or a new row's DEFAULT.
+  /// What an empty box stands for: NULL, or a new row's untouched cell.
   final String hint;
+
+  /// Whether the value can be NULL.
+  final bool nulls;
 
   @override
   State<_CellEditor> createState() => _CellEditorState();
@@ -1015,7 +1018,7 @@ class _CellEditorState extends State<_CellEditor> {
   }
 
   void _ok() => Navigator.of(context).pop(
-    // An empty box left empty keeps its NULL or DEFAULT.
+    // An empty box left empty keeps what it stood for.
     widget.value == null && _text.text.isEmpty ? null : (_text.text,),
   );
 
@@ -1038,10 +1041,11 @@ class _CellEditorState extends State<_CellEditor> {
         decoration: InputDecoration(hintText: widget.hint),
       ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop((null,)),
-          child: const Text('Set NULL'),
-        ),
+        if (widget.nulls)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop((null,)),
+            child: const Text('Set NULL'),
+          ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),

@@ -200,7 +200,7 @@ class DbResult {
     this.rows = const [],
     this.note = '',
     this.details,
-    this.table,
+    this.edit,
   });
 
   final List<String> columns;
@@ -212,8 +212,8 @@ class DbResult {
   /// Each row's document, as indented JSON: MongoDB's.
   final List<String>? details;
 
-  /// The table its rows can be edited in, if any.
-  final DbTable? table;
+  /// How its rows are changed, when they can be.
+  final DbEdit? edit;
 
   /// Row [index] as indented JSON: its document, or its columns and values
   /// as the database gave them.
@@ -225,6 +225,34 @@ class DbResult {
       const JsonEncoder.withIndent('  ').convert({
         for (var c = 0; c < columns.length; c++) columns[c]: rows[index][c],
       });
+}
+
+/// How a result's rows are changed: what saves the changes, and what the
+/// grid lets be changed.
+class DbEdit {
+  const DbEdit(
+    this.save, {
+    this.locked = const {},
+    this.nulls = true,
+    this.adds = true,
+    this.unset = 'DEFAULT',
+  });
+
+  /// Makes the changes: null once all are made, or why one was not after
+  /// others were. Throws, with none made, when the first is refused.
+  final Future<String?> Function(DbChanges changes) save;
+
+  /// Columns a tap does not edit: MongoDB's _id, a Redis list's place.
+  final Set<int> locked;
+
+  /// Whether a value can be NULL: not in Redis.
+  final bool nulls;
+
+  /// Whether rows can be added: not to a Redis string.
+  final bool adds;
+
+  /// What a new row's cell shows until it is given a value.
+  final String unset;
 }
 
 /// A table a result's rows can be edited in: PostgreSQL's, when every
@@ -256,6 +284,16 @@ class DbChanges {
 
   bool get isEmpty => count == 0;
 
+  /// The rows edited and not deleted.
+  Iterable<int> get updated => edits.keys.where((r) => !deleted.contains(r));
+
+  /// Column [c] of row [r] as a save leaves it: its edit, or what [rows]
+  /// hold.
+  String? value(List<List<String?>> rows, int r, int c) {
+    final cells = edits[r];
+    return cells != null && cells.containsKey(c) ? cells[c] : rows[r][c];
+  }
+
   /// Column [c] of row [r] set to [value]: no change when [rows] hold it.
   void set(List<List<String?>> rows, int r, int c, String? value) {
     final cells = edits[r] ??= {};
@@ -267,23 +305,21 @@ class DbChanges {
     }
   }
 
-  /// The statements that make these changes in [result]'s table, to run as
-  /// one transaction: deletes, updates, then inserts, each row found by its
-  /// primary key as it was read.
-  String sql(DbResult result) {
-    final table = result.table!;
+  /// The statements that make these changes to [rows] in [table], to run
+  /// as one transaction: deletes, updates, then inserts, each row found by
+  /// its primary key as it was read.
+  String sql(DbTable table, List<List<String?>> rows) {
     String where(int r) => [
       for (final c in table.key)
-        '${table.columns[c]} = ${_literal(result.rows[r][c])}',
+        '${table.columns[c]} = ${_literal(rows[r][c])}',
     ].join(' AND ');
     return [
       for (final r in deleted) 'DELETE FROM ${table.name} WHERE ${where(r)};',
-      for (final MapEntry(key: r, value: cells) in edits.entries)
-        if (!deleted.contains(r))
-          'UPDATE ${table.name} SET ${[
-            for (final MapEntry(key: c, :value) in cells.entries)
-              '${table.columns[c]} = ${_literal(value)}',
-          ].join(', ')} WHERE ${where(r)};',
+      for (final r in updated)
+        'UPDATE ${table.name} SET ${[
+          for (final MapEntry(key: c, :value) in edits[r]!.entries)
+            '${table.columns[c]} = ${_literal(value)}',
+        ].join(', ')} WHERE ${where(r)};',
       for (final cells in added)
         cells.isEmpty
             ? 'INSERT INTO ${table.name} DEFAULT VALUES;'
@@ -494,14 +530,14 @@ class _PostgresSession extends DbSession {
         for (final result in results) result.tag,
         if (shown.truncated) 'first ${PostgresClient.maxRows} rows shown',
       ].join(' · '),
-      table: await _table(shown),
+      edit: await _edit(shown),
     );
   }
 
-  /// The table [result]'s rows can be edited in: the one every column is
-  /// from, when its primary key is among them. Null otherwise, and when the
+  /// The rows edited in their own table: the one every column is from,
+  /// when its primary key is among them. Null otherwise, and when the
   /// catalog cannot say.
-  Future<DbTable?> _table(PgResult result) async {
+  Future<DbEdit?> _edit(PgResult result) async {
     final tables = {for (final (table, _) in result.origins) table};
     if (tables.length != 1 || tables.single == 0) return null;
     final oid = tables.single;
@@ -527,7 +563,7 @@ class _PostgresSession extends DbSession {
       if (name == null || key.isEmpty || !numbers.toSet().containsAll(key)) {
         return null;
       }
-      return DbTable(
+      final target = DbTable(
         name: name,
         columns: [for (final number in numbers) names[number]!],
         key: [
@@ -535,6 +571,11 @@ class _PostgresSession extends DbSession {
             if (key.contains(number)) c,
         ],
       );
+      // One simple query, which PostgreSQL runs as one transaction.
+      return DbEdit((changes) async {
+        await _client.query(changes.sql(target, result.rows));
+        return null;
+      });
     } on DbException {
       return null;
     }
@@ -620,35 +661,139 @@ class _MongoSession extends DbSession {
       );
     }
     final reply = await _client.command(_authSource, command);
-    final List<Object?> documents;
+    final List<Object?> found;
     final String note;
     if (reply['cursor'] case {'id': final id} && final Map cursor) {
-      documents = (cursor['firstBatch'] ?? cursor['nextBatch']) as List? ?? [];
+      found = (cursor['firstBatch'] ?? cursor['nextBatch']) as List? ?? [];
       note =
-          '${documents.length} document${documents.length == 1 ? '' : 's'}'
+          '${found.length} document${found.length == 1 ? '' : 's'}'
           '${id == 0 ? '' : ', more on the server'}';
     } else {
-      documents = [reply];
+      found = [reply];
       note = 'OK';
     }
+    final documents = [
+      for (final document in found)
+        if (document is Map<String, Object?>) document,
+    ];
     final columns = <String>{
-      for (final document in documents)
-        if (document is Map) ...document.keys.cast<String>(),
+      for (final document in documents) ...document.keys,
     }.toList();
     const pretty = JsonEncoder.withIndent('  ');
+    final collection = command['find'];
     return DbResult(
       columns: columns,
       rows: [
         for (final document in documents)
-          if (document is Map)
-            [for (final column in columns) _cell(document[column])],
+          [for (final column in columns) _cell(document[column])],
       ],
       note: note,
-      details: [
-        for (final document in documents)
-          if (document is Map) pretty.convert(document),
-      ],
+      details: [for (final document in documents) pretty.convert(document)],
+      // What a find reads, each document found again by its _id.
+      edit:
+          command.keys.first == 'find' &&
+              collection is String &&
+              documents.every((document) => document.containsKey('_id'))
+          ? _edit(
+              switch (command[r'$db']) {
+                final String db => db,
+                _ => _authSource,
+              },
+              collection,
+              columns,
+              documents,
+            )
+          : null,
     );
+  }
+
+  /// The documents of [collection] in [db], changed by their _id: one
+  /// update, one delete and one insert, sent one after another.
+  ///
+  /// ponytail: no transaction, which a server outside a replica set does
+  /// not have, so a write refused after another was made leaves that one
+  /// made, and says so. Run them in one where a replica set is known.
+  DbEdit _edit(
+    String db,
+    String collection,
+    List<String> columns,
+    List<Map<String, Object?>> documents,
+  ) => DbEdit(
+    (changes) async {
+      Map<String, Object?> fields(
+        Map<int, String?> cells,
+        Map<String, Object?> was,
+      ) => {
+        for (final MapEntry(key: c, value: text) in cells.entries)
+          columns[c]: _typed(text, was[columns[c]]),
+      };
+      Map<String, Object?> id(int r) => {'_id': documents[r]['_id']};
+      final writes = [
+        if (changes.updated.isNotEmpty)
+          {
+            'update': collection,
+            'updates': [
+              for (final r in changes.updated)
+                {
+                  'q': id(r),
+                  'u': {r'$set': fields(changes.edits[r]!, documents[r])},
+                },
+            ],
+          },
+        if (changes.deleted.isNotEmpty)
+          {
+            'delete': collection,
+            'deletes': [
+              for (final r in changes.deleted) {'q': id(r), 'limit': 1},
+            ],
+          },
+        if (changes.added.isNotEmpty)
+          {
+            'insert': collection,
+            'documents': [
+              for (final cells in changes.added) fields(cells, const {}),
+            ],
+          },
+      ];
+      var made = false;
+      for (final write in writes) {
+        final Map<String, Object?> reply;
+        try {
+          reply = await _client.command(db, write);
+        } on DbException catch (error) {
+          if (!made) rethrow;
+          return error.message;
+        }
+        // A write refused still comes back ok, with why in writeErrors.
+        if (reply['writeErrors'] case [
+          {'index': final int index, 'errmsg': final String message},
+          ...
+        ]) {
+          if (!made && index == 0) throw DbException(message);
+          return message;
+        }
+        made = true;
+      }
+      return null;
+    },
+    locked: {
+      for (final (c, name) in columns.indexed)
+        if (name == '_id') c,
+    },
+    unset: 'NULL',
+  );
+
+  /// What [text] typed into a field that held [was] becomes: a string stays
+  /// a string, anything else is read as JSON when it can be, and a double
+  /// stays a double.
+  static Object? _typed(String? text, Object? was) {
+    if (text == null || was is String) return text;
+    try {
+      final value = jsonDecode(text);
+      return was is double && value is int ? value.toDouble() : value;
+    } on FormatException {
+      return text;
+    }
   }
 
   @override
@@ -718,36 +863,163 @@ class _RedisSession extends DbSession {
       throw const DbException('Type a command, like GET key.');
     }
     final reply = await _client.command(args);
+    final name = args.first.toUpperCase();
+    final key = args.length > 1 ? args[1] : '';
     if (reply is! List) {
+      final rows = [
+        [reply?.toString()],
+      ];
       return DbResult(
         columns: const ['value'],
-        rows: [
-          [reply?.toString()],
-        ],
+        rows: rows,
         note: reply == null ? '(nil)' : '',
+        edit: name == 'GET' && args.length == 2 ? _string(key, rows) : null,
       );
     }
-    final name = args.first.toUpperCase();
     final scores = args.any((arg) => arg.toUpperCase() == 'WITHSCORES');
     String? cell(Object? value) => value is RedisError ? '$value' : _cell(value);
     if (name == 'HGETALL' || name == 'CONFIG' || scores) {
+      final rows = [
+        for (var i = 0; i + 1 < reply.length; i += 2)
+          [cell(reply[i]), cell(reply[i + 1])],
+      ];
       return DbResult(
         columns: scores ? const ['member', 'score'] : const ['field', 'value'],
-        rows: [
-          for (var i = 0; i + 1 < reply.length; i += 2)
-            [cell(reply[i]), cell(reply[i + 1])],
-        ],
+        rows: rows,
         note: '${reply.length ~/ 2} pairs',
+        edit: name == 'HGETALL' && args.length == 2
+            ? _hash(key, rows)
+            : scores && _ranges.contains(name)
+            ? _zset(key, rows)
+            : null,
       );
     }
+    final rows = [
+      for (var i = 0; i < reply.length; i++) ['${i + 1}', cell(reply[i])],
+    ];
+    final start = args.length == 4 ? int.tryParse(args[2]) : null;
     return DbResult(
       columns: const ['#', 'value'],
-      rows: [
-        for (var i = 0; i < reply.length; i++) ['${i + 1}', cell(reply[i])],
-      ],
+      rows: rows,
       note: '${reply.length} item${reply.length == 1 ? '' : 's'}',
+      edit: name == 'SMEMBERS' && args.length == 2
+          ? _set(key, rows)
+          : name == 'LRANGE' && start != null && start >= 0
+          ? _list(key, start, rows)
+          : null,
     );
   }
+
+  /// What reads a sorted set's members with their scores.
+  static const _ranges = {
+    'ZRANGE',
+    'ZREVRANGE',
+    'ZRANGEBYSCORE',
+    'ZREVRANGEBYSCORE',
+  };
+
+  /// Rows saved as the Redis commands [commands] makes of the changes, sent
+  /// as one MULTI … EXEC.
+  DbEdit _edit(
+    List<List<String>> Function(DbChanges changes) commands, {
+    Set<int> locked = const {},
+    bool adds = true,
+  }) => DbEdit(
+    (changes) async {
+      final failed = (await _client.transaction(
+        commands(changes),
+      )).whereType<RedisError>();
+      return failed.isEmpty ? null : failed.join('\n');
+    },
+    locked: locked,
+    nulls: false,
+    adds: adds,
+    unset: '',
+  );
+
+  /// GET's string: set, keeping its time to live, or deleted.
+  DbEdit _string(String key, List<List<String?>> rows) => _edit(
+    adds: false,
+    (changes) => [
+      if (changes.deleted.isNotEmpty)
+        ['DEL', key]
+      else
+        ['SET', key, changes.value(rows, 0, 0) ?? '', 'KEEPTTL'],
+    ],
+  );
+
+  /// A hash's fields and values, a field renamed too. What goes goes
+  /// first, so two fields swapped both land.
+  DbEdit _hash(String key, List<List<String?>> rows) => _edit((changes) {
+    String now(int r, int c) => changes.value(rows, r, c) ?? '';
+    final renamed = changes.updated.where(
+      (r) => changes.edits[r]!.containsKey(0),
+    );
+    return [
+      for (final r in {...changes.deleted, ...renamed})
+        ['HDEL', key, rows[r][0] ?? ''],
+      for (final r in changes.updated) ['HSET', key, now(r, 0), now(r, 1)],
+      for (final cells in changes.added)
+        ['HSET', key, cells[0] ?? '', cells[1] ?? ''],
+    ];
+  });
+
+  /// A sorted set's members and scores, a member renamed too.
+  DbEdit _zset(String key, List<List<String?>> rows) => _edit((changes) {
+    String now(int r, int c) => changes.value(rows, r, c) ?? '';
+    final renamed = changes.updated.where(
+      (r) => changes.edits[r]!.containsKey(0),
+    );
+    return [
+      for (final r in {...changes.deleted, ...renamed})
+        ['ZREM', key, rows[r][0] ?? ''],
+      for (final r in changes.updated)
+        ['ZADD', key, _score(now(r, 1)), now(r, 0)],
+      for (final cells in changes.added)
+        ['ZADD', key, _score(cells[1] ?? ''), cells[0] ?? ''],
+    ];
+  });
+
+  /// A set's members: one changed is the old taken out and the new put in.
+  DbEdit _set(String key, List<List<String?>> rows) => _edit(
+    locked: const {0},
+    (changes) => [
+      for (final r in {...changes.deleted, ...changes.updated})
+        ['SREM', key, rows[r][1] ?? ''],
+      for (final r in changes.updated)
+        ['SADD', key, changes.value(rows, r, 1) ?? ''],
+      for (final cells in changes.added) ['SADD', key, cells[1] ?? ''],
+    ],
+  );
+
+  /// A list's items from [start], by their place. Deleted ones are marked,
+  /// then all taken out at once, so none moves another's place first.
+  DbEdit _list(String key, int start, List<List<String?>> rows) => _edit(
+    locked: const {0},
+    (changes) {
+      final mark = 'jeansh:deleted:${DateTime.now().microsecondsSinceEpoch}';
+      return [
+        for (final r in changes.updated)
+          ['LSET', key, '${start + r}', changes.value(rows, r, 1) ?? ''],
+        for (final r in changes.deleted) ['LSET', key, '${start + r}', mark],
+        if (changes.deleted.isNotEmpty) ['LREM', key, '0', mark],
+        if (changes.added.isNotEmpty)
+          ['RPUSH', key, for (final cells in changes.added) cells[1] ?? ''],
+      ];
+    },
+  );
+
+  /// [score] as ZADD reads it, or why not, before anything is sent: a
+  /// member renamed is taken out first, and must not be lost to a typo.
+  static String _score(String score) =>
+      score.trim() == score &&
+          (double.tryParse(score)?.isNaN == false ||
+              RegExp(r'^[+-]?inf$', caseSensitive: false).hasMatch(score))
+      ? score
+      : throw DbException(
+          '"$score" is not a score: a sorted set scores its members with '
+          'numbers.',
+        );
 
   @override
   Future<void> _closeClient() => _client.close();

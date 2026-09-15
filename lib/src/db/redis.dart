@@ -52,6 +52,31 @@ class RedisClient {
     return reply;
   });
 
+  /// Runs [commands] between MULTI and EXEC, sent at once so nothing else
+  /// on this connection lands among them: EXEC's replies, a [RedisError]
+  /// for each that failed as it ran. Throws, with none run, when Redis
+  /// refuses one as it is queued.
+  Future<List<Object?>> transaction(List<List<String>> commands) =>
+      _wire.serial(() async {
+        _wire.write([
+          for (final args in [
+            ['MULTI'],
+            ...commands,
+            ['EXEC'],
+          ])
+            ...encode(args),
+        ]);
+        // MULTI's OK, then QUEUED, or why not, for each command.
+        final queued = [
+          for (var i = 0; i <= commands.length; i++) await _reply(),
+        ];
+        final replies = await _reply();
+        if (replies is List) return replies;
+        throw DbException(
+          '${queued.whereType<RedisError>().firstOrNull ?? replies ?? 'Redis ran none of them.'}',
+        );
+      });
+
   Future<void> close() => _wire.close();
 
   static Uint8List encode(List<String> args) {
