@@ -205,6 +205,133 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
+  /// The ports this session has put on the tailnet, each by its address:
+  /// what the key bar's chip counts and its sheet lists.
+  List<({int port, String address})> get _tailnetForwards => [
+    for (final forward in _session.forwarder.forwards)
+      if (forward.address case final address?)
+        (port: forward.port, address: address),
+  ];
+
+  /// Every port on that list, with its address to copy or open: what the
+  /// toast offered for five seconds, kept for as long as the server runs.
+  void _showForwards() {
+    // Held now: Copy and Open act on the page, not on the sheet they are
+    // pressed in.
+    final page = context;
+    final inTab = widget.onOpenWeb;
+    unawaited(
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        builder: (context) {
+          final theme = Theme.of(context);
+          final muted = theme.colorScheme.onSurfaceVariant;
+          return SafeArea(
+            // Redrawn as the session's forwards come and go, so a server that
+            // stops leaves the list while it is open.
+            child: ListenableBuilder(
+              listenable: _session,
+              builder: (context, _) {
+                final forwards = _tailnetForwards;
+                return ListView(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.only(bottom: 16),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                      child: Text(
+                        'On your tailnet',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    for (final (:port, :address) in forwards)
+                      ListTile(
+                        contentPadding: const EdgeInsetsDirectional.fromSTEB(
+                          24,
+                          0,
+                          16,
+                          0,
+                        ),
+                        title: Text(
+                          '$port',
+                          style: const TextStyle(
+                            fontFamily: uiMonoFamily,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        subtitle: Text(
+                          address,
+                          style: TextStyle(
+                            fontFamily: uiMonoFamily,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: 'Copy address',
+                              onPressed: () {
+                                unawaited(
+                                  Clipboard.setData(
+                                    ClipboardData(text: 'http://$address'),
+                                  ),
+                                );
+                                showToast(
+                                  page,
+                                  'Copied',
+                                  type: ToastificationType.success,
+                                );
+                              },
+                              icon: const Icon(Icons.copy),
+                            ),
+                            FilledButton.tonalIcon(
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                                unawaited(
+                                  openUrl(
+                                    page,
+                                    Uri.parse('http://$address'),
+                                    inTab: inTab,
+                                  ),
+                                );
+                              },
+                              icon: const Icon(Icons.open_in_new),
+                              label: const Text('Open'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (forwards.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                        child: Text(
+                          'Nothing is on the tailnet now.',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: muted,
+                          ),
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
+                      child: Text(
+                        'Each is listed here until its server stops.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: muted,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   /// Uploads anything handed to the session from outside the terminal page.
   Future<void> _drainShared() async {
     if (_sending != null ||
@@ -593,6 +720,10 @@ class _TerminalPageState extends State<TerminalPage> {
               onPressed: _showKeyboard,
               icon: const Icon(Icons.keyboard_outlined),
             ),
+            // What the session has put on the tailnet, for as long as it is
+            // there: the toast that says so is gone after five seconds.
+            if (_tailnetForwards.isNotEmpty)
+              _ForwardsChip(forwards: _tailnetForwards, onTap: _showForwards),
           ],
         ),
       ),
@@ -718,6 +849,53 @@ class _TerminalPageState extends State<TerminalPage> {
     autoResize: autoResize,
     padding: padding,
   );
+}
+
+/// The key bar's word on what a session has put on the tailnet: the port,
+/// or how many, in the accent. A tap lists them with their addresses.
+class _ForwardsChip extends StatelessWidget {
+  const _ForwardsChip({required this.forwards, required this.onTap});
+
+  final List<({int port, String address})> forwards;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final shape = StadiumBorder(
+      side: BorderSide(color: primary.withValues(alpha: 0.5)),
+    );
+
+    return Material(
+      color: primary.withValues(alpha: 0.14),
+      shape: shape,
+      child: InkWell(
+        customBorder: shape,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(10, 0, 12, 0),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.swap_horiz, size: 16, color: primary),
+              const SizedBox(width: 6),
+              Text(
+                forwards.length == 1
+                    ? '${forwards.single.port} · tailnet'
+                    : '${forwards.length} ports · tailnet',
+                style: TextStyle(
+                  fontFamily: uiMonoFamily,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 const _padding = EdgeInsets.all(6);

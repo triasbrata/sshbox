@@ -520,11 +520,13 @@ class TerminalKeyBar extends StatelessWidget {
         'ctrl' => KeyButton(
             label: 'CTRL',
             active: controller.ctrl,
+            sticky: true,
             onTap: controller.toggleCtrl,
           ),
         'alt' => KeyButton(
             label: 'ALT',
             active: controller.alt,
+            sticky: true,
             onTap: controller.toggleAlt,
           ),
         'space' => _SpacePad(
@@ -699,6 +701,7 @@ class KeyButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.active = false,
+    this.sticky = false,
     this.minWidth = 44,
   });
 
@@ -709,23 +712,36 @@ class KeyButton extends StatelessWidget {
   /// keystroke will do.
   final bool active;
 
+  /// A modifier that stays down for the next key, CTRL or ALT: an outline
+  /// while it is not armed, so it reads as a key of another kind from the
+  /// ones that send something the moment they are pressed.
+  final bool sticky;
+
   final double minWidth;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final foreground =
-        active ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface;
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = active ? scheme.onPrimary : scheme.onSurface;
+    final outlined = sticky && !active;
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(8),
+      side: outlined
+          ? BorderSide(color: scheme.outlineVariant)
+          : BorderSide.none,
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
       child: Material(
         color: active
-            ? theme.colorScheme.primary
-            : theme.colorScheme.chromeKey,
-        borderRadius: BorderRadius.circular(8),
+            ? scheme.primary
+            : outlined
+            ? Colors.transparent
+            : scheme.chromeKey,
+        shape: shape,
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          customBorder: shape,
           onTap: onTap,
           child: Container(
             constraints: BoxConstraints(minWidth: minWidth),
@@ -837,17 +853,20 @@ class _IconKey extends StatelessWidget {
   }
 }
 
+/// A gap between groups of keys. It was a line, which only added noise
+/// between keys that already stand apart; it is still a divider, so Settings
+/// reads the bar it shows the way the terminal lays it out.
 class _KeyDivider extends StatelessWidget {
   const _KeyDivider();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 12, horizontal: 5),
       child: VerticalDivider(
         width: 1,
         thickness: 1,
-        color: Theme.of(context).colorScheme.outlineVariant,
+        color: Colors.transparent,
       ),
     );
   }

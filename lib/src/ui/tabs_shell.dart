@@ -528,7 +528,7 @@ class _TabStripState extends State<TabStrip> {
           cutFirst: tab.kind == TabKind.file ? tab.session.fileTabHost : null,
           page: tab.kind == TabKind.terminal ? terminal : null,
           selected: index + 1 == widget.activeIndex,
-          connected: tab.kind == TabKind.terminal && tab.session.isConnected,
+          link: tab.kind == TabKind.terminal ? _linkOf(tab.session) : null,
           expand: single,
           onTap: () => widget.onSelect(
             tab.session.id,
@@ -554,8 +554,9 @@ class _TabStripState extends State<TabStrip> {
           onClose: () => widget.onCloseDatabase?.call(tab),
         ),
       if (widget.showTransfers)
-        // Only this chip follows the transfers, lit while one is on its way
-        // as a live shell's is; the strip is built again only as tabs change.
+        // Only this chip follows the transfers, its dot lit while one is on
+        // its way as a live shell's is; the strip is built again only as tabs
+        // change.
         ListenableBuilder(
           key: _keys.putIfAbsent(_transfersId, GlobalKey.new),
           listenable: transfers,
@@ -564,7 +565,7 @@ class _TabStripState extends State<TabStrip> {
             label: 'Transfers',
             selected:
                 tabs.length + databases.length + 1 == widget.activeIndex,
-            connected: transfers.anyRunning,
+            link: transfers.anyRunning ? _Link.up : null,
             expand: single,
             onTap: () => widget.onSelectTransfers?.call(),
             onClose: () => widget.onCloseTransfers?.call(),
@@ -615,6 +616,43 @@ class _TabStripState extends State<TabStrip> {
   }
 }
 
+/// How a tab shows what it is connected to, as a dot before its icon: lit
+/// while a shell is up or a transfer is on its way, a ring while a shell
+/// connects, and in the error colour once it has ended.
+enum _Link { up, connecting, down }
+
+/// A shell's [_Link], or none for a tab brought back that has not tried to
+/// connect yet.
+_Link? _linkOf(LiveSession session) => session.isConnected
+    ? _Link.up
+    : session.ended
+    ? _Link.down
+    : session.connecting
+    ? _Link.connecting
+    : null;
+
+class _LinkDot extends StatelessWidget {
+  const _LinkDot(this.link);
+
+  final _Link link;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = link == _Link.down ? scheme.error : scheme.primary;
+    final ring = link == _Link.connecting;
+    return Container(
+      width: 7,
+      height: 7,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: ring ? null : color,
+        border: ring ? Border.all(color: color, width: 1.5) : null,
+      ),
+    );
+  }
+}
+
 class _TabChip extends StatelessWidget {
   const _TabChip({
     super.key,
@@ -624,7 +662,7 @@ class _TabChip extends StatelessWidget {
     required this.selected,
     required this.onTap,
     this.tooltip,
-    this.connected = false,
+    this.link,
     this.expand = false,
     this.onClose,
     this.onReconnect,
@@ -643,7 +681,10 @@ class _TabChip extends StatelessWidget {
   /// which carries its own colour rather than the chip's.
   final Widget? mark;
   final bool selected;
-  final bool connected;
+
+  /// A shell's connection, or a transfer on its way, as a dot before the
+  /// icon; null shows none.
+  final _Link? link;
 
   /// Fill the width the chip is given instead of fitting its name: the name
   /// takes the room and the close button lands at the far end of the pill.
@@ -756,14 +797,11 @@ class _TabChip extends StatelessWidget {
           ),
           child: Row(
             children: [
-              mark ??
-                  Icon(
-                    icon,
-                    size: _iconSize,
-                    color: connected
-                        ? theme.colorScheme.primary
-                        : foreground,
-                  ),
+              if (link case final link?) ...[
+                _LinkDot(link),
+                const SizedBox(width: 6),
+              ],
+              mark ?? Icon(icon, size: _iconSize, color: foreground),
               if (title != null) ...[
                 const SizedBox(width: 6),
                 if (expand)

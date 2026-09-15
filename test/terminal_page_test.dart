@@ -738,6 +738,24 @@ void main() {
       expect(openedWeb, [Uri.parse('http://a.tail1.ts.net:3001')]);
       expect(find.text(said), findsNothing);
     });
+
+    testWidgets('and stays on the key bar once the toast has gone, its sheet '
+        'opening the port beside the shell', (tester) async {
+      await pumpPage(tester);
+      // Past the toast's five seconds, and its slide out.
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump();
+      expect(find.text(said), findsNothing);
+
+      await tester.tap(find.text('3000 · tailnet'));
+      await tester.pumpAndSettle();
+      expect(find.text('a.tail1.ts.net:3001'), findsOneWidget);
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(openedWeb, [Uri.parse('http://a.tail1.ts.net:3001')]);
+    });
   });
 
   group('a forward landing, through the app', () {
