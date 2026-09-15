@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../data/host_repository.dart';
@@ -60,7 +62,11 @@ class LiveSession extends ChangeNotifier {
     this._transport,
     this._notifyKeys,
     this._onNotify,
-  }) {
+    String? tmuxName,
+    bool restored = false,
+  }) : tmuxName = tmuxName ?? _newTmuxName(),
+       _autoConnect = restored,
+       _checkTmux = restored {
     forwarder = TailnetForwarder(
       onChanged: _notify,
       forwardedElsewhere: forwardedElsewhere,
@@ -145,12 +151,52 @@ class LiveSession extends ChangeNotifier {
 
   /// What the tmux session is called on the host. Made once per tab and kept
   /// across reconnects, which is what brings a dropped connection back to the
-  /// same panes. Random rather than [id], which restarts with the app: a new
-  /// tab must not land in a session left behind by an earlier run, or by
-  /// another device.
-  late final tmuxName =
-      'sshbox-${_random.nextInt(1 << 32).toRadixString(36)}';
+  /// same panes, and saved with the tab, which brings it back after the app
+  /// restarts: see [SessionManager.restoreTabs]. Random rather than [id],
+  /// which restarts with the app: a new tab must not land in a session left
+  /// behind by an earlier run, or by another device.
+  final String tmuxName;
   static final _random = math.Random();
+  static String _newTmuxName() =>
+      'sshbox-${_random.nextInt(1 << 32).toRadixString(36)}';
+
+  /// What a saved tmux name must look like to be used: it goes into a
+  /// command on the host.
+  static final tmuxNamePattern = RegExp(r'^sshbox-[0-9a-z]+$');
+
+  /// Brought back from an earlier run and not connected since: see
+  /// [takeAutoConnect].
+  bool _autoConnect;
+
+  /// Whether the next connect asks the host if [tmuxName] is still there
+  /// before attaching, which would otherwise make a new one: a tab brought
+  /// back from an earlier run, until it has connected.
+  bool _checkTmux;
+
+  bool _tmuxGone = false;
+
+  /// This tab's tmux session is no longer on the host: it restarted, or the
+  /// session was ended there. [startNewTmux] makes a new one instead.
+  bool get tmuxGone => _tmuxGone;
+
+  /// True once, for a tab brought back from an earlier run that has not
+  /// connected since: what makes it connect the first time it shows.
+  bool takeAutoConnect() {
+    final auto = _autoConnect;
+    _autoConnect = false;
+    return auto;
+  }
+
+  /// Gives up on the tmux session that went: the next connect makes a new one
+  /// under the same name.
+  void startNewTmux() {
+    _checkTmux = false;
+    _tmuxGone = false;
+  }
+
+  /// Files that were open over this session when the app last went away,
+  /// opened again once it connects: a file tab reads through the connection.
+  final List<String> _restoredFiles = [];
 
   /// Why this host's tmux could not be used, for the page to say once.
   String? _tmuxProblem;
@@ -334,6 +380,7 @@ class LiveSession extends ChangeNotifier {
     (int columns, int rows)? size,
   }) async {
     if (isConnected || _connecting) return;
+    _autoConnect = false;
 
     _wireTerminal();
     if (size != null) _size = size;
@@ -397,6 +444,17 @@ class LiveSession extends ChangeNotifier {
       }
 
       var session = await open(shell: !host.useTmux);
+      if (host.useTmux && _checkTmux && await _tmuxMissing(session)) {
+        await session.dispose();
+        if (current()) {
+          _tmuxGone = true;
+          _error =
+              'The tmux session $tmuxName is no longer on '
+              '${host.displayName}: the host restarted, or the session was '
+              'ended there.';
+        }
+        return;
+      }
       final tmux = host.useTmux ? await _attachTmux(session) : null;
       if (host.useTmux && tmux == null) {
         // The plain shell the host would have had without the switch.
@@ -415,6 +473,12 @@ class LiveSession extends ChangeNotifier {
       }
 
       _tmux = tmux;
+      _checkTmux = false;
+      _tmuxGone = false;
+      for (final path in _restoredFiles) {
+        if (!_openFiles.contains(path)) _openFiles.add(path);
+      }
+      _restoredFiles.clear();
       _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
@@ -495,6 +559,26 @@ class LiveSession extends ChangeNotifier {
     tmux.dispose();
     _tmuxProblem = tmux.problem ?? 'tmux did not answer.';
     return null;
+  }
+
+  /// Whether this tab's tmux session is gone from the host, asked before a
+  /// tab brought back from an earlier run attaches: attaching would make a
+  /// new one. A host that cannot say counts as still having it, and the
+  /// attach says what is wrong.
+  Future<bool> _tmuxMissing(TerminalSession session) async {
+    if (session is! CommandCapable) return false;
+    try {
+      final lines = await (session as CommandCapable)
+          .run(TmuxSession.exists(tmuxName))
+          .toList();
+      final last = lines.lastWhere(
+        (line) => line.trim().isNotEmpty,
+        orElse: () => '',
+      );
+      return last.trim() == 'no';
+    } catch (_) {
+      return false;
+    }
   }
 
   /// tmux ending is this tab's shell ending, however it came about — the last
@@ -1022,7 +1106,15 @@ class SessionManager extends ChangeNotifier {
   /// connects it, and [add] gives it one once it is up, or once its sign-in
   /// has gone to a web tab beside it. [transport] is a test's, as
   /// [LiveSession] takes one.
-  LiveSession create(HostProfile host, {TransportMaker? transport}) {
+  ///
+  /// [tmuxName] and [restored] bring back a tab saved by an earlier run: see
+  /// [restoreTabs].
+  LiveSession create(
+    HostProfile host, {
+    TransportMaker? transport,
+    String? tmuxName,
+    bool restored = false,
+  }) {
     late final LiveSession created;
     created = LiveSession(
       host: host,
@@ -1031,6 +1123,8 @@ class SessionManager extends ChangeNotifier {
       transport: transport,
       notifyKeys: notifyKeys,
       onNotify: onNotify,
+      tmuxName: tmuxName,
+      restored: restored,
     );
     return created;
   }
@@ -1109,6 +1203,127 @@ class SessionManager extends ChangeNotifier {
   Future<void> closeAll() async {
     for (final id in _sessions.keys.toList()) {
       await close(id);
+    }
+  }
+
+  /// Where the open tabs are saved as they change: see [restoreTabs].
+  static const _savedKey = 'sshbox.tabs.v1';
+
+  /// Whether tab changes are saved: from the end of [restoreTabs], so what it
+  /// brings back is not written over first, until [shutdown].
+  bool _saving = false;
+
+  /// What was last written, so an unchanged list is not written again.
+  String? _saved;
+
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    _save();
+  }
+
+  /// The open tabs as they are saved: what finds each again, and nothing
+  /// secret. Each terminal's host and tmux name, its files, and its web
+  /// pages by address alone; then the databases, by id.
+  void _save() {
+    if (!_saving) return;
+    final json = jsonEncode({
+      'sessions': [
+        for (final session in _sessions.values)
+          {
+            'hostId': session.host.id,
+            'tmux': session.tmuxName,
+            'files': [...session._restoredFiles, ...session._openFiles],
+            'web': [
+              for (final web in session._webTabs)
+                if (!web._signIn) ?_savedUrl(web.url),
+            ],
+          },
+      ],
+      'databases': [for (final tab in _dbTabs) tab.db.id],
+    });
+    if (json == _saved) return;
+    _saved = json;
+    unawaited(
+      SharedPreferences.getInstance().then(
+        (prefs) => prefs.setString(_savedKey, json),
+      ),
+    );
+  }
+
+  /// A web page's address as it is saved: without credentials, query or
+  /// fragment, which can carry a token, and never a Tailscale sign-in, whose
+  /// link works once.
+  static String? _savedUrl(Uri url) =>
+      (url.isScheme('http') || url.isScheme('https')) &&
+          url.host != 'login.tailscale.com'
+      ? Uri(
+          scheme: url.scheme,
+          host: url.host,
+          port: url.hasPort ? url.port : null,
+          path: url.path,
+        ).toString()
+      : null;
+
+  /// Brings back the tabs open when the app last went away, as a browser
+  /// does, and saves them from then on as they change. Each terminal comes
+  /// back unconnected, under its old tmux name, and connects the first time
+  /// its tab shows; its files come back once it has. A tab whose host or
+  /// database has been deleted since does not come back. [transport] is a
+  /// test's, as [create] takes one.
+  Future<void> restoreTabs({
+    required List<HostProfile> hosts,
+    required List<DbConnection> databases,
+    TransportMaker? transport,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      final saved =
+          jsonDecode(prefs.getString(_savedKey) ?? '{}')
+              as Map<String, dynamic>;
+      for (final tab in saved['sessions'] as List? ?? const []) {
+        if (tab is! Map<String, dynamic>) continue;
+        final host = hosts.where((host) => host.id == tab['hostId']).firstOrNull;
+        if (host == null) continue;
+        final tmux = tab['tmux'];
+        final session = create(
+          host,
+          transport: transport,
+          tmuxName: tmux is String && LiveSession.tmuxNamePattern.hasMatch(tmux)
+              ? tmux
+              : null,
+          restored: true,
+        );
+        session._restoredFiles.addAll(
+          (tab['files'] as List? ?? const []).whereType<String>(),
+        );
+        for (final url in (tab['web'] as List? ?? const []).whereType<String>()) {
+          final uri = Uri.tryParse(url);
+          if (uri != null && _savedUrl(uri) != null) session.openWeb(uri);
+        }
+        session.addListener(_onSessionChanged);
+        _sessions[session.id] = session;
+      }
+      for (final id in saved['databases'] as List? ?? const []) {
+        final db = databases.where((db) => db.id == id).firstOrNull;
+        if (db == null || _dbTabs.any((tab) => tab.db.id == id)) continue;
+        final host = hosts.where((host) => host.id == db.hostId).firstOrNull;
+        _dbTabs.add(DbTab._(db, db.displayName(host)));
+      }
+    } catch (_) {
+      // A corrupt list costs its tabs, not the app's start.
+    }
+    _saving = true;
+    notifyListeners();
+  }
+
+  /// What the app going away does: every connection is let go, and every
+  /// tmux session left running on its host for its tab to come back to, as
+  /// the tabs were last saved. Only a tab's own close ends its tmux session.
+  Future<void> shutdown() async {
+    _saving = false;
+    for (final session in _sessions.values.toList()) {
+      await session.disconnect();
     }
   }
 }

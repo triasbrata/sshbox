@@ -200,7 +200,13 @@ class _ConnectSheetState extends State<_ConnectSheet> {
           else if (error != null)
             ConnectionError(
               message: error,
-              onRetry: _connect,
+              // A tab brought back after its tmux session went: trying again
+              // finds the same, so it offers a new one.
+              retryLabel: _session.tmuxGone ? 'Start a new session' : null,
+              onRetry: () {
+                if (_session.tmuxGone) _session.startNewTmux();
+                unawaited(_connect());
+              },
               onClose: () => Navigator.of(context).pop(false),
             )
           else if (url != null)

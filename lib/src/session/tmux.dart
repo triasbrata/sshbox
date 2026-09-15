@@ -409,7 +409,24 @@ class TmuxSession {
   /// on stdin, its errors dropped and only its last line kept, so whatever a
   /// profile prints never reaches the channel, let alone control mode.
   static String command(String name) =>
-      "sh -c '"
+      "sh -c '$_findTmux"
+      r'"$t" show -gv update-environment 2>/dev/null | '
+      'grep -q LC_SSHBOX_KEY || '
+      r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
+      r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
+      r'\;; exec "$t" -u -C "$@" '
+      "new-session -A -s $name 2>&1'";
+
+  /// What the host runs to say whether the session called [name] is still
+  /// there, as its last line: `yes` or `no`. `=` makes the name exact, where
+  /// tmux would otherwise take a session whose name only starts with it.
+  static String exists(String name) =>
+      "sh -c '$_findTmux"
+      '"\$t" has-session -t "=$name" 2>/dev/null && echo yes || echo no\'';
+
+  /// Finds tmux as [command] says, into `$t`, or says it is not installed and
+  /// stops.
+  static const _findTmux =
       r'ok() { case $1 in /*) [ -f "$1" ] && [ -x "$1" ];; *) return 1;; esac; }; '
       r't=$(command -v tmux); '
       r'ok "$t" || for t in /opt/homebrew/bin/tmux /usr/local/bin/tmux '
@@ -419,13 +436,7 @@ class TmuxSession {
       r'ok "$t" || t=$("$SHELL" -lc "command -v tmux" </dev/null 2>/dev/null '
       '| tail -n 1); '
       r'ok "$t" || { echo "tmux is not installed on this host (looked on PATH, '
-      'in Homebrew and the other usual places)"; exit 1; }; '
-      r'"$t" show -gv update-environment 2>/dev/null | '
-      'grep -q LC_SSHBOX_KEY || '
-      r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
-      r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
-      r'\;; exec "$t" -u -C "$@" '
-      "new-session -A -s $name 2>&1'";
+      'in Homebrew and the other usual places)"; exit 1; }; ';
 
   /// How far back a pane's history reaches when it is filled in on attach.
   // ponytail: a fixed 2000 lines, a fifth of the plain terminal's 10k,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../data/host_repository.dart';
@@ -137,6 +139,11 @@ class _TabsShellState extends State<TabsShell> {
   /// the page was built afresh, its web page reloaded, its editor read again.
   final Map<String, GlobalKey> _pageKeys = {};
 
+  /// The tabs shown so far, by id. A web or database tab builds its page only
+  /// once it has shown, so the tabs brought back from an earlier run do not
+  /// all load their pages, or open their connections, as the app starts.
+  final Set<String> _shown = {};
+
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
@@ -163,6 +170,7 @@ class _TabsShellState extends State<TabsShell> {
           ? widget.sessions.activeLine
           : null,
     ),
+    TabKind.web when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
     TabKind.web => WebPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       initialUrl: tab.web!.url,
@@ -173,7 +181,9 @@ class _TabsShellState extends State<TabsShell> {
 
   /// A database's tab. Its page connects when first built, and lets the
   /// connection go when the tab closes.
-  Widget _databasePage(DbTab tab) => DbBrowserPage(
+  Widget _databasePage(DbTab tab) => !_shown.contains(_dbIdOf(tab))
+      ? const SizedBox.shrink()
+      : DbBrowserPage(
     key: _pageKeys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
     db: tab.db,
     title: tab.title,
@@ -210,6 +220,28 @@ class _TabsShellState extends State<TabsShell> {
                     tab.web == activeWeb,
               ) +
               1;
+    _shown.removeWhere((id) => !ids.contains(id));
+    if (activeIndex > tabs.length) {
+      _shown.add(_dbIdOf(databases[activeIndex - 1 - tabs.length]));
+    } else if (activeIndex > 0) {
+      final tab = tabs[activeIndex - 1];
+      _shown.add(_idOf(tab));
+      // A tab brought back from an earlier run connects the first time it
+      // shows, in its sheet, as a new one does.
+      if (tab.kind == TabKind.terminal && tab.session.takeAutoConnect()) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          unawaited(
+            connectInSheet(
+              context,
+              tab.session,
+              secrets: widget.secrets,
+              inTab: (url) => widget.sessions.openWeb(tab.session.id, url),
+            ),
+          );
+        });
+      }
+    }
 
     return Scaffold(
       body: SafeArea(

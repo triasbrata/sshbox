@@ -8,6 +8,7 @@ import 'package:toastification/toastification.dart';
 
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
+import 'db/db_session.dart';
 import 'models/host_profile.dart';
 import 'notifications/notification_gateway.dart';
 import 'notifications/notify_key.dart';
@@ -62,10 +63,19 @@ class _SshboxAppState extends State<SshboxApp> {
     super.initState();
     _keepAlive.attach();
     sessionLog.follow(_sessions);
+    unawaited(_restoreTabs());
     unawaited(_startNotifications());
     unawaited(_listenForLinks());
     unawaited(_listenForShares());
   }
+
+  /// The tabs open when the app last went away, back as they were: see
+  /// [SessionManager.restoreTabs]. Only this, the one running copy, gets
+  /// here: a second hands its intent over before Dart starts.
+  Future<void> _restoreTabs() async => _sessions.restoreTabs(
+    hosts: await _repository.load(),
+    databases: await loadDatabases(),
+  );
 
   Future<void> _startNotifications() async {
     // Local notifications first: FCM only delivers messages, the display and
@@ -194,7 +204,9 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_linkSubscription?.cancel());
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());
-    unawaited(_sessions.closeAll());
+    // Not closeAll: that would end every tmux session, and save no tabs to
+    // come back to.
+    unawaited(_sessions.shutdown());
     super.dispose();
   }
 

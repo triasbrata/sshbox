@@ -575,12 +575,20 @@ class _TerminalPageState extends State<TerminalPage> {
     if (error != null && !_session.isConnected) {
       return ConnectionError(
         message: error,
-        onRetry: () => connectInSheet(
-          context,
-          _session,
-          secrets: widget.secrets,
-          inTab: widget.onOpenWeb,
-        ),
+        // A tab brought back after its tmux session went: trying again finds
+        // the same, so it offers a new one.
+        retryLabel: _session.tmuxGone ? 'Start a new session' : null,
+        onRetry: () {
+          if (_session.tmuxGone) _session.startNewTmux();
+          unawaited(
+            connectInSheet(
+              context,
+              _session,
+              secrets: widget.secrets,
+              inTab: widget.onOpenWeb,
+            ),
+          );
+        },
       );
     }
 
@@ -904,11 +912,16 @@ class ConnectionError extends StatelessWidget {
     required this.message,
     required this.onRetry,
     this.onClose,
+    this.retryLabel,
   });
 
   final String message;
   final VoidCallback onRetry;
   final VoidCallback? onClose;
+
+  /// What the retry button says instead of Try again, when trying again as
+  /// it was would not help.
+  final String? retryLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -938,7 +951,7 @@ class ConnectionError extends StatelessWidget {
                 FilledButton.icon(
                   onPressed: onRetry,
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Try again'),
+                  label: Text(retryLabel ?? 'Try again'),
                 ),
               ],
             ),
