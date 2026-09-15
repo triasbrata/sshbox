@@ -1,14 +1,17 @@
 package dev.triasbrata.sshbox
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.lang.ref.WeakReference
 
 // Receives files handed to us by another app's share sheet and puts them
 // somewhere Dart can read.
@@ -27,20 +30,53 @@ class MainActivity : FlutterActivity() {
     // A download waiting in the save dialog: Dart's copy, and who to tell.
     private var saving: Pair<File, MethodChannel.Result>? = null
 
-    // A launcher tap that Android answered with a second MainActivity on top
-    // of ours, instead of bringing our task back. It does that when a file
-    // picker or Custom Tab is open over ours and the task was last started or
-    // resumed by an intent other than the launcher's: a share, or a
-    // notification tap that cold-started the app. Finishing at once shows the
-    // task as it was. finish() goes before super.onCreate, which is where
-    // FlutterActivity makes its engine and starts Dart.
+    // One Jeansh at a time, however it was started. A second MainActivity is
+    // a second FlutterEngine: another SessionManager, notification handler
+    // and set of sessions beside the first. Android makes one whenever a
+    // launch misses the running activity: a tap on a stale Jeansh card in
+    // Recents, restored as the root of its old task; a launcher or
+    // notification tap over a file picker or Custom Tab, added on top of our
+    // task when another intent started it; a floating window, split screen or
+    // "new window" started as a task of its own; a sshbox:// link fired
+    // inside another app's task.
+    //
+    // The copy brings the running one's task forward, hands it the intent
+    // through onNewIntent, as singleTop would have, so a link, notification
+    // tap or share still lands, and finishes before super.onCreate, which is
+    // where FlutterActivity makes its engine and starts Dart. As the root of
+    // a task of its own it takes that task along, so no empty card stays in
+    // Recents; anywhere else it leaves the task as it was.
+    //
+    // A relaunch for a config change is no copy: Android destroys the old
+    // instance, which lets go of [live], before it creates the new one.
     override fun onCreate(savedInstanceState: Bundle?) {
-        if (!isTaskRoot && intent.action == Intent.ACTION_MAIN &&
-            intent.hasCategory(Intent.CATEGORY_LAUNCHER)
-        ) {
-            finish()
+        val running = live?.get()?.takeUnless { it.isFinishing || it.isDestroyed }
+        if (running == null) {
+            live = WeakReference(this)
+        } else {
+            // Our own tasks need no permission for this. Failing only leaves
+            // the running one where it was; a crash here would end its sessions.
+            runCatching {
+                getSystemService(ActivityManager::class.java).appTasks
+                    .firstOrNull { it.id() == running.taskId }
+                    ?.moveToFront()
+            }
+            // A card from Recents, or an instance restored after the process
+            // died, carries an old intent rather than a new request: Android
+            // never hands those to a running activity either.
+            if (savedInstanceState == null &&
+                (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
+            ) {
+                running.onNewIntent(intent)
+            }
+            if (isTaskRoot && taskId != running.taskId) finishAndRemoveTask() else finish()
         }
         super.onCreate(savedInstanceState)
+    }
+
+    override fun onDestroy() {
+        if (live?.get() === this) live = null
+        super.onDestroy()
     }
 
     // The copy finished above gets an engine with no plugins that never runs
@@ -78,7 +114,8 @@ class MainActivity : FlutterActivity() {
 
     // A share while we are already running: ShareActivity brings our task
     // forward and, with launchMode singleTop, delivers it here rather than to
-    // a new instance. Dart is listening by now.
+    // a new instance; a copy turned away in onCreate hands its intent over
+    // here too. Dart is listening by now.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -187,10 +224,20 @@ class MainActivity : FlutterActivity() {
     private fun Intent.streamExtras(): List<Uri> =
         getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
 
+    // TaskInfo.taskId came in API 29; before it, persistentId is the same id.
+    @Suppress("DEPRECATION")
+    private fun ActivityManager.AppTask.id(): Int? = taskInfo?.let {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) it.taskId else it.persistentId
+    }
+
     private companion object {
         const val CHANNEL = "sshbox/share"
 
         // Ours alone among the request codes plugins pass through here.
         const val SAVE_AS = 0x5a5e
+
+        // The MainActivity that got past onCreate's check, until it is
+        // destroyed. Every copy lives in this one process, so this sees them all.
+        var live: WeakReference<MainActivity>? = null
     }
 }
