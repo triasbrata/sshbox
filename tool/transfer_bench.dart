@@ -4,17 +4,33 @@
 // Always: the cipher alone, one 32 KB packet at a time, and what that same
 // packet costs opened on a worker isolate instead of this one. With
 // SSHBOX_BENCH_KEY (an unencrypted key) and SSHBOX_BENCH_FILE (a file on the
-// host, 70 MB is the size the lag was seen with): downloads and uploads of
-// that file, each way the app could run them. The host is 127.0.0.1:22 as
-// $USER unless SSHBOX_BENCH_HOST, SSHBOX_BENCH_PORT and SSHBOX_BENCH_USER say
-// otherwise. It trusts the host's key, so point it only at a host you trust,
-// such as an sshd of your own on 127.0.0.1.
+// host): downloads and uploads of that file, each way the app could run them.
+// The host is 127.0.0.1:22 as $USER unless SSHBOX_BENCH_HOST,
+// SSHBOX_BENCH_PORT and SSHBOX_BENCH_USER say otherwise. It trusts the host's
+// key, so point it only at a host you trust, such as an sshd of your own on
+// 127.0.0.1.
 //
 //   JIT with asserts, as the tablet's debug build runs:
 //     dart run --enable-asserts tool/transfer_bench.dart
 //   AOT, as a release build runs:
 //     dart compile exe tool/transfer_bench.dart -o /tmp/transfer_bench
 //     /tmp/transfer_bench
+//
+// Every transfer runs under both event-loop models:
+//
+//   headless    this Dart VM as it is, which turns a zero-delay timer over
+//               175000 times a second.
+//   frame-bound a Flutter app, where a timer is not serviced until the
+//               engine's task runner next runs, about once a 16.7 ms frame.
+//
+// The second model exists because the first hid a bug. Pacing that hands
+// dartssh2 a fixed 32 KB per turn is free headless and a hard ceiling of
+// 32 KB x 60 = 1.9 MB/s in the app, which is what the tablet measured at
+// 1.5-1.6 MB/s while this benchmark reported 22 MB/s. "KB a turn" below is
+// the number that ceiling is made of.
+//
+// The pacing under test is imported from the app, not copied: keeping a copy
+// here in step by hand is what let the ceiling through.
 //
 // "stall" is the longest the event loop went without running a 1 ms timer,
 // which is how long a frame would have waited; "janky" is how many of those
@@ -30,6 +46,7 @@ import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:dartssh2/src/utils/openssh_chacha20_poly1305.dart';
+import 'package:sshbox/src/session/paced_socket.dart';
 
 String get _host => Platform.environment['SSHBOX_BENCH_HOST'] ?? '127.0.0.1';
 int get _port =>
@@ -38,6 +55,61 @@ String get _user =>
     Platform.environment['SSHBOX_BENCH_USER'] ??
     Platform.environment['USER'] ??
     'root';
+
+/// How a socket read is handed to dartssh2.
+enum _Pacing {
+  /// Straight through, as it was before any pacing: fastest, and it holds the
+  /// isolate for as long as the whole read takes to decrypt and frame.
+  none('as is  '),
+
+  /// A fixed 32 KB per event-loop turn — the pacing that shipped and capped
+  /// the tablet at 1.6 MB/s. Kept here as the number to beat.
+  fixed('32 KB  '),
+
+  /// [pacingBudget] of each turn spent handing pieces over, however many that
+  /// takes: what the app does now.
+  budget('budget ');
+
+  const _Pacing(this.label);
+  final String label;
+}
+
+/// A Flutter app's event loop, where a zero-delay timer waits for the
+/// engine's task runner and so is serviced about once a frame.
+class _FrameClock {
+  _FrameClock() {
+    _timer = Timer.periodic(const Duration(microseconds: 16667), (_) {
+      final due = _waiting;
+      _waiting = [];
+      for (final one in due) {
+        one.complete();
+      }
+    });
+  }
+
+  late final Timer _timer;
+  var _waiting = <Completer<void>>[];
+
+  Future<void> next() {
+    final waiter = Completer<void>();
+    _waiting.add(waiter);
+    return waiter.future;
+  }
+
+  void stop() {
+    _timer.cancel();
+    for (final one in _waiting) {
+      one.complete();
+    }
+    _waiting = [];
+  }
+}
+
+/// Counts the turns a transfer stood aside for, so the bytes moved per turn
+/// can be read off against the ceiling that number sets.
+class _Turns {
+  var count = 0;
+}
 
 Future<void> main() async {
   _cipher();
@@ -50,42 +122,61 @@ Future<void> main() async {
   }
   final pem = File(key).readAsStringSync();
 
-  print('\ndownloads (read size x reads in flight):');
-  for (final rtt in [0, 30]) {
-    for (final (chunk, pending) in [
-      (32768, 16),
-      (32755, 16),
-      (32755, 8),
-      (32755, 4),
-    ]) {
-      for (final paced in [false, true]) {
-        await _download(
-          pem,
-          remote,
-          chunk: chunk,
-          pending: pending,
-          paced: paced,
-          rtt: rtt,
-        );
+  for (final framed in [false, true]) {
+    final model = framed ? 'frame-bound (a Flutter app)' : 'headless (this VM)';
+    print('\ndownloads, $model:');
+    for (final rtt in [0, 30]) {
+      for (final pacing in _Pacing.values) {
+        await _download(pem, remote, pacing: pacing, rtt: rtt, framed: framed);
       }
     }
   }
 
-  print('\nuploads:');
+  // What the budget buys and what it costs. Throughput follows it and so do
+  // the stalls, so this is the one number the whole change turns on.
+  print('\nthe budget to dial (frame-bound, rtt 0 ms):');
+  for (final ms in [2, 3, 4, 5, 8]) {
+    await _download(
+      pem,
+      remote,
+      pacing: _Pacing.budget,
+      rtt: 0,
+      framed: true,
+      budget: Duration(milliseconds: ms),
+    );
+  }
+
+  // Downloads ask for 16 reads at once. Uploads turned out to want far more
+  // than that on a link with any latency, so the same question is worth
+  // asking here.
+  print('\ndownload reads in flight (frame-bound, rtt 30 ms):');
+  for (final pending in [16, 32, 64]) {
+    await _download(
+      pem,
+      remote,
+      pacing: _Pacing.budget,
+      rtt: 30,
+      framed: true,
+      pending: pending,
+    );
+  }
+
   final local = await _fetch(pem, remote);
   try {
-    for (final rtt in [0, 30]) {
-      await _upload(pem, local, remote, streamed: false, paced: false, rtt: rtt);
-      for (final pending in [16, 8]) {
-        await _upload(
-          pem,
-          local,
-          remote,
-          streamed: true,
-          pending: pending,
-          paced: true,
-          rtt: rtt,
-        );
+    for (final framed in [false, true]) {
+      final model = framed ? 'frame-bound (a Flutter app)' : 'headless (this VM)';
+      print('\nuploads, $model (writes in flight):');
+      for (final rtt in [0, 30]) {
+        for (final pending in [16, 32, 64]) {
+          await _upload(
+            pem,
+            local,
+            remote,
+            pending: pending,
+            rtt: rtt,
+            framed: framed,
+          );
+        }
       }
     }
   } finally {
@@ -145,7 +236,8 @@ Future<void> _isolates() async {
   ByteData.sublistView(plain).setUint32(0, body);
   plain[4] = 8;
   final sealed = [
-    for (var i = 0; i < 4; i++) OpenSSHChaCha20Poly1305(key).encryptPacket(plain, i),
+    for (var i = 0; i < 4; i++)
+      OpenSSHChaCha20Poly1305(key).encryptPacket(plain, i),
   ];
   // Its own copy each turn, as a socket read hands one over.
   Uint8List fresh(int i) => Uint8List.fromList(sealed[i % 4]);
@@ -245,12 +337,22 @@ void _openOnWorker(SendPort toMain) {
 Future<void> _download(
   String pem,
   String remote, {
-  required int chunk,
-  required int pending,
-  required bool paced,
+  required _Pacing pacing,
   required int rtt,
+  required bool framed,
+  Duration budget = pacingBudget,
+  int pending = 64,
 }) async {
-  final client = await _connect(pem, paced: paced, rtt: rtt);
+  final frames = framed ? _FrameClock() : null;
+  final turns = _Turns();
+  final client = await _connect(
+    pem,
+    pacing: pacing,
+    rtt: rtt,
+    frames: frames,
+    turns: turns,
+    budget: budget,
+  );
   final target = File('${Directory.systemTemp.path}/sshbox-bench-$pid');
   try {
     final sftp = await client.sftp();
@@ -258,28 +360,33 @@ Future<void> _download(
     final sink = target.openWrite();
     final stalls = _Stalls()..start();
     final clock = Stopwatch()..start();
+    // What the app asks for: see SftpFileBrowser.download.
     final size = await file.downloadTo(
       sink,
-      chunkSize: chunk,
+      chunkSize: 32 * 1024,
       maxPendingRequests: pending,
     );
     await sink.close();
     final took = clock.elapsedMicroseconds;
+    final dialled = pacing == _Pacing.budget
+        ? '${budget.inMilliseconds}ms x$pending'
+        : '${pacing.label}x$pending';
     print(
-      '  rtt ${rtt}ms ${chunk}x$pending ${paced ? 'paced ' : 'as is '} '
-      '${_rate(size, took)}  ${stalls.stop(took)}',
+      '  rtt ${rtt}ms ${dialled.padRight(11)} ${_rate(size, took)}  '
+      '${_perTurn(size, turns.count)}  ${stalls.stop(took)}',
     );
     await file.close();
     sftp.close();
   } finally {
     client.close();
+    frames?.stop();
     if (target.existsSync()) target.deleteSync();
   }
 }
 
 /// A copy of [remote] on this machine, to upload.
 Future<String> _fetch(String pem, String remote) async {
-  final client = await _connect(pem, paced: false, rtt: 0);
+  final client = await _connect(pem, pacing: _Pacing.none, rtt: 0);
   final target = File('${Directory.systemTemp.path}/sshbox-bench-up-$pid');
   try {
     final sftp = await client.sftp();
@@ -295,18 +402,31 @@ Future<String> _fetch(String pem, String remote) async {
   return target.path;
 }
 
-/// [streamed] false is what the app did before: 256 KB read at a time and
-/// handed to writeBytes, whose defaults put 64 writes of 16 KB in flight.
+/// The app's upload: dartssh2's streaming writer, the local file read 64 KB
+/// at a time and cut into packets that fit the 32 KB a host takes.
+///
+/// Always under the budget pacing, because that is what the app dials now.
+/// The interesting number here is [pending]: the acknowledgements that free
+/// the next write come back through the paced socket, so if an upload is
+/// gated by turns rather than by the link, more writes in flight is what
+/// moves it.
 Future<void> _upload(
   String pem,
   String local,
   String remote, {
-  required bool streamed,
-  int pending = 64,
-  required bool paced,
+  required int pending,
   required int rtt,
+  required bool framed,
 }) async {
-  final client = await _connect(pem, paced: paced, rtt: rtt);
+  final frames = framed ? _FrameClock() : null;
+  final turns = _Turns();
+  final client = await _connect(
+    pem,
+    pacing: _Pacing.budget,
+    rtt: rtt,
+    frames: frames,
+    turns: turns,
+  );
   final target = '$remote.bench-upload-$pid';
   try {
     final sftp = await client.sftp();
@@ -319,44 +439,47 @@ Future<void> _upload(
     final size = File(local).lengthSync();
     final stalls = _Stalls()..start();
     final clock = Stopwatch()..start();
-    if (streamed) {
-      await file.write(
-        File(local).openRead().cast<Uint8List>(),
-        chunkSize: 32 * 1024 - 64,
-        maxPendingRequests: pending,
-      );
-    } else {
-      final handle = await File(local).open();
-      var offset = 0;
-      while (true) {
-        final chunk = await handle.read(256 * 1024);
-        if (chunk.isEmpty) break;
-        await file.writeBytes(chunk, offset: offset);
-        offset += chunk.length;
-      }
-      await handle.close();
-    }
+    await file.write(
+      File(local).openRead().cast<Uint8List>(),
+      chunkSize: 32 * 1024 - 64,
+      maxPendingRequests: pending,
+    );
     final took = clock.elapsedMicroseconds;
     print(
-      '  rtt ${rtt}ms ${streamed ? 'streamed x$pending' : '256 KB writeBytes'}'
-      '${paced ? ' paced' : ''}  ${_rate(size, took)}  ${stalls.stop(took)}',
+      '  rtt ${rtt}ms x$pending${pending < 100 ? ' ' : ''}    '
+      '${_rate(size, took)}  ${_perTurn(size, turns.count)}  '
+      '${stalls.stop(took)}',
     );
     await file.close();
     await sftp.remove(target);
     sftp.close();
   } finally {
     client.close();
+    frames?.stop();
   }
 }
 
 Future<SSHClient> _connect(
   String pem, {
-  required bool paced,
+  required _Pacing pacing,
   required int rtt,
+  _FrameClock? frames,
+  _Turns? turns,
+  Duration budget = pacingBudget,
 }) async {
   final socket = await SSHSocket.connect(_host, _port);
   var stream = _late(socket.stream, Duration(milliseconds: rtt));
-  if (paced) stream = _pace(stream);
+  Future<void> yieldTurn() {
+    turns?.count++;
+    return frames == null ? nextTurn() : frames.next();
+  }
+
+  stream = switch (pacing) {
+    _Pacing.none => stream,
+    _Pacing.fixed => _fixedPace(stream, yieldTurn),
+    _Pacing.budget =>
+      paceReads(stream, budget: budget, yieldTurn: yieldTurn),
+  };
   final client = SSHClient(
     _Socket(socket, stream),
     username: _user,
@@ -368,13 +491,20 @@ Future<SSHClient> _connect(
   return client;
 }
 
-/// What arrives, handed on no more than 32 KB at a time, each piece in an
-/// event-loop turn of its own.
-Stream<Uint8List> _pace(Stream<Uint8List> source) async* {
+/// The pacing that shipped and capped the tablet at 1.6 MB/s: a fixed 32 KB
+/// handed over per event-loop turn.
+///
+/// The one copy of old code kept here on purpose — it is the baseline the
+/// numbers above are measured against, and it no longer exists in the app.
+Stream<Uint8List> _fixedPace(
+  Stream<Uint8List> source,
+  Future<void> Function() yieldTurn,
+) async* {
+  const piece = 32 * 1024;
   await for (final data in source) {
-    for (var at = 0; at < data.length; at += 32 * 1024) {
-      yield Uint8List.sublistView(data, at, min(at + 32 * 1024, data.length));
-      await Future<void>.delayed(Duration.zero);
+    for (var at = 0; at < data.length; at += piece) {
+      if (at > 0) await yieldTurn();
+      yield Uint8List.sublistView(data, at, min(at + piece, data.length));
     }
   }
 }
@@ -451,6 +581,14 @@ class _Stalls {
         '${ms(gaps[(gaps.length * 0.99).floor()])} ms, janky ${janky.length}'
         ' (${(lost * 100 / took).round()}% of the time)';
   }
+}
+
+/// The bytes a transfer moved for each turn it stood aside for: the ceiling
+/// that pacing sets, before the event loop's own rate is applied to it.
+String _perTurn(int bytes, int turns) {
+  if (turns == 0) return 'no turns given up';
+  return '${(bytes / turns / 1024).toStringAsFixed(0)} KB a turn '
+      '($turns turns)';
 }
 
 String _rate(int bytes, num micros) =>
