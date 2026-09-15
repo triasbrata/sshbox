@@ -196,4 +196,37 @@ void main() {
 
     expect(sent, ['a', '\x14']);
   });
+
+  testWidgets('under the kitty protocol a key goes once, its release only '
+      'when asked for', (tester) async {
+    final session = LiveSession(
+      host: const HostProfile(
+          id: 'h', label: 'box', host: '10.0.2.2', username: 'me'),
+    );
+    addTearDown(session.dispose);
+    final terminal = session.terminal;
+    final out = <String>[];
+    terminal.onOutput = out.add;
+
+    void tap(TerminalKey key, {bool ctrl = false, bool shift = false}) {
+      terminal.keyInput(key, ctrl: ctrl, shift: shift);
+      terminal.keyInput(key,
+          ctrl: ctrl, shift: shift, type: TerminalKeyEventType.release);
+    }
+
+    // Claude Code's own push: kitty flags 1 and 4, without flag 2, so a release
+    // has no event type to go out with and went as the press again. In its
+    // session list one Ctrl+T pinned a session and unpinned it as the key came
+    // up, and Shift+Enter made two new lines.
+    terminal.write('\x1b[>5u');
+    tap(TerminalKey.keyT, ctrl: true);
+    tap(TerminalKey.enter, shift: true);
+    expect(out, ['\x1b[116;5u', '\x1b[13;2u']);
+
+    // Flag 2 asks for releases, and they come marked as such.
+    out.clear();
+    terminal.write('\x1b[>7u');
+    tap(TerminalKey.keyT, ctrl: true);
+    expect(out, ['\x1b[116;5u', '\x1b[116;5:3u']);
+  });
 }

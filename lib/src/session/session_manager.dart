@@ -128,14 +128,17 @@ class LiveSession extends ChangeNotifier {
   /// Every key a hardware keyboard sends is turned into bytes by this input
   /// handler, which makes it the one place to change what a key means. The
   /// kitty handler goes first so a program that has switched that protocol on
-  /// still gets the protocol's own encoding.
+  /// still gets the protocol's own encoding, and a key's release goes only to
+  /// a program that asked for it: see [_ReleaseOnlyIfAsked].
   static Terminal _newTerminal() => Terminal(
     maxLines: 10000,
-    inputHandler: const CascadeInputHandler([
-      KittyKeyboardInputHandler(),
-      _ShiftEnterInputHandler(),
-      defaultInputHandler,
-    ]),
+    inputHandler: const _ReleaseOnlyIfAsked(
+      CascadeInputHandler([
+        KittyKeyboardInputHandler(),
+        _ShiftEnterInputHandler(),
+        defaultInputHandler,
+      ]),
+    ),
   );
 
   /// The shell's terminal, and in tmux mode the one shown until tmux is up.
@@ -1393,5 +1396,31 @@ class _ShiftEnterInputHandler implements TerminalInputHandler {
     if (event.key != TerminalKey.enter || !event.shift) return null;
     if (event.ctrl || event.alt || event.superKey) return null;
     return '\x1b\r';
+  }
+}
+
+/// Keeps a key's release to itself unless the program asked for releases,
+/// which it does with kitty's flag 2, "report event types".
+///
+/// xterm2's kitty handler encodes a release whenever the protocol is on, and
+/// without flag 2 it has nothing to mark it with, so the release went out as
+/// the press all over again. Claude Code pushes flags 1 and 4 (`ESC [>5u`),
+/// so one hardware Ctrl+T reached it twice, and Shift+Enter made two new
+/// lines. The key bar was never affected, since it sends bytes rather than
+/// presses and releases. Every other handler already drops releases.
+class _ReleaseOnlyIfAsked implements TerminalInputHandler {
+  const _ReleaseOnlyIfAsked(this._keys);
+
+  final TerminalInputHandler _keys;
+
+  static const _reportEventTypes = 0x02;
+
+  @override
+  String? call(TerminalKeyboardEvent event) {
+    if (event.type == TerminalKeyEventType.release &&
+        event.state.kittyKeyboardMode & _reportEventTypes == 0) {
+      return null;
+    }
+    return _keys(event);
   }
 }
