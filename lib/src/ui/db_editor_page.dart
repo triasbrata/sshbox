@@ -182,6 +182,67 @@ class _DbEditorState extends State<_DbEditor> {
     Navigator.of(context).pop<_Edit>((db: widget.existing!, deleted: true));
   }
 
+  /// Fills the fields from a connection URI the user pastes. One the app
+  /// cannot read says why under it, and changes nothing. A URI with no
+  /// password leaves the one typed here.
+  Future<void> _importUri() async {
+    var typed = '';
+    String? error;
+    final parsed = await showDialog<DbUri>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          void submit() {
+            try {
+              Navigator.of(context).pop(parseDbUri(typed));
+            } on FormatException catch (refused) {
+              setDialogState(() => error = refused.message);
+            }
+          }
+
+          return AlertDialog(
+            title: const Text('Import URI'),
+            content: TextField(
+              autofocus: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              // It may hold a password.
+              enableIMEPersonalizedLearning: false,
+              keyboardType: TextInputType.url,
+              decoration: InputDecoration(
+                hintText: 'postgresql://user:password@localhost:5432/app',
+                helperText:
+                    'A postgresql://, mongodb:// or redis:// URI fills in '
+                    'this database\'s fields.',
+                helperMaxLines: 2,
+                errorText: error,
+                errorMaxLines: 3,
+              ),
+              onChanged: (value) => typed = value,
+              onSubmitted: (_) => submit(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(onPressed: submit, child: const Text('Import')),
+            ],
+          );
+        },
+      ),
+    );
+    if (parsed == null || !mounted) return;
+    setState(() {
+      _kind = parsed.kind;
+      _address.text = parsed.address;
+      _port.text = '${parsed.port}';
+      _user.text = parsed.user;
+      if (parsed.password case final password?) _password.text = password;
+      _database.text = parsed.database;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     InputDecoration hinted(String label, String hint, {String? helper}) =>
@@ -219,6 +280,15 @@ class _DbEditorState extends State<_DbEditor> {
             padding: pageGutters(constraints.maxWidth),
             children: [
               const SizedBox(height: 8),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: OutlinedButton.icon(
+                  onPressed: _importUri,
+                  icon: const Icon(Icons.link),
+                  label: const Text('Import URI'),
+                ),
+              ),
+              const SizedBox(height: 12),
               SegmentedButton<DbKind>(
                 showSelectedIcon: false,
                 segments: [

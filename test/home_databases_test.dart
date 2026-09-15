@@ -146,17 +146,33 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Database'));
       await tester.pumpAndSettle();
-      await tester.enterText(
-        find.widgetWithText(TextFormField, 'Password'),
-        's3cret',
+      // Filled from a URI, its password too. One the app cannot read says
+      // why, and stays open.
+      await tester.tap(find.text('Import URI'));
+      await tester.pumpAndSettle();
+      final uriField = find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField &&
+            widget.decoration?.hintText?.startsWith('postgresql://') == true,
       );
+      await tester.enterText(uriField, 'mysql://db.example/shop');
+      await tester.tap(find.text('Import'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Not a database URI'), findsOneWidget);
+      await tester.enterText(
+        uriField,
+        'postgresql://ann:s3cret@localhost:5432/shop',
+      );
+      await tester.tap(find.text('Import'));
+      await tester.pumpAndSettle();
+      expect(uriField, findsNothing);
       await tester.tap(find.byTooltip('Save'));
       await tester.pumpAndSettle();
 
       expect(find.text('Hosts'), findsOneWidget);
       expect(find.text('Databases'), findsOneWidget);
       expect(card, findsOneWidget);
-      expect(find.text('PostgreSQL · localhost:5432'), findsOneWidget);
+      expect(find.text('PostgreSQL · ann@localhost:5432/shop'), findsOneWidget);
       final saved = (await loadDatabases()).single;
       expect(await secrets.read(DbConnection.passwordKey(saved.id)), 's3cret');
 

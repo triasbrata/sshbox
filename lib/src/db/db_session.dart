@@ -101,6 +101,74 @@ class DbConnection {
   }
 }
 
+/// What a connection URI says, for the database editor's Import URI:
+/// `postgresql://user:password@host:5432/app`,
+/// `mongodb://user:password@host:27017/app?authSource=admin` or
+/// `redis://:password@host:6379/0`. [password] is null when it names none.
+typedef DbUri = ({
+  DbKind kind,
+  String address,
+  int port,
+  String user,
+  String? password,
+  String database,
+});
+
+/// [text] as a [DbUri]. Throws a [FormatException] saying why, for one it
+/// cannot read.
+DbUri parseDbUri(String text) {
+  var uri = text.trim();
+  final kind = switch (uri.split('://').first.toLowerCase()) {
+    'postgres' || 'postgresql' => DbKind.postgres,
+    'mongodb' => DbKind.mongo,
+    'redis' => DbKind.redis,
+    'mongodb+srv' => throw const FormatException(
+      'mongodb+srv:// needs a DNS lookup this app does not make. Use the '
+      'mongodb:// form, with one host.',
+    ),
+    'rediss' => throw const FormatException(
+      'rediss:// is Redis over TLS, which this app does not speak: it '
+      'reaches Redis through SSH instead. Use redis://.',
+    ),
+    _ => throw const FormatException(
+      'Not a database URI this app reads: it starts postgresql://, '
+      'mongodb:// or redis://.',
+    ),
+  };
+  if (kind == DbKind.mongo) {
+    // A replica set names each member. The first is the one reached.
+    final start = uri.indexOf('://') + 3;
+    final end = uri.indexOf(RegExp(r'[/?#]'), start);
+    final authority = uri.substring(start, end < 0 ? uri.length : end);
+    final hosts = authority.lastIndexOf('@') + 1;
+    uri = uri.replaceRange(
+      start + hosts,
+      start + authority.length,
+      authority.substring(hosts).split(',').first,
+    );
+  }
+  final parsed = Uri.tryParse(uri);
+  if (parsed == null) {
+    throw const FormatException('That URI could not be read.');
+  }
+  final info = parsed.userInfo;
+  final colon = info.indexOf(':');
+  final path = parsed.pathSegments.firstOrNull ?? '';
+  return (
+    kind: kind,
+    // No host is PostgreSQL's own socket: the host itself.
+    address: parsed.host.isEmpty ? 'localhost' : parsed.host,
+    port: parsed.hasPort ? parsed.port : kind.port,
+    user: Uri.decodeComponent(colon < 0 ? info : info.substring(0, colon)),
+    password: colon < 0
+        ? null
+        : Uri.decodeComponent(info.substring(colon + 1)),
+    database: kind == DbKind.mongo
+        ? parsed.queryParameters['authSource'] ?? path
+        : path,
+  );
+}
+
 const _storageKey = 'sshbox.databases.v1';
 
 /// The saved databases, in the order they were added.
