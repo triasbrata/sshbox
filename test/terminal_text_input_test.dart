@@ -40,10 +40,10 @@ void main() {
     );
 
     input = key.currentState!;
-    // A tap on the terminal: the IME connection every test below speaks
-    // through, which the input keeps open only while the soft keyboard is the
-    // one typing.
-    input.requestKeyboard();
+    // The key bar's keyboard button: the IME connection every test below
+    // speaks through, opened the one way that works whether or not a hardware
+    // keyboard has typed.
+    input.showKeyboard();
     await tester.pump();
   }
 

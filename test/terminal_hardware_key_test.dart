@@ -70,10 +70,10 @@ void main() {
     );
 
     input = key.currentState!;
-    // A tap on the terminal, which is the one thing that asks for the soft
-    // keyboard outright. It also clears the app-wide "a hardware keyboard is
-    // typing" flag another test may have set.
-    input.requestKeyboard();
+    // The key bar's keyboard button, which is the one thing that asks for the
+    // soft keyboard outright — a tap no longer does. It also clears the
+    // app-wide "a hardware keyboard is typing" flag another test may have set.
+    input.showKeyboard();
     await tester.pump();
     expect(input.hasInputConnection, isTrue);
   }
@@ -142,19 +142,58 @@ void main() {
     expect(input.hasInputConnection, isTrue);
   });
 
-  testWidgets('a tap brings the soft keyboard back after a hardware key',
+  testWidgets('a tap does not raise the soft keyboard again', (tester) async {
+    await pumpPane(tester);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    expect(input.hasInputConnection, isFalse);
+
+    // The terminal is tapped, to focus a pane or to let go of a selection.
+    // This used to reopen the connection, handing Android both its paths back
+    // for the very next key — which is the double the user still saw, once per
+    // tap. Focus, and nothing more.
+    input.requestKeyboard();
+    await tester.pump();
+    expect(input.hasInputConnection, isFalse);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
+    input.updateEditingValue(_inserted('b'));
+
+    expect(sent, ['a', 'b']);
+  });
+
+  testWidgets('the keyboard button brings the soft keyboard back, and it types',
       (tester) async {
     await pumpPane(tester);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
     expect(input.hasInputConnection, isFalse);
 
-    // The tablet out of its keyboard case: the terminal is tapped and types
-    // through the IME again.
-    input.requestKeyboard();
+    // The tablet out of its keyboard case: the key bar's keyboard button, the
+    // one ask that outranks the hardware keyboard.
+    input.showKeyboard();
     await tester.pump();
+    expect(input.hasInputConnection, isTrue);
     input.updateEditingValue(_inserted('b'));
 
     expect(sent, ['a', 'b']);
+  });
+
+  testWidgets('a hardware key after the keyboard button shuts it again',
+      (tester) async {
+    await pumpPane(tester);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    input.showKeyboard();
+    await tester.pump();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+    expect(input.hasInputConnection, isFalse);
+    input.updateEditingValue(_inserted('t'));
+
+    expect(sent, ['a', '\x14']);
   });
 }
