@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.18+18
+version: 1.0.19+19
 
 environment:
   sdk: ^3.13.2
@@ -188,3 +188,12 @@ flutter:
         - asset: assets/fonts/fira-code/FiraCode-Regular.ttf
         - asset: assets/fonts/fira-code/FiraCode-Bold.ttf
           weight: 700
+    # Not a font to pick in Settings: the fallback behind every one of them,
+    # for the symbols a code font lacks (U+23F5, the ⏵⏵ of Claude Code's
+    # "auto mode on"; dingbats; the braille JetBrains Mono and Fira Code have
+    # none of). Noto Sans Symbols 2 2.008, SIL OFL 1.1 (its OFL.txt is beside
+    # it), subset with pyftsubset to U+2190-21FF, U+2300-23FF, U+25A0-25FF,
+    # U+2600-26FF, U+2700-27BF and U+2800-28FF: 668 glyphs, 175 KB of 1.2 MB.
+    - family: Noto Sans Symbols 2
+      fonts:
+        - asset: assets/fonts/noto-sans-symbols-2/NotoSansSymbols2-Regular.ttf
