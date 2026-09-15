@@ -22,7 +22,7 @@ typedef DbOpener =
 
 /// One database, open: its tables, collections or keys at the side (in a
 /// drawer on a phone), and a box to type SQL, a database command or a Redis
-/// command into, with what it gave back in a grid under it.
+/// command into, with what it gave back under it: in a grid, or as JSON.
 class DbBrowserPage extends StatefulWidget {
   const DbBrowserPage({
     super.key,
@@ -58,6 +58,9 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
 
   DbResult? _result;
   String? _runError;
+
+  /// Whether a result shows as JSON, a card a row, rather than a grid.
+  var _asJson = false;
   var _running = false;
 
   bool get _redis => widget.db.kind == DbKind.redis;
@@ -392,6 +395,27 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
                   ),
                 ),
               ),
+              if (result != null && result.rows.isNotEmpty) ...[
+                SegmentedButton<bool>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: false,
+                      icon: Icon(Icons.table_rows_outlined),
+                      tooltip: 'Table',
+                    ),
+                    ButtonSegment(
+                      value: true,
+                      icon: Icon(Icons.data_object),
+                      tooltip: 'JSON',
+                    ),
+                  ],
+                  selected: {_asJson},
+                  onSelectionChanged: (picked) =>
+                      setState(() => _asJson = picked.single),
+                ),
+                const SizedBox(width: 8),
+              ],
               FilledButton.icon(
                 onPressed: _running ? null : _run,
                 icon: const Icon(Icons.play_arrow),
@@ -415,11 +439,34 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
                 )
               : result == null
               ? const SizedBox()
+              : _asJson
+              ? _ResultJson(result)
               : _ResultGrid(result),
         ),
       ],
     );
   }
+}
+
+/// A result's rows as JSON, a card each: a document as it is, a row as its
+/// columns and values. Selectable, to copy.
+class _ResultJson extends StatelessWidget {
+  const _ResultJson(this.result);
+
+  final DbResult result;
+
+  @override
+  Widget build(BuildContext context) => ListView.builder(
+    padding: const EdgeInsets.all(12),
+    itemCount: result.rows.length,
+    itemBuilder: (context, i) => Card.outlined(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: SelectableText(result.json(i), style: _ResultGrid._mono),
+      ),
+    ),
+  );
 }
 
 /// A result's rows under its column names, scrolling both ways. A tap on a
