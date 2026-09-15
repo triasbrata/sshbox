@@ -66,7 +66,11 @@ class HostProfile {
   /// Falls back to the target so a profile always has something to show.
   String get displayName => label.trim().isEmpty ? target : label.trim();
 
+  /// A copy with the fields given changed. A new [id] makes it a separate
+  /// saved host — what Home's Duplicate does — and every other field comes
+  /// along, so a field added here travels with a duplicate by itself.
   HostProfile copyWith({
+    String? id,
     String? label,
     String? host,
     String? username,
@@ -79,7 +83,7 @@ class HostProfile {
     OsInfo? os,
   }) {
     return HostProfile(
-      id: id,
+      id: id ?? this.id,
       label: label ?? this.label,
       host: host ?? this.host,
       username: username ?? this.username,
