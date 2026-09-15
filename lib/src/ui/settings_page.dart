@@ -18,6 +18,15 @@ import 'toast.dart';
 /// them, drawn a cell wide, so every family falls back to it first.
 const nerdFontFamily = 'CaskaydiaCove Nerd Font Mono';
 
+/// Where a symbol none of the code fonts has comes from.
+///
+/// Claude Code's status line writes `⏵⏵ auto mode on` with U+23F5, which no
+/// bundled font carries — and neither does the tablet, since Android ships
+/// Noto Sans Symbols subsetted and this codepoint was dropped, so both
+/// triangles came out as boxes. A subset of Noto Sans Symbols 2 stands behind
+/// the Nerd Font for it, and for the dingbats and braille a TUI draws.
+const symbolFontFamily = 'Noto Sans Symbols 2';
+
 /// The fonts Settings offers: every one bundled under `assets/fonts/`, by the
 /// family name `pubspec.yaml` declares, and Android's own monospace, which is
 /// what the terminal drew with before there was a choice.
@@ -41,13 +50,15 @@ const terminalFonts = <({String family, String label, String? note})>[
 const minFontSize = 9.0;
 const maxFontSize = 24.0;
 
-/// What a terminal draws with in [family] at [size]. xterm2's own fallbacks
-/// stay behind the Nerd Font, so emoji and CJK go where they always went.
+/// What a terminal draws with in [family] at [size]. The Nerd Font comes
+/// first and the symbols font behind it, with xterm2's own fallbacks last, so
+/// emoji and CJK go where they always went.
 TerminalStyle terminalStyleOf(String family, double size) => TerminalStyle(
   fontFamily: family,
   fontSize: size,
   fontFamilyFallback: [
     nerdFontFamily,
+    symbolFontFamily,
     ...const TerminalStyle().fontFamilyFallback,
   ],
 );
@@ -614,8 +625,9 @@ class _TerminalSectionState extends State<_TerminalSection> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Text(
                 'These fonts ship inside Jeansh, so they work offline. A glyph '
-                'a font lacks, such as a prompt\'s powerline arrows, comes '
-                'from $nerdFontFamily.',
+                'a font lacks comes from $nerdFontFamily — a prompt\'s '
+                'powerline arrows — or from $symbolFontFamily, for symbols '
+                'like ⏵⏵ that no code font draws.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
