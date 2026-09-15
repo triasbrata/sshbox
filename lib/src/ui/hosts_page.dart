@@ -175,6 +175,15 @@ class _HostsPageState extends State<HostsPage> {
           ],
         ),
         actions: [
+          // The way in when nothing is on its way: the tab joins the strip by
+          // itself only as a transfer starts, so without this the history of
+          // what was downloaded is out of reach. Home, as the known hosts
+          // entry point was moved here; the same icon the tab wears.
+          IconButton(
+            tooltip: 'Transfers',
+            onPressed: () => widget.sessions.showTransfers(select: true),
+            icon: const Icon(Icons.swap_vert),
+          ),
           IconButton(
             tooltip: 'Port forwarding',
             onPressed: () async {

@@ -1,7 +1,8 @@
 // What a file transfer costs the isolate dartssh2 runs on, which in the app
 // is the UI isolate: every byte is decrypted, framed and handed on there.
 //
-// Always: the cipher alone, one 32 KB packet at a time. With
+// Always: the cipher alone, one 32 KB packet at a time, and what that same
+// packet costs opened on a worker isolate instead of this one. With
 // SSHBOX_BENCH_KEY (an unencrypted key) and SSHBOX_BENCH_FILE (a file on the
 // host, 70 MB is the size the lag was seen with): downloads and uploads of
 // that file, each way the app could run them. The host is 127.0.0.1:22 as
@@ -23,6 +24,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -39,6 +41,7 @@ String get _user =>
 
 Future<void> main() async {
   _cipher();
+  await _isolates();
   final key = Platform.environment['SSHBOX_BENCH_KEY'];
   final remote = Platform.environment['SSHBOX_BENCH_FILE'];
   if (key == null || remote == null) {
@@ -123,6 +126,120 @@ void _cipher() {
     '(${_rate(32768, opened)}), seal ${sealedIn.round()} µs '
     '(${_rate(32768, sealedIn)})',
   );
+}
+
+/// What opening the packets somewhere other than this isolate would cost.
+///
+/// A connection's cipher is one running state, and every packet on it — the
+/// terminal's as much as a transfer's — has to pass through in order, so
+/// nothing can open just the transfer's share: a worker would have to hold
+/// the whole transport, with every packet crossing to it and back. These are
+/// the three ways, each given one packet an event-loop turn, as the paced
+/// socket hands them over.
+Future<void> _isolates() async {
+  const rounds = 600;
+  const moved = rounds * 32768;
+  final key = Uint8List(64);
+  const body = 32784;
+  final plain = Uint8List(4 + body);
+  ByteData.sublistView(plain).setUint32(0, body);
+  plain[4] = 8;
+  final sealed = [
+    for (var i = 0; i < 4; i++) OpenSSHChaCha20Poly1305(key).encryptPacket(plain, i),
+  ];
+  // Its own copy each turn, as a socket read hands one over.
+  Uint8List fresh(int i) => Uint8List.fromList(sealed[i % 4]);
+
+  print('\nthe cipher off this isolate (one packet an event-loop turn):');
+
+  // Here, as the app opens them now.
+  final here = OpenSSHChaCha20Poly1305(key);
+  var stalls = _Stalls()..start();
+  var clock = Stopwatch()..start();
+  for (var i = 0; i < rounds; i++) {
+    final data = fresh(i);
+    here.decryptPacketLength(data, i % 4);
+    here.decryptPacket(data, i % 4);
+    await Future<void>.delayed(Duration.zero);
+  }
+  var took = clock.elapsedMicroseconds;
+  print('  on this isolate      ${_rate(moved, took)}  ${stalls.stop(took)}');
+
+  // Handed to a worker holding the cipher, which hands the plaintext back.
+  final inbox = ReceivePort();
+  final worker = await Isolate.spawn(_openOnWorker, inbox.sendPort);
+  final ready = Completer<SendPort>();
+  Completer<Uint8List>? waiting;
+  inbox.listen((message) {
+    if (message is SendPort) {
+      ready.complete(message);
+      return;
+    }
+    final done = waiting!;
+    waiting = null;
+    done.complete(
+      (message as TransferableTypedData).materialize().asUint8List(),
+    );
+  });
+  final toWorker = await ready.future;
+  stalls = _Stalls()..start();
+  clock = Stopwatch()..start();
+  for (var i = 0; i < rounds; i++) {
+    waiting = Completer<Uint8List>();
+    toWorker.send((i % 4, TransferableTypedData.fromList([fresh(i)])));
+    await waiting!.future;
+  }
+  took = clock.elapsedMicroseconds;
+  print('  through a worker     ${_rate(moved, took)}  ${stalls.stop(took)}');
+  toWorker.send(null);
+  inbox.close();
+  worker.kill();
+
+  // An Isolate.run of its own for each, the cheapest thing to write.
+  await _runEach([for (var i = 0; i < rounds ~/ 20; i++) fresh(i)]);
+}
+
+/// The same packets, each opened by an [Isolate.run] of its own.
+///
+/// Its own function: a closure handed to another isolate carries everything
+/// the scope around it holds, and [_isolates] holds completers, which cannot
+/// cross. The key is made on the far side for the same reason.
+Future<void> _runEach(List<Uint8List> packets) async {
+  final stalls = _Stalls()..start();
+  final clock = Stopwatch()..start();
+  for (final (i, data) in packets.indexed) {
+    final sequence = i % 4;
+    await Isolate.run(() {
+      final cipher = OpenSSHChaCha20Poly1305(Uint8List(64));
+      cipher.decryptPacketLength(data, sequence);
+      return cipher.decryptPacket(data, sequence);
+    });
+  }
+  final took = clock.elapsedMicroseconds;
+  print(
+    '  an Isolate.run each  ${_rate(packets.length * 32768, took)}  '
+    '${stalls.stop(took)}',
+  );
+}
+
+/// [_isolates]' worker: holds the connection's cipher, opens what it is sent
+/// and hands the plaintext back.
+void _openOnWorker(SendPort toMain) {
+  final inbox = ReceivePort();
+  toMain.send(inbox.sendPort);
+  final cipher = OpenSSHChaCha20Poly1305(Uint8List(64));
+  inbox.listen((message) {
+    if (message == null) {
+      inbox.close();
+      return;
+    }
+    final (sequence, sent) = message as (int, TransferableTypedData);
+    final data = sent.materialize().asUint8List();
+    cipher.decryptPacketLength(data, sequence);
+    toMain.send(
+      TransferableTypedData.fromList([cipher.decryptPacket(data, sequence)]),
+    );
+  });
 }
 
 Future<void> _download(

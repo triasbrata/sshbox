@@ -441,6 +441,41 @@ void main() {
       expect(transfers.items.first.state, TransferState.done);
     });
 
+    testWidgets('Home opens it with nothing transferred, and a second tap '
+        'goes back to the one tab', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final secrets = InMemorySecretStore();
+      final sessions = SessionManager();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TabsShell(
+            repository: HostRepository(secrets),
+            secrets: secrets,
+            sessions: sessions,
+            onOpenHost: (_) async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(transfers.items, isEmpty);
+      expect(sessions.transfersTab, isFalse);
+
+      // Nothing has ever been transferred: the tab still opens, and says so.
+      await tester.tap(find.byTooltip('Transfers'));
+      await tester.pumpAndSettle();
+      expect((sessions.transfersTab, sessions.transfersActive), (true, true));
+      expect(find.text('Downloads and uploads show here.'), findsOneWidget);
+      expect(find.byTooltip('Close Transfers'), findsOneWidget);
+
+      // Asked for again from Home: the same tab, not a second one.
+      sessions.select(null);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Transfers'));
+      await tester.pumpAndSettle();
+      expect(sessions.transfersActive, isTrue);
+      expect(find.byTooltip('Close Transfers'), findsOneWidget);
+    });
+
     testWidgets('sits on the strip after the others, and opens and closes', (
       tester,
     ) async {
