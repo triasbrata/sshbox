@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/magic_key.dart';
 import 'package:xterm2/xterm.dart';
 
 KeyCombo _combo(
@@ -73,6 +74,65 @@ void main() {
       expect(controller.applyModifiers(' '), '\x00');
       controller.toggleCtrl();
       expect(controller.applyModifiers('?'), '\x7f');
+    });
+  });
+
+  group('KeyBarController.applyToKey', () {
+    late KeyBarController controller;
+    late Terminal terminal;
+
+    setUp(() {
+      controller = KeyBarController();
+      terminal = Terminal();
+    });
+    tearDown(() => controller.dispose());
+
+    test('folds armed Alt into the magic key Enter, making a new line', () {
+      controller.toggleAlt();
+
+      // What the magic key's button sends on a tap.
+      expect(controller.applyToKey('\r'), '\x1b\r');
+      expect(controller.alt, isFalse);
+    });
+
+    test('folds armed Ctrl into a key that types a character', () {
+      controller.toggleCtrl();
+
+      expect(controller.applyToKey('t'), '\x14');
+    });
+
+    test('leaves a cursor key alone, and keeps the modifier armed for the '
+        'next one', () {
+      controller.toggleAlt();
+
+      // ESC [C already: another ESC would make it a meta-escape.
+      expect(controller.applyToKey(cursorKey(terminal, 'C')), '\x1b[C');
+      expect(controller.alt, isTrue);
+    });
+
+    test('leaves a sequence the magic key already escaped alone', () {
+      controller.toggleAlt();
+
+      // Ring 2's W→, which is Alt+f.
+      expect(controller.applyToKey(magicSubKeys['→']![1].send(terminal)),
+          '\x1bf');
+    });
+
+    test('leaves a custom key that encodes its own combination alone', () {
+      controller.toggleCtrl();
+      controller.toggleAlt();
+
+      final backTab = encodeKeyCombo(terminal, _combo('TAB', shift: true));
+      expect(backTab, '\x1b[Z');
+      expect(controller.applyToKey(backTab), '\x1b[Z');
+    });
+
+    test('disarms once, for the key it folded into', () {
+      controller.toggleAlt();
+      controller.toggleCtrl();
+
+      expect(controller.applyToKey('\r'), '\x1b\r');
+      expect(controller.applyToKey('\r'), '\r');
     });
   });
 

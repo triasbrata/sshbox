@@ -13,6 +13,11 @@ import 'key_bar.dart' show CursorPad;
 /// as an insert of nothing. Running [TerminalView] with `hardwareKeyboardOnly`
 /// hands the soft keyboard to this instead and leaves everything else of
 /// xterm2's — hardware keys, shortcuts, selection gestures — untouched.
+///
+/// The connection is the soft keyboard's alone: the first hardware key shuts
+/// it, and only an explicit ask — [requestKeyboard], a tap on the terminal —
+/// opens it again. Held open under a hardware keyboard it is what makes one
+/// press arrive twice; see [_onHardwareKey].
 class TerminalTextInput extends StatefulWidget {
   const TerminalTextInput({
     super.key,
@@ -70,6 +75,12 @@ class TerminalTextInputState extends State<TerminalTextInput>
     'D': TerminalKey.arrowLeft,
   };
 
+  /// Set by the first hardware key seen anywhere in the app, and cleared by an
+  /// explicit ask for the keyboard. App-wide on purpose: a keyboard plugged
+  /// into the tablet types into every tab, so a new one must not raise the
+  /// soft keyboard either.
+  static var _hardwareKeyboard = false;
+
   final _pad = CursorPad();
 
   TextInputConnection? _connection;
@@ -83,10 +94,12 @@ class TerminalTextInputState extends State<TerminalTextInput>
   void initState() {
     super.initState();
     widget.focusNode.addListener(_onFocusChange);
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.focusNode.removeListener(_onFocusChange);
     _closeConnection();
     super.dispose();
@@ -99,7 +112,12 @@ class TerminalTextInputState extends State<TerminalTextInput>
 
   /// Brings the keyboard back after it has been dismissed. The view below
   /// already holds focus at that point, so focus alone will not do it.
+  ///
+  /// An ask this plain — a tap on the terminal — outranks the hardware
+  /// keyboard, so a tablet taken out of its keyboard case types again; the
+  /// next hardware key shuts the connection right back.
   void requestKeyboard() {
+    _hardwareKeyboard = false;
     if (widget.focusNode.hasFocus) {
       _openConnection();
     } else {
@@ -114,9 +132,30 @@ class TerminalTextInputState extends State<TerminalTextInput>
   void _onFocusChange() {
     if (!widget.focusNode.hasFocus) {
       _closeConnection();
-    } else if (widget.focusNode.consumeKeyboardToken()) {
+    } else if (widget.focusNode.consumeKeyboardToken() && !_hardwareKeyboard) {
       _openConnection();
     }
+  }
+
+  /// A hardware keyboard is typing, so the soft keyboard's connection has no
+  /// business being open — and holding it open is what makes one press arrive
+  /// twice.
+  ///
+  /// Android hands every key to the IME before the app sees it. An IME that
+  /// does not want a combination passes it on with
+  /// `InputConnection.sendKeyEvent`, which Flutter feeds straight back into
+  /// its own keyboard manager, and the platform then delivers the same press
+  /// to the view as well: xterm2 reads it twice and sends its bytes twice
+  /// (two ESC CR for Shift+Enter, two 0x14 for Ctrl+T). The IME may also put
+  /// what it read into the editing buffer, and Flutter's keyboard manager
+  /// hands any key the framework leaves unhandled to the input connection,
+  /// which inserts it as text. All three need a live connection.
+  ///
+  /// Only watches: the key still goes wherever it was going.
+  bool _onHardwareKey(KeyEvent event) {
+    _hardwareKeyboard = true;
+    _closeConnection();
+    return false;
   }
 
   void _openConnection() {
@@ -163,6 +202,10 @@ class TerminalTextInputState extends State<TerminalTextInput>
 
   @override
   void updateEditingValue(TextEditingValue value) {
+    // An edit that crossed the connection being closed belongs to a keystroke
+    // xterm2 has already dealt with. Without a connection there is no editing
+    // session to speak for, so there is nothing to send.
+    if (!hasInputConnection) return;
     _editingState = value;
 
     // Nothing is committed until the IME finishes composing, so reading a
@@ -181,16 +224,10 @@ class TerminalTextInputState extends State<TerminalTextInput>
         widget.terminal.keyInput(TerminalKey.backspace);
       }
     } else {
-      // A newline in the IME buffer is the Enter key, not text. A hardware
-      // Shift+Enter reaches xterm2 as a key already (→ ESC CR), and the soft
-      // keyboard's Enter comes through performAction below; Android also
-      // inserts a '\n' here for the same Shift+Enter, so sending it as text
-      // too is what doubled the newline.
-      // ponytail: strips '\n' from any insert, so a soft-keyboard paste of
-      // multiline text loses its breaks — split on '\n' + keyInput(enter) if
-      // that ever matters.
-      final text = _insertedText(value.text, growth).replaceAll('\n', '');
-      if (text.isNotEmpty) widget.terminal.textInput(text);
+      // Every insert here is the soft keyboard's own, hardware keys having
+      // shut the connection, so it goes as it came — a pasted newline
+      // included.
+      widget.terminal.textInput(_insertedText(value.text, growth));
     }
 
     widget.onInput?.call();
@@ -245,6 +282,9 @@ class TerminalTextInputState extends State<TerminalTextInput>
 
   @override
   void performAction(TextInputAction action) {
+    // Android turns a hardware Enter the framework left unhandled into this
+    // too; with the connection shut it is xterm2's key alone.
+    if (!hasInputConnection) return;
     if (action == TextInputAction.done || action == TextInputAction.newline) {
       widget.terminal.keyInput(TerminalKey.enter);
       widget.onInput?.call();

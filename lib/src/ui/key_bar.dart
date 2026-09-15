@@ -111,6 +111,15 @@ class KeyBarController extends ChangeNotifier {
     _disarm();
     return result;
   }
+
+  /// The same for a key the bar, the pad or the magic key sends, which is how
+  /// ALT and the magic key's Enter make a new line: a key of one character
+  /// takes the armed modifiers, `\r` becoming ESC CR, while anything longer is
+  /// a ready-made sequence — a cursor key, ESC f, a custom key's own
+  /// combination — that carries its modifiers already and would only be
+  /// mangled by another layer.
+  String applyToKey(String data) =>
+      data.length == 1 ? applyModifiers(data) : data;
 }
 
 /// [data] as a keyboard sends it with Ctrl or Alt held. Ctrl turns a lone

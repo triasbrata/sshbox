@@ -40,6 +40,11 @@ void main() {
     );
 
     input = key.currentState!;
+    // A tap on the terminal: the IME connection every test below speaks
+    // through, which the input keeps open only while the soft keyboard is the
+    // one typing.
+    input.requestKeyboard();
+    await tester.pump();
   }
 
   group('floating cursor — a held space bar on iOS', () {
