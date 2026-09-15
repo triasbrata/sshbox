@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -448,25 +449,172 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
   }
 }
 
-/// A result's rows as JSON, a card each: a document as it is, a row as its
-/// columns and values. Selectable, to copy.
+/// A result's rows as JSON, a card each, laid out as a tree: an object or
+/// array with something in it is one line that opens to what is in it. A
+/// document shows as it is, a row as its columns and values, and Copy JSON
+/// takes the whole of either.
 class _ResultJson extends StatelessWidget {
   const _ResultJson(this.result);
 
   final DbResult result;
 
   @override
-  Widget build(BuildContext context) => ListView.builder(
-    padding: const EdgeInsets.all(12),
-    itemCount: result.rows.length,
-    itemBuilder: (context, i) => Card.outlined(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: Padding(
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Room for a branch's arrow and no more, so the tree stays tight.
+    return ListTileTheme.merge(
+      minLeadingWidth: 20,
+      horizontalTitleGap: 4,
+      minVerticalPadding: 0,
+      child: ListView.builder(
         padding: const EdgeInsets.all(12),
-        child: SelectableText(result.json(i), style: _ResultGrid._mono),
+        itemCount: result.rows.length,
+        itemBuilder: (context, i) {
+          final json = result.json(i);
+          final row = jsonDecode(json) as Map<String, dynamic>;
+          return Card.outlined(
+            margin: const EdgeInsets.only(bottom: 8),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsetsDirectional.only(start: 12),
+                        child: Text(
+                          '${i + 1}',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'Copy JSON',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.copy, size: 18),
+                        onPressed: () {
+                          unawaited(
+                            Clipboard.setData(ClipboardData(text: json)),
+                          );
+                          showToast(context, 'Copied');
+                        },
+                      ),
+                    ],
+                  ),
+                  for (final MapEntry(:key, :value) in row.entries)
+                    _JsonNode(name: key, value: value),
+                ],
+              ),
+            ),
+          );
+        },
       ),
-    ),
-  );
+    );
+  }
+}
+
+/// One field of a JSON value, [depth] levels in: a line with its value, or,
+/// for an object or array with something in it, a line that opens to what
+/// is in it, built only while open.
+class _JsonNode extends StatelessWidget {
+  const _JsonNode({required this.name, required this.value, this.depth = 0});
+
+  final String name;
+  final Object? value;
+  final int depth;
+
+  /// How many fields or items a line opens to. The rest are counted, and
+  /// Copy JSON has them: a long array would otherwise build every line.
+  static const _shown = 100;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final value = this.value;
+    // MongoDB's $oid, $date and the like are one value, not a branch.
+    final wrapped =
+        value is Map &&
+        value.length == 1 &&
+        '${value.keys.first}'.startsWith(r'$');
+    final children = switch (value) {
+      Map map when map.isNotEmpty && !wrapped => [
+        for (final entry in map.entries) ('${entry.key}', entry.value),
+      ],
+      List list when list.isNotEmpty => [
+        for (final (index, item) in list.indexed) ('$index', item),
+      ],
+      _ => null,
+    };
+    final indent = 12.0 + depth * 16;
+    final nameSpan = TextSpan(
+      text: name,
+      style: TextStyle(color: scheme.primary),
+    );
+
+    if (children == null) {
+      return Padding(
+        // Past a branch's arrow, so every name at one depth lines up.
+        padding: EdgeInsetsDirectional.fromSTEB(indent + 28, 4, 12, 4),
+        child: SelectableText.rich(
+          TextSpan(
+            style: _ResultGrid._mono,
+            children: [
+              nameSpan,
+              const TextSpan(text: ': '),
+              TextSpan(
+                text: jsonEncode(value),
+                style: TextStyle(
+                  color: value is String ? scheme.tertiary : scheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final count = children.length;
+    return ExpansionTile(
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      minTileHeight: 32,
+      controlAffinity: ListTileControlAffinity.leading,
+      tilePadding: EdgeInsetsDirectional.only(start: indent, end: 12),
+      childrenPadding: EdgeInsets.zero,
+      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      title: Text.rich(
+        TextSpan(
+          style: _ResultGrid._mono,
+          children: [
+            nameSpan,
+            TextSpan(
+              text: value is Map
+                  ? '  {$count ${count == 1 ? 'key' : 'keys'}}'
+                  : '  [$count ${count == 1 ? 'item' : 'items'}]',
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+      children: [
+        for (final (name, child) in children.take(_shown))
+          _JsonNode(name: name, value: child, depth: depth + 1),
+        if (count > _shown)
+          Padding(
+            padding: EdgeInsetsDirectional.fromSTEB(indent + 44, 4, 12, 8),
+            child: Text(
+              '… ${count - _shown} more: Copy JSON has them all',
+              style: _ResultGrid._mono.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 /// A result's rows under its column names, scrolling both ways. A tap on a
