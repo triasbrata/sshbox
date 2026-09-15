@@ -14,7 +14,9 @@ import 'db_browser_page.dart';
 import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
 import 'hosts_page.dart';
+import 'settings_page.dart' show appTheme;
 import 'terminal_page.dart';
+import 'terminal_schemes.dart';
 import 'toast.dart';
 import 'transfers_page.dart';
 import 'web_page.dart';
@@ -487,6 +489,11 @@ class _TabStripState extends State<TabStrip> {
       if (widget.showTransfers) _transfersId,
     };
     _keys.removeWhere((id, _) => !ids.contains(id));
+    // What the page under a tab is painted with, for the tab shown to run on
+    // down into: a shell's terminal, and every other page's surface.
+    final terminal = appTheme.value.scheme
+        .terminal(theme.brightness)
+        .background;
 
     // A lone tab takes the whole strip, the way Terminus lays it out: there
     // is nothing to scroll to or to make room for, so capping it would only
@@ -519,6 +526,7 @@ class _TabStripState extends State<TabStrip> {
             TabKind.terminal => tab.session.title,
           },
           cutFirst: tab.kind == TabKind.file ? tab.session.fileTabHost : null,
+          page: tab.kind == TabKind.terminal ? terminal : null,
           selected: index + 1 == widget.activeIndex,
           connected: tab.kind == TabKind.terminal && tab.session.isConnected,
           expand: single,
@@ -567,7 +575,7 @@ class _TabStripState extends State<TabStrip> {
     return Container(
       height: 44,
       padding: const EdgeInsets.symmetric(horizontal: 6),
-      color: theme.colorScheme.surfaceContainerHighest,
+      color: theme.colorScheme.chrome,
       child: LayoutBuilder(
         builder: (context, constraints) {
           // Wide: the button follows the last tab, the way a desktop browser
@@ -622,6 +630,7 @@ class _TabChip extends StatelessWidget {
     this.onReconnect,
     this.cutFirst,
     this.menu = const [],
+    this.page,
   });
 
   /// null shows the icon alone — the chip still answers to [tooltip], so it
@@ -657,6 +666,15 @@ class _TabChip extends StatelessWidget {
   /// another session on a shell's host, and tmux's pane commands. Empty on a
   /// file, web or database tab, which have nothing of their own to offer.
   final List<(String, VoidCallback)> menu;
+
+  /// What the page this tab shows is painted with, when it is not the
+  /// theme's surface: a shell's terminal background. The tab shown wears it,
+  /// and runs on down into the page.
+  final Color? page;
+
+  /// Between a tab and the strip's lower edge, the strip being 44 tall: what
+  /// the tab shown fills in to reach its page.
+  static const double _below = 5;
 
   /// How much of a name a tab may show.
   ///
@@ -711,18 +729,24 @@ class _TabChip extends StatelessWidget {
             ],
           );
 
+    // The page's own colour marks where you are, and with its lower corners
+    // square the tab runs on into the page, the way a browser's does.
+    // Everything else wears the same faint fill, so it reads as a button —
+    // without one, the host list collapses to a bare icon the moment a
+    // session is showing.
+    final fill = selected
+        ? page ?? theme.colorScheme.surface
+        : theme.colorScheme.onSurface.withValues(alpha: 0.08);
+    final corners = selected
+        ? const BorderRadius.vertical(top: Radius.circular(8))
+        : BorderRadius.circular(8);
     final chip = Material(
-      // The page's own colour marks where you are. Everything else wears the
-      // same faint fill, so it reads as a button — without one, the host list
-      // collapses to a bare icon the moment a session is showing.
-      color: selected
-          ? theme.colorScheme.surface
-          : theme.colorScheme.onSurface.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(8),
+      color: fill,
+      borderRadius: corners,
       child: InkWell(
         onTap: onTap,
         onLongPress: menu.isEmpty ? null : () => _showMenu(context),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: corners,
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             _inset,
@@ -772,11 +796,27 @@ class _TabChip extends StatelessWidget {
       ),
     );
 
+    // As tall as the strip, margins and all, so a strip that scrolls is as
+    // tall too and does not clip the tab shown where it meets its page.
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: _below),
       child: SizedBox(
         height: _height,
-        child: tooltip == null ? chip : Tooltip(message: tooltip!, child: chip),
+        child: Stack(
+          fit: StackFit.passthrough,
+          clipBehavior: Clip.none,
+          children: [
+            tooltip == null ? chip : Tooltip(message: tooltip!, child: chip),
+            if (selected)
+              Positioned(
+                left: 0,
+                right: 0,
+                top: _height,
+                height: _below,
+                child: ColoredBox(color: fill),
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -14,15 +14,23 @@ double _contrast(Color a, Color b) {
 }
 
 void main() {
-  test('Jeansh keeps the terminal surface, text and cursor it had before '
-      'there were themes', () {
+  test('Jeansh puts the green it always had on the denim of its icon', () {
     final clode = terminalSchemes.first;
     expect(AppTheme.defaults.scheme, same(clode));
     expect(clode.accent, const Color(0xFF4CC38A));
+    expect(clode.neutral, const Color(0xFF373964));
 
     for (final brightness in Brightness.values) {
-      // The app's colours then: Material's default scheme from the accent.
-      final app = ColorScheme.fromSeed(
+      // The terminal's colours are taken the way they were before there were
+      // themes, from Material's default scheme of a seed: its surface and
+      // text from the denim, in the variant whose greys keep its hue, and its
+      // cursor and selection from the green, as they always were.
+      final denim = ColorScheme.fromSeed(
+        seedColor: clode.neutral!,
+        brightness: brightness,
+        dynamicSchemeVariant: DynamicSchemeVariant.vibrant,
+      );
+      final green = ColorScheme.fromSeed(
         seedColor: clode.accent,
         brightness: brightness,
       );
@@ -38,13 +46,66 @@ void main() {
             c.toARGB32(),
         ],
         [
-          app.surfaceContainerLow.toARGB32(),
-          app.onSurface.toARGB32(),
-          app.primary.toARGB32(),
-          app.primary.withValues(alpha: 0.35).toARGB32(),
+          denim.surfaceContainerLow.toARGB32(),
+          denim.onSurface.toARGB32(),
+          green.primary.toARGB32(),
+          green.primary.withValues(alpha: 0.35).toARGB32(),
         ],
         reason: '$brightness',
       );
+
+      // The app: the denim's surfaces under the green's accents.
+      final app = clode.colorScheme(brightness);
+      ColorScheme medium(Color seed, DynamicSchemeVariant variant) =>
+          ColorScheme.fromSeed(
+            seedColor: seed,
+            brightness: brightness,
+            dynamicSchemeVariant: variant,
+            contrastLevel: 0.5,
+          );
+      final cloth = medium(clode.neutral!, DynamicSchemeVariant.vibrant);
+      final accent = medium(clode.accent, DynamicSchemeVariant.content);
+      expect(app.surface, cloth.surface, reason: '$brightness');
+      expect(app.surfaceContainerLow, cloth.surfaceContainerLow);
+      expect(app.onSurface, cloth.onSurface);
+      expect(app.primary, accent.primary, reason: '$brightness');
+      expect(app.primaryContainer, accent.primaryContainer);
+    }
+
+    // Every other theme's app is still its accent's alone.
+    for (final scheme in terminalSchemes.skip(1)) {
+      expect(scheme.neutral, isNull, reason: scheme.name);
+    }
+  });
+
+  test('the frame sits behind the terminal and the page, in every theme', () {
+    for (final scheme in terminalSchemes) {
+      for (final brightness in Brightness.values) {
+        final app = scheme.colorScheme(brightness);
+        final terminal = scheme.terminal(brightness).background;
+        final where = '${scheme.name} ${brightness.name}';
+        // The tab strip and key bars are dimmer than what they frame, so the
+        // terminal is the brightest thing on screen...
+        expect(
+          app.chrome.computeLuminance(),
+          lessThan(terminal.computeLuminance()),
+          reason: '$where terminal',
+        );
+        // ...and in the dark, dimmer than every other page too.
+        if (brightness == Brightness.dark) {
+          expect(
+            app.chrome.computeLuminance(),
+            lessThan(app.surface.computeLuminance()),
+            reason: '$where page',
+          );
+        }
+        // A key on the bar still stands out from it.
+        expect(
+          _contrast(app.chromeKey, app.chrome),
+          greaterThan(1.2),
+          reason: '$where keys',
+        );
+      }
     }
   });
 

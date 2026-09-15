@@ -27,6 +27,12 @@ const nerdFontFamily = 'CaskaydiaCove Nerd Font Mono';
 /// the Nerd Font for it, and for the dingbats and braille a TUI draws.
 const symbolFontFamily = 'Noto Sans Symbols 2';
 
+/// What the app writes machine text in, wherever it is not the terminal:
+/// addresses, ports, fingerprints and the key bar's labels. Bundled for the
+/// terminal already, so it costs nothing, and it reads the same on every
+/// device, where Android's own monospace does not.
+const uiMonoFamily = 'JetBrains Mono';
+
 /// The fonts Settings offers: every one bundled under `assets/fonts/`, by the
 /// family name `pubspec.yaml` declares, and Android's own monospace, which is
 /// what the terminal drew with before there was a choice.

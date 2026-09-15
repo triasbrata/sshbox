@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
+import 'settings_page.dart' show uiMonoFamily;
+import 'terminal_schemes.dart';
 import 'toast.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -559,7 +561,7 @@ class TerminalKeyBar extends StatelessWidget {
     if (shown.lastOrNull == keyBarDivider) shown.removeLast();
 
     return Material(
-      color: theme.colorScheme.surfaceContainerHighest,
+      color: theme.colorScheme.chrome,
       child: SafeArea(
         top: false,
         child: SizedBox(
@@ -628,7 +630,7 @@ class EditorKeyBar extends StatelessWidget {
         );
 
     return Material(
-      color: theme.colorScheme.surfaceContainerHighest,
+      color: theme.colorScheme.chrome,
       child: SafeArea(
         top: false,
         child: SizedBox(
@@ -720,10 +722,10 @@ class KeyButton extends StatelessWidget {
       child: Material(
         color: active
             ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(6),
+            : theme.colorScheme.chromeKey,
+        borderRadius: BorderRadius.circular(8),
         child: InkWell(
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(8),
           onTap: onTap,
           child: Container(
             constraints: BoxConstraints(minWidth: minWidth),
@@ -732,7 +734,7 @@ class KeyButton extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                fontFamily: 'monospace',
+                fontFamily: uiMonoFamily,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: foreground,
@@ -818,14 +820,14 @@ class _IconKey extends StatelessWidget {
         data: IconButtonThemeData(
           style: IconButton.styleFrom(
             foregroundColor: colors.onSurface,
-            backgroundColor: colors.surfaceContainerHigh,
+            backgroundColor: colors.chromeKey,
             // Greyed out rather than gone: still a key, just not one to press.
-            disabledBackgroundColor: colors.surfaceContainerHigh,
+            disabledBackgroundColor: colors.chromeKey,
             iconSize: 20,
             minimumSize: const Size(44, 36),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(8),
             ),
           ),
         ),

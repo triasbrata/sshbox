@@ -10,6 +10,7 @@ class TerminalScheme {
     this.accent, {
     required String dark,
     required String light,
+    this.neutral,
   }) : dark = _colors(dark),
        light = _colors(light);
 
@@ -19,6 +20,11 @@ class TerminalScheme {
 
   /// The seed of the app's `ColorScheme`, light or dark.
   final Color accent;
+
+  /// The seed of the app's surfaces, the text on them and its outlines, when
+  /// they grow from a colour of their own rather than from [accent]: Jeansh's
+  /// are the denim of its icon, under its green. Null for every other theme.
+  final Color? neutral;
   final TerminalTheme dark;
   final TerminalTheme light;
 
@@ -30,12 +36,54 @@ class TerminalScheme {
   /// The app's colours, light or dark. The accent itself is the primary
   /// container, the rest keep close to it, and every pair Material makes
   /// (text on its surface, a label on its button) is at its medium contrast.
-  ColorScheme colorScheme(Brightness brightness) => ColorScheme.fromSeed(
-    seedColor: accent,
-    brightness: brightness,
-    dynamicSchemeVariant: DynamicSchemeVariant.content,
-    contrastLevel: 0.5,
-  );
+  /// With a [neutral], the surfaces, the text on them and the outlines are
+  /// its instead, in the variant whose greys keep most of their seed's hue.
+  ColorScheme colorScheme(Brightness brightness) {
+    ColorScheme of(Color seed, DynamicSchemeVariant variant) =>
+        ColorScheme.fromSeed(
+          seedColor: seed,
+          brightness: brightness,
+          dynamicSchemeVariant: variant,
+          contrastLevel: 0.5,
+        );
+    final scheme = of(accent, DynamicSchemeVariant.content);
+    final seed = neutral;
+    if (seed == null) return scheme;
+    final cloth = of(seed, DynamicSchemeVariant.vibrant);
+    return scheme.copyWith(
+      surface: cloth.surface,
+      onSurface: cloth.onSurface,
+      onSurfaceVariant: cloth.onSurfaceVariant,
+      surfaceDim: cloth.surfaceDim,
+      surfaceBright: cloth.surfaceBright,
+      surfaceContainerLowest: cloth.surfaceContainerLowest,
+      surfaceContainerLow: cloth.surfaceContainerLow,
+      surfaceContainer: cloth.surfaceContainer,
+      surfaceContainerHigh: cloth.surfaceContainerHigh,
+      surfaceContainerHighest: cloth.surfaceContainerHighest,
+      outline: cloth.outline,
+      outlineVariant: cloth.outlineVariant,
+      inverseSurface: cloth.inverseSurface,
+      onInverseSurface: cloth.onInverseSurface,
+    );
+  }
+}
+
+/// What frames the pages: the tab strip above them and the key bar under a
+/// terminal or an editor. In the dark it sits a step behind the page and the
+/// terminal both, so the terminal is the brightest thing on screen; in the
+/// light it stays the dimmest surface, as it always was.
+extension Chrome on ColorScheme {
+  Color get chrome => brightness == Brightness.dark
+      ? surfaceContainerLowest
+      : surfaceContainerHighest;
+
+  /// A key on [chrome]: a step lighter than the bar in either brightness.
+  /// In the light the next container up was as good as the bar itself,
+  /// about 1.1:1, so a key there is the lightest surface instead.
+  Color get chromeKey => brightness == Brightness.dark
+      ? surfaceContainerHigh
+      : surfaceContainerLowest;
 }
 
 /// Twenty colours in hex, in the order a terminal's settings list them:
@@ -91,25 +139,29 @@ TerminalTheme _colors(String hex) {
 /// Dracula and Nord publish no light variant; theirs are the scheme's own
 /// colours on a light background, darkened the same way.
 final terminalSchemes = [
-  // The green Jeansh always had. Background, text, cursor and selection are
-  // the Material surface, on-surface and primary it had before there were
-  // themes; the ANSI colours are VS Code's: xterm2's default on dark, after
-  // Light+ on light.
+  // The green Jeansh always had, on the denim of its icon: the app's
+  // surfaces, the text on them and its outlines grow from #373964, its
+  // accents from the green. The terminal's background and text are the
+  // denim's Material surface-container-low and on-surface, its cursor and
+  // selection the green's primary, as all four were the green's before; the
+  // ANSI colours are VS Code's: xterm2's default on dark, after Light+ on
+  // light.
   TerminalScheme(
     'clode',
     'Jeansh',
     const Color(0xFF4CC38A),
+    neutral: const Color(0xFF373964),
     // red cd3131 → d85a5a, blue 2472c8 → 3685db, magenta bc3fbc → c656c6,
     // bright black 666666 → 676767.
     dark:
-        '171d19 dfe4dd 91d5ad 5991d5ad '
+        '1a1b25 e3e1ef 91d5ad 5991d5ad '
         '000000 d85a5a 0dbc79 e5e510 3685db c656c6 11a8cd e5e5e5 '
         '676767 f14c4c 23d18b f5f543 3b8eea d670d6 29b8db ffffff',
     // yellow 946f00 → 8e6a00, cyan 0a7f9e → 0a7997; bright red e04848 →
     // d82525, green 148f14 → 128112, yellow a88400 → 896c00, blue 2a6fd6 →
     // 286dd2, magenta c837c8 → b833b8, cyan 0a93b3 → 087a94.
     light:
-        'f0f5ee 171d19 266a4a 59266a4a '
+        'f5f2ff 1a1b25 266a4a 59266a4a '
         '000000 cd3131 107c10 8e6a00 0451a5 bc05bc 0a7997 555555 '
         '666666 d82525 128112 896c00 286dd2 b833b8 087a94 8c8c8c',
   ),
