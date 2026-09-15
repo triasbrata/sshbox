@@ -8,6 +8,7 @@ import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart';
+import '../files/transfers.dart';
 import 'code_languages.dart';
 import 'file_download.dart';
 import 'key_bar.dart';
@@ -29,10 +30,15 @@ class FileEditorPage extends StatefulWidget {
     this.draftKey,
     this.line,
     this.onOpenWeb,
+    this.host,
   });
 
   final FileBrowser browser;
   final String path;
+
+  /// The host the file is on, as its tab names it, for the Transfers tab to
+  /// say where a download came from.
+  final String? host;
 
   /// Opens a web link from the Markdown preview in a tab beside the shell,
   /// as a link in the terminal opens. Null sends it to the phone's browser.
@@ -232,8 +238,8 @@ class _FileEditorPageState extends State<FileEditorPage> {
   bool _saving = false;
   bool _saved = false;
 
-  /// The download under way, and how far along it is.
-  ({String label, double? progress})? _transfer;
+  /// The download under way, which its bar follows.
+  Transfer? _transfer;
 
   bool get _embedded => widget.onClose != null;
 
@@ -763,6 +769,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
       context,
       widget.browser,
       widget.path,
+      host: widget.host ?? '',
       // Opened through sudo, while a download reads as the login.
       denied: _asRoot
           ? 'Could not download ${RemotePath.basename(widget.path)}: your '

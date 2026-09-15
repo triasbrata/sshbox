@@ -9,6 +9,7 @@ import 'package:toastification/toastification.dart';
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
 import 'db/db_session.dart';
+import 'files/transfers.dart';
 import 'models/host_profile.dart';
 import 'notifications/notification_gateway.dart';
 import 'notifications/notify_key.dart';
@@ -81,6 +82,7 @@ class _SshboxAppState extends State<SshboxApp> {
     // Local notifications first: FCM only delivers messages, the display and
     // tap routing below it are shared.
     await _notifications.initialize();
+    await _notifications.followTransfers(transfers);
     await _push.initialize();
   }
 
@@ -110,6 +112,10 @@ class _SshboxAppState extends State<SshboxApp> {
     final hostId = uri.pathSegments.first;
 
     switch (uri.host) {
+      // `sshbox://transfers/<id>`: a transfer's notification, tapped or
+      // cancelled from.
+      case 'transfers':
+        _sessions.showTransfers(select: true);
       case 'host':
         await openHost(hostId);
       case 'notify' when kDebugMode:

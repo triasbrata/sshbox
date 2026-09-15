@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
+import '../files/transfers.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
@@ -15,6 +16,7 @@ import 'file_editor_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
 import 'toast.dart';
+import 'transfers_page.dart';
 import 'web_page.dart';
 
 /// One tab, named by what it shows rather than by an index — indices shift
@@ -68,6 +70,7 @@ class _TabsShellState extends State<TabsShell> {
   void initState() {
     super.initState();
     widget.sessions.addListener(_onSessionsChanged);
+    transfers.addListener(_onTransfers);
     // A port forward has no page of its own on screen to ask about a host
     // key from, or to speak through, and this shell always is.
     portForwards
@@ -78,6 +81,7 @@ class _TabsShellState extends State<TabsShell> {
   @override
   void dispose() {
     widget.sessions.removeListener(_onSessionsChanged);
+    transfers.removeListener(_onTransfers);
     portForwards
       ..confirmHostKey = null
       ..onNotice = null;
@@ -101,6 +105,21 @@ class _TabsShellState extends State<TabsShell> {
 
   void _onSessionsChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// The newest transfer already seen, so each new one brings the Transfers
+  /// tab back once, and closing it until the next one sticks.
+  int? _newestTransfer = transfers.items.firstOrNull?.id;
+
+  /// A transfer starting puts the Transfers tab at the end of the strip,
+  /// where a browser's downloads button sits, without showing it: the page
+  /// it was started from stays in front, and nothing covers the tabs, as a
+  /// toast offering to open it would before it went again.
+  void _onTransfers() {
+    final newest = transfers.items.firstOrNull?.id;
+    if (newest == null || newest == _newestTransfer) return;
+    _newestTransfer = newest;
+    widget.sessions.showTransfers();
   }
 
   /// Left to right: each session's shell, then the files and the web pages
@@ -165,6 +184,7 @@ class _TabsShellState extends State<TabsShell> {
       // when the session it was typed in is long gone.
       draftKey: '${tab.session.host.id}:${tab.path}',
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
+      host: tab.session.fileTabHost,
       line: tab.session.id == widget.sessions.activeId &&
               tab.path == widget.sessions.activePath
           ? widget.sessions.activeLine
@@ -201,16 +221,25 @@ class _TabsShellState extends State<TabsShell> {
   Widget build(BuildContext context) {
     final tabs = _tabs();
     final databases = widget.sessions.dbTabs;
-    final ids = {...tabs.map(_idOf), ...databases.map(_dbIdOf)};
+    final showTransfers = widget.sessions.transfersTab;
+    final ids = {
+      ...tabs.map(_idOf),
+      ...databases.map(_dbIdOf),
+      if (showTransfers) _transfersId,
+    };
     _pageKeys.removeWhere((id, _) => !ids.contains(id));
     final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
     final activePath = widget.sessions.activePath;
     final activeWeb = widget.sessions.activeWeb;
     final activeDb = widget.sessions.activeDb;
-    // A database's tab comes after every session's. A tab that no longer
-    // exists falls back to the host list rather than an out-of-range index.
-    final activeIndex = activeDb != null && databases.contains(activeDb)
+    // A database's tab comes after every session's, and the Transfers tab
+    // after them all. A tab that no longer exists falls back to the host list
+    // rather than an out-of-range index.
+    final transfersIndex = tabs.length + databases.length + 1;
+    final activeIndex = showTransfers && widget.sessions.transfersActive
+        ? transfersIndex
+        : activeDb != null && databases.contains(activeDb)
         ? tabs.length + 1 + databases.indexOf(activeDb)
         : tabs.indexWhere(
                 (tab) =>
@@ -221,9 +250,9 @@ class _TabsShellState extends State<TabsShell> {
               ) +
               1;
     _shown.removeWhere((id) => !ids.contains(id));
-    if (activeIndex > tabs.length) {
+    if (activeIndex > tabs.length && activeIndex < transfersIndex) {
       _shown.add(_dbIdOf(databases[activeIndex - 1 - tabs.length]));
-    } else if (activeIndex > 0) {
+    } else if (activeIndex > 0 && activeIndex <= tabs.length) {
       final tab = tabs[activeIndex - 1];
       _shown.add(_idOf(tab));
       // A tab brought back from an earlier run connects the first time it
@@ -266,6 +295,10 @@ class _TabsShellState extends State<TabsShell> {
                 ),
               },
               onCloseDatabase: widget.sessions.closeDb,
+              showTransfers: showTransfers,
+              onSelectTransfers: () =>
+                  widget.sessions.showTransfers(select: true),
+              onCloseTransfers: widget.sessions.closeTransfers,
               // The connect sheet, over the tab, as the terminal page's own
               // Try again opens it; a sign-in opens beside the tab.
               onReconnect: (session) => connectInSheet(
@@ -291,6 +324,10 @@ class _TabsShellState extends State<TabsShell> {
                     ),
                     ...tabs.map(_pageFor),
                     ...databases.map(_databasePage),
+                    if (showTransfers)
+                      TransfersPage(
+                        key: _pageKeys.putIfAbsent(_transfersId, GlobalKey.new),
+                      ),
                   ].indexed)
                     // Every page stays in the tree so its terminal keeps
                     // scroll, key bar and connection — but only the visible
@@ -324,12 +361,20 @@ class TabStrip extends StatefulWidget {
     this.onCloseDatabase,
     required this.onReconnect,
     required this.onDuplicate,
+    this.showTransfers = false,
+    this.onSelectTransfers,
+    this.onCloseTransfers,
   });
 
   final List<TabRef> tabs;
 
   /// The databases open in tabs of their own, after every session's tabs.
   final List<DbTab> databases;
+
+  /// Whether the Transfers tab is on the strip, after all the others.
+  final bool showTransfers;
+  final VoidCallback? onSelectTransfers;
+  final VoidCallback? onCloseTransfers;
   final int activeIndex;
   final void Function(int? id, {TabKind kind, String? path, WebTab? web})
   onSelect;
@@ -350,6 +395,9 @@ String _idOf(TabRef tab) =>
 /// The same, for a database's tab.
 String _dbIdOf(DbTab tab) => 'database:${tab.id}';
 
+/// The same, for the Transfers tab: there is only one.
+const _transfersId = 'transfers';
+
 class _TabStripState extends State<TabStrip> {
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
@@ -368,6 +416,7 @@ class _TabStripState extends State<TabStrip> {
     final ids = [
       ...widget.tabs.map(_idOf),
       ...widget.databases.map(_dbIdOf),
+      if (widget.showTransfers) _transfersId,
     ];
     final index = widget.activeIndex - 1;
     if (index < 0 || index >= ids.length) {
@@ -432,7 +481,11 @@ class _TabStripState extends State<TabStrip> {
     final theme = Theme.of(context);
     final tabs = widget.tabs;
     final databases = widget.databases;
-    final ids = {...tabs.map(_idOf), ...databases.map(_dbIdOf)};
+    final ids = {
+      ...tabs.map(_idOf),
+      ...databases.map(_dbIdOf),
+      if (widget.showTransfers) _transfersId,
+    };
     _keys.removeWhere((id, _) => !ids.contains(id));
 
     // A lone tab takes the whole strip, the way Terminus lays it out: there
@@ -490,6 +543,23 @@ class _TabStripState extends State<TabStrip> {
           expand: single,
           onTap: () => widget.onSelectDatabase?.call(tab),
           onClose: () => widget.onCloseDatabase?.call(tab),
+        ),
+      if (widget.showTransfers)
+        // Only this chip follows the transfers, lit while one is on its way
+        // as a live shell's is; the strip is built again only as tabs change.
+        ListenableBuilder(
+          key: _keys.putIfAbsent(_transfersId, GlobalKey.new),
+          listenable: transfers,
+          builder: (context, _) => _TabChip(
+            icon: Icons.swap_vert,
+            label: 'Transfers',
+            selected:
+                tabs.length + databases.length + 1 == widget.activeIndex,
+            connected: transfers.anyRunning,
+            expand: single,
+            onTap: () => widget.onSelectTransfers?.call(),
+            onClose: () => widget.onCloseTransfers?.call(),
+          ),
         ),
     ];
 

@@ -200,7 +200,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     final size = attrs.size ?? 0;
     if (size > maxBytes) {
       throw FileBrowserException(
-        '${_formatBytes(size)} is too large to open here. '
+        '${formatBytes(size)} is too large to open here. '
         'Use the terminal for a file this size.',
         fault: FileBrowserFault.tooLarge,
       );
@@ -378,6 +378,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     String path, {
     bool replace = false,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) =>
       _guard(
         'upload ${RemotePath.basename(path)} to ${RemotePath.parent(path)}',
@@ -403,7 +404,12 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
                 SftpFileOpenMode.write,
           );
           try {
-            await sendFile(file, localPath, onProgress: onProgress);
+            await sendFile(
+              file,
+              localPath,
+              onProgress: onProgress,
+              cancel: cancel,
+            );
             if (replace) {
               try {
                 await sftp.rename(target, path);
@@ -423,15 +429,24 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
       );
 
   /// Fills [remote], a file of ours just made by an exclusive open, from the
-  /// phone's file at [localPath], then closes it.
+  /// phone's file at [localPath], then closes it. [cancel] completing stops
+  /// it with [FileBrowserException.cancelled].
   ///
   /// Private (0600) before any byte goes in: whatever is left readable there,
   /// every login that can see the directory can read. The one way a file
   /// goes up: the key bar's upload to /tmp and the tree's both end here.
+  ///
+  /// Streamed, never the whole file in memory: the phone's file is read
+  /// 64 KB at a time, each read an event-loop turn of its own, so what is
+  /// sealed on the UI isolate between two frames is one read's worth. 16
+  /// writes wait on the host at most, which keeps a link 30 ms away busy,
+  /// where 256 KB handed over at a time and each waited out left it idle in
+  /// between: see tool/transfer_bench.dart.
   static Future<void> sendFile(
     SftpFile remote,
     String localPath, {
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     try {
       await remote.setStat(
@@ -439,22 +454,22 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
       );
       final source = File(localPath);
       final total = await source.length();
-      final handle = await source.open();
-      try {
-        // A chunk at a time against the file offset: reading a whole video
-        // into memory first is not something a phone forgives.
-        const chunkSize = 256 * 1024;
-        var offset = 0;
-        while (offset < total) {
-          final chunk = await handle.read(chunkSize);
-          if (chunk.isEmpty) break;
-          await remote.writeBytes(chunk, offset: offset);
-          offset += chunk.length;
-          onProgress?.call(offset, total);
-        }
-      } finally {
-        await handle.close();
-      }
+      final writer = remote.write(
+        source.openRead().cast<Uint8List>(),
+        onProgress: (sent) => onProgress?.call(sent, total),
+        // One SSH packet each, headers and all, in the 32 KB a host takes.
+        chunkSize: 32 * 1024 - 64,
+        maxPendingRequests: 16,
+      );
+      var stopped = false;
+      unawaited(
+        cancel?.then((_) {
+          stopped = true;
+          return writer.abort();
+        }),
+      );
+      await writer.done;
+      if (stopped) throw FileBrowserException.cancelled;
     } finally {
       await remote.close();
     }
@@ -465,22 +480,35 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     String path,
     String localPath, {
     void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
   }) =>
       _guard('download ${RemotePath.basename(path)}', () async {
         final sftp = await _channel();
         final size = (await sftp.stat(path)).size ?? 0;
         final file = await sftp.open(path);
         final local = File(localPath).openWrite();
+        var stopped = false;
+        unawaited(cancel?.then((_) => stopped = true));
         try {
-          // Every reply is decrypted on the UI isolate (dartssh2 is pure
-          // Dart), so what is in flight is what can land in one go: half a
-          // megabyte keeps that burst short and the frames coming.
-          await file.downloadTo(
-            local,
-            onProgress: (received) => onProgress?.call(received, size),
+          // Half a megabyte in flight keeps a link 30 ms away busy, where a
+          // quarter of it halves the speed. Every reply is decrypted on the
+          // UI isolate, dartssh2 being pure Dart, and the paced socket in
+          // dartssh2_transport.dart hands it over a packet at a time, so the
+          // frames keep coming however much of it lands at once.
+          var received = 0;
+          await for (final chunk in file.read(
             chunkSize: 32 * 1024,
             maxPendingRequests: 16,
-          );
+          )) {
+            if (stopped) throw FileBrowserException.cancelled;
+            local.add(chunk);
+            onProgress?.call(received += chunk.length, size);
+            // Written out every 2 MB: a disk slower than the link holds no
+            // more than that in memory.
+            if (received % (2 * 1024 * 1024) < chunk.length) {
+              await local.flush();
+            }
+          }
         } finally {
           await local.close();
           await file.close();
@@ -929,19 +957,5 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
       );
     }
     return FileBrowserException('Could not $action: $error');
-  }
-
-  static String _formatBytes(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var value = bytes.toDouble();
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    final rounded = unit == 0 || value >= 100
-        ? value.toStringAsFixed(0)
-        : value.toStringAsFixed(1);
-    return '$rounded ${units[unit]}';
   }
 }

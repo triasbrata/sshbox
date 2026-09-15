@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../files/file_browser.dart';
+import '../files/transfers.dart';
 import 'file_download.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
@@ -167,9 +168,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   bool _busy = false;
   bool _showHidden = false;
 
-  /// The upload or download under way: what it is, and how far along it is,
-  /// null while that is not known yet.
-  ({String label, double? progress})? _transfer;
+  /// The upload or download under way, which its bar follows, and what the
+  /// bar says where the file's name is not enough.
+  Transfer? _transfer;
+  String? _transferLabel;
 
   final _filterController = TextEditingController();
   bool _filtering = false;
@@ -637,15 +639,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     );
   }
 
-  /// Shows [done] of [total] for the transfer called [label]; a [total] of
-  /// nought is one not known yet.
-  void _showTransfer(String label, int done, int total) {
-    if (!mounted) return;
-    setState(() {
-      _transfer = (label: label, progress: total > 0 ? done / total : null);
-    });
-  }
-
   /// [_say], for the news at the end of a long transfer. The drawer may have
   /// been shut by then, and the answer should not go with it, so it goes
   /// through the app's navigator rather than this page.
@@ -705,16 +698,35 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           }
         }
 
-        final label = picked.length == 1
-            ? 'Uploading $name'
-            : 'Uploading $name (${index + 1} of ${picked.length})';
-        _showTransfer(label, 0, 0);
-        await widget.browser.upload(
-          localPath,
-          RemotePath.join(folder, name),
-          replace: replace,
-          onProgress: (done, total) => _showTransfer(label, done, total),
-        );
+        final target = RemotePath.join(folder, name);
+        try {
+          await transfers.run(
+            name: name,
+            host: widget.title,
+            direction: TransferDirection.upload,
+            work: (transfer) {
+              if (mounted) {
+                setState(() {
+                  _transfer = transfer;
+                  _transferLabel = picked.length == 1
+                      ? null
+                      : 'Uploading $name (${index + 1} of ${picked.length})';
+                });
+              }
+              return widget.browser.upload(
+                localPath,
+                target,
+                replace: replace,
+                onProgress: transfer.report,
+                cancel: transfer.cancelled,
+              );
+            },
+          );
+        } on FileBrowserException catch (error) {
+          // One file cancelled leaves the rest to go.
+          if (error.fault == FileBrowserFault.cancelled) continue;
+          rethrow;
+        }
         taken.add(name);
         sent.add(name);
       }
@@ -733,6 +745,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         setState(() {
           _busy = false;
           _transfer = null;
+          _transferLabel = null;
         });
       }
     }
@@ -780,8 +793,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         context,
         widget.browser,
         entry.path,
+        host: widget.title,
         onTransfer: (transfer) {
-          if (mounted) setState(() => _transfer = transfer);
+          if (!mounted) return;
+          setState(() {
+            _transfer = transfer;
+            _transferLabel = null;
+          });
         },
       );
     } finally {
@@ -861,7 +879,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         body: Column(
           children: [
             if (root != null) _buildRootHeader(root),
-            if (_transfer case final transfer?) TransferBar(transfer),
+            if (_transfer case final transfer?)
+              TransferBar(transfer, label: _transferLabel),
             Expanded(child: _buildBody()),
           ],
         ),

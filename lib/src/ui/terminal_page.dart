@@ -10,6 +10,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
+import '../files/transfers.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -75,8 +76,9 @@ class _TerminalPageState extends State<TerminalPage> {
   Iterable<_PaneViewState> get _paneViews =>
       _views.values.map((key) => key.currentState).nonNulls;
 
-  bool _uploading = false;
-  double? _uploadProgress;
+  /// The upload under way from here, which the bar along the terminal's
+  /// bottom edge follows.
+  Transfer? _sending;
 
   /// Kept for the width of a tablet session rather than per visit, because the
   /// drawer holding it is rebuilt every time it opens and reconnecting SFTP on
@@ -205,7 +207,9 @@ class _TerminalPageState extends State<TerminalPage> {
 
   /// Uploads anything handed to the session from outside the terminal page.
   Future<void> _drainShared() async {
-    if (_uploading || !_session.isConnected || !_session.hasPendingUploads) {
+    if (_sending != null ||
+        !_session.isConnected ||
+        !_session.hasPendingUploads) {
       return;
     }
     // Opening a session replaces this page with a fresh one; only whichever is
@@ -477,15 +481,19 @@ class _TerminalPageState extends State<TerminalPage> {
   Future<void> _upload(SharedFile file) async {
     if (!mounted) return;
 
-    setState(() => _uploading = true);
-
     try {
-      final remotePath = await _session.uploadToTmp(
-        localPath: file.path,
-        fileName: file.name,
-        onProgress: (sent, total) {
-          if (!mounted || total == 0) return;
-          setState(() => _uploadProgress = sent / total);
+      final remotePath = await transfers.run(
+        name: file.name,
+        host: _session.host.displayName,
+        direction: TransferDirection.upload,
+        work: (transfer) {
+          setState(() => _sending = transfer);
+          return _session.uploadToTmp(
+            localPath: file.path,
+            fileName: file.name,
+            onProgress: transfer.report,
+            cancel: transfer.cancelled,
+          );
         },
       );
 
@@ -500,7 +508,11 @@ class _TerminalPageState extends State<TerminalPage> {
         );
       }
     } catch (error) {
-      if (mounted) {
+      // Cancelled from the Transfers tab or the notification, which say so.
+      final cancelled =
+          error is FileBrowserException &&
+          error.fault == FileBrowserFault.cancelled;
+      if (mounted && !cancelled) {
         showToast(
           context,
           'Upload failed: $error',
@@ -508,12 +520,7 @@ class _TerminalPageState extends State<TerminalPage> {
         );
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _uploading = false;
-          _uploadProgress = null;
-        });
-      }
+      if (mounted) setState(() => _sending = null);
     }
   }
 
@@ -557,7 +564,7 @@ class _TerminalPageState extends State<TerminalPage> {
               tooltip: 'Upload a file to /tmp',
               onPressed: (_session.isConnected &&
                       _session.canUploadFiles &&
-                      !_uploading)
+                      _sending == null)
                   ? _attachFile
                   : null,
               icon: const Icon(Icons.attach_file),
@@ -645,12 +652,18 @@ class _TerminalPageState extends State<TerminalPage> {
         // than in the bar's slot: growing the slot would shrink the terminal,
         // and resize the shell once when an upload starts and again when it
         // ends.
-        if (_uploading)
+        if (_sending case final sending?)
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: LinearProgressIndicator(value: _uploadProgress),
+            // Only the bar follows the transfer, a few times a second: the
+            // page is built again only as it starts and ends.
+            child: ListenableBuilder(
+              listenable: transfers,
+              builder: (_, _) =>
+                  LinearProgressIndicator(value: sending.fraction),
+            ),
           ),
         // In the body rather than the Scaffold's button slot so it can be
         // parked anywhere, and so its ring is free to open over the terminal.

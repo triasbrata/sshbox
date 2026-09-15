@@ -19,6 +19,9 @@ class FakeFilePicker extends FilePickerPlatform {
   /// False to have the user dismiss Android's save dialog.
   bool save = true;
 
+  /// Every saved download Open was asked to open.
+  final List<String> opened = [];
+
   @override
   Future<List<PlatformFile>> pickFiles({
     String? dialogTitle,
@@ -64,14 +67,19 @@ FakeFilePicker useFakePicker() {
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   messenger.setMockMethodCallHandler(android, (call) async {
-    if (call.method != 'saveAs') return null;
-    final arguments = call.arguments as Map<Object?, Object?>;
-    final from = picker.savedFrom = arguments['path']! as String;
-    picker.saved = (
-      name: arguments['name']! as String,
-      bytes: File(from).readAsBytesSync(),
-    );
-    return picker.save;
+    final arguments = call.arguments;
+    if (arguments is! Map) return null;
+    switch (call.method) {
+      case 'saveAs':
+        final from = picker.savedFrom = arguments['path']! as String;
+        final name = arguments['name']! as String;
+        picker.saved = (name: name, bytes: File(from).readAsBytesSync());
+        return picker.save ? 'content://downloads/$name' : null;
+      case 'open':
+        picker.opened.add(arguments['uri']! as String);
+        return true;
+    }
+    return null;
   });
   addTearDown(() => messenger.setMockMethodCallHandler(android, null));
   return picker;
