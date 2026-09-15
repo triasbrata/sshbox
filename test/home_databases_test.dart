@@ -195,8 +195,9 @@ void main() {
       // The same rows as JSON, a card each, and back to the grid.
       await tester.tap(find.byTooltip('JSON'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('"name": "ann"'), findsOneWidget);
-      expect(find.textContaining('"name": null'), findsOneWidget);
+      expect(find.textContaining('name: "ann"'), findsOneWidget);
+      expect(find.textContaining('name: null'), findsOneWidget);
+      expect(find.byTooltip('Copy JSON'), findsNWidgets(2));
       expect(find.text('ann'), findsNothing);
       await tester.tap(find.byTooltip('Table'));
       await tester.pumpAndSettle();
