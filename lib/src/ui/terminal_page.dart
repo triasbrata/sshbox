@@ -245,10 +245,12 @@ class _TerminalPageState extends State<TerminalPage> {
     return _keyBar.applyModifiers(data);
   }
 
-  /// The same for the keys the bar, the pad and the magic key send.
+  /// The same for the keys the bar, the pad and the magic key send: an armed
+  /// modifier folds into a key of one character, so ALT with the magic key's
+  /// Enter is ESC CR, a new line, and CTRL with a symbol is its control code.
   void _send(String data) {
     _letGo();
-    _session.sendRaw(data);
+    _session.sendRaw(_keyBar.applyToKey(data));
   }
 
   void _letGo() {
