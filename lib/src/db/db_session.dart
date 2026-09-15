@@ -210,6 +210,17 @@ class DbResult {
 
   /// Each row's document, as indented JSON: MongoDB's.
   final List<String>? details;
+
+  /// Row [index] as indented JSON: its document, or its columns and values
+  /// as the database gave them.
+  ///
+  /// ponytail: JSON has one key per name, so of two columns with the same
+  /// name only the last shows.
+  String json(int index) =>
+      details?[index] ??
+      const JsonEncoder.withIndent('  ').convert({
+        for (var c = 0; c < columns.length; c++) columns[c]: rows[index][c],
+      });
 }
 
 /// An open database, and the SSH connection it goes through: what the
