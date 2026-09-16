@@ -744,7 +744,7 @@ class _BadgeColumn extends StatelessWidget {
     final theme = Theme.of(context);
 
     return SizedBox(
-      width: 64,
+      width: 80,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
