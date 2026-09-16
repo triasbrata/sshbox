@@ -40,10 +40,12 @@ class DbBrowserPage extends StatefulWidget {
   final DbOpener open;
 
   @override
-  State<DbBrowserPage> createState() => _DbBrowserPageState();
+  State<DbBrowserPage> createState() => DbBrowserPageState();
 }
 
-class _DbBrowserPageState extends State<DbBrowserPage> {
+/// Public so the tab strip can ask [DbBrowserPageState.mayDrop] before it
+/// closes the tab out from under changes not saved.
+class DbBrowserPageState extends State<DbBrowserPage> {
   final _scaffold = GlobalKey<ScaffoldState>();
   final _filter = TextEditingController();
   final _query = TextEditingController();
@@ -93,6 +95,7 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
   }
 
   Future<void> _connect() async {
+    if (!await mayDrop()) return;
     final attempt = ++_attempt;
     final old = _session;
     setState(() {
@@ -148,7 +151,7 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
   /// What [name] under [group] shows, run.
   Future<void> _open(String group, String name) async {
     final session = _session;
-    if (session == null) return;
+    if (session == null || !await mayDrop()) return;
     _scaffold.currentState?.closeEndDrawer();
     try {
       _query.text = await session.queryFor(group, name);
@@ -156,12 +159,46 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
       if (mounted) setState(() => _runError = '$error');
       return;
     }
-    await _run();
+    await _read();
   }
 
-  /// Runs [query], or what the box holds. Its result drops whatever was
-  /// changed in the one before and not saved.
+  /// Runs [query], or what the box holds, once whatever is not saved may go.
   Future<void> _run([String? query]) async {
+    if (await mayDrop()) await _read(query);
+  }
+
+  /// Whether the changes not saved may go: there are none, or the user said
+  /// so. Asked before a run, another table, a reconnect and the tab's close,
+  /// each of which reads the rows afresh and leaves nothing of them.
+  Future<bool> mayDrop() async {
+    final changes = _changes;
+    if (changes == null || changes.isEmpty || !mounted) return true;
+    final drop = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Discard ${_count(changes.count)}?'),
+        content: const Text(
+          'They were never saved to the database, and there is no way back '
+          'to them.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    return drop ?? false;
+  }
+
+  /// Runs [query] and shows what it gives back, dropping whatever was
+  /// changed in the result before: every caller has asked about that first.
+  Future<void> _read([String? query]) async {
     final session = _session;
     final text = query ?? _query.text;
     if (session == null || _running || text.trim().isEmpty) return;
@@ -212,7 +249,12 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
       return;
     }
     if (!mounted) return;
-    setState(() => _running = false);
+    setState(() {
+      _running = false;
+      // Saved, or gone with what was saved: the read-back has none to ask
+      // about.
+      _changes = DbChanges();
+    });
     showToast(
       context,
       missed == null ? 'Saved ${_count(changes.count)}' : 'Not all saved\n$missed',
@@ -220,7 +262,7 @@ class _DbBrowserPageState extends State<DbBrowserPage> {
           ? ToastificationType.success
           : ToastificationType.warning,
     );
-    await _run(_shownQuery);
+    await _read(_shownQuery);
   }
 
   static String _count(int changes) =>

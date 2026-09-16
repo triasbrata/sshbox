@@ -90,6 +90,10 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
   await tester.pumpAndSettle();
 }
 
+/// The button saying [label] on the dialog, not the one behind it.
+Finder _inDialog(String label) =>
+    find.descendant(of: find.byType(AlertDialog), matching: find.text(label));
+
 /// Taps [cell] and types [text] as its value.
 Future<void> _type(WidgetTester tester, Finder cell, String text) async {
   await tester.tap(cell);
@@ -168,11 +172,41 @@ void main() {
     expect(find.text('zed'), findsOneWidget);
     await tester.tap(find.text('Run'));
     await tester.pumpAndSettle();
+    // Asked first, the run reading the rows afresh.
+    expect(find.text('Discard 1 change?'), findsOneWidget);
+    await tester.tap(_inDialog('Discard'));
+    await tester.pumpAndSettle();
     expect(find.text('zed'), findsNothing);
     expect(find.text('ann'), findsOneWidget);
     expect(find.text(_hint), findsOneWidget);
     expect(saved, isEmpty);
     expect(db.runs, [_query, _query]);
+  });
+
+  testWidgets('nothing not saved goes without asking', (tester) async {
+    final saved = <String>[];
+    final db = _people(saved);
+    await _open(tester, db);
+    await _type(tester, find.text('ann'), 'zed');
+
+    // A run reads the rows afresh: Keep editing leaves the change where it
+    // is, and runs nothing.
+    await tester.tap(find.text('Run'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard 1 change?'), findsOneWidget);
+    await tester.tap(_inDialog('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(find.text('zed'), findsOneWidget);
+    expect(db.runs, [_query]);
+
+    // A reconnect would let the rows go too.
+    await tester.tap(find.byTooltip('Reconnect'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard 1 change?'), findsOneWidget);
+    await tester.tap(_inDialog('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(find.text('zed'), findsOneWidget);
+    expect(saved, isEmpty);
   });
 
   testWidgets('a locked column is not edited, no NULL where there is none, '

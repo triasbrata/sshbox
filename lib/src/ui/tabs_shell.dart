@@ -199,6 +199,14 @@ class _TabsShellState extends State<TabsShell> {
     ),
   };
 
+  /// Closes [tab], once its page says the changes not saved in its grid may
+  /// go: closing it takes the page, and them, with it.
+  Future<void> _closeDatabase(DbTab tab) async {
+    final page = _pageKeys[_dbIdOf(tab)]?.currentState;
+    if (page is DbBrowserPageState && !await page.mayDrop()) return;
+    widget.sessions.closeDb(tab);
+  }
+
   /// A database's tab. Its page connects when first built, and lets the
   /// connection go when the tab closes.
   Widget _databasePage(DbTab tab) => !_shown.contains(_dbIdOf(tab))
@@ -294,7 +302,7 @@ class _TabsShellState extends State<TabsShell> {
                   tab.web!,
                 ),
               },
-              onCloseDatabase: widget.sessions.closeDb,
+              onCloseDatabase: _closeDatabase,
               showTransfers: showTransfers,
               onSelectTransfers: () =>
                   widget.sessions.showTransfers(select: true),
