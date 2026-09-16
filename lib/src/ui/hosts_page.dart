@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -237,21 +236,17 @@ class _HostsPageState extends State<HostsPage> {
   }
 
   /// The ways out of Home, each with its name on it rather than an icon to
-  /// guess from, under the stitching: in a row that scrolls on a phone.
+  /// guess from: in a row that scrolls on a phone.
   PreferredSizeWidget _tools() {
     void push(Widget page) => Navigator.of(
       context,
     ).push(MaterialPageRoute<void>(builder: (_) => page));
 
     return PreferredSize(
-      preferredSize: const Size.fromHeight(64),
+      preferredSize: const Size.fromHeight(56),
       child: Column(
         children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: _Stitch(),
-          ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 8),
           SizedBox(
             height: 40,
             child: ListView(
@@ -473,8 +468,9 @@ class _HostsPageState extends State<HostsPage> {
   }
 }
 
-/// The app's name as its icon writes it, the prompt in green before it, in
-/// the face the app writes machine text in, and its tagline under it.
+/// The app's name and its tagline, as the header has always read them: the
+/// prompt drawn before it and the mono face were too much, said of the first
+/// build of this redesign.
 class _Wordmark extends StatelessWidget {
   const _Wordmark();
 
@@ -483,25 +479,12 @@ class _Wordmark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    const mono = TextStyle(fontFamily: uiMonoFamily, fontWeight: FontWeight.w700);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ExcludeSemantics(
-              child: Text(
-                '>_',
-                style: mono.copyWith(color: theme.colorScheme.primary),
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Text('Jeansh', style: mono),
-          ],
-        ),
+        const Text('Jeansh'),
         Text(
           _tagline,
           maxLines: 1,
@@ -513,42 +496,6 @@ class _Wordmark extends StatelessWidget {
       ],
     );
   }
-}
-
-/// The stitching round the pocket on Jeansh's icon, drawn once, under Home's
-/// name: the one place the app wears it.
-class _Stitch extends StatelessWidget {
-  const _Stitch();
-
-  /// The thread's colour on the icon.
-  static const _thread = Color(0xFFD6A25A);
-
-  @override
-  Widget build(BuildContext context) => const SizedBox(
-    height: 2,
-    width: double.infinity,
-    child: CustomPaint(painter: _StitchPainter(_thread)),
-  );
-}
-
-class _StitchPainter extends CustomPainter {
-  const _StitchPainter(this.color);
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = color.withValues(alpha: 0.6);
-    for (var x = 0.0; x < size.width; x += 14) {
-      canvas.drawRect(
-        Rect.fromLTWH(x, 0, math.min(8, size.width - x), size.height),
-        paint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_StitchPainter oldDelegate) => oldDelegate.color != color;
 }
 
 /// A way out of Home, named: an outlined pill, with how many of the thing
