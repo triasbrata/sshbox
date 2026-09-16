@@ -15,7 +15,7 @@ import '../models/host_profile.dart';
 import '../models/os_info.dart';
 import '../notifications/direct_notify.dart';
 import '../notifications/notify_key.dart';
-import 'dartssh2_transport.dart';
+import 'isolate_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 import 'tmux.dart';
@@ -404,7 +404,7 @@ class LiveSession extends ChangeNotifier {
 
       final transport =
           _transport?.call(confirmHostKey, banner) ??
-          Dartssh2Transport(
+          IsolateTransport(
             confirmHostKey: confirmHostKey,
             onAuthBanner: banner,
           );

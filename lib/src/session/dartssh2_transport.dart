@@ -11,7 +11,6 @@ import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../files/sftp_file_browser.dart';
 import '../models/host_profile.dart';
-import 'paced_socket.dart';
 import 'terminal_session.dart';
 
 /// The SSH implementation of [SessionTransport].
@@ -25,9 +24,18 @@ class Dartssh2Transport implements SessionTransport {
     KnownHostStore? knownHosts,
     this.confirmHostKey,
     this.onAuthBanner,
+    this.loadHosts,
   }) : _knownHosts = knownHosts ?? KnownHostStore();
 
   final KnownHostStore _knownHosts;
+
+  /// The saved hosts a jump chain is resolved against.
+  ///
+  /// Left out, they come from [HostRepository], which needs shared
+  /// preferences — a Flutter plugin, and so out of reach of the worker
+  /// isolate `IsolateTransport` runs this on. That one hands over a loader
+  /// that asks the UI isolate instead.
+  final Future<List<HostProfile>> Function()? loadHosts;
 
   /// Asked when a host's key is not the one pinned for it — the first
   /// connect, or a key that has changed — so the user decides rather than
@@ -48,8 +56,9 @@ class Dartssh2Transport implements SessionTransport {
     Map<String, String> environment = const {},
     Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
-    final session = _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner)
-      .._environment = environment;
+    final session =
+        _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner, loadHosts)
+          .._environment = environment;
     await session._open(
       host: host,
       secrets: secrets,
@@ -100,11 +109,13 @@ class _Dartssh2Session
     this._knownHosts,
     this._confirmHostKey,
     this._onAuthBannerReceived,
+    this._loadHosts,
   );
 
   final KnownHostStore _knownHosts;
   final Future<bool> Function(HostKeyCheck check)? _confirmHostKey;
   final void Function(String banner)? _onAuthBannerReceived;
+  final Future<List<HostProfile>> Function()? _loadHosts;
 
   final _output = StreamController<String>.broadcast();
   final _status = ValueNotifier(SessionStatus.connecting);
@@ -148,20 +159,25 @@ class _Dartssh2Session
     try {
       final chain = [
         if (host.jumpHostId.isNotEmpty)
-          ...jumpChain(host, await HostRepository(secrets).load()),
+          ...jumpChain(
+            host,
+            await (_loadHosts?.call() ?? HostRepository(secrets).load()),
+          ),
         host,
       ];
 
       hop = chain.first;
+      // No pacing on the socket: this runs on an isolate of its own, where
+      // nothing is waiting for a frame. Handing dartssh2 the reads in pieces
+      // was what kept the UI isolate's frames coming, and it cost the whole
+      // of the link — see `IsolateTransport`.
       var client = await _login(
         hop,
         secrets,
-        () async => PacedSocket(
-          await SSHSocket.connect(
-            hop.host,
-            hop.port,
-            timeout: const Duration(seconds: 15),
-          ),
+        () => SSHSocket.connect(
+          hop.host,
+          hop.port,
+          timeout: const Duration(seconds: 15),
         ),
       );
       for (final next in chain.skip(1)) {

@@ -4,12 +4,34 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
+import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
+
+/// A connect that fails at once, without leaving this isolate.
+///
+/// The tests below connect only to get a session into its failed state. The
+/// real transport now runs on an isolate of its own, whose answers arrive on
+/// the real event loop rather than the one `testWidgets` drives, so a widget
+/// test that let it start would wait for ever.
+class _Refused implements SessionTransport {
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async =>
+      throw const SshSessionException('No password saved for this host.');
+}
 
 TabRef _shell(WidgetTester tester, String id, String label) {
   // Never connected: the strip only reads the session's name and status.
   final session = LiveSession(
     host: HostProfile(id: id, label: label, host: '10.0.2.2', username: 'me'),
+    transport: (confirmHostKey, onAuthBanner) => _Refused(),
   );
   addTearDown(session.dispose);
   return (session: session, kind: TabKind.terminal, path: null, web: null);

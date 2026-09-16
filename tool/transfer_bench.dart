@@ -29,8 +29,13 @@
 // 1.5-1.6 MB/s while this benchmark reported 22 MB/s. "KB a turn" below is
 // the number that ceiling is made of.
 //
-// The pacing under test is imported from the app, not copied: keeping a copy
-// here in step by hand is what let the ceiling through.
+// Both pacings below are now frozen baselines: the app paces nothing any
+// more, because its whole SSH transport moved to a worker isolate, where no
+// frame is waiting on it — see lib/src/session/isolate_transport.dart. They
+// are kept here as the numbers that change is measured against. The "after"
+// number cannot be taken here: the transport is bound to Flutter, which a
+// plain Dart VM cannot load, so it is measured frame-bound by
+// test/isolate_transfer_bench_test.dart instead.
 //
 // "stall" is the longest the event loop went without running a 1 ms timer,
 // which is how long a frame would have waited; "janky" is how many of those
@@ -46,7 +51,46 @@ import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:dartssh2/src/utils/openssh_chacha20_poly1305.dart';
-import 'package:sshbox/src/session/paced_socket.dart';
+
+/// A turn of the event loop.
+///
+/// A timer, not a microtask: microtasks all run before the loop gets back to
+/// anything else, so standing aside through one stands aside from nothing.
+Future<void> nextTurn() => Future<void>.delayed(Duration.zero);
+
+/// The budget the app dialled while it paced its socket on the UI isolate.
+const pacingBudget = Duration(milliseconds: 4);
+
+/// One full SSH packet, the most a host sends in one.
+const _piece = 32 * 1024;
+
+/// The time-budget pacing the app shipped and has now dropped, kept here as a
+/// baseline: [source]'s bytes in pieces, spending at most [budget] of any one
+/// event-loop turn on them before standing aside through [yieldTurn].
+///
+/// Frame-bound, this is what a Flutter app measured: however long the turn
+/// is, the transfer moves what the device can decrypt in [budget] and then
+/// waits for the next frame, so the rate is that times 60. Raising the budget
+/// trades frames for speed with no knee to sit on, which is why the fix was
+/// to take the transport off the isolate the frame is on instead.
+Stream<Uint8List> paceReads(
+  Stream<Uint8List> source, {
+  Duration budget = pacingBudget,
+  Future<void> Function() yieldTurn = nextTurn,
+}) async* {
+  final spent = Stopwatch();
+  await for (final data in source) {
+    for (var at = 0; at < data.length; at += _piece) {
+      if (spent.elapsed >= budget) {
+        spent.reset();
+        await yieldTurn();
+      }
+      spent.start();
+      yield Uint8List.sublistView(data, at, min(at + _piece, data.length));
+      spent.stop();
+    }
+  }
+}
 
 String get _host => Platform.environment['SSHBOX_BENCH_HOST'] ?? '127.0.0.1';
 int get _port =>
@@ -494,17 +538,17 @@ Future<SSHClient> _connect(
 /// The pacing that shipped and capped the tablet at 1.6 MB/s: a fixed 32 KB
 /// handed over per event-loop turn.
 ///
-/// The one copy of old code kept here on purpose — it is the baseline the
-/// numbers above are measured against, and it no longer exists in the app.
+/// One of the two copies of old code kept here on purpose — it is a baseline
+/// the numbers above are measured against, and it no longer exists in the
+/// app.
 Stream<Uint8List> _fixedPace(
   Stream<Uint8List> source,
   Future<void> Function() yieldTurn,
 ) async* {
-  const piece = 32 * 1024;
   await for (final data in source) {
-    for (var at = 0; at < data.length; at += piece) {
+    for (var at = 0; at < data.length; at += _piece) {
       if (at > 0) await yieldTurn();
-      yield Uint8List.sublistView(data, at, min(at + piece, data.length));
+      yield Uint8List.sublistView(data, at, min(at + _piece, data.length));
     }
   }
 }

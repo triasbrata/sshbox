@@ -59,6 +59,25 @@ class _NoSecrets implements SecretStore {
   Future<void> purgeHost(String hostId) async {}
 }
 
+/// A connect that fails at once, without leaving this isolate.
+///
+/// The real transport now runs on an isolate of its own, whose answers arrive
+/// on the real event loop rather than the one `testWidgets` drives, so a
+/// widget test that let it start would wait for ever.
+class _Refused implements SessionTransport {
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async =>
+      throw const SshSessionException('No password saved for this host.');
+}
+
 /// A shell that is up the moment it is asked for, on a host whose files are
 /// [FakeFileBrowser]'s and whose terminal is running `claude` in /home/me.
 class _Shell
@@ -136,6 +155,7 @@ void main() {
         host: '10.0.2.2',
         username: 'me',
       ),
+      transport: (_, _) => _Refused(),
     );
     addTearDown(session.dispose);
 

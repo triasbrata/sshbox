@@ -6,7 +6,7 @@ import '../data/host_repository.dart';
 import '../data/known_host_store.dart' show HostKeyCheck;
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
-import '../session/dartssh2_transport.dart';
+import '../session/isolate_transport.dart';
 import '../session/session_manager.dart' show LiveSession;
 import '../session/terminal_session.dart';
 import 'mongo.dart';
@@ -380,7 +380,7 @@ abstract class DbSession {
     }
     final ssh =
         await (transport ??
-                Dartssh2Transport(
+                IsolateTransport(
                   confirmHostKey: confirmHostKey,
                   onAuthBanner: (banner) {
                     final url = LiveSession.extractAuthUrl(banner);
