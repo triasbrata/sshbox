@@ -187,8 +187,9 @@ void main() {
       for (final arch in ['x86_64', 'aarch64', '·']) {
         expect(find.textContaining(arch), findsNothing);
       }
-      // Said once, on its own card, as a pill beside the name.
-      expect(find.text('2 active'), findsOneWidget);
+      // A card says nothing about sessions: the lit corner on its badge
+      // does, and nothing else on it competes with the name.
+      expect(find.textContaining('active'), findsNothing);
       expect(find.text('OS not detected yet'), findsNothing);
       // The user and the OS are on the card once each, not again in an
       // `ssh, me, ubuntu` line.
@@ -212,7 +213,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Named on Home now, rather than an icon with a tooltip.
+    // Behind Home's one menu now, by name.
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Known hosts'));
     await tester.pumpAndSettle();
     expect(find.byType(KnownHostsPage), findsOneWidget);
@@ -244,7 +247,7 @@ void main() {
     // Nothing of it on Home: a host's own is copied from its edit page.
     expect(find.byIcon(Icons.key_outlined), findsNothing);
 
-    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.tap(find.descendant(of: find.byType(Card), matching: find.byType(PopupMenuButton<String>)).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
@@ -298,7 +301,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.tap(find.descendant(of: find.byType(Card), matching: find.byType(PopupMenuButton<String>)).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Duplicate'));
     await tester.pumpAndSettle();
@@ -329,7 +332,7 @@ void main() {
     }
 
     // A second copy of the same host takes the next name free.
-    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.tap(find.descendant(of: find.byType(Card), matching: find.byType(PopupMenuButton<String>)).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Duplicate'));
     await tester.pumpAndSettle();

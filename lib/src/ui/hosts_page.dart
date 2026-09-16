@@ -235,82 +235,50 @@ class _HostsPageState extends State<HostsPage> {
     );
   }
 
-  /// The ways out of Home, each with its name on it rather than an icon to
-  /// guess from: in a row that scrolls on a phone.
-  PreferredSizeWidget _tools() {
-    void push(Widget page) => Navigator.of(
+  /// Everywhere else Home goes, by name, behind one button. A row of named
+  /// buttons said them all at once, but took a strip of the page and still
+  /// scrolled out of sight on a phone; opened, this says the same names.
+  Widget _menu() {
+    Future<void> push(Widget page) => Navigator.of(
       context,
     ).push(MaterialPageRoute<void>(builder: (_) => page));
 
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(56),
-      child: Column(
-        children: [
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 40,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              children: [
-                // With how many run, which is why the page is opened most.
-                ListenableBuilder(
-                  listenable: portForwards,
-                  builder: (context, _) => _Tool(
-                    icon: Icons.swap_horiz,
-                    label: 'Port forwarding',
-                    count: portForwards.onCount,
-                    onPressed: () async {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => PortForwardingPage(
-                            forwards: portForwards,
-                            repository: widget.repository,
-                            secrets: widget.secrets,
-                          ),
-                        ),
-                      );
-                      // A host made there belongs here too.
-                      await _reload();
-                    },
-                  ),
-                ),
-                // The way in when nothing is on its way: the tab joins the
-                // strip by itself only as a transfer starts, so without this
-                // the history of what was downloaded is out of reach.
-                _Tool(
-                  icon: Icons.swap_vert,
-                  label: 'Transfers',
-                  onPressed: () => widget.sessions.showTransfers(select: true),
-                ),
-                _Tool(
-                  icon: Icons.history,
-                  label: 'Logs',
-                  onPressed: () => push(
-                    LogsPage(
-                      repository: widget.repository,
-                      onOpenHost: widget.onOpenHost,
-                    ),
-                  ),
-                ),
-                _Tool(
-                  icon: Icons.fingerprint,
-                  label: 'Known hosts',
-                  onPressed: () =>
-                      push(KnownHostsPage(repository: widget.repository)),
-                ),
-                _Tool(
-                  icon: Icons.settings_outlined,
-                  label: 'Settings',
-                  onPressed: () =>
-                      push(SettingsPage(notifyKeys: widget.sessions.notifyKeys)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      onSelected: (choice) async {
+        switch (choice) {
+          case 'forwards':
+            await push(
+              PortForwardingPage(
+                forwards: portForwards,
+                repository: widget.repository,
+                secrets: widget.secrets,
+              ),
+            );
+            // A host made there belongs here too.
+            await _reload();
+          case 'transfers':
+            widget.sessions.showTransfers(select: true);
+          case 'logs':
+            await push(
+              LogsPage(
+                repository: widget.repository,
+                onOpenHost: widget.onOpenHost,
+              ),
+            );
+          case 'known':
+            await push(KnownHostsPage(repository: widget.repository));
+          case 'settings':
+            await push(SettingsPage(notifyKeys: widget.sessions.notifyKeys));
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 'forwards', child: Text('Port forwarding')),
+        PopupMenuItem(value: 'transfers', child: Text('Transfers')),
+        PopupMenuItem(value: 'logs', child: Text('Logs')),
+        PopupMenuItem(value: 'known', child: Text('Known hosts')),
+        PopupMenuItem(value: 'settings', child: Text('Settings')),
+      ],
     );
   }
 
@@ -328,18 +296,15 @@ class _HostsPageState extends State<HostsPage> {
             : const _Wordmark(),
         actions: [
           if (wide)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: SizedBox(width: 320, child: _searchField()),
-            )
+            SizedBox(width: 320, child: _searchField())
           else
             IconButton(
               tooltip: _searching ? 'Close search' : 'Search',
               onPressed: _toggleSearch,
               icon: Icon(_searching ? Icons.close : Icons.search),
             ),
+          _menu(),
         ],
-        bottom: _tools(),
       ),
       floatingActionButton: _AddButton(
         onHost: () => _openEditor(),
@@ -362,7 +327,6 @@ class _HostsPageState extends State<HostsPage> {
                     host: host,
                     sessionCount: open.length,
                     activeCount: open.where((s) => s.isConnected).length,
-                    jumpHost: byId[host.jumpHostId]?.displayName,
                     onOpen: () => widget.onOpenHost(host.id),
                     onEdit: () => _openEditor(existing: host),
                     onDuplicate: () => _duplicate(host),
@@ -498,100 +462,6 @@ class _Wordmark extends StatelessWidget {
   }
 }
 
-/// A way out of Home, named: an outlined pill, with how many of the thing
-/// run beside the name when [count] is more than none.
-class _Tool extends StatelessWidget {
-  const _Tool({
-    required this.icon,
-    required this.label,
-    required this.onPressed,
-    this.count = 0,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onPressed;
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Padding(
-      padding: const EdgeInsetsDirectional.only(end: 8),
-      child: OutlinedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(icon, size: 18),
-        label: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(label),
-            if (count > 0) ...[
-              const SizedBox(width: 8),
-              _Pill('$count on'),
-            ],
-          ],
-        ),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: scheme.onSurface,
-          backgroundColor: scheme.surfaceContainerHigh,
-          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: .4)),
-          minimumSize: const Size(0, 40),
-          padding: const EdgeInsetsDirectional.fromSTEB(12, 0, 16, 0),
-        ),
-      ),
-    );
-  }
-}
-
-/// A count in the accent, on a faint wash of it: a host's live shells, or
-/// the port forwards that run.
-class _Pill extends StatelessWidget {
-  const _Pill(this.text, {this.dot = false});
-
-  final String text;
-
-  /// A lit dot before it, as a live shell's tab wears one.
-  final bool dot;
-
-  @override
-  Widget build(BuildContext context) {
-    final primary = Theme.of(context).colorScheme.primary;
-
-    return Container(
-      height: 20,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: primary.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (dot) ...[
-            Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(color: primary, shape: BoxShape.circle),
-            ),
-            const SizedBox(width: 6),
-          ],
-          Text(
-            text,
-            style: TextStyle(
-              fontFamily: uiMonoFamily,
-              fontSize: 11.5,
-              height: 1,
-              fontWeight: FontWeight.w600,
-              color: primary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Home's one add button. A tap stacks Host and Database above it; a second
 /// tap, or a tap anywhere else, puts them away.
 class _AddButton extends StatefulWidget {
@@ -657,13 +527,13 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // In the accent, as Settings heads its sections.
+    // Quiet: a heading is there to be read past, not at.
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 16, 10, 4),
       child: Text(
         title,
         style: theme.textTheme.titleSmall?.copyWith(
-          color: theme.colorScheme.primary,
+          color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
     );
@@ -681,10 +551,18 @@ ShapeBorder _cardShape(ColorScheme scheme) => RoundedRectangleBorder(
 /// so every name starts at the same x. The line is always a line's room, even
 /// blank (an empty Text is a little shorter), so every badge sits as high.
 class _BadgeColumn extends StatelessWidget {
-  const _BadgeColumn({required this.badge, this.caption = ''});
+  const _BadgeColumn({
+    required this.badge,
+    this.caption = '',
+    this.live = false,
+  });
 
   final Widget badge;
   final String caption;
+
+  /// A shell up on this host: a lit dot cut into the badge's corner, which
+  /// says it without a word.
+  final bool live;
 
   @override
   Widget build(BuildContext context) {
@@ -695,7 +573,34 @@ class _BadgeColumn extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          badge,
+          if (live)
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                badge,
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary,
+                      shape: BoxShape.circle,
+                      // Cut out of the badge in the card's own colour.
+                      border: Border.all(
+                        color:
+                            theme.cardTheme.color ??
+                            theme.colorScheme.surfaceContainerLow,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else
+            badge,
           const SizedBox(height: 4),
           DefaultTextStyle.merge(
             // A step under labelSmall's 11.
@@ -720,83 +625,38 @@ class _BadgeColumn extends StatelessWidget {
   }
 }
 
-/// A card's name, its address in the face machine text is written in, and a
-/// line of what else there is to know, each item cut short on its own.
+/// A card's name and, under it, its address in the face machine text is
+/// written in. Nothing else: the auth method, tmux and the jump host were a
+/// line too many, and are in the host's own page.
 class _CardText extends StatelessWidget {
-  const _CardText({
-    required this.name,
-    required this.address,
-    required this.details,
-    this.pill,
-  });
+  const _CardText({required this.name, required this.address});
 
   final String name;
   final String address;
-  final List<String> details;
-
-  /// Beside the name: how many shells a host has up.
-  final Widget? pill;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final muted = theme.colorScheme.onSurfaceVariant;
-    final mono = TextStyle(fontFamily: uiMonoFamily, color: muted);
-    final pill = this.pill;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleMedium,
-              ),
-            ),
-            if (pill != null) ...[const SizedBox(width: 8), pill],
-          ],
+        Text(
+          name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleMedium,
         ),
         Text(
           address,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.bodyMedium?.merge(mono).copyWith(
+          style: theme.textTheme.bodyMedium?.copyWith(
+            fontFamily: uiMonoFamily,
             fontSize: 12.5,
+            color: theme.colorScheme.onSurfaceVariant,
           ),
-        ),
-        const SizedBox(height: 4),
-        // Kept apart by drawn dots rather than a character, so a detail can
-        // be cut short without taking the others with it.
-        Row(
-          children: [
-            for (final (i, detail) in details.indexed) ...[
-              if (i > 0)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: Container(
-                    width: 3,
-                    height: 3,
-                    decoration: BoxDecoration(
-                      color: muted,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-              Flexible(
-                child: Text(
-                  detail,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.merge(mono),
-                ),
-              ),
-            ],
-          ],
         ),
       ],
     );
@@ -808,7 +668,6 @@ class _HostTile extends StatelessWidget {
     required this.host,
     required this.sessionCount,
     required this.activeCount,
-    required this.jumpHost,
     required this.onOpen,
     required this.onEdit,
     required this.onDuplicate,
@@ -823,9 +682,6 @@ class _HostTile extends StatelessWidget {
 
   /// The ones with a shell actually attached.
   final int activeCount;
-
-  /// The name of the saved host this one is reached through, if any.
-  final String? jumpHost;
   final VoidCallback onOpen;
   final VoidCallback onEdit;
   final VoidCallback onDuplicate;
@@ -835,12 +691,6 @@ class _HostTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final authLabel = switch (host.authMethod) {
-      SshAuthMethod.password => 'password',
-      SshAuthMethod.privateKey => 'key',
-      SshAuthMethod.tailscale => 'tailscale',
-    };
-    final via = jumpHost;
 
     // By hand rather than a ListTile, whose leading is at most 56 dp tall:
     // too short for the badge with its version under it.
@@ -856,24 +706,17 @@ class _HostTile extends StatelessWidget {
           child: Row(
             children: [
               // Only the version under the badge: the badge already says
-              // which OS.
+              // which OS, and a lit corner that a shell is up.
               _BadgeColumn(
                 badge: OsBadge(host.os, size: 44),
                 caption: host.os?.version ?? '',
+                live: activeCount > 0,
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: _CardText(
                   name: host.displayName,
                   address: host.target,
-                  details: [
-                    authLabel,
-                    if (host.useTmux) 'tmux',
-                    if (via != null) 'via $via',
-                  ],
-                  pill: activeCount > 0
-                      ? _Pill('$activeCount active', dot: true)
-                      : null,
                 ),
               ),
               PopupMenuButton<String>(
@@ -948,7 +791,6 @@ class _DatabaseTile extends StatelessWidget {
                 child: _CardText(
                   name: db.displayName(host),
                   address: '${db.kind.label} · ${db.summary}',
-                  details: ['via ${host?.displayName ?? 'a deleted host'}'],
                 ),
               ),
               PopupMenuButton<String>(

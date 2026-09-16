@@ -224,7 +224,7 @@ void main() {
       expect(closeTab, findsNothing);
       expect(card, findsOneWidget);
 
-      await tester.tap(find.byType(PopupMenuButton<String>).last);
+      await tester.tap(find.descendant(of: find.byType(Card), matching: find.byType(PopupMenuButton<String>)).last);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Delete'));
       await tester.pumpAndSettle();

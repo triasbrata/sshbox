@@ -14,7 +14,6 @@ import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
-import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/transfers_page.dart';
@@ -467,11 +466,10 @@ void main() {
       expect(sessions.transfersTab, isFalse);
 
       // Nothing has ever been transferred: the tab still opens, and says so.
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
       await tester.tap(
-        find.descendant(
-          of: find.byType(HostsPage),
-          matching: find.text('Transfers'),
-        ),
+        find.widgetWithText(PopupMenuItem<String>, 'Transfers'),
       );
       await tester.pumpAndSettle();
       expect((sessions.transfersTab, sessions.transfersActive), (true, true));
@@ -481,11 +479,10 @@ void main() {
       // Asked for again from Home: the same tab, not a second one.
       sessions.select(null);
       await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
       await tester.tap(
-        find.descendant(
-          of: find.byType(HostsPage),
-          matching: find.text('Transfers'),
-        ),
+        find.widgetWithText(PopupMenuItem<String>, 'Transfers'),
       );
       await tester.pumpAndSettle();
       expect(sessions.transfersActive, isTrue);
