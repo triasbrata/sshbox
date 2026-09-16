@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/known_host_store.dart';
@@ -10,7 +12,10 @@ import 'package:sshbox/src/session/isolate_transport.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 
 // What a download costs the isolate the app draws on, measured on the app's
-// own transports rather than a copy of them.
+// own transports rather than a copy of them — and, against the same host,
+// the rest of what a session carries over the wire: a command, a channel and
+// a forwarded connection, which is what tmux, the databases and port
+// forwarding are made of.
 //
 // `tool/transfer_bench.dart` cannot do this: it runs on a plain Dart VM,
 // which cannot load Flutter, and the transports are Flutter-bound. It keeps
@@ -67,14 +72,7 @@ void main() {
     final secrets = _Secrets({
       SecretKeys.privateKey('bench'): File(key).readAsStringSync(),
     });
-    final host = HostProfile(
-      id: 'bench',
-      label: 'bench',
-      host: _host,
-      port: _port,
-      username: _user,
-      authMethod: SshAuthMethod.privateKey,
-    );
+    final host = _benchHost();
 
     for (final framed in [false, true]) {
       // ignore: avoid_print
@@ -118,7 +116,73 @@ void main() {
       }
     }
   }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('a real session carries its commands, channels and forwards', () async {
+    final key = Platform.environment['SSHBOX_BENCH_KEY'];
+    if (key == null) {
+      printOnFailure('skipped: set SSHBOX_BENCH_KEY');
+      return;
+    }
+    final session = await IsolateTransport(knownHosts: _TrustAll()).connect(
+      host: _benchHost(),
+      secrets: _Secrets({
+        SecretKeys.privateKey('bench'): File(key).readAsStringSync(),
+      }),
+      columns: 80,
+      rows: 24,
+      shell: false,
+    );
+    try {
+      // What the OS probe, the hostname and the tailnet watcher use.
+      expect(
+        await (session as CommandCapable).run('echo over-the-wire').first,
+        'over-the-wire',
+      );
+
+      // What tmux's control mode is: bytes both ways on a channel of its own.
+      final channel = await (session as ChannelCapable).open('cat');
+      final said = channel.output.map(utf8.decode).take(1).toList();
+      channel.write(Uint8List.fromList(utf8.encode('through a channel\n')));
+      expect((await said).single.trim(), 'through a channel');
+      channel.close();
+
+      // What `ssh -L` is, and every database connection with it. The host
+      // reaches its own sshd, which says hello first.
+      final tunnel = await (session as ForwardCapable).forward('127.0.0.1', 22);
+      expect(
+        await tunnel.output.map(utf8.decode).first,
+        startsWith('SSH-2.0-'),
+      );
+      await tunnel.input.close();
+
+      // What `ssh -R` is, and the notification port with it: the host listens
+      // and hands over what connects there.
+      final port = await (session as ForwardCapable).listen('127.0.0.1', 0);
+      final knock = port.connections.first;
+      final socket = await Socket.connect('127.0.0.1', port.port);
+      socket.add(utf8.encode('knock'));
+      expect(await (await knock).output.map(utf8.decode).first, 'knock');
+      socket.destroy();
+      port.close();
+
+      // And a listing, on the same connection as all of it.
+      final home = (session as FileBrowseCapable).openFileBrowser();
+      expect(await home.resolveHome(), startsWith('/'));
+      await home.close();
+    } finally {
+      await session.dispose();
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
+
+HostProfile _benchHost() => HostProfile(
+      id: 'bench',
+      label: 'bench',
+      host: _host,
+      port: _port,
+      username: _user,
+      authMethod: SshAuthMethod.privateKey,
+    );
 
 /// A frame's worth of work on this isolate, every 16.7 ms: what the transfer
 /// used to be taking its turn against.

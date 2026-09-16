@@ -632,7 +632,15 @@ class _ProxySession
     // carries on, exactly as the UI isolate does when dartssh2 throws where
     // nothing was waiting.
     obituary.listen((message) {
-      if (message is List) return;
+      if (message is List) {
+        // Said out loud in a debug build only: an isolate that swallows its
+        // errors is the worst thing to be handed at three in the morning.
+        assert(() {
+          debugPrint('session isolate: ${message.first}');
+          return true;
+        }());
+        return;
+      }
       _gone();
     });
     _isolate = await Isolate.spawn(
