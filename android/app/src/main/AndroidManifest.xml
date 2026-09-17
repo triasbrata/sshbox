@@ -107,6 +107,21 @@
                 <data android:mimeType="*/*"/>
             </intent-filter>
         </activity>
+        <!-- Copy image in a file tab: an image goes on the clipboard as a
+             content:// URI, and this is what serves it. Not exported, so only
+             an app handed one of our URIs can read it, and only cache/clip is
+             behind it (res/xml/file_paths.xml). grantUriPermissions is what
+             lets the system pass read access to whoever pastes. -->
+        <provider
+            android:name=".ClipFileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+
         <!-- Declared here rather than left to manifest merging: from Android 14
              the service must carry a foregroundServiceType, and it has to match
              the type passed to startService. Without this the system rejects

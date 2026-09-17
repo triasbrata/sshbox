@@ -44,5 +44,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# The Kotlin compiler daemon's session files, which a Gradle build leaves
+# behind and a `git add -A` beside a running build would otherwise commit.
+/android/.kotlin/
+
 # Widget Preview related
 .widget_preview/

@@ -38,15 +38,34 @@ bool _canSave(WidgetTester tester) => tester
 CodeLineEditingController _editor(WidgetTester tester) =>
     tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!;
 
-/// Picks Download from the editor's menu. Not settled after, which would wait
-/// out the toast it ends with.
-Future<void> _download(WidgetTester tester) async {
+/// Picks [entry] from the ⋮ menu. Not settled after, which would wait out the
+/// toast these end with.
+Future<void> _pick(WidgetTester tester, String entry) async {
   await tester.tap(find.byTooltip('More'));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('Download'));
+  await tester.tap(find.text(entry));
   await tester.pump();
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 600));
+}
+
+Future<void> _download(WidgetTester tester) => _pick(tester, 'Download');
+
+/// What the app put on the clipboard, in place of the phone's own.
+List<String> _useFakeClipboard() {
+  final copied = <String>[];
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+    if (call.method == 'Clipboard.setData') {
+      copied.add((call.arguments as Map)['text'] as String);
+    }
+    return null;
+  });
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+  );
+  return copied;
 }
 
 const _unsavedWarning =
@@ -702,6 +721,75 @@ void main() {
     expect(find.byType(CodeEditor), findsNothing);
   });
 
+  group('copy content', () {
+    testWidgets('copies the whole file as it is on screen', (tester) async {
+      final copied = _useFakeClipboard();
+      final browser = FakeFileBrowser();
+      await _pumpEditor(tester, browser);
+
+      // An edit not saved yet is part of "all of it": this is Select all and
+      // Copy in one tap, not a second Download.
+      _editor(tester).text = 'first line\nsecond line\nand a third\n';
+      await tester.pumpAndSettle();
+
+      await _pick(tester, 'Copy content');
+
+      expect(copied, ['first line\nsecond line\nand a third\n']);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied notes.txt'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+      // Copying is not saving: the host still has what it had.
+      expect(browser.contents['/home/me/notes.txt'], 'first line\nsecond line\n');
+    });
+
+    testWidgets('one past the clipboard ceiling says so and copies nothing',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      // 3400 lines of 80 characters: 272 KB, past the 256 KB ceiling and well
+      // inside the 1 MiB the editor opens at all.
+      final browser = FakeFileBrowser()
+        ..contents['/home/me/notes.txt'] =
+            '${List.filled(3400, 'x' * 79).join('\n')}\n';
+      await _pumpEditor(tester, browser);
+
+      await _pick(tester, 'Copy content');
+
+      expect(copied, isEmpty);
+      expect(find.textContaining('too large to copy'), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('is offered on a text file, and Copy image is not',
+        (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy content'), findsOneWidget);
+      expect(find.text('Copy image'), findsNothing);
+    });
+
+    testWidgets('is not offered for a file that would not open', (tester) async {
+      final browser = FakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          'This looks like a binary file.',
+          fault: FileBrowserFault.notText,
+        );
+      await _pumpEditor(tester, browser);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy content'), findsNothing);
+      // Download still is: it only ever needed the path.
+      expect(find.text('Download'), findsOneWidget);
+    });
+  });
+
   testWidgets('closes the pane instead of popping when embedded',
       (tester) async {
     var closed = false;
@@ -1012,6 +1100,64 @@ Run `make` first.
       expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
     });
 
+    testWidgets('every code block gets a copy button; inline code and a '
+        'mermaid diagram do not', (tester) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await pumpReadme(tester, '''
+```sh
+echo hello
+```
+
+```
+no language here
+```
+
+```mermaid
+flowchart LR
+  A --> B
+```
+
+Run `make` first.
+''');
+
+      // The two fences, and neither the diagram nor `make`.
+      expect(find.byTooltip('Copy code'), findsNWidgets(2));
+      expect(find.byType(MermaidView), findsOneWidget);
+    });
+
+    testWidgets('the copy button copies the block, fences and all left out',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpReadme(tester, '''
+Before it.
+
+```dart
+void main() {
+  print('hi');
+}
+```
+
+After it.
+''');
+
+      await tester.tap(find.byTooltip('Copy code'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // No fences, no language tag, and no trailing line break: what is
+      // pasted is the code and nothing else.
+      expect(copied, ["void main() {\n  print('hi');\n}"]);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied code block'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('Find from the preview finds in Source', (tester) async {
       await pumpReadme(tester, '# Title\n');
 
@@ -1099,6 +1245,36 @@ Run `make` first.
       await tester.tap(find.byTooltip('More'));
       await tester.pumpAndSettle();
       expect(find.text('Download'), findsOneWidget);
+      // Nothing was decoded, so there is nothing to put on the clipboard.
+      expect(find.text('Copy image'), findsNothing);
+    });
+
+    testWidgets('Copy image hands Android the copy it drew', (tester) async {
+      final picker = useFakePicker();
+      final browser = FakeFileBrowser()..binary[shot] = png;
+      await pumpImage(tester, browser);
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      // Nothing here is text, so there is no content to copy.
+      expect(find.text('Copy content'), findsNothing);
+      await tester.tap(find.text('Copy image'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // The picture the viewer is showing, not a second trip to the host.
+      expect(picker.copiedImage?.path, browser.downloads.single.to);
+      expect(picker.copiedImage?.name, 'shot.png');
+      expect(browser.downloads, hasLength(1));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied shot.png'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
     });
 
     testWidgets('one that will not decode says so, and still downloads',

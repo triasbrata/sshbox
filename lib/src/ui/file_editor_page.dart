@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -76,6 +78,29 @@ final _imageNames = RegExp(
 );
 
 bool _isImage(String path) => _imageNames.hasMatch(path);
+
+/// Puts something on the clipboard and says so, or says why not. Both of the
+/// file tab's Copy entries end here, so both say the same thing.
+Future<void> _copyAndSay(
+  BuildContext context,
+  String name,
+  Future<void> Function() copy,
+) async {
+  try {
+    await copy();
+    if (context.mounted) {
+      showToast(context, 'Copied $name', type: ToastificationType.success);
+    }
+  } on PlatformException catch (error) {
+    if (context.mounted) {
+      showToast(
+        context,
+        'Could not copy $name: ${error.message ?? error.code}',
+        type: ToastificationType.error,
+      );
+    }
+  }
+}
 
 /// Opens one remote file for reading and, if you want, changing.
 ///
@@ -840,6 +865,35 @@ class _TextFileTabState extends State<_TextFileTab> {
     );
   }
 
+  /// ponytail: 256 KB. The clipboard crosses to Android over the same ~1 MB
+  /// Binder transaction as everything else, as UTF-16, so the whole of a
+  /// 1 MiB file — the most the editor opens at all — would not fit. Raise it
+  /// if pasting a bigger file ever matters; a native clip beyond that would
+  /// have to go by file, as Copy image does.
+  static const _copyLimit = 256 * 1024;
+
+  /// Puts the file on the clipboard as it is on screen, unsaved edits and
+  /// all: this is Select all and Copy in one tap, for the text being looked
+  /// at. Download is already there for the version on the host.
+  Future<void> _copyContent() {
+    final name = RemotePath.basename(widget.path);
+    final text = _controller.text;
+    if (text.length > _copyLimit) {
+      showToast(
+        context,
+        '$name is too large to copy: the clipboard takes '
+        '${formatBytes(_copyLimit)} at most. Download it instead.',
+        type: ToastificationType.warning,
+      );
+      return Future.value();
+    }
+    return _copyAndSay(
+      context,
+      name,
+      () => Clipboard.setData(ClipboardData(text: text)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final canSave = _canSave;
@@ -921,6 +975,13 @@ class _TextFileTabState extends State<_TextFileTab> {
                   enabled: _transfer == null,
                   child: const Text('Download'),
                 ),
+                // Nothing to copy while the file is still coming, and nothing
+                // worth copying when it would not open as text.
+                if (!_loading && _error == null)
+                  PopupMenuItem(
+                    value: _copyContent,
+                    child: const Text('Copy content'),
+                  ),
                 const PopupMenuDivider(),
                 if (!_loading && _error == null) ...[
                   PopupMenuItem(
@@ -1302,6 +1363,24 @@ class _ImageFileTabState extends State<_ImageFileTab> {
     },
   );
 
+  /// Puts the picture itself on the clipboard, to paste into a chat or an
+  /// editor.
+  ///
+  /// The app's own copy is what goes, the same file the viewer draws, so
+  /// nothing comes down twice. No cap of its own beyond [_limit], which is
+  /// all the tab would show anyway: only a URI crosses to the pasting app,
+  /// never the bytes.
+  Future<void> _copyImage() {
+    final image = _image;
+    if (image == null) return Future.value();
+    final name = RemotePath.basename(widget.path);
+    return _copyAndSay(
+      context,
+      name,
+      () => copyImageToClipboard(image.file.path, name),
+    );
+  }
+
   /// Double-tap: every pixel, at the point tapped, or back to the whole image.
   void _toggleZoom(Size viewport) {
     if (_view.value.getMaxScaleOnAxis() > 1.01) {
@@ -1373,6 +1452,14 @@ class _ImageFileTabState extends State<_ImageFileTab> {
                 enabled: _transfer == null,
                 child: const Text('Download'),
               ),
+              // Only once there is a picture to copy, and only where there is
+              // a clipboard that takes one: MainActivity's, over the channel.
+              if (_image != null &&
+                  defaultTargetPlatform == TargetPlatform.android)
+                PopupMenuItem(
+                  value: _copyImage,
+                  child: const Text('Copy image'),
+                ),
             ],
           ),
         ],
@@ -1517,7 +1604,7 @@ class _MarkdownPreview extends StatelessWidget {
               child: Markdown(
                 data: shown,
                 onTapLink: onTapLink,
-                builders: {'code': MermaidBuilder()},
+                builders: {'code': _CodeBuilder()},
                 imageBuilder: (uri, title, alt) => Text.rich(
                   TextSpan(
                     children: [
@@ -1565,6 +1652,109 @@ class _MarkdownPreview extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The Markdown preview's code: a ```mermaid fence is a diagram, as
+/// [MermaidBuilder] draws it, any other block gets a button that copies it,
+/// and inline code is left to the package.
+///
+/// A mermaid fence deliberately gets no button. What it shows is a picture
+/// rather than the text, and the button would have to sit over a web view's
+/// own surface to be near it; Source has the whole file, that block included.
+class _CodeBuilder extends MermaidBuilder {
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final diagram = super.visitElementAfterWithContext(
+      context,
+      element,
+      preferredStyle,
+      parentStyle,
+    );
+    if (diagram != null) return diagram;
+    // Inline code is no block: it keeps the package's own span and gets no
+    // button. What tells the two apart is the line break the parser puts at
+    // the end of every block and never at the end of inline code — the <pre>
+    // around a block is gone by the time a builder is asked about its code.
+    final source = element.textContent;
+    if (!source.endsWith('\n')) return null;
+    return _CodeBlock(
+      // That last break is the fence's, not the code's: pasting a block
+      // should not bring a blank line along.
+      source: source.substring(0, source.length - 1),
+      style: preferredStyle,
+    );
+  }
+}
+
+/// One code block in the Markdown preview: the source, scrolling sideways as
+/// the package's own does, and a button that copies the whole of it.
+///
+/// No ceiling of its own — the preview stops at 100 KB, well inside what the
+/// clipboard takes.
+class _CodeBlock extends StatefulWidget {
+  const _CodeBlock({required this.source, this.style});
+
+  final String source;
+  final TextStyle? style;
+
+  @override
+  State<_CodeBlock> createState() => _CodeBlockState();
+}
+
+class _CodeBlockState extends State<_CodeBlock> {
+  /// Its own, because a scrollbar needs the controller its view is on.
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(
+        child: Scrollbar(
+          controller: _scroll,
+          child: SingleChildScrollView(
+            controller: _scroll,
+            scrollDirection: Axis.horizontal,
+            // What MarkdownStyleSheet.codeblockPadding gives a block the
+            // package builds itself, which this stands in for.
+            padding: const EdgeInsets.all(8),
+            child: Text.rich(
+              TextSpan(text: widget.source, style: widget.style),
+            ),
+          ),
+        ),
+      ),
+      // Beside the code, not over it: an overlay would cover the first line
+      // of a wide block and take the drag that scrolls it. 40 dp square, so a
+      // one-line block does not grow to fit a full-sized button.
+      IconButton(
+        tooltip: 'Copy code',
+        onPressed: () => _copyAndSay(
+          context,
+          'code block',
+          () => Clipboard.setData(ClipboardData(text: widget.source)),
+        ),
+        icon: const Icon(Icons.content_copy, size: 18),
+        // onSurfaceVariant on the block's surfaceContainerHighest: the pair
+        // Material keeps legible either way round, light theme or dark.
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+      ),
+    ],
+  );
 }
 
 /// Find, and replace once asked for, across the top of the editor.
