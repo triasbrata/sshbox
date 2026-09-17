@@ -21,6 +21,9 @@ async function render(source, options) {
     flowchart: { htmlLabels: false },
     suppressErrorRendering: true,
     theme: options.dark ? 'dark' : 'default',
+    // Mermaid 12 lays out with ELK and draws in its new `neo` look by
+    // default, and both are taken as they come. `layout: 'dagre'` and
+    // `look: 'classic'` here bring 11's drawing back if ever wanted.
   });
   try {
     const { svg } = await mermaid.render('m', source);

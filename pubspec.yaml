@@ -155,7 +155,8 @@ flutter:
 
   # The Markdown preview's Mermaid diagrams (lib/src/ui/mermaid_view.dart):
   # the page, its script, and dist/mermaid.min.js from the npm package
-  # mermaid 11.17.2, MIT, with its LICENSE.
+  # mermaid 12.0.0, MIT, with its LICENSE. 12 bundles the ELK layout
+  # engine, which is why the file is 5.6 MB rather than 3.6.
   assets:
     - assets/mermaid/
 
