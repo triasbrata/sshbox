@@ -886,7 +886,11 @@ class _TextFileTabState extends State<_TextFileTab> {
     final name = RemotePath.basename(widget.path);
     final text = _controller.text;
     if (text.length > copyLimit) {
-      showToast(context, tooLargeToCopy(name), type: ToastificationType.warning);
+      showToast(
+        context,
+        tooLargeToCopy(name),
+        type: ToastificationType.warning,
+      );
       return Future.value();
     }
     return copyAndSay(
