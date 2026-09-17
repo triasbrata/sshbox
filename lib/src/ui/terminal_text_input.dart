@@ -262,14 +262,44 @@ class TerminalTextInputState extends State<TerminalTextInput>
     _resetEditingState();
   }
 
-  /// The run the IME added, found by walking in from the left until the buffer
-  /// stops matching the padding. Reading the selection instead would be
-  /// shorter, but IMEs are free to leave it unset.
+  /// The run the IME added, read from where the caret is rather than searched
+  /// for. The buffer holds nothing but padding and a caret, and an insert
+  /// lands at the caret, so the run is simply the slice there.
+  ///
+  /// It used to be found by walking in from the left until the buffer stopped
+  /// matching the padding, which cannot tell a typed space from a padding one:
+  /// a run that begins with a space had it skipped, and the slice slid that
+  /// far into the trailing padding, so ` buka` went to the terminal as `buka `
+  /// and a sentence pasted a word at a time came out with its spaces one word
+  /// late — `tinggal buka lagidan pane`.
+  ///
+  /// [_caret] is only where the IME last said the caret was, so it is clamped
+  /// to the offsets this buffer allows: everything left of the run must still
+  /// be the head of the padding, everything right of it the tail. Spaces at
+  /// either end of the run leave a choice of offsets — ` ls` at 16 reads the
+  /// same as `ls ` at 15 — and the caret is what picks between them.
   String _insertedText(String text, int growth) {
-    var start = 0;
-    while (start < _baseText.length && text[start] == _baseText[start]) {
-      start++;
+    var head = 0;
+    while (head < _baseText.length && text[head] == _baseText[head]) {
+      head++;
     }
+    var tail = 0;
+    while (tail < _baseText.length &&
+        text[text.length - 1 - tail] ==
+            _baseText[_baseText.length - 1 - tail]) {
+      tail++;
+    }
+
+    final first = _baseText.length - tail;
+    if (first > head) {
+      // No offset leaves the padding whole either side, so this is not an
+      // insert into it: an IME that replaced a stale composing region, say,
+      // whose run is not [growth] long. Send what changed and nothing else,
+      // rather than a slice that would be half padding.
+      return text.substring(head, text.length - tail);
+    }
+
+    final start = _caret.clamp(first, head);
     return text.substring(start, start + growth);
   }
 

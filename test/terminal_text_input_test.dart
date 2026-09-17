@@ -214,6 +214,83 @@ void main() {
       expect(sent, [' ']);
     });
 
+    testWidgets('keeps the space a run begins with', (tester) async {
+      await pumpInput(tester);
+
+      // Gboard commits a paste a word at a time, each chunk arriving with the
+      // space in front of it. Read by scanning past the padding, that space
+      // was skipped and the slice slid into the trailing padding: `world `.
+      input.updateEditingValue(
+        _value('${' ' * _padding} world${' ' * _padding}', _padding + 6),
+      );
+
+      expect(sent, [' world']);
+    });
+
+    testWidgets('keeps the space a run ends with', (tester) async {
+      await pumpInput(tester);
+
+      // The other way round, and the reason the caret decides: ` world` at the
+      // caret and `world ` a space earlier leave the same buffer behind.
+      input.updateEditingValue(
+        _value('${' ' * _padding}world ${' ' * _padding}', _padding + 6),
+      );
+
+      expect(sent, ['world ']);
+    });
+
+    testWidgets('keeps every space of a sentence pasted word by word',
+        (tester) async {
+      await pumpInput(tester);
+
+      for (final chunk in [
+        'tinggal',
+        ' buka',
+        ' lagi',
+        ' dan pane tmux-nya masih di',
+        ' tempat.',
+      ]) {
+        input.updateEditingValue(_value(
+          '${' ' * _padding}$chunk${' ' * _padding}',
+          _padding + chunk.length,
+        ));
+      }
+
+      expect(sent.join(), 'tinggal buka lagi dan pane tmux-nya masih di '
+          'tempat.');
+    });
+
+    testWidgets('reads a run inserted where a slide left the caret',
+        (tester) async {
+      await pumpInput(tester);
+
+      // A slide short of the margin does not re-centre, so the next insert
+      // lands two to the right of the middle.
+      input.updateEditingValue(_value(_baseText, _padding + 2));
+      sent.clear();
+      input.updateEditingValue(_value(
+        '${' ' * (_padding + 2)} ls${' ' * (_padding - 2)}',
+        _padding + 5,
+      ));
+
+      expect(sent, [' ls']);
+    });
+
+    testWidgets('sends what changed when the IME replaced part of the padding',
+        (tester) async {
+      await pumpInput(tester);
+
+      // Four padding characters gone, `cukup` in their place: no offset leaves
+      // the padding whole, so the run is not six characters long wherever it
+      // is read from.
+      input.updateEditingValue(_value(
+        '${' ' * _padding}cukup${' ' * (_padding - 4)}',
+        _padding + 5,
+      ));
+
+      expect(sent, ['cukup']);
+    });
+
     testWidgets('sends backspace when the buffer shrinks', (tester) async {
       await pumpInput(tester);
 
