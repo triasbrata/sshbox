@@ -995,6 +995,31 @@ void main() {
       expect(tester.state(find.byType(CodeEditor)), same(editor));
     });
 
+    testWidgets('a reload comes back to where the preview was left',
+        (tester) async {
+      await pumpReadme(
+        tester,
+        List.generate(200, (i) => 'Paragraph number $i.').join('\n\n'),
+      );
+      double at() =>
+          tester.widget<Markdown>(find.byType(Markdown)).controller!.offset;
+      expect(at(), 0);
+
+      await tester.drag(find.byType(Markdown), const Offset(0, -600));
+      await tester.pumpAndSettle();
+      final left = at();
+      expect(left, greaterThan(0));
+
+      await tester.tap(find.byTooltip('Reload from host'));
+      await tester.pumpAndSettle();
+      expect(at(), left);
+
+      // Source throws the preview away as surely as a reload does.
+      await toggle(tester, 'Show source');
+      await toggle(tester, 'Show preview');
+      expect(at(), left);
+    });
+
     testWidgets('a web link opens in a web tab, a relative one opens nothing',
         (tester) async {
       final opened = <Uri>[];
