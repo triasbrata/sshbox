@@ -6,6 +6,7 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../files/transfers.dart';
+import '../session/isolate_transport.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
@@ -76,6 +77,9 @@ class _TabsShellState extends State<TabsShell> {
     portForwards
       ..confirmHostKey = ((check) => confirmHostKey(context, check))
       ..onNotice = _showForwardNotice;
+    // Any connection in the app — a session, a port forward, a database
+    // tunnel — saying it came up at a host's alternative address.
+    IsolateTransport.onNotice = _showNotice;
   }
 
   @override
@@ -85,7 +89,16 @@ class _TabsShellState extends State<TabsShell> {
     portForwards
       ..confirmHostKey = null
       ..onNotice = null;
+    IsolateTransport.onNotice = null;
     super.dispose();
+  }
+
+  /// A remark from a connection, with no page of its own to make it on.
+  void _showNotice(String message) {
+    if (!mounted) return;
+    // Two lines to take in as a session comes up, so a little longer than a
+    // remark's second.
+    showToast(context, message, duration: const Duration(seconds: 4));
   }
 
   void _showForwardNotice(ForwardNotice notice) {

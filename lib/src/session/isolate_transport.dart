@@ -59,6 +59,17 @@ class IsolateTransport implements SessionTransport {
 
   final void Function(String banner)? onAuthBanner;
 
+  /// Where a remark about the connection goes — that a host answered at its
+  /// alternative address rather than its saved one.
+  ///
+  /// Static because every connection in the app has one of these, made in
+  /// three places (a session, a port forward, a database tunnel), and the one
+  /// thing on screen that can speak for all of them is the tab shell, which
+  /// sets this the way it sets `portForwards.onNotice`.
+  // ponytail: one global sink; a callback per transport if a caller ever
+  // needs its own wording.
+  static void Function(String message)? onNotice;
+
   @override
   Future<TerminalSession> connect({
     required HostProfile host,
@@ -90,6 +101,7 @@ typedef IsolateTransportMaker = SessionTransport Function({
   required KnownHostStore knownHosts,
   required Future<bool> Function(HostKeyCheck check)? confirmHostKey,
   required void Function(String banner)? onAuthBanner,
+  required void Function(String message)? onNotice,
   required Future<List<HostProfile>> Function()? loadHosts,
 });
 
@@ -109,12 +121,14 @@ SessionTransport _ssh({
   required KnownHostStore knownHosts,
   required Future<bool> Function(HostKeyCheck check)? confirmHostKey,
   required void Function(String banner)? onAuthBanner,
+  required void Function(String message)? onNotice,
   required Future<List<HostProfile>> Function()? loadHosts,
 }) =>
     Dartssh2Transport(
       knownHosts: knownHosts,
       confirmHostKey: confirmHostKey,
       onAuthBanner: onAuthBanner,
+      onNotice: onNotice,
       loadHosts: loadHosts,
     );
 
@@ -235,6 +249,7 @@ class _Server {
             check.fingerprint,
           ]) as bool,
       onAuthBanner: (banner) => _emit(('banner', banner)),
+      onNotice: (message) => _emit(('notice', message)),
       loadHosts: () async =>
           (await _wire.call('hosts', const []) as List).cast<HostProfile>(),
     );
@@ -711,6 +726,8 @@ class _ProxySession
         _failure = problem;
       case ('banner', final String text):
         _onAuthBanner?.call(text);
+      case ('notice', final String text):
+        IsolateTransport.onNotice?.call(text);
     }
   }
 

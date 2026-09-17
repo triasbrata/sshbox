@@ -174,6 +174,7 @@ class _HostEditPageState extends State<HostEditPage> {
 
   late final TextEditingController _label;
   late final TextEditingController _host;
+  late final TextEditingController _altHost;
   late final TextEditingController _port;
   late final TextEditingController _username;
   late final TextEditingController _fileRoot;
@@ -198,6 +199,7 @@ class _HostEditPageState extends State<HostEditPage> {
     final existing = widget.existing;
     _label = TextEditingController(text: existing?.label ?? '');
     _host = TextEditingController(text: existing?.host ?? '');
+    _altHost = TextEditingController(text: existing?.altHost ?? '');
     _port = TextEditingController(text: '${existing?.port ?? 22}');
     _username = TextEditingController(text: existing?.username ?? '');
     _fileRoot = TextEditingController(text: existing?.fileRoot ?? '');
@@ -226,6 +228,7 @@ class _HostEditPageState extends State<HostEditPage> {
     for (final controller in [
       _label,
       _host,
+      _altHost,
       _port,
       _username,
       _fileRoot,
@@ -308,6 +311,7 @@ class _HostEditPageState extends State<HostEditPage> {
       id: id,
       label: _label.text.trim(),
       host: _host.text.trim(),
+      altHost: _altHost.text.trim(),
       username: _username.text.trim(),
       port: int.parse(_port.text.trim()),
       authMethod: _authMethod,
@@ -373,6 +377,23 @@ class _HostEditPageState extends State<HostEditPage> {
               validator: (value) => (value == null || value.trim().isEmpty)
                   ? 'A hostname or IP is required'
                   : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _altHost,
+              decoration: const InputDecoration(
+                labelText: 'Alternative address',
+                hintText: '192.168.1.20',
+                helperText: 'Optional. A second address for the same machine, '
+                    'dialled alongside the one above and used if it answers '
+                    'first: the LAN address of a host you normally reach over '
+                    'Tailscale, so a tailnet that is down needs no edit here. '
+                    'Same port, user and credentials.',
+                helperMaxLines: 5,
+              ),
+              autocorrect: false,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 12),
             TextFormField(

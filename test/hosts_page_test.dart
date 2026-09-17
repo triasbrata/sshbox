@@ -266,6 +266,7 @@ void main() {
       id: 'box',
       label: 'wsl windows',
       host: '10.0.0.9',
+      altHost: '192.168.1.20',
       username: 'me',
       port: 2222,
       authMethod: SshAuthMethod.privateKey,

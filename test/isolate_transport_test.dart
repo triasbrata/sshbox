@@ -262,6 +262,7 @@ void fakeSessionIsolate(SendPort toProxy) => runSessionIsolate(
         required knownHosts,
         required confirmHostKey,
         required onAuthBanner,
+        required onNotice,
         required loadHosts,
       }) =>
           _FakeTransport(onAuthBanner),

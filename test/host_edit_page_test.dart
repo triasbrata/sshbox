@@ -106,7 +106,8 @@ TextField _field(WidgetTester tester, String label) =>
     tester.widget<TextField>(find.widgetWithText(TextField, label));
 
 void main() {
-  testWidgets('picks a saved host to jump through, and saves it', (
+  testWidgets('picks a saved host to jump through, and saves it with the '
+      'alternative address', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -158,10 +159,17 @@ void main() {
     await tester.tap(find.text('office gw').last);
     await tester.pumpAndSettle();
 
+    // The LAN address of the same machine, for when the tailnet is down.
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Alternative address'),
+      ' 192.168.1.20 ',
+    );
+
     await tester.tap(find.byTooltip('Save'));
     await tester.pumpAndSettle();
     final saved = (await repository.load()).firstWhere((h) => h.id == 'box');
     expect(saved.jumpHostId, 'gw');
+    expect(saved.altHost, '192.168.1.20');
   });
 
   testWidgets('the passphrase is masked until its eye shows it, and the '

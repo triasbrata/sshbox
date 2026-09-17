@@ -83,4 +83,59 @@ void main() {
     expect(pinnedFingerprint, startsWith('SHA256:'));
     expect(await knownHosts.pinnedKey('127.0.0.1', 22), pinnedFingerprint);
   }, timeout: const Timeout(Duration(seconds: 40)));
+
+  test('the key is pinned under the saved address, whichever one answered',
+      () async {
+    if (!await _sshdReachable()) {
+      printOnFailure('skipped: nothing listening on 127.0.0.1:22');
+      return;
+    }
+
+    SharedPreferences.setMockInitialValues({});
+
+    final knownHosts = KnownHostStore();
+    var asked = 0;
+    String? pinnedFingerprint;
+    final transport = Dartssh2Transport(
+      knownHosts: knownHosts,
+      confirmHostKey: (check) async {
+        asked++;
+        pinnedFingerprint = check.fingerprint;
+        return true;
+      },
+    );
+
+    const host = HostProfile(
+      id: 'live-test',
+      label: 'local sshd',
+      // Reserved by RFC 2606, so it never resolves: the saved address is out
+      // of reach, and only the alternative can answer.
+      host: 'nothing-here.invalid',
+      altHost: '127.0.0.1',
+      username: 'sshbox-user-that-does-not-exist',
+    );
+
+    final secrets = InMemorySecretStore();
+    await secrets.write(
+      SecretKeys.password(host.id),
+      'deliberately-wrong-password',
+    );
+
+    await expectLater(
+      transport.connect(host: host, secrets: secrets, columns: 80, rows: 24),
+      throwsA(isA<SshSessionException>()),
+    );
+
+    // Asked once, and pinned against the host as it is saved — not against
+    // the address that answered. The same machine at either address is one
+    // pinned key, so switching to the alternative neither asks again nor
+    // cries "the host key has changed".
+    expect(asked, 1);
+    expect(pinnedFingerprint, startsWith('SHA256:'));
+    expect(
+      await knownHosts.pinnedKey('nothing-here.invalid', 22),
+      pinnedFingerprint,
+    );
+    expect(await knownHosts.pinnedKey('127.0.0.1', 22), isNull);
+  }, timeout: const Timeout(Duration(seconds: 40)));
 }
