@@ -807,6 +807,50 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
+  /// Puts [entry]'s text on the clipboard without opening it in a tab.
+  ///
+  /// Unlike the file tab's Copy content, the text is not here yet, so this
+  /// one has to fetch it: the tree's busy flag goes up, which shows the app
+  /// bar's bar and stops every row taking another long press until it lands.
+  ///
+  /// The size the listing already knows is checked first, so a 90 MB log is
+  /// refused where it stands rather than coming down the connection to be
+  /// declined at the other end. Whether it is text at all stays the browser's
+  /// call — the same [FileBrowser.readText] the editor leans on, binary rule
+  /// and all — and every refusal it makes is already a sentence to show.
+  Future<void> _copyContent(RemoteEntry entry) async {
+    final size = entry.size;
+    if (size != null && size > copyLimit) {
+      _say(tooLargeToCopy(entry.name), ToastificationType.warning);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final file = await widget.browser.readText(
+        entry.path,
+        maxBytes: copyLimit,
+      );
+      if (!mounted) return;
+      await copyAndSay(
+        context,
+        entry.name,
+        () => Clipboard.setData(ClipboardData(text: file.text)),
+      );
+    } on FileBrowserException catch (error) {
+      if (!mounted) return;
+      // A file with no size in the listing, or one that grew since it: say
+      // the same thing the ceiling above says, not the editor's "too large
+      // to open here".
+      final tooLarge = error.fault == FileBrowserFault.tooLarge;
+      _say(
+        tooLarge ? tooLargeToCopy(entry.name) : error.message,
+        tooLarge ? ToastificationType.warning : ToastificationType.error,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// VS Code's right-click menu, opened where the finger or the pointer went
   /// down.
   Future<void> _showContextMenu(RemoteEntry entry, Offset pressedAt) async {
@@ -816,6 +860,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     final at = overlay.globalToLocal(pressedAt);
     final terminal = widget.terminal;
     final isFolder = entry.isTraversable;
+    // A file, or a link to one. A folder is not one thing to save or to copy.
+    final isFile = entry.kind == RemoteEntryKind.file ||
+        (entry.kind == RemoteEntryKind.symlink &&
+            entry.targetIsDirectory == false);
 
     PopupMenuItem<VoidCallback> item(String label, VoidCallback action) =>
         PopupMenuItem(value: action, child: Text(label));
@@ -834,10 +882,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           item('Set as root', () => _setRoot(entry.path)),
           const PopupMenuDivider(),
         ],
-        // A file, or a link to one. A folder is not one thing to save.
-        if (entry.kind == RemoteEntryKind.file ||
-            (entry.kind == RemoteEntryKind.symlink &&
-                entry.targetIsDirectory == false)) ...[
+        if (isFile) ...[
           item('Download', () => _download(entry)),
           const PopupMenuDivider(),
         ],
@@ -852,6 +897,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             _showTerminal();
           }),
         ],
+        // Beside Copy path, the other thing a long press puts on the
+        // clipboard. Not on a picture: the same name rule that sends one to
+        // the image tab, which offers Copy image instead.
+        if (isFile && !isImageFile(entry.path))
+          item('Copy content', () => _copyContent(entry)),
         item('Copy path', () {
           Clipboard.setData(ClipboardData(text: entry.path));
           _say('Path copied', ToastificationType.success);

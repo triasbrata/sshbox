@@ -48,7 +48,7 @@ class FileEditorPage extends StatelessWidget {
   final int? line;
 
   @override
-  Widget build(BuildContext context) => _isImage(path)
+  Widget build(BuildContext context) => isImageFile(path)
       ? _ImageFileTab(
           browser: browser,
           path: path,
@@ -77,11 +77,25 @@ final _imageNames = RegExp(
   caseSensitive: false,
 );
 
-bool _isImage(String path) => _imageNames.hasMatch(path);
+bool isImageFile(String path) => _imageNames.hasMatch(path);
 
-/// Puts something on the clipboard and says so, or says why not. Both of the
-/// file tab's Copy entries end here, so both say the same thing.
-Future<void> _copyAndSay(
+/// ponytail: 256 KB. The clipboard crosses to Android over the same ~1 MB
+/// Binder transaction as everything else, as UTF-16, so the whole of a 1 MiB
+/// file — the most the editor opens at all — would not fit. Raise it if
+/// pasting a bigger file ever matters; a native clip beyond that would have
+/// to go by file, as Copy image does.
+const copyLimit = 256 * 1024;
+
+/// What Copy content says instead of copying. One sentence for the file tab
+/// and the tree alike, so the ceiling and the wording cannot drift apart.
+String tooLargeToCopy(String name) =>
+    '$name is too large to copy: the clipboard takes '
+    '${formatBytes(copyLimit)} at most. Download it instead.';
+
+/// Puts something on the clipboard and says so, or says why not. The file
+/// tab's Copy entries and the tree's all end here, so they all say the same
+/// thing.
+Future<void> copyAndSay(
   BuildContext context,
   String name,
   Future<void> Function() copy,
@@ -865,29 +879,17 @@ class _TextFileTabState extends State<_TextFileTab> {
     );
   }
 
-  /// ponytail: 256 KB. The clipboard crosses to Android over the same ~1 MB
-  /// Binder transaction as everything else, as UTF-16, so the whole of a
-  /// 1 MiB file — the most the editor opens at all — would not fit. Raise it
-  /// if pasting a bigger file ever matters; a native clip beyond that would
-  /// have to go by file, as Copy image does.
-  static const _copyLimit = 256 * 1024;
-
   /// Puts the file on the clipboard as it is on screen, unsaved edits and
   /// all: this is Select all and Copy in one tap, for the text being looked
   /// at. Download is already there for the version on the host.
   Future<void> _copyContent() {
     final name = RemotePath.basename(widget.path);
     final text = _controller.text;
-    if (text.length > _copyLimit) {
-      showToast(
-        context,
-        '$name is too large to copy: the clipboard takes '
-        '${formatBytes(_copyLimit)} at most. Download it instead.',
-        type: ToastificationType.warning,
-      );
+    if (text.length > copyLimit) {
+      showToast(context, tooLargeToCopy(name), type: ToastificationType.warning);
       return Future.value();
     }
-    return _copyAndSay(
+    return copyAndSay(
       context,
       name,
       () => Clipboard.setData(ClipboardData(text: text)),
@@ -1374,7 +1376,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
     final image = _image;
     if (image == null) return Future.value();
     final name = RemotePath.basename(widget.path);
-    return _copyAndSay(
+    return copyAndSay(
       context,
       name,
       () => copyImageToClipboard(image.file.path, name),
@@ -1740,7 +1742,7 @@ class _CodeBlockState extends State<_CodeBlock> {
       // one-line block does not grow to fit a full-sized button.
       IconButton(
         tooltip: 'Copy code',
-        onPressed: () => _copyAndSay(
+        onPressed: () => copyAndSay(
           context,
           'code block',
           () => Clipboard.setData(ClipboardData(text: widget.source)),

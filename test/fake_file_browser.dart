@@ -51,6 +51,10 @@ class FakeFileBrowser implements FileBrowser {
     '/home/me/dev/main.dart': 'void main() {}\n',
   };
 
+  /// Every path [readText] was asked for, so a test can prove nothing came
+  /// down the wire at all.
+  final List<String> reads = [];
+
   final List<String> deleted = [];
   final List<String> recursiveDeletes = [];
   final List<(String from, String to)> renames = [];
@@ -105,9 +109,20 @@ class FakeFileBrowser implements FileBrowser {
     String path, {
     int maxBytes = FileBrowser.defaultReadLimit,
   }) async {
+    reads.add(path);
     final failure = failReadWith;
     if (failure != null) throw failure;
-    return _read(path);
+    final text = _read(path);
+    // SFTP stats before it opens; so does this, so a caller that asks for
+    // less than the file holds is refused rather than handed the lot.
+    if (text.text.length > maxBytes) {
+      throw FileBrowserException(
+        '${formatBytes(text.text.length)} is too large to open here. '
+        'Use the terminal for a file this size.',
+        fault: FileBrowserFault.tooLarge,
+      );
+    }
+    return text;
   }
 
   RemoteText _read(String path) {

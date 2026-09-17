@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
@@ -870,6 +871,156 @@ void main() {
     );
     await tester.pumpAndSettle();
   });
+
+  group('Copy content', () {
+    testWidgets('puts the file on the clipboard without opening it',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      final browser = FakeFileBrowser();
+      await _pumpBrowser(tester, browser);
+
+      await _rowActionUnsettled(tester, 'notes.txt', 'Copy content');
+
+      expect(copied, ['first line\nsecond line\n']);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied notes.txt'),
+        ),
+        findsOneWidget,
+      );
+      // The tree is still the tree: nothing was opened in a tab.
+      expect(find.byType(FileEditorPage), findsNothing);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('is offered on a file, and not on a folder or a picture',
+        (tester) async {
+      await _pumpBrowser(
+        tester,
+        _ExtraRowBrowser(const RemoteEntry(
+          name: 'photo.png',
+          path: '/home/me/photo.png',
+          kind: RemoteEntryKind.file,
+          size: 4096,
+        )),
+      );
+
+      await tester.longPress(_row('notes.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy content'), findsOneWidget);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      // A folder is not one thing to copy.
+      await tester.longPress(_row('dev'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy content'), findsNothing);
+      expect(find.text('Copy path'), findsOneWidget);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      // A picture goes to the image tab, which offers Copy image instead —
+      // the same name rule decides both.
+      await tester.longPress(_row('photo.png'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy content'), findsNothing);
+      expect(find.text('Download'), findsOneWidget);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('refuses a file past the ceiling without fetching it',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      // 90 MB, the log the listing already knows the size of.
+      final browser = _ExtraRowBrowser(const RemoteEntry(
+        name: 'huge.log',
+        path: '/home/me/huge.log',
+        kind: RemoteEntryKind.file,
+        size: 90 * 1024 * 1024,
+      ));
+      await _pumpBrowser(tester, browser);
+
+      await _rowActionUnsettled(tester, 'huge.log', 'Copy content');
+
+      expect(copied, isEmpty);
+      expect(find.textContaining('too large to copy'), findsOneWidget);
+      // The whole point of checking the listing first: not a byte was asked
+      // for.
+      expect(browser.reads, isEmpty);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('says what the host said when the fetch fails',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      const refused = 'This looks like a binary file.';
+      final browser = FakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          refused,
+          fault: FileBrowserFault.notText,
+        );
+      await _pumpBrowser(tester, browser);
+
+      await _rowActionUnsettled(tester, 'notes.txt', 'Copy content');
+
+      expect(copied, isEmpty);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text(refused),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+  });
+}
+
+/// Home with one more row in it, for the kinds of file the default fake tree
+/// has none of.
+class _ExtraRowBrowser extends FakeFileBrowser {
+  _ExtraRowBrowser(this.extra);
+
+  final RemoteEntry extra;
+
+  @override
+  Future<List<RemoteEntry>> list(String path) async => path == '/home/me'
+      ? [...await super.list(path), extra]
+      : super.list(path);
+}
+
+/// Records what [Clipboard.setData] was given, the platform call and all.
+List<String> _useFakeClipboard() {
+  final copied = <String>[];
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+    if (call.method == 'Clipboard.setData') {
+      copied.add((call.arguments as Map)['text'] as String);
+    }
+    return null;
+  });
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+  );
+  return copied;
+}
+
+/// Long-presses [name] and picks [action], stopping short of settling so a
+/// toast is still on screen to look at.
+Future<void> _rowActionUnsettled(
+  WidgetTester tester,
+  String name,
+  String action,
+) async {
+  await tester.longPress(_row(name));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(action));
+  await tester.pump();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
 }
 
 /// A file on the phone, as the picker hands one over: a copy with a path.
