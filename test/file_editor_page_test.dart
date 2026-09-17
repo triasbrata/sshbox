@@ -51,6 +51,26 @@ Future<void> _pick(WidgetTester tester, String entry) async {
 
 Future<void> _download(WidgetTester tester) => _pick(tester, 'Download');
 
+/// A real 1×1 PNG: the engine decodes it for real here, which is what the
+/// viewer's and the preview's failure states turn on.
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEh'
+  'QGAhKmMIQAAAABJRU5ErkJggg==',
+);
+
+/// Waits out the copies and their decodes, which are real file work rather
+/// than anything on the test's fake clock.
+Future<void> _settleImages(WidgetTester tester, {int wanted = 1}) async {
+  for (var i = 0;
+      i < 100 && find.byType(Image).evaluate().length < wanted;
+      i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+  }
+}
+
 /// What the app put on the clipboard, in place of the phone's own.
 List<String> _useFakeClipboard() {
   final copied = <String>[];
@@ -929,12 +949,13 @@ void main() {
   group('markdown', () {
     const readme = '/home/me/README.md';
 
-    Future<void> pumpReadme(
+    Future<FakeFileBrowser> pumpReadme(
       WidgetTester tester,
       String text, {
       void Function(Uri url)? onOpenWeb,
+      FakeFileBrowser? on,
     }) async {
-      final browser = FakeFileBrowser()..contents[readme] = text;
+      final browser = (on ?? FakeFileBrowser())..contents[readme] = text;
       await tester.pumpWidget(
         MaterialApp(
           home: FileEditorPage(
@@ -945,6 +966,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      return browser;
     }
 
     Future<void> toggle(WidgetTester tester, String tooltip) async {
@@ -1049,8 +1071,8 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('renders a table, code, tasks, and an image as its alt text',
-        (tester) async {
+    testWidgets('renders a table, code, tasks, and a picture that is not '
+        'there as its alt text', (tester) async {
       terminalSettings.value = terminalStyleOf('JetBrains Mono', 13);
       addTearDown(
         () => terminalSettings.value = TerminalSettings.defaultStyle,
@@ -1091,9 +1113,128 @@ echo hello
       );
       expect(find.byIcon(Icons.check_box), findsOneWidget);
       expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
-      // Named, never fetched.
+      // Nothing on the host by that name, so the alt text stands in for it.
       expect(find.textContaining('the logo'), findsOneWidget);
       expect(find.byType(Image), findsNothing);
+    });
+
+    testWidgets('a picture beside the document is fetched and drawn',
+        (tester) async {
+      final browser = FakeFileBrowser()
+        ..binary['/home/me/img/logo.png'] = _png;
+      await pumpReadme(tester, '![the logo](img/logo.png)\n', on: browser);
+      await _settleImages(tester);
+
+      expect(find.byType(Image), findsOneWidget);
+      expect(browser.downloads.single.from, '/home/me/img/logo.png');
+      // The picture itself, not the words that stand in for one.
+      expect(find.textContaining('the logo'), findsNothing);
+    });
+
+    testWidgets('a web picture is never fetched, and one that will not open '
+        'says why', (tester) async {
+      final browser = await pumpReadme(tester, '''
+![a badge](https://img.shields.io/badge.png)
+
+![a drawing](drawing.svg)
+
+![gone](img/gone.png)
+''');
+      await tester.pumpAndSettle();
+
+      // Only the host path was asked for: nothing told the web anything.
+      expect(browser.downloads.single.from, '/home/me/img/gone.png');
+      expect(find.byType(Image), findsNothing);
+      expect(find.textContaining('a badge'), findsOneWidget);
+      expect(
+        find.textContaining('a drawing — not a picture this app can draw'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('gone — Could not open'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a path is read as a shell would read it', (tester) async {
+      final browser = await pumpReadme(tester, '''
+![a](~/pics/a.png)
+
+![b](../shared/b.png)
+
+![c](/etc/logo.png)
+
+![d](img/d%20one.png)
+''');
+      await tester.pumpAndSettle();
+
+      expect(
+        browser.downloads.map((download) => download.from),
+        unorderedEquals([
+          // `~` is the login home, as it is everywhere else in the app.
+          '/home/me/pics/a.png',
+          // Relative to the document, `..` walked.
+          '/home/shared/b.png',
+          '/etc/logo.png',
+          // A space is a space by the time it reaches the host.
+          '/home/me/img/d one.png',
+        ]),
+      );
+    });
+
+    testWidgets('a picture past the cap, and a document past its budget, are '
+        'not brought down', (tester) async {
+      final browser = FakeFileBrowser();
+      for (final name in ['one', 'two', 'three', 'four', 'five']) {
+        browser
+          ..binary['/home/me/$name.png'] = _png
+          ..statedSize['/home/me/$name.png'] = 15 * 1024 * 1024;
+      }
+      browser
+        ..binary['/home/me/huge.png'] = _png
+        ..statedSize['/home/me/huge.png'] = 21 * 1024 * 1024;
+      await pumpReadme(tester, '''
+![huge](huge.png)
+
+![one](one.png)
+
+![two](two.png)
+
+![three](three.png)
+
+![four](four.png)
+
+![five](five.png)
+''', on: browser);
+      await _settleImages(tester, wanted: 4);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('huge — 21.0 MB is too large to show here'),
+        findsOneWidget,
+      );
+      // Four at 15 MB fit the 64 MB the document gets; the fifth does not.
+      expect(find.byType(Image), findsNWidgets(4));
+      expect(
+        find.textContaining('five — the preview has already fetched 64.0 MB'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the copies it brought down go when the tab closes',
+        (tester) async {
+      final browser = FakeFileBrowser()
+        ..binary['/home/me/img/logo.png'] = _png;
+      await pumpReadme(tester, '![the logo](img/logo.png)\n', on: browser);
+      await _settleImages(tester);
+      final copy = File(browser.downloads.single.to);
+      expect(copy.existsSync(), isTrue);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+
+      expect(copy.existsSync(), isFalse);
+      expect(copy.parent.existsSync(), isFalse);
     });
 
     testWidgets('draws a mermaid block as a diagram, and leaves other code be',
@@ -1200,12 +1341,7 @@ After it.
   });
 
   group('image', () {
-    // A real 1×1 PNG: the engine decodes it for real here, which is what the
-    // viewer's failure state turns on.
-    final png = base64Decode(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEh'
-      'QGAhKmMIQAAAABJRU5ErkJggg==',
-    );
+    final png = _png;
     const shot = '/home/me/shot.png';
 
     /// Pumps the tab and waits out the copy and its decode, which are real
