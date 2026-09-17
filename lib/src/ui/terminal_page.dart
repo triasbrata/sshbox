@@ -952,8 +952,16 @@ class _PaneViewState extends State<_PaneView> {
   /// is held is not underlined until it comes down again, though a Ctrl+tap
   /// on it still opens it — the tap reads the line afresh.
   void showLinks({required bool ctrl, required Color color}) {
-    // A program reading the mouse would otherwise take the tap as a click.
-    selection.setSuspendPointerInput(ctrl);
+    // The tap is held back, because a program reading the mouse would
+    // otherwise take a Ctrl+tap as a click and the link would never open.
+    // The scroll is not: suspending every pointer input, as this used to,
+    // took scrolling away too, and on the alternate screen or under a
+    // program that reads the mouse — Claude Code, vim, less, tmux — a drag
+    // is the only way a finger can scroll at all, there being no wheel. So
+    // an armed CTRL froze the terminal's content until the app was killed.
+    selection.setPointerInputs(
+      ctrl ? _ctrlPointerInputs : _defaultPointerInputs,
+    );
     for (final underline in _underlines) {
       underline.dispose();
     }
@@ -970,6 +978,15 @@ class _PaneViewState extends State<_PaneView> {
       color: color,
     );
   }
+
+  /// What a terminal normally takes: xterm2's own default.
+  static const _defaultPointerInputs = PointerInputs({
+    PointerInput.tap,
+    PointerInput.scroll,
+  });
+
+  /// The same without the tap, which Ctrl has claimed for opening links.
+  static const _ctrlPointerInputs = PointerInputs({PointerInput.scroll});
 
   @override
   Widget build(BuildContext context) {

@@ -84,8 +84,8 @@ void main() {
     expect(await knownHosts.pinnedKey('127.0.0.1', 22), pinnedFingerprint);
   }, timeout: const Timeout(Duration(seconds: 40)));
 
-  test('the key is pinned under the saved address, whichever one answered',
-      () async {
+  test('the key is pinned under the address that answered, and the prompt '
+      'names it', () async {
     if (!await _sshdReachable()) {
       printOnFailure('skipped: nothing listening on 127.0.0.1:22');
       return;
@@ -94,13 +94,11 @@ void main() {
     SharedPreferences.setMockInitialValues({});
 
     final knownHosts = KnownHostStore();
-    var asked = 0;
-    String? pinnedFingerprint;
+    final asked = <HostKeyCheck>[];
     final transport = Dartssh2Transport(
       knownHosts: knownHosts,
       confirmHostKey: (check) async {
-        asked++;
-        pinnedFingerprint = check.fingerprint;
+        asked.add(check);
         return true;
       },
     );
@@ -126,16 +124,21 @@ void main() {
       throwsA(isA<SshSessionException>()),
     );
 
-    // Asked once, and pinned against the host as it is saved — not against
-    // the address that answered. The same machine at either address is one
-    // pinned key, so switching to the alternative neither asks again nor
-    // cries "the host key has changed".
-    expect(asked, 1);
-    expect(pinnedFingerprint, startsWith('SHA256:'));
+    // Asked once, about the address that actually answered — never about the
+    // saved address, which nothing was ever reached at: a user cannot rule on
+    // a key shown under the name of a machine that never spoke.
+    expect(asked, hasLength(1));
+    expect(asked.single.address, '127.0.0.1');
+    expect(asked.single.pinned, isNull);
+    // The saved address has no key of its own to disagree with, so there is
+    // nothing to warn about.
+    expect(asked.single.otherAddress, isNull);
+    expect(asked.single.fingerprint, startsWith('SHA256:'));
+    // And pinned under that address, as OpenSSH's known_hosts would.
     expect(
-      await knownHosts.pinnedKey('nothing-here.invalid', 22),
-      pinnedFingerprint,
+      await knownHosts.pinnedKey('127.0.0.1', 22),
+      asked.single.fingerprint,
     );
-    expect(await knownHosts.pinnedKey('127.0.0.1', 22), isNull);
+    expect(await knownHosts.pinnedKey('nothing-here.invalid', 22), isNull);
   }, timeout: const Timeout(Duration(seconds: 40)));
 }

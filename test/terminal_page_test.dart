@@ -600,6 +600,38 @@ void main() {
         contains('TextInput.show'),
       );
     });
+
+    testWidgets('an armed CTRL takes the tap but never the scroll, so the '
+        'alternate screen still scrolls under a finger', (tester) async {
+      await pumpPage(tester);
+      // The alternate screen, where Claude Code, vim and less live: xterm2
+      // has no scrollback of its own to move, so a drag becomes the arrow
+      // keys the program scrolls by. That is the only way a finger can
+      // scroll there — a tablet has no wheel.
+      tester.widget<TerminalView>(find.byType(TerminalView)).terminal
+        ..resize(40, 10)
+        ..write('\x1b[?1049h');
+      await tester.pump();
+
+      await tester.tap(find.text('CTRL'));
+      await tester.pump();
+      shell.sent.clear();
+
+      final drag = await tester.startGesture(
+        tester.getCenter(find.byType(TerminalView)),
+      );
+      for (var i = 0; i < 10; i++) {
+        await drag.moveBy(const Offset(0, 20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // Suspending every pointer input, as arming CTRL used to, swallowed
+      // these and froze the terminal until the app was killed.
+      expect(shell.sent, isNotEmpty);
+      expect(shell.sent, everyElement('\x1b[A'));
+    });
   });
 
   group('cd from the files drawer', () {

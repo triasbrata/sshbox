@@ -79,6 +79,15 @@ final _imageNames = RegExp(
 
 bool isImageFile(String path) => _imageNames.hasMatch(path);
 
+/// The most of any one picture the app will bring down and decode, whether it
+/// is a tab of its own or one image in a Markdown preview.
+///
+/// ponytail: 20 MB. Every screenshot and camera photo is a small fraction of
+/// that, and the file is only half the cost — to draw it, Flutter decodes it
+/// to width × height × 4 bytes of pixels, which no cap on the file can bound
+/// tightly. Raise it when somebody has a real image bigger than this.
+const _imageLimit = 20 * 1024 * 1024;
+
 /// ponytail: 256 KB. The clipboard crosses to Android over the same ~1 MB
 /// Binder transaction as everything else, as UTF-16, so the whole of a 1 MiB
 /// file — the most the editor opens at all — would not fit. Raise it if
@@ -301,6 +310,14 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// [setState]: it is only read when a new preview is built.
   double _previewAt = 0;
 
+  /// The pictures the preview has fetched, kept here rather than in the
+  /// preview so they outlive a reload or a trip to Source, and go when the tab
+  /// does.
+  late final _images = _PreviewImages(
+    widget.browser,
+    RemotePath.parent(widget.path),
+  );
+
   /// Whether the key bar's Tab types a tab rather than spaces.
   bool _useTabs = false;
 
@@ -397,6 +414,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     }
     _find.dispose();
     _editorFocus.dispose();
+    _images.dispose();
     _controller.removeListener(_onEdited);
     _controller.dispose();
     super.dispose();
@@ -1114,6 +1132,7 @@ class _TextFileTabState extends State<_TextFileTab> {
               if (_preview)
                 _MarkdownPreview(
                   text: _controller.text,
+                  images: _images,
                   onTapLink: _openPreviewLink,
                   at: _previewAt,
                   onScroll: (at) => _previewAt = at,
@@ -1197,12 +1216,6 @@ class _ImageFileTab extends StatefulWidget {
 }
 
 class _ImageFileTabState extends State<_ImageFileTab> {
-  /// ponytail: 20 MB. Every screenshot and camera photo is a small fraction of
-  /// that, and the file is only half the cost — to draw it, Flutter decodes it
-  /// to width × height × 4 bytes of pixels, which no cap on the file can bound
-  /// tightly. Raise it when somebody has a real image bigger than this.
-  static const _limit = 20 * 1024 * 1024;
-
   /// The app's own copy and the directory holding it. The file comes down a
   /// chunk at a time, as a download does, so nothing but the decoded image is
   /// ever held in memory, and the copy goes when the tab does.
@@ -1218,7 +1231,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   FileBrowserFault? _fault;
   bool _loading = true;
 
-  /// Stops the copy part way: the tab closed, or the file is past [_limit].
+  /// Stops the copy part way: the tab closed, or the file is past [_imageLimit].
   final _stop = Completer<void>();
   bool _tooLarge = false;
 
@@ -1277,7 +1290,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
           _bytes = total;
           // The size lands with the first chunk, so a file past the cap is
           // stopped there rather than pulled down in full to be turned away.
-          if (total > _limit && !_stop.isCompleted) {
+          if (total > _imageLimit && !_stop.isCompleted) {
             _tooLarge = true;
             _stop.complete();
           }
@@ -1286,7 +1299,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
       );
       if (!mounted) return;
       // Checked again for a transport that finishes rather than stopping.
-      if (_tooLarge || _bytes > _limit) return _refuse();
+      if (_tooLarge || _bytes > _imageLimit) return _refuse();
 
       final image = FileImage(File(copy));
       final size = await _sizeOf(image);
@@ -1381,7 +1394,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   /// editor.
   ///
   /// The app's own copy is what goes, the same file the viewer draws, so
-  /// nothing comes down twice. No cap of its own beyond [_limit], which is
+  /// nothing comes down twice. No cap of its own beyond [_imageLimit], which is
   /// all the tab would show anyway: only a URI crosses to the pasting app,
   /// never the bytes.
   Future<void> _copyImage() {
@@ -1569,21 +1582,276 @@ class _EditorError extends StatelessWidget {
   }
 }
 
+/// One picture in a Markdown preview: what came of fetching it, and when that
+/// will be known.
+class _Picture {
+  FileImage? image;
+
+  /// Why there is no picture, as a phrase to put after the alt text, or null
+  /// while there might still be one.
+  String? failure;
+
+  /// Completes once [image] or [failure] is set.
+  late final Future<void> done;
+
+  bool get settled => image != null || failure != null;
+}
+
+/// The pictures a Markdown preview has brought down, held by the file tab
+/// rather than by the preview.
+///
+/// The preview's widgets are thrown away often — by Source, by a reload, and
+/// by the list itself as a picture scrolls out of view — and a second trip to
+/// the host for a picture already on the phone would cost both a round trip
+/// and a frame of alt text, and a frame at the wrong height moves the scroll
+/// position the reader was put back to. Asked for a picture already in hand,
+/// this answers in the same frame, so nothing shifts.
+class _PreviewImages {
+  _PreviewImages(this.browser, this.directory);
+
+  final FileBrowser browser;
+
+  /// The directory holding the .md file, which a relative source is taken
+  /// from, as every other Markdown renderer takes it.
+  final String directory;
+
+  /// ponytail: 64 MB over the document, on top of [_imageLimit] for any one
+  /// picture. The preview's list builds its children as they scroll into view,
+  /// so a long article only fetches what is read; this is the ceiling on what
+  /// one tab can leave in the app's cache. Count pictures instead, or drop the
+  /// ones scrolled far away, if a real article ever hits it.
+  static const _budget = 64 * 1024 * 1024;
+
+  final _pictures = <String, _Picture>{};
+
+  /// Completes when the tab closes, stopping every download still in flight.
+  final _closed = Completer<void>();
+
+  Directory? _temp;
+  int _spent = 0;
+  int _fetching = 0;
+  int _next = 0;
+
+  /// What became of [source], fetching it on the first ask.
+  _Picture of(String source) {
+    final known = _pictures[source];
+    if (known != null) return known;
+    final picture = _pictures[source] = _Picture();
+    picture.done = _fetch(source, picture);
+    return picture;
+  }
+
+  /// [source] as a path on the host: a relative one against the document's own
+  /// directory, `~` against the login home — the app's paths take it
+  /// everywhere else — and `..` walked, which stops at the root as it does on
+  /// the host. Nothing is confined beyond that: the login can read these files
+  /// in the terminal anyway, and only a name [isImageFile] knows is ever
+  /// fetched at all.
+  Future<String> _resolve(String source) async => source.startsWith('~')
+      ? RemotePath.resolve(source, await browser.resolveHome())
+      : RemotePath.normalize(RemotePath.join(directory, source));
+
+  Future<void> _fetch(String source, _Picture picture) async {
+    _fetching++;
+    final stop = Completer<void>();
+    var refused = '';
+    try {
+      final path = await _resolve(source);
+      if (!isImageFile(path)) {
+        picture.failure = 'not a picture this app can draw';
+        return;
+      }
+      // On Android, Flutter points systemTemp at the app's own code cache.
+      final temp = _temp ??= Directory.systemTemp.createTempSync('preview');
+      final copy = '${temp.path}/${_next++}';
+      var bytes = 0;
+      await browser.download(
+        path,
+        copy,
+        onProgress: (received, total) {
+          bytes = total;
+          if (refused.isNotEmpty) return;
+          // The size lands with the first chunk, so one past a ceiling is
+          // stopped there rather than pulled down in full to be turned away.
+          if (total > _imageLimit) {
+            refused = '${formatBytes(total)} is too large to show here';
+          } else if (_spent + total > _budget) {
+            refused = 'the preview has already fetched '
+                '${formatBytes(_budget)} of pictures';
+          }
+          if (refused.isNotEmpty) stop.complete();
+        },
+        cancel: Future.any([stop.future, _closed.future]),
+      );
+      // Checked again for a transport that finishes rather than stopping.
+      if (refused.isNotEmpty) return;
+      _spent += bytes;
+      picture.image = FileImage(File(copy));
+    } on FileBrowserException catch (error) {
+      // Its messages are already fit to put in front of a reader: not there,
+      // permission denied, the connection gone.
+      picture.failure = error.message;
+    } catch (_) {
+      picture.failure = 'could not be fetched';
+    } finally {
+      // A refusal stops the download part way, so it arrives here as a
+      // cancellation: the ceiling is what the reader wants to be told about.
+      if (refused.isNotEmpty) picture.failure = refused;
+      _fetching--;
+      // The tab went while this was in flight, so dispose left the copies
+      // alone: see [dispose].
+      if (_closed.isCompleted && _fetching == 0) _remove();
+    }
+  }
+
+  /// Removes the app's copies. Idempotent, so whichever of the tab closing and
+  /// the last fetch finishing comes last does it, and neither has to know.
+  void _remove() {
+    final temp = _temp;
+    _temp = null;
+    try {
+      temp?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Already gone, or never made.
+    }
+  }
+
+  void dispose() {
+    if (!_closed.isCompleted) _closed.complete();
+    for (final picture in _pictures.values) {
+      // The decoded pixels are cached under the copy's path, and that path
+      // goes with the copy.
+      final image = picture.image;
+      if (image != null) unawaited(image.evict());
+    }
+    // A download still writing into the directory would fail on its way out
+    // rather than stopping cleanly, so the last one out clears up.
+    if (_fetching == 0) _remove();
+  }
+}
+
+/// A picture that is not shown: its alt text in italics behind a picture icon,
+/// and why not when there is a why.
+Widget _imageAlt(
+  BuildContext context,
+  String label, {
+  String? because,
+  bool loading = false,
+}) {
+  final theme = Theme.of(context);
+  return Text.rich(
+    TextSpan(
+      children: [
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: loading
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.image_outlined, size: 16),
+        ),
+        TextSpan(text: ' $label${because == null ? '' : ' — $because'}'),
+      ],
+    ),
+    style: theme.textTheme.bodyMedium!.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+      fontStyle: FontStyle.italic,
+    ),
+  );
+}
+
+/// One picture in the Markdown preview, as wide as the page and no wider.
+///
+/// Until it is in, and if it never comes, the alt text stands in its place as
+/// it always did, with the reason beside it.
+class _MarkdownImage extends StatefulWidget {
+  const _MarkdownImage({
+    required this.images,
+    required this.source,
+    required this.label,
+  });
+
+  final _PreviewImages images;
+
+  /// The path as the document writes it, before it is resolved.
+  final String source;
+
+  /// The alt text, or the source itself when there is none.
+  final String label;
+
+  @override
+  State<_MarkdownImage> createState() => _MarkdownImageState();
+}
+
+class _MarkdownImageState extends State<_MarkdownImage> {
+  late final _Picture _picture = widget.images.of(widget.source);
+
+  @override
+  void initState() {
+    super.initState();
+    // One already in hand draws in this very frame, and waits for nothing.
+    if (!_picture.settled) {
+      _picture.done.whenComplete(() {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = _picture.image;
+    if (image == null) {
+      return _imageAlt(
+        context,
+        widget.label,
+        because: _picture.failure,
+        loading: !_picture.settled,
+      );
+    }
+    return Image(
+      image: image,
+      // No width of its own: a picture wider than the page is fitted to it and
+      // a small one is left alone, which is what an image tag means in prose.
+      //
+      // ponytail: decoded at its own size, so a page of 4000-pixel screenshots
+      // leans on Flutter's own image cache to bound it. Decode at the page's
+      // width with ResizeImage if a real article ever runs a tablet out of
+      // memory.
+      errorBuilder: (context, _, _) => _imageAlt(
+        context,
+        widget.label,
+        because: 'not a picture this app can draw',
+      ),
+    );
+  }
+}
+
 /// A Markdown file as it reads, from the text in the editor rather than the
 /// host, so an edit not yet saved shows too. Read-only, since editing is
 /// Source's, and selectable across blocks.
 ///
-/// Images are never fetched: a relative one is a file on the host, and a web
-/// one is as often a tracking badge. Each shows as its alt text.
+/// A picture on the host is fetched and drawn, through [_PreviewImages]. A web
+/// one is still never fetched and shows as its alt text: the document comes
+/// off somebody's server, and `![](https://tracker/…)` in it would tell a
+/// third party which file the user is reading, which is not a thing a preview
+/// should do behind their back.
 class _MarkdownPreview extends StatefulWidget {
   const _MarkdownPreview({
     required this.text,
+    required this.images,
     required this.onTapLink,
     required this.at,
     required this.onScroll,
   });
 
   final String text;
+
+  /// The pictures fetched for this document, kept by the tab so they outlive
+  /// the preview.
+  final _PreviewImages images;
+
   final MarkdownTapLinkCallback onTapLink;
 
   /// Where the preview was last left, in pixels. Reload replaces the body with
@@ -1656,23 +1924,23 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
                 controller: _scroll,
                 onTapLink: widget.onTapLink,
                 builders: {'code': _CodeBuilder()},
-                imageBuilder: (uri, title, alt) => Text.rich(
-                  TextSpan(
-                    children: [
-                      const WidgetSpan(
-                        alignment: PlaceholderAlignment.middle,
-                        child: Icon(Icons.image_outlined, size: 16),
-                      ),
-                      TextSpan(
-                        text: ' ${alt == null || alt.isEmpty ? uri : alt}',
-                      ),
-                    ],
-                  ),
-                  style: body.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
+                imageBuilder: (uri, title, alt) {
+                  final label = alt == null || alt.isEmpty ? '$uri' : alt;
+                  // Anything with a scheme or a host is somebody else's
+                  // server: see the class comment.
+                  if (uri.hasScheme || uri.hasAuthority) {
+                    return _imageAlt(context, label);
+                  }
+                  return _MarkdownImage(
+                    images: widget.images,
+                    // Without the query a raw link carries, and with `%20`
+                    // read back as the space it stands for: what is left is a
+                    // path on the host. Uri.parse escapes a bare `%` on its
+                    // way in, so this never throws on one.
+                    source: Uri.decodeComponent(uri.path),
+                    label: label,
+                  );
+                },
                 // The package's own picks a fixed blue for links and a
                 // colour that vanishes on a dark page for checkboxes.
                 styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
