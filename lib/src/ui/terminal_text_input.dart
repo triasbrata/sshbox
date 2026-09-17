@@ -26,6 +26,7 @@ class TerminalTextInput extends StatefulWidget {
     required this.focusNode,
     required this.child,
     this.onInput,
+    this.onContent,
     this.inputType = TextInputType.emailAddress,
     this.keyboardAppearance = Brightness.dark,
   });
@@ -43,6 +44,12 @@ class TerminalTextInput extends StatefulWidget {
   /// can follow it down. xterm2 does this for its own input, and running with
   /// `hardwareKeyboardOnly` opts out of that along with everything else.
   final VoidCallback? onInput;
+
+  /// A picture the soft keyboard committed rather than typed: Gboard's
+  /// clipboard strip inserts one this way, and only into a field that said it
+  /// takes them — see [_imageTypes]. A terminal has nothing to do with pixels,
+  /// so the page sends it to the host as a file instead.
+  final void Function(KeyboardInsertedContent content)? onContent;
 
   final TextInputType inputType;
 
@@ -68,6 +75,17 @@ class TerminalTextInputState extends State<TerminalTextInput>
     text: _baseText,
     selection: const TextSelection.collapsed(offset: _padding),
   );
+
+  /// What the keyboard may hand over as a picture instead of as text. Nothing
+  /// is offered by an IME unless the field asks for it by name, which is why
+  /// pasting a screenshot did nothing at all before, and these are the kinds
+  /// Android's own keyboards commit.
+  static const _imageTypes = [
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+  ];
 
   static const _arrows = <String, TerminalKey>{
     'A': TerminalKey.arrowUp,
@@ -202,6 +220,7 @@ class TerminalTextInputState extends State<TerminalTextInput>
         autocorrect: false,
         enableSuggestions: false,
         enableIMEPersonalizedLearning: false,
+        allowedMimeTypes: _imageTypes,
       ),
     );
 
@@ -347,6 +366,14 @@ class TerminalTextInputState extends State<TerminalTextInput>
       widget.terminal.keyInput(TerminalKey.enter);
       widget.onInput?.call();
     }
+  }
+
+  /// A picture the keyboard committed. Never text, so the editing buffer is
+  /// untouched and nothing goes down the wire from here — see [onContent].
+  @override
+  void insertContent(KeyboardInsertedContent content) {
+    if (!hasInputConnection) return;
+    widget.onContent?.call(content);
   }
 
   @override

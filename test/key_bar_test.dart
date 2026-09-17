@@ -186,6 +186,7 @@ void main() {
           terminal: Terminal(),
           controller: controller,
           onEmit: (_) {},
+          onPaste: () async {},
           // Opaque, so it takes part in the hit test the way a terminal does.
           child: const ColoredBox(color: Colors.black, child: SizedBox.expand()),
         ),
@@ -288,6 +289,7 @@ void main() {
             terminal: terminal,
             controller: selection,
             onEmit: sent.add,
+            onPaste: () async {},
             child: TerminalView(
               terminal,
               controller: selection,

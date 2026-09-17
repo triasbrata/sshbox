@@ -880,6 +880,7 @@ class SwipeKeyPad extends StatefulWidget {
     required this.terminal,
     required this.controller,
     required this.onEmit,
+    required this.onPaste,
     required this.child,
   });
 
@@ -892,6 +893,11 @@ class SwipeKeyPad extends StatefulWidget {
   final TerminalController controller;
 
   final void Function(String data) onEmit;
+
+  /// What the toolbar's Paste does. The page owns it, not the pad: an image on
+  /// the clipboard goes to the host as a file rather than down the wire, and
+  /// only the page can upload.
+  final Future<void> Function() onPaste;
 
   final Widget child;
 
@@ -1205,16 +1211,15 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     widget.controller.clearSelection();
   }
 
-  /// The clipboard goes to the shell through xterm2's own paste, the one a
-  /// hardware Ctrl+V takes, so it arrives bracketed when the shell asked for
-  /// that.
+  /// Handed to the page, which pastes text through xterm2's own paste — the
+  /// one a hardware Ctrl+V takes, so it arrives bracketed when the shell asked
+  /// for that — and sends an image to the host as a file instead.
   ///
-  /// ponytail: offered whether or not the clipboard holds any text. A
+  /// ponytail: offered whether or not the clipboard holds anything. A
   /// ClipboardStatusNotifier would hide it when empty, as a text field does.
-  Future<void> _paste() async {
+  void _paste() {
     widget.controller.clearSelection();
-    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-    if (text != null) widget.terminal.paste(text);
+    widget.onPaste();
   }
 
   /// Everything the terminal holds, scrollback and all, as xterm2's own

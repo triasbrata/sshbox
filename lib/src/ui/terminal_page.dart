@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -20,6 +21,7 @@ import 'key_bar.dart';
 import 'magic_key.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
+import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
@@ -714,6 +716,7 @@ class _TerminalPageState extends State<TerminalPage> {
     textStyle: style,
     onEmit: _send,
     onTap: _onTerminalTap,
+    onImage: _upload,
     focused: focused,
     autoResize: autoResize,
     padding: padding,
@@ -733,6 +736,7 @@ class _PaneView extends StatefulWidget {
     required this.textStyle,
     required this.onEmit,
     required this.onTap,
+    required this.onImage,
     required this.focused,
     this.autoResize = true,
     this.padding,
@@ -742,6 +746,10 @@ class _PaneView extends StatefulWidget {
   final TerminalStyle textStyle;
   final void Function(String data) onEmit;
   final void Function(_PaneViewState view, CellOffset cell) onTap;
+
+  /// Sends a pasted picture to the host and types its path at the prompt: the
+  /// page's own upload, the paperclip's and the share sheet's.
+  final Future<void> Function(SharedFile image) onImage;
 
   /// Whether keystrokes go here. Only such a view takes focus, and with it
   /// the soft keyboard.
@@ -823,6 +831,63 @@ class _PaneViewState extends State<_PaneView> {
       FocusManager.instance.applyFocusChangesIfNeeded();
     }
     return false;
+  }
+
+  /// Every paste into this pane, however it was asked for: the selection
+  /// toolbar's Paste, and a hardware Ctrl+V, which xterm2 would otherwise
+  /// answer itself with text alone.
+  ///
+  /// An image goes to the host as a file and its remote path is typed at the
+  /// prompt, since a byte stream has nothing to do with a picture and a
+  /// program on the host cannot see the tablet's clipboard. The upload says
+  /// its own piece; only a clipboard that cannot be taken is reported here.
+  Future<void> _paste() async {
+    try {
+      await pasteIntoTerminal(widget.terminal, upload: widget.onImage);
+    } on PlatformException catch (error) {
+      _refuse(error);
+    }
+  }
+
+  /// A picture the soft keyboard committed — Gboard's clipboard strip — which
+  /// arrives as bytes rather than through the clipboard.
+  Future<void> _pasteContent(KeyboardInsertedContent content) async {
+    try {
+      final image = await insertedImage(content);
+      if (image != null) await widget.onImage(image);
+    } on PlatformException catch (error) {
+      _refuse(error);
+    }
+  }
+
+  void _refuse(PlatformException error) {
+    if (!mounted) return;
+    showToast(
+      context,
+      error.message ?? 'That image could not be pasted',
+      type: ToastificationType.warning,
+    );
+  }
+
+  /// Ctrl+V — ⌘V on an Apple platform — before xterm2's own paste shortcut
+  /// sees it, that one reading text and nothing else. Every other key is left
+  /// exactly as it was.
+  KeyEventResult _onPasteChord(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent ||
+        event.logicalKey != LogicalKeyboardKey.keyV) {
+      return KeyEventResult.ignored;
+    }
+    final keys = HardwareKeyboard.instance;
+    // The same combination xterm2's own activator takes, so nothing that used
+    // to reach the shell — ^V, Ctrl+Shift+V — stops reaching it.
+    if (keys.isShiftPressed || keys.isAltPressed) return KeyEventResult.ignored;
+    final chord = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS => keys.isMetaPressed,
+      _ => keys.isControlPressed && !keys.isMetaPressed,
+    };
+    if (!chord) return KeyEventResult.ignored;
+    unawaited(_paste());
+    return KeyEventResult.handled;
   }
 
   /// Whether the tabs were showing this pane when it last looked; null until
@@ -910,10 +975,12 @@ class _PaneViewState extends State<_PaneView> {
       terminal: widget.terminal,
       focusNode: _focusNode,
       onInput: _scrollToBottom,
+      onContent: _pasteContent,
       child: SwipeKeyPad(
         terminal: widget.terminal,
         controller: selection,
         onEmit: widget.onEmit,
+        onPaste: _paste,
         child: TerminalView(
           widget.terminal,
           key: _viewKey,
@@ -925,6 +992,8 @@ class _PaneViewState extends State<_PaneView> {
           // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
           // hardware keys, shortcuts and mouse selection.
           hardwareKeyboardOnly: true,
+          // Asked before xterm2's own shortcuts, and it claims Ctrl+V alone.
+          onKeyEvent: _onPasteChord,
           // Tapping a terminal that already has focus is how you ask for the
           // keyboard back, and focus alone will not raise it.
           onTapUp: (_, cell) => widget.onTap(this, cell),

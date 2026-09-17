@@ -108,6 +108,8 @@ class MainActivity : FlutterActivity() {
                     saveAs(call.argument("path")!!, call.argument("name")!!, result)
                 } else if (call.method == "copyImage") {
                     copyImage(call.argument("path")!!, call.argument("name")!!, result)
+                } else if (call.method == "clipboardImage") {
+                    clipboardImage((call.arguments as Number).toLong(), result)
                 } else if (call.method == "open") {
                     result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
                 } else {
@@ -232,6 +234,70 @@ class MainActivity : FlutterActivity() {
         }.start()
     }
 
+    // The image on the clipboard, for a paste into a terminal — the other
+    // direction to copyImage, and the same fact behind it: a clip holds a
+    // content:// URI rather than pixels, which Flutter's Clipboard cannot read
+    // and SFTP cannot open. So it is copied into a file of ours, exactly as a
+    // share is, and only the path crosses the channel; sending the picture
+    // over as bytes is what freezes the app on anything large.
+    //
+    // Answers null when the clipboard holds no image, which is the common
+    // case: the paste then goes on to be text.
+    private fun clipboardImage(limit: Long, result: MethodChannel.Result) {
+        val clip = runCatching {
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+        }.getOrNull()
+        val uri = (0 until (clip?.itemCount ?: 0))
+            .mapNotNull { clip?.getItemAt(it)?.uri }
+            .firstOrNull { typeOf(it)?.startsWith("image/") == true }
+        if (uri == null) {
+            result.success(null)
+            return
+        }
+        // What the provider says it is, before a byte is read: a video or a
+        // RAW photo pasted by accident is refused without being copied at all.
+        val declared = sizeOf(uri)
+        if (declared != null && declared > limit) {
+            result.error("too_big", tooBig(limit), null)
+            return
+        }
+        // Up to 20 MB of copying, which is not for the main thread — Flutter's
+        // UI runs on it.
+        Thread {
+            val file = copyToCache(uri)?.let { withExtension(it, typeOf(uri)) }
+            // A provider that declared nothing, or lied: the copy is ours and
+            // goes again rather than sitting in the cache.
+            val tooBig = file != null && File(file["path"]!!).let {
+                (it.length() > limit).also { over -> if (over) it.delete() }
+            }
+            runOnUiThread {
+                when {
+                    tooBig -> result.error("too_big", tooBig(limit), null)
+                    file == null -> result.error(
+                        "unreadable",
+                        "The image on the clipboard could not be read.",
+                        null,
+                    )
+                    else -> result.success(file)
+                }
+            }
+        }.start()
+    }
+
+    private fun tooBig(limit: Long) =
+        "That image is bigger than ${limit / (1024 * 1024)} MB — send it from " +
+            "the files drawer instead."
+
+    // A clip item often carries no display name — a MediaStore id leaves a
+    // name with no extension — and the extension is the whole of what tells
+    // whatever opens the file on the host that it is a picture.
+    private fun withExtension(file: Map<String, String>, type: String?): Map<String, String> {
+        val name = file["name"]!!
+        if (name.contains('.')) return file
+        val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(type) ?: return file
+        return mapOf("path" to file["path"]!!, "name" to "$name.$extension")
+    }
+
     // A finished download, in whatever app the phone has for its kind: the
     // document the save dialog made, which that app reads through the grant
     // the dialog gave us. Its kind comes from its name, since the dialog was
@@ -289,11 +355,30 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun displayName(uri: Uri): String? =
+    // Both ask a provider in another app about a URI the clipboard handed us,
+    // and a grant that has lapsed answers with a SecurityException rather than
+    // a null. Not knowing is fine — the copy itself is still guarded — and
+    // taking the app down over a paste is not.
+    private fun typeOf(uri: Uri): String? =
+        runCatching { contentResolver.getType(uri) }.getOrNull()
+
+    private fun sizeOf(uri: Uri): Long? = runCatching {
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) {
+                cursor.getLong(column)
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
+
+    private fun displayName(uri: Uri): String? = runCatching {
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
             if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
         }
+    }.getOrNull()
 
     @Suppress("DEPRECATION")
     private fun Intent.streamExtra(): Uri? = getParcelableExtra(Intent.EXTRA_STREAM)
