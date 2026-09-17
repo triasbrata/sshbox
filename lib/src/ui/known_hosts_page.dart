@@ -110,7 +110,9 @@ class _KnownHostsPageState extends State<KnownHostsPage> {
             final pin = pins[index];
             final names = [
               for (final host in _hosts)
-                if (host.host == pin.host && host.port == pin.port)
+                // Either address: a key trusted over the alternative one is
+                // pinned under it, and still belongs to this saved host.
+                if (host.addresses.contains(pin.host) && host.port == pin.port)
                   host.displayName,
             ];
             return ListTile(
