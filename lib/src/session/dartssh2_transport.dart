@@ -24,6 +24,7 @@ class Dartssh2Transport implements SessionTransport {
     KnownHostStore? knownHosts,
     this.confirmHostKey,
     this.onAuthBanner,
+    this.onNotice,
     this.loadHosts,
   }) : _knownHosts = knownHosts ?? KnownHostStore();
 
@@ -46,6 +47,10 @@ class Dartssh2Transport implements SessionTransport {
   /// "visit this URL" check in here.
   final void Function(String banner)? onAuthBanner;
 
+  /// A line for the user about the connection itself, quietly: today, that a
+  /// host answered at its alternative address rather than its saved one.
+  final void Function(String message)? onNotice;
+
   @override
   Future<TerminalSession> connect({
     required HostProfile host,
@@ -56,9 +61,13 @@ class Dartssh2Transport implements SessionTransport {
     Map<String, String> environment = const {},
     Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
-    final session =
-        _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner, loadHosts)
-          .._environment = environment;
+    final session = _Dartssh2Session(
+      _knownHosts,
+      confirmHostKey,
+      onAuthBanner,
+      onNotice,
+      loadHosts,
+    ).._environment = environment;
     await session._open(
       host: host,
       secrets: secrets,
@@ -97,6 +106,70 @@ List<HostProfile> jumpChain(HostProfile host, List<HostProfile> hosts) {
   return chain;
 }
 
+/// How long a dial has to itself before the next address is tried as well:
+/// the connection attempt delay of a browser's happy eyeballs (RFC 8305),
+/// which uses the same 250 ms.
+const _attemptDelay = Duration(milliseconds: 250);
+
+/// Opens the first of [dials] that answers, by the address it answered at.
+///
+/// The first goes out at once; the next starts 250 ms later, or as soon as
+/// every one before it has failed. So a saved address that is up wins the
+/// head start it was given, and one that is down — a tailnet that is off,
+/// with its packets going nowhere — costs a quarter of a second rather than a
+/// TCP timeout.
+///
+/// A loser is destroyed the moment it arrives, before a byte is written to
+/// it, so only the winner ever starts an SSH handshake: a wrong password or a
+/// host key that does not match happens afterwards, on that one connection,
+/// and is never retried anywhere else. Every dial failing throws the first
+/// one's error, which is about the address the host is saved with.
+@visibleForTesting
+Future<({String address, SSHSocket socket})> firstToAnswer(
+  Map<String, Future<SSHSocket> Function()> dials, {
+  Duration delay = _attemptDelay,
+}) {
+  final answered = Completer<({String address, SSHSocket socket})>();
+  final addresses = dials.keys.toList();
+  final errors = <String, Object>{};
+  final started = <int>{};
+  final timers = <Timer>[];
+
+  void dial(int index) {
+    if (index >= addresses.length || answered.isCompleted) return;
+    // The timer and the failure of an earlier dial both ask for this one.
+    if (!started.add(index)) return;
+    final address = addresses[index];
+    if (index + 1 < addresses.length) {
+      timers.add(Timer(delay, () => dial(index + 1)));
+    }
+    dials[address]!().then(
+      (socket) {
+        if (answered.isCompleted) {
+          socket.destroy();
+          return;
+        }
+        for (final timer in timers) {
+          timer.cancel();
+        }
+        answered.complete((address: address, socket: socket));
+      },
+      onError: (Object error) {
+        errors[address] = error;
+        if (answered.isCompleted) return;
+        if (errors.length == addresses.length) {
+          answered.completeError(errors[addresses.first]!);
+        } else {
+          dial(index + 1);
+        }
+      },
+    );
+  }
+
+  dial(0);
+  return answered.future;
+}
+
 class _Dartssh2Session
     implements
         TerminalSession,
@@ -109,12 +182,14 @@ class _Dartssh2Session
     this._knownHosts,
     this._confirmHostKey,
     this._onAuthBannerReceived,
+    this._onNotice,
     this._loadHosts,
   );
 
   final KnownHostStore _knownHosts;
   final Future<bool> Function(HostKeyCheck check)? _confirmHostKey;
   final void Function(String banner)? _onAuthBannerReceived;
+  final void Function(String message)? _onNotice;
   final Future<List<HostProfile>> Function()? _loadHosts;
 
   final _output = StreamController<String>.broadcast();
@@ -174,10 +249,13 @@ class _Dartssh2Session
       var client = await _login(
         hop,
         secrets,
-        () => SSHSocket.connect(
-          hop.host,
-          hop.port,
-          timeout: const Duration(seconds: 15),
+        () => _dial(
+          hop,
+          (address) => SSHSocket.connect(
+            address,
+            hop.port,
+            timeout: const Duration(seconds: 15),
+          ),
         ),
       );
       for (final next in chain.skip(1)) {
@@ -188,9 +266,12 @@ class _Dartssh2Session
         client = await _login(
           next,
           secrets,
-          () => jump
-              .forwardLocal(next.host, next.port)
-              .timeout(const Duration(seconds: 15)),
+          () => _dial(
+            next,
+            (address) => jump
+                .forwardLocal(address, next.port)
+                .timeout(const Duration(seconds: 15)),
+          ),
         );
       }
       _client = client;
@@ -232,6 +313,32 @@ class _Dartssh2Session
       _status.value = SessionStatus.failed;
       throw SshSessionException(_failure!);
     }
+  }
+
+  /// Opens a connection to [hop] at whichever of its addresses answers, with
+  /// [open] dialling one of them — a socket for the host in front of the
+  /// chain, a channel through the jump host for the rest, so both get the
+  /// fallback.
+  ///
+  /// Only the socket changes: the profile itself is untouched, so the host
+  /// key is still pinned under the address the host is saved with, and
+  /// reaching the same machine at its other address never looks like a key
+  /// that has changed — see [_verifyHostKey].
+  Future<SSHSocket> _dial(
+    HostProfile hop,
+    Future<SSHSocket> Function(String address) open,
+  ) async {
+    final addresses = hop.addresses;
+    final answered = await firstToAnswer({
+      for (final address in addresses) address: () => open(address),
+    });
+    if (answered.address != addresses.first) {
+      _onNotice?.call(
+        'Reached ${hop.displayName} at ${answered.address}\n'
+        'Its alternative address answered first.',
+      );
+    }
+    return answered.socket;
   }
 
   /// Signs in to [host] over the connection [dial] opens: straight to it, or
@@ -286,6 +393,12 @@ class _Dartssh2Session
   }
 
   /// Runs before authentication, so a refused key costs no credential.
+  ///
+  /// The profile is what the key is pinned against, not the address actually
+  /// dialled: one machine saved under two addresses is one pinned key, so
+  /// switching to the alternative address asks nothing and — more to the
+  /// point — never cries "the host key has changed", which has to keep
+  /// meaning what it says.
   Future<bool> _verifyHostKey(HostProfile host, String fingerprint) async {
     if (await _knownHosts.trust(host, fingerprint, _confirmHostKey)) {
       return true;
