@@ -295,6 +295,12 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// opens that way, unless it was opened at a line.
   late bool _preview = _markdown && widget.line == null;
 
+  /// How far down the preview was scrolled, kept here because the preview
+  /// itself is thrown away and built again by a reload, which shows a spinner
+  /// in its place, and by a trip to Source. Set as it scrolls, never with
+  /// [setState]: it is only read when a new preview is built.
+  double _previewAt = 0;
+
   /// Whether the key bar's Tab types a tab rather than spaces.
   bool _useTabs = false;
 
@@ -1109,6 +1115,8 @@ class _TextFileTabState extends State<_TextFileTab> {
                 _MarkdownPreview(
                   text: _controller.text,
                   onTapLink: _openPreviewLink,
+                  at: _previewAt,
+                  onScroll: (at) => _previewAt = at,
                 )
               else
                 const SizedBox.shrink(),
@@ -1567,11 +1575,27 @@ class _EditorError extends StatelessWidget {
 ///
 /// Images are never fetched: a relative one is a file on the host, and a web
 /// one is as often a tracking badge. Each shows as its alt text.
-class _MarkdownPreview extends StatelessWidget {
-  const _MarkdownPreview({required this.text, required this.onTapLink});
+class _MarkdownPreview extends StatefulWidget {
+  const _MarkdownPreview({
+    required this.text,
+    required this.onTapLink,
+    required this.at,
+    required this.onScroll,
+  });
 
   final String text;
   final MarkdownTapLinkCallback onTapLink;
+
+  /// Where the preview was last left, in pixels. Reload replaces the body with
+  /// a spinner and Source takes the preview out of the tree, so each of them
+  /// builds this widget afresh; starting the scroll here is what brings the
+  /// reader back to the passage they were reading. Past the end of a file that
+  /// came back shorter, the list settles at its bottom.
+  final double at;
+
+  /// Called as the preview scrolls, so [at] is up to date next time. Only ever
+  /// a field to write: rebuilding on a scroll would rebuild the document.
+  final ValueChanged<double> onScroll;
 
   /// ponytail: flutter_markdown_plus parses and builds the whole document on
   /// the UI thread, 0.6 s a megabyte on a desktop and slower on the tablet, so
@@ -1580,14 +1604,34 @@ class _MarkdownPreview extends StatelessWidget {
   static const _limit = 100 * 1024;
 
   @override
+  State<_MarkdownPreview> createState() => _MarkdownPreviewState();
+}
+
+class _MarkdownPreviewState extends State<_MarkdownPreview> {
+  late final _scroll = ScrollController(initialScrollOffset: widget.at)
+    ..addListener(_report);
+
+  void _report() {
+    if (_scroll.hasClients) widget.onScroll(_scroll.offset);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final text = widget.text;
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final body = theme.textTheme.bodyMedium!;
+    const limit = _MarkdownPreview._limit;
     var shown = text;
-    if (text.length > _limit) {
-      final end = text.lastIndexOf('\n', _limit);
-      shown = text.substring(0, end > 0 ? end : _limit);
+    if (text.length > limit) {
+      final end = text.lastIndexOf('\n', limit);
+      shown = text.substring(0, end > 0 ? end : limit);
     }
 
     return ValueListenableBuilder(
@@ -1609,7 +1653,8 @@ class _MarkdownPreview extends StatelessWidget {
             child: SelectionArea(
               child: Markdown(
                 data: shown,
-                onTapLink: onTapLink,
+                controller: _scroll,
+                onTapLink: widget.onTapLink,
                 builders: {'code': _CodeBuilder()},
                 imageBuilder: (uri, title, alt) => Text.rich(
                   TextSpan(
