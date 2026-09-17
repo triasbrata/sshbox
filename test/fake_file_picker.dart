@@ -22,6 +22,10 @@ class FakeFilePicker extends FilePickerPlatform {
   /// Every saved download Open was asked to open.
   final List<String> opened = [];
 
+  /// What Copy image last handed Android: the app's own copy of the picture,
+  /// and the name it goes on the clipboard under.
+  ({String path, String name})? copiedImage;
+
   @override
   Future<List<PlatformFile>> pickFiles({
     String? dialogTitle,
@@ -75,6 +79,12 @@ FakeFilePicker useFakePicker() {
         final name = arguments['name']! as String;
         picker.saved = (name: name, bytes: File(from).readAsBytesSync());
         return picker.save ? 'content://downloads/$name' : null;
+      case 'copyImage':
+        picker.copiedImage = (
+          path: arguments['path']! as String,
+          name: arguments['name']! as String,
+        );
+        return null;
       case 'open':
         picker.opened.add(arguments['uri']! as String);
         return true;

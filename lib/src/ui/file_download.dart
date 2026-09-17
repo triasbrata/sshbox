@@ -124,6 +124,16 @@ Future<String?> _saveAs(String copy, String name) async {
   }
 }
 
+/// Puts the image in the app's own file at [path] on the clipboard under
+/// [name], so another app can paste it.
+///
+/// Android only: Flutter has no clipboard for pixels, and there is nothing
+/// behind this channel anywhere else. MainActivity takes a copy of its own
+/// that lasts as long as the clip does, so [path] may go whenever its owner
+/// likes. Throws [PlatformException] when the phone refuses.
+Future<void> copyImageToClipboard(String path, String name) =>
+    _android.invokeMethod<void>('copyImage', {'path': path, 'name': name});
+
 /// Opens a finished download, [saved] as [name], in whatever app the phone
 /// has for its kind. False when none will.
 Future<bool> openDownload(String saved, String name) async {

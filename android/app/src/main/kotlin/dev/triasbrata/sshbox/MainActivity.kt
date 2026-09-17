@@ -2,6 +2,8 @@ package dev.triasbrata.sshbox
 
 import android.app.ActivityManager
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -9,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -103,6 +106,8 @@ class MainActivity : FlutterActivity() {
                     pending = null
                 } else if (call.method == "saveAs") {
                     saveAs(call.argument("path")!!, call.argument("name")!!, result)
+                } else if (call.method == "copyImage") {
+                    copyImage(call.argument("path")!!, call.argument("name")!!, result)
                 } else if (call.method == "open") {
                     result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
                 } else {
@@ -176,6 +181,52 @@ class MainActivity : FlutterActivity() {
                     result.success(target.toString())
                 } else {
                     result.error("save_failed", error.message ?: error.toString(), null)
+                }
+            }
+        }.start()
+    }
+
+    // An image on the clipboard, to paste into a chat or an editor. Android
+    // has no clipboard for pixels: a clip holds a content:// URI the pasting
+    // app reads, so the file behind it has to outlive this call and has to
+    // sit where ClipFileProvider serves it. Dart's copy is neither — it is in
+    // code_cache and goes when the tab closes — so it is copied into
+    // cache/clip, which holds one image: the next Copy image replaces it.
+    private fun copyImage(path: String, name: String, result: MethodChannel.Result) {
+        // The name comes from a remote host, and it is about to build a path
+        // of ours: one segment of it, and never one that walks out of the
+        // directory.
+        val safe = name.substringAfterLast('/').substringAfterLast('\\')
+            .takeUnless { it.isEmpty() || it == "." || it == ".." } ?: "image"
+        // Up to 20 MB of copying, which is not for the main thread — Flutter's
+        // UI runs on it.
+        Thread {
+            val clip = runCatching {
+                val dir = File(cacheDir, "clip")
+                dir.deleteRecursively()
+                dir.mkdirs()
+                val target = File(dir, safe)
+                File(path).copyTo(target, overwrite = true)
+                // newUri takes the type from the provider, which takes it from
+                // the extension: the name has to keep its .png.
+                ClipData.newUri(
+                    contentResolver,
+                    safe,
+                    FileProvider.getUriForFile(this, "$packageName.files", target),
+                )
+            }
+            runOnUiThread {
+                // The system grants the pasting app read access to a URI on
+                // the clipboard, which is why the provider grants URI
+                // permissions and stays unexported.
+                val error = clip.exceptionOrNull() ?: runCatching {
+                    (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                        .setPrimaryClip(clip.getOrThrow())
+                }.exceptionOrNull()
+                if (error == null) {
+                    result.success(null)
+                } else {
+                    result.error("copy_failed", error.message ?: error.toString(), null)
                 }
             }
         }.start()
@@ -268,3 +319,11 @@ class MainActivity : FlutterActivity() {
         var live: WeakReference<MainActivity>? = null
     }
 }
+
+// Serves cache/clip — the one image Copy image last put on the clipboard — to
+// whichever app pastes it; see MainActivity.copyImage and res/xml/file_paths.
+//
+// A subclass of our own rather than androidx's FileProvider straight, because
+// the manifest merger keys providers on their class name: a plugin that
+// declared androidx's would collide with ours and fail the build.
+class ClipFileProvider : FileProvider()

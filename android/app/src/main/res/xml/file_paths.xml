@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What ClipFileProvider will hand out: cache/clip and nothing else, which
+     holds the one image Copy image last put on the clipboard. Everything else
+     of ours — the hosts, the keys, the shared uploads, a download on its way
+     through — stays unreachable, and the provider is not exported, so only a
+     URI we put on the clipboard ourselves is ever readable, and only by the
+     app that pastes it. -->
+<paths>
+    <cache-path name="clip" path="clip/"/>
+</paths>
