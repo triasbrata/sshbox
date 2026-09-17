@@ -1055,9 +1055,10 @@ tool/release.sh --publish             # the real one
 `--publish` builds as above and then hands the bundle to
 `tool/play_publish.py`, which speaks the Play Developer API v3 with a service
 account: it opens an edit, refuses a build number Play already has, uploads
-the bundle, puts it on a track and commits. It needs `python3` and `openssl`,
-both of which sign a token and parse JSON without a single pip package.
-Nothing it prints is a secret, so its output is safe to paste anywhere.
+the bundle, puts it on a track and commits. It needs `python3` and `openssl`:
+between them they read the key, sign the sign-in token and speak the API,
+without a single pip package. Nothing it prints is a secret, so its output is
+safe to paste anywhere.
 
 | Flag | Means |
 | --- | --- |
@@ -1084,9 +1085,9 @@ after it. Any failure before the commit drops the Play edit again, so a run
 that dies half way leaves nothing behind and can just be run again.
 
 Release notes are not sent. `store/RELEASE_NOTES.md` and
-`store/RELEASE_NOTES.id.md` still describe 1.0 as the first release, and
-notes that stale reaching real testers is worse than none: paste them into the
-Play Console, where they can be read before they go out.
+`store/RELEASE_NOTES.id.md` still describe 1.0 as the first release, and notes
+that stale are worse for a real tester than none at all: paste them into the
+Play Console instead, where they can be read before they go out.
 
 `tool/test_play_publish.sh` checks what the publisher refuses — a missing or
 malformed key, a bad track, `production`, a missing bundle — and that no
