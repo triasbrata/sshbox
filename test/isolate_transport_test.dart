@@ -240,6 +240,7 @@ class _NoKnownHosts extends KnownHostStore {
   @override
   Future<bool> trust(
     HostProfile host,
+    String address,
     String fingerprint,
     Future<bool> Function(HostKeyCheck check)? confirm,
   ) async =>

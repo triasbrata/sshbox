@@ -320,11 +320,10 @@ class _Dartssh2Session
   /// chain, a channel through the jump host for the rest, so both get the
   /// fallback.
   ///
-  /// Only the socket changes: the profile itself is untouched, so the host
-  /// key is still pinned under the address the host is saved with, and
-  /// reaching the same machine at its other address never looks like a key
-  /// that has changed — see [_verifyHostKey].
-  Future<SSHSocket> _dial(
+  /// The address that answered comes back with the socket, because that is
+  /// the machine the host key belongs to and the one the trust prompt has to
+  /// name — see [_verifyHostKey].
+  Future<({String address, SSHSocket socket})> _dial(
     HostProfile hop,
     Future<SSHSocket> Function(String address) open,
   ) async {
@@ -338,7 +337,7 @@ class _Dartssh2Session
         'Its alternative address answered first.',
       );
     }
-    return answered.socket;
+    return answered;
   }
 
   /// Signs in to [host] over the connection [dial] opens: straight to it, or
@@ -348,14 +347,15 @@ class _Dartssh2Session
   Future<SSHClient> _login(
     HostProfile host,
     SecretStore secrets,
-    Future<SSHSocket> Function() dial,
+    Future<({String address, SSHSocket socket})> Function() dial,
   ) async {
     final identities = await _loadIdentities(host, secrets);
     final password = await _loadPassword(host, secrets);
     final isTailscale = host.authMethod == SshAuthMethod.tailscale;
 
+    final answered = await dial();
     return SSHClient(
-      await dial(),
+      answered.socket,
       username: host.username,
       identities: identities,
       // Offer nothing for Tailscale SSH. dartssh2 always appends `none` as
@@ -368,7 +368,7 @@ class _Dartssh2Session
       // deadline is far too short.
       authTimeout: isTailscale ? const Duration(minutes: 5) : null,
       onVerifyHostKey: (type, fingerprint) =>
-          _verifyHostKey(host, utf8.decode(fingerprint)),
+          _verifyHostKey(host, answered.address, utf8.decode(fingerprint)),
       // OpenSSH's own order. dartssh2 puts AES-GCM first, and pointycastle's
       // GCM runs about 1.3 MB/s, some 30 times slower than ChaCha20 or
       // AES-CTR, all of it on the UI isolate: a 70 MB download held it for
@@ -394,16 +394,22 @@ class _Dartssh2Session
 
   /// Runs before authentication, so a refused key costs no credential.
   ///
-  /// The profile is what the key is pinned against, not the address actually
-  /// dialled: one machine saved under two addresses is one pinned key, so
-  /// switching to the alternative address asks nothing and — more to the
-  /// point — never cries "the host key has changed", which has to keep
-  /// meaning what it says.
-  Future<bool> _verifyHostKey(HostProfile host, String fingerprint) async {
-    if (await _knownHosts.trust(host, fingerprint, _confirmHostKey)) {
+  /// [address] is the one that answered, and the key is pinned against it
+  /// rather than against the profile: a prompt has to name the machine that
+  /// is really on the other end. The same key already trusted at the host's
+  /// other address is taken silently, so an alternative address that reaches
+  /// the same machine still neither asks again nor cries "the host key has
+  /// changed", which has to keep meaning what it says — see
+  /// `KnownHostStore.trust`.
+  Future<bool> _verifyHostKey(
+    HostProfile host,
+    String address,
+    String fingerprint,
+  ) async {
+    if (await _knownHosts.trust(host, address, fingerprint, _confirmHostKey)) {
       return true;
     }
-    _hostKeyRefused = await _knownHosts.pinnedKey(host.host, host.port) == null
+    _hostKeyRefused = await _knownHosts.pinnedKey(address, host.port) == null
         ? 'The host key was not trusted, so nothing was sent to the host.'
         : 'Host key changed since the last connection. This can mean the '
             'server was rebuilt — or that something is intercepting the '

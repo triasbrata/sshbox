@@ -564,12 +564,13 @@ class _WireKnownHosts extends KnownHostStore {
   @override
   Future<bool> trust(
     HostProfile host,
+    String address,
     String fingerprint,
     Future<bool> Function(HostKeyCheck check)? confirm,
   ) async =>
       // The far side runs the whole of it, dialog and pinning together: the
       // question and the answer are one round trip rather than three.
-      await _wire.call('trust', [host, fingerprint]) as bool;
+      await _wire.call('trust', [host, address, fingerprint]) as bool;
 
   @override
   Future<String?> pinnedKey(String host, int port) async =>
@@ -707,6 +708,7 @@ class _ProxySession
         return _knownHosts.trust(
           args[0]! as HostProfile,
           args[1]! as String,
+          args[2]! as String,
           _confirmHostKey,
         );
       case 'beforeShell':
