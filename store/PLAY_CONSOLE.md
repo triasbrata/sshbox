@@ -16,7 +16,7 @@ The package is `cloud.brata.terminal`. It can't change after the first upload.
 ## 2. The first upload, by hand
 
 Play's API can't upload to an app that has never had a bundle, and so neither
-can the CI workflow. The first bundle goes through the Console:
+can `tool/release.sh --publish`. The first bundle goes through the Console:
 
 1. Make the upload keystore and `android/key.properties`, as described in
    README.md, Releasing.
@@ -36,22 +36,29 @@ won't install it over the debug build on the tablet, which has the same
 package. Uninstalling that build wipes its hosts, keys and settings. Move them
 off the tablet first, or test the Play build on another device.
 
-## 3. CI takes over after that
+## 3. `tool/release.sh --publish` takes over after that
+
+Releases go out from your own machine, not from CI.
 
 1. **In Google Cloud:**
    - enable the **Google Play Android Developer API**;
    - create a service account;
-   - create a JSON key for it.
+   - create a JSON key for it, and save it as
+     `~/keys/jeansh-play-service-account.json` (`chmod 600`), or anywhere
+     `$PLAY_SERVICE_ACCOUNT_JSON` names.
 2. **In the Play Console → Users and permissions:** invite the service
    account's email, and give it, for Jeansh, **Release apps to testing
-   tracks**.
-3. **In the GitHub repo:** add the five secrets listed in README.md,
-   Releasing.
-4. Push a `v*` tag, or run **Release Android** from the Actions tab. It
-   uploads to internal testing as a **draft**. Roll the draft out in the
-   Console.
+   tracks**. It takes a few minutes before the API agrees.
+3. **Closed testing:** under **Test and release → Testing → Closed testing**,
+   the track Play makes for you has the id `alpha`; a track you add yourself
+   has its own id, the last part of its address. Add a tester list to it, and
+   copy the opt-in link.
+4. Run `tool/release.sh --publish --dry-run` first: it does everything but the
+   commit. Then `tool/release.sh --publish`, which releases on `alpha`, or
+   `--track <id>` for a track of your own.
 5. Every upload needs a build number Play hasn't seen. The pre-commit hook
-   raises it with each app commit. Two uploads of the same commit fail.
+   raises it with each app commit, and the publisher refuses a number Play
+   already has before it uploads anything.
 
 ## 4. Policy → App content
 

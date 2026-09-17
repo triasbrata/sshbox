@@ -33,6 +33,11 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# The Play service account key that tool/play_publish.py signs in with. It
+# belongs beside the upload keystore, outside the repo; this is in case a copy
+# ever lands in the tree.
+*service-account*.json
+
 # Symbolication related
 app.*.symbols
 

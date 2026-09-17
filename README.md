@@ -1043,21 +1043,60 @@ The script:
 `--name` first sets X.Y in `pubspec.yaml` and keeps N: `--name 1.1` turns
 1.0.13+13 into 1.1.13+13. Commit that change afterwards.
 
-### From CI
+### Publishing to Play, from the same machine
 
-`.github/workflows/release-android.yml` runs on a `v*` tag
-(`git tag v1.0.13 && git push origin v1.0.13`), or by hand from the Actions tab.
-It tests, builds the signed bundle, keeps it as a run artifact, and uploads it
-to Play's internal testing track as a draft. It needs these repository
-secrets:
+There is no CI: the release goes to Play from here, with `--publish`.
 
-| Secret | Holds |
+```sh
+tool/release.sh --publish --dry-run   # everything but the commit
+tool/release.sh --publish             # the real one
+```
+
+`--publish` builds as above and then hands the bundle to
+`tool/play_publish.py`, which speaks the Play Developer API v3 with a service
+account: it opens an edit, refuses a build number Play already has, uploads
+the bundle, puts it on a track and commits. It needs `python3` and `openssl`:
+between them they read the key, sign the sign-in token and speak the API,
+without a single pip package. Nothing it prints is a secret, so its output is
+safe to paste anywhere.
+
+| Flag | Means |
 | --- | --- |
-| `ANDROID_UPLOAD_KEYSTORE_BASE64` | the upload keystore, from `base64 -w0 jeansh-upload.jks` (`base64 -i` on macOS) |
-| `ANDROID_UPLOAD_STORE_PASSWORD` | the keystore's password |
-| `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
-| `ANDROID_UPLOAD_KEY_PASSWORD` | the key's password |
-| `PLAY_SERVICE_ACCOUNT_JSON` | the JSON key of a Google Cloud service account that the Play Console lets release to testing tracks |
+| `--publish` | upload and release. Without it nothing is ever uploaded, and no plain `flutter build` can publish by accident |
+| `--dry-run` | open the edit, upload the bundle, set the track — then drop the edit instead of committing, so no tester sees anything |
+| `--track <id>` | the track to release on. The default, `alpha`, is what Play calls Closed testing. A custom closed track's id is the last part of its address in the Play Console; `production` is refused, and rolls out from the Console by hand |
+| `--draft` | leave the release a draft rather than rolling it out. Play takes nothing else until the app has been published once |
+
+The service account's JSON key is read from `$PLAY_SERVICE_ACCOUNT_JSON`, or
+from `~/keys/jeansh-play-service-account.json` beside the upload keystore.
+Keep it outside the repo — git ignores `*service-account*.json` in case one
+lands there anyway. To make one:
+
+1. **Google Cloud**, in the project the Play account is linked to: enable the
+   **Google Play Android Developer API**, create a service account, and create
+   a **JSON key** for it.
+2. **Play Console → Users and permissions:** invite the service account's
+   email address, and give it, for Jeansh, **Release apps to testing tracks**.
+   Permissions take a few minutes to reach the API.
+3. Save the JSON at the path above, `chmod 600` it.
+
+`tool/release.sh --publish` checks the key and the track before the build, not
+after it. Any failure before the commit drops the Play edit again, so a run
+that dies half way leaves nothing behind and can just be run again.
+
+Release notes are not sent. `store/RELEASE_NOTES.md` and
+`store/RELEASE_NOTES.id.md` still describe 1.0 as the first release, and notes
+that stale are worse for a real tester than none at all: paste them into the
+Play Console instead, where they can be read before they go out.
+
+`tool/test_play_publish.sh` checks what the publisher refuses — a missing or
+malformed key, a bad track, `production`, a missing bundle — and that no
+output holds the key. It needs no credentials and reaches no network. The
+happy path can only be checked against Play itself.
+
+If Play answers the commit with "Changes cannot be sent for review
+automatically", the app has a change waiting that only the Console can send:
+finish that release there once, then `--publish` again.
 
 ### The first upload, by hand
 
@@ -1067,7 +1106,7 @@ one goes through the Play Console:
 2. upload the bundle from `tool/release.sh` to Internal testing;
 3. accept Play App Signing.
 
-After that, tags release through CI.
+After that, `tool/release.sh --publish` does it.
 
 `store/` holds the listing, the privacy policy and the release notes, in
 English and Indonesian. `store/PLAY_CONSOLE.md` walks through the rest of the
