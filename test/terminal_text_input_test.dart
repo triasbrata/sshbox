@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart';
 import 'package:sshbox/src/ui/terminal_text_input.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -21,7 +24,10 @@ void main() {
 
   /// Mounts the widget the way [TerminalPage] does — the focus node belongs to
   /// the child, and this adds no [Focus] of its own.
-  Future<void> pumpInput(WidgetTester tester) async {
+  Future<void> pumpInput(
+    WidgetTester tester, {
+    void Function(KeyboardInsertedContent content)? onContent,
+  }) async {
     final key = GlobalKey<TerminalTextInputState>();
     final focusNode = FocusNode();
     addTearDown(focusNode.dispose);
@@ -35,6 +41,7 @@ void main() {
         key: key,
         terminal: terminal,
         focusNode: focusNode,
+        onContent: onContent,
         child: Focus(focusNode: focusNode, child: const SizedBox()),
       ),
     );
@@ -349,6 +356,57 @@ void main() {
       );
 
       expect(sent, ['b']);
+    });
+  });
+
+  group('a picture the keyboard commits', () {
+    final png = KeyboardInsertedContent(
+      mimeType: 'image/png',
+      uri: 'content://media/external/images/1',
+      data: Uint8List.fromList([137, 80, 78, 71]),
+    );
+
+    testWidgets('goes to the page, and nothing of it down the wire',
+        (tester) async {
+      final taken = <KeyboardInsertedContent>[];
+      await pumpInput(tester, onContent: taken.add);
+
+      input.insertContent(png);
+
+      expect(taken, [png]);
+      expect(sent, isEmpty);
+    });
+
+    test('is written out under a name that says what it is', () async {
+      final image = await insertedImage(KeyboardInsertedContent(
+        mimeType: 'image/jpeg',
+        uri: 'content://media/external/images/1',
+        data: Uint8List.fromList([255, 216, 255]),
+      ));
+
+      expect(image!.name, 'pasted.jpg');
+      expect(File(image.path).readAsBytesSync(), [255, 216, 255]);
+    });
+
+    test('is refused past the ceiling rather than sent', () async {
+      await expectLater(
+        insertedImage(KeyboardInsertedContent(
+          mimeType: 'image/png',
+          uri: 'content://media/external/images/1',
+          data: Uint8List(pasteImageLimit + 1),
+        )),
+        throwsA(isA<PlatformException>()),
+      );
+    });
+
+    test('anything that is not a picture is left alone', () async {
+      final other = KeyboardInsertedContent(
+        mimeType: 'text/plain',
+        uri: png.uri,
+        data: png.data,
+      );
+
+      expect(await insertedImage(other), isNull);
     });
   });
 }
