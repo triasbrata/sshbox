@@ -171,6 +171,30 @@ void main() {
     );
   });
 
+  testWidgets('a shell whose focus fell to nothing takes the next key back', (
+    tester,
+  ) async {
+    await pumpTabs(tester);
+
+    // One hardware key shuts the soft keyboard's IME connection for the run
+    // of the app (see TerminalTextInput), so from here the terminal's focus
+    // is the only input path there is.
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    expect(shell.sent, ['a']);
+
+    // Focus parked on the enclosing scope and handed to no one: what Flutter
+    // leaves behind whenever a focused node goes away, and what a page is
+    // left with when nothing puts the focus back. With the connection shut
+    // there is now no input path at all — the terminal types nothing, and the
+    // user's only way out is to leave the app and come back.
+    terminal(tester).unfocus();
+    await tester.pump();
+    expect(terminal(tester).hasFocus, isFalse);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
+    expect(shell.sent, ['a', 'b']);
+  });
+
   testWidgets('a tab opened before a page leaves the page as it was', (
     tester,
   ) async {

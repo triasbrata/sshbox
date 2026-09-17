@@ -775,6 +775,7 @@ class _PaneViewState extends State<_PaneView> {
     // A pane born focused — tmux focuses the one a split makes — takes focus
     // from the pane that had it, which autofocus alone would leave alone.
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
   }
 
   @override
@@ -785,11 +786,43 @@ class _PaneViewState extends State<_PaneView> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _focusNode.dispose();
     _scrollController.dispose();
     // Takes the underlines with it.
     selection.dispose();
     super.dispose();
+  }
+
+  /// There must always be exactly one live input path — [TerminalTextInput]'s
+  /// IME connection or this pane's focused hardware keys — and never zero.
+  ///
+  /// The connection is shut for good once a hardware keyboard has typed, so
+  /// focus is then the whole of it, and focus can fall into a hole: Flutter
+  /// parks it on the enclosing scope, handing it to no one, whenever a
+  /// focused node goes away, and a page that does not put it back leaves the
+  /// terminal quietly unable to type. The user's only way out is to switch to
+  /// another app and come back, which makes the platform hand the focus over
+  /// again.
+  ///
+  /// A hardware key is seen here whether this pane has focus or not, and
+  /// [HardwareKeyboard]'s handlers run before the focus chain is dispatched,
+  /// so taking the focus back now lands this very key rather than the one
+  /// after it.
+  ///
+  /// Only when the focus is parked on this pane's own scope: a dialog, a
+  /// bottom sheet or the files drawer holds its own scope while it is open,
+  /// and a field being typed into is a node rather than a scope, so neither
+  /// is taken from. Watches only — the key still goes where it was going.
+  bool _onHardwareKey(KeyEvent event) {
+    if (_shown == true &&
+        FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
+      _followFocus(keyboard: false);
+      // The pending change would otherwise be applied in a microtask, long
+      // after this key has been dispatched into the hole.
+      FocusManager.instance.applyFocusChangesIfNeeded();
+    }
+    return false;
   }
 
   /// Whether the tabs were showing this pane when it last looked; null until
