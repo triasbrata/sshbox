@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -17,6 +18,9 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.lang.ref.WeakReference
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // Receives files handed to us by another app's share sheet and puts them
 // somewhere Dart can read.
@@ -241,30 +245,72 @@ class MainActivity : FlutterActivity() {
     // share is, and only the path crosses the channel; sending the picture
     // over as bytes is what freezes the app on anything large.
     //
-    // Answers null when the clipboard holds no image, which is the common
-    // case: the paste then goes on to be text.
+    // Answers null when the clipboard holds no picture, which is the common
+    // case: the paste then goes on to be text. A clip that says it holds one
+    // and then cannot be read is an error rather than a null, because silence
+    // here reads to the user as a feature that does nothing.
+    //
+    // Every step is logged under [PASTE], the one thing that can be read off a
+    // tablet when a paste does not do what it should: what the clip declared,
+    // where its items come from, and the reason for every failure. Never any
+    // of the picture, and never a URI's query, which can carry a token.
     private fun clipboardImage(limit: Long, result: MethodChannel.Result) {
-        val clip = runCatching {
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
-        }.getOrNull()
-        val uri = (0 until (clip?.itemCount ?: 0))
-            .mapNotNull { clip?.getItemAt(it)?.uri }
-            .firstOrNull { typeOf(it)?.startsWith("image/") == true }
+        val clipboard = runCatching {
+            getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        }.onFailure { Log.w(PASTE, "no clipboard service", it) }.getOrNull()
+
+        // Asked before the clip itself: the description is metadata the
+        // clipboard service keeps, so it needs no round trip to the app that
+        // did the copying and no grant. It is also the only reliable answer.
+        // getType() has to reach that app's provider, and Chrome's writes the
+        // picture lazily, so it answers null while the file is still being
+        // made — which read as "no image here", and a paste from Chrome did
+        // nothing at all.
+        val described = runCatching { clipboard?.primaryClipDescription }
+            .onFailure { Log.w(PASTE, "no clip description", it) }.getOrNull()
+        val declaredTypes = (0 until (described?.mimeTypeCount ?: 0))
+            .mapNotNull { described?.getMimeType(it) }
+        val saysImage = described?.hasMimeType("image/*") == true
+        Log.i(PASTE, "clip declares $declaredTypes, image=$saysImage")
+
+        val clip = runCatching { clipboard?.primaryClip }
+            .onFailure { Log.w(PASTE, "clip could not be read", it) }.getOrNull()
+        val uris = (0 until (clip?.itemCount ?: 0)).mapNotNull { clip?.getItemAt(it)?.uri }
+        // The authority alone: it names the app the picture comes from, which
+        // is the whole of what is worth knowing, and carries none of it.
+        Log.i(PASTE, "${uris.size} of ${clip?.itemCount ?: 0} items are uris, " +
+            "from ${uris.map { it.authority }}")
+
+        // What it says it is comes first; asking each provider is the fallback
+        // for a clip that declares nothing useful.
+        val uri = if (saysImage) {
+            uris.firstOrNull()
+        } else {
+            uris.firstOrNull { typeOf(it)?.startsWith("image/") == true }
+        }
         if (uri == null) {
+            Log.i(PASTE, "no picture on the clipboard; the paste is text")
             result.success(null)
             return
         }
+        val type = declaredTypes.firstOrNull { it.startsWith("image/") } ?: typeOf(uri)
+
         // What the provider says it is, before a byte is read: a video or a
         // RAW photo pasted by accident is refused without being copied at all.
-        val declared = sizeOf(uri)
-        if (declared != null && declared > limit) {
+        val declaredSize = sizeOf(uri)
+        Log.i(PASTE, "taking a $type from ${uri.authority}, $declaredSize bytes declared")
+        if (declaredSize != null && declaredSize > limit) {
             result.error("too_big", tooBig(limit), null)
             return
         }
-        // Up to 20 MB of copying, which is not for the main thread — Flutter's
-        // UI runs on it.
+        // Up to 20 MB of copying, and a provider that prepares the file only
+        // when it is opened blocks until it has: neither is for the main
+        // thread, which is Flutter's UI thread too.
         Thread {
-            val file = copyToCache(uri)?.let { withExtension(it, typeOf(uri)) }
+            val copied = copyToCache(uri)
+            val file = copied?.let {
+                mapOf("path" to it["path"]!!, "name" to pasteName(it["name"]!!, type))
+            }
             // A provider that declared nothing, or lied: the copy is ours and
             // goes again rather than sitting in the cache.
             val tooBig = file != null && File(file["path"]!!).let {
@@ -272,13 +318,24 @@ class MainActivity : FlutterActivity() {
             }
             runOnUiThread {
                 when {
-                    tooBig -> result.error("too_big", tooBig(limit), null)
-                    file == null -> result.error(
-                        "unreadable",
-                        "The image on the clipboard could not be read.",
-                        null,
-                    )
-                    else -> result.success(file)
+                    tooBig -> {
+                        Log.w(PASTE, "over the ${limit / (1024 * 1024)} MB ceiling once copied")
+                        result.error("too_big", tooBig(limit), null)
+                    }
+                    file == null -> {
+                        // copyToCache has already logged why.
+                        result.error(
+                            "unreadable",
+                            "${uri.authority ?: "That app"} would not hand over the picture on " +
+                                "the clipboard. Try copying it again, or share it into Jeansh.",
+                            null,
+                        )
+                    }
+                    else -> {
+                        Log.i(PASTE, "took it as ${file["name"]}, " +
+                            "${File(file["path"]!!).length()} bytes")
+                        result.success(file)
+                    }
                 }
             }
         }.start()
@@ -288,14 +345,23 @@ class MainActivity : FlutterActivity() {
         "That image is bigger than ${limit / (1024 * 1024)} MB — send it from " +
             "the files drawer instead."
 
-    // A clip item often carries no display name — a MediaStore id leaves a
-    // name with no extension — and the extension is the whole of what tells
-    // whatever opens the file on the host that it is a picture.
-    private fun withExtension(file: Map<String, String>, type: String?): Map<String, String> {
-        val name = file["name"]!!
-        if (name.contains('.')) return file
-        val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(type) ?: return file
-        return mapOf("path" to file["path"]!!, "name" to "$name.$extension")
+    // What the picture is called once it is on the host, where the user reads
+    // it and types it at a prompt. A clip rarely carries a name anybody chose:
+    // Chrome's was 17896822620575726385647394774611.png, a wall of digits. A
+    // base with no letter in it is no name, so it is called what it is and
+    // when it arrived; one that reads as a name — a screenshot's — is kept.
+    //
+    // The extension comes from the type the clipboard declared when the name
+    // carries none, since without one nothing on the host can tell the file is
+    // a picture at all.
+    private fun pasteName(given: String, type: String?): String {
+        val extension = given.substringAfterLast('.', "").takeIf { it.length in 1..5 }
+            ?: MimeTypeMap.getSingleton().getExtensionFromMimeType(type)
+            ?: "png"
+        val base = given.substringBeforeLast('.', given)
+        if (base.any(Char::isLetter)) return "$base.$extension"
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        return "pasted-$stamp.$extension"
     }
 
     // A finished download, in whatever app the phone has for its kind: the
@@ -343,24 +409,34 @@ class MainActivity : FlutterActivity() {
         target.parentFile?.mkdirs()
 
         return try {
-            val input = contentResolver.openInputStream(uri) ?: return null
+            val input = contentResolver.openInputStream(uri)
+            if (input == null) {
+                say("open", uri, IllegalStateException("no stream"))
+                return null
+            }
             input.use { source ->
                 target.outputStream().use { sink -> source.copyTo(sink) }
             }
             mapOf("path" to target.absolutePath, "name" to name)
         } catch (error: Exception) {
             // A revoked or dead content URI is the sender's problem, not a
-            // reason to take the app down.
+            // reason to take the app down — but the reason is worth keeping,
+            // since this is where a paste that found a picture gives up.
+            say("open", uri, error)
+            target.delete()
             null
         }
     }
 
-    // Both ask a provider in another app about a URI the clipboard handed us,
-    // and a grant that has lapsed answers with a SecurityException rather than
-    // a null. Not knowing is fine — the copy itself is still guarded — and
-    // taking the app down over a paste is not.
-    private fun typeOf(uri: Uri): String? =
-        runCatching { contentResolver.getType(uri) }.getOrNull()
+    // All three ask a provider in another app about a URI the clipboard handed
+    // us, and a grant that has lapsed answers with a SecurityException rather
+    // than a null. Not knowing is fine — the copy itself is still guarded, and
+    // the clip's own description is asked first — but taking the app down over
+    // a paste is not, and neither is losing the reason: swallowing these is
+    // what made the Chrome case impossible to diagnose from the tablet.
+    private fun typeOf(uri: Uri): String? = runCatching {
+        contentResolver.getType(uri)
+    }.onFailure { say("getType", uri, it) }.getOrNull()
 
     private fun sizeOf(uri: Uri): Long? = runCatching {
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -371,14 +447,20 @@ class MainActivity : FlutterActivity() {
                 null
             }
         }
-    }.getOrNull()
+    }.onFailure { say("size", uri, it) }.getOrNull()
 
     private fun displayName(uri: Uri): String? = runCatching {
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
             if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
         }
-    }.getOrNull()
+    }.onFailure { say("name", uri, it) }.getOrNull()
+
+    // The authority and the failure, never the URI itself: its path or query
+    // can carry a token, and its content is the user's.
+    private fun say(asked: String, uri: Uri, error: Throwable) =
+        Log.w(PASTE, "$asked refused by ${uri.authority}: ${error.javaClass.simpleName}: " +
+            "${error.message}")
 
     @Suppress("DEPRECATION")
     private fun Intent.streamExtra(): Uri? = getParcelableExtra(Intent.EXTRA_STREAM)
@@ -395,6 +477,10 @@ class MainActivity : FlutterActivity() {
 
     private companion object {
         const val CHANNEL = "sshbox/share"
+
+        // Everything a paste of a picture does, so a paste that misbehaves on
+        // a tablet can be read back with `adb logcat -s JeanshPaste`.
+        const val PASTE = "JeanshPaste"
 
         // Ours alone among the request codes plugins pass through here.
         const val SAVE_AS = 0x5a5e

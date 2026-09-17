@@ -29,11 +29,16 @@ const pasteImageLimit = 20 * 1024 * 1024;
 /// is text, pasted exactly as it always was, bracketed when the shell asked
 /// for that.
 ///
+/// A paste that finds nothing it can use says so rather than doing nothing:
+/// silence is what made a paste from Chrome, whose picture could not be read,
+/// look like a feature that was simply broken.
+///
 /// Throws a [PlatformException] whose message says why when an image is
-/// there but cannot be taken: too big, or unreadable.
+/// there but cannot be taken: too big, or the app that holds it refusing.
 Future<void> pasteIntoTerminal(
   Terminal terminal, {
   required Future<void> Function(SharedFile image) upload,
+  void Function(String message)? onNothing,
 }) async {
   final image = await clipboardImage();
   if (image != null) {
@@ -41,7 +46,11 @@ Future<void> pasteIntoTerminal(
     return;
   }
   final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-  if (text != null) terminal.paste(text);
+  if (text != null && text.isNotEmpty) {
+    terminal.paste(text);
+    return;
+  }
+  onNothing?.call('Nothing on the clipboard a terminal can paste');
 }
 
 /// The image on the clipboard, copied into a file of the app's own, or null

@@ -1068,6 +1068,21 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
     }
 
+    /// Ctrl+V held down, as Android reports it: one press and then a repeat
+    /// about every 50 ms for as long as the thumb stays there.
+    Future<void> holdCtrlV(WidgetTester tester, {int repeats = 3}) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      for (var i = 0; i < repeats; i++) {
+        await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyV);
+      }
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
     testWidgets('an image goes to the host and its path is typed', (
       tester,
     ) async {
@@ -1096,6 +1111,75 @@ void main() {
 
       expect(shell.uploaded, isEmpty);
       expect(shell.sent, contains('ls -la'));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('a held Ctrl+V pastes once, not once per auto-repeat', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      clipboardText = 'ls -la';
+
+      await holdCtrlV(tester);
+
+      // Each repeat used to fall past the chord handler to xterm2's own paste
+      // shortcut, whose SingleActivator takes repeats, so a thumb left on the
+      // key pasted again every 50 ms — and would have uploaded a picture
+      // again every 50 ms.
+      expect(shell.sent.where((data) => data == 'ls -la'), hasLength(1));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('a held Ctrl+V uploads the picture once', (tester) async {
+      await pumpPage(tester);
+      image = pictureNamed('Screenshot.png');
+
+      await holdCtrlV(tester);
+
+      expect(shell.uploaded, hasLength(1));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('nothing it can use is said, not passed over in silence', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+
+      await pressCtrlV(tester);
+
+      expect(
+        _toast(
+          'Nothing on the clipboard a terminal can paste',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('a picture the owning app will not hand over says so', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      refusal = PlatformException(
+        code: 'unreadable',
+        message: 'com.android.chrome.FileProvider would not hand over the '
+            'picture on the clipboard. Try copying it again, or share it into '
+            'Jeansh.',
+      );
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, isEmpty);
+      expect(
+        _toast(
+          'com.android.chrome.FileProvider would not hand over the picture on '
+              'the clipboard. Try copying it again, or share it into Jeansh.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
     }, variant: _android);
 
     testWidgets('an image too big to send is refused, not uploaded', (

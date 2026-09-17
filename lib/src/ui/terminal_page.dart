@@ -840,12 +840,18 @@ class _PaneViewState extends State<_PaneView> {
   /// An image goes to the host as a file and its remote path is typed at the
   /// prompt, since a byte stream has nothing to do with a picture and a
   /// program on the host cannot see the tablet's clipboard. The upload says
-  /// its own piece; only a clipboard that cannot be taken is reported here.
+  /// its own piece; a clipboard that cannot be taken, or that holds nothing
+  /// this can use, is said here — a paste must never look like nothing
+  /// happened.
   Future<void> _paste() async {
     try {
-      await pasteIntoTerminal(widget.terminal, upload: widget.onImage);
+      await pasteIntoTerminal(
+        widget.terminal,
+        upload: widget.onImage,
+        onNothing: _say,
+      );
     } on PlatformException catch (error) {
-      _refuse(error);
+      _say(error.message ?? 'That picture could not be pasted');
     }
   }
 
@@ -856,25 +862,29 @@ class _PaneViewState extends State<_PaneView> {
       final image = await insertedImage(content);
       if (image != null) await widget.onImage(image);
     } on PlatformException catch (error) {
-      _refuse(error);
+      _say(error.message ?? 'That picture could not be pasted');
     }
   }
 
-  void _refuse(PlatformException error) {
+  void _say(String message) {
     if (!mounted) return;
-    showToast(
-      context,
-      error.message ?? 'That image could not be pasted',
-      type: ToastificationType.warning,
-    );
+    showToast(context, message, type: ToastificationType.warning);
   }
 
   /// Ctrl+V — ⌘V on an Apple platform — before xterm2's own paste shortcut
   /// sees it, that one reading text and nothing else. Every other key is left
   /// exactly as it was.
+  ///
+  /// A held Ctrl+V pastes once. Android repeats a held key about 20 times a
+  /// second, and each repeat is a [KeyRepeatEvent] rather than a
+  /// [KeyDownEvent]; those used to fall past this to xterm2's own shortcut,
+  /// whose [SingleActivator] takes repeats, so half a second of holding the
+  /// key ran three more clipboard reads — visible in the tablet's log as three
+  /// "Clipboard text was unable to be received from content URI" in 100 ms.
+  /// They are claimed here and dropped instead: one press is one paste, and a
+  /// picture is never uploaded again and again because a thumb stayed down.
   KeyEventResult _onPasteChord(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent ||
-        event.logicalKey != LogicalKeyboardKey.keyV) {
+    if (event is KeyUpEvent || event.logicalKey != LogicalKeyboardKey.keyV) {
       return KeyEventResult.ignored;
     }
     final keys = HardwareKeyboard.instance;
@@ -886,7 +896,7 @@ class _PaneViewState extends State<_PaneView> {
       _ => keys.isControlPressed && !keys.isMetaPressed,
     };
     if (!chord) return KeyEventResult.ignored;
-    unawaited(_paste());
+    if (event is KeyDownEvent) unawaited(_paste());
     return KeyEventResult.handled;
   }
 
