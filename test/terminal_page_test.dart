@@ -19,6 +19,7 @@ import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart' show shareTextLimit;
 import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:toastification/toastification.dart';
@@ -1026,6 +1027,9 @@ void main() {
     /// image.
     String? clipboardText;
 
+    /// What was put on the system clipboard, if anything.
+    String? copied;
+
     const channel = MethodChannel('sshbox/share');
 
     setUp(() {
@@ -1033,6 +1037,7 @@ void main() {
       image = null;
       refusal = null;
       clipboardText = null;
+      copied = null;
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       messenger.setMockMethodCallHandler(channel, (call) async {
@@ -1041,6 +1046,9 @@ void main() {
         return image;
       });
       messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String?;
+        }
         if (call.method != 'Clipboard.getData') return null;
         return clipboardText == null ? null : {'text': clipboardText};
       });
@@ -1062,7 +1070,7 @@ void main() {
       return {'path': file.path, 'name': name};
     }
 
-    Future<void> pumpPage(WidgetTester tester) async {
+    Future<LiveSession> pumpPage(WidgetTester tester) async {
       shell = _Shell();
       final session = LiveSession(
         host: const HostProfile(
@@ -1094,6 +1102,7 @@ void main() {
           .focusNode!
           .requestFocus();
       await tester.pump();
+      return session;
     }
 
     /// The paste a hardware keyboard sends, which xterm2 would otherwise
@@ -1270,6 +1279,105 @@ void main() {
       );
       await tester.pumpAndSettle();
     }, variant: _android);
+
+    /// "Share with Jeansh" from another app, handed to the session the way
+    /// app.dart hands a share over, and given the frames to land in.
+    Future<void> share(
+      WidgetTester tester,
+      LiveSession session,
+      List<Object> shares,
+    ) async {
+      session.queueUploads(shares);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    /// Everything sent to the host that mentions [text].
+    List<String> sentWith(String text) =>
+        shell.sent.where((data) => data.contains(text)).toList();
+
+    testWidgets('a shared link is written at the prompt, never with an Enter', (
+      tester,
+    ) async {
+      final session = await pumpPage(tester);
+
+      // Chrome's link can come with a line break after it.
+      await share(tester, session, ['https://example.com/a?b=c\n']);
+
+      expect(sentWith('example.com'), ['https://example.com/a?b=c']);
+      expect(shell.sent.where((data) => data.contains('\r')), isEmpty);
+      expect(copied, isNull);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('several lines go in bracketed, for a shell that asked for '
+        'bracketed paste', (tester) async {
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+
+      await share(tester, session, ['echo one\necho two\n']);
+
+      expect(sentWith('echo'), ['\x1b[200~echo one\necho two\x1b[201~']);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('several lines are not pasted into a shell that would run '
+        'them: they go on the clipboard instead', (tester) async {
+      final session = await pumpPage(tester);
+
+      await share(tester, session, ['echo one\nrm -rf ~/work']);
+
+      expect(sentWith('echo'), isEmpty);
+      expect(copied, 'echo one\nrm -rf ~/work');
+      expect(
+        _toast(
+          'Not pasted: this shell would run each line of it. It is on the '
+          'clipboard instead.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a shared text past the ceiling is refused, not pasted', (
+      tester,
+    ) async {
+      final session = await pumpPage(tester);
+
+      await share(tester, session, ['x' * (shareTextLimit + 1)]);
+
+      expect(sentWith('xxxx'), isEmpty);
+      expect(copied, isNull);
+      expect(
+        _toast(
+          'The shared text is too long to paste: 64 KB at most',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a file and a text shared one after the other land in that '
+        'order', (tester) async {
+      final session = await pumpPage(tester);
+      final shot = pictureNamed('shot.png');
+
+      await share(tester, session, [
+        (path: shot['path']!, name: 'shot.png'),
+        'https://example.com',
+      ]);
+      await tester.pumpAndSettle();
+
+      expect(
+        shell.sent.where(
+          (data) => data.contains('/tmp/') || data.contains('example.com'),
+        ),
+        ['/tmp/shot.png ', 'https://example.com'],
+      );
+    });
   });
 }
 
