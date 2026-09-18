@@ -100,6 +100,84 @@ enum ChatPermission {
   final String label;
 }
 
+/// One session `claude agents` knows about on the host: a background one
+/// started with `--bg`, or an interactive one somebody is typing into.
+///
+/// Every field here is data from the host, and the name is free text the user
+/// typed when they started it — so it is drawn, never run, and the only piece
+/// that ever reaches a command is [sessionId], quoted like any other value.
+///
+/// The shape is what the CLI actually prints, which is not the same for every
+/// row: an interactive session has no `id` and no `state`, and a session whose
+/// process has gone has no `pid` and no `status`. So everything but the
+/// session id is optional here, and [live] reads the one field that says
+/// whether the process is still there.
+class ClaudeAgent {
+  const ClaudeAgent({
+    required this.sessionId,
+    required this.name,
+    required this.cwd,
+    required this.kind,
+    this.id,
+    this.status,
+    this.pid,
+    this.startedAt,
+  });
+
+  /// The transcript, and the only thing `--resume` takes.
+  final String sessionId;
+
+  /// The short id `claude attach` and `claude stop` take. Background only:
+  /// an interactive session has none, which is why none can be attached.
+  final String? id;
+
+  final String name;
+  final String cwd;
+
+  /// `background`, `interactive`, or whatever a later CLI adds.
+  final String kind;
+
+  /// `idle` or `busy` while the process is there; absent once it has gone.
+  final String? status;
+
+  final int? pid;
+  final DateTime? startedAt;
+
+  /// Whether the process is still running. Measured against the CLI: a live
+  /// session is the one that refuses `-p --resume`, and a finished one is the
+  /// one that takes it.
+  bool get live => pid != null;
+
+  bool get busy => status == 'busy';
+
+  /// Whether somebody is typing into this one at a terminal.
+  bool get interactive => kind == 'interactive';
+
+  /// One row of `claude agents --json`, or null when it carries no session to
+  /// resume — a row from a newer CLI that means nothing here is left out
+  /// rather than drawn half empty.
+  static ClaudeAgent? fromJson(Object? row) {
+    if (row is! Map<String, dynamic>) return null;
+    final sessionId = row['sessionId'];
+    if (sessionId is! String || sessionId.isEmpty) return null;
+    final started = row['startedAt'];
+    return ClaudeAgent(
+      sessionId: sessionId,
+      id: row['id'] is String ? row['id'] as String : null,
+      name: row['name'] is String && (row['name'] as String).trim().isNotEmpty
+          ? (row['name'] as String).trim()
+          : sessionId,
+      cwd: row['cwd'] is String ? row['cwd'] as String : '',
+      kind: row['kind'] is String ? row['kind'] as String : 'background',
+      status: row['status'] is String ? row['status'] as String : null,
+      pid: row['pid'] is int ? row['pid'] as int : null,
+      startedAt: started is int && started > 0
+          ? DateTime.fromMillisecondsSinceEpoch(started)
+          : null,
+    );
+  }
+}
+
 /// A conversation with Claude Code running on the host, driven over one
 /// command channel on the session's own SSH connection.
 ///
@@ -141,6 +219,19 @@ class ClaudeChat extends ChangeNotifier {
 
   String? get sessionId => _sessionId;
 
+  /// The session this chat was picked up from, for the list of sessions to
+  /// mark as the one showing. Not [sessionId]: a copy's id is its own, and
+  /// the list shows the original.
+  String? _pickedFrom;
+
+  String? get pickedFrom => _pickedFrom;
+
+  /// Whether the next start branches off the session it resumes instead of
+  /// continuing it. Set by [continueFrom] and cleared as soon as it has been
+  /// used: the fork reports an id of its own, and from then on this chat
+  /// continues that, not the session it came from.
+  bool _fork = false;
+
   bool _starting = false;
   bool _ready = false;
   bool _busy = false;
@@ -169,9 +260,15 @@ class ClaudeChat extends ChangeNotifier {
     notifyListeners();
     try {
       final channel = await open(
-        command(cwd: cwd, permission: _permission, resume: _sessionId),
+        command(
+          cwd: cwd,
+          permission: _permission,
+          resume: _sessionId,
+          fork: _fork,
+        ),
       );
       _channel = channel;
+      _fork = false;
       _ready = true;
       _lines = utf8.decoder
           .bind(channel.output)
@@ -219,6 +316,213 @@ class ClaudeChat extends ChangeNotifier {
     await start();
   }
 
+  /// What `claude agents` can see on the host: the sessions running there,
+  /// background and interactive alike.
+  ///
+  /// Only the ones still running, which is what the CLI lists without
+  /// `--all` and what was asked for. A finished session is still resumable,
+  /// and could be offered later; nothing here would have to change but the
+  /// flag, since [continueFrom] already picks its way by [ClaudeAgent.live].
+  ///
+  /// Throws with what the host said when it could not list them — an old
+  /// Claude Code with no `agents` command, or none installed at all.
+  Future<List<ClaudeAgent>> agents() async {
+    final channel = await open(agentsCommand());
+    final String text;
+    try {
+      text = await utf8.decoder.bind(channel.output).join();
+    } finally {
+      channel.close();
+    }
+    final rows = _arrayIn(text);
+    if (rows == null) {
+      throw SshSessionException(
+        text.trim().isEmpty
+            ? 'The host said nothing about its Claude sessions.'
+            : text.trim(),
+      );
+    }
+    return [
+      for (final row in rows) ?ClaudeAgent.fromJson(row),
+    ];
+  }
+
+  /// The JSON array in [text], or null when there is none.
+  ///
+  /// stderr is folded into stdout, so a warning from the host, or a line a
+  /// profile printed, can sit beside the array; the array is taken from the
+  /// first `[` to the last `]` when the whole text will not parse.
+  static List<Object?>? _arrayIn(String text) {
+    for (final candidate in [
+      text.trim(),
+      if (text.contains('[') && text.lastIndexOf(']') > text.indexOf('['))
+        text.substring(text.indexOf('['), text.lastIndexOf(']') + 1),
+    ]) {
+      try {
+        final parsed = jsonDecode(candidate);
+        if (parsed is List) return parsed;
+      } catch (_) {
+        // Not this one; try the array inside it.
+      }
+    }
+    return null;
+  }
+
+  /// Picks up [agent] in this chat.
+  ///
+  /// A session whose process is still running is branched off rather than
+  /// continued, because the CLI refuses to resume one that is live — it says
+  /// so and stops, whether that session is busy or sitting idle — and because
+  /// the person or the job that owns it is still using it. The branch carries
+  /// everything said so far, gets an id of its own, and leaves the original
+  /// running untouched. A session that has finished is continued in place.
+  ///
+  /// ponytail: never `claude stop`, which would end somebody's session from a
+  /// tap on a phone. Offer it as its own action, said out loud, if continuing
+  /// the original rather than a copy turns out to be what people want.
+  Future<void> continueFrom(ClaudeAgent agent) async {
+    await _stop();
+    _entries.clear();
+    _running.clear();
+    _busy = false;
+    _ended = false;
+    _sessionId = agent.sessionId;
+    _pickedFrom = agent.sessionId;
+    _fork = agent.live;
+    // What was said before, from the transcript the host keeps: resuming
+    // replays nothing on stdout, so without this the tab would start blank
+    // on a conversation Claude remembers. The original's file, not the
+    // copy's: measured, a copy's transcript carries every earlier turn, but
+    // the original's is on disk before anything is started, and is exactly
+    // what the copy was made from.
+    await _loadHistory(agent.sessionId);
+    _say(
+      ChatNotice(
+        agent.live
+            ? 'Continuing “${agent.name}” as a copy. The session on the host '
+                  'keeps running and is not touched by anything said here.'
+            : 'Continuing “${agent.name}”.',
+      ),
+    );
+    await start();
+  }
+
+  /// What a session id looks like: a UUID, or the short form. Anything else
+  /// is not looked for — the id comes from the host, and `find -name` would
+  /// read a `*` in it as a pattern however it was quoted.
+  static final _sessionIdShape = RegExp(r'^[0-9A-Za-z-]{8,64}$');
+
+  /// Reads the end of [sessionId]'s transcript into the chat, drawn as a live
+  /// turn is drawn. A transcript that cannot be read costs its history, never
+  /// the pick-up: it says why, and the chat goes on.
+  Future<void> _loadHistory(String sessionId) async {
+    if (!_sessionIdShape.hasMatch(sessionId)) {
+      _say(ChatNotice('This session has no id that can be looked up.'));
+      return;
+    }
+    final String text;
+    try {
+      final channel = await open(historyCommand(sessionId));
+      try {
+        // Malformed allowed: a cut by bytes can land inside a character.
+        // A host that never closes the channel costs its history, not the
+        // pick-up.
+        text = await const Utf8Decoder(allowMalformed: true)
+            .bind(channel.output)
+            .join()
+            .timeout(const Duration(seconds: 20));
+      } finally {
+        channel.close();
+      }
+    } catch (error) {
+      _say(ChatNotice('Its earlier turns could not be read: $error'));
+      return;
+    }
+    final lines = const LineSplitter().convert(text);
+    final size = lines.isEmpty ? null : int.tryParse(lines.first.trim());
+    if (size == null) {
+      // Not a size: the host saying why there is nothing, as it said it.
+      final reason = text.trim();
+      _say(
+        ChatNotice(
+          reason.isEmpty ? 'Its earlier turns could not be read.' : reason,
+        ),
+      );
+      return;
+    }
+    var body = lines.skip(1);
+    if (size > historyLimit) {
+      // Read from the middle of a line; that line is only its end.
+      body = body.skip(1);
+      _entries.add(
+        ChatNotice(
+          'Only the latest part of this session is shown; its earlier turns '
+          'are on the host.',
+        ),
+      );
+    }
+    for (final line in body) {
+      _replay(line);
+    }
+    // A call whose answer fell outside what was read, or never came, is
+    // history now and not a spinner.
+    for (final run in _running.values) {
+      run.result = '';
+    }
+    _running.clear();
+    notifyListeners();
+  }
+
+  /// One line of a transcript. Only the conversation is kept: a transcript
+  /// is mostly other things — modes, titles, costs, snapshots — and even its
+  /// `user` lines are often not the user: a tool's result, which folds into
+  /// its call; a line Claude Code put there itself (`isMeta`, or a string
+  /// that opens with a tag such as `<task-notification>`); or a subagent's
+  /// own exchange (`isSidechain`), which the session's own view leaves out.
+  void _replay(String line) {
+    final Object? event;
+    try {
+      event = jsonDecode(line);
+    } catch (_) {
+      return;
+    }
+    if (event is! Map<String, dynamic>) return;
+    if (event['isMeta'] == true || event['isSidechain'] == true) return;
+    final message = event['message'];
+    switch (event['type']) {
+      case 'assistant':
+        _onAssistant(message);
+      case 'user' when message is Map<String, dynamic>:
+        final content = message['content'];
+        final said = switch (content) {
+          final String text => text,
+          final List blocks
+              when !blocks.any(
+                (block) => block is Map && block['type'] == 'tool_result',
+              ) =>
+            blocks
+                .whereType<Map<String, dynamic>>()
+                .where((block) => block['type'] == 'text')
+                .map((block) => block['text'] as String? ?? '')
+                .join('\n'),
+          _ => null,
+        };
+        if (said == null) {
+          _onToolResults(message);
+          return;
+        }
+        final text = said.trim();
+        // ponytail: a message the user typed that itself opens with `<` is
+        // taken for one Claude Code wrote, and left out.
+        if (text.isEmpty || text.startsWith('<')) return;
+        _entries.add(
+          text.startsWith('[Request interrupted')
+              ? ChatNotice('The user interrupted this turn.')
+              : ChatSaid(text, mine: true),
+        );
+    }
+  }
+
   void _write(Map<String, dynamic> message) {
     final channel = _channel;
     if (channel == null) return;
@@ -253,9 +557,9 @@ class ClaudeChat extends ChangeNotifier {
         _sessionId = event['session_id'] as String?;
         notifyListeners();
       case 'assistant':
-        _onAssistant(event['message']);
+        if (_onAssistant(event['message'])) notifyListeners();
       case 'user':
-        _onToolResults(event['message']);
+        if (_onToolResults(event['message'])) notifyListeners();
       case 'result':
         _busy = false;
         final subtype = event['subtype'];
@@ -272,10 +576,12 @@ class ClaudeChat extends ChangeNotifier {
     _ => 'Claude stopped: $subtype.',
   };
 
-  void _onAssistant(Object? message) {
-    if (message is! Map<String, dynamic>) return;
+  /// Claude's side of a turn, into the transcript. True when it added
+  /// anything, for the caller to redraw.
+  bool _onAssistant(Object? message) {
+    if (message is! Map<String, dynamic>) return false;
     final content = message['content'];
-    if (content is! List) return;
+    if (content is! List) return false;
     var changed = false;
     for (final block in content) {
       if (block is! Map<String, dynamic>) continue;
@@ -301,15 +607,15 @@ class ClaudeChat extends ChangeNotifier {
           changed = true;
       }
     }
-    if (changed) notifyListeners();
+    return changed;
   }
 
   /// A `user` event is not the user: it is what the tools Claude ran gave
   /// back, which folds into the call that asked for it.
-  void _onToolResults(Object? message) {
-    if (message is! Map<String, dynamic>) return;
+  bool _onToolResults(Object? message) {
+    if (message is! Map<String, dynamic>) return false;
     final content = message['content'];
-    if (content is! List) return;
+    if (content is! List) return false;
     var changed = false;
     for (final block in content) {
       if (block is! Map<String, dynamic>) continue;
@@ -321,7 +627,7 @@ class ClaudeChat extends ChangeNotifier {
         ..failed = block['is_error'] == true;
       changed = true;
     }
-    if (changed) notifyListeners();
+    return changed;
   }
 
   /// A result is a string, or the blocks a tool answered with. Either way
@@ -396,11 +702,14 @@ class ClaudeChat extends ChangeNotifier {
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
+    bool fork = false,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
-    final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
+    final again = resume == null
+        ? ''
+        : ' --resume ${_shellQuote(resume)}${fork ? ' --fork-session' : ''}';
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
     // Splicing a quoted value into an outer '…' closes that quote instead, so
@@ -411,6 +720,43 @@ class ClaudeChat extends ChangeNotifier {
         '--permission-prompts none$again 2>&1';
     return 'sh -c ${_shellQuote(script)}';
   }
+
+  /// What the host runs to list its Claude sessions.
+  ///
+  /// `--json` is the one that does not want a terminal, which is what makes
+  /// this possible over an exec channel at all. Without `--all` it lists the
+  /// sessions still running, which is what was asked for. Claude is found and
+  /// the whole script quoted exactly as [command] does it.
+  static String agentsCommand() => 'sh -c '
+      '${_shellQuote('$_findClaude'
+          r'exec "$c" agents --json 2>&1')}';
+
+  /// How much of a transcript is read, from its end.
+  ///
+  /// ponytail: the last 512 KB. Transcripts measured on a working machine run
+  /// to 1 MB at the median, 11 MB at the 90th percentile and past 100 MB at
+  /// the top, and a single line can be 12 MB — a tool's whole answer, or a
+  /// picture — so the cut is by bytes, never by lines. Page further back on
+  /// request if the tail proves too short.
+  static const historyLimit = 512 * 1024;
+
+  /// What the host runs to hand over the end of a session's transcript: its
+  /// size in bytes on the first line, then the last [historyLimit] bytes.
+  ///
+  /// Found by its id with `find`, not by working out the directory Claude
+  /// Code files it under: that naming is the CLI's own business and can
+  /// change between versions, and the id is the one thing that names the
+  /// file. Where the projects live follows CLAUDE_CONFIG_DIR, as the CLI
+  /// does. The id is quoted for sh, and the whole script once more for the
+  /// login shell, as [command] quotes its values.
+  static String historyCommand(String sessionId) => 'sh -c '
+      '${_shellQuote(r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"; '
+          'f=\$(find "\$d" -type f -name ${_shellQuote('$sessionId.jsonl')} '
+          r'2>/dev/null | head -n 1); '
+          r'[ -n "$f" ] || { echo "No transcript for this session on the '
+          r'host."; exit 1; }; '
+          r'wc -c < "$f"; '
+          'tail -c $historyLimit "\$f"')}';
 
   /// Finds Claude Code into `$c`, or says it is not there and stops.
   static const _findClaude =

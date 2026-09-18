@@ -83,8 +83,9 @@
                 <data android:scheme="sshbox"/>
             </intent-filter>
         </activity>
-        <!-- "Share with Jeansh" from any other app: the file goes to /tmp on
-             the session you were last in. Not on MainActivity: the share sheet
+        <!-- "Share with Jeansh" from any other app: a file goes to /tmp on
+             the session you were last in, and a link or other text is pasted
+             at its prompt. Not on MainActivity: the share sheet
              starts its target inside the sending app's task, and singleTop
              only reuses an instance at the top of the same task, so sharing
              started a second MainActivity with an empty engine. This one

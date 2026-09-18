@@ -345,6 +345,10 @@ abstract class DbSession {
   /// database, and Redis's keys under one blank group. [filter] narrows it.
   Future<Map<String, List<String>>> objects(String filter);
 
+  /// Whether [objects], read with no filter, stopped before the whole list,
+  /// so a filter has to ask the database rather than narrow what came back.
+  bool capped(Map<String, List<String>> objects) => false;
+
   /// What a tap on [name] under [group] runs.
   Future<String> queryFor(String group, String name);
 
@@ -454,6 +458,16 @@ abstract class DbSession {
   }
 }
 
+/// [objects] as [filter] narrows it, without asking the database again.
+Map<String, List<String>> filterObjects(
+  Map<String, List<String>> objects,
+  String filter,
+) {
+  final groups = <String, List<String>>{};
+  objects.forEach((group, names) => _addGroup(groups, group, names, filter));
+  return groups;
+}
+
 /// [names] under [group], with only those holding [filter] when the group's
 /// own name does not.
 void _addGroup(
@@ -498,11 +512,7 @@ class _PostgresSession extends DbSession {
     for (final [schema, table] in rows) {
       (bySchema[schema!] ??= []).add(table!);
     }
-    final groups = <String, List<String>>{};
-    bySchema.forEach(
-      (schema, tables) => _addGroup(groups, schema, tables, filter),
-    );
-    return groups;
+    return filterObjects(bySchema, filter);
   }
 
   /// Bare when it would read back the same, in double quotes otherwise.
@@ -810,6 +820,10 @@ class _RedisSession extends DbSession {
 
   @override
   String get hint => 'A command, like GET key or HGETALL key';
+
+  @override
+  bool capped(Map<String, List<String>> objects) =>
+      (objects['']?.length ?? 0) >= maxKeys;
 
   @override
   Future<Map<String, List<String>>> objects(String filter) async {

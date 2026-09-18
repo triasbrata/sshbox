@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,6 +19,7 @@ import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart' show shareTextLimit;
 import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:toastification/toastification.dart';
@@ -26,6 +28,7 @@ import 'package:url_launcher_platform_interface/url_launcher_platform_interface.
 import 'package:xterm2/xterm.dart';
 
 import 'fake_file_browser.dart';
+import 'fake_file_picker.dart';
 
 /// The phone's url_launcher, able to open links only the [ways] it is given,
 /// and failing the rest the way Android does: by throwing.
@@ -1030,6 +1033,9 @@ void main() {
     /// image.
     String? clipboardText;
 
+    /// What was put on the system clipboard, if anything.
+    String? copied;
+
     const channel = MethodChannel('sshbox/share');
 
     setUp(() {
@@ -1037,6 +1043,7 @@ void main() {
       image = null;
       refusal = null;
       clipboardText = null;
+      copied = null;
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       messenger.setMockMethodCallHandler(channel, (call) async {
@@ -1045,6 +1052,9 @@ void main() {
         return image;
       });
       messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String?;
+        }
         if (call.method != 'Clipboard.getData') return null;
         return clipboardText == null ? null : {'text': clipboardText};
       });
@@ -1066,7 +1076,7 @@ void main() {
       return {'path': file.path, 'name': name};
     }
 
-    Future<void> pumpPage(WidgetTester tester) async {
+    Future<LiveSession> pumpPage(WidgetTester tester) async {
       shell = _Shell();
       final session = LiveSession(
         host: const HostProfile(
@@ -1099,6 +1109,7 @@ void main() {
           .focusNode!
           .requestFocus();
       await tester.pump();
+      return session;
     }
 
     /// The paste a hardware keyboard sends, which xterm2 would otherwise
@@ -1145,6 +1156,30 @@ void main() {
         findsOneWidget,
       );
       await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('the upload button takes several files, and types every '
+        'path in the order they were picked', (tester) async {
+      useFakePicker().next = [
+        for (final name in ['shot.png', 'build.log', 'notes.txt'])
+          _Picked(File('${temp.path}/$name')..writeAsBytesSync([1])),
+      ];
+      await pumpPage(tester);
+
+      await tester.tap(find.byTooltip('Upload a file to /tmp'));
+      await tester.pumpAndSettle();
+
+      expect(shell.uploaded.map((file) => file.name), [
+        'shot.png',
+        'build.log',
+        'notes.txt',
+      ]);
+      // One line, in the order picked, each ready to be followed by the next.
+      expect(shell.sent.where((text) => text.startsWith('/tmp/')), [
+        '/tmp/shot.png ',
+        '/tmp/build.log ',
+        '/tmp/notes.txt ',
+      ]);
     }, variant: _android);
 
     testWidgets('with no image on it, the clipboard is text as before', (
@@ -1253,5 +1288,134 @@ void main() {
       );
       await tester.pumpAndSettle();
     }, variant: _android);
+
+    /// "Share with Jeansh" from another app, handed to the session the way
+    /// app.dart hands a share over, and given the frames to land in.
+    Future<void> share(
+      WidgetTester tester,
+      LiveSession session,
+      List<Object> shares,
+    ) async {
+      session.queueUploads(shares);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    /// Everything sent to the host that mentions [text].
+    List<String> sentWith(String text) =>
+        shell.sent.where((data) => data.contains(text)).toList();
+
+    testWidgets('a shared link is written at the prompt, never with an Enter', (
+      tester,
+    ) async {
+      final session = await pumpPage(tester);
+
+      // Chrome's link can come with a line break after it.
+      await share(tester, session, ['https://example.com/a?b=c\n']);
+
+      expect(sentWith('example.com'), ['https://example.com/a?b=c']);
+      expect(shell.sent.where((data) => data.contains('\r')), isEmpty);
+      expect(copied, isNull);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('several lines go in bracketed, for a shell that asked for '
+        'bracketed paste', (tester) async {
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+
+      await share(tester, session, ['echo one\necho two\n']);
+
+      expect(sentWith('echo'), ['\x1b[200~echo one\necho two\x1b[201~']);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('several lines are not pasted into a shell that would run '
+        'them: they go on the clipboard instead', (tester) async {
+      final session = await pumpPage(tester);
+
+      await share(tester, session, ['echo one\nrm -rf ~/work']);
+
+      expect(sentWith('echo'), isEmpty);
+      expect(copied, 'echo one\nrm -rf ~/work');
+      expect(
+        _toast(
+          'Not pasted: this shell would run each line of it. It is on the '
+          'clipboard instead.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a shared text past the ceiling is refused, not pasted', (
+      tester,
+    ) async {
+      final session = await pumpPage(tester);
+
+      await share(tester, session, ['x' * (shareTextLimit + 1)]);
+
+      expect(sentWith('xxxx'), isEmpty);
+      expect(copied, isNull);
+      expect(
+        _toast(
+          'The shared text is too long to paste: 64 KB at most',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a file and a text shared one after the other land in that '
+        'order', (tester) async {
+      final session = await pumpPage(tester);
+      final shot = pictureNamed('shot.png');
+
+      await share(tester, session, [
+        (path: shot['path']!, name: 'shot.png'),
+        'https://example.com',
+      ]);
+      await tester.pumpAndSettle();
+
+      expect(
+        shell.sent.where(
+          (data) => data.contains('/tmp/') || data.contains('example.com'),
+        ),
+        ['/tmp/shot.png ', 'https://example.com'],
+      );
+    });
   });
+}
+
+/// A file picked on the phone, standing on a real file so the upload can read
+/// it.
+final class _Picked extends PlatformFile {
+  _Picked(this.file);
+
+  final File file;
+
+  @override
+  String get name => file.uri.pathSegments.last;
+
+  @override
+  Uri get uri => file.uri;
+
+  @override
+  get xFile => throw UnimplementedError();
+
+  @override
+  int? lengthSync() => file.lengthSync();
+
+  @override
+  Future<int> length() => file.length();
+
+  @override
+  Future<Uint8List> readAsBytes() => file.readAsBytes();
+
+  @override
+  Stream<Uint8List> readAsByteStream() =>
+      file.openRead().map(Uint8List.fromList);
 }

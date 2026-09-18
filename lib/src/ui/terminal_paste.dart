@@ -53,6 +53,43 @@ Future<void> pasteIntoTerminal(
   onNothing?.call('Nothing on the clipboard a terminal can paste');
 }
 
+/// The most text a share will paste at a prompt.
+///
+/// ponytail: 64 KB — a thousand lines, far past a link, a command or a
+/// snippet, while a whole document shared by mistake is refused rather than
+/// echoed back over SSH into the line editor. Under the file tab's 256 KB
+/// `copyLimit`, so what is refused for its newlines always fits on the
+/// clipboard. Raise it when a real share needs more.
+const shareTextLimit = 64 * 1024;
+
+/// Text another app shared into Jeansh — a link from Chrome, a snippet —
+/// written at the prompt as a paste, never followed by Enter. Returns why it
+/// was not pasted, or null when it was.
+///
+/// The text is untrusted: it is whatever the sending app put in the share.
+/// Line breaks at either end are dropped, since there they could only ever
+/// be an Enter — a link can come with one. [Terminal.paste] strips escapes
+/// and control bytes, and brackets the rest when the program asked for
+/// bracketed paste, which is how a shell knows not to run a newline in it.
+/// A program that did not ask — a plain `sh`, an old bash — runs each line
+/// as it arrives, so text that is not a single safe line is not pasted there
+/// at all: it goes on the clipboard, for a paste the user makes knowingly.
+Future<String?> pasteShared(Terminal terminal, String shared) async {
+  final text = shared.replaceAll(RegExp(r'^[\r\n]+|[\r\n]+$'), '');
+  if (text.isEmpty) return null;
+  if (text.length > shareTextLimit) {
+    return 'The shared text is too long to paste: '
+        '${shareTextLimit ~/ 1024} KB at most';
+  }
+  if (!terminal.bracketedPasteMode && !Terminal.isPasteSafe(text)) {
+    await Clipboard.setData(ClipboardData(text: text));
+    return 'Not pasted: this shell would run each line of it. '
+        'It is on the clipboard instead.';
+  }
+  terminal.paste(text);
+  return null;
+}
+
 /// The image on the clipboard, copied into a file of the app's own, or null
 /// when the clipboard holds none.
 ///

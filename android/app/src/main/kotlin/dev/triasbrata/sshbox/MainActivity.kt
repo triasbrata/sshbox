@@ -22,12 +22,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// Receives files handed to us by another app's share sheet and puts them
-// somewhere Dart can read.
+// Receives what another app's share sheet hands us and puts it somewhere
+// Dart can read.
 //
-// A share arrives as a content:// URI owned by the sending app, which SFTP
+// A file arrives as a content:// URI owned by the sending app, which SFTP
 // cannot open — so it is copied into our own cache first, and only the path
-// crosses the channel.
+// crosses the channel. A link or a snippet arrives as text and crosses as it
+// is, for Dart to paste at the prompt.
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
 
@@ -124,7 +125,7 @@ class MainActivity : FlutterActivity() {
         // Copies from an earlier run were uploaded or abandoned with it; a
         // shared photo or document should not sit in our cache for good.
         File(cacheDir, "shared").deleteRecursively()
-        pending = filesIn(intent)
+        pending = sharesIn(intent)
     }
 
     // A share while we are already running: ShareActivity brings our task
@@ -134,8 +135,8 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val files = filesIn(intent) ?: return
-        channel?.invokeMethod("shared", files)
+        val shares = sharesIn(intent) ?: return
+        channel?.invokeMethod("shared", shares)
     }
 
     // A download, the other way. file_picker's saveFile wants the whole file
@@ -386,14 +387,24 @@ class MainActivity : FlutterActivity() {
         false
     }
 
-    private fun filesIn(intent: Intent?): List<Map<String, String>>? {
+    // Each file as {path, name}, or a text share as {text}.
+    //
+    // A file is the payload whenever there is one: a photo's caption is not
+    // typed after its path, being another app's words on a command line.
+    // With no file, EXTRA_TEXT is the share — a link from Chrome, a snippet
+    // from a notes app — and EXTRA_SUBJECT, the page title Chrome sends beside
+    // a link, is left out: the link is what was asked for. Dart decides how it
+    // is pasted, and nothing of it is ever logged.
+    private fun sharesIn(intent: Intent?): List<Map<String, String>>? {
         val uris: List<Uri> = when (intent?.action) {
             Intent.ACTION_SEND -> listOfNotNull(intent.streamExtra())
             Intent.ACTION_SEND_MULTIPLE -> intent.streamExtras()
             else -> emptyList()
         }
-        // Text-only shares carry no stream: nothing to upload, and nothing to
-        // report either.
+        if (uris.isEmpty() && intent?.action == Intent.ACTION_SEND) {
+            val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            return if (text.isNullOrBlank()) null else listOf(mapOf("text" to text))
+        }
         return uris.mapNotNull(::copyToCache).ifEmpty { null }
     }
 

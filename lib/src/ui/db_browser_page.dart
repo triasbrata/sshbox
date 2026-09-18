@@ -59,8 +59,15 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   /// lets its session go.
   var _attempt = 0;
 
+  /// The whole side list as last read, or null while it is read. The filter
+  /// narrows it here, without asking the database again; only Refresh and
+  /// Reconnect read it anew.
   Map<String, List<String>>? _objects;
   String? _objectsError;
+
+  /// Whether [_objects] stopped at the most keys a Redis list reads, so a
+  /// filter still asks the server for the keys it would otherwise miss.
+  var _capped = false;
 
   DbResult? _result;
   String? _runError;
@@ -105,6 +112,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       // Its rows would be saved through the connection let go of.
       _result = null;
       _changes = null;
+      _capped = false;
     });
     unawaited(old?.close());
     try {
@@ -132,14 +140,22 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   Future<void> _loadObjects() async {
     final session = _session;
     if (session == null) return;
+    final filter = _capped ? _filter.text : '';
     setState(() {
       _objects = null;
       _objectsError = null;
     });
     try {
-      final objects = await session.objects(_filter.text);
+      final objects = await session.objects(filter);
       if (mounted && identical(session, _session)) {
-        setState(() => _objects = objects);
+        setState(() {
+          _objects = objects;
+          if (filter.isEmpty) _capped = session.capped(objects);
+        });
+        // Found too long just now, with a filter already typed.
+        if (filter.isEmpty && _capped && _filter.text.isNotEmpty) {
+          await _loadObjects();
+        }
       }
     } catch (error) {
       if (mounted && identical(session, _session)) {
@@ -363,7 +379,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
 
   Widget _objectsPane(String label) {
     final theme = Theme.of(context);
-    final objects = _objects;
+    final all = _objects;
+    final objects = all == null ? null : filterObjects(all, _filter.text);
     final error = _objectsError;
     // A header row per group that has a name, then its names.
     final entries = <(String, String?)>[
@@ -392,6 +409,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             ),
             autocorrect: false,
             onChanged: (_) {
+              setState(() {});
+              if (!_capped) return;
               _filtering?.cancel();
               _filtering = Timer(
                 const Duration(milliseconds: 400),

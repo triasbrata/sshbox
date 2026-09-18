@@ -183,8 +183,9 @@ class _SshboxAppState extends State<SshboxApp> {
     await session.connect(secrets: _secrets);
   }
 
-  /// Files shared into the app before there was anywhere to put them.
-  final List<SharedFile> _pendingShares = [];
+  /// Files and texts shared into the app before there was anywhere to put
+  /// them: see [LiveSession.queueUploads].
+  final List<Object> _pendingShares = [];
 
   /// "Share with Jeansh" from another app.
   ///
@@ -208,7 +209,9 @@ class _SshboxAppState extends State<SshboxApp> {
     if (payload is! List) return;
     _pendingShares.addAll(
       payload.cast<Map<dynamic, dynamic>>().map(
-        (file) => (path: file['path'] as String, name: file['name'] as String),
+        (share) =>
+            share['text'] as String? ??
+            (path: share['path'] as String, name: share['name'] as String),
       ),
     );
     if (_pendingShares.isEmpty) return;
@@ -224,9 +227,12 @@ class _SshboxAppState extends State<SshboxApp> {
     if (context == null) return;
     // Three seconds rather than a remark's one: it is said as the app comes
     // back from the one the files were shared from.
+    final files = _pendingShares.whereType<SharedFile>().length;
     showToast(
       context,
-      'Open a host to upload ${_pendingShares.length} shared file(s)',
+      files == 0
+          ? 'Open a host to paste the shared text'
+          : 'Open a host to upload $files shared file(s)',
       duration: const Duration(seconds: 3),
     );
   }
