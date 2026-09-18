@@ -28,7 +28,10 @@ class _Shell
   /// Every command started on the host, and the pipes each one was given.
   final commands = <String>[];
   final written = <String>[];
-  final _output = StreamController<Uint8List>.broadcast();
+
+  /// A channel of its own per command, as the host gives one: the chat opens
+  /// a second when it picks a session up, and the first one's is over.
+  final _channels = <StreamController<Uint8List>>[];
 
   @override
   Future<TerminalSession> connect({
@@ -41,19 +44,35 @@ class _Shell
     Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async => this;
 
+  /// What `claude agents --json` answers, when a test sets one.
+  String? listing;
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    final rows = listing;
+    if (rows != null && command.contains('agents --json')) {
+      // One shot: the listing, then the command is over.
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(rows))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    final output = StreamController<Uint8List>();
+    _channels.add(output);
     return (
-      output: _output.stream,
+      output: output.stream,
       write: (Uint8List data) => written.add(utf8.decode(data)),
-      close: () {},
+      close: output.close,
     );
   }
 
-  /// One event from Claude, as the process writes it.
-  void event(Map<String, dynamic> event) =>
-      _output.add(Uint8List.fromList(utf8.encode('${jsonEncode(event)}\n')));
+  /// One event from Claude, as the process writes it, down the channel it is
+  /// talking on now.
+  void event(Map<String, dynamic> event) => _channels.last.add(
+    Uint8List.fromList(utf8.encode('${jsonEncode(event)}\n')),
+  );
 
   @override
   final status = ValueNotifier(SessionStatus.connected);
@@ -175,5 +194,93 @@ void main() {
 
     expect(shell.commands, isEmpty);
     expect(find.text('Connect this session first'), findsOneWidget);
+  });
+
+  testWidgets('the sessions on the host are offered, and one still running '
+      'is picked up as a copy', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'startedAt': DateTime.now()
+              .subtract(const Duration(hours: 2))
+              .millisecondsSinceEpoch,
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'idle',
+          'state': 'done',
+        },
+        {
+          'pid': 1259765,
+          'cwd': '/home/me',
+          'kind': 'interactive',
+          'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+          'name': 'dev-e0',
+          'status': 'idle',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Sessions on this host'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // Both kinds are listed, each saying what it is and where it runs.
+    expect(find.text('the nightly build'), findsOneWidget);
+    expect(find.text('dev-e0'), findsOneWidget);
+    expect(find.textContaining('at a terminal'), findsOneWidget);
+    expect(find.textContaining('2h ago'), findsOneWidget);
+
+    await tester.tap(find.text('the nightly build'));
+    // Settle the frames, then let the event loop run out: picking one up
+    // closes the sheet, ends the process that was running and starts
+    // another, and those hops are futures rather than frames — settling
+    // alone returns while they are still in flight.
+    await tester.pumpAndSettle();
+    // The hops that follow are futures, not frames: the sheet's result, the
+    // process being stopped and the next one started. runAsync lets the real
+    // event loop run them out before this asks what the host was told.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump();
+
+    // Its process is alive, so it is branched off rather than resumed, and
+    // the tab says so rather than leaving the user to guess.
+    expect(shell.commands.last, contains('--fork-session'));
+    expect(
+      shell.commands.last,
+      contains('81badf4a-7e9f-4f01-b098-6968dbe5f070'),
+    );
+    expect(find.textContaining('keeps running'), findsOneWidget);
+  });
+
+  testWidgets('a host that cannot list its sessions says what it said',
+      (tester) async {
+    final shell = _Shell()..listing = "error: unknown command 'agents'";
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Sessions on this host'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.textContaining("unknown command 'agents'"), findsOneWidget);
   });
 }
