@@ -16,6 +16,7 @@ import '../models/host_profile.dart';
 import '../models/os_info.dart';
 import '../notifications/direct_notify.dart';
 import '../notifications/notify_key.dart';
+import '../git/git_repo.dart';
 import 'isolate_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
@@ -28,20 +29,18 @@ typedef SharedFile = ({String path, String name});
 /// Makes the transport one connect goes through, handed that attempt's host
 /// key question and sign-in banner hook: SSH's own, unless a test brings a
 /// stand-in.
-typedef TransportMaker =
-    SessionTransport Function(
-      Future<bool> Function(HostKeyCheck check)? confirmHostKey,
-      void Function(String banner) onAuthBanner,
-    );
+typedef TransportMaker = SessionTransport Function(
+  Future<bool> Function(HostKeyCheck check)? confirmHostKey,
+  void Function(String banner) onAuthBanner,
+);
 
 /// Posts a notification that opens [hostId] when tapped, as a push does:
 /// `NotificationGateway.showForHost`.
-typedef ShowNotification =
-    Future<void> Function({
-      required String hostId,
-      required String title,
-      required String body,
-    });
+typedef ShowNotification = Future<void> Function({
+  required String hostId,
+  required String title,
+  required String body,
+});
 
 /// What a session's terminal is running on the host, as
 /// [LiveSession.foreground] reads it: whether the shell itself has the
@@ -266,13 +265,13 @@ class LiveSession extends ChangeNotifier {
     _authUrl = extractAuthUrl(banner);
     _notify();
   }
+
   String? get remoteTitle => _remoteTitle;
   String get title => _remoteTitle ?? host.displayName;
 
   /// True only while a shell is actually attached — what the host list uses to
   /// decide between "resume" and "connect".
-  bool get isConnected =>
-      _session?.status.value == SessionStatus.connected;
+  bool get isConnected => _session?.status.value == SessionStatus.connected;
 
   /// True once the shell has gone — closed by the far end, dropped, never
   /// reached, or given up on — as opposed to not having been asked for yet.
@@ -340,6 +339,48 @@ class LiveSession extends ChangeNotifier {
     _chatOpen = false;
     _chat?.dispose();
     _chat = null;
+    _notify();
+  }
+
+  bool _gitOpen = false;
+
+  /// Whether this session has a git tab beside its shell. At most one, as the
+  /// chat is: it is this host's repositories, and the picker inside it is how
+  /// you move between them.
+  bool get gitOpen => _gitOpen;
+
+  /// Whether git can be run beside the shell at all. A transport that carries
+  /// only a terminal cannot, and the key bar's button is dead there.
+  bool get canGit => _session is CommandCapable;
+
+  GitRepos? _repos;
+
+  /// The repositories the git tab shows, found the first time it is asked for
+  /// and kept until the tab closes. Rooted at the host's file tree root when
+  /// it has one, so a host that opens in `~/projects` looks for repositories
+  /// there rather than across the whole home.
+  GitRepos get repos => _repos ??= GitRepos(
+    run: (command) {
+      final session = _session;
+      if (session is! CommandCapable || !isConnected) {
+        throw const SshSessionException('Not connected.');
+      }
+      return (session as CommandCapable).run(command);
+    },
+    start: host.fileRoot.trim().isEmpty ? r'$HOME' : host.fileRoot.trim(),
+  );
+
+  void openGit() {
+    if (_gitOpen) return;
+    _gitOpen = true;
+    _notify();
+  }
+
+  void closeGit() {
+    if (!_gitOpen) return;
+    _gitOpen = false;
+    _repos?.dispose();
+    _repos = null;
     _notify();
   }
 
@@ -922,7 +963,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
 
 /// What a tab shows: the shell on a host, a file opened over that shell, or
 /// a web page a link in it opened.
-enum TabKind { terminal, chat, file, web }
+enum TabKind { terminal, chat, git, file, web }
 
 /// A web page in a tab beside the shell whose link opened it.
 class WebTab {
@@ -1160,9 +1201,7 @@ class SessionManager extends ChangeNotifier {
     final session = _sessions[id];
     if (session == null) return;
     session.closeFile(path);
-    if (_activeId == id &&
-        _activeKind == TabKind.file &&
-        _activePath == path) {
+    if (_activeId == id && _activeKind == TabKind.file && _activePath == path) {
       select(id);
     }
   }
@@ -1183,6 +1222,24 @@ class SessionManager extends ChangeNotifier {
     if (session == null) return;
     session.closeChat();
     if (_activeId == id && _activeKind == TabKind.chat) select(id);
+  }
+
+  /// Opens this session's git panel in a tab beside its shell, and shows it.
+  /// Asking again goes back to the tab already there.
+  void openGit(int id) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.openGit();
+    select(id, kind: TabKind.git);
+  }
+
+  /// Closing the git tab lands on the shell it sits beside, and lets go of
+  /// the repositories it found.
+  void closeGit(int id) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.closeGit();
+    if (_activeId == id && _activeKind == TabKind.git) select(id);
   }
 
   /// Opens a link as a web page in a tab beside the session's shell, and
@@ -1235,8 +1292,9 @@ class SessionManager extends ChangeNotifier {
     late final LiveSession created;
     created = LiveSession(
       host: host,
-      forwardedElsewhere: (port) => sessionsFor(created.host.id)
-          .any((s) => s != created && s.forwarder.isForwarding(port)),
+      forwardedElsewhere: (port) =>
+          sessionsFor(created.host.id)
+              .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
       notifyKeys: notifyKeys,
       onNotify: onNotify,
@@ -1355,6 +1413,9 @@ class SessionManager extends ChangeNotifier {
             // it: the conversation lives in the Claude the host ran, and that
             // went when the app did.
             if (session._chatOpen) 'chat': true,
+            // The same for the git tab: which repositories there are, and
+            // which was picked, are found again on the host it asks.
+            if (session._gitOpen) 'git': true,
             'files': [...session._restoredFiles, ...session._openFiles],
             'web': [
               for (final web in session._webTabs)
@@ -1400,12 +1461,14 @@ class SessionManager extends ChangeNotifier {
   }) async {
     final prefs = await SharedPreferences.getInstance();
     try {
-      final saved =
-          jsonDecode(prefs.getString(_savedKey) ?? '{}')
-              as Map<String, dynamic>;
+      final saved = jsonDecode(
+        prefs.getString(_savedKey) ?? '{}',
+      ) as Map<String, dynamic>;
       for (final tab in saved['sessions'] as List? ?? const []) {
         if (tab is! Map<String, dynamic>) continue;
-        final host = hosts.where((host) => host.id == tab['hostId']).firstOrNull;
+        final host = hosts
+            .where((host) => host.id == tab['hostId'])
+            .firstOrNull;
         if (host == null) continue;
         final tmux = tab['tmux'];
         final session = create(
@@ -1417,10 +1480,12 @@ class SessionManager extends ChangeNotifier {
           restored: true,
         );
         session._chatOpen = tab['chat'] == true;
+        session._gitOpen = tab['git'] == true;
         session._restoredFiles.addAll(
           (tab['files'] as List? ?? const []).whereType<String>(),
         );
-        for (final url in (tab['web'] as List? ?? const []).whereType<String>()) {
+        for (final url
+            in (tab['web'] as List? ?? const []).whereType<String>()) {
           final uri = Uri.tryParse(url);
           if (uri != null && _savedUrl(uri) != null) session.openWeb(uri);
         }

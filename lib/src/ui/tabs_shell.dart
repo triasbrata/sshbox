@@ -15,6 +15,7 @@ import 'connect_sheet.dart';
 import 'db_browser_page.dart';
 import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
+import 'git_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
 import 'toast.dart';
@@ -150,6 +151,8 @@ class _TabsShellState extends State<TabsShell> {
       (session: session, kind: TabKind.terminal, path: null, web: null),
       if (session.chatOpen)
         (session: session, kind: TabKind.chat, path: null, web: null),
+      if (session.gitOpen)
+        (session: session, kind: TabKind.git, path: null, web: null),
       for (final path in session.openFiles)
         (session: session, kind: TabKind.file, path: path, web: null),
       for (final web in session.webTabs)
@@ -193,6 +196,7 @@ class _TabsShellState extends State<TabsShell> {
           widget.sessions.openFile(tab.session.id, path, line: line),
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       onOpenChat: () => widget.sessions.openChat(tab.session.id),
+      onOpenGit: () => widget.sessions.openGit(tab.session.id),
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
@@ -217,6 +221,13 @@ class _TabsShellState extends State<TabsShell> {
     // on the host the first time it shows, not as the app starts.
     TabKind.chat when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
     TabKind.chat => ChatPage(
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
+      session: tab.session,
+    ),
+    // Like the chat: a git tab brought back from an earlier run asks the host
+    // what it has the first time it shows, not as the app starts.
+    TabKind.git when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
+    TabKind.git => GitPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       session: tab.session,
     ),
@@ -325,6 +336,7 @@ class _TabsShellState extends State<TabsShell> {
               onClose: (tab) => switch (tab.kind) {
                 TabKind.terminal => widget.sessions.close(tab.session.id),
                 TabKind.chat => widget.sessions.closeChat(tab.session.id),
+                TabKind.git => widget.sessions.closeGit(tab.session.id),
                 TabKind.file => widget.sessions.closeFile(
                   tab.session.id,
                   tab.path!,
@@ -548,6 +560,7 @@ class _TabStripState extends State<TabStrip> {
           key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
           icon: switch (tab.kind) {
             TabKind.chat => Icons.forum_outlined,
+            TabKind.git => Icons.account_tree_outlined,
             TabKind.file => Icons.description_outlined,
             TabKind.web => Icons.public,
             // tmux, said quietly: the same chip, split.
@@ -557,6 +570,7 @@ class _TabStripState extends State<TabStrip> {
           },
           label: switch (tab.kind) {
             TabKind.chat => 'Claude',
+            TabKind.git => 'Git',
             TabKind.file => tab.session.fileTabTitle(tab.path!),
             TabKind.web => tab.web!.title,
             TabKind.terminal => tab.session.title,

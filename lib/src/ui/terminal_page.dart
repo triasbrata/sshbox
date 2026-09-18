@@ -40,6 +40,7 @@ class TerminalPage extends StatefulWidget {
     required this.onOpenFile,
     required this.onOpenWeb,
     required this.onOpenChat,
+    required this.onOpenGit,
     required this.onSaveFileRoot,
   });
 
@@ -56,6 +57,9 @@ class TerminalPage extends StatefulWidget {
 
   /// Opens this session's chat with Claude in a tab beside this one.
   final VoidCallback onOpenChat;
+
+  /// Opens this session's git panel in a tab beside this one.
+  final VoidCallback onOpenGit;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -593,6 +597,13 @@ class _TerminalPageState extends State<TerminalPage> {
                         ? widget.onOpenChat
                         : null,
                     icon: const Icon(Icons.forum_outlined),
+                  ),
+                  IconButton(
+                    tooltip: 'Git',
+                    onPressed: (_session.isConnected && _session.canGit)
+                        ? widget.onOpenGit
+                        : null,
+                    icon: const Icon(Icons.account_tree_outlined),
                   ),
                   IconButton(
                     tooltip: 'Browse files',

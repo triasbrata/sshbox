@@ -90,6 +90,7 @@ Future<LiveSession> _connected(WidgetTester tester) async {
         onOpenFile: (_, {line}) {},
         onOpenWeb: (_) {},
         onOpenChat: () {},
+        onOpenGit: () {},
         onSaveFileRoot: (_) async {},
       ),
     ),

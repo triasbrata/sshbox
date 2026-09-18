@@ -160,11 +160,11 @@ final _android = TargetPlatformVariant.only(TargetPlatform.android);
 
 /// The toast saying [message], if it is one of [type]'s.
 Finder _toast(String message, ToastificationType type) => find.ancestor(
-      of: find.text(message),
-      matching: find.byWidgetPredicate(
-        (widget) => widget is ToastCard && widget.type == type,
-      ),
-    );
+  of: find.text(message),
+  matching: find.byWidgetPredicate(
+    (widget) => widget is ToastCard && widget.type == type,
+  ),
+);
 
 void main() {
   testWidgets('no header: its buttons ride in the key bar, and no menu', (
@@ -189,6 +189,7 @@ void main() {
           onOpenFile: (_, {line}) {},
           onOpenWeb: (_) {},
           onOpenChat: () {},
+          onOpenGit: () {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -236,6 +237,7 @@ void main() {
           onOpenFile: (_, {line}) {},
           onOpenWeb: (_) {},
           onOpenChat: () {},
+          onOpenGit: () {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -287,6 +289,7 @@ void main() {
           onOpenFile: (_, {line}) {},
           onOpenWeb: (_) {},
           onOpenChat: () {},
+          onOpenGit: () {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -350,12 +353,10 @@ void main() {
       );
       addTearDown(manager.closeAll);
 
-      final tried = await open(
-        tester,
-        'https://dart.dev',
-        {inApp, browser},
-        inTab: (url) => manager.openWeb(shell.id, url),
-      );
+      final tried = await open(tester, 'https://dart.dev', {
+        inApp,
+        browser,
+      }, inTab: (url) => manager.openWeb(shell.id, url));
 
       expect(tried, isEmpty);
       expect(shell.webTabs.single.url, Uri.parse('https://dart.dev'));
@@ -464,6 +465,7 @@ void main() {
             onOpenFile: (path, {line}) => opened.add(path),
             onOpenWeb: openedWeb.add,
             onOpenChat: () {},
+            onOpenGit: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -481,7 +483,8 @@ void main() {
       final render = tester
           .state<TerminalViewState>(find.byType(TerminalView))
           .renderTerminal;
-      final cell = render.getOffset(CellOffset(column, 0)) +
+      final cell =
+          render.getOffset(CellOffset(column, 0)) +
           render.cellSize.center(Offset.zero);
       await tester.tapAt(render.localToGlobal(cell));
       // A lone tap lands once the double-tap window has run out.
@@ -490,23 +493,24 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     }
 
-    testWidgets('underlines the links, opens a URL in a tab, and uses CTRL up', (
-      tester,
-    ) async {
-      await pumpPage(tester);
-      await tester.tap(find.text('CTRL'));
-      await tester.pump();
-      // The URL, dev/ and missing/x. A bare name is not underlined until the
-      // host says it exists.
-      expect(links(tester).underlines, hasLength(3));
+    testWidgets(
+      'underlines the links, opens a URL in a tab, and uses CTRL up',
+      (tester) async {
+        await pumpPage(tester);
+        await tester.tap(find.text('CTRL'));
+        await tester.pump();
+        // The URL, dev/ and missing/x. A bare name is not underlined until the
+        // host says it exists.
+        expect(links(tester).underlines, hasLength(3));
 
-      await tapColumn(tester, 3);
+        await tapColumn(tester, 3);
 
-      expect(openedWeb, [Uri.parse('https://dart.dev')]);
-      expect(launcher.tried, isEmpty);
-      expect(shell.sent, isEmpty);
-      expect(links(tester).underlines, isEmpty);
-    });
+        expect(openedWeb, [Uri.parse('https://dart.dev')]);
+        expect(launcher.tried, isEmpty);
+        expect(shell.sent, isEmpty);
+        expect(links(tester).underlines, isEmpty);
+      },
+    );
 
     testWidgets('a folder opens the drawer there', (tester) async {
       await pumpPage(tester);
@@ -664,6 +668,7 @@ void main() {
             onOpenFile: (_, {line}) {},
             onOpenWeb: (_) {},
             onOpenChat: () {},
+            onOpenGit: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -756,9 +761,9 @@ void main() {
         ..answer = (command) => command.startsWith('tailscale serve')
             ? serving.stream
             : command.contains('/proc/net/tcp')
-                // The uid, a sweep with nothing up, then one with vite in it.
-                ? Stream.fromIterable(['1000', '', '0100007F:0BB8 1000', ''])
-                : null;
+            // The uid, a sweep with nothing up, then one with vite in it.
+            ? Stream.fromIterable(['1000', '', '0100007F:0BB8 1000', ''])
+            : null;
       final session = LiveSession(
         host: const HostProfile(
           id: 'host-1',
@@ -779,6 +784,7 @@ void main() {
             onOpenFile: (_, {line}) {},
             onOpenWeb: openedWeb.add,
             onOpenChat: () {},
+            onOpenGit: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -837,8 +843,8 @@ void main() {
         ..answer = (command) => command.startsWith('tailscale serve')
             ? serving.stream
             : command.contains('/proc/net/tcp')
-                ? watch.stream
-                : null;
+            ? watch.stream
+            : null;
       manager = SessionManager();
       addTearDown(manager.closeAll);
       manager.open(
@@ -1081,6 +1087,7 @@ void main() {
             onOpenFile: (_, {line}) {},
             onOpenWeb: (_) {},
             onOpenChat: () {},
+            onOpenGit: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -1202,7 +1209,8 @@ void main() {
       await pumpPage(tester);
       refusal = PlatformException(
         code: 'unreadable',
-        message: 'com.android.chrome.FileProvider would not hand over the '
+        message:
+            'com.android.chrome.FileProvider would not hand over the '
             'picture on the clipboard. Try copying it again, or share it into '
             'Jeansh.',
       );
@@ -1213,7 +1221,7 @@ void main() {
       expect(
         _toast(
           'com.android.chrome.FileProvider would not hand over the picture on '
-              'the clipboard. Try copying it again, or share it into Jeansh.',
+          'the clipboard. Try copying it again, or share it into Jeansh.',
           ToastificationType.warning,
         ),
         findsOneWidget,
@@ -1227,7 +1235,8 @@ void main() {
       await pumpPage(tester);
       refusal = PlatformException(
         code: 'too_big',
-        message: 'That image is bigger than 20 MB — send it from the files '
+        message:
+            'That image is bigger than 20 MB — send it from the files '
             'drawer instead.',
       );
 
@@ -1237,7 +1246,7 @@ void main() {
       expect(
         _toast(
           'That image is bigger than 20 MB — send it from the files drawer '
-              'instead.',
+          'instead.',
           ToastificationType.warning,
         ),
         findsOneWidget,

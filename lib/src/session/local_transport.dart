@@ -30,9 +30,10 @@ const localHostId = 'local';
 ///
 /// It is a [SessionTransport] like the SSH one, so every tab, terminal and
 /// keystroke path above it is unchanged. What it does not implement is as
-/// important as what it does: no [FileBrowseCapable], [CommandCapable] or
-/// [ForwardCapable], so the files drawer, the tailnet forwarding, the OS badge
-/// and tmux mode switch themselves off for it rather than failing at a use.
+/// important as what it does: no [FileBrowseCapable] or [ForwardCapable], so
+/// the files drawer and the tailnet forwarding switch themselves off for it
+/// rather than failing at a use. [CommandCapable] it does have, which is what
+/// the git tab runs through.
 class LocalTransport implements SessionTransport {
   LocalTransport({this.shell, this.startPty = Pty.start});
 
@@ -92,7 +93,7 @@ class LocalTransport implements SessionTransport {
   }
 }
 
-class _LocalSession implements TerminalSession {
+class _LocalSession implements TerminalSession, CommandCapable {
   _LocalSession(this._pty) {
     // Chunked rather than a decode per event: a character the shell writes in
     // two reads arrives split across them, and this holds the first half until
@@ -142,6 +143,28 @@ class _LocalSession implements TerminalSession {
     if (_disposed) return;
     // The pty takes rows first, the terminal gives columns first.
     _pty.resize(rows, columns);
+  }
+
+  /// A command beside the shell, as the SSH transport runs one — a process of
+  /// its own rather than anything typed into the pty, so what the git tab asks
+  /// for never lands in the user's command line.
+  ///
+  /// `sh -c` because the callers write shell: pipes, redirections and `$HOME`
+  /// are theirs to use. [pty] is ignored: a local process needs no terminal to
+  /// be hung up, it is killed outright when the stream is cancelled.
+  @override
+  Stream<String> run(String command, {bool pty = false}) async* {
+    if (_disposed) {
+      throw const SshSessionException('This shell has ended.');
+    }
+    final process = await Process.start('/bin/sh', ['-c', command]);
+    try {
+      yield* process.stdout
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .transform(const LineSplitter());
+    } finally {
+      process.kill();
+    }
   }
 
   @override
