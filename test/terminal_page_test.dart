@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -26,6 +27,7 @@ import 'package:url_launcher_platform_interface/url_launcher_platform_interface.
 import 'package:xterm2/xterm.dart';
 
 import 'fake_file_browser.dart';
+import 'fake_file_picker.dart';
 
 /// The phone's url_launcher, able to open links only the [ways] it is given,
 /// and failing the rest the way Android does: by throwing.
@@ -1140,6 +1142,30 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: _android);
 
+    testWidgets('the upload button takes several files, and types every '
+        'path in the order they were picked', (tester) async {
+      useFakePicker().next = [
+        for (final name in ['shot.png', 'build.log', 'notes.txt'])
+          _Picked(File('${temp.path}/$name')..writeAsBytesSync([1])),
+      ];
+      await pumpPage(tester);
+
+      await tester.tap(find.byTooltip('Upload a file to /tmp'));
+      await tester.pumpAndSettle();
+
+      expect(shell.uploaded.map((file) => file.name), [
+        'shot.png',
+        'build.log',
+        'notes.txt',
+      ]);
+      // One line, in the order picked, each ready to be followed by the next.
+      expect(shell.sent.where((text) => text.startsWith('/tmp/')), [
+        '/tmp/shot.png ',
+        '/tmp/build.log ',
+        '/tmp/notes.txt ',
+      ]);
+    }, variant: _android);
+
     testWidgets('with no image on it, the clipboard is text as before', (
       tester,
     ) async {
@@ -1245,4 +1271,34 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: _android);
   });
+}
+
+/// A file picked on the phone, standing on a real file so the upload can read
+/// it.
+final class _Picked extends PlatformFile {
+  _Picked(this.file);
+
+  final File file;
+
+  @override
+  String get name => file.uri.pathSegments.last;
+
+  @override
+  Uri get uri => file.uri;
+
+  @override
+  get xFile => throw UnimplementedError();
+
+  @override
+  int? lengthSync() => file.lengthSync();
+
+  @override
+  Future<int> length() => file.length();
+
+  @override
+  Future<Uint8List> readAsBytes() => file.readAsBytes();
+
+  @override
+  Stream<Uint8List> readAsByteStream() =>
+      file.openRead().map(Uint8List.fromList);
 }

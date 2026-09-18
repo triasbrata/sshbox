@@ -486,15 +486,18 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
-  /// Pick a file, send it to `/tmp` on the host, then type the remote path at
-  /// the prompt — so the next thing you write is a command that uses it.
+  /// Pick files, send each to `/tmp` on the host, then type each remote path
+  /// at the prompt — so the next thing you write is a command that uses them.
+  /// One at a time and in the order picked, as a share of several is, so the
+  /// paths land on one line in that order.
   Future<void> _attachFile() async {
-    final file = await FilePicker.pickFile();
-    final localPath = file?.path;
-    // Something picked from a cloud provider has no filesystem path, and so
-    // nothing for SFTP to read.
-    if (file == null || localPath == null) return;
-    await _upload((path: localPath, name: file.name));
+    for (final file in await FilePicker.pickFiles()) {
+      final localPath = file.path;
+      // Something picked from a cloud provider has no filesystem path, and so
+      // nothing for SFTP to read.
+      if (localPath == null) continue;
+      await _upload((path: localPath, name: file.name));
+    }
   }
 
   /// The one upload path: the paperclip and the share sheet both end here, so
