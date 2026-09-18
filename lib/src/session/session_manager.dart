@@ -815,24 +815,25 @@ f=/proc/$6
 d=$(readlink "$f/cwd" || readlink "$p/cwd")
 printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/null)" "$d"''';
 
-  /// Files handed to this session from outside the terminal page, waiting for
-  /// the page to be on screen and the shell to be up.
+  /// Shares handed to this session from outside the terminal page, waiting for
+  /// the page to be on screen and the shell to be up: each a [SharedFile] to
+  /// upload, or a [String] to paste at the prompt.
   ///
-  /// A share can arrive while the app is dead, so the file has to wait
-  /// somewhere that outlives the widget — same reason the terminal does.
-  final List<SharedFile> _pendingUploads = [];
+  /// A share can arrive while the app is dead, so it has to wait somewhere
+  /// that outlives the widget — same reason the terminal does.
+  final List<Object> _pendingUploads = [];
 
   bool get hasPendingUploads => _pendingUploads.isNotEmpty;
 
-  void queueUploads(Iterable<SharedFile> files) {
-    if (files.isEmpty) return;
-    _pendingUploads.addAll(files);
+  void queueUploads(Iterable<Object> shares) {
+    if (shares.isEmpty) return;
+    _pendingUploads.addAll(shares);
     _notify();
   }
 
   /// Hands the queue over and empties it, so a redraw cannot upload twice.
-  List<SharedFile> takePendingUploads() {
-    final taken = List<SharedFile>.of(_pendingUploads);
+  List<Object> takePendingUploads() {
+    final taken = List<Object>.of(_pendingUploads);
     _pendingUploads.clear();
     return taken;
   }

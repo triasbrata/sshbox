@@ -211,7 +211,8 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
-  /// Uploads anything handed to the session from outside the terminal page.
+  /// Uploads a file handed to the session from outside the terminal page, and
+  /// pastes a text, in the order they came.
   Future<void> _drainShared() async {
     if (_sending != null ||
         !_session.isConnected ||
@@ -222,8 +223,16 @@ class _TerminalPageState extends State<TerminalPage> {
     // actually on screen takes the queue, so the progress bar is visible and
     // no file is uploaded twice.
     if (ModalRoute.of(context)?.isCurrent != true) return;
-    for (final file in _session.takePendingUploads()) {
-      await _upload(file);
+    for (final share in _session.takePendingUploads()) {
+      switch (share) {
+        case SharedFile file:
+          await _upload(file);
+        case String text:
+          final refused = await pasteShared(_session.terminal, text);
+          if (refused != null && mounted) {
+            showToast(context, refused, type: ToastificationType.warning);
+          }
+      }
     }
   }
 
