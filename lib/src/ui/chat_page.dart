@@ -93,6 +93,20 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  /// Shows what `claude agents` sees on the host, and picks one up.
+  Future<void> _pickSession() async {
+    final agent = await showModalBottomSheet<ClaudeAgent>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => _SessionSheet(chat: _chat),
+    );
+    if (agent == null || !mounted) return;
+    await _chat.continueFrom(agent);
+    _drawn = -1;
+    _followTranscript();
+  }
+
   void _send() {
     final text = _input.text;
     if (text.trim().isEmpty) return;
@@ -113,7 +127,7 @@ class _ChatPageState extends State<ChatPage> {
       children: [
         Expanded(
           child: entries.isEmpty
-              ? _Empty(session: widget.session)
+              ? _Empty(session: widget.session, onPickSession: _pickSession)
               : ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
@@ -166,11 +180,18 @@ class _ChatPageState extends State<ChatPage> {
               onSelected: (choice) {
                 if (choice is ChatPermission) {
                   unawaited(chat.restart(permission: choice));
+                } else if (choice == 'sessions') {
+                  unawaited(_pickSession());
                 } else {
                   unawaited(chat.restart());
                 }
               },
               itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'sessions',
+                  child: Text('Sessions on this host…'),
+                ),
+                const PopupMenuDivider(),
                 for (final mode in ChatPermission.values)
                   CheckedPopupMenuItem(
                     value: mode,
@@ -221,9 +242,10 @@ class _ChatPageState extends State<ChatPage> {
 
 /// What the tab says before anything has been asked.
 class _Empty extends StatelessWidget {
-  const _Empty({required this.session});
+  const _Empty({required this.session, required this.onPickSession});
 
   final LiveSession session;
+  final VoidCallback onPickSession;
 
   @override
   Widget build(BuildContext context) {
@@ -254,6 +276,14 @@ class _Empty extends StatelessWidget {
                   : 'It runs on the host, in $root, and sees the files there.',
               style: theme.textTheme.bodySmall,
               textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            // Where a new chat tab lands, so the sessions already running on
+            // the host are offered before anything has been typed.
+            FilledButton.tonalIcon(
+              onPressed: onPickSession,
+              icon: const Icon(Icons.dashboard_customize_outlined),
+              label: const Text('Sessions on this host'),
             ),
           ],
         ),
@@ -461,6 +491,162 @@ class _Notice extends StatelessWidget {
               : theme.colorScheme.onSurfaceVariant,
         ),
       ),
+    );
+  }
+}
+
+
+/// The sessions `claude agents` can see on the host, to pick one up in this
+/// chat.
+///
+/// Every row is data from the host — a name is whatever the person who
+/// started it typed — so it is drawn and never run.
+class _SessionSheet extends StatefulWidget {
+  const _SessionSheet({required this.chat});
+
+  final ClaudeChat chat;
+
+  @override
+  State<_SessionSheet> createState() => _SessionSheetState();
+}
+
+class _SessionSheetState extends State<_SessionSheet> {
+  late Future<List<ClaudeAgent>> _agents = widget.chat.agents();
+
+  void _again() => setState(() => _agents = widget.chat.agents());
+
+  /// How long ago, in as few characters as a row can spare.
+  static String _ago(DateTime? at) {
+    if (at == null) return '';
+    final since = DateTime.now().difference(at);
+    if (since.inMinutes < 1) return 'just now';
+    if (since.inHours < 1) return '${since.inMinutes}m ago';
+    if (since.inDays < 1) return '${since.inHours}h ago';
+    return '${since.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Sessions on this host',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Refresh',
+                    onPressed: _again,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'One still running is picked up as a copy, so it carries on '
+                'untouched and nothing said here reaches it.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+            Flexible(
+              child: FutureBuilder<List<ClaudeAgent>>(
+                future: _agents,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final error = snapshot.error;
+                  if (error != null) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                      // What the host said, as it said it: an old Claude with
+                      // no agents command, or none installed at all.
+                      child: SelectableText(
+                        '$error',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    );
+                  }
+                  final agents = snapshot.data ?? const <ClaudeAgent>[];
+                  if (agents.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                      child: Text(
+                        'No Claude sessions are running on this host.',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    );
+                  }
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: agents.length,
+                    itemBuilder: (context, index) =>
+                        _row(context, agents[index]),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, ClaudeAgent agent) {
+    final theme = Theme.of(context);
+    final where = [
+      if (agent.interactive)
+        'at a terminal'
+      else if (agent.busy)
+        'working'
+      else if (agent.live)
+        'idle'
+      else
+        'finished',
+      if (_ago(agent.startedAt).isNotEmpty) _ago(agent.startedAt),
+      if (agent.cwd.isNotEmpty) agent.cwd,
+    ].join(' · ');
+    return ListTile(
+      leading: agent.busy
+          ? const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(
+              // Somebody is typing into an interactive one; a background one
+              // is a job that was sent off.
+              agent.interactive ? Icons.keyboard_outlined : Icons.forum_outlined,
+              color: theme.colorScheme.primary,
+            ),
+      title: Text(agent.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        where,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodySmall,
+      ),
+      onTap: () => Navigator.pop(context, agent),
     );
   }
 }

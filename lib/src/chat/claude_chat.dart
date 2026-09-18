@@ -100,6 +100,84 @@ enum ChatPermission {
   final String label;
 }
 
+/// One session `claude agents` knows about on the host: a background one
+/// started with `--bg`, or an interactive one somebody is typing into.
+///
+/// Every field here is data from the host, and the name is free text the user
+/// typed when they started it — so it is drawn, never run, and the only piece
+/// that ever reaches a command is [sessionId], quoted like any other value.
+///
+/// The shape is what the CLI actually prints, which is not the same for every
+/// row: an interactive session has no `id` and no `state`, and a session whose
+/// process has gone has no `pid` and no `status`. So everything but the
+/// session id is optional here, and [live] reads the one field that says
+/// whether the process is still there.
+class ClaudeAgent {
+  const ClaudeAgent({
+    required this.sessionId,
+    required this.name,
+    required this.cwd,
+    required this.kind,
+    this.id,
+    this.status,
+    this.pid,
+    this.startedAt,
+  });
+
+  /// The transcript, and the only thing `--resume` takes.
+  final String sessionId;
+
+  /// The short id `claude attach` and `claude stop` take. Background only:
+  /// an interactive session has none, which is why none can be attached.
+  final String? id;
+
+  final String name;
+  final String cwd;
+
+  /// `background`, `interactive`, or whatever a later CLI adds.
+  final String kind;
+
+  /// `idle` or `busy` while the process is there; absent once it has gone.
+  final String? status;
+
+  final int? pid;
+  final DateTime? startedAt;
+
+  /// Whether the process is still running. Measured against the CLI: a live
+  /// session is the one that refuses `-p --resume`, and a finished one is the
+  /// one that takes it.
+  bool get live => pid != null;
+
+  bool get busy => status == 'busy';
+
+  /// Whether somebody is typing into this one at a terminal.
+  bool get interactive => kind == 'interactive';
+
+  /// One row of `claude agents --json`, or null when it carries no session to
+  /// resume — a row from a newer CLI that means nothing here is left out
+  /// rather than drawn half empty.
+  static ClaudeAgent? fromJson(Object? row) {
+    if (row is! Map<String, dynamic>) return null;
+    final sessionId = row['sessionId'];
+    if (sessionId is! String || sessionId.isEmpty) return null;
+    final started = row['startedAt'];
+    return ClaudeAgent(
+      sessionId: sessionId,
+      id: row['id'] is String ? row['id'] as String : null,
+      name: row['name'] is String && (row['name'] as String).trim().isNotEmpty
+          ? (row['name'] as String).trim()
+          : sessionId,
+      cwd: row['cwd'] is String ? row['cwd'] as String : '',
+      kind: row['kind'] is String ? row['kind'] as String : 'background',
+      status: row['status'] is String ? row['status'] as String : null,
+      pid: row['pid'] is int ? row['pid'] as int : null,
+      startedAt: started is int && started > 0
+          ? DateTime.fromMillisecondsSinceEpoch(started)
+          : null,
+    );
+  }
+}
+
 /// A conversation with Claude Code running on the host, driven over one
 /// command channel on the session's own SSH connection.
 ///
@@ -141,6 +219,12 @@ class ClaudeChat extends ChangeNotifier {
 
   String? get sessionId => _sessionId;
 
+  /// Whether the next start branches off the session it resumes instead of
+  /// continuing it. Set by [continueFrom] and cleared as soon as it has been
+  /// used: the fork reports an id of its own, and from then on this chat
+  /// continues that, not the session it came from.
+  bool _fork = false;
+
   bool _starting = false;
   bool _ready = false;
   bool _busy = false;
@@ -169,9 +253,15 @@ class ClaudeChat extends ChangeNotifier {
     notifyListeners();
     try {
       final channel = await open(
-        command(cwd: cwd, permission: _permission, resume: _sessionId),
+        command(
+          cwd: cwd,
+          permission: _permission,
+          resume: _sessionId,
+          fork: _fork,
+        ),
       );
       _channel = channel;
+      _fork = false;
       _ready = true;
       _lines = utf8.decoder
           .bind(channel.output)
@@ -216,6 +306,89 @@ class ClaudeChat extends ChangeNotifier {
     await _stop();
     _busy = false;
     _ended = false;
+    await start();
+  }
+
+  /// What `claude agents` can see on the host: the sessions running there,
+  /// background and interactive alike.
+  ///
+  /// Only the ones still running, which is what the CLI lists without
+  /// `--all` and what was asked for. A finished session is still resumable,
+  /// and could be offered later; nothing here would have to change but the
+  /// flag, since [continueFrom] already picks its way by [ClaudeAgent.live].
+  ///
+  /// Throws with what the host said when it could not list them — an old
+  /// Claude Code with no `agents` command, or none installed at all.
+  Future<List<ClaudeAgent>> agents() async {
+    final channel = await open(agentsCommand());
+    final String text;
+    try {
+      text = await utf8.decoder.bind(channel.output).join();
+    } finally {
+      channel.close();
+    }
+    final rows = _arrayIn(text);
+    if (rows == null) {
+      throw SshSessionException(
+        text.trim().isEmpty
+            ? 'The host said nothing about its Claude sessions.'
+            : text.trim(),
+      );
+    }
+    return [
+      for (final row in rows) ?ClaudeAgent.fromJson(row),
+    ];
+  }
+
+  /// The JSON array in [text], or null when there is none.
+  ///
+  /// stderr is folded into stdout, so a warning from the host, or a line a
+  /// profile printed, can sit beside the array; the array is taken from the
+  /// first `[` to the last `]` when the whole text will not parse.
+  static List<Object?>? _arrayIn(String text) {
+    for (final candidate in [
+      text.trim(),
+      if (text.contains('[') && text.lastIndexOf(']') > text.indexOf('['))
+        text.substring(text.indexOf('['), text.lastIndexOf(']') + 1),
+    ]) {
+      try {
+        final parsed = jsonDecode(candidate);
+        if (parsed is List) return parsed;
+      } catch (_) {
+        // Not this one; try the array inside it.
+      }
+    }
+    return null;
+  }
+
+  /// Picks up [agent] in this chat.
+  ///
+  /// A session whose process is still running is branched off rather than
+  /// continued, because the CLI refuses to resume one that is live — it says
+  /// so and stops, whether that session is busy or sitting idle — and because
+  /// the person or the job that owns it is still using it. The branch carries
+  /// everything said so far, gets an id of its own, and leaves the original
+  /// running untouched. A session that has finished is continued in place.
+  ///
+  /// ponytail: never `claude stop`, which would end somebody's session from a
+  /// tap on a phone. Offer it as its own action, said out loud, if continuing
+  /// the original rather than a copy turns out to be what people want.
+  Future<void> continueFrom(ClaudeAgent agent) async {
+    await _stop();
+    _entries.clear();
+    _running.clear();
+    _busy = false;
+    _ended = false;
+    _sessionId = agent.sessionId;
+    _fork = agent.live;
+    _say(
+      ChatNotice(
+        agent.live
+            ? 'Continuing “${agent.name}” as a copy. The session on the host '
+                  'keeps running and is not touched by anything said here.'
+            : 'Continuing “${agent.name}”.',
+      ),
+    );
     await start();
   }
 
@@ -396,11 +569,14 @@ class ClaudeChat extends ChangeNotifier {
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
+    bool fork = false,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
-    final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
+    final again = resume == null
+        ? ''
+        : ' --resume ${_shellQuote(resume)}${fork ? ' --fork-session' : ''}';
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
     // Splicing a quoted value into an outer '…' closes that quote instead, so
@@ -411,6 +587,16 @@ class ClaudeChat extends ChangeNotifier {
         '--permission-prompts none$again 2>&1';
     return 'sh -c ${_shellQuote(script)}';
   }
+
+  /// What the host runs to list its Claude sessions.
+  ///
+  /// `--json` is the one that does not want a terminal, which is what makes
+  /// this possible over an exec channel at all. Without `--all` it lists the
+  /// sessions still running, which is what was asked for. Claude is found and
+  /// the whole script quoted exactly as [command] does it.
+  static String agentsCommand() => 'sh -c '
+      '${_shellQuote('$_findClaude'
+          r'exec "$c" agents --json 2>&1')}';
 
   /// Finds Claude Code into `$c`, or says it is not there and stops.
   static const _findClaude =

@@ -345,4 +345,258 @@ void main() {
     // Stopping on purpose is not Claude going away.
     expect(chat.ended, isFalse);
   });
+
+  test('the sessions on the host come back however each row is shaped',
+      () async {
+    final claude = _FakeClaude();
+    final chat = ClaudeChat(open: (_) async => claude.channel);
+    addTearDown(chat.dispose);
+    // Exactly the shapes the CLI prints: a background session at work, one
+    // sitting idle, an interactive one — which carries no id and no state —
+    // and one whose process has gone, which carries no pid and no status.
+    claude.line(jsonEncode([
+      {
+        'pid': 4079548,
+        'id': '81badf4a',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'startedAt': 1789740731285,
+        'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+        'name': 'chat mode feature',
+        'status': 'busy',
+        'state': 'working',
+      },
+      {
+        'pid': 340952,
+        'id': '1e2f8fcd',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'sessionId': '399b2842-52ea-4019-8f0c-3f44192ab977',
+        'name': 'database client ui development',
+        'status': 'idle',
+        'state': 'done',
+      },
+      {
+        'pid': 1259765,
+        'cwd': '/home/me',
+        'kind': 'interactive',
+        'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+        'name': 'dev-e0',
+        'status': 'idle',
+      },
+      {
+        'id': 'cf58d27a',
+        'cwd': '/home/me',
+        'kind': 'background',
+        'sessionId': 'cf58d27a-da65-4e9b-a896-078306134024',
+        'name': 'Zsh config fix',
+        'state': 'done',
+      },
+      // Nothing to resume, and nothing that is a row at all: both left out
+      // rather than drawn half empty.
+      {'kind': 'background', 'name': 'no session here'},
+      'not a row',
+    ]));
+    // The fake's close waits for a listener, so the listing is under way
+    // before the stream ends.
+    final listing = chat.agents();
+    await claude.end();
+    final agents = await listing;
+    expect(agents.map((agent) => agent.name), [
+      'chat mode feature',
+      'database client ui development',
+      'dev-e0',
+      'Zsh config fix',
+    ]);
+    final [busy, idle, interactive, finished] = agents;
+    expect(busy.live, isTrue);
+    expect(busy.busy, isTrue);
+    expect(idle.live, isTrue);
+    expect(idle.busy, isFalse);
+    // An interactive session has no short id, which is why none can be
+    // attached, and somebody is typing into it.
+    expect(interactive.interactive, isTrue);
+    expect(interactive.id, isNull);
+    expect(interactive.live, isTrue);
+    // No pid: the process has gone, whatever else the row says.
+    expect(finished.live, isFalse);
+    expect(finished.busy, isFalse);
+    expect(busy.startedAt, DateTime.fromMillisecondsSinceEpoch(1789740731285));
+  });
+
+  test('a word from the host beside the list does not cost the list',
+      () async {
+    final claude = _FakeClaude();
+    final chat = ClaudeChat(open: (_) async => claude.channel);
+    addTearDown(chat.dispose);
+    // stderr is folded into stdout, so a warning can sit in front of it.
+    claude.line('warning: something the host wanted to say');
+    claude.line(jsonEncode([
+      {
+        'pid': 1,
+        'id': 'aaaa1111',
+        'cwd': '/srv',
+        'kind': 'background',
+        'sessionId': 'aaaa1111-0000-0000-0000-000000000000',
+        'name': 'still found',
+        'status': 'idle',
+      },
+    ]));
+    final listing = chat.agents();
+    await claude.end();
+    expect((await listing).single.name, 'still found');
+  });
+
+  test('a host whose Claude has no agents command says what it said',
+      () async {
+    final claude = _FakeClaude();
+    final chat = ClaudeChat(open: (_) async => claude.channel);
+    addTearDown(chat.dispose);
+    claude.line("error: unknown command 'agents'");
+    // The expectation is attached before the stream ends, so the throw has
+    // somewhere to land.
+    final listing = expectLater(
+      chat.agents(),
+      throwsA(
+        isA<SshSessionException>().having(
+          (error) => '$error',
+          'what the host said',
+          contains("unknown command 'agents'"),
+        ),
+      ),
+    );
+    await claude.end();
+    await listing;
+  });
+
+  test('picking up a session that is still running branches off it rather '
+      'than resuming it', () async {
+    final commands = <String>[];
+    final channels = <_FakeClaude>[];
+    final chat = ClaudeChat(
+      open: (command) async {
+        commands.add(command);
+        final claude = _FakeClaude();
+        channels.add(claude);
+        return claude.channel;
+      },
+    );
+    addTearDown(chat.dispose);
+    await chat.start();
+    chat.send('this chat, before it was handed a session');
+    await _settle();
+
+    await chat.continueFrom(
+      const ClaudeAgent(
+        sessionId: 'aaaa1111-0000-0000-0000-000000000000',
+        name: 'the one at work',
+        cwd: '/srv/app',
+        kind: 'background',
+        id: 'aaaa1111',
+        status: 'busy',
+        pid: 4079548,
+      ),
+    );
+
+    // The CLI refuses -p --resume for a session whose process is alive,
+    // busy or idle alike, so a live one is branched off.
+    expect(commands.last, contains('--fork-session'));
+    expect(commands.last, contains('--resume'));
+    // The id itself, not how it is quoted — the shell test below is what
+    // proves the quoting, because text that reads right can still run wrong.
+    expect(commands.last, contains('aaaa1111-0000-0000-0000-000000000000'));
+    // A new conversation: what this chat said before is not what that
+    // session said.
+    expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+    expect(
+      chat.entries.whereType<ChatNotice>().single.text,
+      allOf(contains('the one at work'), contains('keeps running')),
+    );
+
+    // The fork has an id of its own from here on, and is not forked again.
+    channels.last.event({
+      'type': 'system',
+      'subtype': 'init',
+      'session_id': 'bbbb2222-0000-0000-0000-000000000000',
+    });
+    await _settle();
+    await chat.restart();
+    expect(commands.last, contains('bbbb2222-0000-0000-0000-000000000000'));
+    expect(commands.last, isNot(contains('--fork-session')));
+  });
+
+  test('picking up a session that has finished continues it where it was',
+      () async {
+    final commands = <String>[];
+    final chat = ClaudeChat(
+      open: (command) async {
+        commands.add(command);
+        return _FakeClaude().channel;
+      },
+    );
+    addTearDown(chat.dispose);
+
+    await chat.continueFrom(
+      const ClaudeAgent(
+        sessionId: 'cf58d27a-da65-4e9b-a896-078306134024',
+        name: 'Zsh config fix',
+        cwd: '/home/me',
+        kind: 'background',
+        id: 'cf58d27a',
+      ),
+    );
+
+    expect(commands.single, contains('--resume'));
+    expect(commands.single, contains('cf58d27a-da65-4e9b-a896-078306134024'));
+    expect(commands.single, isNot(contains('--fork-session')));
+    expect(
+      chat.entries.whereType<ChatNotice>().single.text,
+      allOf(contains('Zsh config fix'), isNot(contains('copy'))),
+    );
+  });
+
+  test('listing the sessions, and the id of one picked up, reach Claude '
+      'exactly as given', () async {
+    // The same real shell the command test uses: what a session id holds —
+    // and a name holds anything the user typed — must not be read by any
+    // shell it passes through.
+    final root = await Directory.systemTemp.createTemp('chat-agents');
+    addTearDown(() => root.delete(recursive: true));
+    final bin = await Directory('${root.path}/bin').create();
+    final claude = File('${bin.path}/claude')
+      ..writeAsStringSync('#!/bin/sh\nprintf "%s\\n" "\$@"\n');
+    await Process.run('chmod', ['+x', claude.path]);
+    final path = {'PATH': '${bin.path}:/usr/bin:/bin'};
+
+    final listed = await Process.run(
+      'sh',
+      ['-c', ClaudeChat.agentsCommand()],
+      environment: path,
+    );
+    expect((listed.stdout as String).split('\n'), containsAllInOrder([
+      'agents',
+      '--json',
+    ]));
+
+    for (final session in [
+      r"s'1 $(echo RAN)",
+      'a;b',
+      'has a space',
+      r'$(touch ' '${root.path}/RAN)',
+    ]) {
+      final result = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.command(resume: session, fork: true)],
+        environment: path,
+      );
+      final lines = (result.stdout as String).split('\n');
+      final at = lines.indexOf('--resume');
+      expect(at, isNot(-1), reason: session);
+      expect(lines[at + 1], session, reason: session);
+      expect(lines[at + 2], '--fork-session', reason: session);
+      expect(result.stdout, isNot(contains('RAN\n')), reason: session);
+    }
+    // Nothing a session id held was ever run.
+    expect(File('${root.path}/RAN').existsSync(), isFalse);
+  });
 }
