@@ -6,7 +6,8 @@ import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/session_manager.dart';
-import 'terminal_page.dart' show ConnectionError;
+import '../platform.dart';
+import 'terminal_page.dart' show ConnectionError, openUrl;
 
 /// Another terminal on [host], connected in a sheet and given its tab by
 /// [sessions] once it is up, or once its sign-in has gone to a web tab beside
@@ -26,10 +27,20 @@ Future<LiveSession?> openInSheet(
     context,
     session,
     secrets: secrets,
-    // A tab of its own first, for its sign-in's to open beside.
-    inTab: (url) => sessions
-      ..add(session)
-      ..openWeb(session.id, url),
+    // A tab of its own first, for its sign-in's to open beside. On a desktop
+    // there are no web tabs at all, so the sign-in goes to the machine's own
+    // browser — where the user is likely signed in to the identity provider
+    // already — and the session waits for it exactly as before.
+    inTab: (url) {
+      if (isDesktop) {
+        sessions.add(session);
+        unawaited(openUrl(context, url));
+        return;
+      }
+      sessions
+        ..add(session)
+        ..openWeb(session.id, url);
+    },
   );
   if (!kept) {
     session.dispose();
@@ -279,26 +290,24 @@ class _HostKeyPrompt extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        Text(
-          switch ((pinned, alternative)) {
-            (final String _, _) =>
-              'Something at $where is answering for ${host.displayName} with '
-                  'a key that is not the one pinned for that address. The '
-                  'server may have been rebuilt — or something may be '
-                  'intercepting the connection.',
-            (null, true) =>
-              'First connection to ${host.displayName} at its alternative '
-                  'address, $where. Trust it only if this fingerprint '
-                  'matches the one '
-                  '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
-                  'prints on the server.',
-            (null, false) =>
-              'First connection to ${host.displayName} at $where. Trust it '
-                  'only if this fingerprint matches the one '
-                  '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
-                  'prints on the server.',
-          },
-        ),
+        Text(switch ((pinned, alternative)) {
+          (final String _, _) =>
+            'Something at $where is answering for ${host.displayName} with '
+                'a key that is not the one pinned for that address. The '
+                'server may have been rebuilt — or something may be '
+                'intercepting the connection.',
+          (null, true) =>
+            'First connection to ${host.displayName} at its alternative '
+                'address, $where. Trust it only if this fingerprint '
+                'matches the one '
+                '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
+                'prints on the server.',
+          (null, false) =>
+            'First connection to ${host.displayName} at $where. Trust it '
+                'only if this fingerprint matches the one '
+                '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
+                'prints on the server.',
+        }),
         if (other != null) ...[
           const SizedBox(height: 12),
           Text(

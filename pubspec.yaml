@@ -36,6 +36,10 @@ dependencies:
   cupertino_icons: ^1.0.8
   xterm2: ^5.2.0
   dartssh2: ^4.1.0
+  # The local shell on a desktop build: a real pty, so vim, htop and job
+  # control work the way they do in Terminal. Nothing on Android or iOS opens
+  # one — see `LocalTransport`.
+  flutter_pty: ^0.4.2
   flutter_secure_storage: ^11.0.0
   shared_preferences: ^2.5.5
   app_links: ^7.2.1

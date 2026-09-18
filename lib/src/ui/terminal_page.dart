@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
@@ -12,6 +13,7 @@ import 'package:xterm2/xterm.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../files/transfers.dart';
+import '../platform.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -294,8 +296,9 @@ class _TerminalPageState extends State<TerminalPage> {
         title: _session.host.displayName,
         initialRoot: _browseRoot ?? _session.host.fileRoot,
         initialExpanded: _browseExpanded,
-        initialScrollOffset:
-            _browseScroll.root == _browseRoot ? _browseScroll.offset : 0,
+        initialScrollOffset: _browseScroll.root == _browseRoot
+            ? _browseScroll.offset
+            : 0,
         ownsBrowser: false,
         onRootChanged: (root) => _browseRoot = root,
         onExpandedChanged: (expanded) => _browseExpanded = expanded,
@@ -438,8 +441,8 @@ class _TerminalPageState extends State<TerminalPage> {
   /// shell would act on rather than pass along.
   static String _shellQuote(String path) =>
       RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
-          ? path
-          : "'${path.replaceAll("'", r"'\''")}'";
+      ? path
+      : "'${path.replaceAll("'", r"'\''")}'";
 
   /// Puts a path at the prompt, ready for a command to be written around it.
   void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
@@ -476,9 +479,11 @@ class _TerminalPageState extends State<TerminalPage> {
       },
     );
     if (now == null) {
-      refuse(slow
-          ? 'No answer from the host in time — not moving the shell'
-          : 'The host cannot say what the shell is running — not moving it');
+      refuse(
+        slow
+            ? 'No answer from the host in time — not moving the shell'
+            : 'The host cannot say what the shell is running — not moving it',
+      );
     } else if (!now.shellInForeground) {
       refuse('${now.program} is running — not moving the shell');
     } else if (now.cwd != path) {
@@ -564,51 +569,60 @@ class _TerminalPageState extends State<TerminalPage> {
       // In the Scaffold's own slot rather than the body so it rides above the
       // soft keyboard and the button below floats clear of it. Its keys are
       // the ones Settings arranged, redrawn the moment they change there.
-      bottomNavigationBar: ValueListenableBuilder(
-        valueListenable: keyBarSettings,
-        builder: (context, _, _) => TerminalKeyBar(
-          controller: _keyBar,
-          terminal: _session.terminal,
-          onEmit: _send,
-          showKeys: _session.isConnected,
-          keys: keyBarSettings.keys,
-          customKeys: keyBarSettings.customKeys,
-          leading: [
-            IconButton(
-              tooltip: 'Chat with Claude',
-              onPressed: (_session.isConnected && _session.canChat)
-                  ? widget.onOpenChat
-                  : null,
-              icon: const Icon(Icons.forum_outlined),
+      //
+      // A desktop has none of it: the bar stands in for the keys a soft
+      // keyboard lacks, and there the keyboard has them all. Its own two
+      // buttons — the files drawer and upload — go with it, the way they did
+      // before the header left; on a desktop they ride in the tab strip's
+      // long-press menu instead.
+      bottomNavigationBar: isDesktop
+          ? null
+          : ValueListenableBuilder(
+              valueListenable: keyBarSettings,
+              builder: (context, _, _) => TerminalKeyBar(
+                controller: _keyBar,
+                terminal: _session.terminal,
+                onEmit: _send,
+                showKeys: _session.isConnected,
+                keys: keyBarSettings.keys,
+                customKeys: keyBarSettings.customKeys,
+                leading: [
+                  IconButton(
+                    tooltip: 'Chat with Claude',
+                    onPressed: (_session.isConnected && _session.canChat)
+                        ? widget.onOpenChat
+                        : null,
+                    icon: const Icon(Icons.forum_outlined),
+                  ),
+                  IconButton(
+                    tooltip: 'Browse files',
+                    onPressed: (_session.isConnected && _session.canBrowseFiles)
+                        ? _openFiles
+                        : null,
+                    icon: const Icon(Icons.folder_outlined),
+                  ),
+                  IconButton(
+                    tooltip: 'Upload a file to /tmp',
+                    onPressed:
+                        (_session.isConnected &&
+                            _session.canUploadFiles &&
+                            _sending == null)
+                        ? _attachFile
+                        : null,
+                    icon: const Icon(Icons.attach_file),
+                  ),
+                  // The only way back to the soft keyboard once a hardware key has
+                  // shut it: a tap on the terminal cannot reopen it without making
+                  // the next key arrive twice. Always here, so a tablet out of its
+                  // keyboard case is never left without one.
+                  IconButton(
+                    tooltip: 'Show the keyboard',
+                    onPressed: _showKeyboard,
+                    icon: const Icon(Icons.keyboard_outlined),
+                  ),
+                ],
+              ),
             ),
-            IconButton(
-              tooltip: 'Browse files',
-              onPressed: (_session.isConnected && _session.canBrowseFiles)
-                  ? _openFiles
-                  : null,
-              icon: const Icon(Icons.folder_outlined),
-            ),
-            IconButton(
-              tooltip: 'Upload a file to /tmp',
-              onPressed: (_session.isConnected &&
-                      _session.canUploadFiles &&
-                      _sending == null)
-                  ? _attachFile
-                  : null,
-              icon: const Icon(Icons.attach_file),
-            ),
-            // The only way back to the soft keyboard once a hardware key has
-            // shut it: a tap on the terminal cannot reopen it without making
-            // the next key arrive twice. Always here, so a tablet out of its
-            // keyboard case is never left without one.
-            IconButton(
-              tooltip: 'Show the keyboard',
-              onPressed: _showKeyboard,
-              icon: const Icon(Icons.keyboard_outlined),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -645,12 +659,7 @@ class _TerminalPageState extends State<TerminalPage> {
     return Stack(
       children: [
         if (tmux == null)
-          _paneView(
-            _session.terminal,
-            style,
-            focused: true,
-            padding: _padding,
-          )
+          _paneView(_session.terminal, style, focused: true, padding: _padding)
         else
           TmuxPaneLayout(
             tmux: tmux,
@@ -704,12 +713,11 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         // In the body rather than the Scaffold's button slot so it can be
         // parked anywhere, and so its ring is free to open over the terminal.
-        if (_session.isConnected)
+        // Not on a desktop: it is a thumb's Enter key, and a mouse dragging it
+        // around over the output is only in the way.
+        if (_session.isConnected && !isDesktop)
           Positioned.fill(
-            child: MagicKey(
-              terminal: _session.terminal,
-              onEmit: _send,
-            ),
+            child: MagicKey(terminal: _session.terminal, onEmit: _send),
           ),
       ],
     );
@@ -1066,8 +1074,12 @@ Future<void> openUrl(
   Uri url, {
   void Function(Uri url)? inTab,
 }) async {
+  // A desktop has a browser of its own, with the user's own extensions,
+  // sessions and bookmarks; a web tab drawn by the system web view has none of
+  // them, and no address bar worth the name. So every link there goes out to
+  // that browser and no web tab is ever opened.
   final web = url.isScheme('http') || url.isScheme('https');
-  if (web && inTab != null && context.mounted) {
+  if (web && inTab != null && !isDesktop && context.mounted) {
     inTab(url);
     return;
   }

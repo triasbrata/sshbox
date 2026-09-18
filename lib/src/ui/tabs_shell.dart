@@ -51,6 +51,7 @@ class TabsShell extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
+    this.onOpenLocal,
     this.openDatabase,
   });
 
@@ -58,6 +59,10 @@ class TabsShell extends StatefulWidget {
   final SecretStore secrets;
   final SessionManager sessions;
   final Future<void> Function(String hostId) onOpenHost;
+
+  /// Opens a shell on this machine, on the builds that can have one — see
+  /// `LocalTransport`. Null elsewhere, and Home draws no card for it.
+  final Future<void> Function()? onOpenLocal;
 
   /// What a database's tab connects with: [DbSession.open], unless a test
   /// brings a stand-in.
@@ -202,7 +207,8 @@ class _TabsShellState extends State<TabsShell> {
       draftKey: '${tab.session.host.id}:${tab.path}',
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       host: tab.session.fileTabHost,
-      line: tab.session.id == widget.sessions.activeId &&
+      line:
+          tab.session.id == widget.sessions.activeId &&
               tab.path == widget.sessions.activePath
           ? widget.sessions.activeLine
           : null,
@@ -236,18 +242,19 @@ class _TabsShellState extends State<TabsShell> {
   Widget _databasePage(DbTab tab) => !_shown.contains(_dbIdOf(tab))
       ? const SizedBox.shrink()
       : DbBrowserPage(
-    key: _pageKeys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
-    db: tab.db,
-    title: tab.title,
-    open:
-        widget.openDatabase ??
-        (db, {required confirmHostKey, required onSignIn}) => DbSession.open(
-          db,
-          secrets: widget.secrets,
-          confirmHostKey: confirmHostKey,
-          onSignIn: onSignIn,
-        ),
-  );
+          key: _pageKeys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
+          db: tab.db,
+          title: tab.title,
+          open:
+              widget.openDatabase ??
+              (db, {required confirmHostKey, required onSignIn}) =>
+                  DbSession.open(
+                    db,
+                    secrets: widget.secrets,
+                    confirmHostKey: confirmHostKey,
+                    onSignIn: onSignIn,
+                  ),
+        );
 
   @override
   Widget build(BuildContext context) {
@@ -354,6 +361,7 @@ class _TabsShellState extends State<TabsShell> {
                       secrets: widget.secrets,
                       sessions: widget.sessions,
                       onOpenHost: widget.onOpenHost,
+                      onOpenLocal: widget.onOpenLocal,
                     ),
                     ...tabs.map(_pageFor),
                     ...databases.map(_databasePage),
@@ -589,8 +597,7 @@ class _TabStripState extends State<TabStrip> {
           builder: (context, _) => _TabChip(
             icon: Icons.swap_vert,
             label: 'Transfers',
-            selected:
-                tabs.length + databases.length + 1 == widget.activeIndex,
+            selected: tabs.length + databases.length + 1 == widget.activeIndex,
             connected: transfers.anyRunning,
             expand: single,
             onTap: () => widget.onSelectTransfers?.call(),
@@ -771,9 +778,7 @@ class _TabChip extends StatelessWidget {
                   Icon(
                     icon,
                     size: _iconSize,
-                    color: connected
-                        ? theme.colorScheme.primary
-                        : foreground,
+                    color: connected ? theme.colorScheme.primary : foreground,
                   ),
               if (title != null) ...[
                 const SizedBox(width: 6),

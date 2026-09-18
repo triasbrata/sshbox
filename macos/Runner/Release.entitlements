@@ -2,8 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- No app sandbox: the local shell is the reason. A sandboxed child gets
+	     the container's view of the disk, so `ls ~/Projects` in the shell would
+	     come back empty and every SSH key on the machine would be out of reach.
+	     This build ships as a .dmg rather than through the Mac App Store, which
+	     is what makes the choice ours to make. -->
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<key>com.apple.security.network.client</key>

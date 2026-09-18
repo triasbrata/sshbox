@@ -14,6 +14,8 @@ import 'models/host_profile.dart';
 import 'notifications/notification_gateway.dart';
 import 'notifications/notify_key.dart';
 import 'notifications/push_messaging.dart';
+import 'platform.dart';
+import 'session/local_transport.dart';
 import 'session/port_forwards.dart';
 import 'session/session_keepalive.dart';
 import 'session/session_log.dart';
@@ -48,16 +50,19 @@ class _SshboxAppState extends State<SshboxApp> {
 
   final AppLinks _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSubscription;
-  late final NotificationGateway _notifications =
-      NotificationGateway(onOpenLink: _handleLink);
+  late final NotificationGateway _notifications = NotificationGateway(
+    onOpenLink: _handleLink,
+  );
   late final PushMessaging _push = PushMessaging(
     notifications: _notifications,
     onOpenLink: _handleLink,
     notifyKeys: _notifyKeys,
   );
 
-  late final SessionKeepAlive _keepAlive =
-      SessionKeepAlive(_sessions, portForwards);
+  late final SessionKeepAlive _keepAlive = SessionKeepAlive(
+    _sessions,
+    portForwards,
+  );
 
   @override
   void initState() {
@@ -161,6 +166,23 @@ class _SshboxAppState extends State<SshboxApp> {
     _pendingShares.clear();
   }
 
+  /// A shell on this machine, on the desktop builds that can have one — see
+  /// [LocalTransport].
+  ///
+  /// No connect sheet: there is no address to reach, no host key to rule on
+  /// and no sign-in to finish, so the tab opens straight away and whatever the
+  /// shell has to say about itself it says in the terminal. A tap when one is
+  /// already open adds another, as a tap on a host's card does.
+  Future<void> openLocal() async {
+    if (!isDesktop) return;
+    final session = _sessions.create(
+      localHost(),
+      transport: (_, _) => LocalTransport(),
+    );
+    _sessions.add(session);
+    await session.connect(secrets: _secrets);
+  }
+
   /// Files shared into the app before there was anywhere to put them.
   final List<SharedFile> _pendingShares = [];
 
@@ -172,18 +194,17 @@ class _SshboxAppState extends State<SshboxApp> {
     _shareChannel.setMethodCallHandler((call) async {
       if (call.method == 'shared') _handleShared(call.arguments);
     });
-    _handleShared(await _shareChannel.invokeMethod<List<dynamic>>('takeShared'));
+    _handleShared(
+      await _shareChannel.invokeMethod<List<dynamic>>('takeShared'),
+    );
   }
 
   void _handleShared(Object? payload) {
     if (payload is! List) return;
     _pendingShares.addAll(
       payload.cast<Map<dynamic, dynamic>>().map(
-            (file) => (
-              path: file['path'] as String,
-              name: file['name'] as String,
-            ),
-          ),
+        (file) => (path: file['path'] as String, name: file['name'] as String),
+      ),
     );
     if (_pendingShares.isEmpty) return;
 
@@ -257,6 +278,7 @@ class _SshboxAppState extends State<SshboxApp> {
               secrets: _secrets,
               sessions: _sessions,
               onOpenHost: (hostId) => openHost(hostId, newSession: true),
+              onOpenLocal: openLocal,
             ),
           );
         },

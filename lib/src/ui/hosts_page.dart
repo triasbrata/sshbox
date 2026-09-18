@@ -6,6 +6,8 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../models/host_profile.dart';
+import '../platform.dart';
+import '../session/local_transport.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import 'db_editor_page.dart';
@@ -23,6 +25,7 @@ class HostsPage extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
+    this.onOpenLocal,
   });
 
   final HostRepository repository;
@@ -33,11 +36,22 @@ class HostsPage extends StatefulWidget {
   /// tab strip is how you get back to those.
   final Future<void> Function(String hostId) onOpenHost;
 
+  /// Opens a shell on this machine — see `LocalTransport`. Null where there
+  /// can be no such thing, which is every build but the desktop ones, and the
+  /// card for it is then not drawn.
+  final Future<void> Function()? onOpenLocal;
+
   @override
   State<HostsPage> createState() => _HostsPageState();
 }
 
 class _HostsPageState extends State<HostsPage> {
+  /// Whether this build can open a shell on the machine it runs on, and so
+  /// whether Home shows a card for one. Both halves matter: only a desktop
+  /// has a shell to open, and only a caller that handed [HostsPage.onOpenLocal]
+  /// over can open it.
+  bool get _local => isDesktop && widget.onOpenLocal != null;
+
   List<HostProfile>? _hosts;
   List<DbConnection>? _databases;
 
@@ -277,7 +291,9 @@ class _HostsPageState extends State<HostsPage> {
       ),
       body: hosts == null || databases == null
           ? const Center(child: CircularProgressIndicator())
-          : hosts.isEmpty && databases.isEmpty
+          // A desktop always has one thing to show, the local shell, so the
+          // "add your first host" page would be standing in front of it.
+          : hosts.isEmpty && databases.isEmpty && !_local
           ? const _EmptyState()
           : LayoutBuilder(
               builder: (context, constraints) {
@@ -334,11 +350,22 @@ class _HostsPageState extends State<HostsPage> {
                     ),
                 ];
 
-                // Headed only once there are databases too: hosts alone read
-                // as they always have.
+                // Headed only once there is something else to tell the hosts
+                // apart from — a database, or this machine's own shell.
+                // Hosts alone read as they always have.
+                final headed = databases.isNotEmpty || _local;
                 final items = [
-                  if (hosts.isNotEmpty && databases.isNotEmpty)
-                    const _SectionHeader('Hosts'),
+                  if (_local) ...[
+                    if (hosts.isNotEmpty || databases.isNotEmpty)
+                      const _SectionHeader('This machine'),
+                    ...rows([
+                      _LocalTile(
+                        sessions: widget.sessions.sessionsFor(localHostId),
+                        onOpen: () => widget.onOpenLocal!(),
+                      ),
+                    ]),
+                  ],
+                  if (hosts.isNotEmpty && headed) const _SectionHeader('Hosts'),
                   ...rows([for (final host in hosts) hostCard(host)]),
                   if (databases.isNotEmpty) ...[
                     const _SectionHeader('Databases'),
@@ -352,6 +379,64 @@ class _HostsPageState extends State<HostsPage> {
                 );
               },
             ),
+    );
+  }
+}
+
+/// The local shell's card, above the saved hosts on a desktop: no address, no
+/// credentials and nothing to edit, because there is no connection to make.
+///
+/// It counts the shells open on this machine the way a host's card counts its
+/// sessions, and a tap opens another — the tab strip is the way back to the
+/// ones already up.
+class _LocalTile extends StatelessWidget {
+  const _LocalTile({required this.sessions, required this.onOpen});
+
+  final List<LiveSession> sessions;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final open = sessions.length;
+
+    return Card(
+      margin: const EdgeInsets.all(6),
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(Icons.laptop_mac, color: theme.colorScheme.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Local shell',
+                      style: theme.textTheme.titleMedium,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      open == 0 ? 'A shell on this machine' : '$open open',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -638,10 +723,7 @@ class _DatabaseTile extends StatelessWidget {
           child: Row(
             children: [
               // As wide as a host's badge, so the names line up.
-              SizedBox(
-                width: 80,
-                child: Center(child: DbBadge(db.kind)),
-              ),
+              SizedBox(width: 80, child: Center(child: DbBadge(db.kind))),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
