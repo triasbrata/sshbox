@@ -47,9 +47,20 @@ class _Shell
   /// What `claude agents --json` answers, when a test sets one.
   String? listing;
 
+  /// What the history command answers: the transcript's size, then its end.
+  /// A session that has said nothing, unless a test says otherwise.
+  String history = '0\n';
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('.jsonl')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(history))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     final rows = listing;
     if (rows != null && command.contains('agents --json')) {
       // One shot: the listing, then the command is over.
@@ -91,6 +102,41 @@ class _Shell
 
   @override
   Future<void> dispose() async {}
+}
+
+/// The end of a session's transcript, as the host hands it over.
+String _history(List<Map<String, Object?>> lines) {
+  final body = lines.map(jsonEncode).join('\n');
+  return '${utf8.encode(body).length}\n$body\n';
+}
+
+final _nightlyHistory = _history([
+  {'type': 'mode'},
+  {
+    'type': 'user',
+    'message': {'role': 'user', 'content': 'is the nightly build green?'},
+  },
+  {
+    'type': 'assistant',
+    'message': {
+      'role': 'assistant',
+      'content': [
+        {'type': 'text', 'text': 'It failed at the lint step.'},
+      ],
+    },
+  },
+]);
+
+/// Lets a pick-up run out. Closing the drawer, reading the history and
+/// starting Claude are futures, not frames, so settling the frames alone
+/// returns while they are in flight; this takes turns between the two until
+/// both are quiet.
+Future<void> _settlePickUp(WidgetTester tester) async {
+  for (var turn = 0; turn < 8; turn++) {
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+  }
+  await tester.pump();
 }
 
 const _host = HostProfile(
@@ -199,6 +245,7 @@ void main() {
   testWidgets('the sessions on the host are offered, and one still running '
       'is picked up as a copy', (tester) async {
     final shell = _Shell()
+      ..history = _nightlyHistory
       ..listing = jsonEncode([
         {
           'pid': 4079548,
@@ -242,19 +289,12 @@ void main() {
     expect(find.textContaining('2h ago'), findsOneWidget);
 
     await tester.tap(find.text('the nightly build'));
-    // Settle the frames, then let the event loop run out: picking one up
-    // closes the sheet, ends the process that was running and starts
-    // another, and those hops are futures rather than frames — settling
-    // alone returns while they are still in flight.
-    await tester.pumpAndSettle();
-    // The hops that follow are futures, not frames: the sheet's result, the
-    // process being stopped and the next one started. runAsync lets the real
-    // event loop run them out before this asks what the host was told.
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 50)),
-    );
-    await tester.pump();
+    await _settlePickUp(tester);
 
+    // What was already said in it is there: the conversation it had, not a
+    // blank tab on a session Claude remembers.
+    expect(find.text('is the nightly build green?'), findsOneWidget);
+    expect(find.text('It failed at the lint step.'), findsOneWidget);
     // Its process is alive, so it is branched off rather than resumed, and
     // the tab says so rather than leaving the user to guess.
     expect(shell.commands.last, contains('--fork-session'));
@@ -282,5 +322,63 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.textContaining("unknown command 'agents'"), findsOneWidget);
+  });
+
+  testWidgets('on a tablet the sessions are a sidebar beside the chat, '
+      'marking the one showing', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'idle',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pumpAndSettle();
+
+    // In view without asking: no sheet, no drawer, and no button in the empty
+    // tab to show what is already showing.
+    expect(find.text('the nightly build'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Sessions on this host'),
+        findsNothing);
+
+    await tester.tap(find.text('the nightly build'));
+    await _settlePickUp(tester);
+
+    // Still beside the chat, with the one picked marked, and its
+    // conversation drawn next to it.
+    final row = tester.widget<ListTile>(
+      find.ancestor(
+        of: find.text('the nightly build'),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(row.selected, isTrue);
+    expect(find.text('is the nightly build green?'), findsOneWidget);
+
+    // The button beside the box hides it, for room to read, and brings it
+    // back.
+    await tester.tap(find.byTooltip('Hide the sessions on this host'));
+    await tester.pumpAndSettle();
+    expect(find.text('the nightly build'), findsNothing);
+    await tester.tap(find.byTooltip('Sessions on this host'));
+    await tester.pumpAndSettle();
+    expect(find.text('the nightly build'), findsOneWidget);
   });
 }

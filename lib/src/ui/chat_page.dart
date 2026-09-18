@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -93,16 +94,43 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  /// Shows what `claude agents` sees on the host, and picks one up.
-  Future<void> _pickSession() async {
-    final agent = await showModalBottomSheet<ClaudeAgent>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (context) => _SessionSheet(chat: _chat),
-    );
-    if (agent == null || !mounted) return;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// From this width the sessions stay in view beside the conversation, as a
+  /// sidebar; below it they slide in over it, as the files drawer does beside
+  /// a terminal. Material's expanded breakpoint: a tablet held either way,
+  /// and not a phone.
+  static const _wide = 840.0;
+
+  /// Whether the sidebar is showing on a wide screen. It starts showing —
+  /// that is where the sessions were asked to be — and the button beside the
+  /// box hides it for more room to read.
+  bool _sidebarOpen = true;
+
+  /// Shows the sessions: the sidebar on a wide screen, the drawer on a
+  /// narrow one.
+  void _showSessions(bool wide) {
+    if (wide) {
+      setState(() => _sidebarOpen = true);
+    } else {
+      _scaffoldKey.currentState?.openDrawer();
+    }
+  }
+
+  void _toggleSessions(bool wide) {
+    if (wide) {
+      setState(() => _sidebarOpen = !_sidebarOpen);
+    } else {
+      _scaffoldKey.currentState?.openDrawer();
+    }
+  }
+
+  /// Picks [agent] up in this chat, and, on a narrow screen, gets the drawer
+  /// out of the way of what it brought.
+  Future<void> _pick(ClaudeAgent agent) async {
+    _scaffoldKey.currentState?.closeDrawer();
     await _chat.continueFrom(agent);
+    if (!mounted) return;
     _drawn = -1;
     _followTranscript();
   }
@@ -118,7 +146,40 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, box) {
+      final wide = box.maxWidth >= _wide;
+      final sidebar = wide && _sidebarOpen;
+      final sessions = _SessionList(
+        chat: _chat,
+        connected: widget.session.isConnected,
+        onPick: _pick,
+      );
+      return Scaffold(
+        key: _scaffoldKey,
+        drawer: wide
+            ? null
+            : Drawer(
+                width: math.min(360, box.maxWidth * 0.85),
+                child: SafeArea(child: sessions),
+              ),
+        // Opened by its button only: a sideways drag here is somebody
+        // scrolling a wide code block.
+        drawerEnableOpenDragGesture: false,
+        body: Row(
+          children: [
+            if (sidebar) ...[
+              SizedBox(width: 300, child: sessions),
+              const VerticalDivider(width: 1),
+            ],
+            Expanded(child: _conversation(wide: wide, sidebar: sidebar)),
+          ],
+        ),
+      );
+    },
+  );
+
+  Widget _conversation({required bool wide, required bool sidebar}) {
     final theme = Theme.of(context);
     final chat = _chat;
     final entries = chat.entries;
@@ -127,7 +188,12 @@ class _ChatPageState extends State<ChatPage> {
       children: [
         Expanded(
           child: entries.isEmpty
-              ? _Empty(session: widget.session, onPickSession: _pickSession)
+              ? _Empty(
+                  session: widget.session,
+                  // Beside a sidebar already showing them, a button to show
+                  // them would do nothing.
+                  onPickSession: sidebar ? null : () => _showSessions(wide),
+                )
               : ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
@@ -152,7 +218,7 @@ class _ChatPageState extends State<ChatPage> {
             ],
           ),
         const Divider(height: 1),
-        _composer(theme),
+        _composer(theme, wide: wide, sidebar: sidebar),
       ],
     );
   }
@@ -164,7 +230,11 @@ class _ChatPageState extends State<ChatPage> {
     final ChatNotice notice => _Notice(notice: notice),
   };
 
-  Widget _composer(ThemeData theme) {
+  Widget _composer(
+    ThemeData theme, {
+    required bool wide,
+    required bool sidebar,
+  }) {
     final chat = _chat;
     final canSend = chat.ready && !chat.busy;
     return SafeArea(
@@ -174,24 +244,26 @@ class _ChatPageState extends State<ChatPage> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            IconButton(
+              tooltip: sidebar
+                  ? 'Hide the sessions on this host'
+                  : 'Sessions on this host',
+              isSelected: sidebar,
+              onPressed: () => _toggleSessions(wide),
+              icon: const Icon(Icons.view_sidebar_outlined),
+              selectedIcon: const Icon(Icons.view_sidebar),
+            ),
             PopupMenuButton<Object>(
               tooltip: 'Chat settings',
               icon: const Icon(Icons.more_vert),
               onSelected: (choice) {
                 if (choice is ChatPermission) {
                   unawaited(chat.restart(permission: choice));
-                } else if (choice == 'sessions') {
-                  unawaited(_pickSession());
                 } else {
                   unawaited(chat.restart());
                 }
               },
               itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'sessions',
-                  child: Text('Sessions on this host…'),
-                ),
-                const PopupMenuDivider(),
                 for (final mode in ChatPermission.values)
                   CheckedPopupMenuItem(
                     value: mode,
@@ -242,10 +314,12 @@ class _ChatPageState extends State<ChatPage> {
 
 /// What the tab says before anything has been asked.
 class _Empty extends StatelessWidget {
-  const _Empty({required this.session, required this.onPickSession});
+  const _Empty({required this.session, this.onPickSession});
 
   final LiveSession session;
-  final VoidCallback onPickSession;
+
+  /// Null while the sessions are already in view beside it.
+  final VoidCallback? onPickSession;
 
   @override
   Widget build(BuildContext context) {
@@ -277,14 +351,16 @@ class _Empty extends StatelessWidget {
               style: theme.textTheme.bodySmall,
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 20),
             // Where a new chat tab lands, so the sessions already running on
             // the host are offered before anything has been typed.
-            FilledButton.tonalIcon(
-              onPressed: onPickSession,
-              icon: const Icon(Icons.dashboard_customize_outlined),
-              label: const Text('Sessions on this host'),
-            ),
+            if (onPickSession case final show?) ...[
+              const SizedBox(height: 20),
+              FilledButton.tonalIcon(
+                onPressed: show,
+                icon: const Icon(Icons.view_sidebar_outlined),
+                label: const Text('Sessions on this host'),
+              ),
+            ],
           ],
         ),
       ),
@@ -497,21 +573,42 @@ class _Notice extends StatelessWidget {
 
 
 /// The sessions `claude agents` can see on the host, to pick one up in this
-/// chat.
+/// chat: the sidebar on a wide screen, the drawer on a narrow one.
 ///
 /// Every row is data from the host — a name is whatever the person who
 /// started it typed — so it is drawn and never run.
-class _SessionSheet extends StatefulWidget {
-  const _SessionSheet({required this.chat});
+class _SessionList extends StatefulWidget {
+  const _SessionList({
+    required this.chat,
+    required this.connected,
+    required this.onPick,
+  });
 
   final ClaudeChat chat;
 
+  /// Whether the session is up: the list is asked for over its connection,
+  /// and asked again when it comes back.
+  final bool connected;
+  final ValueChanged<ClaudeAgent> onPick;
+
   @override
-  State<_SessionSheet> createState() => _SessionSheetState();
+  State<_SessionList> createState() => _SessionListState();
 }
 
-class _SessionSheetState extends State<_SessionSheet> {
-  late Future<List<ClaudeAgent>> _agents = widget.chat.agents();
+class _SessionListState extends State<_SessionList> {
+  Future<List<ClaudeAgent>>? _agents;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.connected) _agents = widget.chat.agents();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SessionList old) {
+    super.didUpdateWidget(old);
+    if (widget.connected && !old.connected) _again();
+  }
 
   void _again() => setState(() => _agents = widget.chat.agents());
 
@@ -528,85 +625,79 @@ class _SessionSheetState extends State<_SessionSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return SafeArea(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+    final agents = _agents;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 4, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Sessions on this host',
+                  style: theme.textTheme.titleSmall,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Refresh',
+                onPressed: widget.connected ? _again : null,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 8, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Sessions on this host',
-                      style: theme.textTheme.titleMedium,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Refresh',
-                    onPressed: _again,
-                    icon: const Icon(Icons.refresh),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-              child: Text(
-                'One still running is picked up as a copy, so it carries on '
-                'untouched and nothing said here reaches it.',
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
-            Flexible(
-              child: FutureBuilder<List<ClaudeAgent>>(
-                future: _agents,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return const Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  final error = snapshot.error;
-                  if (error != null) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text(
+            'One still running is picked up as a copy, so it carries on '
+            'untouched and nothing said here reaches it.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: agents == null
+              ? _say(context, 'Connect this session to see its Claude sessions.')
+              : FutureBuilder<List<ClaudeAgent>>(
+                  future: agents,
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState != ConnectionState.done) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final error = snapshot.error;
+                    if (error != null) {
                       // What the host said, as it said it: an old Claude with
                       // no agents command, or none installed at all.
-                      child: SelectableText(
-                        '$error',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.error,
-                        ),
-                      ),
-                    );
-                  }
-                  final agents = snapshot.data ?? const <ClaudeAgent>[];
-                  if (agents.isEmpty) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-                      child: Text(
+                      return _say(context, '$error', failed: true);
+                    }
+                    final rows = snapshot.data ?? const <ClaudeAgent>[];
+                    if (rows.isEmpty) {
+                      return _say(
+                        context,
                         'No Claude sessions are running on this host.',
-                        style: theme.textTheme.bodySmall,
-                      ),
+                      );
+                    }
+                    return ListView.builder(
+                      itemCount: rows.length,
+                      itemBuilder: (context, index) =>
+                          _row(context, rows[index]),
                     );
-                  }
-                  return ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: agents.length,
-                    itemBuilder: (context, index) =>
-                        _row(context, agents[index]),
-                  );
-                },
-              ),
-            ),
-          ],
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _say(BuildContext context, String text, {bool failed = false}) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: SelectableText(
+        text,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: failed ? theme.colorScheme.error : null,
         ),
       ),
     );
@@ -627,6 +718,9 @@ class _SessionSheetState extends State<_SessionSheet> {
       if (agent.cwd.isNotEmpty) agent.cwd,
     ].join(' · ');
     return ListTile(
+      // The one this chat was picked up from, so which is showing is never a
+      // guess.
+      selected: agent.sessionId == widget.chat.pickedFrom,
       leading: agent.busy
           ? const SizedBox(
               width: 20,
@@ -642,11 +736,11 @@ class _SessionSheetState extends State<_SessionSheet> {
       title: Text(agent.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(
         where,
-        maxLines: 1,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodySmall,
       ),
-      onTap: () => Navigator.pop(context, agent),
+      onTap: () => widget.onPick(agent),
     );
   }
 }
