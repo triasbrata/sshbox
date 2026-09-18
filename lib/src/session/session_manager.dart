@@ -324,6 +324,15 @@ class LiveSession extends ChangeNotifier {
       }
       return (session as ChannelCapable).open(command);
     },
+    // A terminal of its own on the host, for typing into a running session
+    // through `claude attach`, which will not run without one.
+    openTerminal: (command) async {
+      final session = _session;
+      if (session is! TerminalChannelCapable || !isConnected) {
+        throw const SshSessionException('Not connected.');
+      }
+      return (session as TerminalChannelCapable).openTerminal(command);
+    },
     cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
   );
 

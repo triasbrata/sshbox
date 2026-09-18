@@ -203,6 +203,14 @@ class _Server {
 
       case 'openChannel':
         return _hold(await (_live() as ChannelCapable).open(args[0]! as String));
+      case 'openTerminal':
+        return _hold(
+          await (_live() as TerminalChannelCapable).openTerminal(
+            args[0]! as String,
+            columns: args[1]! as int,
+            rows: args[2]! as int,
+          ),
+        );
       case 'forward':
         return _hold(
           await _forwards().forward(args[0]! as String, args[1]! as int),
@@ -588,6 +596,7 @@ class _ProxySession
         FileBrowseCapable,
         CommandCapable,
         ChannelCapable,
+        TerminalChannelCapable,
         ForwardCapable {
   _ProxySession(
     this._knownHosts,
@@ -761,6 +770,21 @@ class _ProxySession
   @override
   Future<CommandChannel> open(String command) async {
     final key = await _wire.call('openChannel', [command]) as int;
+    return (
+      output: _wire.stream('channelOut', [key]).cast<Uint8List>(),
+      write: (Uint8List data) => _wire.call('channelIn', [key, data]).ignore(),
+      close: () => _wire.call('channelEnd', [key]).ignore(),
+    );
+  }
+
+  @override
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  }) async {
+    final key =
+        await _wire.call('openTerminal', [command, columns, rows]) as int;
     return (
       output: _wire.stream('channelOut', [key]).cast<Uint8List>(),
       write: (Uint8List data) => _wire.call('channelIn', [key, data]).ignore(),

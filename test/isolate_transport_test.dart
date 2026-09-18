@@ -75,6 +75,17 @@ void main() {
     expect(await heard, ['PING']);
     channel.close();
 
+    // A terminal channel, likewise, its size carried across as well.
+    final terminal = await (session as TerminalChannelCapable).openTerminal(
+      'tui',
+      columns: 100,
+      rows: 30,
+    );
+    final drawn = terminal.output.map(utf8.decode).take(1).toList();
+    terminal.write(Uint8List.fromList(utf8.encode('key')));
+    expect(await drawn, ['tui 100x30: key']);
+    terminal.close();
+
     // A forwarded connection, likewise, through a sink.
     final tunnel = await (session as ForwardCapable).forward('db', 5432);
     final back = tunnel.output.map(utf8.decode).take(1).toList();
@@ -300,6 +311,7 @@ class _FakeSession
         FileBrowseCapable,
         CommandCapable,
         ChannelCapable,
+        TerminalChannelCapable,
         ForwardCapable {
   final _output = StreamController<String>.broadcast();
   final _status = ValueNotifier(SessionStatus.connecting);
@@ -356,6 +368,24 @@ class _FakeSession
       output: back.stream,
       write: (Uint8List data) =>
           back.add(Uint8List.fromList(utf8.encode(utf8.decode(data).toUpperCase()))),
+      close: back.close,
+    );
+  }
+
+  @override
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  }) async {
+    final back = StreamController<Uint8List>();
+    return (
+      output: back.stream,
+      write: (Uint8List data) => back.add(
+        Uint8List.fromList(
+          utf8.encode('$command ${columns}x$rows: ${utf8.decode(data)}'),
+        ),
+      ),
       close: back.close,
     );
   }

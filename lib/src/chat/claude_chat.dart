@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -14,6 +15,19 @@ const _resultLimit = 4000;
 /// One line of the transcript.
 sealed class ChatEntry {}
 
+/// Where a message typed into a watched session has got to. Null once the
+/// session has recorded it — which is the only thing that makes it sent.
+enum Delivery {
+  /// Being typed into the session.
+  sending,
+
+  /// Recorded by the session as waiting behind the turn it is running.
+  queued,
+
+  /// Not delivered; [ChatSaid.why] says why.
+  failed,
+}
+
 /// What the user typed, or what Claude answered.
 class ChatSaid extends ChatEntry {
   ChatSaid(this.text, {required this.mine});
@@ -22,6 +36,13 @@ class ChatSaid extends ChatEntry {
 
   /// Whose turn it was: the user's, or Claude's.
   final bool mine;
+
+  /// For a message typed into a session being watched, until that session has
+  /// recorded it.
+  Delivery? delivery;
+
+  /// Why it was not delivered, when [delivery] is [Delivery.failed].
+  String? why;
 }
 
 /// A tool Claude asked for, and what came back — one entry rather than two,
@@ -120,8 +141,10 @@ class ClaudeAgent {
     required this.kind,
     this.id,
     this.status,
+    this.state,
     this.pid,
     this.startedAt,
+    this.pinned = false,
   });
 
   /// The transcript, and the only thing `--resume` takes.
@@ -140,6 +163,15 @@ class ClaudeAgent {
   /// `idle` or `busy` while the process is there; absent once it has gone.
   final String? status;
 
+  /// What a background session is doing, as the CLI puts it: measured
+  /// `working` mid-turn, `done` waiting for its next message, `blocked` at a
+  /// dialog. An interactive session has none.
+  final String? state;
+
+  /// Pinned in `claude agents` on the host. Only a background session can
+  /// be: pins are kept by its short [id].
+  final bool pinned;
+
   final int? pid;
   final DateTime? startedAt;
 
@@ -156,7 +188,7 @@ class ClaudeAgent {
   /// One row of `claude agents --json`, or null when it carries no session to
   /// resume — a row from a newer CLI that means nothing here is left out
   /// rather than drawn half empty.
-  static ClaudeAgent? fromJson(Object? row) {
+  static ClaudeAgent? fromJson(Object? row, {Set<String> pins = const {}}) {
     if (row is! Map<String, dynamic>) return null;
     final sessionId = row['sessionId'];
     if (sessionId is! String || sessionId.isEmpty) return null;
@@ -170,10 +202,12 @@ class ClaudeAgent {
       cwd: row['cwd'] is String ? row['cwd'] as String : '',
       kind: row['kind'] is String ? row['kind'] as String : 'background',
       status: row['status'] is String ? row['status'] as String : null,
+      state: row['state'] is String ? row['state'] as String : null,
       pid: row['pid'] is int ? row['pid'] as int : null,
       startedAt: started is int && started > 0
           ? DateTime.fromMillisecondsSinceEpoch(started)
           : null,
+      pinned: row['id'] is String && pins.contains(row['id']),
     );
   }
 }
@@ -187,7 +221,22 @@ class ClaudeAgent {
 /// here — so nothing has to be replayed, and a turn's tool calls arrive as
 /// they happen instead of as terminal drawing to be unpicked.
 class ClaudeChat extends ChangeNotifier {
-  ClaudeChat({required this.open, this.cwd});
+  ClaudeChat({
+    required this.open,
+    this.openTerminal,
+    this.cwd,
+    this.deliveryTimeout = const Duration(seconds: 30),
+  });
+
+  /// Starts a command on the host with a terminal of its own — what typing
+  /// into a running session goes through, since `claude attach` will not run
+  /// without one. Null where the connection cannot give one.
+  final Future<CommandChannel> Function(String command)? openTerminal;
+
+  /// How long a message typed into a watched session has, first for the
+  /// session to come up to type into and then for it to record the message,
+  /// before the chat says it did not arrive.
+  final Duration deliveryTimeout;
 
   /// Starts a command on the host and hands back its pipes — the session's
   /// own [ChannelCapable.open], looked up at the moment it is called so a
@@ -220,17 +269,24 @@ class ClaudeChat extends ChangeNotifier {
   String? get sessionId => _sessionId;
 
   /// The session this chat was picked up from, for the list of sessions to
-  /// mark as the one showing. Not [sessionId]: a copy's id is its own, and
-  /// the list shows the original.
+  /// mark as the one showing.
   String? _pickedFrom;
 
   String? get pickedFrom => _pickedFrom;
 
-  /// Whether the next start branches off the session it resumes instead of
-  /// continuing it. Set by [continueFrom] and cleared as soon as it has been
-  /// used: the fork reports an id of its own, and from then on this chat
-  /// continues that, not the session it came from.
-  bool _fork = false;
+  /// The running session this chat is watching live, or null. While it is
+  /// set there is no Claude of this chat's own: what shows is what that
+  /// session writes, followed from its transcript as it writes it.
+  ClaudeAgent? _watching;
+
+  ClaudeAgent? get watching => _watching;
+
+  CommandChannel? _follower;
+  StreamSubscription<String>? _followed;
+
+  /// Set when the follow says the session's process has gone, as against the
+  /// channel simply ending with the connection.
+  bool _sessionGone = false;
 
   bool _starting = false;
   bool _ready = false;
@@ -260,15 +316,9 @@ class ClaudeChat extends ChangeNotifier {
     notifyListeners();
     try {
       final channel = await open(
-        command(
-          cwd: cwd,
-          permission: _permission,
-          resume: _sessionId,
-          fork: _fork,
-        ),
+        command(cwd: cwd, permission: _permission, resume: _sessionId),
       );
       _channel = channel;
-      _fork = false;
       _ready = true;
       _lines = utf8.decoder
           .bind(channel.output)
@@ -289,7 +339,13 @@ class ClaudeChat extends ChangeNotifier {
   /// Sends a message and waits for the turn it starts.
   void send(String text) {
     final message = text.trim();
-    if (message.isEmpty || !_ready || _busy) return;
+    if (message.isEmpty) return;
+    final watching = _watching;
+    if (watching != null) {
+      _typeInto(watching, message);
+      return;
+    }
+    if (!_ready || _busy) return;
     _write({
       'type': 'user',
       'message': {
@@ -310,6 +366,9 @@ class ClaudeChat extends ChangeNotifier {
   /// needs once the session is back.
   Future<void> restart({ChatPermission? permission}) async {
     if (permission != null) _permission = permission;
+    // Watching runs no Claude of its own to restart: follow it afresh.
+    final watching = _watching;
+    if (watching != null) return continueFrom(watching);
     await _stop();
     _busy = false;
     _ended = false;
@@ -328,12 +387,17 @@ class ClaudeChat extends ChangeNotifier {
   /// Claude Code with no `agents` command, or none installed at all.
   Future<List<ClaudeAgent>> agents() async {
     final channel = await open(agentsCommand());
-    final String text;
+    final String output;
     try {
-      text = await utf8.decoder.bind(channel.output).join();
+      output = await utf8.decoder.bind(channel.output).join();
     } finally {
       channel.close();
     }
+    // The listing, then the pins after a line of their own: see
+    // [agentsCommand].
+    final cut = output.indexOf(_pinsMark);
+    final text = cut < 0 ? output : output.substring(0, cut);
+    final pins = cut < 0 ? const <String>[] : _pinsIn(output.substring(cut));
     final rows = _arrayIn(text);
     if (rows == null) {
       throw SshSessionException(
@@ -342,9 +406,35 @@ class ClaudeChat extends ChangeNotifier {
             : text.trim(),
       );
     }
-    return [
-      for (final row in rows) ?ClaudeAgent.fromJson(row),
+    final agents = [
+      for (final row in rows) ?ClaudeAgent.fromJson(row, pins: pins.toSet()),
     ];
+    // Pinned ones first, in the order they were pinned — the order the file
+    // keeps them in — then the rest as the CLI listed them.
+    int rank(ClaudeAgent agent) =>
+        agent.pinned ? pins.indexOf(agent.id!) : pins.length;
+    final ordered = agents.indexed.toList()
+      ..sort((a, b) {
+        final byPin = rank(a.$2).compareTo(rank(b.$2));
+        return byPin != 0 ? byPin : a.$1.compareTo(b.$1);
+      });
+    return [for (final (_, agent) in ordered) agent];
+  }
+
+  /// The line between the listing and the pins.
+  static const _pinsMark = '\n--- pins\n';
+
+  /// The short ids pinned on the host, from `jobs/pins.json`: a JSON array of
+  /// strings. Missing, unreadable or not an array means nothing is pinned —
+  /// never an error, since nobody may have pinned anything yet.
+  static List<String> _pinsIn(String text) {
+    try {
+      final parsed = jsonDecode(text.replaceFirst(_pinsMark, '').trim());
+      if (parsed is List) return parsed.whereType<String>().toList();
+    } catch (_) {
+      // No pins file, or not one this can read.
+    }
+    return const [];
   }
 
   /// The JSON array in [text], or null when there is none.
@@ -368,43 +458,318 @@ class ClaudeChat extends ChangeNotifier {
     return null;
   }
 
-  /// Picks up [agent] in this chat.
+  /// Picks up [agent] in this chat, with what it has already said.
   ///
-  /// A session whose process is still running is branched off rather than
-  /// continued, because the CLI refuses to resume one that is live — it says
-  /// so and stops, whether that session is busy or sitting idle — and because
-  /// the person or the job that owns it is still using it. The branch carries
-  /// everything said so far, gets an id of its own, and leaves the original
-  /// running untouched. A session that has finished is continued in place.
+  /// A session whose process is still running is watched: its transcript is
+  /// followed as it grows, so what it goes on to do shows here as it does it,
+  /// and nothing is started or branched off — the CLI refuses to resume a
+  /// live session, and a copy would be a different conversation from the one
+  /// being watched. A session that has finished is continued in place.
   ///
   /// ponytail: never `claude stop`, which would end somebody's session from a
-  /// tap on a phone. Offer it as its own action, said out loud, if continuing
-  /// the original rather than a copy turns out to be what people want.
+  /// tap on a phone.
   Future<void> continueFrom(ClaudeAgent agent) async {
     await _stop();
     _entries.clear();
     _running.clear();
     _busy = false;
     _ended = false;
+    _watching = null;
+    _pending.clear();
     _sessionId = agent.sessionId;
     _pickedFrom = agent.sessionId;
-    _fork = agent.live;
-    // What was said before, from the transcript the host keeps: resuming
-    // replays nothing on stdout, so without this the tab would start blank
-    // on a conversation Claude remembers. The original's file, not the
-    // copy's: measured, a copy's transcript carries every earlier turn, but
-    // the original's is on disk before anything is started, and is exactly
-    // what the copy was made from.
-    await _loadHistory(agent.sessionId);
+    final pid = agent.pid;
+    final read = await _loadHistory(agent.sessionId, keepRunning: pid != null);
+    if (pid != null) {
+      // Unreadable, it has said why; with nothing to follow from, nothing is
+      // started either.
+      if (read == null) return;
+      _watching = agent;
+      _say(
+        ChatNotice(
+          'Watching “${agent.name}” live. What it does on the host shows '
+          'here as it happens.',
+        ),
+      );
+      await _follow(agent, pid: pid, from: read.from, carry: read.carry);
+      return;
+    }
+    _say(ChatNotice('Continuing “${agent.name}”.'));
+    await start();
+  }
+
+  /// What the page does when the connection comes (back): a watched session
+  /// is picked up again — its follow went with the old connection — and
+  /// anything else is started, or restarted if it had ended.
+  Future<void> resume() async {
+    final watching = _watching;
+    if (watching != null) return continueFrom(watching);
+    return _ended ? restart() : start();
+  }
+
+  /// Follows [agent]'s transcript from byte [from], starting with [carry] —
+  /// the start of a line the history read stopped in the middle of, which the
+  /// follow's first bytes finish.
+  Future<void> _follow(
+    ClaudeAgent agent, {
+    required int pid,
+    required int from,
+    required List<int> carry,
+  }) async {
+    final CommandChannel channel;
+    try {
+      channel = await open(
+        followCommand(agent.sessionId, from: from, pid: pid),
+      );
+    } catch (error) {
+      _say(ChatNotice('It could not be followed live: $error', failed: true));
+      return;
+    }
+    _follower = channel;
+    _sessionGone = false;
+    Stream<List<int>> bytes() async* {
+      if (carry.isNotEmpty) yield carry;
+      yield* channel.output;
+    }
+
+    _followed = const Utf8Decoder(allowMalformed: true)
+        .bind(bytes())
+        .transform(const LineSplitter())
+        .listen(_onFollowed, onDone: () => _followDone(agent));
+  }
+
+  /// One line the watched session wrote, drawn as a live turn is.
+  void _onFollowed(String line) {
+    final text = line.trim();
+    if (text.isEmpty) return;
+    if (text == 'sshbox:ended') {
+      _sessionGone = true;
+      return;
+    }
+    // Not a transcript line: the host saying why it cannot follow.
+    if (!text.startsWith('{')) {
+      _say(ChatNotice(text, failed: true));
+      return;
+    }
+    try {
+      final event = jsonDecode(text);
+      if (event is Map<String, dynamic>) _confirm(event);
+    } catch (_) {
+      // Drawn or not by the replay, which reads it again.
+    }
+    _replay(text);
+    notifyListeners();
+  }
+
+  void _followDone(ClaudeAgent agent) {
+    _followed = null;
+    _follower = null;
+    if (!_sessionGone) {
+      _say(
+        ChatNotice(
+          'Stopped following “${agent.name}”. It picks up again when the '
+          'connection is back, or tap it in the list.',
+        ),
+      );
+      return;
+    }
+    _sessionGone = false;
+    _watching = null;
+    // What was in flight when it stopped is history now, not a spinner.
+    for (final run in _running.values) {
+      run.result = '';
+    }
+    _running.clear();
     _say(
       ChatNotice(
-        agent.live
-            ? 'Continuing “${agent.name}” as a copy. The session on the host '
-                  'keeps running and is not touched by anything said here.'
-            : 'Continuing “${agent.name}”.',
+        '“${agent.name}” is no longer running on the host. What you send '
+        'from here now continues it.',
       ),
     );
-    await start();
+    // No longer live, so it resumes in place: the same conversation.
+    unawaited(start());
+  }
+
+  /// The states `claude agents` gives a session it is safe to type into,
+  /// both measured: `done`, waiting for its next message, where a message is
+  /// taken as the next turn; and `working`, mid-turn, where it is queued
+  /// behind the turn and answered after it. Anything else — `blocked` at a
+  /// dialog, a state a later CLI adds, none at all — is refused, since a
+  /// keystroke there could answer a prompt nobody meant to answer.
+  static const _typeable = {'done', 'working'};
+
+  /// Messages typed into the watched session that it has not recorded yet.
+  final List<ChatSaid> _pending = [];
+
+  /// Settled when the session records the message it is keyed by.
+  final Map<ChatSaid, Completer<void>> _recorded = {};
+
+  /// One message at a time goes into the session: two attaches typing at
+  /// once would interleave their keystrokes.
+  Future<void> _typing = Future.value();
+
+  /// Types [message] into [agent], the session being watched, rather than
+  /// into a Claude of this chat's own: shown at once as being sent, and as
+  /// sent only when the session's own transcript has it.
+  void _typeInto(ClaudeAgent agent, String message) {
+    final said = ChatSaid(message, mine: true)..delivery = Delivery.sending;
+    _pending.add(said);
+    _recorded[said] = Completer<void>();
+    _say(said);
+    // Whatever goes wrong, the message says it was not delivered rather than
+    // sitting at "sending", and the next one still gets its turn.
+    _typing = _typing.then(
+      (_) => _deliver(said, agent).catchError(
+        (Object error) => _undelivered(said, 'Not delivered: $error'),
+      ),
+    );
+  }
+
+  Future<void> _deliver(ChatSaid said, ClaudeAgent agent) async {
+    final openTerminal = this.openTerminal;
+    if (openTerminal == null) {
+      return _undelivered(said, 'This connection cannot open a terminal on '
+          'the host, which typing into a session needs.');
+    }
+    // What it is doing now, not what the list said when it was picked.
+    final ClaudeAgent? now;
+    try {
+      now = (await agents())
+          .where((row) => row.sessionId == agent.sessionId)
+          .firstOrNull;
+    } catch (error) {
+      return _undelivered(said, 'Could not check on it first: $error');
+    }
+    if (now == null || !now.live) {
+      return _undelivered(said, '“${agent.name}” is no longer running.');
+    }
+    final id = now.id;
+    if (id == null || now.interactive) {
+      return _undelivered(said, 'Somebody is typing into “${agent.name}” at a '
+          'terminal. Type there, so two people are not typing at once.');
+    }
+    if (!_typeable.contains(now.state)) {
+      return _undelivered(said, '“${agent.name}” is waiting for something on '
+          'the host${now.state == null ? '' : ' (${now.state})'}. Open it in a '
+          'terminal with `claude attach $id` to answer it.');
+    }
+    if (!_sessionIdShape.hasMatch(id)) {
+      return _undelivered(said, 'This session has no id that can be '
+          'attached to.');
+    }
+    final CommandChannel terminal;
+    try {
+      terminal = await openTerminal(attachCommand(id));
+    } catch (error) {
+      return _undelivered(said, 'Could not open it on the host: $error');
+    }
+    final drawn = Completer<void>();
+    final screen = const Utf8Decoder(allowMalformed: true)
+        .bind(terminal.output)
+        .listen(
+          (chunk) {
+            // Its input line: the TUI is up and a paste lands in it.
+            if (chunk.contains('❯') && !drawn.isCompleted) drawn.complete();
+          },
+          onDone: () {
+            if (!drawn.isCompleted) drawn.completeError('closed');
+          },
+          onError: (Object _) {},
+        );
+    try {
+      try {
+        await drawn.future.timeout(deliveryTimeout);
+      } catch (_) {
+        return _undelivered(said, '“${agent.name}” did not come up to type '
+            'into. Open it in a terminal with `claude attach $id`.');
+      }
+      // A moment for the rest of the screen to settle under the prompt.
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      terminal.write(
+        Uint8List.fromList(utf8.encode('\x1b[200~${_pasteable(said.text)}\x1b[201~')),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      terminal.write(Uint8List.fromList(const [13]));
+      // Sent only once the session has it: recorded as its next turn, or
+      // queued behind the one it is running.
+      try {
+        await _recorded[said]!.future.timeout(deliveryTimeout);
+      } on TimeoutException {
+        _undelivered(said, 'Not delivered: “${agent.name}” did not record it '
+            'within ${deliveryTimeout.inSeconds} s. It may be waiting for '
+            'something on the host — open it in a terminal with '
+            '`claude attach $id` to see.');
+      }
+    } finally {
+      await screen.cancel();
+      // The attach goes; the session keeps running either way.
+      terminal.close();
+    }
+  }
+
+  void _undelivered(ChatSaid said, String why) {
+    said
+      ..delivery = Delivery.failed
+      ..why = why;
+    _pending.remove(said);
+    final recorded = _recorded.remove(said);
+    if (recorded != null && !recorded.isCompleted) recorded.complete();
+    notifyListeners();
+  }
+
+  /// Text as it may go into a paste: no escape, and no control but a newline
+  /// or a tab. A paste ends at `ESC[201~`, so an escape left in it would end
+  /// it early and let the rest be read as keys; the C1 controls go too, since
+  /// some terminals read U+009B as an escape sequence of its own.
+  static String _pasteable(String text) =>
+      text.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]'), '');
+
+  /// What the session writing [event] says about a message typed into it:
+  /// that it has taken it as a turn, or queued it behind the one it is on.
+  void _confirm(Map<String, dynamic> event) {
+    if (_pending.isEmpty) return;
+    final String? text;
+    var queued = false;
+    switch (event['type']) {
+      case 'queue-operation' when event['operation'] == 'enqueue':
+        text = event['content'] as String?;
+        queued = true;
+      case 'user' when event['isMeta'] != true:
+        final message = event['message'];
+        text = message is Map<String, dynamic>
+            ? _userText(message['content'])
+            : null;
+      default:
+        text = null;
+    }
+    if (text == null) return;
+    final key = _normal(text);
+    final said = _pending.where((said) => _normal(said.text) == key).firstOrNull;
+    if (said == null) return;
+    // Either way the session has it, and the attach can go.
+    _recorded.remove(said)?.complete();
+    if (queued) {
+      // Still pending: it moves to where the session puts it once taken.
+      said.delivery = Delivery.queued;
+      return;
+    }
+    // Taken as a turn: the session's own line is drawn in its place, where
+    // the session put it.
+    _pending.remove(said);
+    _entries.remove(said);
+  }
+
+  static String _normal(String text) =>
+      text.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+  Future<void> _stopFollowing() async {
+    final followed = _followed;
+    final follower = _follower;
+    _followed = null;
+    _follower = null;
+    // Cancelled first, so a follow stopped on purpose says nothing about it.
+    await followed?.cancel();
+    follower?.close();
   }
 
   /// What a session id looks like: a UUID, or the short form. Anything else
@@ -413,47 +778,60 @@ class ClaudeChat extends ChangeNotifier {
   static final _sessionIdShape = RegExp(r'^[0-9A-Za-z-]{8,64}$');
 
   /// Reads the end of [sessionId]'s transcript into the chat, drawn as a live
-  /// turn is drawn. A transcript that cannot be read costs its history, never
-  /// the pick-up: it says why, and the chat goes on.
-  Future<void> _loadHistory(String sessionId) async {
+  /// turn is drawn, and says where it stopped: the byte a follow takes up
+  /// from, and the start of a line it cut, which the follow finishes. A
+  /// transcript that cannot be read costs its history, never the pick-up: it
+  /// says why, and hands back null.
+  ///
+  /// [keepRunning] leaves a tool call whose result has not come yet
+  /// spinning, for a session being followed, whose result is still to come;
+  /// otherwise it is history, and marked done.
+  Future<({int from, List<int> carry})?> _loadHistory(
+    String sessionId, {
+    bool keepRunning = false,
+  }) async {
     if (!_sessionIdShape.hasMatch(sessionId)) {
       _say(ChatNotice('This session has no id that can be looked up.'));
-      return;
+      return null;
     }
-    final String text;
+    final Uint8List bytes;
     try {
       final channel = await open(historyCommand(sessionId));
       try {
-        // Malformed allowed: a cut by bytes can land inside a character.
         // A host that never closes the channel costs its history, not the
         // pick-up.
-        text = await const Utf8Decoder(allowMalformed: true)
-            .bind(channel.output)
-            .join()
+        bytes = await channel.output
+            .fold(BytesBuilder(copy: false), (all, chunk) => all..add(chunk))
+            .then((all) => all.takeBytes())
             .timeout(const Duration(seconds: 20));
       } finally {
         channel.close();
       }
     } catch (error) {
       _say(ChatNotice('Its earlier turns could not be read: $error'));
-      return;
+      return null;
     }
-    final lines = const LineSplitter().convert(text);
-    final size = lines.isEmpty ? null : int.tryParse(lines.first.trim());
+    // Malformed allowed: a cut by bytes can land inside a character.
+    const text = Utf8Decoder(allowMalformed: true);
+    final firstLine = bytes.indexOf(10);
+    final size = firstLine < 0
+        ? null
+        : int.tryParse(latin1.decode(bytes.sublist(0, firstLine)).trim());
     if (size == null) {
       // Not a size: the host saying why there is nothing, as it said it.
-      final reason = text.trim();
+      final reason = text.convert(bytes).trim();
       _say(
         ChatNotice(
           reason.isEmpty ? 'Its earlier turns could not be read.' : reason,
         ),
       );
-      return;
+      return null;
     }
-    var body = lines.skip(1);
+    var body = bytes.sublist(firstLine + 1);
     if (size > historyLimit) {
       // Read from the middle of a line; that line is only its end.
-      body = body.skip(1);
+      final cut = body.indexOf(10);
+      body = cut < 0 ? Uint8List(0) : body.sublist(cut + 1);
       _entries.add(
         ChatNotice(
           'Only the latest part of this session is shown; its earlier turns '
@@ -461,16 +839,22 @@ class ClaudeChat extends ChangeNotifier {
         ),
       );
     }
-    for (final line in body) {
+    // Only whole lines are drawn; what follows the last one is a line still
+    // being written, for the follow to finish.
+    final whole = body.lastIndexOf(10) + 1;
+    for (final line in const LineSplitter().convert(
+      text.convert(body.sublist(0, whole)),
+    )) {
       _replay(line);
     }
-    // A call whose answer fell outside what was read, or never came, is
-    // history now and not a spinner.
-    for (final run in _running.values) {
-      run.result = '';
+    if (!keepRunning) {
+      for (final run in _running.values) {
+        run.result = '';
+      }
+      _running.clear();
     }
-    _running.clear();
     notifyListeners();
+    return (from: size, carry: body.sublist(whole));
   }
 
   /// One line of a transcript. Only the conversation is kept: a transcript
@@ -493,20 +877,7 @@ class ClaudeChat extends ChangeNotifier {
       case 'assistant':
         _onAssistant(message);
       case 'user' when message is Map<String, dynamic>:
-        final content = message['content'];
-        final said = switch (content) {
-          final String text => text,
-          final List blocks
-              when !blocks.any(
-                (block) => block is Map && block['type'] == 'tool_result',
-              ) =>
-            blocks
-                .whereType<Map<String, dynamic>>()
-                .where((block) => block['type'] == 'text')
-                .map((block) => block['text'] as String? ?? '')
-                .join('\n'),
-          _ => null,
-        };
+        final said = _userText(message['content']);
         if (said == null) {
           _onToolResults(message);
           return;
@@ -522,6 +893,23 @@ class ClaudeChat extends ChangeNotifier {
         );
     }
   }
+
+  /// What a `user` line's content says the user typed: a plain string, as a
+  /// terminal records it, or the text blocks this chat sends. Null for a
+  /// line that is a tool's result instead.
+  static String? _userText(Object? content) => switch (content) {
+    final String text => text,
+    final List blocks
+        when !blocks.any(
+          (block) => block is Map && block['type'] == 'tool_result',
+        ) =>
+      blocks
+          .whereType<Map<String, dynamic>>()
+          .where((block) => block['type'] == 'text')
+          .map((block) => block['text'] as String? ?? '')
+          .join('\n'),
+    _ => null,
+  };
 
   void _write(Map<String, dynamic> message) {
     final channel = _channel;
@@ -670,6 +1058,7 @@ class ClaudeChat extends ChangeNotifier {
   }
 
   Future<void> _stop() async {
+    await _stopFollowing();
     final lines = _lines;
     final channel = _channel;
     _lines = null;
@@ -702,14 +1091,11 @@ class ClaudeChat extends ChangeNotifier {
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
-    bool fork = false,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
-    final again = resume == null
-        ? ''
-        : ' --resume ${_shellQuote(resume)}${fork ? ' --fork-session' : ''}';
+    final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
     // Splicing a quoted value into an outer '…' closes that quote instead, so
@@ -727,9 +1113,16 @@ class ClaudeChat extends ChangeNotifier {
   /// this possible over an exec channel at all. Without `--all` it lists the
   /// sessions still running, which is what was asked for. Claude is found and
   /// the whole script quoted exactly as [command] does it.
+  ///
+  /// The pins follow it after a line of their own, so one round trip brings
+  /// both: `jobs/pins.json` beside the CLI's other state, a JSON array of the
+  /// short ids pinned in `claude agents` — found by watching which file
+  /// changed when a session was pinned, since the listing itself never says.
   static String agentsCommand() => 'sh -c '
       '${_shellQuote('$_findClaude'
-          r'exec "$c" agents --json 2>&1')}';
+          r'"$c" agents --json 2>&1; printf "\n--- pins\n"; '
+          r'cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/pins.json" '
+          '2>/dev/null')}';
 
   /// How much of a transcript is read, from its end.
   ///
@@ -750,13 +1143,64 @@ class ClaudeChat extends ChangeNotifier {
   /// does. The id is quoted for sh, and the whole script once more for the
   /// login shell, as [command] quotes its values.
   static String historyCommand(String sessionId) => 'sh -c '
-      '${_shellQuote(r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"; '
-          'f=\$(find "\$d" -type f -name ${_shellQuote('$sessionId.jsonl')} '
-          r'2>/dev/null | head -n 1); '
-          r'[ -n "$f" ] || { echo "No transcript for this session on the '
-          r'host."; exit 1; }; '
-          r'wc -c < "$f"; '
-          'tail -c $historyLimit "\$f"')}';
+      '${_shellQuote('${_findTranscript(sessionId)}'
+          // The size is read once, and the read stops there: a session
+          // still writing must not have its newest bytes handed over twice,
+          // here and again by the follow that starts at this size.
+          r's=$(wc -c < "$f" | tr -d " "); echo "$s"; '
+          'if [ "\$s" -gt $historyLimit ]; then '
+          'tail -c +\$((s - $historyLimit + 1)) "\$f" | head -c $historyLimit; '
+          r'else head -c "$s" "$f"; fi')}';
+
+  /// What the host runs to hand over what a running session goes on to write,
+  /// from byte [from] of its transcript — where the history read stopped —
+  /// for as long as its process, [pid], is alive.
+  ///
+  /// Measured: a background session's transcript grows an event at a time
+  /// while its turn runs, each tool call as it is issued and each result as
+  /// it returns, so following the file is live, not turn by turn.
+  ///
+  /// Three things end it, and none leaves anything behind on the host:
+  /// - The session's process going, checked every 2 s with `kill -0`. Then
+  ///   the tail is given a second to hand over the last lines, and a line of
+  ///   its own saying so, `sshbox:ended`, follows them.
+  /// - The channel closing, when the tab closes or the connection goes. An
+  ///   exec channel with no pty hangs up nothing, so the shell reads its own
+  ///   stdin in the foreground, and the end of it is the channel gone.
+  /// - The tail dying on its own.
+  ///
+  /// The id is found and quoted as [historyCommand] does it; [from] and
+  /// [pid] are numbers, and nothing else from the host reaches the command.
+  static String followCommand(
+    String sessionId, {
+    required int from,
+    required int pid,
+  }) => 'sh -c '
+      '${_shellQuote('${_findTranscript(sessionId)}'
+          'tail -c +${from + 1} -f "\$f" & t=\$!; '
+          '( while kill -0 $pid 2>/dev/null && kill -0 \$t 2>/dev/null; '
+          'do sleep 2; done; '
+          'if ! kill -0 $pid 2>/dev/null; then sleep 1; kill \$t 2>/dev/null; '
+          'echo; echo sshbox:ended; fi; '
+          r'kill $$ 2>/dev/null ) & w=$!; '
+          r'cat >/dev/null 2>&1; kill $t $w 2>/dev/null')}';
+
+  /// What the host runs to type into a running background session: `claude
+  /// attach` with its short [id], on the pty [openTerminal] gives it. Claude
+  /// is found as [command] finds it, and the id quoted once for sh, the whole
+  /// script once more.
+  static String attachCommand(String id) => 'sh -c '
+      '${_shellQuote('$_findClaude'
+          'exec "\$c" attach ${_shellQuote(id)}')}';
+
+  /// Finds [sessionId]'s transcript into `$f`, or says there is none and
+  /// stops — by its id, not by the directory the CLI files it under.
+  static String _findTranscript(String sessionId) =>
+      r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"; '
+      'f=\$(find "\$d" -type f -name ${_shellQuote('$sessionId.jsonl')} '
+      r'2>/dev/null | head -n 1); '
+      r'[ -n "$f" ] || { echo "No transcript for this session on the '
+      r'host."; exit 1; }; ';
 
   /// Finds Claude Code into `$c`, or says it is not there and stops.
   static const _findClaude =

@@ -110,6 +110,23 @@ abstract class ChannelCapable {
   Future<CommandChannel> open(String command);
 }
 
+/// Optional capability: a command on the host with a terminal of its own,
+/// talked to and listened to in raw bytes, both ways.
+///
+/// For a program that will not run without one, as `claude attach` will not.
+/// Apart from [ChannelCapable], whose promise is the opposite — no pty, so
+/// nothing on the way turns `\n` into `\r\n` or reads a byte as a signal —
+/// and which the terminal, tmux and the chat's own Claude rely on.
+abstract class TerminalChannelCapable {
+  /// A pty of [columns] by [rows]. [CommandChannel.close] hangs it up, which
+  /// ends what it was running.
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  });
+}
+
 /// A TCP connection through the host — one [ForwardCapable.forward] made
 /// from it, or one made to a port it listens on for us: the bytes the far
 /// end sends, and a sink for ours whose close says we are done.

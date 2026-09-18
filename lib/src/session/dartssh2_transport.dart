@@ -177,6 +177,7 @@ class _Dartssh2Session
         FileBrowseCapable,
         CommandCapable,
         ChannelCapable,
+        TerminalChannelCapable,
         ForwardCapable {
   _Dartssh2Session(
     this._knownHosts,
@@ -538,6 +539,32 @@ class _Dartssh2Session
     }
     final session = await _withEnvironment(
       (environment) => client.execute(command, environment: environment),
+    );
+    return (
+      output: session.stdout,
+      write: session.write,
+      close: session.channel.destroy,
+    );
+  }
+
+  /// As [open], with a pty of its own: the same environment, and closed with
+  /// `destroy`, which hangs the pty up and so ends what it runs.
+  @override
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  }) async {
+    final client = _client;
+    if (client == null || _status.value != SessionStatus.connected) {
+      throw const SshSessionException('Not connected.');
+    }
+    final session = await _withEnvironment(
+      (environment) => client.execute(
+        command,
+        environment: environment,
+        pty: SSHPtyConfig(width: columns, height: rows),
+      ),
     );
     return (
       output: session.stdout,

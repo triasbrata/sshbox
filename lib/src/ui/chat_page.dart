@@ -66,9 +66,10 @@ class _ChatPageState extends State<ChatPage> {
     final connected = widget.session.isConnected;
     if (connected && !_wasConnected) {
       _wasConnected = true;
-      // After a reconnect the old process went with the old connection;
-      // restarting resumes the same conversation on the new one.
-      unawaited(_chat.ended ? _chat.restart() : _chat.start());
+      // After a reconnect the old process, or the follow of a session being
+      // watched, went with the old connection: it is picked up again on the
+      // new one, the same conversation either way.
+      unawaited(_chat.resume());
     } else if (!connected) {
       _wasConnected = false;
     }
@@ -224,7 +225,7 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _entry(ChatEntry entry) => switch (entry) {
-    ChatSaid(mine: true, :final text) => _Bubble(text: text),
+    ChatSaid(mine: true) => _Bubble(said: entry),
     ChatSaid(:final text) => _Answer(text: text),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
@@ -236,7 +237,12 @@ class _ChatPageState extends State<ChatPage> {
     required bool sidebar,
   }) {
     final chat = _chat;
-    final canSend = chat.ready && !chat.busy;
+    final watching = chat.watching;
+    // Into a session being watched, what is typed goes to that session and
+    // queues behind whatever it is doing; to this chat's own Claude, only
+    // between its turns.
+    final open = watching != null || chat.ready;
+    final canSend = watching != null || (chat.ready && !chat.busy);
     return SafeArea(
       top: false,
       child: Padding(
@@ -280,7 +286,7 @@ class _ChatPageState extends State<ChatPage> {
             Expanded(
               child: TextField(
                 controller: _input,
-                enabled: chat.ready,
+                enabled: open,
                 minLines: 1,
                 maxLines: 5,
                 keyboardType: TextInputType.multiline,
@@ -288,7 +294,9 @@ class _ChatPageState extends State<ChatPage> {
                 decoration: InputDecoration(
                   isDense: true,
                   border: const OutlineInputBorder(),
-                  hintText: chat.ready
+                  hintText: watching != null
+                      ? 'Message “${watching.name}”…'
+                      : chat.ready
                       ? 'Ask Claude…'
                       : widget.session.isConnected
                       ? 'Starting Claude on the host…'
@@ -368,27 +376,69 @@ class _Empty extends StatelessWidget {
   }
 }
 
-/// What the user said: their own bubble, on their own side.
+/// What the user said: their own bubble, on their own side — and, for a
+/// message typed into a session being watched, where it has got to, until
+/// that session has recorded it.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.text});
+  const _Bubble({required this.said});
 
-  final String text;
+  final ChatSaid said;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final delivery = said.delivery;
+    final failed = delivery == Delivery.failed;
+    final note = switch (delivery) {
+      Delivery.sending => 'Sending…',
+      Delivery.queued => 'Queued: it runs after what the session is doing.',
+      Delivery.failed => said.why ?? 'Not delivered.',
+      null => null,
+    };
     return Align(
       alignment: Alignment.centerRight,
-      child: Container(
-        margin: const EdgeInsets.only(top: 8, bottom: 8, left: 48),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: scheme.primaryContainer,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: SelectableText(
-          text,
-          style: TextStyle(color: scheme.onPrimaryContainer),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 8, left: 48),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Opacity(
+              // Not in the session yet, so not quite said.
+              opacity: delivery == null ? 1 : 0.6,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: failed
+                      ? scheme.errorContainer
+                      : scheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: SelectableText(
+                  said.text,
+                  style: TextStyle(
+                    color: failed
+                        ? scheme.onErrorContainer
+                        : scheme.onPrimaryContainer,
+                  ),
+                ),
+              ),
+            ),
+            if (note != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: SelectableText(
+                  note,
+                  textAlign: TextAlign.end,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: failed ? scheme.error : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -740,6 +790,17 @@ class _SessionListState extends State<_SessionList> {
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodySmall,
       ),
+      // Pinned in `claude agents` on the host, and so first here too.
+      trailing: agent.pinned
+          ? Tooltip(
+              message: 'Pinned',
+              child: Icon(
+                Icons.push_pin,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
+            )
+          : null,
       onTap: () => widget.onPick(agent),
     );
   }

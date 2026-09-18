@@ -24,7 +24,35 @@ class _NoSecrets implements SecretStore {
 /// A host that is up at once and can run a command beside the shell — which
 /// is all a chat needs of a session.
 class _Shell
-    implements SessionTransport, TerminalSession, ChannelCapable {
+    implements
+        SessionTransport,
+        TerminalSession,
+        ChannelCapable,
+        TerminalChannelCapable {
+  /// What was typed into each terminal opened on the host.
+  final typed = <List<String>>[];
+
+  @override
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  }) async {
+    commands.add(command);
+    final keys = <String>[];
+    typed.add(keys);
+    final screen = StreamController<Uint8List>();
+    // `claude attach` drawing its input line.
+    scheduleMicrotask(
+      () => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))),
+    );
+    return (
+      output: screen.stream,
+      write: (Uint8List data) => keys.add(utf8.decode(data)),
+      close: () => unawaited(screen.close()),
+    );
+  }
+
   /// Every command started on the host, and the pipes each one was given.
   final commands = <String>[];
   final written = <String>[];
@@ -51,9 +79,27 @@ class _Shell
   /// A session that has said nothing, unless a test says otherwise.
   String history = '0\n';
 
+  /// The running session's transcript as it grows, once something follows
+  /// it.
+  StreamController<Uint8List>? follow;
+
+  /// The session writing one more line to its transcript.
+  void adds(Map<String, Object?> line) => follow!.add(
+    Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')),
+  );
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains(' -f ')) {
+      final controller = StreamController<Uint8List>();
+      follow = controller;
+      return (
+        output: controller.stream,
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     if (command.contains('.jsonl')) {
       return (
         output: Stream.value(Uint8List.fromList(utf8.encode(history))),
@@ -243,7 +289,7 @@ void main() {
   });
 
   testWidgets('the sessions on the host are offered, and one still running '
-      'is picked up as a copy', (tester) async {
+      'is watched live, updating by itself', (tester) async {
     final shell = _Shell()
       ..history = _nightlyHistory
       ..listing = jsonEncode([
@@ -295,14 +341,27 @@ void main() {
     // blank tab on a session Claude remembers.
     expect(find.text('is the nightly build green?'), findsOneWidget);
     expect(find.text('It failed at the lint step.'), findsOneWidget);
-    // Its process is alive, so it is branched off rather than resumed, and
-    // the tab says so rather than leaving the user to guess.
-    expect(shell.commands.last, contains('--fork-session'));
+    // Its process is alive, so it is followed rather than resumed or
+    // copied, and the tab says so.
+    expect(shell.commands.last, contains(' -f '));
     expect(
       shell.commands.last,
       contains('81badf4a-7e9f-4f01-b098-6968dbe5f070'),
     );
-    expect(find.textContaining('keeps running'), findsOneWidget);
+    expect(find.textContaining('Watching'), findsOneWidget);
+
+    // What it says next shows by itself, without picking it again.
+    shell.adds({
+      'type': 'assistant',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'Lint fixed, build running again.'},
+        ],
+      },
+    });
+    await _settlePickUp(tester);
+    expect(find.text('Lint fixed, build running again.'), findsOneWidget);
   });
 
   testWidgets('a host that cannot list its sessions says what it said',
@@ -380,5 +439,104 @@ void main() {
     await tester.tap(find.byTooltip('Sessions on this host'));
     await tester.pumpAndSettle();
     expect(find.text('the nightly build'), findsOneWidget);
+  });
+
+  testWidgets('what is typed into a session being watched shows as sending, '
+      'then as said once the session has it', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'idle',
+          'state': 'done',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('the nightly build'));
+    await _settlePickUp(tester);
+
+    // Open to typing while watching, and says where it goes.
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration!.hintText,
+      'Message “the nightly build”…',
+    );
+    await tester.enterText(find.byType(TextField), 'run it once more');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+    expect(find.text('Sending…'), findsOneWidget);
+
+    for (var turn = 0; turn < 12; turn++) {
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    // Into the running session itself, through its attach.
+    expect(shell.commands.any((command) => command.contains('attach')),
+        isTrue);
+    expect(shell.typed.single.first, '\x1b[200~run it once more\x1b[201~');
+    expect(find.text('Sending…'), findsOneWidget);
+
+    shell.adds({
+      'type': 'user',
+      'message': {'role': 'user', 'content': 'run it once more'},
+    });
+    await _settlePickUp(tester);
+
+    expect(find.text('Sending…'), findsNothing);
+    expect(find.text('run it once more'), findsOneWidget);
+  });
+
+  testWidgets('a session pinned in claude agents is pinned in the sidebar, '
+      'first', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    Map<String, Object?> bg(String id, String name) => {
+      'pid': 1,
+      'id': id,
+      'cwd': '/srv',
+      'kind': 'background',
+      'sessionId': '$id-0000-0000-0000-000000000000',
+      'name': name,
+      'status': 'idle',
+      'state': 'done',
+    };
+    final shell = _Shell()
+      ..listing =
+          '${jsonEncode([bg('aaaa1111', 'not pinned'), bg('bbbb2222', 'pinned')])}'
+          '\n--- pins\n["bbbb2222"]\n';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pumpAndSettle();
+
+    final rows = tester
+        .widgetList<ListTile>(find.byType(ListTile))
+        .map((tile) => (tile.title! as Text).data)
+        .toList();
+    expect(rows, ['pinned', 'not pinned']);
+    expect(find.byIcon(Icons.push_pin), findsOneWidget);
   });
 }

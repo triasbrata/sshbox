@@ -162,6 +162,14 @@ _hostWithHistory(String? history) {
     commands: commands,
     open: (String command) async {
       commands.add(command);
+      if (command.contains(' -f ')) {
+        // Following a session that, for this test, adds nothing more.
+        return (
+          output: StreamController<Uint8List>().stream,
+          write: (Uint8List data) {},
+          close: () {},
+        );
+      }
       if (command.contains('.jsonl')) {
         return (
           output: Stream.value(
@@ -192,6 +200,113 @@ CommandChannel _noHistory() => (
   write: (Uint8List data) {},
   close: () {},
 );
+
+/// A host with a live session on it: the history command gets [history],
+/// the follow command a channel this test writes into as the session goes
+/// on, and Claude itself — if anything starts it — a channel of its own.
+class _LiveHost {
+  _LiveHost(this.history, {this.state = 'done'});
+
+  final String history;
+
+  /// What `claude agents` says the watched session is doing right now.
+  String? state;
+  final commands = <String>[];
+  StreamController<Uint8List>? follow;
+  var followClosed = false;
+
+  /// Every terminal opened on the host: the command, what was typed into it,
+  /// and whether it has been closed — in the order they were opened.
+  final terminals = <({String command, List<String> typed, List<bool> closed})>[];
+
+  /// Whether a terminal draws a prompt to type at. A TUI that never comes up
+  /// is a test's to ask for.
+  var terminalsDraw = true;
+
+  Future<CommandChannel> openTerminal(String command) async {
+    commands.add(command);
+    final typed = <String>[];
+    final closed = [false];
+    terminals.add((command: command, typed: typed, closed: closed));
+    final screen = StreamController<Uint8List>();
+    if (terminalsDraw) {
+      // What `claude attach` draws: its input line, which is the prompt.
+      scheduleMicrotask(
+        () => screen.add(Uint8List.fromList(utf8.encode('\x1b[2J ❯ '))),
+      );
+    }
+    return (
+      output: screen.stream,
+      write: (Uint8List data) => typed.add(utf8.decode(data)),
+      close: () {
+        closed[0] = true;
+        unawaited(screen.close());
+      },
+    );
+  }
+
+  Future<CommandChannel> open(String command) async {
+    commands.add(command);
+    if (command.contains('agents --json')) {
+      final listed = jsonEncode([
+        {
+          'pid': _live.pid,
+          'id': _live.id,
+          'cwd': _live.cwd,
+          'kind': 'background',
+          'sessionId': _live.sessionId,
+          'name': _live.name,
+          'status': state == 'working' ? 'busy' : 'idle',
+          'state': ?state,
+        },
+      ]);
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(listed))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    if (command.contains(' -f ')) {
+      final controller = StreamController<Uint8List>();
+      follow = controller;
+      followClosed = false;
+      return (
+        output: controller.stream,
+        write: (Uint8List data) {},
+        close: () => followClosed = true,
+      );
+    }
+    if (command.contains('.jsonl')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(history))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    return _FakeClaude().channel;
+  }
+
+  /// The session writing one more line to its transcript.
+  void adds(Object line) => follow!.add(
+    Uint8List.fromList(
+      utf8.encode(line is String ? line : '${jsonEncode(line)}\n'),
+    ),
+  );
+
+  /// Whether Claude itself was started — a copy, or the session resumed.
+  bool get startedClaude =>
+      commands.any((command) => command.contains('stream-json'));
+}
+
+Map<String, Object?> _said(String text) => {
+  'type': 'assistant',
+  'message': {
+    'role': 'assistant',
+    'content': [
+      {'type': 'text', 'text': text},
+    ],
+  },
+};
 
 /// Lets the events queued above reach the chat.
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
@@ -623,63 +738,6 @@ void main() {
     await listing;
   });
 
-  test('picking up a session that is still running branches off it rather '
-      'than resuming it', () async {
-    final commands = <String>[];
-    final channels = <_FakeClaude>[];
-    final chat = ClaudeChat(
-      open: (command) async {
-        commands.add(command);
-        if (command.contains('.jsonl')) return _noHistory();
-        final claude = _FakeClaude();
-        channels.add(claude);
-        return claude.channel;
-      },
-    );
-    addTearDown(chat.dispose);
-    await chat.start();
-    chat.send('this chat, before it was handed a session');
-    await _settle();
-
-    await chat.continueFrom(
-      const ClaudeAgent(
-        sessionId: 'aaaa1111-0000-0000-0000-000000000000',
-        name: 'the one at work',
-        cwd: '/srv/app',
-        kind: 'background',
-        id: 'aaaa1111',
-        status: 'busy',
-        pid: 4079548,
-      ),
-    );
-
-    // The CLI refuses -p --resume for a session whose process is alive,
-    // busy or idle alike, so a live one is branched off.
-    expect(commands.last, contains('--fork-session'));
-    expect(commands.last, contains('--resume'));
-    // The id itself, not how it is quoted — the shell test below is what
-    // proves the quoting, because text that reads right can still run wrong.
-    expect(commands.last, contains('aaaa1111-0000-0000-0000-000000000000'));
-    // A new conversation: what this chat said before is not what that
-    // session said.
-    expect(chat.entries.whereType<ChatSaid>(), isEmpty);
-    expect(
-      chat.entries.whereType<ChatNotice>().single.text,
-      allOf(contains('the one at work'), contains('keeps running')),
-    );
-
-    // The fork has an id of its own from here on, and is not forked again.
-    channels.last.event({
-      'type': 'system',
-      'subtype': 'init',
-      'session_id': 'bbbb2222-0000-0000-0000-000000000000',
-    });
-    await _settle();
-    await chat.restart();
-    expect(commands.last, contains('bbbb2222-0000-0000-0000-000000000000'));
-    expect(commands.last, isNot(contains('--fork-session')));
-  });
-
   test('picking up a session that has finished continues it where it was',
       () async {
     final commands = <String>[];
@@ -711,7 +769,7 @@ void main() {
     );
   });
 
-  test('listing the sessions, and the id of one picked up, reach Claude '
+  test('listing the sessions, and the id of one continued, reach Claude '
       'exactly as given', () async {
     // The same real shell the command test uses: what a session id holds —
     // and a name holds anything the user typed — must not be read by any
@@ -742,14 +800,13 @@ void main() {
     ]) {
       final result = await Process.run(
         'sh',
-        ['-c', ClaudeChat.command(resume: session, fork: true)],
+        ['-c', ClaudeChat.command(resume: session)],
         environment: path,
       );
       final lines = (result.stdout as String).split('\n');
       final at = lines.indexOf('--resume');
       expect(at, isNot(-1), reason: session);
       expect(lines[at + 1], session, reason: session);
-      expect(lines[at + 2], '--fork-session', reason: session);
       expect(result.stdout, isNot(contains('RAN\n')), reason: session);
     }
     // Nothing a session id held was ever run.
@@ -788,12 +845,12 @@ void main() {
     // history, where it happens.
     final notices = chat.entries.whereType<ChatNotice>().toList();
     expect(notices.first.text, contains('interrupted'));
-    expect(notices.last.text, contains('as a copy'));
+    expect(notices.last.text, contains('Watching'));
     expect(chat.entries.last, isA<ChatNotice>());
-    // Its history comes first, then Claude is started on it.
+    // Its history comes first, then it is followed from there.
     expect(host.commands.first, contains('3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f'));
     expect(host.commands.first, contains('.jsonl'));
-    expect(host.commands.last, contains('--fork-session'));
+    expect(host.commands.last, contains(' -f '));
   });
 
   test('a long transcript is read from its tail, and says so', () async {
@@ -809,7 +866,9 @@ void main() {
 
     await chat.continueFrom(_live);
 
-    expect(host.commands.first, contains('tail -c ${ClaudeChat.historyLimit}'));
+    // How much the host reads is the shell test's to prove, below; this one
+    // is what the chat does with a read that cut a line.
+    expect(host.commands.first, contains('.jsonl'));
     expect(
       chat.entries.first,
       isA<ChatNotice>().having(
@@ -821,7 +880,8 @@ void main() {
     expect(chat.entries.whereType<ChatSaid>().first.text, 'why is nginx slow?');
   });
 
-  test('a session whose transcript cannot be read is still picked up', () async {
+  test('a running session whose transcript cannot be read says why, and '
+      'starts nothing in its place', () async {
     final host = _hostWithHistory('No transcript for this session on the host.');
     final chat = ClaudeChat(open: host.open);
     addTearDown(chat.dispose);
@@ -829,11 +889,11 @@ void main() {
     await chat.continueFrom(_live);
 
     expect(
-      chat.entries.whereType<ChatNotice>().first.text,
+      chat.entries.whereType<ChatNotice>().single.text,
       contains('No transcript'),
     );
-    expect(host.commands.last, contains('--fork-session'));
-    expect(chat.ready, isTrue);
+    expect(chat.watching, isNull);
+    expect(host.commands.single, contains('.jsonl'));
   });
 
   test('an id that is not a session id is never looked for on the host',
@@ -888,6 +948,559 @@ void main() {
       final lines = (result.stdout as String).trim().split('\n');
       expect(int.tryParse(lines.first.trim()), isNotNull, reason: id);
       expect(lines.last, contains(id.replaceAll('"', r'\"')), reason: id);
+    }
+    expect(File('${root.path}/RAN').existsSync(), isFalse);
+  });
+
+  test('watching a running session draws what it adds, as it adds it',
+      () async {
+    final text = _transcript(_live.sessionId);
+    final size = utf8.encode('$text\n').length;
+    final host = _LiveHost('$size\n$text\n');
+    final chat = ClaudeChat(open: host.open);
+    addTearDown(chat.dispose);
+
+    await chat.continueFrom(_live);
+
+    // Followed from exactly where the history stopped, for as long as that
+    // process lives — and nothing started: watching is not talking.
+    expect(chat.watching?.sessionId, _live.sessionId);
+    expect(host.commands.last, contains('-c +${size + 1} -f'));
+    expect(host.commands.last, contains('kill -0 ${_live.pid}'));
+    expect(host.startedClaude, isFalse);
+    final before = chat.entries.length;
+
+    host.adds({
+      'type': 'assistant',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_live',
+            'name': 'Bash',
+            'input': {'command': 'systemctl reload nginx'},
+          },
+        ],
+      },
+    });
+    await _settle();
+    final run = chat.entries.whereType<ChatToolRun>().last;
+    expect(run.summary, 'systemctl reload nginx');
+    expect(run.done, isFalse);
+
+    host.adds({
+      'type': 'user',
+      'message': {
+        'role': 'user',
+        'content': [
+          {'type': 'tool_result', 'tool_use_id': 'toolu_live', 'content': 'ok'},
+        ],
+      },
+    });
+    host.adds(_said('Reloaded.'));
+    await _settle();
+    expect(run.result, 'ok');
+    expect(chat.entries.length, before + 2);
+    expect((chat.entries.last as ChatSaid).text, 'Reloaded.');
+  });
+
+  test('a line the history cut in half is finished by the follow, and '
+      'drawn once', () async {
+    final whole = jsonEncode(_said('said across the cut'));
+    final half = whole.length ~/ 2;
+    final history = '${jsonEncode(_said('before'))}\n${whole.substring(0, half)}';
+    final host = _LiveHost('${utf8.encode(history).length}\n$history');
+    final chat = ClaudeChat(open: host.open);
+    addTearDown(chat.dispose);
+
+    await chat.continueFrom(_live);
+    host.adds('${whole.substring(half)}\n');
+    await _settle();
+
+    expect(
+      chat.entries.whereType<ChatSaid>().map((said) => said.text),
+      ['before', 'said across the cut'],
+    );
+  });
+
+  test('when the session ends the tab says so, stops watching and '
+      'continues it in place', () async {
+    final host = _LiveHost('0\n');
+    final chat = ClaudeChat(open: host.open);
+    addTearDown(chat.dispose);
+    await chat.continueFrom(_live);
+
+    host.adds('\nsshbox:ended\n');
+    await host.follow!.close();
+    await _settle();
+
+    expect(chat.watching, isNull);
+    expect(
+      chat.entries.whereType<ChatNotice>().last.text,
+      contains('no longer running'),
+    );
+    // No longer live, so resumable in place: the same conversation, no copy.
+    expect(host.startedClaude, isTrue);
+    expect(host.commands.last, isNot(contains('--fork-session')));
+  });
+
+  test('a follow that drops without the session ending does not say it '
+      'ended, and a reconnect picks it up again', () async {
+    final host = _LiveHost('0\n');
+    final chat = ClaudeChat(open: host.open);
+    addTearDown(chat.dispose);
+    await chat.continueFrom(_live);
+
+    await host.follow!.close();
+    await _settle();
+
+    expect(chat.watching?.sessionId, _live.sessionId);
+    expect(
+      chat.entries.whereType<ChatNotice>().any(
+        (notice) => notice.text.contains('no longer running'),
+      ),
+      isFalse,
+    );
+
+    final followsBefore =
+        host.commands.where((command) => command.contains(' -f ')).length;
+    await chat.resume();
+    expect(
+      host.commands.where((command) => command.contains(' -f ')).length,
+      followsBefore + 1,
+    );
+    expect(host.startedClaude, isFalse);
+  });
+
+  test('closing the tab stops following', () async {
+    final host = _LiveHost('0\n');
+    final chat = ClaudeChat(open: host.open);
+    await chat.continueFrom(_live);
+    expect(host.followClosed, isFalse);
+
+    chat.dispose();
+    await _settle();
+    expect(host.followClosed, isTrue);
+  });
+
+  test('pinned sessions come first, in the order they were pinned, and are '
+      'marked', () async {
+    final claude = _FakeClaude();
+    final chat = ClaudeChat(open: (_) async => claude.channel);
+    addTearDown(chat.dispose);
+    Map<String, Object?> bg(String id, String name) => {
+      'pid': 1,
+      'id': id,
+      'cwd': '/srv',
+      'kind': 'background',
+      'sessionId': '$id-0000-0000-0000-000000000000',
+      'name': name,
+      'status': 'idle',
+    };
+    claude.line(jsonEncode([
+      bg('aaaa1111', 'first listed'),
+      bg('bbbb2222', 'pinned second'),
+      bg('cccc3333', 'pinned first'),
+    ]));
+    claude.line('--- pins');
+    claude.line('["cccc3333","bbbb2222","gone0000"]');
+    final listing = chat.agents();
+    await claude.end();
+    final agents = await listing;
+
+    expect(agents.map((agent) => agent.name), [
+      'pinned first',
+      'pinned second',
+      'first listed',
+    ]);
+    expect(agents.map((agent) => agent.pinned), [true, true, false]);
+  });
+
+  test('a host with no pins file has nothing pinned', () async {
+    final claude = _FakeClaude();
+    final chat = ClaudeChat(open: (_) async => claude.channel);
+    addTearDown(chat.dispose);
+    claude.line(jsonEncode([
+      {
+        'pid': 1,
+        'id': 'aaaa1111',
+        'cwd': '/srv',
+        'kind': 'background',
+        'sessionId': 'aaaa1111-0000-0000-0000-000000000000',
+        'name': 'lone',
+        'status': 'idle',
+      },
+    ]));
+    claude.line('--- pins');
+    final listing = chat.agents();
+    await claude.end();
+
+    expect((await listing).single.pinned, isFalse);
+  });
+
+  test('the listing command reads the pins beside the sessions, through a '
+      'real shell', () async {
+    final root = await Directory.systemTemp.createTemp('chat-pins');
+    addTearDown(() => root.delete(recursive: true));
+    final bin = await Directory('${root.path}/bin').create();
+    File('${bin.path}/claude').writeAsStringSync(
+      '#!/bin/sh\necho \'[{"id":"aaaa1111"}]\'\n',
+    );
+    await Process.run('chmod', ['+x', '${bin.path}/claude']);
+    final jobs = await Directory('${root.path}/config/jobs').create(
+      recursive: true,
+    );
+    File('${jobs.path}/pins.json').writeAsStringSync('["aaaa1111"]');
+
+    final result = await Process.run(
+      'sh',
+      ['-c', ClaudeChat.agentsCommand()],
+      environment: {
+        'PATH': '${bin.path}:/usr/bin:/bin',
+        'HOME': '${root.path}/nowhere',
+        'CLAUDE_CONFIG_DIR': '${root.path}/config',
+      },
+    );
+    final [listed, pins] = (result.stdout as String).split('\n--- pins\n');
+    expect(jsonDecode(listed), [
+      {'id': 'aaaa1111'},
+    ]);
+    expect(jsonDecode(pins), ['aaaa1111']);
+  });
+
+  group('following, through a real shell', () {
+    late Directory root;
+    late File transcript;
+    Map<String, String> env() => {
+      'HOME': '${root.path}/nowhere',
+      'CLAUDE_CONFIG_DIR': '${root.path}/config',
+      'PATH': '/usr/bin:/bin',
+    };
+
+    setUp(() async {
+      root = await Directory.systemTemp.createTemp('chat-follow');
+      final projects = await Directory(
+        '${root.path}/config/projects/-srv',
+      ).create(recursive: true);
+      transcript = File('${projects.path}/${_live.sessionId}.jsonl')
+        ..writeAsStringSync('{"n":1}\n{"n":2}\n');
+    });
+    tearDown(() => root.delete(recursive: true));
+
+    /// A process standing in for the session, whose pid the follow watches.
+    Future<Process> session() => Process.start('sleep', ['60']);
+
+    /// Every `tail` still reading this test's transcript.
+    Future<int> tails() async {
+      final ps = await Process.run('ps', ['-eo', 'args']);
+      return (ps.stdout as String)
+          .split('\n')
+          .where((line) => line.startsWith('tail') && line.contains(root.path))
+          .length;
+    }
+
+    test('it hands over what is added after where it starts, and nothing '
+        'before', () async {
+      final alive = await session();
+      addTearDown(alive.kill);
+      final follow = await Process.start(
+        'sh',
+        [
+          '-c',
+          ClaudeChat.followCommand(
+            _live.sessionId,
+            from: '{"n":1}\n'.length,
+            pid: alive.pid,
+          ),
+        ],
+        environment: env(),
+      );
+      final seen = <String>[];
+      final lines = follow.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(seen.add);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      transcript.writeAsStringSync('{"n":3}\n', mode: FileMode.append);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(seen.where((line) => line.isNotEmpty), ['{"n":2}', '{"n":3}']);
+      await follow.stdin.close();
+      await follow.exitCode.timeout(const Duration(seconds: 10));
+      await lines.cancel();
+    });
+
+    test('it says the session ended, and ends, when its process goes',
+        () async {
+      final alive = await session();
+      final follow = await Process.start(
+        'sh',
+        [
+          '-c',
+          ClaudeChat.followCommand(_live.sessionId, from: 0, pid: alive.pid),
+        ],
+        environment: env(),
+      );
+      final out = follow.stdout.transform(utf8.decoder).join();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      alive.kill();
+      await follow.exitCode.timeout(const Duration(seconds: 15));
+      expect(await out, contains('\nsshbox:ended\n'));
+      expect(await tails(), 0);
+    });
+
+    test('closing the channel leaves nothing following on the host',
+        () async {
+      final alive = await session();
+      addTearDown(alive.kill);
+      final follow = await Process.start(
+        'sh',
+        [
+          '-c',
+          ClaudeChat.followCommand(_live.sessionId, from: 0, pid: alive.pid),
+        ],
+        environment: env(),
+      );
+      final drained = follow.stdout.drain<void>();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(await tails(), 1);
+      // What the channel closing looks like to the host: stdin at its end.
+      await follow.stdin.close();
+      await follow.exitCode.timeout(const Duration(seconds: 10));
+      await drained;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(await tails(), 0);
+    });
+
+    test('the history read is the last of the file up to the size it '
+        'reports, and never more than the limit', () async {
+      // Bigger than the limit, so only its end is read — by bytes, whole
+      // lines or not.
+      final big = List.filled(ClaudeChat.historyLimit + 1000, 'x').join();
+      transcript.writeAsStringSync(big);
+      final result = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.historyCommand(_live.sessionId)],
+        environment: env(),
+        stdoutEncoding: null,
+      );
+      final bytes = result.stdout as List<int>;
+      final nl = bytes.indexOf(10);
+      expect(int.parse(String.fromCharCodes(bytes.sublist(0, nl))), big.length);
+      final body = bytes.sublist(nl + 1);
+      expect(body.length, ClaudeChat.historyLimit);
+      expect(String.fromCharCodes(body), big.substring(1000));
+    });
+
+    test('the id reaches find exactly as given, and nothing in it runs',
+        () async {
+      final alive = await session();
+      addTearDown(alive.kill);
+      for (final id in ["it's", 'has a space', r'$(touch RAN)', 'a;b']) {
+        File('${transcript.parent.path}/$id.jsonl')
+            .writeAsStringSync('{"id":"$id"}\n');
+        final follow = await Process.start(
+          'sh',
+          ['-c', ClaudeChat.followCommand(id, from: 0, pid: alive.pid)],
+          environment: env(),
+          workingDirectory: root.path,
+        );
+        final first = follow.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .first;
+        expect(
+          await first.timeout(const Duration(seconds: 5)),
+          contains(id.replaceAll('"', r'\"')),
+          reason: id,
+        );
+        await follow.stdin.close();
+        await follow.exitCode.timeout(const Duration(seconds: 10));
+      }
+      expect(File('${root.path}/RAN').existsSync(), isFalse);
+    });
+  });
+
+  group('typing into the session being watched', () {
+    ClaudeChat watcher(_LiveHost host, {Duration? deliveryTimeout}) {
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        deliveryTimeout: deliveryTimeout ?? const Duration(seconds: 30),
+      );
+      addTearDown(chat.dispose);
+      return chat;
+    }
+
+    /// The user line the session records once what was typed reaches it.
+    Map<String, Object?> recorded(String text) => {
+      'type': 'user',
+      'message': {'role': 'user', 'content': text},
+    };
+
+    test('it goes into the running session itself, and shows as sent only '
+        'once the session has recorded it', () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('is the build green?');
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.sending);
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+      // Into `claude attach` for that very session, as a paste, then Enter.
+      final terminal = host.terminals.single;
+      expect(terminal.command, contains('attach'));
+      expect(terminal.command, contains(_live.id));
+      expect(terminal.typed, [
+        '\x1b[200~is the build green?\x1b[201~',
+        '\r',
+      ]);
+      // Not yet sent: the session has not recorded it.
+      expect(said.delivery, Delivery.sending);
+
+      host.adds(recorded('is the build green?'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // Once, where the session put it, and sent.
+      final mine = chat.entries.whereType<ChatSaid>().where((e) => e.mine);
+      expect(mine.single.text, 'is the build green?');
+      expect(mine.single.delivery, isNull);
+      // The attach is let go, and nothing was started, copied or stopped.
+      expect(terminal.closed.single, isTrue);
+      expect(host.startedClaude, isFalse);
+      expect(host.commands.any((command) => command.contains(' stop ')),
+          isFalse);
+      expect(chat.watching?.sessionId, _live.sessionId);
+    });
+
+    test('a message behind a running turn says it is queued', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds({
+        'type': 'queue-operation',
+        'operation': 'enqueue',
+        'content': 'then run the tests',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(
+        chat.entries.whereType<ChatSaid>().single.delivery,
+        Delivery.queued,
+      );
+    });
+
+    for (final state in ['blocked', 'waiting-on-you', null]) {
+      test('a session whose state is ${state ?? 'not given'} is never typed '
+          'into', () async {
+        final host = _LiveHost('0\n', state: state);
+        final chat = watcher(host);
+        await chat.continueFrom(_live);
+
+        chat.send('anything');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+
+        expect(host.terminals, isEmpty);
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, contains('terminal'));
+      });
+    }
+
+    test('two messages sent at once take turns, one terminal at a time',
+        () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('first');
+      chat.send('second');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      // The second waits for the first to be in.
+      expect(host.terminals, hasLength(1));
+
+      host.adds(recorded('first'));
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals, hasLength(2));
+      expect(host.terminals.first.closed.single, isTrue);
+      expect(host.terminals.last.typed.first, contains('second'));
+    });
+
+    test('what is typed cannot end the paste early or send a control key',
+        () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('a\x1b[201~\x1b[2Jb\x03c\x9bd\ne');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+      final paste = host.terminals.single.typed.first;
+      expect(paste, '\x1b[200~a[201~[2Jbcd\ne\x1b[201~');
+      expect('\x1b'.allMatches(paste), hasLength(2));
+    });
+
+    test('a message the session never records is said not to have arrived',
+        () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(
+        host,
+        deliveryTimeout: const Duration(milliseconds: 200),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('hello?');
+      await Future<void>.delayed(const Duration(milliseconds: 1800));
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('did not record'));
+      expect(host.terminals.single.closed.single, isTrue);
+    });
+
+    test('a session that never comes up to type into is let go', () async {
+      final host = _LiveHost('0\n')..terminalsDraw = false;
+      final chat = watcher(
+        host,
+        deliveryTimeout: const Duration(milliseconds: 200),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('hello?');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      expect(host.terminals.single.typed, isEmpty);
+      expect(host.terminals.single.closed.single, isTrue);
+      expect(
+        chat.entries.whereType<ChatSaid>().single.delivery,
+        Delivery.failed,
+      );
+    });
+  });
+
+  test('the attach command reaches Claude with the id exactly as given, '
+      'through a real shell', () async {
+    final root = await Directory.systemTemp.createTemp('chat-attach');
+    addTearDown(() => root.delete(recursive: true));
+    final bin = await Directory('${root.path}/bin').create();
+    File('${bin.path}/claude')
+        .writeAsStringSync('#!/bin/sh\nprintf "%s\\n" "\$@"\n');
+    await Process.run('chmod', ['+x', '${bin.path}/claude']);
+
+    for (final id in ["it's", 'has a space', r'$(touch RAN)', 'a;b']) {
+      final result = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.attachCommand(id)],
+        environment: {'PATH': '${bin.path}:/usr/bin:/bin'},
+        workingDirectory: root.path,
+      );
+      expect((result.stdout as String).split('\n').take(2), ['attach', id],
+          reason: id);
     }
     expect(File('${root.path}/RAN').existsSync(), isFalse);
   });
