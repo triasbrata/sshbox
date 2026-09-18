@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -10,6 +11,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
+import '../files/transfers.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -19,6 +21,7 @@ import 'key_bar.dart';
 import 'magic_key.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
+import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
@@ -34,6 +37,7 @@ class TerminalPage extends StatefulWidget {
     required this.secrets,
     required this.onOpenFile,
     required this.onOpenWeb,
+    required this.onOpenChat,
     required this.onSaveFileRoot,
   });
 
@@ -47,6 +51,9 @@ class TerminalPage extends StatefulWidget {
   /// Opens a web link from this session in a tab of its own, next to this
   /// one — see [openUrl].
   final void Function(Uri url) onOpenWeb;
+
+  /// Opens this session's chat with Claude in a tab beside this one.
+  final VoidCallback onOpenChat;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -75,8 +82,9 @@ class _TerminalPageState extends State<TerminalPage> {
   Iterable<_PaneViewState> get _paneViews =>
       _views.values.map((key) => key.currentState).nonNulls;
 
-  bool _uploading = false;
-  double? _uploadProgress;
+  /// The upload under way from here, which the bar along the terminal's
+  /// bottom edge follows.
+  Transfer? _sending;
 
   /// Kept for the width of a tablet session rather than per visit, because the
   /// drawer holding it is rebuilt every time it opens and reconnecting SFTP on
@@ -205,7 +213,9 @@ class _TerminalPageState extends State<TerminalPage> {
 
   /// Uploads anything handed to the session from outside the terminal page.
   Future<void> _drainShared() async {
-    if (_uploading || !_session.isConnected || !_session.hasPendingUploads) {
+    if (_sending != null ||
+        !_session.isConnected ||
+        !_session.hasPendingUploads) {
       return;
     }
     // Opening a session replaces this page with a fresh one; only whichever is
@@ -241,10 +251,12 @@ class _TerminalPageState extends State<TerminalPage> {
     return _keyBar.applyModifiers(data);
   }
 
-  /// The same for the keys the bar, the pad and the magic key send.
+  /// The same for the keys the bar, the pad and the magic key send: an armed
+  /// modifier folds into a key of one character, so ALT with the magic key's
+  /// Enter is ESC CR, a new line, and CTRL with a symbol is its control code.
   void _send(String data) {
     _letGo();
-    _session.sendRaw(data);
+    _session.sendRaw(_keyBar.applyToKey(data));
   }
 
   void _letGo() {
@@ -330,8 +342,21 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
+  /// The key bar's keyboard button: the way back to the soft keyboard, which
+  /// a tap on the terminal is not once a hardware key has shut it. The pane
+  /// being typed into gets it, or the first one when none holds focus.
+  void _showKeyboard() {
+    _PaneViewState? target;
+    for (final view in _paneViews) {
+      target ??= view;
+      if (view.hasFocus) target = view;
+    }
+    target?.showKeyboard();
+  }
+
   /// With Ctrl, opens the link under the tap and types nothing; without, asks
-  /// for the keyboard back, the way a tap always has.
+  /// for focus — and for the soft keyboard too, unless a hardware keyboard has
+  /// typed, in which case reopening it would double the next key.
   void _onTerminalTap(_PaneViewState view, CellOffset cell) {
     if (!_ctrl) {
       view.requestKeyboard();
@@ -477,15 +502,19 @@ class _TerminalPageState extends State<TerminalPage> {
   Future<void> _upload(SharedFile file) async {
     if (!mounted) return;
 
-    setState(() => _uploading = true);
-
     try {
-      final remotePath = await _session.uploadToTmp(
-        localPath: file.path,
-        fileName: file.name,
-        onProgress: (sent, total) {
-          if (!mounted || total == 0) return;
-          setState(() => _uploadProgress = sent / total);
+      final remotePath = await transfers.run(
+        name: file.name,
+        host: _session.host.displayName,
+        direction: TransferDirection.upload,
+        work: (transfer) {
+          setState(() => _sending = transfer);
+          return _session.uploadToTmp(
+            localPath: file.path,
+            fileName: file.name,
+            onProgress: transfer.report,
+            cancel: transfer.cancelled,
+          );
         },
       );
 
@@ -500,7 +529,11 @@ class _TerminalPageState extends State<TerminalPage> {
         );
       }
     } catch (error) {
-      if (mounted) {
+      // Cancelled from the Transfers tab or the notification, which say so.
+      final cancelled =
+          error is FileBrowserException &&
+          error.fault == FileBrowserFault.cancelled;
+      if (mounted && !cancelled) {
         showToast(
           context,
           'Upload failed: $error',
@@ -508,12 +541,7 @@ class _TerminalPageState extends State<TerminalPage> {
         );
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _uploading = false;
-          _uploadProgress = null;
-        });
-      }
+      if (mounted) setState(() => _sending = null);
     }
   }
 
@@ -547,6 +575,13 @@ class _TerminalPageState extends State<TerminalPage> {
           customKeys: keyBarSettings.customKeys,
           leading: [
             IconButton(
+              tooltip: 'Chat with Claude',
+              onPressed: (_session.isConnected && _session.canChat)
+                  ? widget.onOpenChat
+                  : null,
+              icon: const Icon(Icons.forum_outlined),
+            ),
+            IconButton(
               tooltip: 'Browse files',
               onPressed: (_session.isConnected && _session.canBrowseFiles)
                   ? _openFiles
@@ -557,10 +592,19 @@ class _TerminalPageState extends State<TerminalPage> {
               tooltip: 'Upload a file to /tmp',
               onPressed: (_session.isConnected &&
                       _session.canUploadFiles &&
-                      !_uploading)
+                      _sending == null)
                   ? _attachFile
                   : null,
               icon: const Icon(Icons.attach_file),
+            ),
+            // The only way back to the soft keyboard once a hardware key has
+            // shut it: a tap on the terminal cannot reopen it without making
+            // the next key arrive twice. Always here, so a tablet out of its
+            // keyboard case is never left without one.
+            IconButton(
+              tooltip: 'Show the keyboard',
+              onPressed: _showKeyboard,
+              icon: const Icon(Icons.keyboard_outlined),
             ),
           ],
         ),
@@ -575,12 +619,20 @@ class _TerminalPageState extends State<TerminalPage> {
     if (error != null && !_session.isConnected) {
       return ConnectionError(
         message: error,
-        onRetry: () => connectInSheet(
-          context,
-          _session,
-          secrets: widget.secrets,
-          inTab: widget.onOpenWeb,
-        ),
+        // A tab brought back after its tmux session went: trying again finds
+        // the same, so it offers a new one.
+        retryLabel: _session.tmuxGone ? 'Start a new session' : null,
+        onRetry: () {
+          if (_session.tmuxGone) _session.startNewTmux();
+          unawaited(
+            connectInSheet(
+              context,
+              _session,
+              secrets: widget.secrets,
+              inTab: widget.onOpenWeb,
+            ),
+          );
+        },
       );
     }
 
@@ -637,12 +689,18 @@ class _TerminalPageState extends State<TerminalPage> {
         // than in the bar's slot: growing the slot would shrink the terminal,
         // and resize the shell once when an upload starts and again when it
         // ends.
-        if (_uploading)
+        if (_sending case final sending?)
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: LinearProgressIndicator(value: _uploadProgress),
+            // Only the bar follows the transfer, a few times a second: the
+            // page is built again only as it starts and ends.
+            child: ListenableBuilder(
+              listenable: transfers,
+              builder: (_, _) =>
+                  LinearProgressIndicator(value: sending.fraction),
+            ),
           ),
         // In the body rather than the Scaffold's button slot so it can be
         // parked anywhere, and so its ring is free to open over the terminal.
@@ -669,6 +727,7 @@ class _TerminalPageState extends State<TerminalPage> {
     textStyle: style,
     onEmit: _send,
     onTap: _onTerminalTap,
+    onImage: _upload,
     focused: focused,
     autoResize: autoResize,
     padding: padding,
@@ -688,6 +747,7 @@ class _PaneView extends StatefulWidget {
     required this.textStyle,
     required this.onEmit,
     required this.onTap,
+    required this.onImage,
     required this.focused,
     this.autoResize = true,
     this.padding,
@@ -697,6 +757,10 @@ class _PaneView extends StatefulWidget {
   final TerminalStyle textStyle;
   final void Function(String data) onEmit;
   final void Function(_PaneViewState view, CellOffset cell) onTap;
+
+  /// Sends a pasted picture to the host and types its path at the prompt: the
+  /// page's own upload, the paperclip's and the share sheet's.
+  final Future<void> Function(SharedFile image) onImage;
 
   /// Whether keystrokes go here. Only such a view takes focus, and with it
   /// the soft keyboard.
@@ -730,6 +794,7 @@ class _PaneViewState extends State<_PaneView> {
     // A pane born focused — tmux focuses the one a split makes — takes focus
     // from the pane that had it, which autofocus alone would leave alone.
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
   }
 
   @override
@@ -740,11 +805,110 @@ class _PaneViewState extends State<_PaneView> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _focusNode.dispose();
     _scrollController.dispose();
     // Takes the underlines with it.
     selection.dispose();
     super.dispose();
+  }
+
+  /// There must always be exactly one live input path — [TerminalTextInput]'s
+  /// IME connection or this pane's focused hardware keys — and never zero.
+  ///
+  /// The connection is shut for good once a hardware keyboard has typed, so
+  /// focus is then the whole of it, and focus can fall into a hole: Flutter
+  /// parks it on the enclosing scope, handing it to no one, whenever a
+  /// focused node goes away, and a page that does not put it back leaves the
+  /// terminal quietly unable to type. The user's only way out is to switch to
+  /// another app and come back, which makes the platform hand the focus over
+  /// again.
+  ///
+  /// A hardware key is seen here whether this pane has focus or not, and
+  /// [HardwareKeyboard]'s handlers run before the focus chain is dispatched,
+  /// so taking the focus back now lands this very key rather than the one
+  /// after it.
+  ///
+  /// Only when the focus is parked on this pane's own scope: a dialog, a
+  /// bottom sheet or the files drawer holds its own scope while it is open,
+  /// and a field being typed into is a node rather than a scope, so neither
+  /// is taken from. Watches only — the key still goes where it was going.
+  bool _onHardwareKey(KeyEvent event) {
+    if (_shown == true &&
+        FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
+      _followFocus(keyboard: false);
+      // The pending change would otherwise be applied in a microtask, long
+      // after this key has been dispatched into the hole.
+      FocusManager.instance.applyFocusChangesIfNeeded();
+    }
+    return false;
+  }
+
+  /// Every paste into this pane, however it was asked for: the selection
+  /// toolbar's Paste, and a hardware Ctrl+V, which xterm2 would otherwise
+  /// answer itself with text alone.
+  ///
+  /// An image goes to the host as a file and its remote path is typed at the
+  /// prompt, since a byte stream has nothing to do with a picture and a
+  /// program on the host cannot see the tablet's clipboard. The upload says
+  /// its own piece; a clipboard that cannot be taken, or that holds nothing
+  /// this can use, is said here — a paste must never look like nothing
+  /// happened.
+  Future<void> _paste() async {
+    try {
+      await pasteIntoTerminal(
+        widget.terminal,
+        upload: widget.onImage,
+        onNothing: _say,
+      );
+    } on PlatformException catch (error) {
+      _say(error.message ?? 'That picture could not be pasted');
+    }
+  }
+
+  /// A picture the soft keyboard committed — Gboard's clipboard strip — which
+  /// arrives as bytes rather than through the clipboard.
+  Future<void> _pasteContent(KeyboardInsertedContent content) async {
+    try {
+      final image = await insertedImage(content);
+      if (image != null) await widget.onImage(image);
+    } on PlatformException catch (error) {
+      _say(error.message ?? 'That picture could not be pasted');
+    }
+  }
+
+  void _say(String message) {
+    if (!mounted) return;
+    showToast(context, message, type: ToastificationType.warning);
+  }
+
+  /// Ctrl+V — ⌘V on an Apple platform — before xterm2's own paste shortcut
+  /// sees it, that one reading text and nothing else. Every other key is left
+  /// exactly as it was.
+  ///
+  /// A held Ctrl+V pastes once. Android repeats a held key about 20 times a
+  /// second, and each repeat is a [KeyRepeatEvent] rather than a
+  /// [KeyDownEvent]; those used to fall past this to xterm2's own shortcut,
+  /// whose [SingleActivator] takes repeats, so half a second of holding the
+  /// key ran three more clipboard reads — visible in the tablet's log as three
+  /// "Clipboard text was unable to be received from content URI" in 100 ms.
+  /// They are claimed here and dropped instead: one press is one paste, and a
+  /// picture is never uploaded again and again because a thumb stayed down.
+  KeyEventResult _onPasteChord(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent || event.logicalKey != LogicalKeyboardKey.keyV) {
+      return KeyEventResult.ignored;
+    }
+    final keys = HardwareKeyboard.instance;
+    // The same combination xterm2's own activator takes, so nothing that used
+    // to reach the shell — ^V, Ctrl+Shift+V — stops reaching it.
+    if (keys.isShiftPressed || keys.isAltPressed) return KeyEventResult.ignored;
+    final chord = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS => keys.isMetaPressed,
+      _ => keys.isControlPressed && !keys.isMetaPressed,
+    };
+    if (!chord) return KeyEventResult.ignored;
+    if (event is KeyDownEvent) unawaited(_paste());
+    return KeyEventResult.handled;
   }
 
   /// Whether the tabs were showing this pane when it last looked; null until
@@ -781,6 +945,11 @@ class _PaneViewState extends State<_PaneView> {
 
   void requestKeyboard() => _inputKey.currentState?.requestKeyboard();
 
+  bool get hasFocus => _focusNode.hasFocus;
+
+  /// The keyboard button's ask, which outranks a hardware keyboard.
+  void showKeyboard() => _inputKey.currentState?.showKeyboard();
+
   /// Typing anywhere in the scrollback should snap back to the prompt.
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
@@ -794,8 +963,16 @@ class _PaneViewState extends State<_PaneView> {
   /// is held is not underlined until it comes down again, though a Ctrl+tap
   /// on it still opens it — the tap reads the line afresh.
   void showLinks({required bool ctrl, required Color color}) {
-    // A program reading the mouse would otherwise take the tap as a click.
-    selection.setSuspendPointerInput(ctrl);
+    // The tap is held back, because a program reading the mouse would
+    // otherwise take a Ctrl+tap as a click and the link would never open.
+    // The scroll is not: suspending every pointer input, as this used to,
+    // took scrolling away too, and on the alternate screen or under a
+    // program that reads the mouse — Claude Code, vim, less, tmux — a drag
+    // is the only way a finger can scroll at all, there being no wheel. So
+    // an armed CTRL froze the terminal's content until the app was killed.
+    selection.setPointerInputs(
+      ctrl ? _ctrlPointerInputs : _defaultPointerInputs,
+    );
     for (final underline in _underlines) {
       underline.dispose();
     }
@@ -813,6 +990,15 @@ class _PaneViewState extends State<_PaneView> {
     );
   }
 
+  /// What a terminal normally takes: xterm2's own default.
+  static const _defaultPointerInputs = PointerInputs({
+    PointerInput.tap,
+    PointerInput.scroll,
+  });
+
+  /// The same without the tap, which Ctrl has claimed for opening links.
+  static const _ctrlPointerInputs = PointerInputs({PointerInput.scroll});
+
   @override
   Widget build(BuildContext context) {
     // Two wrappers, because they take different things: the input owns the
@@ -827,10 +1013,12 @@ class _PaneViewState extends State<_PaneView> {
       terminal: widget.terminal,
       focusNode: _focusNode,
       onInput: _scrollToBottom,
+      onContent: _pasteContent,
       child: SwipeKeyPad(
         terminal: widget.terminal,
         controller: selection,
         onEmit: widget.onEmit,
+        onPaste: _paste,
         child: TerminalView(
           widget.terminal,
           key: _viewKey,
@@ -842,6 +1030,8 @@ class _PaneViewState extends State<_PaneView> {
           // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
           // hardware keys, shortcuts and mouse selection.
           hardwareKeyboardOnly: true,
+          // Asked before xterm2's own shortcuts, and it claims Ctrl+V alone.
+          onKeyEvent: _onPasteChord,
           // Tapping a terminal that already has focus is how you ask for the
           // keyboard back, and focus alone will not raise it.
           onTapUp: (_, cell) => widget.onTap(this, cell),
@@ -904,11 +1094,16 @@ class ConnectionError extends StatelessWidget {
     required this.message,
     required this.onRetry,
     this.onClose,
+    this.retryLabel,
   });
 
   final String message;
   final VoidCallback onRetry;
   final VoidCallback? onClose;
+
+  /// What the retry button says instead of Try again, when trying again as
+  /// it was would not help.
+  final String? retryLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -938,7 +1133,7 @@ class ConnectionError extends StatelessWidget {
                 FilledButton.icon(
                   onPressed: onRetry,
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Try again'),
+                  label: Text(retryLabel ?? 'Try again'),
                 ),
               ],
             ),

@@ -76,10 +76,12 @@ class _Host implements SessionTransport, TerminalSession {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     attempts++;
     final key = fingerprint;
-    if (key != null && !await KnownHostStore().trust(host, key, confirm)) {
+    if (key != null &&
+        !await KnownHostStore().trust(host, host.host, key, confirm)) {
       throw const SshSessionException('The host key was not trusted.');
     }
     if (signIn case final signIn?) {
@@ -393,7 +395,13 @@ void main() {
       'and closing it is a no', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: Scaffold()));
     final context = tester.element(find.byType(Scaffold));
-    const HostKeyCheck check = (host: _box, fingerprint: _key, pinned: null);
+    const HostKeyCheck check = (
+      host: _box,
+      address: '10.0.2.2',
+      fingerprint: _key,
+      pinned: null,
+      otherAddress: null,
+    );
 
     var trusted = confirmHostKey(context, check);
     await tester.pumpAndSettle();
@@ -405,6 +413,58 @@ void main() {
     trusted = confirmHostKey(context, check);
     await tester.pumpAndSettle();
     await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    expect(await trusted, isFalse);
+  });
+
+  testWidgets('a key reached over the alternative address is asked about '
+      'under that address, and a disagreeing one is a warning', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold()));
+    final context = tester.element(find.byType(Scaffold));
+    const alternative = '192.168.1.20';
+
+    var trusted = confirmHostKey(context, (
+      host: _box,
+      address: alternative,
+      fingerprint: _key,
+      pinned: null,
+      otherAddress: null,
+    ));
+    await tester.pumpAndSettle();
+    // The address that answered, never the saved 10.0.2.2 nothing was
+    // reached at.
+    expect(find.text('Trust $alternative?'), findsOneWidget);
+    expect(find.textContaining('10.0.2.2'), findsNothing);
+    expect(
+      find.textContaining('at its alternative address, $alternative'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(await trusted, isFalse);
+
+    // The same address, but the host's saved one is pinned to another key:
+    // still a first connection here, so never "the host key has changed" —
+    // and still said out loud, because this is what a squatted address looks
+    // like.
+    trusted = confirmHostKey(context, (
+      host: _box,
+      address: alternative,
+      fingerprint: _key,
+      pinned: null,
+      otherAddress: (address: '10.0.2.2', fingerprint: 'SHA256:other'),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Trust $alternative?'), findsOneWidget);
+    expect(find.textContaining('changed'), findsNothing);
+    expect(
+      find.textContaining(
+        'The other address of box, 10.0.2.2, is pinned to a different key',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('SHA256:other'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(await trusted, isFalse);
   });

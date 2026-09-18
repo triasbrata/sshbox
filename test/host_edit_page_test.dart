@@ -1,15 +1,18 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/ui/host_edit_page.dart';
 import 'package:toastification/toastification.dart';
+
+import 'fake_relay.dart';
 
 const _openSshKey = '-----BEGIN OPENSSH PRIVATE KEY-----\n'
     'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n'
@@ -103,7 +106,8 @@ TextField _field(WidgetTester tester, String label) =>
     tester.widget<TextField>(find.widgetWithText(TextField, label));
 
 void main() {
-  testWidgets('picks a saved host to jump through, and saves it', (
+  testWidgets('picks a saved host to jump through, and saves it with the '
+      'alternative address', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -155,10 +159,17 @@ void main() {
     await tester.tap(find.text('office gw').last);
     await tester.pumpAndSettle();
 
+    // The LAN address of the same machine, for when the tailnet is down.
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Alternative address'),
+      ' 192.168.1.20 ',
+    );
+
     await tester.tap(find.byTooltip('Save'));
     await tester.pumpAndSettle();
     final saved = (await repository.load()).firstWhere((h) => h.id == 'box');
     expect(saved.jumpHostId, 'gw');
+    expect(saved.altHost, '192.168.1.20');
   });
 
   testWidgets('the passphrase is masked until its eye shows it, and the '
@@ -214,6 +225,77 @@ void main() {
     // The toast goes by itself.
     await tester.pump(const Duration(seconds: 10));
     await tester.pumpAndSettle();
+  });
+
+  testWidgets("a saved host's notification key is copied from its page; one "
+      'with none yet says so, and a new host offers none', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.binding.setSurfaceSize(const Size(800, 2000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final copied = <Object?>[];
+    final platform = tester.binding.defaultBinaryMessenger;
+    platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+      return null;
+    });
+    addTearDown(
+      () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    final secrets = InMemorySecretStore();
+    final notifyKeys = NotifyKeys(secrets, relay: FakeRelay());
+    await notifyKeys.useFcmToken('fcm-token');
+    final key = await notifyKeys.forConnect('box');
+
+    Future<void> open(String? hostId) async {
+      await tester.pumpWidget(
+        ToastificationWrapper(
+          child: MaterialApp(
+            home: HostEditPage(
+              key: ValueKey(hostId),
+              repository: HostRepository(secrets),
+              secrets: secrets,
+              notifyKeys: notifyKeys,
+              existing: hostId == null
+                  ? null
+                  : HostProfile(
+                      id: hostId,
+                      label: hostId,
+                      host: '10.0.0.5',
+                      username: 'me',
+                    ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    /// Copies, and waits for the toast that says how it went.
+    Future<void> copy() async {
+      await tester.tap(find.text('Copy notification key'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    await open('box');
+    expect(find.textContaining('LC_SSHBOX_KEY'), findsOneWidget);
+    await copy();
+    // The host's LC_SSHBOX_KEY value, never the FCM token.
+    expect(copied, [
+      {'text': key},
+    ]);
+    expect(find.text('Notification key copied'), findsOneWidget);
+    await tester.pumpAndSettle();
+
+    await open('never-connected');
+    await copy();
+    expect(copied, hasLength(1));
+    expect(find.textContaining('No notification key yet'), findsOneWidget);
+    await tester.pumpAndSettle();
+
+    await open(null);
+    expect(find.text('Copy notification key'), findsNothing);
   });
 
   test('a key file is read if it holds an OpenSSH or PEM private key, and '

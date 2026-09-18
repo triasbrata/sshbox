@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Jeansh: Play feature graphic, 1024 × 500</title>
+<style>
+  @font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf');
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../../../assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf');
+    font-weight: 700;
+  }
+  html, body { margin: 0; background: #111227; }
+  canvas { display: block; }
+</style>
+<canvas id="c" width="1024" height="500"></canvas>
+<script type="module">
+  // The promo site's look (jeansh-web, src/styles.css): the icon's indigo,
+  // its amber stitching, a dark terminal.
+  const W = 1024, H = 500;
+  const brand = '#373964', stitch = '#e0a458', text = '#f3f3fb';
+  const t = { chrome: '#16161e' };
+  const mono = (size, bold) => `${bold ? 700 : 400} ${size}px "JetBrains Mono"`;
+
+  for (const w of [400, 700]) {
+    if (!(await document.fonts.load(`${w} 16px "JetBrains Mono"`)).length) {
+      throw new Error(`JetBrains Mono ${w} did not load`);
+    }
+  }
+  const icon = new Image();
+  icon.src = '../../../assets/branding/app_icon.png';
+  await icon.decode();
+
+  // The app itself, photographed on the emulator rather than drawn here, so
+  // the graphic shows what a buyer will actually see (store/sc).
+  const shot = new Image();
+  shot.src = '../../sc/02-file-tree.png';
+  await shot.decode();
+
+  const ctx = document.getElementById('c').getContext('2d');
+
+  // Denim: indigo into night, a faint twill, darker at the edges.
+  let g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#3e4175');
+  g.addColorStop(0.55, brand);
+  g.addColorStop(1, '#1a1b36');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = -H; x < W; x += 5) {
+    ctx.moveTo(x, H);
+    ctx.lineTo(x + H, 0);
+  }
+  ctx.stroke();
+  g = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, W * 0.7);
+  g.addColorStop(0, 'rgba(10,10,30,0)');
+  g.addColorStop(1, 'rgba(10,10,30,0.5)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // A seam just inside the edge, like the site's stitched buttons. Play may
+  // crop it; nothing else sits outside 88 px across and 78 px down.
+  ctx.setLineDash([12, 9]);
+  ctx.strokeStyle = 'rgba(224,164,88,0.55)';
+  ctx.lineWidth = 2;
+  roundRect(20, 20, W - 40, H - 40, 26);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Left: the icon, the name, the tagline.
+  shadow('rgba(8,8,28,0.55)', 30, 12, () => ctx.drawImage(icon, 92, 92, 136, 136));
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = text;
+  ctx.font = mono(88, true);
+  ctx.fillText('Jeansh', 92, 318);
+  ctx.fillStyle = stitch;
+  ctx.font = mono(32, true);
+  ctx.fillText('Terminal buddy', 96, 368);
+  ctx.fillText('in your pocket', 96, 408);
+
+  // Right: the screenshot in a rounded frame. The frame keeps the shot's own
+  // 2560 × 1600, so nothing is cropped and no bars are left over.
+  const x = 480, w = 456, h = Math.round(w * shot.height / shot.width);
+  const y = Math.round(78 + (344 - h) / 2), r = 16;
+  shadow('rgba(6,6,24,0.6)', 40, 18, () => {
+    ctx.fillStyle = t.chrome;
+    roundRect(x, y, w, h, r);
+    ctx.fill();
+  });
+  ctx.save();
+  roundRect(x, y, w, h, r);
+  ctx.clip();
+  ctx.drawImage(shot, x, y, w, h);
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  roundRect(x + 0.5, y + 0.5, w - 1, h - 1, r);
+  ctx.stroke();
+
+  document.body.dataset.ready = '1';
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+  }
+
+  function shadow(color, blur, dy, draw) {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur;
+    ctx.shadowOffsetY = dy;
+    draw();
+    ctx.restore();
+  }
+</script>

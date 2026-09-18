@@ -99,9 +99,10 @@ round-trip-per-entry shape and throw away the one advantage it has.
   debug manifest, so a release build would otherwise ship unable to connect.
 - **Cleartext HTTP is allowed** (`network_security_config.xml`), for the web
   tabs: a dev server on a host, or one forwarded to the tailnet, is plain
-  `http`, which the WebView otherwise refuses outright. Nothing else in the
-  app speaks HTTP — SSH is its own socket — so it changes what a web tab may
-  load and nothing more.
+  `http`, which the WebView otherwise refuses outright. The only other HTTP
+  in the app is HTTPS to the notification relay, and the direct
+  notifications' tiny server, which answers inside SSH channels rather than
+  on a socket — so it changes what a web tab may load and nothing more.
 - **Editing a host leaves blank credential fields alone**, so changing a port
   cannot silently wipe a stored key.
 
@@ -698,6 +699,8 @@ A notification carries a `sshbox://host/<hostId>` payload, so tapping one goes
 through the same router as a deep link — there is no second code path to keep
 in sync.
 
+The whole flow, as sequence diagrams: [docs/notification-architecture.md](docs/notification-architecture.md).
+
 `notifications/notification_gateway.dart` displays them and handles taps,
 including `getNotificationAppLaunchDetails()` for a tap that cold-starts the
 app. `notifications/push_messaging.dart` is only the delivery half: FCM hands
@@ -712,10 +715,11 @@ over a message, the gateway does the rest.
 A `notification` block would let Android post its own notification while the
 app is backgrounded, and that one carries no payload to route with.
 
-The device's registration token goes to every host it connects to, as
-`LC_SSHBOX_TOKEN`: see [Sending one from a server](#sending-one-from-a-server).
-**Settings → Notifications → Copy notification token** copies it for a host
-that won't take it, and a debug build prints it to logcat at startup.
+Every shell the app opens is told two ways to reach the phone: a port on the
+host that comes straight down its own connection, and the host's own key for
+the relay that sends the push. See [Sending one from a server](#sending-one-from-a-server).
+**Copy notification key** on a host's edit page copies its relay key for a
+server that won't take it.
 
 **Testing without a server:** `sshbox://notify/<hostId>` posts a notification
 locally, so the whole notify → tap → resume path can be exercised with adb:
@@ -730,72 +734,151 @@ Firebase config lives in `android/app/google-services.json` and the
 
 ### Sending one from a server
 
-`tools/sshbox-notify` is a Go binary to drop on any server you SSH into:
+Two ways, and neither needs anything on the server but curl: straight down
+the SSH connection while its session is open, and through the relay
+otherwise.
+
+**Straight down the connection.** Before a connection opens its shell, it
+asks the host to listen on a port of the host's own loopback for us — `ssh
+-R` on `127.0.0.1`, a port the host picks. What connects there comes down
+that connection to the app, which answers it itself, as a tiny HTTP server
+would, and shows it as a notification that opens the host when tapped. No
+FCM, no relay, no internet: it works while the session is open, in the
+background too. Nothing listens on the phone.
 
 ```sh
-cd tools/sshbox-notify && go build -o sshbox-notify .
-scp sshbox-notify server:/usr/local/bin/
-
-# then, at the end of something slow:
-sshbox-notify "build selesai"
-sshbox-notify -title Deploy -host <hostId> "selesai dalam 4m"
+curl --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
+  -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
+  --data-urlencode "title=Build" \
+  --data-urlencode "body=build done"
 ```
 
-It is a compiled binary rather than a curl one-liner because FCM HTTP v1
-requires OAuth2 with a service account, and signing an RS256 JWT in shell is
-not worth the evening. Static, no runtime dependencies, and it cross-compiles
-for linux/amd64, linux/arm64 and darwin/arm64.
+Only `POST /v1/send` is answered, with the connection's secret as its bearer
+token. The body is a form, as there, or JSON: `body` is required and cut at
+1000 characters, and `title` is "Jeansh" when left out, cut at 100. It
+answers 200 `{"ok":true}`; 401 for a wrong secret; 400, 404, 405, or 413
+past 16 KB otherwise; and hangs up on a request that has not arrived in five
+seconds. A host that will not forward — `AllowTcpForwarding no`, say — still
+connects, and its shells get neither variable.
 
-It notifies the device the shell it runs in was opened from, and a tap opens
-the host that shell came through. Jeansh passes both with every shell it
-opens, plain or tmux:
+**Through the relay.** [jeansh-notify](https://github.com/triasbrata/jeansh-notify),
+a Cloudflare Worker at `https://jeansh-notify.brata.cloud`, holds the Firebase
+credentials and sends a push, which reaches the phone with no session open.
+Every request to it is signed, the way Indonesia's SNAP payment API signs
+one, with a key only that host holds:
+
+| Header | Holds |
+| --- | --- |
+| `X-PARTNER-ID` | the key id: `LC_SSHBOX_KEY` up to its colon |
+| `X-TIMESTAMP` | the time, `yyyy-MM-ddTHH:mm:ssTZD`, as in `2026-09-14T08:15:30+07:00` |
+| `X-EXTERNAL-ID` | 16 to 64 of `A-Z a-z 0-9 -`, new for each request |
+| `X-SIGNATURE` | the ECDSA P-256 SHA-256 signature, DER, in standard base64 |
+
+What is signed is
+`<METHOD>:<PATH>:<lowercase hex SHA-256 of the body>:<X-TIMESTAMP>:<X-EXTERNAL-ID>`;
+an empty body hashes the empty string. The relay checks the signature with
+the key's public half and sends the push for the host the key belongs to.
+With openssl and curl:
+
+```sh
+# A push through the relay, signed with this host's LC_SSHBOX_KEY. Title and
+# body on one line each.
+relay_notify() {
+  esc() { printf %s "$1" | sed 's/[\\"]/\\&/g'; }
+  body=$(printf '{"title":"%s","body":"%s"}' "$(esc "$1")" "$(esc "$2")")
+  ts=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+  id=$(openssl rand -hex 16)
+  hash=$(printf %s "$body" | openssl dgst -sha256 -r | cut -d' ' -f1)
+  # The key reaches openssl on a file descriptor: never on disk or in ps.
+  sig=$(printf 'POST:/v1/send:%s:%s:%s' "$hash" "$ts" "$id" |
+    openssl dgst -sha256 -sign /dev/fd/3 3<<EOF | openssl base64 -A
+-----BEGIN PRIVATE KEY-----
+$(printf %s "${LC_SSHBOX_KEY#*:}" | fold -w 64)
+-----END PRIVATE KEY-----
+EOF
+  )
+  curl -fsS https://jeansh-notify.brata.cloud/v1/send \
+    -H 'Content-Type: application/json' \
+    -H "X-PARTNER-ID: ${LC_SSHBOX_KEY%%:*}" -H "X-TIMESTAMP: $ts" \
+    -H "X-EXTERNAL-ID: $id" -H "X-SIGNATURE: $sig" \
+    --data-binary "$body"
+}
+```
+
+The relay repo's [notify.sh](https://github.com/triasbrata/jeansh-notify/blob/main/notify.sh)
+does the same, after trying the direct way, and installs as `sshbox-notify`.
+
+**One key per host.** `LC_SSHBOX_KEY` is `<key id>:<private key>`, the
+private key PKCS#8 DER in standard base64. Each saved host has its own: a
+P-256 key pair the app makes at the host's first connect and registers with
+the relay (`POST /v1/register`, with the phone's FCM token, the public key's
+SPKI DER in base64 and the host id). The key id is `jnk_` and the first 32
+characters of the base64url SHA-256 of that SPKI, worked out on both sides.
+The relay gets only the public half; the FCM token goes to no server. When
+FCM replaces the token, every key is registered again for the new one and
+keeps its id, so servers holding it carry on. With the relay out of reach, a
+connect goes without `LC_SSHBOX_KEY` and the next one tries again. Deleting a
+host revokes its key (`DELETE /v1/key`, signed with that key). **Settings →
+Notifications → Reset notification keys** revokes every host's key, for when
+one has got out: servers holding an old key stop notifying until their host
+reconnects and gets a new one.
+
+The two together, the direct way first:
+
+```sh
+notify() {
+  curl -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
+    -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
+    --data-urlencode "title=$1" --data-urlencode "body=$2" >/dev/null ||
+  relay_notify "$1" "$2" >/dev/null
+}
+
+# then, at the end of something slow:
+make build; notify Build "build selesai"
+```
+
+Jeansh passes these with every shell it opens, plain or tmux:
 
 | Variable | Holds |
 | --- | --- |
-| `LC_SSHBOX_TOKEN` | the device's FCM registration token |
-| `LC_SSHBOX_HOST_ID` | the id of the saved host, which a tap opens |
+| `LC_SSHBOX_NOTIFY_URL` | `http://127.0.0.1:<port>/v1/send`, the port the host listens on for this connection |
+| `LC_SSHBOX_NOTIFY_SECRET` | this connection's own secret, 32 random bytes in base64url |
+| `LC_SSHBOX_KEY` | this host's relay key: its id, a colon, and its private key |
+| `LC_SSHBOX_HOST_ID` | the id of the saved host; the relay needs only the key, which names its host |
 
-Neither is sent while the device has no token, as when Firebase did not
-start. `-token` and `-host` still win over them.
+The first two only when the host listens for us, the last two only once the
+host has a relay key.
 
 **The server has to accept them.** OpenSSH takes only the variables its
 `AcceptEnv` lists. Debian, Ubuntu and macOS ship `AcceptEnv LANG LC_*`, which
-is why both names start with `LC_`, the trick iTerm2's `LC_TERMINAL` uses.
+is why every name starts with `LC_`, the trick iTerm2's `LC_TERMINAL` uses.
 Elsewhere, add `AcceptEnv LC_SSHBOX_*` (or `LC_*`) to `sshd_config` and reload
 sshd. Tailscale SSH passes them only when the tailnet policy's SSH rule lists
 them in `acceptEnv`, as in `"acceptEnv": ["LC_SSHBOX_*"]`, on Tailscale 1.76
 or later. A server that refuses them still connects, and
-`echo $LC_SSHBOX_TOKEN` prints nothing there; put the token in the config
-instead, from **Settings → Notifications → Copy notification token**.
+`echo $LC_SSHBOX_KEY` prints nothing there; export `LC_SSHBOX_KEY` in its
+shell's profile instead, from **Copy notification key** on the host's edit
+page. The direct way
+cannot be set by hand: its port and secret are new with each connection.
 
-In tmux mode a tab adds the two names to tmux's `update-environment`, once per
-tmux server, so tmux copies them into the tab's session when it makes it and
-at every reattach. A new pane gets this connection's values even when the
+In tmux mode a tab adds the four names to tmux's `update-environment`, once
+per tmux server, so tmux copies them into the tab's session when it makes it
+and at every reattach. A new pane gets this connection's values even when the
 tmux server was started by something else; a pane already running keeps the
-ones it started with.
+ones it started with, whose direct URL went with the connection that gave it
+— which is what the relay in `notify` above is for.
 
-**The token goes to every host you connect to.** It tells FCM which device to
-reach, but sending to it also takes the Firebase service account, which stays
-on the machine that runs `sshbox-notify`.
+**A host's key goes to that host only.** It signs notifications to this
+phone and does nothing else, and the relay sends them as that host's, so a
+key that gets out of one host cannot speak for another. Deleting the host
+revokes it; if one gets out, reset them.
 
-Config lives at `~/.config/sshbox-notify/config.json`, and all it needs is the
-service account. `tokens` and `host_id` stand in for a shell without the
-variables:
-
-```json
-{
-  "service_account": "/etc/sshbox/service-account.json",
-  "tokens": ["<token from Settings → Notifications in Jeansh>"],
-  "host_id": "<the sshbox host entry for this server>"
-}
-```
-
-The service account comes from the Firebase console under
-**Project Settings → Service Accounts → Generate new private key**. It is a
-credential that can send messages to every device in the project — keep it
-readable only by the user running the command, and do not commit it.
-
-Running with no config prints the exact commands to create one.
+**The direct way's ceiling.** The port is on the host's loopback, so on a
+server others log in to, once the connection has ended another local user can
+listen on that port and read what a shell left over from the connection sends
+to it. They get the text of that one message and nothing more: the secret
+stops them sending anything to the phone. It is also why `LC_SSHBOX_KEY`
+never goes to the direct URL — whoever held the port would hold the key.
 
 ## Uploading files
 
@@ -930,10 +1013,150 @@ hits as it finds them. Having two implementations of unequal quality is exactly
 why search is stated as a separate capability rather than folded into
 `FileBrowser`.
 
+## Releasing
+
+### Build numbers
+
+`pubspec.yaml`'s `version: X.Y.N+N` holds the version name, X.Y.N, and the
+build number, N, which is Android's `versionCode` and iOS's
+`CFBundleVersion`. The name ends in the build number, so build 13 is version
+1.0.13.
+
+Every commit that changes the app raises N by one in both places, through
+`.githooks/pre-commit`; X.Y stay as they are. These count as changes to the
+app:
+- anything in `lib/`, `android/`, `ios/` or `assets/`;
+- `pubspec.lock`;
+- a `pubspec.yaml` change beyond its version line.
+
+Docs, tests and `tool/` don't. A commit that changes the version line gets
+`[build vN]` in its message, placed above any trailers.
+
+The hooks stay off until a clone turns them on, once. Worktrees share the
+setting:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`tool/test_hooks.sh` runs the hooks against a throwaway repo. Parallel
+branches collide on the version line, X.Y.N+N on both sides: keep the line
+with the higher N, and the hook raises it again on the merge commit.
+
+### A release from this machine
+
+Without `android/key.properties`, a release build falls back to the debug key,
+and Play refuses a bundle signed with it. So make an upload key once. Keep it
+outside the repo, and back it up: if it's lost, only Play support can reset
+it.
+
+```sh
+keytool -genkeypair -v -keystore ~/keys/jeansh-upload.jks \
+  -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+Then write `android/key.properties`, which git ignores. It's a Java
+properties file, so double any backslash in a password.
+
+```properties
+storeFile=/home/you/keys/jeansh-upload.jks
+storePassword=…
+keyAlias=upload
+keyPassword=…
+```
+
+Then, from a clean tree:
+
+```sh
+tool/release.sh                # or: tool/release.sh --name 1.1
+```
+
+The script:
+1. refuses to run without the key, or with uncommitted changes;
+2. builds `build/app/outputs/bundle/release/app-release.aab`;
+3. checks that the bundle isn't debug-signed;
+4. prints the bundle's versionName and versionCode.
+
+`--name` first sets X.Y in `pubspec.yaml` and keeps N: `--name 1.1` turns
+1.0.13+13 into 1.1.13+13. Commit that change afterwards.
+
+### Publishing to Play, from the same machine
+
+There is no CI: the release goes to Play from here, with `--publish`.
+
+```sh
+tool/release.sh --publish --dry-run   # everything but the commit
+tool/release.sh --publish             # the real one
+```
+
+`--publish` builds as above and then hands the bundle to
+`tool/play_publish.py`, which speaks the Play Developer API v3 with a service
+account: it opens an edit, refuses a build number Play already has, uploads
+the bundle, puts it on a track and commits. It needs `python3` and `openssl`:
+between them they read the key, sign the sign-in token and speak the API,
+without a single pip package. Nothing it prints is a secret, so its output is
+safe to paste anywhere.
+
+| Flag | Means |
+| --- | --- |
+| `--publish` | upload and release. Without it nothing is ever uploaded, and no plain `flutter build` can publish by accident |
+| `--dry-run` | open the edit, upload the bundle, set the track — then drop the edit instead of committing, so no tester sees anything |
+| `--track <id>` | the track to release on. The default, `alpha`, is what Play calls Closed testing. A custom closed track's id is the last part of its address in the Play Console; `production` is refused, and rolls out from the Console by hand |
+| `--draft` | leave the release a draft rather than rolling it out. Play takes nothing else until the app has been published once |
+
+The service account's JSON key is read from `$PLAY_SERVICE_ACCOUNT_JSON`, or
+from `~/keys/jeansh-play-service-account.json` beside the upload keystore.
+Keep it outside the repo — git ignores `*service-account*.json` in case one
+lands there anyway. To make one:
+
+1. **Google Cloud**, in the project the Play account is linked to: enable the
+   **Google Play Android Developer API**, create a service account, and create
+   a **JSON key** for it.
+2. **Play Console → Users and permissions:** invite the service account's
+   email address, and give it, for Jeansh, **Release apps to testing tracks**.
+   Permissions take a few minutes to reach the API.
+3. Save the JSON at the path above, `chmod 600` it.
+
+`tool/release.sh --publish` checks the key and the track before the build, not
+after it. Any failure before the commit drops the Play edit again, so a run
+that dies half way leaves nothing behind and can just be run again.
+
+Release notes are not sent. `store/RELEASE_NOTES.md` and
+`store/RELEASE_NOTES.id.md` still describe 1.0 as the first release, and notes
+that stale are worse for a real tester than none at all: paste them into the
+Play Console instead, where they can be read before they go out.
+
+`tool/test_play_publish.sh` checks what the publisher refuses — a missing or
+malformed key, a bad track, `production`, a missing bundle — and that no
+output holds the key. It needs no credentials and reaches no network. The
+happy path can only be checked against Play itself.
+
+If Play answers the commit with "Changes cannot be sent for review
+automatically", the app has a change waiting that only the Console can send:
+finish that release there once, then `--publish` again.
+
+### The first upload, by hand
+
+Play's API can't upload to an app that has never had a bundle, so the first
+one goes through the Play Console:
+1. create the app;
+2. upload the bundle from `tool/release.sh` to Internal testing;
+3. accept Play App Signing.
+
+After that, `tool/release.sh --publish` does it.
+
+`store/` holds the listing, the privacy policy and the release notes, in
+English and Indonesian. `store/PLAY_CONSOLE.md` walks through the rest of the
+Console: Data safety, the foreground service declaration, content rating and
+testing.
+
 ## Not done yet
 
 - **APNs / iOS push.** Only FCM on Android is wired.
-- **A relay**, so servers hold a token rather than a service-account JSON.
+- **Your own relay.** Its address is one constant, `notifyRelay` in
+  `notifications/notify_key.dart`; a self-hosted
+  [jeansh-notify](https://github.com/triasbrata/jeansh-notify) means changing
+  it and building.
 - **mosh.** The seam is in place, the transport is not. No mature mosh
   implementation exists in Dart, so this is real work, not a wiring job.
 - **Downloading a file to the phone.** The browser reads and writes text in

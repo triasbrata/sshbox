@@ -9,7 +9,7 @@ import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../models/forward_setting.dart';
-import 'dartssh2_transport.dart';
+import 'isolate_transport.dart';
 import 'local_forwarder.dart';
 import 'session_manager.dart' show LiveSession;
 import 'terminal_session.dart';
@@ -227,7 +227,7 @@ class PortForwards extends ChangeNotifier {
       run._name = run.setting.displayName(host);
       final transport =
           _transport ??
-          Dartssh2Transport(
+          IsolateTransport(
             confirmHostKey: (check) async {
               final trusted =
                   current() && (await confirmHostKey?.call(check) ?? false);

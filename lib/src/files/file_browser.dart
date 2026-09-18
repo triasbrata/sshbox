@@ -99,6 +99,10 @@ enum FileBrowserFault {
   changed,
   disconnected,
   unsupported,
+
+  /// Stopped part way because Cancel was tapped, which says all there is to
+  /// say about it.
+  cancelled,
   unknown,
 }
 
@@ -119,8 +123,29 @@ class FileBrowserException implements Exception {
 
   final FileBrowserFault fault;
 
+  /// What a transfer throws once its cancel has stopped it.
+  static const cancelled = FileBrowserException(
+    'Cancelled.',
+    fault: FileBrowserFault.cancelled,
+  );
+
   @override
   String toString() => message;
+}
+
+/// [bytes] as a person reads a size: `512 B`, `3.4 MB`, `120 GB`.
+String formatBytes(int bytes) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var value = bytes.toDouble();
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  final rounded = unit == 0 || value >= 100
+      ? value.toStringAsFixed(0)
+      : value.toStringAsFixed(1);
+  return '$rounded ${units[unit]}';
 }
 
 /// Reading, writing and rearranging files on the remote host.
@@ -168,6 +193,34 @@ abstract class FileBrowser {
   Future<void> delete(String path, {bool recursive = false});
 
   Future<void> makeDirectory(String path);
+
+  /// Sends the phone's file at [localPath] to [path], telling [onProgress]
+  /// how far it has got.
+  ///
+  /// It arrives private to the login, and never goes through a link found
+  /// under the name. Without [replace] a name already taken fails the upload;
+  /// with it, what is there is replaced, and stays whole until the new file
+  /// is. [cancel] completing stops it part way with
+  /// [FileBrowserException.cancelled], and what was sent goes.
+  Future<void> upload(
+    String localPath,
+    String path, {
+    bool replace = false,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  });
+
+  /// Brings the file at [path] down into the phone's file at [localPath],
+  /// byte for byte, a chunk at a time, telling [onProgress] how far it has
+  /// got. Nothing is held in memory, so only the phone's disk bounds it.
+  /// [cancel] completing stops it part way with
+  /// [FileBrowserException.cancelled].
+  Future<void> download(
+    String path,
+    String localPath, {
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  });
 
   /// Releases whatever the implementation is holding open.
   Future<void> close();

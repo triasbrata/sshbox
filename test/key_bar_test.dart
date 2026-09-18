@@ -3,7 +3,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/magic_key.dart';
 import 'package:xterm2/xterm.dart';
+
+KeyCombo _combo(
+  String key, {
+  bool ctrl = false,
+  bool alt = false,
+  bool shift = false,
+  bool superKey = false,
+  bool mac = false,
+}) =>
+    (
+      key: key,
+      ctrl: ctrl,
+      alt: alt,
+      shift: shift,
+      superKey: superKey,
+      mac: mac,
+    );
 
 void main() {
   group('KeyBarController.applyModifiers', () {
@@ -59,6 +77,65 @@ void main() {
     });
   });
 
+  group('KeyBarController.applyToKey', () {
+    late KeyBarController controller;
+    late Terminal terminal;
+
+    setUp(() {
+      controller = KeyBarController();
+      terminal = Terminal();
+    });
+    tearDown(() => controller.dispose());
+
+    test('folds armed Alt into the magic key Enter, making a new line', () {
+      controller.toggleAlt();
+
+      // What the magic key's button sends on a tap.
+      expect(controller.applyToKey('\r'), '\x1b\r');
+      expect(controller.alt, isFalse);
+    });
+
+    test('folds armed Ctrl into a key that types a character', () {
+      controller.toggleCtrl();
+
+      expect(controller.applyToKey('t'), '\x14');
+    });
+
+    test('leaves a cursor key alone, and keeps the modifier armed for the '
+        'next one', () {
+      controller.toggleAlt();
+
+      // ESC [C already: another ESC would make it a meta-escape.
+      expect(controller.applyToKey(cursorKey(terminal, 'C')), '\x1b[C');
+      expect(controller.alt, isTrue);
+    });
+
+    test('leaves a sequence the magic key already escaped alone', () {
+      controller.toggleAlt();
+
+      // Ring 2's W→, which is Alt+f.
+      expect(controller.applyToKey(magicSubKeys['→']![1].send(terminal)),
+          '\x1bf');
+    });
+
+    test('leaves a custom key that encodes its own combination alone', () {
+      controller.toggleCtrl();
+      controller.toggleAlt();
+
+      final backTab = encodeKeyCombo(terminal, _combo('TAB', shift: true));
+      expect(backTab, '\x1b[Z');
+      expect(controller.applyToKey(backTab), '\x1b[Z');
+    });
+
+    test('disarms once, for the key it folded into', () {
+      controller.toggleAlt();
+      controller.toggleCtrl();
+
+      expect(controller.applyToKey('\r'), '\x1b\r');
+      expect(controller.applyToKey('\r'), '\r');
+    });
+  });
+
   group('swipe gestures', () {
     test('ignores a wobble inside the deadzone', () {
       expect(swipeArrow(const Offset(12, 9)), isNull);
@@ -109,6 +186,7 @@ void main() {
           terminal: Terminal(),
           controller: controller,
           onEmit: (_) {},
+          onPaste: () async {},
           // Opaque, so it takes part in the hit test the way a terminal does.
           child: const ColoredBox(color: Colors.black, child: SizedBox.expand()),
         ),
@@ -211,6 +289,7 @@ void main() {
             terminal: terminal,
             controller: selection,
             onEmit: sent.add,
+            onPaste: () async {},
             child: TerminalView(
               terminal,
               controller: selection,
@@ -486,19 +565,26 @@ void main() {
     });
   });
 
-  testWidgets('a custom key shows its label, and types its text decoded',
-      (tester) async {
+  testWidgets(
+      'a custom key sends its combination, read at tap time, and one made '
+      'before the picker types its text', (tester) async {
     final sent = <String>[];
+    final terminal = Terminal();
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         bottomNavigationBar: TerminalKeyBar(
           controller: KeyBarController(),
-          terminal: Terminal(),
+          terminal: terminal,
           onEmit: sent.add,
-          keys: const ['custom:ls', 'esc', 'custom:f5'],
-          customKeys: const {
-            'custom:ls': (label: 'LS', send: r'ls\n'),
-            'custom:f5': (label: 'F5', send: r'\e[15~'),
+          keys: const ['custom:ls', 'esc', 'custom:up', 'custom:f5'],
+          customKeys: {
+            'custom:ls': (label: 'LS', send: r'ls\n', combo: null),
+            'custom:up': (label: '↑', send: '\x1b[A', combo: _combo('↑')),
+            'custom:f5': (
+              label: 'S-F5',
+              send: '\x1b[15;2~',
+              combo: _combo('F5', shift: true),
+            ),
           },
         ),
       ),
@@ -506,8 +592,159 @@ void main() {
 
     await tester.tap(find.text('LS'));
     await tester.tap(find.text('ESC'));
-    await tester.tap(find.text('F5'));
-    expect(sent, ['ls\r', '\x1b', '\x1b[15~']);
+    await tester.tap(find.text('S-F5'));
+    await tester.tap(find.text('↑'));
+    // vim asks for application cursor keys, and the key follows.
+    terminal.write('\x1b[?1h');
+    await tester.tap(find.text('↑'));
+    expect(sent, ['ls\r', '\x1b', '\x1b[15;2~', '\x1b[A', '\x1bOA']);
+  });
+
+  group('key combinations', () {
+    String send(KeyCombo combo) => encodeKeyCombo(Terminal(), combo);
+
+    test('go out as xterm sends them', () {
+      final expected = {
+        _combo('R', ctrl: true): '\x12',
+        _combo('B', alt: true): '\x1bb',
+        _combo('→', ctrl: true): '\x1b[1;5C',
+        _combo('F5', shift: true): '\x1b[15;2~',
+        _combo('F1'): '\x1bOP',
+        _combo('R', ctrl: true, alt: true): '\x1b\x12',
+        _combo('R', ctrl: true, shift: true): '\x12',
+        _combo('A', shift: true): 'A',
+        _combo('A'): 'a',
+        _combo('1', shift: true): '!',
+        // Ctrl with @ [ \ ] ^ _ and Space, the ones with no letter.
+        _combo('2', ctrl: true, shift: true): '\x00',
+        _combo('[', ctrl: true): '\x1b',
+        _combo(r'\', ctrl: true): '\x1c',
+        _combo(']', ctrl: true): '\x1d',
+        _combo('6', ctrl: true, shift: true): '\x1e',
+        _combo('-', ctrl: true, shift: true): '\x1f',
+        _combo('SPACE', ctrl: true): '\x00',
+        _combo('TAB', shift: true): '\x1b[Z',
+        _combo('ENTER', alt: true): '\x1b\r',
+        _combo('BKSP'): '\x7f',
+        _combo('F1', shift: true): '\x1b[1;2P',
+        _combo('F12', ctrl: true, alt: true): '\x1b[24;7~',
+        _combo('PGUP', ctrl: true): '\x1b[5;5~',
+        _combo('DEL'): '\x1b[3~',
+        _combo('↑', alt: true): '\x1b[1;3A',
+        _combo('HOME', shift: true): '\x1b[1;2H',
+      };
+      for (final MapEntry(key: combo, value: bytes) in expected.entries) {
+        expect(send(combo), bytes, reason: keyComboName(combo));
+      }
+    });
+
+    test('with Super, the parameter gains 8, and a key that types a character '
+        'goes out in the CSI u form', () {
+      final expected = {
+        _combo('→', superKey: true): '\x1b[1;9C',
+        _combo('→', superKey: true, shift: true): '\x1b[1;10C',
+        _combo('S', superKey: true): '\x1b[115;9u',
+        // The key's own character, whatever Shift would make it.
+        _combo('S', superKey: true, shift: true): '\x1b[115;10u',
+        _combo('R', superKey: true, ctrl: true): '\x1b[114;13u',
+        _combo('F5', ctrl: true, superKey: true): '\x1b[15;13~',
+        _combo('F1', superKey: true): '\x1b[1;9P',
+        _combo('ENTER', superKey: true): '\x1b[13;9u',
+        _combo('TAB', superKey: true, shift: true): '\x1b[9;10u',
+        _combo('BKSP', superKey: true): '\x1b[127;9u',
+        _combo('ESC', superKey: true): '\x1b[27;9u',
+        _combo('SPACE', superKey: true, alt: true): '\x1b[32;11u',
+      };
+      for (final MapEntry(key: combo, value: bytes) in expected.entries) {
+        expect(send(combo), bytes, reason: keyComboName(combo));
+      }
+    });
+
+    test('on the macOS layout, the line-editing combinations send what a '
+        'shell reads for them, and the rest is as on a PC', () {
+      final expected = {
+        _combo('←', superKey: true, mac: true): '\x01',
+        _combo('→', superKey: true, mac: true): '\x05',
+        _combo('←', alt: true, mac: true): '\x1bb',
+        _combo('→', alt: true, mac: true): '\x1bf',
+        _combo('BKSP', superKey: true, mac: true): '\x15',
+        _combo('BKSP', alt: true, mac: true): '\x17',
+        // One more modifier, and it is xterm's again.
+        _combo('←', superKey: true, shift: true, mac: true): '\x1b[1;10D',
+        _combo('S', superKey: true, mac: true): '\x1b[115;9u',
+        _combo('R', ctrl: true, mac: true): '\x12',
+        // On a PC the same keys are xterm's.
+        _combo('→', alt: true): '\x1b[1;3C',
+        _combo('←', superKey: true): '\x1b[1;9D',
+        _combo('BKSP', alt: true): '\x1b\x7f',
+      };
+      for (final MapEntry(key: combo, value: bytes) in expected.entries) {
+        expect(send(combo), bytes, reason: keyComboText(combo));
+      }
+    });
+
+    test('arrows, HOME and END with no modifier follow cursor-keys mode', () {
+      final terminal = Terminal();
+      expect(encodeKeyCombo(terminal, _combo('←')), '\x1b[D');
+      expect(encodeKeyCombo(terminal, _combo('END')), '\x1b[F');
+      terminal.write('\x1b[?1h');
+      expect(encodeKeyCombo(terminal, _combo('←')), '\x1bOD');
+      expect(encodeKeyCombo(terminal, _combo('END')), '\x1bOF');
+      // A modifier says which it is, whatever the mode.
+      expect(encodeKeyCombo(terminal, _combo('←', ctrl: true)), '\x1b[1;5D');
+    });
+
+    test('read back from their names, every key the picker has', () {
+      expect(keyComboName(_combo('R', ctrl: true, alt: true)), 'Ctrl+Alt+R');
+      expect(
+        keyComboName(_combo('S', ctrl: true, superKey: true, mac: true)),
+        'Ctrl+Super+S',
+      );
+      for (final key in keyComboRows.expand((row) => row)) {
+        final combo = _combo(key, ctrl: true, shift: true);
+        expect(parseKeyCombo(keyComboName(combo)), combo, reason: key);
+        final mac = _combo(key, alt: true, superKey: true, mac: true);
+        expect(parseKeyCombo(keyComboName(mac), mac: true), mac, reason: key);
+      }
+      expect(parseKeyCombo('Shift+='), _combo('=', shift: true));
+      // A key or a modifier this build does not know is no combination.
+      expect(parseKeyCombo('Ctrl+F13'), isNull);
+      expect(parseKeyCombo('Hyper+R'), isNull);
+    });
+
+    test('get labels in the style of the built-in keys', () {
+      final expected = {
+        _combo('R', ctrl: true): '^R',
+        _combo('R', ctrl: true, alt: true): 'M-^R',
+        _combo('2', ctrl: true, shift: true): '^@',
+        _combo('B', alt: true): 'M-b',
+        _combo('2', shift: true): '@',
+        _combo('→', ctrl: true): 'C-→',
+        _combo('F5', shift: true): 'S-F5',
+        _combo('PGUP'): 'PGUP',
+        _combo('ESC'): 'ESC',
+        // Cut to fit a label.
+        _combo('ENTER', ctrl: true, alt: true, shift: true): 'C-M-S-EN',
+        // Emacs's s- for Super, and with it a Ctrl chord is no caret.
+        _combo('S', superKey: true): 's-s',
+        _combo('→', superKey: true): 's-→',
+        _combo('R', ctrl: true, superKey: true): 'C-s-r',
+        // A Mac's symbols, in the Mac's order.
+        _combo('→', superKey: true, mac: true): '⌘→',
+        _combo('B', alt: true, mac: true): '⌥B',
+        _combo('BKSP', superKey: true, mac: true): '⌘⌫',
+        _combo('R', ctrl: true, alt: true, shift: true, superKey: true,
+            mac: true): '⌃⌥⇧⌘R',
+      };
+      for (final MapEntry(key: combo, value: label) in expected.entries) {
+        expect(keyComboLabel(combo), label, reason: keyComboName(combo));
+      }
+    });
+
+    test('read on a Mac in its symbols, and on a PC by name', () {
+      expect(keyComboText(_combo('BKSP', alt: true, mac: true)), '⌥⌫');
+      expect(keyComboText(_combo('→', superKey: true)), 'Super+→');
+    });
   });
 
   group('CursorPad', () {

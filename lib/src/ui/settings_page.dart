@@ -1,10 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../notifications/notify_key.dart';
 import 'key_bar.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
@@ -17,6 +17,15 @@ import 'toast.dart';
 /// Android's own monospace all show boxes there. The patched Cascadia has
 /// them, drawn a cell wide, so every family falls back to it first.
 const nerdFontFamily = 'CaskaydiaCove Nerd Font Mono';
+
+/// Where a symbol none of the code fonts has comes from.
+///
+/// Claude Code's status line writes `⏵⏵ auto mode on` with U+23F5, which no
+/// bundled font carries — and neither does the tablet, since Android ships
+/// Noto Sans Symbols subsetted and this codepoint was dropped, so both
+/// triangles came out as boxes. A subset of Noto Sans Symbols 2 stands behind
+/// the Nerd Font for it, and for the dingbats and braille a TUI draws.
+const symbolFontFamily = 'Noto Sans Symbols 2';
 
 /// The fonts Settings offers: every one bundled under `assets/fonts/`, by the
 /// family name `pubspec.yaml` declares, and Android's own monospace, which is
@@ -41,13 +50,15 @@ const terminalFonts = <({String family, String label, String? note})>[
 const minFontSize = 9.0;
 const maxFontSize = 24.0;
 
-/// What a terminal draws with in [family] at [size]. xterm2's own fallbacks
-/// stay behind the Nerd Font, so emoji and CJK go where they always went.
+/// What a terminal draws with in [family] at [size]. The Nerd Font comes
+/// first and the symbols font behind it, with xterm2's own fallbacks last, so
+/// emoji and CJK go where they always went.
 TerminalStyle terminalStyleOf(String family, double size) => TerminalStyle(
   fontFamily: family,
   fontSize: size,
   fontFamilyFallback: [
     nerdFontFamily,
+    symbolFontFamily,
     ...const TerminalStyle().fontFamilyFallback,
   ],
 );
@@ -161,11 +172,27 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   ]);
 
   /// Still v1's JSON list: `{"id": "esc", "shown": true}` for each item on the
-  /// bar, in order, a custom key's with its `label` and its `send` as typed,
-  /// then `{"id": "tab", "shown": false}` for each built-in key off it. Those
+  /// bar, in order, a custom key's with its `label`, its `send` and its
+  /// `combo` as [keyComboName] writes it, `Ctrl+Alt+R`, and `"layout": "mac"`
+  /// for one picked on the macOS layout; `send` is all an earlier version
+  /// reads, and all a key made before the picker has. Then
+  /// `{"id": "tab", "shown": false}` for each built-in key off it. Those
   /// tell a key taken off from one a later version adds, which joins the bar.
   /// v1 hid a key in the same words, so a key hidden then is off the bar now.
   static const _key = 'sshbox.keyBar.v1';
+
+  /// `mac` or `pc`: the layout the custom key picker was last switched to.
+  static const _layoutKey = 'sshbox.keyBar.layout';
+
+  /// Whether the custom key picker opens a new key on the macOS layout.
+  bool macLayout = false;
+
+  /// Saved for the next key, and the next start.
+  Future<void> chooseLayout({required bool mac}) async {
+    macLayout = mac;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_layoutKey, mac ? 'mac' : 'pc');
+  }
 
   /// The ids the bar shows, in order.
   List<String> get keys => [for (final item in value) item.id];
@@ -181,6 +208,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   /// added, joins at the end.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
+    macLayout = prefs.getString(_layoutKey) == 'mac';
     Object? saved;
     try {
       saved = jsonDecode(prefs.getString(_key) ?? 'null');
@@ -209,7 +237,21 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
       } else if (entry
           case {'label': final String label, 'send': final String send}
           when id.startsWith(customKeyPrefix)) {
-        items.add((id: id, custom: (label: label, send: send)));
+        items.add((
+          id: id,
+          custom: (
+            label: label,
+            send: send,
+            // A key a later version has and this one does not types its text.
+            combo: switch (entry['combo']) {
+              final String saved => parseKeyCombo(
+                saved,
+                mac: entry['layout'] == 'mac',
+              ),
+              _ => null,
+            },
+          ),
+        ));
       }
     }
     for (final id in terminalKeyBarDefault) {
@@ -234,6 +276,10 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
             if (item.custom case final key?) ...{
               'label': key.label,
               'send': key.send,
+              if (key.combo case final combo?) ...{
+                'combo': keyComboName(combo),
+                if (combo.mac) 'layout': 'mac',
+              },
             },
           },
         for (final id in terminalKeys.keys)
@@ -257,11 +303,11 @@ final keyBarSettings = KeyBarSettings();
 
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, this.pushToken});
+  const SettingsPage({super.key, this.notifyKeys});
 
-  /// Reads the device's push token, for Notifications to copy. Left out,
-  /// there is none to copy.
-  final String? Function()? pushToken;
+  /// The relay keys, one per host, for Notifications to reset. Left out,
+  /// there are none.
+  final NotifyKeys? notifyKeys;
 
   @override
   Widget build(BuildContext context) {
@@ -287,7 +333,7 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           ),
-          _NotificationsSection(pushToken),
+          _NotificationsSection(notifyKeys),
         ],
       ),
     );
@@ -579,8 +625,9 @@ class _TerminalSectionState extends State<_TerminalSection> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Text(
                 'These fonts ship inside Jeansh, so they work offline. A glyph '
-                'a font lacks, such as a prompt\'s powerline arrows, comes '
-                'from $nerdFontFamily.',
+                'a font lacks comes from $nerdFontFamily — a prompt\'s '
+                'powerline arrows — or from $symbolFontFamily, for symbols '
+                'like ⏵⏵ that no code font draws.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -715,7 +762,10 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
               ListTile(
                 leading: const Icon(Icons.add),
                 title: const Text('Custom key…'),
-                subtitle: const Text('A label, and the text it types'),
+                subtitle: const Text(
+                  'Any key, with Ctrl, Alt, Shift or Super, on a PC or '
+                  'macOS layout',
+                ),
                 onTap: () => pick(customKeyPrefix),
               ),
             ],
@@ -839,11 +889,16 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                               fontWeight: FontWeight.w600,
                             ),
                     ),
-                    // What a key of the user's own types, as written.
+                    // What a key of the user's own stands for, `Ctrl+Alt+R`
+                    // or `⌥⌫`, or for one made before the picker, its text as
+                    // written.
                     subtitle: custom == null
                         ? null
                         : Text(
-                            custom.send,
+                            switch (custom.combo) {
+                              final combo? => keyComboText(combo),
+                              null => custom.send,
+                            },
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontFamily: 'monospace'),
@@ -865,13 +920,17 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
   }
 }
 
-/// The form for a key of the user's own: the label it shows, short enough
-/// for a key, and the text it types, escapes and all. Pops with the key, or
-/// with nothing on Cancel.
+/// The picker for a key of the user's own: a PC or macOS layout, Ctrl, Alt,
+/// Shift and Super to hold, or on a Mac ⌃ ⌥ ⇧ ⌘, a keyboard to tap the key
+/// on, the combination as it is built, and the label the key shows, filled in
+/// from the combination until the user writes one. Clear starts it over.
+/// Pops with the key, or with nothing on Cancel.
 class _CustomKeyDialog extends StatefulWidget {
   const _CustomKeyDialog(this.initial);
 
-  /// The key being changed, or null for a new one.
+  /// The key being changed, or null for a new one. One made before the
+  /// picker, with only the text it types, opens with no key picked and its
+  /// label kept.
   final CustomKey? initial;
 
   @override
@@ -879,126 +938,301 @@ class _CustomKeyDialog extends StatefulWidget {
 }
 
 class _CustomKeyDialogState extends State<_CustomKeyDialog> {
-  final _form = GlobalKey<FormState>();
   late final _label = TextEditingController(text: widget.initial?.label);
-  late final _send = TextEditingController(text: widget.initial?.send);
+  late String? _key = widget.initial?.combo?.key;
+  late bool _ctrl = widget.initial?.combo?.ctrl ?? false;
+  late bool _alt = widget.initial?.combo?.alt ?? false;
+  late bool _shift = widget.initial?.combo?.shift ?? false;
+  late bool _super = widget.initial?.combo?.superKey ?? false;
+
+  /// A key's own layout, or for a new one the layout last picked.
+  late bool _mac = widget.initial?.combo?.mac ?? keyBarSettings.macLayout;
+
+  /// The label the combination last filled in, so one the user wrote is left
+  /// alone.
+  late String? _filled = switch (widget.initial?.combo) {
+    final combo? => keyComboLabel(combo),
+    null => null,
+  };
+
+  /// The combination so far, `…` standing in for a key not picked yet.
+  KeyCombo get _shown => (
+    key: _key ?? '…',
+    ctrl: _ctrl,
+    alt: _alt,
+    shift: _shift,
+    superKey: _super,
+    mac: _mac,
+  );
+
+  KeyCombo? get _combo => _key == null ? null : _shown;
 
   @override
   void dispose() {
     _label.dispose();
-    _send.dispose();
     super.dispose();
   }
 
+  /// Makes [change] to the combination, and fills the label in from it.
+  void _change(VoidCallback change) => setState(() {
+    change();
+    if (_combo case final combo?) {
+      final label = keyComboLabel(combo);
+      if (_label.text.trim().isEmpty || _label.text == _filled) {
+        _label.text = label;
+      }
+      _filled = label;
+    }
+  });
+
+  /// No key, no modifier, and a label the next key fills in. The layout stays.
+  void _clear() => setState(() {
+    _key = null;
+    _ctrl = _alt = _shift = _super = false;
+    _label.clear();
+    _filled = null;
+  });
+
   void _save() {
-    if (!_form.currentState!.validate()) return;
-    Navigator.of(context).pop((label: _label.text.trim(), send: _send.text));
+    final combo = _combo!;
+    final label = _label.text.trim();
+    Navigator.of(context).pop((
+      label: label.isEmpty ? keyComboLabel(combo) : label,
+      // What an earlier version, which knows no combinations, types for it:
+      // xterm's sequence as a fresh terminal has it, with each backslash
+      // escaped for decodeKeyText.
+      send: encodeKeyCombo(Terminal(), combo).replaceAll(r'\', r'\\'),
+      combo: combo,
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final isNew = widget.initial == null;
+    final blank = _key == null && !_ctrl && !_alt && !_shift && !_super;
+    // In the same places on both: Ctrl is Control, Alt is Option and Super
+    // is Command, and that is the Mac's own order.
+    final names = _mac
+        ? const ['⌃ Control', '⌥ Option', '⇧ Shift', '⌘ Command']
+        : const ['Ctrl', 'Alt', 'Shift', 'Super'];
+    Widget modifier(int index, bool held, void Function(bool) hold) =>
+        FilterChip(
+          label: Text(names[index]),
+          selected: held,
+          onSelected: (held) => _change(() => hold(held)),
+        );
+    // A Mac's line-editing combinations are plain control characters, which
+    // any shell reads.
+    final extended =
+        _super && !(_mac && macTextEditing.containsKey(keyComboName(_shown)));
 
-    return AlertDialog(
-      scrollable: true,
-      title: Text(isNew ? 'New custom key' : 'Change custom key'),
-      content: Form(
-        key: _form,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              controller: _label,
-              autofocus: true,
-              // Twice PGUP, the widest built-in key.
-              maxLength: 8,
-              decoration: const InputDecoration(
-                labelText: 'Label',
-                helperText: 'What the key shows',
+    return Dialog(
+      // Close to the edges on a phone, where a keyboard needs the width; a
+      // card of its own on a tablet.
+      insetPadding: const EdgeInsets.all(16),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                isNew ? 'New custom key' : 'Change custom key',
+                style: theme.textTheme.headlineSmall,
               ),
-              validator: (label) =>
-                  label!.trim().isEmpty ? 'Give the key a label' : null,
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _send,
-              style: const TextStyle(fontFamily: 'monospace'),
-              // Commands and escapes rather than words, and nothing for the
-              // keyboard to learn: a key may well type a password.
-              autocorrect: false,
-              enableSuggestions: false,
-              enableIMEPersonalizedLearning: false,
-              decoration: const InputDecoration(
-                labelText: 'Sends',
-                helperText:
-                    r'\n Enter, \t Tab, \e Esc, \\ backslash, \xHH any code. '
-                    r'For example git status\n, or \e[15~ for F5',
-                helperMaxLines: 4,
+              const SizedBox(height: 12),
+              Center(
+                child: SegmentedButton(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('PC')),
+                    ButtonSegment(value: true, label: Text('macOS')),
+                  ],
+                  selected: {_mac},
+                  onSelectionChanged: (picked) {
+                    _change(() => _mac = picked.single);
+                    keyBarSettings.chooseLayout(mac: _mac);
+                  },
+                ),
               ),
-              validator: (send) {
-                if (send!.isEmpty) return 'Type what the key sends';
-                try {
-                  decodeKeyText(send);
-                } on FormatException catch (error) {
-                  return error.message;
-                }
-                return null;
-              },
-              onFieldSubmitted: (_) => _save(),
-            ),
-          ],
+              const SizedBox(height: 12),
+              // The combination as it is built, in sight while the keys
+              // below scroll.
+              Text(
+                blank
+                    ? 'Pick a key, with ${names.take(3).join(', ')} or '
+                          '${names.last} if you like'
+                    : keyComboText(_shown),
+                textAlign: TextAlign.center,
+                style: blank
+                    ? theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      )
+                    : theme.textTheme.titleLarge?.copyWith(
+                        fontFamily: 'monospace',
+                      ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                children: [
+                  modifier(0, _ctrl, (held) => _ctrl = held),
+                  modifier(1, _alt, (held) => _alt = held),
+                  modifier(2, _shift, (held) => _shift = held),
+                  modifier(3, _super, (held) => _super = held),
+                ],
+              ),
+              if (extended)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Only apps that read extended keys act on '
+                    '${_mac ? '⌘' : 'Super'}: tmux with extended-keys on, '
+                    'neovim, and apps that speak the kitty keyboard protocol.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      for (final row in keyComboRows)
+                        SizedBox(
+                          height: 44,
+                          child: Row(
+                            children: [
+                              for (final key in row)
+                                Expanded(
+                                  child: KeyButton(
+                                    // With Shift held, what Shift types.
+                                    label: keyCapOf(
+                                      key,
+                                      shift: _shift,
+                                      mac: _mac,
+                                    ),
+                                    active: key == _key,
+                                    minWidth: 0,
+                                    onTap: () => _change(() => _key = key),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              TextField(
+                controller: _label,
+                maxLength: customKeyLabelMax,
+                decoration: const InputDecoration(
+                  labelText: 'Label',
+                  helperText: 'What the key shows',
+                ),
+              ),
+              Row(
+                children: [
+                  TextButton(onPressed: _clear, child: const Text('Clear')),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _key == null ? null : _save,
+                    child: Text(isNew ? 'Add' : 'Save'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _save, child: Text(isNew ? 'Add' : 'Save')),
-      ],
     );
   }
 }
 
-/// The device's push token, to copy by hand for a host that will not take
-/// it the usual way, as `LC_SSHBOX_TOKEN` with every shell: see
-/// `LiveSession.connect`.
+/// The relay keys, one per host, that its shells get as `LC_SSHBOX_KEY` (see
+/// `LiveSession.connect`): reset, every one, when one has got out. A host's
+/// own is copied from its edit page.
 class _NotificationsSection extends StatelessWidget {
-  const _NotificationsSection(this.pushToken);
+  const _NotificationsSection(this.notifyKeys);
 
-  final String? Function()? pushToken;
+  final NotifyKeys? notifyKeys;
 
-  Future<void> _copy(BuildContext context) async {
-    final token = pushToken?.call();
-    if (token == null) {
-      showToast(
-        context,
-        'No FCM token yet — push is unavailable',
-        type: ToastificationType.warning,
-      );
+  Future<void> _reset(BuildContext context, NotifyKeys notifyKeys) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset notification keys?'),
+        content: const Text(
+          "Every host's key is revoked. Servers holding an old key stop "
+          'notifying this device until their host reconnects and gets a new '
+          'one.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await notifyKeys.reset();
+    } catch (_) {
+      if (context.mounted) {
+        showToast(
+          context,
+          'Some old keys are not revoked yet\nNo host gets them again, and '
+          'Jeansh tries again when it next starts.',
+          type: ToastificationType.warning,
+          duration: const Duration(seconds: 3),
+        );
+      }
       return;
     }
-
-    await Clipboard.setData(ClipboardData(text: token));
     if (context.mounted) {
-      showToast(context, 'FCM token copied', type: ToastificationType.success);
+      showToast(
+        context,
+        'Notification keys reset\nEach host gets a new one when it next '
+        'connects.',
+        type: ToastificationType.success,
+        duration: const Duration(seconds: 3),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final notifyKeys = this.notifyKeys;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionHeader('Notifications'),
         ListTile(
-          leading: const Icon(Icons.key_outlined),
-          title: const Text('Copy notification token'),
+          leading: const Icon(Icons.restart_alt),
+          title: const Text('Reset notification keys'),
           subtitle: const Text(
-            'Normally sent to hosts automatically as LC_SSHBOX_TOKEN. Copy '
-            'it only for a server that does not accept it.',
+            "Revoke every host's key, for when one has got out. A host's own "
+            'is copied from its edit page.',
           ),
-          onTap: () => _copy(context),
+          enabled: notifyKeys != null,
+          onTap: notifyKeys == null ? null : () => _reset(context, notifyKeys),
         ),
       ],
     );

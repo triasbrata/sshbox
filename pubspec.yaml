@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.0.51+51
 
 environment:
   sdk: ^3.13.2
@@ -49,6 +49,15 @@ dependencies:
   re_highlight: ^0.0.3
   webview_flutter: ^4.14.1
   toastification: ^3.2.0
+  flutter_markdown_plus: ^1.0.12
+  # Already here under flutter_markdown_plus, whose builders take its nodes.
+  markdown: ^7.3.1
+  # Already here under dartssh2, pure Dart: signs relay requests with each
+  # host's P-256 key.
+  pointycastle: ^4.0.0
+  # Already here under uuid, pure Dart: SCRAM and MD5 for the database
+  # browser's PostgreSQL and MongoDB sign-ins.
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
@@ -151,6 +160,13 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 
+  # The Markdown preview's Mermaid diagrams (lib/src/ui/mermaid_view.dart):
+  # the page, its script, and dist/mermaid.min.js from the npm package
+  # mermaid 12.0.0, MIT, with its LICENSE. 12 bundles the ELK layout
+  # engine, which is why the file is 5.6 MB rather than 3.6.
+  assets:
+    - assets/mermaid/
+
   # The terminal's fonts, picked in Settings (lib/src/ui/settings_page.dart,
   # which names them by these families). Static Regular and Bold only; each
   # folder holds its SIL OFL 1.1 license.
@@ -180,3 +196,12 @@ flutter:
         - asset: assets/fonts/fira-code/FiraCode-Regular.ttf
         - asset: assets/fonts/fira-code/FiraCode-Bold.ttf
           weight: 700
+    # Not a font to pick in Settings: the fallback behind every one of them,
+    # for the symbols a code font lacks (U+23F5, the ⏵⏵ of Claude Code's
+    # "auto mode on"; dingbats; the braille JetBrains Mono and Fira Code have
+    # none of). Noto Sans Symbols 2 2.008, SIL OFL 1.1 (its OFL.txt is beside
+    # it), subset with pyftsubset to U+2190-21FF, U+2300-23FF, U+25A0-25FF,
+    # U+2600-26FF, U+2700-27BF and U+2800-28FF: 668 glyphs, 175 KB of 1.2 MB.
+    - family: Noto Sans Symbols 2
+      fonts:
+        - asset: assets/fonts/noto-sans-symbols-2/NotoSansSymbols2-Regular.ttf

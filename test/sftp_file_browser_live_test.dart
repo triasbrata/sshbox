@@ -16,10 +16,17 @@ import 'package:sshbox/src/session/terminal_session.dart';
 /// characters and all. Every page in the browser rests on that, so it is worth
 /// a test that needs a server to run.
 ///
-/// Skips itself unless there is an sshd on the configured host and an
-/// unencrypted key that can log into it, so it stays harmless on a machine or
-/// CI runner without either. Override the defaults with SSHBOX_LIVE_HOST,
-/// SSHBOX_LIVE_PORT, SSHBOX_LIVE_USER and SSHBOX_LIVE_KEY.
+/// Opt-in, because it logs into a real host with a real private key, which no
+/// test run should do unasked: it is skipped unless SSHBOX_LIVE_KEY names an
+/// unencrypted key for the host. There is no default key, and nothing under
+/// ~/.ssh is ever read on its own. The host is 127.0.0.1:22 as $USER unless
+/// SSHBOX_LIVE_HOST, SSHBOX_LIVE_PORT and SSHBOX_LIVE_USER say otherwise:
+///
+///     SSHBOX_LIVE_KEY=/path/to/test_key flutter test test/sftp_file_browser_live_test.dart
+///
+/// It works in a folder of its own under the login's home, plus a file in
+/// this machine's temp directory and one in the host's /tmp, and removes all
+/// of them when it is done, failed or not.
 String get _host => Platform.environment['SSHBOX_LIVE_HOST'] ?? '127.0.0.1';
 
 int get _port =>
@@ -30,47 +37,19 @@ String get _user =>
     Platform.environment['USER'] ??
     'root';
 
-String get _keyPath =>
-    Platform.environment['SSHBOX_LIVE_KEY'] ??
-    '${Platform.environment['HOME']}/.ssh/id_rsa';
-
-Future<String?> _readUsableKey() async {
-  final file = File(_keyPath);
-  if (!file.existsSync()) return null;
-  final pem = await file.readAsString();
-  // An encrypted key would need a passphrase this test has no business
-  // holding, so treat it the same as no key at all.
-  if (pem.contains('ENCRYPTED')) return null;
-  return pem;
-}
-
-Future<bool> _sshdReachable() async {
-  try {
-    final socket = await Socket.connect(
-      _host,
-      _port,
-      timeout: const Duration(seconds: 2),
-    );
-    socket.destroy();
-    return true;
-  } on Exception {
-    return false;
-  }
-}
+String? get _keyPath => Platform.environment['SSHBOX_LIVE_KEY'];
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('reads, writes and rearranges files on a real host', () async {
-    if (!await _sshdReachable()) {
-      printOnFailure('skipped: nothing listening on $_host:$_port');
-      return;
-    }
-    final pem = await _readUsableKey();
-    if (pem == null) {
-      printOnFailure('skipped: no usable private key at $_keyPath');
-      return;
-    }
+    final pem = await File(_keyPath!).readAsString();
+    // A passphrase is something this test has no business holding.
+    expect(
+      pem,
+      isNot(contains('ENCRYPTED')),
+      reason: 'SSHBOX_LIVE_KEY must name an unencrypted key',
+    );
 
     SharedPreferences.setMockInitialValues({});
 
@@ -261,6 +240,75 @@ void main() {
         ),
       );
 
+      // Uploads: to a free name only, never through a link planted under it,
+      // private, and a replace swapped in whole. The bytes come back as they
+      // went, over the chunk size so the loop turns more than once.
+      final phone = File('${Directory.systemTemp.path}/sshbox-live-phone-$pid')
+        ..writeAsBytesSync(List.generate(300 * 1024, (i) => i % 251));
+      final small = File('${phone.path}.kecil')..writeAsBytesSync([1, 2, 3]);
+      String? tmp;
+      // What the host holds, fetched back the way a download brings it.
+      Future<List<int>> fetch(String remote) async {
+        final copy = File('${phone.path}.balik');
+        try {
+          await browser.download(remote, copy.path);
+          return copy.readAsBytesSync();
+        } finally {
+          if (copy.existsSync()) copy.deleteSync();
+        }
+      }
+
+      try {
+        final uploaded = RemotePath.join(root, 'unggah.bin');
+        await browser.upload(phone.path, uploaded);
+        expect(await fetch(uploaded), phone.readAsBytesSync());
+        await expectLater(
+          browser.upload(phone.path, uploaded),
+          throwsA(isA<FileBrowserException>()),
+        );
+
+        await browser.upload(small.path, uploaded, replace: true);
+        expect(await fetch(uploaded), [1, 2, 3]);
+
+        // The key bar's upload to /tmp sends the same way.
+        tmp = await (session as FileUploadCapable).uploadToTmp(
+          localPath: phone.path,
+          fileName: 'sshbox-live-tmp-$pid.bin',
+        );
+        expect(await fetch(tmp), phone.readAsBytesSync());
+
+        if (local) {
+          expect(File(uploaded).statSync().mode & 0x1ff, 0x180);
+          // A link planted under the name is refused, and a replace swaps
+          // the link for the file: what it points at is never written.
+          final victim = File(RemotePath.join(root, 'korban.txt'))
+            ..writeAsStringSync('asli');
+          final trap = Link(RemotePath.join(root, 'jebakan.bin'))
+            ..createSync(victim.path);
+          await expectLater(
+            browser.upload(phone.path, trap.path),
+            throwsA(isA<FileBrowserException>()),
+          );
+          await browser.upload(phone.path, trap.path, replace: true);
+          expect(FileSystemEntity.isLinkSync(trap.path), isFalse);
+          expect(victim.readAsStringSync(), 'asli');
+        }
+
+        // No half-sent or swapped-out copy left beside them.
+        expect(
+          (await browser.list(root))
+              .map((entry) => entry.name)
+              .where((name) => name.contains('sshbox')),
+          isEmpty,
+        );
+      } finally {
+        phone.deleteSync();
+        small.deleteSync();
+        // Best effort, as for the folder below: a failed check above must not
+        // leave the upload in the host's /tmp.
+        if (tmp != null) await browser.delete(tmp).catchError((Object _) {});
+      }
+
       // Deleting a directory with things in it has to fail loudly rather than
       // quietly taking the contents with it.
       await expectLater(
@@ -295,5 +343,9 @@ void main() {
       await browser.close();
       await session.dispose();
     }
-  }, timeout: const Timeout(Duration(seconds: 90)));
+  },
+      skip: _keyPath == null
+          ? 'opt-in: set SSHBOX_LIVE_KEY to a key for a test host to run it'
+          : false,
+      timeout: const Timeout(Duration(seconds: 90)));
 }

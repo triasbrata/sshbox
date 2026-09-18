@@ -1,14 +1,23 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
+import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_file_browser.dart';
+import 'fake_file_picker.dart';
+import 'fake_web_view.dart';
 
 Future<void> _pumpEditor(
   WidgetTester tester,
@@ -28,6 +37,60 @@ bool _canSave(WidgetTester tester) => tester
 
 CodeLineEditingController _editor(WidgetTester tester) =>
     tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!;
+
+/// Picks [entry] from the ⋮ menu. Not settled after, which would wait out the
+/// toast these end with.
+Future<void> _pick(WidgetTester tester, String entry) async {
+  await tester.tap(find.byTooltip('More'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(entry));
+  await tester.pump();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
+Future<void> _download(WidgetTester tester) => _pick(tester, 'Download');
+
+/// A real 1×1 PNG: the engine decodes it for real here, which is what the
+/// viewer's and the preview's failure states turn on.
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEh'
+  'QGAhKmMIQAAAABJRU5ErkJggg==',
+);
+
+/// Waits out the copies and their decodes, which are real file work rather
+/// than anything on the test's fake clock.
+Future<void> _settleImages(WidgetTester tester, {int wanted = 1}) async {
+  for (var i = 0;
+      i < 100 && find.byType(Image).evaluate().length < wanted;
+      i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+  }
+}
+
+/// What the app put on the clipboard, in place of the phone's own.
+List<String> _useFakeClipboard() {
+  final copied = <String>[];
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+    if (call.method == 'Clipboard.setData') {
+      copied.add((call.arguments as Map)['text'] as String);
+    }
+    return null;
+  });
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+  );
+  return copied;
+}
+
+const _unsavedWarning =
+    "The download is the version on the server; your unsaved edits aren't "
+    'in it.';
 
 void main() {
   // The editor reads its text size and wrap setting when it opens.
@@ -678,6 +741,75 @@ void main() {
     expect(find.byType(CodeEditor), findsNothing);
   });
 
+  group('copy content', () {
+    testWidgets('copies the whole file as it is on screen', (tester) async {
+      final copied = _useFakeClipboard();
+      final browser = FakeFileBrowser();
+      await _pumpEditor(tester, browser);
+
+      // An edit not saved yet is part of "all of it": this is Select all and
+      // Copy in one tap, not a second Download.
+      _editor(tester).text = 'first line\nsecond line\nand a third\n';
+      await tester.pumpAndSettle();
+
+      await _pick(tester, 'Copy content');
+
+      expect(copied, ['first line\nsecond line\nand a third\n']);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied notes.txt'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+      // Copying is not saving: the host still has what it had.
+      expect(browser.contents['/home/me/notes.txt'], 'first line\nsecond line\n');
+    });
+
+    testWidgets('one past the clipboard ceiling says so and copies nothing',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      // 3400 lines of 80 characters: 272 KB, past the 256 KB ceiling and well
+      // inside the 1 MiB the editor opens at all.
+      final browser = FakeFileBrowser()
+        ..contents['/home/me/notes.txt'] =
+            '${List.filled(3400, 'x' * 79).join('\n')}\n';
+      await _pumpEditor(tester, browser);
+
+      await _pick(tester, 'Copy content');
+
+      expect(copied, isEmpty);
+      expect(find.textContaining('too large to copy'), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('is offered on a text file, and Copy image is not',
+        (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy content'), findsOneWidget);
+      expect(find.text('Copy image'), findsNothing);
+    });
+
+    testWidgets('is not offered for a file that would not open', (tester) async {
+      final browser = FakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          'This looks like a binary file.',
+          fault: FileBrowserFault.notText,
+        );
+      await _pumpEditor(tester, browser);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy content'), findsNothing);
+      // Download still is: it only ever needed the path.
+      expect(find.text('Download'), findsOneWidget);
+    });
+  });
+
   testWidgets('closes the pane instead of popping when embedded',
       (tester) async {
     var closed = false;
@@ -720,5 +852,623 @@ void main() {
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
     expect(closed, isTrue);
+  });
+
+  group('download', () {
+    testWidgets('is on the menu in the preview and in Source',
+        (tester) async {
+      const readme = '/home/me/README.md';
+      final browser = FakeFileBrowser()..contents[readme] = '# Title\n';
+      await _pumpEditor(tester, browser, path: readme);
+      Future<void> expectOnMenu() async {
+        await tester.tap(find.byTooltip('More'));
+        await tester.pumpAndSettle();
+        expect(find.text('Download'), findsOneWidget);
+        await tester.tapAt(Offset.zero);
+        await tester.pumpAndSettle();
+      }
+
+      expect(find.byType(Markdown), findsOneWidget);
+      await expectOnMenu();
+      await tester.tap(find.byTooltip('Show source'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Markdown), findsNothing);
+      await expectOnMenu();
+    });
+
+    testWidgets('saves the bytes on the host, without asking when clean',
+        (tester) async {
+      final picker = useFakePicker();
+      // CRLF, which the editor holds as LF: what is saved is the host's.
+      final browser = FakeFileBrowser()
+        ..contents['/home/me/notes.txt'] = 'one\r\ntwo\r\n';
+      await _pumpEditor(tester, browser);
+
+      await _download(tester);
+      expect(find.text(_unsavedWarning), findsNothing);
+      expect(picker.saved?.name, 'notes.txt');
+      expect(picker.saved?.bytes, utf8.encode('one\r\ntwo\r\n'));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Saved notes.txt'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('with unsaved edits, asks first and saves the host version',
+        (tester) async {
+      final picker = useFakePicker();
+      await _pumpEditor(tester, FakeFileBrowser());
+      _editor(tester).text = 'edited\n';
+      await tester.pumpAndSettle();
+
+      await _download(tester);
+      expect(find.text(_unsavedWarning), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(picker.saved, isNull);
+
+      await _download(tester);
+      await tester.tap(find.widgetWithText(FilledButton, 'Download'));
+      await tester.pumpAndSettle();
+      expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+      // The edit stays, still unsaved.
+      expect(_editor(tester).text, 'edited\n');
+      expect(_canSave(tester), isTrue);
+    });
+
+    testWidgets('a file opened with sudo the login may not read says so',
+        (tester) async {
+      final picker = useFakePicker();
+      final browser = SudoFakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          'Could not open: permission denied.',
+          fault: FileBrowserFault.permissionDenied,
+        )
+        ..sudoPassword = null;
+      await _pumpEditor(tester, browser);
+      await tester.tap(find.text('Open with sudo'));
+      await tester.pumpAndSettle();
+
+      await _download(tester);
+      expect(picker.saved, isNull);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.textContaining('a download does not go through sudo'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+  });
+
+  group('markdown', () {
+    const readme = '/home/me/README.md';
+
+    Future<FakeFileBrowser> pumpReadme(
+      WidgetTester tester,
+      String text, {
+      void Function(Uri url)? onOpenWeb,
+      FakeFileBrowser? on,
+    }) async {
+      final browser = (on ?? FakeFileBrowser())..contents[readme] = text;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FileEditorPage(
+            browser: browser,
+            path: readme,
+            onOpenWeb: onOpenWeb,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return browser;
+    }
+
+    Future<void> toggle(WidgetTester tester, String tooltip) async {
+      await tester.tap(find.byTooltip(tooltip));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('only a Markdown file has a preview, and opens in it',
+        (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+      expect(find.byTooltip('Show preview'), findsNothing);
+      expect(find.byTooltip('Show source'), findsNothing);
+      expect(find.byType(Markdown), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+      await pumpReadme(tester, '# Title\n');
+      expect(find.byType(Markdown), findsOneWidget);
+      expect(find.text('Title'), findsOneWidget);
+      // Read-only, so nothing to type with.
+      expect(find.byType(EditorKeyBar), findsNothing);
+
+      await toggle(tester, 'Show source');
+      expect(find.byType(Markdown), findsNothing);
+      expect(find.byType(EditorKeyBar), findsOneWidget);
+    });
+
+    testWidgets('previews unsaved edits, and Source keeps them',
+        (tester) async {
+      await pumpReadme(tester, '# Title\n\nfirst paragraph\n');
+      await toggle(tester, 'Show source');
+      final editor = tester.state(find.byType(CodeEditor));
+      _editor(tester)
+        ..text = '# Edited\n\nsecond paragraph\n'
+        ..selection = const CodeLineSelection.collapsed(index: 2, offset: 3);
+      await tester.pumpAndSettle();
+
+      await toggle(tester, 'Show preview');
+      expect(find.text('Edited'), findsOneWidget);
+      expect(find.text('second paragraph'), findsOneWidget);
+      expect(find.text('Title'), findsNothing);
+      expect(_canSave(tester), isTrue);
+
+      await toggle(tester, 'Show source');
+      expect(_editor(tester).text, '# Edited\n\nsecond paragraph\n');
+      expect(_editor(tester).selection.extentIndex, 2);
+      expect(_editor(tester).selection.extentOffset, 3);
+      // The same editor rather than a new one, so its scroll came back too.
+      expect(tester.state(find.byType(CodeEditor)), same(editor));
+    });
+
+    testWidgets('a reload comes back to where the preview was left',
+        (tester) async {
+      await pumpReadme(
+        tester,
+        List.generate(200, (i) => 'Paragraph number $i.').join('\n\n'),
+      );
+      double at() =>
+          tester.widget<Markdown>(find.byType(Markdown)).controller!.offset;
+      expect(at(), 0);
+
+      await tester.drag(find.byType(Markdown), const Offset(0, -600));
+      await tester.pumpAndSettle();
+      final left = at();
+      expect(left, greaterThan(0));
+
+      await tester.tap(find.byTooltip('Reload from host'));
+      await tester.pumpAndSettle();
+      expect(at(), left);
+
+      // Source throws the preview away as surely as a reload does.
+      await toggle(tester, 'Show source');
+      await toggle(tester, 'Show preview');
+      expect(at(), left);
+    });
+
+    testWidgets('a web link opens in a web tab, a relative one opens nothing',
+        (tester) async {
+      final opened = <Uri>[];
+      await pumpReadme(
+        tester,
+        'See [the docs](https://example.com/docs) or [setup](docs/setup.md).\n',
+        onOpenWeb: opened.add,
+      );
+
+      await tester.tapOnText(find.textRange.ofSubstring('the docs'));
+      await tester.pumpAndSettle();
+      expect(opened, [Uri.parse('https://example.com/docs')]);
+
+      await tester.tapOnText(find.textRange.ofSubstring('setup'));
+      // Not settled, which would wait out the toast.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(opened, hasLength(1));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.textContaining('docs/setup.md'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('renders a table, code, tasks, and a picture that is not '
+        'there as its alt text', (tester) async {
+      terminalSettings.value = terminalStyleOf('JetBrains Mono', 13);
+      addTearDown(
+        () => terminalSettings.value = TerminalSettings.defaultStyle,
+      );
+      await pumpReadme(tester, '''
+| Name | Value |
+|------|-------|
+| a    | 1     |
+
+```sh
+echo hello
+```
+
+- [x] done
+- [ ] todo
+
+![the logo](img/logo.png)
+''');
+
+      bool sideways(Widget widget) =>
+          widget is SingleChildScrollView &&
+          widget.scrollDirection == Axis.horizontal;
+      expect(
+        find.ancestor(
+          of: find.byType(Table),
+          matching: find.byWidgetPredicate(sideways),
+        ),
+        findsOneWidget,
+      );
+      final code = find.text('echo hello');
+      expect(
+        find.ancestor(of: code, matching: find.byWidgetPredicate(sideways)),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<Text>(code).textSpan!.style!.fontFamily,
+        'JetBrains Mono',
+      );
+      expect(find.byIcon(Icons.check_box), findsOneWidget);
+      expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
+      // Nothing on the host by that name, so the alt text stands in for it.
+      expect(find.textContaining('the logo'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+    });
+
+    testWidgets('a picture beside the document is fetched and drawn',
+        (tester) async {
+      final browser = FakeFileBrowser()
+        ..binary['/home/me/img/logo.png'] = _png;
+      await pumpReadme(tester, '![the logo](img/logo.png)\n', on: browser);
+      await _settleImages(tester);
+
+      expect(find.byType(Image), findsOneWidget);
+      expect(browser.downloads.single.from, '/home/me/img/logo.png');
+      // The picture itself, not the words that stand in for one.
+      expect(find.textContaining('the logo'), findsNothing);
+    });
+
+    testWidgets('a web picture is never fetched, and one that will not open '
+        'says why', (tester) async {
+      final browser = await pumpReadme(tester, '''
+![a badge](https://img.shields.io/badge.png)
+
+![a drawing](drawing.svg)
+
+![gone](img/gone.png)
+''');
+      await tester.pumpAndSettle();
+
+      // Only the host path was asked for: nothing told the web anything.
+      expect(browser.downloads.single.from, '/home/me/img/gone.png');
+      expect(find.byType(Image), findsNothing);
+      expect(find.textContaining('a badge'), findsOneWidget);
+      expect(
+        find.textContaining('a drawing — not a picture this app can draw'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('gone — Could not open'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a path is read as a shell would read it', (tester) async {
+      final browser = await pumpReadme(tester, '''
+![a](~/pics/a.png)
+
+![b](../shared/b.png)
+
+![c](/etc/logo.png)
+
+![d](img/d%20one.png)
+''');
+      await tester.pumpAndSettle();
+
+      expect(
+        browser.downloads.map((download) => download.from),
+        unorderedEquals([
+          // `~` is the login home, as it is everywhere else in the app.
+          '/home/me/pics/a.png',
+          // Relative to the document, `..` walked.
+          '/home/shared/b.png',
+          '/etc/logo.png',
+          // A space is a space by the time it reaches the host.
+          '/home/me/img/d one.png',
+        ]),
+      );
+    });
+
+    testWidgets('a picture past the cap, and a document past its budget, are '
+        'not brought down', (tester) async {
+      final browser = FakeFileBrowser();
+      for (final name in ['one', 'two', 'three', 'four', 'five']) {
+        browser
+          ..binary['/home/me/$name.png'] = _png
+          ..statedSize['/home/me/$name.png'] = 15 * 1024 * 1024;
+      }
+      browser
+        ..binary['/home/me/huge.png'] = _png
+        ..statedSize['/home/me/huge.png'] = 21 * 1024 * 1024;
+      await pumpReadme(tester, '''
+![huge](huge.png)
+
+![one](one.png)
+
+![two](two.png)
+
+![three](three.png)
+
+![four](four.png)
+
+![five](five.png)
+''', on: browser);
+      await _settleImages(tester, wanted: 4);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('huge — 21.0 MB is too large to show here'),
+        findsOneWidget,
+      );
+      // Four at 15 MB fit the 64 MB the document gets; the fifth does not.
+      expect(find.byType(Image), findsNWidgets(4));
+      expect(
+        find.textContaining('five — the preview has already fetched 64.0 MB'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the copies it brought down go when the tab closes',
+        (tester) async {
+      final browser = FakeFileBrowser()
+        ..binary['/home/me/img/logo.png'] = _png;
+      await pumpReadme(tester, '![the logo](img/logo.png)\n', on: browser);
+      await _settleImages(tester);
+      final copy = File(browser.downloads.single.to);
+      expect(copy.existsSync(), isTrue);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+
+      expect(copy.existsSync(), isFalse);
+      expect(copy.parent.existsSync(), isFalse);
+    });
+
+    testWidgets('draws a mermaid block as a diagram, and leaves other code be',
+        (tester) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await pumpReadme(tester, '''
+```mermaid
+flowchart LR
+  A --> B
+```
+
+```sh
+echo hello
+```
+
+Run `make` first.
+''');
+
+      expect(
+        tester.widget<MermaidView>(find.byType(MermaidView)).source,
+        'flowchart LR\n  A --> B\n',
+      );
+      expect(find.textContaining('A --> B'), findsNothing);
+      expect(find.text('echo hello'), findsOneWidget);
+      expect(find.textContaining('make first'), findsOneWidget);
+
+      await toggle(tester, 'Show source');
+      expect(find.byType(MermaidView), findsNothing);
+      expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
+    });
+
+    testWidgets('every code block gets a copy button; inline code and a '
+        'mermaid diagram do not', (tester) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await pumpReadme(tester, '''
+```sh
+echo hello
+```
+
+```
+no language here
+```
+
+```mermaid
+flowchart LR
+  A --> B
+```
+
+Run `make` first.
+''');
+
+      // The two fences, and neither the diagram nor `make`.
+      expect(find.byTooltip('Copy code'), findsNWidgets(2));
+      expect(find.byType(MermaidView), findsOneWidget);
+    });
+
+    testWidgets('the copy button copies the block, fences and all left out',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpReadme(tester, '''
+Before it.
+
+```dart
+void main() {
+  print('hi');
+}
+```
+
+After it.
+''');
+
+      await tester.tap(find.byTooltip('Copy code'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // No fences, no language tag, and no trailing line break: what is
+      // pasted is the code and nothing else.
+      expect(copied, ["void main() {\n  print('hi');\n}"]);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied code block'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('Find from the preview finds in Source', (tester) async {
+      await pumpReadme(tester, '# Title\n');
+
+      await tester.tap(find.byTooltip('Find'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Markdown), findsNothing);
+      expect(find.widgetWithText(TextField, 'Find'), findsOneWidget);
+    });
+
+    testWidgets('previews only the start of a very long file',
+        (tester) async {
+      await pumpReadme(tester, 'word ' * 30000);
+      expect(find.textContaining('Only the first 100 KB'), findsOneWidget);
+    });
+  });
+
+  group('image', () {
+    final png = _png;
+    const shot = '/home/me/shot.png';
+
+    /// Pumps the tab and waits out the copy and its decode, which are real
+    /// file work rather than anything on the test's fake clock.
+    Future<void> pumpImage(
+      WidgetTester tester,
+      FakeFileBrowser browser, {
+      String path = shot,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(home: FileEditorPage(browser: browser, path: path)),
+      );
+      for (var i = 0;
+          i < 100 &&
+              find.byType(CircularProgressIndicator).evaluate().isNotEmpty;
+          i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+    }
+
+    testWidgets('an image opens in the viewer rather than the editor',
+        (tester) async {
+      final browser = FakeFileBrowser()..binary[shot] = png;
+      await pumpImage(tester, browser);
+
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(find.byType(Image), findsOneWidget);
+      // Nothing that only means anything for text.
+      expect(find.byType(CodeEditor), findsNothing);
+      expect(find.byType(EditorKeyBar), findsNothing);
+      expect(
+        find.widgetWithIcon(IconButton, Icons.save_outlined),
+        findsNothing,
+      );
+      expect(find.byTooltip('Find'), findsNothing);
+      expect(find.byTooltip('Show preview'), findsNothing);
+      // What it is and how big, out of the way in the title.
+      expect(find.text('shot.png'), findsOneWidget);
+      expect(find.text('1 × 1 · ${png.length} B'), findsOneWidget);
+    });
+
+    testWidgets('a text file still opens the editor', (tester) async {
+      await _pumpEditor(tester, FakeFileBrowser());
+
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsNothing);
+    });
+
+    testWidgets('one past the cap says so instead of opening it',
+        (tester) async {
+      final browser = FakeFileBrowser()
+        ..binary[shot] = png
+        ..statedSize[shot] = 21 * 1024 * 1024;
+      await pumpImage(tester, browser);
+
+      expect(find.textContaining('too large to show here'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+      // Download is still the way to get at it.
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      expect(find.text('Download'), findsOneWidget);
+      // Nothing was decoded, so there is nothing to put on the clipboard.
+      expect(find.text('Copy image'), findsNothing);
+    });
+
+    testWidgets('Copy image hands Android the copy it drew', (tester) async {
+      final picker = useFakePicker();
+      final browser = FakeFileBrowser()..binary[shot] = png;
+      await pumpImage(tester, browser);
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      // Nothing here is text, so there is no content to copy.
+      expect(find.text('Copy content'), findsNothing);
+      await tester.tap(find.text('Copy image'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // The picture the viewer is showing, not a second trip to the host.
+      expect(picker.copiedImage?.path, browser.downloads.single.to);
+      expect(picker.copiedImage?.name, 'shot.png');
+      expect(browser.downloads, hasLength(1));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied shot.png'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('one that will not decode says so, and still downloads',
+        (tester) async {
+      final picker = useFakePicker();
+      final browser = FakeFileBrowser()
+        ..binary[shot] = utf8.encode('not really a png');
+      await pumpImage(tester, browser);
+
+      expect(
+        find.textContaining('not an image this app can open'),
+        findsOneWidget,
+      );
+      expect(find.byType(InteractiveViewer), findsNothing);
+
+      await _download(tester);
+      expect(picker.saved?.name, 'shot.png');
+      expect(picker.saved?.bytes, utf8.encode('not really a png'));
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('the copy it brought down goes when the tab closes',
+        (tester) async {
+      final browser = FakeFileBrowser()..binary[shot] = png;
+      await pumpImage(tester, browser);
+      final copy = File(browser.downloads.single.to);
+      expect(copy.existsSync(), isTrue);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+
+      expect(copy.existsSync(), isFalse);
+      expect(copy.parent.existsSync(), isFalse);
+    });
   });
 }

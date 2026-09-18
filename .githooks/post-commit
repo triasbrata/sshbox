@@ -1,0 +1,15 @@
+#!/bin/sh
+# After `git commit <paths>`, git commits pre-commit's bump but keeps the index
+# as it was before the commit. Bring the index's version line, X.Y.N+N, up to
+# the commit's build number N, or the next commit would take it back. A no-op
+# when the index already has the commit's N, so an old X.Y.0+N line waits for
+# its next bump instead of turning up as a staged change.
+set -eu
+
+f=pubspec.yaml
+git cat-file -e "HEAD:$f" 2>/dev/null && git cat-file -e ":$f" 2>/dev/null || exit 0
+build() { git show "$1:$f" | sed -n 's/^version:[^+]*+\([0-9][0-9]*\).*/\1/p' | head -n 1; }
+n=$(build HEAD)
+[ -n "$n" ] && [ "$(build '')" != "$n" ] || exit 0
+blob=$(git show ":$f" | sed "s/^\(version:[^0-9]*[0-9][0-9]*\.[0-9][0-9]*\.\)[0-9][0-9]*+[0-9][0-9]*/\1$n+$n/" | git hash-object -w --stdin)
+git update-index --cacheinfo "100644,$blob,$f"

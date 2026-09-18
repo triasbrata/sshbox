@@ -107,28 +107,42 @@ class KeyBarController extends ChangeNotifier {
   String applyModifiers(String data) {
     if (data.isEmpty || (!_ctrl && !_alt)) return data;
 
-    var result = data;
-
-    if (_ctrl && data.length == 1) {
-      final control = _toControlCode(data.codeUnitAt(0));
-      if (control != null) result = String.fromCharCode(control);
-    }
-
-    // Alt is transmitted the way every terminal does it: ESC then the key.
-    if (_alt) result = '\x1b$result';
-
+    final result = withModifiers(data, ctrl: _ctrl, alt: _alt);
     _disarm();
     return result;
   }
 
-  /// Maps a printable character to the C0 code a hardware Ctrl chord sends.
-  int? _toControlCode(int code) {
-    if (code >= 0x61 && code <= 0x7a) return code - 0x60; // a-z
-    if (code >= 0x40 && code <= 0x5f) return code - 0x40; // @ A-Z [ \ ] ^ _
-    if (code == 0x20) return 0x00; // Ctrl-Space sends NUL
-    if (code == 0x3f) return 0x7f; // Ctrl-? sends DEL
-    return null;
+  /// The same for a key the bar, the pad or the magic key sends, which is how
+  /// ALT and the magic key's Enter make a new line: a key of one character
+  /// takes the armed modifiers, `\r` becoming ESC CR, while anything longer is
+  /// a ready-made sequence — a cursor key, ESC f, a custom key's own
+  /// combination — that carries its modifiers already and would only be
+  /// mangled by another layer.
+  String applyToKey(String data) =>
+      data.length == 1 ? applyModifiers(data) : data;
+}
+
+/// [data] as a keyboard sends it with Ctrl or Alt held. Ctrl turns a lone
+/// character into the C0 code a hardware chord sends; text longer than that
+/// keeps it, since autocomplete and paste arrive as a run of characters and
+/// mangling the first would corrupt them. Alt goes out the way every terminal
+/// sends it: ESC, then the key.
+String withModifiers(String data, {bool ctrl = false, bool alt = false}) {
+  var result = data;
+  if (ctrl && data.length == 1) {
+    final control = _controlCode(data.codeUnitAt(0));
+    if (control != null) result = String.fromCharCode(control);
   }
+  return alt ? '\x1b$result' : result;
+}
+
+/// Maps a printable character to the C0 code a hardware Ctrl chord sends.
+int? _controlCode(int code) {
+  if (code >= 0x61 && code <= 0x7a) return code - 0x60; // a-z
+  if (code >= 0x40 && code <= 0x5f) return code - 0x40; // @ A-Z [ \ ] ^ _
+  if (code == 0x20) return 0x00; // Ctrl-Space sends NUL
+  if (code == 0x3f) return 0x7f; // Ctrl-? sends DEL
+  return null;
 }
 
 /// Turns a drag into cursor-key steps.
@@ -226,10 +240,212 @@ const terminalKeyBarDefault = [
   '-', '/', '|', '~', ':', '*',
 ];
 
-/// A key the user made in Settings: the [label] it shows, and the text it
-/// types as written in its form, escapes and all, so the form shows it back
-/// the way it was written. [decodeKeyText] reads it at tap time.
-typedef CustomKey = ({String label, String send});
+/// A key the user made in Settings: the [label] it shows, the [combo] it
+/// stands for, and [send], the same as text, escapes and all, for
+/// [decodeKeyText]. That text is all an earlier version of the app reads, and
+/// all a key made before there was a picker has: its [combo] is null, and it
+/// types its text.
+typedef CustomKey = ({String label, String send, KeyCombo? combo});
+
+/// The longest label a key of the user's own may have: twice PGUP, the widest
+/// built-in key.
+const customKeyLabelMax = 8;
+
+/// A key and the modifiers held with it, as the custom key picker builds it.
+/// [key] is the key's cap, from [keyComboRows]. [superKey] is Super on a PC
+/// and Command on a Mac. [mac] is the layout it was picked on: macOS names
+/// the modifiers ⌃ ⌥ ⇧ ⌘, and a few of its text-editing combinations send
+/// what a shell's line editor takes for them, [macTextEditing].
+typedef KeyCombo = ({
+  String key,
+  bool ctrl,
+  bool alt,
+  bool shift,
+  bool superKey,
+  bool mac,
+});
+
+/// On the macOS layout, what these send in place of xterm's sequence, as
+/// iTerm2's Natural Text Editing has them: line start and end, a word back
+/// and forward, and deleting the line or the word before the cursor. By
+/// [keyComboName].
+const macTextEditing = {
+  'Super+←': '\x01',
+  'Super+→': '\x05',
+  'Alt+←': '\x1bb',
+  'Alt+→': '\x1bf',
+  'Super+BKSP': '\x15',
+  'Alt+BKSP': '\x17',
+};
+
+/// The keys a Mac marks with a symbol rather than a name.
+const _macCaps = {'BKSP': '⌫', 'DEL': '⌦'};
+
+/// The keys that type a character, by cap, row by row as a US keyboard has
+/// them, and what each types with Shift.
+const _typingRows = [
+  '1234567890', 'QWERTYUIOP', 'ASDFGHJKL;', 'ZXCVBNM,./', "`-=[]\\'", //
+];
+const _typingRowsShifted = [
+  r'!@#$%^&*()', 'QWERTYUIOP', 'ASDFGHJKL:', 'ZXCVBNM<>?', '~_+{}|"', //
+];
+
+/// What each typing key types with Shift, by cap.
+final _shifted = {
+  for (final (row, caps) in _typingRows.indexed)
+    for (var i = 0; i < caps.length; i++) caps[i]: _typingRowsShifted[row][i],
+};
+
+/// Keys that type a character with no cap of its own.
+const _charKeys = {
+  'ESC': '\x1b',
+  'TAB': '\t',
+  'ENTER': '\r',
+  'BKSP': '\x7f',
+  'SPACE': ' ',
+};
+
+/// The rest: what xterm sends after CSI for each, `~` and all.
+const _csiKeys = {
+  'INS': '2~', 'DEL': '3~', 'HOME': 'H', 'END': 'F', 'PGUP': '5~', 'PGDN': '6~',
+  '←': 'D', '↓': 'B', '↑': 'A', '→': 'C', //
+  'F1': 'P', 'F2': 'Q', 'F3': 'R', 'F4': 'S', 'F5': '15~', 'F6': '17~',
+  'F7': '18~', 'F8': '19~', 'F9': '20~', 'F10': '21~', 'F11': '23~',
+  'F12': '24~',
+};
+
+/// Every key a custom key can be, by cap, row by row as the picker lays them
+/// out: the typing keys as a US keyboard has them, then the rest.
+final keyComboRows = [
+  for (final caps in _typingRows) caps.split(''),
+  _charKeys.keys.toList(),
+  ['INS', 'DEL', 'HOME', 'END', 'PGUP', 'PGDN'],
+  ['←', '↓', '↑', '→'],
+  ['F1', 'F2', 'F3', 'F4', 'F5', 'F6'],
+  ['F7', 'F8', 'F9', 'F10', 'F11', 'F12'],
+];
+
+/// What the cap of [key] shows: the character a typing key types, the one
+/// above it with Shift, or the name of any other key, or on a [mac] its
+/// symbol.
+String keyCapOf(String key, {bool shift = false, bool mac = false}) =>
+    switch (_shifted[key]) {
+      final upper? => shift ? upper : key.toLowerCase(),
+      null => mac ? _macCaps[key] ?? key : key,
+    };
+
+/// What [combo] sends, as xterm sends it. Shift picks a typing key's upper
+/// character, and Ctrl and Alt fold into a character the way the key bar's
+/// own sticky CTRL and ALT do. Any other key with a modifier gets xterm's
+/// modifier parameter: 1, plus 1 for Shift, 2 for Alt, 4 for Ctrl and 8 for
+/// Super, so Ctrl+→ is `ESC [1;5C`. Without one, the arrows, HOME and END
+/// follow the terminal's cursor-keys mode, read now, as the bar's own arrows
+/// do. Super has no character to fold into, so a key that types one goes out
+/// in the CSI u form, `ESC [115;9u` for Super+S: the key's own character and
+/// the same parameter. On the macOS layout, [macTextEditing] comes first.
+String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
+  final (:key, :ctrl, :alt, :shift, :superKey, :mac) = combo;
+  if (mac) {
+    if (macTextEditing[keyComboName(combo)] case final edit?) return edit;
+  }
+  final modifier = 1 +
+      (shift ? 1 : 0) +
+      (alt ? 2 : 0) +
+      (ctrl ? 4 : 0) +
+      (superKey ? 8 : 0);
+  final csi = _csiKeys[key];
+  if (csi == null && superKey) {
+    final code = (_charKeys[key] ?? keyCapOf(key)).codeUnitAt(0);
+    return '\x1b[$code;${modifier}u';
+  }
+  if (csi == null) {
+    // Shift+Tab is its own key to a terminal, the back tab.
+    final typed = key == 'TAB' && shift
+        ? '\x1b[Z'
+        : _charKeys[key] ?? keyCapOf(key, shift: shift);
+    return withModifiers(typed, ctrl: ctrl, alt: alt);
+  }
+
+  if (csi.endsWith('~')) {
+    return modifier == 1
+        ? '\x1b[$csi'
+        : '\x1b[${csi.substring(0, csi.length - 1)};$modifier~';
+  }
+  if (modifier > 1) return '\x1b[1;$modifier$csi';
+  return 'PQRS'.contains(csi) ? '\x1bO$csi' : cursorKey(terminal, csi);
+}
+
+/// How [combo] reads on a PC, `Ctrl+Alt+R`, whatever its layout: how a custom
+/// key saves it for [parseKeyCombo], and what [macTextEditing] goes by.
+String keyComboName(KeyCombo combo) => [
+      if (combo.ctrl) 'Ctrl',
+      if (combo.alt) 'Alt',
+      if (combo.shift) 'Shift',
+      if (combo.superKey) 'Super',
+      combo.key,
+    ].join('+');
+
+/// How [combo] reads in its own layout: [keyComboName] on a PC, and on a Mac
+/// the symbols in the Mac's order, `⌃⌥⇧⌘`, then the key, `⌘→`.
+String keyComboText(KeyCombo combo) => combo.mac
+    ? [
+        if (combo.ctrl) '⌃',
+        if (combo.alt) '⌥',
+        if (combo.shift) '⇧',
+        if (combo.superKey) '⌘',
+        _macCaps[combo.key] ?? combo.key,
+      ].join()
+    : keyComboName(combo);
+
+/// The combination [saved] names, as [keyComboName] wrote it, on the [mac]
+/// layout or a PC's, or null for one with a key or a modifier this build does
+/// not have.
+KeyCombo? parseKeyCombo(String saved, {bool mac = false}) {
+  final parts = saved.split('+');
+  final key = parts.removeLast();
+  final modifiers = parts.toSet();
+  final known = _shifted.containsKey(key) ||
+      _charKeys.containsKey(key) ||
+      _csiKeys.containsKey(key);
+  if (!known ||
+      !const {'Ctrl', 'Alt', 'Shift', 'Super'}.containsAll(modifiers)) {
+    return null;
+  }
+  return (
+    key: key,
+    ctrl: modifiers.contains('Ctrl'),
+    alt: modifiers.contains('Alt'),
+    shift: modifiers.contains('Shift'),
+    superKey: modifiers.contains('Super'),
+    mac: mac,
+  );
+}
+
+/// A label for [combo]'s button, no longer than [customKeyLabelMax]. On a Mac
+/// it is [keyComboText], `⌥B`. On a PC it is in the style of the built-in
+/// keys: the character it types, a Ctrl chord in the caret form a terminal
+/// shows it in, `^R`, or the cap, `PGUP`, behind Emacs's `C-` for Ctrl, `M-`
+/// for Alt, `S-` for Shift and `s-` for Super. With Super held a Ctrl chord is
+/// no control character, so it gets `C-` too.
+String keyComboLabel(KeyCombo combo) {
+  final (:key, :ctrl, :alt, :shift, :superKey, :mac) = combo;
+  final typing = _shifted.containsKey(key);
+  final cap = keyCapOf(key, shift: shift);
+  final control =
+      ctrl && typing && !superKey ? _controlCode(cap.codeUnitAt(0)) : null;
+  final label = mac
+      ? keyComboText(combo)
+      : [
+          if (ctrl && control == null) 'C-',
+          if (alt) 'M-',
+          if (shift && !typing) 'S-',
+          if (superKey) 's-',
+          control == null ? cap : '^${String.fromCharCode(control ^ 0x40)}',
+        ].join();
+  return label.length > customKeyLabelMax
+      ? label.substring(0, customKeyLabelMax)
+      : label;
+}
 
 /// Enter is a carriage return, as the Enter key sends it: a program that reads
 /// keys one at a time, such as fzf or vim, takes a line feed for Ctrl+J.
@@ -319,7 +535,10 @@ class TerminalKeyBar extends StatelessWidget {
         _ => KeyButton(
             label: customKeys[id]?.label ?? terminalKeys[id]!.label,
             onTap: () => onEmit(switch (customKeys[id]) {
-              final key? => decodeKeyText(key.send),
+              final key? => switch (key.combo) {
+                  final combo? => encodeKeyCombo(terminal, combo),
+                  null => decodeKeyText(key.send),
+                },
               null => terminalKeys[id]!.send!(terminal),
             }),
           ),
@@ -661,6 +880,7 @@ class SwipeKeyPad extends StatefulWidget {
     required this.terminal,
     required this.controller,
     required this.onEmit,
+    required this.onPaste,
     required this.child,
   });
 
@@ -673,6 +893,11 @@ class SwipeKeyPad extends StatefulWidget {
   final TerminalController controller;
 
   final void Function(String data) onEmit;
+
+  /// What the toolbar's Paste does. The page owns it, not the pad: an image on
+  /// the clipboard goes to the host as a file rather than down the wire, and
+  /// only the page can upload.
+  final Future<void> Function() onPaste;
 
   final Widget child;
 
@@ -986,16 +1211,15 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     widget.controller.clearSelection();
   }
 
-  /// The clipboard goes to the shell through xterm2's own paste, the one a
-  /// hardware Ctrl+V takes, so it arrives bracketed when the shell asked for
-  /// that.
+  /// Handed to the page, which pastes text through xterm2's own paste — the
+  /// one a hardware Ctrl+V takes, so it arrives bracketed when the shell asked
+  /// for that — and sends an image to the host as a file instead.
   ///
-  /// ponytail: offered whether or not the clipboard holds any text. A
+  /// ponytail: offered whether or not the clipboard holds anything. A
   /// ClipboardStatusNotifier would hide it when empty, as a text field does.
-  Future<void> _paste() async {
+  void _paste() {
     widget.controller.clearSelection();
-    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-    if (text != null) widget.terminal.paste(text);
+    widget.onPaste();
   }
 
   /// Everything the terminal holds, scrollback and all, as xterm2's own

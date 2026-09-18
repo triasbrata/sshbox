@@ -3,10 +3,12 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart' show FilePicker;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
+import '../notifications/notify_key.dart';
 import 'toast.dart';
 
 /// The most a key file may hold. A private key is a few KB, so a larger file
@@ -72,6 +74,7 @@ class HostEditPage extends StatefulWidget {
     required this.repository,
     required this.secrets,
     this.existing,
+    this.notifyKeys,
   });
 
   final HostRepository repository;
@@ -79,6 +82,10 @@ class HostEditPage extends StatefulWidget {
 
   /// Null when adding a new host.
   final HostProfile? existing;
+
+  /// Where a saved host's notification key is copied from. Left out, the
+  /// page offers none.
+  final NotifyKeys? notifyKeys;
 
   @override
   State<HostEditPage> createState() => _HostEditPageState();
@@ -167,6 +174,7 @@ class _HostEditPageState extends State<HostEditPage> {
 
   late final TextEditingController _label;
   late final TextEditingController _host;
+  late final TextEditingController _altHost;
   late final TextEditingController _port;
   late final TextEditingController _username;
   late final TextEditingController _fileRoot;
@@ -191,6 +199,7 @@ class _HostEditPageState extends State<HostEditPage> {
     final existing = widget.existing;
     _label = TextEditingController(text: existing?.label ?? '');
     _host = TextEditingController(text: existing?.host ?? '');
+    _altHost = TextEditingController(text: existing?.altHost ?? '');
     _port = TextEditingController(text: '${existing?.port ?? 22}');
     _username = TextEditingController(text: existing?.username ?? '');
     _fileRoot = TextEditingController(text: existing?.fileRoot ?? '');
@@ -219,6 +228,7 @@ class _HostEditPageState extends State<HostEditPage> {
     for (final controller in [
       _label,
       _host,
+      _altHost,
       _port,
       _username,
       _fileRoot,
@@ -265,6 +275,30 @@ class _HostEditPageState extends State<HostEditPage> {
     if (mounted) _privateKey.text = key;
   }
 
+  /// This host's `LC_SSHBOX_KEY`, for a server whose sshd will not take it
+  /// with the connection.
+  Future<void> _copyNotifyKey() async {
+    final value = await widget.notifyKeys!.valueFor(widget.existing!.id);
+    if (!mounted) return;
+    if (value == null) {
+      showToast(
+        context,
+        'No notification key yet\nThis host gets one when it next connects.',
+        type: ToastificationType.warning,
+        duration: const Duration(seconds: 3),
+      );
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: value));
+    if (mounted) {
+      showToast(
+        context,
+        'Notification key copied',
+        type: ToastificationType.success,
+      );
+    }
+  }
+
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -277,6 +311,7 @@ class _HostEditPageState extends State<HostEditPage> {
       id: id,
       label: _label.text.trim(),
       host: _host.text.trim(),
+      altHost: _altHost.text.trim(),
       username: _username.text.trim(),
       port: int.parse(_port.text.trim()),
       authMethod: _authMethod,
@@ -342,6 +377,23 @@ class _HostEditPageState extends State<HostEditPage> {
               validator: (value) => (value == null || value.trim().isEmpty)
                   ? 'A hostname or IP is required'
                   : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _altHost,
+              decoration: const InputDecoration(
+                labelText: 'Alternative address',
+                hintText: '192.168.1.20',
+                helperText: 'Optional. A second address for the same machine, '
+                    'dialled alongside the one above and used if it answers '
+                    'first: the LAN address of a host you normally reach over '
+                    'Tailscale, so a tailnet that is down needs no edit here. '
+                    'Same port, user and credentials.',
+                helperMaxLines: 5,
+              ),
+              autocorrect: false,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -440,6 +492,17 @@ class _HostEditPageState extends State<HostEditPage> {
                 'tab ends them. Needs tmux on the host.',
               ),
             ),
+            if (_isEditing && widget.notifyKeys != null)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.key_outlined),
+                title: const Text('Copy notification key'),
+                subtitle: const Text(
+                  'Sent to this host by itself, as LC_SSHBOX_KEY. Copy it '
+                  'only for a server that does not accept it.',
+                ),
+                onTap: _copyNotifyKey,
+              ),
             const SizedBox(height: 24),
             SegmentedButton<SshAuthMethod>(
               segments: const [

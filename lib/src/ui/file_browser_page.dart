@@ -1,9 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart' show FilePicker;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../files/file_browser.dart';
+import '../files/transfers.dart';
+import 'file_download.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
 import 'terminal_link.dart';
@@ -13,14 +16,30 @@ import 'toast.dart';
 /// sits below the root.
 typedef _Row = ({RemoteEntry entry, int depth});
 
+/// What to do with an upload whose name is already taken in its folder.
+enum _Clash { replace, keepBoth, skip }
+
+/// [name] as `name (1).ext`, counting up past every name in [taken]: the
+/// name "Keep both" gives an upload.
+String _keepBothName(String name, Set<String> taken) {
+  // A leading dot starts a dotfile's name, not an extension.
+  final dot = name.lastIndexOf('.');
+  final stem = dot > 0 ? name.substring(0, dot) : name;
+  final extension = dot > 0 ? name.substring(dot) : '';
+  for (var n = 1;; n++) {
+    final candidate = '$stem ($n)$extension';
+    if (!taken.contains(candidate)) return candidate;
+  }
+}
+
 /// The remote filesystem as a tree, laid out the way VS Code's Explorer is.
 ///
 /// Dense one-line rows, a chevron on each folder, a file-type icon on each
 /// file and a guide line down every open folder. Folders open in place, so a
 /// file three levels down is reached without losing sight of where it lives,
 /// and the actions live where VS Code keeps them: new file, new folder,
-/// refresh and collapse on the root's header, everything else in a context
-/// menu — a long press here, the right button with a mouse.
+/// upload, refresh and collapse on the root's header, everything else in a
+/// context menu — a long press here, the right button with a mouse.
 ///
 /// The tree hangs from one root — the host's saved file tree root, or home.
 /// Any folder can be made the root instead, and the root's name opens a menu
@@ -148,6 +167,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   bool _loading = true;
   bool _busy = false;
   bool _showHidden = false;
+
+  /// The upload or download under way, which its bar follows, and what the
+  /// bar says where the file's name is not enough.
+  Transfer? _transfer;
+  String? _transferLabel;
 
   final _filterController = TextEditingController();
   bool _filtering = false;
@@ -615,6 +639,218 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     );
   }
 
+  /// [_say], for the news at the end of a long transfer. The drawer may have
+  /// been shut by then, and the answer should not go with it, so it goes
+  /// through the app's navigator rather than this page.
+  void Function(String, ToastificationType) _sayAnyway() {
+    final app = Navigator.of(context, rootNavigator: true).context;
+    return (message, type) {
+      if (app.mounted) showToast(app, message, type: type);
+    };
+  }
+
+  /// Sends files picked on the phone into [folder], several at a time. A
+  /// name already there asks first: replace that file, keep both, or skip
+  /// this one.
+  Future<void> _uploadInto(String folder) async {
+    final picked = await FilePicker.pickFiles();
+    if (picked.isEmpty || !mounted) return;
+    final say = _sayAnyway();
+
+    setState(() => _busy = true);
+    final sent = <String>[];
+    try {
+      // Asked of the host rather than the tree, which may not have this
+      // folder open or up to date. Links count, broken ones too: an upload
+      // never goes through one.
+      final taken = {
+        for (final entry in await widget.browser.list(folder)) entry.name,
+      };
+      for (final (index, file) in picked.indexed) {
+        final localPath = file.path;
+        if (localPath == null) {
+          // Straight from a cloud provider, with no copy on the phone to send.
+          say(
+            '${file.name} is not on the phone, so it was skipped',
+            ToastificationType.warning,
+          );
+          continue;
+        }
+        // Only the last part of the picker's name: a slash in it would land
+        // the file somewhere other than [folder].
+        final base = file.name.split('/').last;
+        var name =
+            base.isEmpty || base == '.' || base == '..' ? 'upload' : base;
+        var replace = false;
+        if (taken.contains(name)) {
+          // Never over a file without asking, and with the page gone there is
+          // nobody to ask.
+          final clash = mounted
+              ? await _askClash(name, _keepBothName(name, taken))
+              : _Clash.skip;
+          switch (clash) {
+            case _Clash.replace:
+              replace = true;
+            case _Clash.keepBoth:
+              name = _keepBothName(name, taken);
+            case _Clash.skip || null:
+              continue;
+          }
+        }
+
+        final target = RemotePath.join(folder, name);
+        try {
+          await transfers.run(
+            name: name,
+            host: widget.title,
+            direction: TransferDirection.upload,
+            work: (transfer) {
+              if (mounted) {
+                setState(() {
+                  _transfer = transfer;
+                  _transferLabel = picked.length == 1
+                      ? null
+                      : 'Uploading $name (${index + 1} of ${picked.length})';
+                });
+              }
+              return widget.browser.upload(
+                localPath,
+                target,
+                replace: replace,
+                onProgress: transfer.report,
+                cancel: transfer.cancelled,
+              );
+            },
+          );
+        } on FileBrowserException catch (error) {
+          // One file cancelled leaves the rest to go.
+          if (error.fault == FileBrowserFault.cancelled) continue;
+          rethrow;
+        }
+        taken.add(name);
+        sent.add(name);
+      }
+      if (sent.isNotEmpty) {
+        say(
+          sent.length == 1
+              ? 'Uploaded ${sent.single} to $folder'
+              : 'Uploaded ${sent.length} files to $folder',
+          ToastificationType.success,
+        );
+      }
+    } on FileBrowserException catch (error) {
+      say(error.message, ToastificationType.error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _transfer = null;
+          _transferLabel = null;
+        });
+      }
+    }
+    // What arrived, in sight: its folder opened and read again.
+    if (sent.isNotEmpty && mounted) {
+      _openForNew(folder);
+      await _refresh();
+    }
+  }
+
+  /// Replace, keep both or skip, for an upload whose [name] is taken; null
+  /// when the question is dismissed, which skips it too.
+  Future<_Clash?> _askClash(String name, String bothName) =>
+      showDialog<_Clash>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('$name is already there'),
+          content: Text(
+            'Replace it with the file from the phone, keep both with the new '
+            'one as "$bothName", or skip it.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(_Clash.skip),
+              child: const Text('Skip'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(_Clash.keepBoth),
+              child: const Text('Keep both'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(_Clash.replace),
+              child: const Text('Replace'),
+            ),
+          ],
+        ),
+      );
+
+  /// Brings [entry] down to the phone through [downloadFile], as a file tab
+  /// does.
+  Future<void> _download(RemoteEntry entry) async {
+    setState(() => _busy = true);
+    try {
+      await downloadFile(
+        context,
+        widget.browser,
+        entry.path,
+        host: widget.title,
+        onTransfer: (transfer) {
+          if (!mounted) return;
+          setState(() {
+            _transfer = transfer;
+            _transferLabel = null;
+          });
+        },
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Puts [entry]'s text on the clipboard without opening it in a tab.
+  ///
+  /// Unlike the file tab's Copy content, the text is not here yet, so this
+  /// one has to fetch it: the tree's busy flag goes up, which shows the app
+  /// bar's bar and stops every row taking another long press until it lands.
+  ///
+  /// The size the listing already knows is checked first, so a 90 MB log is
+  /// refused where it stands rather than coming down the connection to be
+  /// declined at the other end. Whether it is text at all stays the browser's
+  /// call — the same [FileBrowser.readText] the editor leans on, binary rule
+  /// and all — and every refusal it makes is already a sentence to show.
+  Future<void> _copyContent(RemoteEntry entry) async {
+    final size = entry.size;
+    if (size != null && size > copyLimit) {
+      _say(tooLargeToCopy(entry.name), ToastificationType.warning);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final file = await widget.browser.readText(
+        entry.path,
+        maxBytes: copyLimit,
+      );
+      if (!mounted) return;
+      await copyAndSay(
+        context,
+        entry.name,
+        () => Clipboard.setData(ClipboardData(text: file.text)),
+      );
+    } on FileBrowserException catch (error) {
+      if (!mounted) return;
+      // A file with no size in the listing, or one that grew since it: say
+      // the same thing the ceiling above says, not the editor's "too large
+      // to open here".
+      final tooLarge = error.fault == FileBrowserFault.tooLarge;
+      _say(
+        tooLarge ? tooLargeToCopy(entry.name) : error.message,
+        tooLarge ? ToastificationType.warning : ToastificationType.error,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// VS Code's right-click menu, opened where the finger or the pointer went
   /// down.
   Future<void> _showContextMenu(RemoteEntry entry, Offset pressedAt) async {
@@ -624,6 +860,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     final at = overlay.globalToLocal(pressedAt);
     final terminal = widget.terminal;
     final isFolder = entry.isTraversable;
+    // A file, or a link to one. A folder is not one thing to save or to copy.
+    final isFile = entry.kind == RemoteEntryKind.file ||
+        (entry.kind == RemoteEntryKind.symlink &&
+            entry.targetIsDirectory == false);
 
     PopupMenuItem<VoidCallback> item(String label, VoidCallback action) =>
         PopupMenuItem(value: action, child: Text(label));
@@ -638,7 +878,12 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         if (isFolder) ...[
           item('New file…', () => _promptNewFile(entry.path)),
           item('New folder…', () => _promptNewDirectory(entry.path)),
+          item('Upload here…', () => _uploadInto(entry.path)),
           item('Set as root', () => _setRoot(entry.path)),
+          const PopupMenuDivider(),
+        ],
+        if (isFile) ...[
+          item('Download', () => _download(entry)),
           const PopupMenuDivider(),
         ],
         if (terminal != null) ...[
@@ -652,6 +897,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             _showTerminal();
           }),
         ],
+        // Beside Copy path, the other thing a long press puts on the
+        // clipboard. Not on a picture: the same name rule that sends one to
+        // the image tab, which offers Copy image instead.
+        if (isFile && !isImageFile(entry.path))
+          item('Copy content', () => _copyContent(entry)),
         item('Copy path', () {
           Clipboard.setData(ClipboardData(text: entry.path));
           _say('Path copied', ToastificationType.success);
@@ -679,6 +929,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         body: Column(
           children: [
             if (root != null) _buildRootHeader(root),
+            if (_transfer case final transfer?)
+              TransferBar(transfer, label: _transferLabel),
             Expanded(child: _buildBody()),
           ],
         ),
@@ -734,7 +986,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.labelLarge?.copyWith(letterSpacing: 1.2),
             ),
-      bottom: (_loading || _busy)
+      // A transfer has a bar of its own, under the root's header.
+      bottom: (_loading || _busy) && _transfer == null
           ? const PreferredSize(
               preferredSize: Size.fromHeight(2),
               child: LinearProgressIndicator(minHeight: 2),
@@ -855,6 +1108,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             }),
             action('New folder', Icons.create_new_folder_outlined, () {
               _promptNewDirectory(root);
+            }),
+            action('Upload here', Icons.upload_file_outlined, () {
+              _uploadInto(root);
             }),
             action('Refresh', Icons.refresh, _refresh),
             action('Collapse all', Icons.unfold_less, _collapseAll),

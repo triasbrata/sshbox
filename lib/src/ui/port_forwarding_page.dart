@@ -15,7 +15,7 @@ import 'terminal_page.dart' show openUrl;
 
 /// Side padding that keeps a page's column readable on a tablet: 16 dp on a
 /// phone, and a 720 dp column in the middle of anything wider.
-EdgeInsets _gutters(double width, {double bottom = 32}) {
+EdgeInsets pageGutters(double width, {double bottom = 32}) {
   final side = math.max(16.0, (width - 720) / 2);
   return EdgeInsets.fromLTRB(side, 8, side, bottom);
 }
@@ -92,7 +92,7 @@ class _PortForwardingPageState extends State<PortForwardingPage> {
                 if (runs.isEmpty) return const _EmptyState();
                 return LayoutBuilder(
                   builder: (context, constraints) => ListView(
-                    padding: _gutters(constraints.maxWidth, bottom: 88),
+                    padding: pageGutters(constraints.maxWidth, bottom: 88),
                     children: [
                       for (final run in runs)
                         _ForwardCard(
@@ -695,7 +695,7 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         key: _form,
         child: LayoutBuilder(
           builder: (context, constraints) => ListView(
-            padding: _gutters(constraints.maxWidth),
+            padding: pageGutters(constraints.maxWidth),
             children: [
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(

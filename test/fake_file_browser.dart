@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:sshbox/src/files/file_browser.dart';
 
 /// A filesystem in a map.
@@ -46,6 +50,10 @@ class FakeFileBrowser implements FileBrowser {
     '/home/me/notes.txt': 'first line\nsecond line\n',
     '/home/me/dev/main.dart': 'void main() {}\n',
   };
+
+  /// Every path [readText] was asked for, so a test can prove nothing came
+  /// down the wire at all.
+  final List<String> reads = [];
 
   final List<String> deleted = [];
   final List<String> recursiveDeletes = [];
@@ -101,9 +109,20 @@ class FakeFileBrowser implements FileBrowser {
     String path, {
     int maxBytes = FileBrowser.defaultReadLimit,
   }) async {
+    reads.add(path);
     final failure = failReadWith;
     if (failure != null) throw failure;
-    return _read(path);
+    final text = _read(path);
+    // SFTP stats before it opens; so does this, so a caller that asks for
+    // less than the file holds is refused rather than handed the lot.
+    if (text.text.length > maxBytes) {
+      throw FileBrowserException(
+        '${formatBytes(text.text.length)} is too large to open here. '
+        'Use the terminal for a file this size.',
+        fault: FileBrowserFault.tooLarge,
+      );
+    }
+    return text;
   }
 
   RemoteText _read(String path) {
@@ -187,6 +206,78 @@ class FakeFileBrowser implements FileBrowser {
       path: path,
       kind: RemoteEntryKind.directory,
     ));
+  }
+
+  /// Every upload, in order: the phone's file, where it went, and whether it
+  /// could replace what was there.
+  final List<({String from, String to, bool replace})> uploads = [];
+
+  /// Set to hold uploads and downloads part way, as a big file on a slow
+  /// link does, until it completes or the transfer is cancelled.
+  Completer<void>? hold;
+
+  Future<void> _midway(Future<void>? cancel) async {
+    final held = hold;
+    if (held == null) return;
+    await Future.any([held.future, ?cancel]);
+    if (!held.isCompleted) throw FileBrowserException.cancelled;
+  }
+
+  /// Fails with [failWriteWith], as a folder the login cannot write to does.
+  @override
+  Future<void> upload(
+    String localPath,
+    String path, {
+    bool replace = false,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    final failure = failWriteWith;
+    if (failure != null) throw failure;
+    // As SFTP's exclusive open does: a name already taken is refused.
+    final siblings = _tree[RemotePath.parent(path)] ?? const [];
+    if (!replace && siblings.any((entry) => entry.path == path)) {
+      throw FileBrowserException(
+        'Could not upload ${RemotePath.basename(path)}: it is already there.',
+      );
+    }
+    onProgress?.call(0, 1);
+    await _midway(cancel);
+    uploads.add((from: localPath, to: path, replace: replace));
+    onProgress?.call(1, 1);
+    _write(path, 'sent from $localPath', null);
+  }
+
+  /// Every download, in order: the host's file and the phone's copy.
+  final List<({String from, String to})> downloads = [];
+
+  /// Files whose bytes are not text — an image, say. [download] sends these
+  /// as they are, where anything else goes down as its text.
+  final Map<String, List<int>> binary = {};
+
+  /// A size to report for a download without holding that many bytes, as SFTP
+  /// stats the file before streaming it: for the cap a viewer puts on what it
+  /// will open.
+  final Map<String, int> statedSize = {};
+
+  /// Fails with [failReadWith] once the bytes are in, as a connection lost
+  /// near the end leaves them.
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    downloads.add((from: path, to: localPath));
+    final bytes = binary[path] ?? utf8.encode(_read(path).text);
+    final size = statedSize[path] ?? bytes.length;
+    File(localPath).writeAsBytesSync(bytes);
+    onProgress?.call(bytes.length ~/ 2, size);
+    await _midway(cancel);
+    onProgress?.call(bytes.length, size);
+    final failure = failReadWith;
+    if (failure != null) throw failure;
   }
 
   @override

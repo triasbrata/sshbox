@@ -1,21 +1,33 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart';
+import '../files/transfers.dart';
 import 'code_languages.dart';
+import 'file_download.dart';
 import 'key_bar.dart';
+import 'mermaid_view.dart';
+import 'settings_page.dart' show terminalSettings;
+import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 
-/// Opens one remote file for reading and, if you want, changing.
+/// One remote file in a tab: an image in a viewer, anything else in the
+/// editor.
 ///
-/// Pops `true` when something was actually saved, so the listing behind it
-/// knows to reload the size and timestamp it is showing.
-class FileEditorPage extends StatefulWidget {
+/// The choice is made by name alone, so it costs no round trip and survives an
+/// app restart for free — the open tabs are saved as paths, and a path that
+/// named an image still names one when it comes back.
+class FileEditorPage extends StatelessWidget {
   const FileEditorPage({
     super.key,
     required this.browser,
@@ -23,10 +35,121 @@ class FileEditorPage extends StatefulWidget {
     this.onClose,
     this.draftKey,
     this.line,
+    this.onOpenWeb,
+    this.host,
   });
 
   final FileBrowser browser;
   final String path;
+  final String? host;
+  final void Function(Uri url)? onOpenWeb;
+  final VoidCallback? onClose;
+  final String? draftKey;
+  final int? line;
+
+  @override
+  Widget build(BuildContext context) => isImageFile(path)
+      ? _ImageFileTab(
+          browser: browser,
+          path: path,
+          host: host,
+          onClose: onClose,
+        )
+      : _TextFileTab(
+          browser: browser,
+          path: path,
+          host: host,
+          onClose: onClose,
+          draftKey: draftKey,
+          line: line,
+          onOpenWeb: onOpenWeb,
+        );
+}
+
+/// The images Flutter decodes on its own.
+///
+/// Deliberately not the files drawer's image icon list, which also marks svg
+/// and ico: dart:ui draws neither without a package, and heic and tiff go the
+/// same way. Those stay editor files and say "This looks like a binary file",
+/// which already offers Download — better than a viewer that can only fail.
+final _imageNames = RegExp(
+  r'\.(png|jpe?g|gif|webp|bmp|wbmp)$',
+  caseSensitive: false,
+);
+
+bool isImageFile(String path) => _imageNames.hasMatch(path);
+
+/// The most of any one picture the app will bring down and decode, whether it
+/// is a tab of its own or one image in a Markdown preview.
+///
+/// ponytail: 20 MB. Every screenshot and camera photo is a small fraction of
+/// that, and the file is only half the cost — to draw it, Flutter decodes it
+/// to width × height × 4 bytes of pixels, which no cap on the file can bound
+/// tightly. Raise it when somebody has a real image bigger than this.
+const _imageLimit = 20 * 1024 * 1024;
+
+/// ponytail: 256 KB. The clipboard crosses to Android over the same ~1 MB
+/// Binder transaction as everything else, as UTF-16, so the whole of a 1 MiB
+/// file — the most the editor opens at all — would not fit. Raise it if
+/// pasting a bigger file ever matters; a native clip beyond that would have
+/// to go by file, as Copy image does.
+const copyLimit = 256 * 1024;
+
+/// What Copy content says instead of copying. One sentence for the file tab
+/// and the tree alike, so the ceiling and the wording cannot drift apart.
+String tooLargeToCopy(String name) =>
+    '$name is too large to copy: the clipboard takes '
+    '${formatBytes(copyLimit)} at most. Download it instead.';
+
+/// Puts something on the clipboard and says so, or says why not. The file
+/// tab's Copy entries and the tree's all end here, so they all say the same
+/// thing.
+Future<void> copyAndSay(
+  BuildContext context,
+  String name,
+  Future<void> Function() copy,
+) async {
+  try {
+    await copy();
+    if (context.mounted) {
+      showToast(context, 'Copied $name', type: ToastificationType.success);
+    }
+  } on PlatformException catch (error) {
+    if (context.mounted) {
+      showToast(
+        context,
+        'Could not copy $name: ${error.message ?? error.code}',
+        type: ToastificationType.error,
+      );
+    }
+  }
+}
+
+/// Opens one remote file for reading and, if you want, changing.
+///
+/// Pops `true` when something was actually saved, so the listing behind it
+/// knows to reload the size and timestamp it is showing.
+class _TextFileTab extends StatefulWidget {
+  const _TextFileTab({
+    required this.browser,
+    required this.path,
+    this.onClose,
+    this.draftKey,
+    this.line,
+    this.onOpenWeb,
+    this.host,
+  });
+
+  final FileBrowser browser;
+  final String path;
+
+  /// The host the file is on, as its tab names it, for the Transfers tab to
+  /// say where a download came from.
+  final String? host;
+
+  /// Opens a web link from the Markdown preview in a tab beside the shell,
+  /// as a link in the terminal opens. Null sends it to the phone's browser.
+  final void Function(Uri url)? onOpenWeb;
 
   /// Dismisses the editor when it is a pane rather than a screen.
   ///
@@ -45,7 +168,7 @@ class FileEditorPage extends StatefulWidget {
   final int? line;
 
   @override
-  State<FileEditorPage> createState() => _FileEditorPageState();
+  State<_TextFileTab> createState() => _TextFileTabState();
 }
 
 enum _Conflict { overwrite, reload }
@@ -59,7 +182,7 @@ String _draftPrefsKey(String key) => 'editor.draft.$key';
 const _prefsFontSize = 'editor.fontSize';
 const _prefsWordWrap = 'editor.wordWrap';
 
-class _FileEditorPageState extends State<FileEditorPage> {
+class _TextFileTabState extends State<_TextFileTab> {
   final _controller = CodeLineEditingController();
 
   /// One for a dark page and one for a light, each made once: re_editor
@@ -171,6 +294,30 @@ class _FileEditorPageState extends State<FileEditorPage> {
 
   bool _dirty = false;
 
+  /// Whether this is a Markdown file, which can be read rendered as well.
+  late final _markdown = RegExp(
+    r'\.(md|markdown)$',
+    caseSensitive: false,
+  ).hasMatch(widget.path);
+
+  /// Whether the file shows rendered rather than as written. A Markdown file
+  /// opens that way, unless it was opened at a line.
+  late bool _preview = _markdown && widget.line == null;
+
+  /// How far down the preview was scrolled, kept here because the preview
+  /// itself is thrown away and built again by a reload, which shows a spinner
+  /// in its place, and by a trip to Source. Set as it scrolls, never with
+  /// [setState]: it is only read when a new preview is built.
+  double _previewAt = 0;
+
+  /// The pictures the preview has fetched, kept here rather than in the
+  /// preview so they outlive a reload or a trip to Source, and go when the tab
+  /// does.
+  late final _images = _PreviewImages(
+    widget.browser,
+    RemotePath.parent(widget.path),
+  );
+
   /// Whether the key bar's Tab types a tab rather than spaces.
   bool _useTabs = false;
 
@@ -211,6 +358,9 @@ class _FileEditorPageState extends State<FileEditorPage> {
   bool _loading = true;
   bool _saving = false;
   bool _saved = false;
+
+  /// The download under way, which its bar follows.
+  Transfer? _transfer;
 
   bool get _embedded => widget.onClose != null;
 
@@ -264,6 +414,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
     }
     _find.dispose();
     _editorFocus.dispose();
+    _images.dispose();
     _controller.removeListener(_onEdited);
     _controller.dispose();
     super.dispose();
@@ -287,21 +438,27 @@ class _FileEditorPageState extends State<FileEditorPage> {
     // connection, which re_editor opens with that token. Leave the token if a
     // soft keyboard on every switch to a file is the lesser evil.
     final shown = Visibility.of(context);
-    if (shown && _shown == false) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _loading || _error != null) return;
-        _editorFocus.requestFocus();
-        _editorFocus.consumeKeyboardToken();
-      });
-    }
+    if (shown && _shown == false) _focusText();
     _shown = shown;
   }
 
+  /// Hands the text the keys after the frame, without the soft keyboard: see
+  /// [didChangeDependencies]. Never while the preview hides the text.
+  void _focusText() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _loading || _error != null || _preview) return;
+      _editorFocus.requestFocus();
+      _editorFocus.consumeKeyboardToken();
+    });
+  }
+
   @override
-  void didUpdateWidget(FileEditorPage oldWidget) {
+  void didUpdateWidget(_TextFileTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     final line = widget.line;
     if (line != null && line != oldWidget.line && !_loading && _error == null) {
+      // A line is a place in the text, so a Markdown file shows its source.
+      _preview = false;
       _jumpTo(line);
     }
   }
@@ -328,6 +485,38 @@ class _FileEditorPageState extends State<FileEditorPage> {
     );
     final line = int.tryParse(answer?.trim() ?? '');
     if (line != null && mounted) _jumpTo(line);
+  }
+
+  /// Rendered or as written. Source comes back with its cursor and scroll
+  /// position as they were: the text stays built behind the preview.
+  void _setPreview(bool preview) {
+    setState(() => _preview = preview);
+    _focusText();
+  }
+
+  /// Runs [action], which works on the text, bringing Source back first if
+  /// the preview is up: then after the frame, once the text can take focus.
+  void _inSource(VoidCallback action) {
+    if (!_preview) {
+      action();
+      return;
+    }
+    setState(() => _preview = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) action();
+    });
+  }
+
+  /// A link tapped in the preview. A web address opens the way a link in the
+  /// terminal does. Anything relative is a file on the host or a heading in
+  /// this one, so it is named rather than fetched.
+  void _openPreviewLink(String text, String? href, String title) {
+    final url = Uri.tryParse(href ?? '');
+    if (url != null && url.hasScheme) {
+      unawaited(openUrl(context, url, inTab: widget.onOpenWeb));
+      return;
+    }
+    showToast(context, 'Not opened: ${href ?? text} is relative to this file');
   }
 
   /// The controller reports every caret move as well as every edit, so the
@@ -671,6 +860,70 @@ class _FileEditorPageState extends State<FileEditorPage> {
     _leave();
   }
 
+  /// Saves the file on the phone as the host has it, the way the files
+  /// drawer's Download does. An edit not saved yet is not in that, so it
+  /// asks first.
+  Future<void> _download() async {
+    if (_dirty) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: const Text(
+            "The download is the version on the server; your unsaved edits "
+            "aren't in it.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Download'),
+            ),
+          ],
+        ),
+      );
+      if (go != true) return;
+    }
+    if (!mounted) return;
+    await downloadFile(
+      context,
+      widget.browser,
+      widget.path,
+      host: widget.host ?? '',
+      // Opened through sudo, while a download reads as the login.
+      denied: _asRoot
+          ? 'Could not download ${RemotePath.basename(widget.path)}: your '
+              'login may not read it, and a download does not go through sudo.'
+          : null,
+      onTransfer: (transfer) {
+        if (mounted) setState(() => _transfer = transfer);
+      },
+    );
+  }
+
+  /// Puts the file on the clipboard as it is on screen, unsaved edits and
+  /// all: this is Select all and Copy in one tap, for the text being looked
+  /// at. Download is already there for the version on the host.
+  Future<void> _copyContent() {
+    final name = RemotePath.basename(widget.path);
+    final text = _controller.text;
+    if (text.length > copyLimit) {
+      showToast(
+        context,
+        tooLargeToCopy(name),
+        type: ToastificationType.warning,
+      );
+      return Future.value();
+    }
+    return copyAndSay(
+      context,
+      name,
+      () => Clipboard.setData(ClipboardData(text: text)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final canSave = _canSave;
@@ -716,9 +969,19 @@ class _FileEditorPageState extends State<FileEditorPage> {
                 )
               : null,
           actions: [
+            if (_markdown)
+              IconButton(
+                tooltip: _preview ? 'Show source' : 'Show preview',
+                onPressed: _loading || _error != null
+                    ? null
+                    : () => _setPreview(!_preview),
+                icon: Icon(_preview ? Icons.code : Icons.preview_outlined),
+              ),
             IconButton(
               tooltip: 'Find',
-              onPressed: _loading || _error != null ? null : _find.findMode,
+              onPressed: _loading || _error != null
+                  ? null
+                  : () => _inSource(_find.findMode),
               icon: const Icon(Icons.search),
             ),
             IconButton(
@@ -735,13 +998,28 @@ class _FileEditorPageState extends State<FileEditorPage> {
               tooltip: 'More',
               onSelected: (action) => action(),
               itemBuilder: (context) => [
+                // Only the path is needed, so a file that would not open as
+                // text can still be saved on the phone.
+                PopupMenuItem(
+                  value: _download,
+                  enabled: _transfer == null,
+                  child: const Text('Download'),
+                ),
+                // Nothing to copy while the file is still coming, and nothing
+                // worth copying when it would not open as text.
+                if (!_loading && _error == null)
+                  PopupMenuItem(
+                    value: _copyContent,
+                    child: const Text('Copy content'),
+                  ),
+                const PopupMenuDivider(),
                 if (!_loading && _error == null) ...[
                   PopupMenuItem(
-                    value: _find.replaceMode,
+                    value: () => _inSource(_find.replaceMode),
                     child: const Text('Find and replace'),
                   ),
                   PopupMenuItem(
-                    value: _goToLine,
+                    value: () => _inSource(_goToLine),
                     child: const Text('Go to line…'),
                   ),
                   const PopupMenuDivider(),
@@ -763,8 +1041,14 @@ class _FileEditorPageState extends State<FileEditorPage> {
             ),
           ],
         ),
-        body: _buildBody(),
-        bottomNavigationBar: _loading || _error != null
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_transfer case final transfer?) TransferBar(transfer),
+            Expanded(child: _buildBody()),
+          ],
+        ),
+        bottomNavigationBar: _loading || _error != null || _preview
             ? null
             : EditorKeyBar(controller: _controller, useTabs: _useTabs),
       ),
@@ -804,34 +1088,58 @@ class _FileEditorPageState extends State<FileEditorPage> {
             ],
           ),
         Expanded(
-          // re_editor opens the keyboard with autocorrect, smart punctuation
-          // and capitalisation all off, as a plain text file needs.
-          child: Focus(
-            // Not a stop of its own: it only hears the keys the text lets by.
-            canRequestFocus: false,
-            skipTraversal: true,
-            onKeyEvent: _onHardwareKey,
-            child: CodeEditor(
-              controller: _controller,
-              focusNode: _editorFocus,
-              wordWrap: _wordWrap,
-              toolbarController: _toolbar,
-              findController: _find,
-              findBuilder: (context, find, readOnly) => _FindBar(find),
-              style: CodeEditorStyle(
-                fontSize: _fontSize,
-                // Files are code and config far more often than prose, and
-                // both are unreadable in a proportional face once alignment
-                // matters.
-                fontFamily: 'monospace',
-                codeTheme: _codeThemes[Theme.of(context).brightness],
+          // The text stays built behind the preview, so Source comes back
+          // with its cursor and scroll position; out of focus meanwhile, so
+          // no key reaches text nobody can see.
+          child: IndexedStack(
+            index: _preview ? 1 : 0,
+            sizing: StackFit.expand,
+            children: [
+              ExcludeFocus(
+                excluding: _preview,
+                // re_editor opens the keyboard with autocorrect, smart
+                // punctuation and capitalisation all off, as a plain text
+                // file needs.
+                child: Focus(
+                  // Not a stop of its own: it only hears the keys the text
+                  // lets by.
+                  canRequestFocus: false,
+                  skipTraversal: true,
+                  onKeyEvent: _onHardwareKey,
+                  child: CodeEditor(
+                    controller: _controller,
+                    focusNode: _editorFocus,
+                    wordWrap: _wordWrap,
+                    toolbarController: _toolbar,
+                    findController: _find,
+                    findBuilder: (context, find, readOnly) => _FindBar(find),
+                    style: CodeEditorStyle(
+                      fontSize: _fontSize,
+                      // Files are code and config far more often than prose,
+                      // and both are unreadable in a proportional face once
+                      // alignment matters.
+                      fontFamily: 'monospace',
+                      codeTheme: _codeThemes[Theme.of(context).brightness],
+                    ),
+                    indicatorBuilder: (context, editing, chunks, notifier) =>
+                        DefaultCodeLineNumber(
+                      controller: editing,
+                      notifier: notifier,
+                    ),
+                  ),
+                ),
               ),
-              indicatorBuilder: (context, editing, chunks, notifier) =>
-                  DefaultCodeLineNumber(
-                controller: editing,
-                notifier: notifier,
-              ),
-            ),
+              if (_preview)
+                _MarkdownPreview(
+                  text: _controller.text,
+                  images: _images,
+                  onTapLink: _openPreviewLink,
+                  at: _previewAt,
+                  onScroll: (at) => _previewAt = at,
+                )
+              else
+                const SizedBox.shrink(),
+            ],
           ),
         ),
       ],
@@ -873,6 +1181,356 @@ class _FileEditorPageState extends State<FileEditorPage> {
             },
           ),
       ],
+    );
+  }
+}
+
+/// One image in a file tab: fitted to the tab, pinch to zoom and pan, and a
+/// double-tap between the whole image and every one of its pixels.
+///
+/// There is nothing here to edit, so the editor's Save, Find, Go to line and
+/// Markdown toggle are not offered and there is no key bar. Download is, since
+/// that only ever needed the path — an image the app cannot draw can still be
+/// saved on the phone and opened by something that can.
+class _ImageFileTab extends StatefulWidget {
+  const _ImageFileTab({
+    required this.browser,
+    required this.path,
+    this.host,
+    this.onClose,
+  });
+
+  final FileBrowser browser;
+  final String path;
+
+  /// The host the file is on, as its tab names it, for the Transfers tab to
+  /// say where a download came from.
+  final String? host;
+
+  /// Dismisses the tab when it is a pane rather than a screen: see
+  /// [FileEditorPage.onClose].
+  final VoidCallback? onClose;
+
+  @override
+  State<_ImageFileTab> createState() => _ImageFileTabState();
+}
+
+class _ImageFileTabState extends State<_ImageFileTab> {
+  /// The app's own copy and the directory holding it. The file comes down a
+  /// chunk at a time, as a download does, so nothing but the decoded image is
+  /// ever held in memory, and the copy goes when the tab does.
+  Directory? _temp;
+  FileImage? _image;
+
+  /// What the host says the file is, and what it turned out to be.
+  int _bytes = 0;
+  int? _width;
+  int? _height;
+
+  String? _error;
+  FileBrowserFault? _fault;
+  bool _loading = true;
+
+  /// Stops the copy part way: the tab closed, or the file is past [_imageLimit].
+  final _stop = Completer<void>();
+  bool _tooLarge = false;
+
+  /// The download under way from the ⋮ menu, which its bar follows.
+  Transfer? _transfer;
+
+  final _view = TransformationController();
+
+  /// Where the last double-tap landed, which the zoom keeps under the finger.
+  Offset _tapped = Offset.zero;
+
+  bool get _embedded => widget.onClose != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    if (!_stop.isCompleted) _stop.complete();
+    _view.dispose();
+    // The decoded pixels are cached under the copy's path, and that path goes
+    // with the copy.
+    final image = _image;
+    if (image != null) unawaited(image.evict());
+    // Still loading, and the copy is the download's to clear up on its way
+    // out: see the end of [_load].
+    if (!_loading) _cleanup();
+    super.dispose();
+  }
+
+  /// Removes the app's copy. Idempotent, so whichever of the tab closing and
+  /// the copy finishing comes last does it, and neither has to know.
+  void _cleanup() {
+    final temp = _temp;
+    _temp = null;
+    try {
+      temp?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Already gone, or never made.
+    }
+  }
+
+  Future<void> _load() async {
+    // On Android, Flutter points systemTemp at the app's own code cache.
+    final temp = Directory.systemTemp.createTempSync('image');
+    _temp = temp;
+    final copy = '${temp.path}/file';
+    try {
+      await widget.browser.download(
+        widget.path,
+        copy,
+        onProgress: (received, total) {
+          _bytes = total;
+          // The size lands with the first chunk, so a file past the cap is
+          // stopped there rather than pulled down in full to be turned away.
+          if (total > _imageLimit && !_stop.isCompleted) {
+            _tooLarge = true;
+            _stop.complete();
+          }
+        },
+        cancel: _stop.future,
+      );
+      if (!mounted) return;
+      // Checked again for a transport that finishes rather than stopping.
+      if (_tooLarge || _bytes > _imageLimit) return _refuse();
+
+      final image = FileImage(File(copy));
+      final size = await _sizeOf(image);
+      if (!mounted) return;
+      setState(() {
+        _image = image;
+        _width = size.width.round();
+        _height = size.height.round();
+        _loading = false;
+      });
+    } on FileBrowserException catch (error) {
+      if (!mounted) return;
+      if (_tooLarge) return _refuse();
+      setState(() {
+        _error = error.message;
+        _fault = error.fault;
+        _loading = false;
+      });
+    } catch (_) {
+      // Whatever the decoder made of it, the answer is the same: this is not
+      // an image we can draw. Its own words are for a log, not for a page.
+      if (!mounted) return;
+      setState(() {
+        _error =
+            'Could not show ${RemotePath.basename(widget.path)}: it is not an '
+            'image this app can open. Download it to open it on the phone.';
+        _loading = false;
+      });
+    } finally {
+      // The tab went while this was in flight, so dispose left the copy alone.
+      if (!mounted) _cleanup();
+    }
+  }
+
+  void _refuse() {
+    setState(() {
+      _error =
+          '${formatBytes(_bytes)} is too large to show here. Download it to '
+          'open it on the phone.';
+      _fault = FileBrowserFault.tooLarge;
+      _loading = false;
+    });
+  }
+
+  /// The image's own pixel size, which is also its decode: a failure here is a
+  /// file that is not an image, and what is drawn comes back from the same
+  /// cached decode rather than a second one.
+  Future<Size> _sizeOf(ImageProvider provider) {
+    final done = Completer<Size>();
+    final stream = provider.resolve(ImageConfiguration.empty);
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        stream.removeListener(listener);
+        final size = Size(
+          info.image.width.toDouble(),
+          info.image.height.toDouble(),
+        );
+        info.dispose();
+        if (!done.isCompleted) done.complete(size);
+      },
+      onError: (error, _) {
+        stream.removeListener(listener);
+        if (!done.isCompleted) done.completeError(error);
+      },
+    );
+    stream.addListener(listener);
+    return done.future;
+  }
+
+  void _leave() {
+    final close = widget.onClose;
+    if (close != null) {
+      close();
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
+  /// The same save dialog the files drawer and the editor use.
+  Future<void> _download() => downloadFile(
+    context,
+    widget.browser,
+    widget.path,
+    host: widget.host ?? '',
+    onTransfer: (transfer) {
+      if (mounted) setState(() => _transfer = transfer);
+    },
+  );
+
+  /// Puts the picture itself on the clipboard, to paste into a chat or an
+  /// editor.
+  ///
+  /// The app's own copy is what goes, the same file the viewer draws, so
+  /// nothing comes down twice. No cap of its own beyond [_imageLimit], which is
+  /// all the tab would show anyway: only a URI crosses to the pasting app,
+  /// never the bytes.
+  Future<void> _copyImage() {
+    final image = _image;
+    if (image == null) return Future.value();
+    final name = RemotePath.basename(widget.path);
+    return copyAndSay(
+      context,
+      name,
+      () => copyImageToClipboard(image.file.path, name),
+    );
+  }
+
+  /// Double-tap: every pixel, at the point tapped, or back to the whole image.
+  void _toggleZoom(Size viewport) {
+    if (_view.value.getMaxScaleOnAxis() > 1.01) {
+      _view.value = Matrix4.identity();
+      return;
+    }
+    final width = _width;
+    if (width == null || _height == null) return;
+    // 1 is the image fitted to the tab, so 100% is however much larger than
+    // that its own pixels are on this screen's.
+    final fitted = applyBoxFit(
+      BoxFit.contain,
+      Size(width.toDouble(), _height!.toDouble()),
+      viewport,
+    ).destination;
+    final full =
+        width / (fitted.width * MediaQuery.devicePixelRatioOf(context));
+    // Already showing every pixel, or more: there is nothing to zoom to.
+    if (full <= 1.01) return;
+    final scale = math.min(full, 8.0);
+    _view.value = Matrix4.identity()
+      ..translateByDouble(
+        -_tapped.dx * (scale - 1),
+        -_tapped.dy * (scale - 1),
+        0,
+        1,
+      )
+      ..scaleByDouble(scale, scale, scale, 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = _width == null
+        ? RemotePath.parent(widget.path)
+        : '$_width × $_height · ${formatBytes(_bytes)}';
+
+    return Scaffold(
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          tooltip: _embedded ? 'Close file' : 'Back',
+          icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
+          onPressed: _leave,
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              RemotePath.basename(widget.path),
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              size,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          PopupMenuButton<VoidCallback>(
+            tooltip: 'More',
+            onSelected: (action) => action(),
+            itemBuilder: (context) => [
+              // Only the path is needed, so an image that would not open here
+              // can still be saved on the phone.
+              PopupMenuItem(
+                value: _download,
+                enabled: _transfer == null,
+                child: const Text('Download'),
+              ),
+              // Only once there is a picture to copy, and only where there is
+              // a clipboard that takes one: MainActivity's, over the channel.
+              if (_image != null &&
+                  defaultTargetPlatform == TargetPlatform.android)
+                PopupMenuItem(
+                  value: _copyImage,
+                  child: const Text('Copy image'),
+                ),
+            ],
+          ),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_transfer case final transfer?) TransferBar(transfer),
+          Expanded(child: _buildBody()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+
+    final error = _error;
+    if (error != null) return _EditorError(message: error, fault: _fault);
+
+    // A mid grey behind it: what a transparent PNG leaves showing is as often
+    // white as black, and this is the one ground neither disappears into,
+    // light theme or dark.
+    return ColoredBox(
+      color: const Color(0xFF6E6E6E),
+      child: LayoutBuilder(
+        builder: (context, box) => GestureDetector(
+          onDoubleTapDown: (details) => _tapped = details.localPosition,
+          onDoubleTap: () => _toggleZoom(box.biggest),
+          child: InteractiveViewer(
+            transformationController: _view,
+            maxScale: 8,
+            child: Image(
+              image: _image!,
+              fit: BoxFit.contain,
+              // The decode already worked once, so this is a copy that went
+              // away under us rather than a file that was never an image.
+              errorBuilder: (context, _, _) => const Center(
+                child: Icon(Icons.broken_image_outlined, size: 40),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -922,6 +1580,500 @@ class _EditorError extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One picture in a Markdown preview: what came of fetching it, and when that
+/// will be known.
+class _Picture {
+  FileImage? image;
+
+  /// Why there is no picture, as a phrase to put after the alt text, or null
+  /// while there might still be one.
+  String? failure;
+
+  /// Completes once [image] or [failure] is set.
+  late final Future<void> done;
+
+  bool get settled => image != null || failure != null;
+}
+
+/// The pictures a Markdown preview has brought down, held by the file tab
+/// rather than by the preview.
+///
+/// The preview's widgets are thrown away often — by Source, by a reload, and
+/// by the list itself as a picture scrolls out of view — and a second trip to
+/// the host for a picture already on the phone would cost both a round trip
+/// and a frame of alt text, and a frame at the wrong height moves the scroll
+/// position the reader was put back to. Asked for a picture already in hand,
+/// this answers in the same frame, so nothing shifts.
+class _PreviewImages {
+  _PreviewImages(this.browser, this.directory);
+
+  final FileBrowser browser;
+
+  /// The directory holding the .md file, which a relative source is taken
+  /// from, as every other Markdown renderer takes it.
+  final String directory;
+
+  /// ponytail: 64 MB over the document, on top of [_imageLimit] for any one
+  /// picture. The preview's list builds its children as they scroll into view,
+  /// so a long article only fetches what is read; this is the ceiling on what
+  /// one tab can leave in the app's cache. Count pictures instead, or drop the
+  /// ones scrolled far away, if a real article ever hits it.
+  static const _budget = 64 * 1024 * 1024;
+
+  final _pictures = <String, _Picture>{};
+
+  /// Completes when the tab closes, stopping every download still in flight.
+  final _closed = Completer<void>();
+
+  Directory? _temp;
+  int _spent = 0;
+  int _fetching = 0;
+  int _next = 0;
+
+  /// What became of [source], fetching it on the first ask.
+  _Picture of(String source) {
+    final known = _pictures[source];
+    if (known != null) return known;
+    final picture = _pictures[source] = _Picture();
+    picture.done = _fetch(source, picture);
+    return picture;
+  }
+
+  /// [source] as a path on the host: a relative one against the document's own
+  /// directory, `~` against the login home — the app's paths take it
+  /// everywhere else — and `..` walked, which stops at the root as it does on
+  /// the host. Nothing is confined beyond that: the login can read these files
+  /// in the terminal anyway, and only a name [isImageFile] knows is ever
+  /// fetched at all.
+  Future<String> _resolve(String source) async => source.startsWith('~')
+      ? RemotePath.resolve(source, await browser.resolveHome())
+      : RemotePath.normalize(RemotePath.join(directory, source));
+
+  Future<void> _fetch(String source, _Picture picture) async {
+    _fetching++;
+    final stop = Completer<void>();
+    var refused = '';
+    try {
+      final path = await _resolve(source);
+      if (!isImageFile(path)) {
+        picture.failure = 'not a picture this app can draw';
+        return;
+      }
+      // On Android, Flutter points systemTemp at the app's own code cache.
+      final temp = _temp ??= Directory.systemTemp.createTempSync('preview');
+      final copy = '${temp.path}/${_next++}';
+      var bytes = 0;
+      await browser.download(
+        path,
+        copy,
+        onProgress: (received, total) {
+          bytes = total;
+          if (refused.isNotEmpty) return;
+          // The size lands with the first chunk, so one past a ceiling is
+          // stopped there rather than pulled down in full to be turned away.
+          if (total > _imageLimit) {
+            refused = '${formatBytes(total)} is too large to show here';
+          } else if (_spent + total > _budget) {
+            refused = 'the preview has already fetched '
+                '${formatBytes(_budget)} of pictures';
+          }
+          if (refused.isNotEmpty) stop.complete();
+        },
+        cancel: Future.any([stop.future, _closed.future]),
+      );
+      // Checked again for a transport that finishes rather than stopping.
+      if (refused.isNotEmpty) return;
+      _spent += bytes;
+      picture.image = FileImage(File(copy));
+    } on FileBrowserException catch (error) {
+      // Its messages are already fit to put in front of a reader: not there,
+      // permission denied, the connection gone.
+      picture.failure = error.message;
+    } catch (_) {
+      picture.failure = 'could not be fetched';
+    } finally {
+      // A refusal stops the download part way, so it arrives here as a
+      // cancellation: the ceiling is what the reader wants to be told about.
+      if (refused.isNotEmpty) picture.failure = refused;
+      _fetching--;
+      // The tab went while this was in flight, so dispose left the copies
+      // alone: see [dispose].
+      if (_closed.isCompleted && _fetching == 0) _remove();
+    }
+  }
+
+  /// Removes the app's copies. Idempotent, so whichever of the tab closing and
+  /// the last fetch finishing comes last does it, and neither has to know.
+  void _remove() {
+    final temp = _temp;
+    _temp = null;
+    try {
+      temp?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Already gone, or never made.
+    }
+  }
+
+  void dispose() {
+    if (!_closed.isCompleted) _closed.complete();
+    for (final picture in _pictures.values) {
+      // The decoded pixels are cached under the copy's path, and that path
+      // goes with the copy.
+      final image = picture.image;
+      if (image != null) unawaited(image.evict());
+    }
+    // A download still writing into the directory would fail on its way out
+    // rather than stopping cleanly, so the last one out clears up.
+    if (_fetching == 0) _remove();
+  }
+}
+
+/// A picture that is not shown: its alt text in italics behind a picture icon,
+/// and why not when there is a why.
+Widget _imageAlt(
+  BuildContext context,
+  String label, {
+  String? because,
+  bool loading = false,
+}) {
+  final theme = Theme.of(context);
+  return Text.rich(
+    TextSpan(
+      children: [
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: loading
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.image_outlined, size: 16),
+        ),
+        TextSpan(text: ' $label${because == null ? '' : ' — $because'}'),
+      ],
+    ),
+    style: theme.textTheme.bodyMedium!.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+      fontStyle: FontStyle.italic,
+    ),
+  );
+}
+
+/// One picture in the Markdown preview, as wide as the page and no wider.
+///
+/// Until it is in, and if it never comes, the alt text stands in its place as
+/// it always did, with the reason beside it.
+class _MarkdownImage extends StatefulWidget {
+  const _MarkdownImage({
+    required this.images,
+    required this.source,
+    required this.label,
+  });
+
+  final _PreviewImages images;
+
+  /// The path as the document writes it, before it is resolved.
+  final String source;
+
+  /// The alt text, or the source itself when there is none.
+  final String label;
+
+  @override
+  State<_MarkdownImage> createState() => _MarkdownImageState();
+}
+
+class _MarkdownImageState extends State<_MarkdownImage> {
+  late final _Picture _picture = widget.images.of(widget.source);
+
+  @override
+  void initState() {
+    super.initState();
+    // One already in hand draws in this very frame, and waits for nothing.
+    if (!_picture.settled) {
+      _picture.done.whenComplete(() {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = _picture.image;
+    if (image == null) {
+      return _imageAlt(
+        context,
+        widget.label,
+        because: _picture.failure,
+        loading: !_picture.settled,
+      );
+    }
+    return Image(
+      image: image,
+      // No width of its own: a picture wider than the page is fitted to it and
+      // a small one is left alone, which is what an image tag means in prose.
+      //
+      // ponytail: decoded at its own size, so a page of 4000-pixel screenshots
+      // leans on Flutter's own image cache to bound it. Decode at the page's
+      // width with ResizeImage if a real article ever runs a tablet out of
+      // memory.
+      errorBuilder: (context, _, _) => _imageAlt(
+        context,
+        widget.label,
+        because: 'not a picture this app can draw',
+      ),
+    );
+  }
+}
+
+/// A Markdown file as it reads, from the text in the editor rather than the
+/// host, so an edit not yet saved shows too. Read-only, since editing is
+/// Source's, and selectable across blocks.
+///
+/// A picture on the host is fetched and drawn, through [_PreviewImages]. A web
+/// one is still never fetched and shows as its alt text: the document comes
+/// off somebody's server, and `![](https://tracker/…)` in it would tell a
+/// third party which file the user is reading, which is not a thing a preview
+/// should do behind their back.
+class _MarkdownPreview extends StatefulWidget {
+  const _MarkdownPreview({
+    required this.text,
+    required this.images,
+    required this.onTapLink,
+    required this.at,
+    required this.onScroll,
+  });
+
+  final String text;
+
+  /// The pictures fetched for this document, kept by the tab so they outlive
+  /// the preview.
+  final _PreviewImages images;
+
+  final MarkdownTapLinkCallback onTapLink;
+
+  /// Where the preview was last left, in pixels. Reload replaces the body with
+  /// a spinner and Source takes the preview out of the tree, so each of them
+  /// builds this widget afresh; starting the scroll here is what brings the
+  /// reader back to the passage they were reading. Past the end of a file that
+  /// came back shorter, the list settles at its bottom.
+  final double at;
+
+  /// Called as the preview scrolls, so [at] is up to date next time. Only ever
+  /// a field to write: rebuilding on a scroll would rebuild the document.
+  final ValueChanged<double> onScroll;
+
+  /// ponytail: flutter_markdown_plus parses and builds the whole document on
+  /// the UI thread, 0.6 s a megabyte on a desktop and slower on the tablet, so
+  /// the preview stops here. Parse in an isolate and build the blocks lazily
+  /// if longer files must render in full.
+  static const _limit = 100 * 1024;
+
+  @override
+  State<_MarkdownPreview> createState() => _MarkdownPreviewState();
+}
+
+class _MarkdownPreviewState extends State<_MarkdownPreview> {
+  late final _scroll = ScrollController(initialScrollOffset: widget.at)
+    ..addListener(_report);
+
+  void _report() {
+    if (_scroll.hasClients) widget.onScroll(_scroll.offset);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = widget.text;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final body = theme.textTheme.bodyMedium!;
+    const limit = _MarkdownPreview._limit;
+    var shown = text;
+    if (text.length > limit) {
+      final end = text.lastIndexOf('\n', limit);
+      shown = text.substring(0, end > 0 ? end : limit);
+    }
+
+    return ValueListenableBuilder(
+      // Code in the terminal's font, following Settings as it changes.
+      valueListenable: terminalSettings,
+      builder: (context, terminal, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (shown.length < text.length)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Text(
+                'Only the first 100 KB is shown here. Source has the whole '
+                'file.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          Expanded(
+            child: SelectionArea(
+              child: Markdown(
+                data: shown,
+                controller: _scroll,
+                onTapLink: widget.onTapLink,
+                builders: {'code': _CodeBuilder()},
+                imageBuilder: (uri, title, alt) {
+                  final label = alt == null || alt.isEmpty ? '$uri' : alt;
+                  // Anything with a scheme or a host is somebody else's
+                  // server: see the class comment.
+                  if (uri.hasScheme || uri.hasAuthority) {
+                    return _imageAlt(context, label);
+                  }
+                  return _MarkdownImage(
+                    images: widget.images,
+                    // Without the query a raw link carries, and with `%20`
+                    // read back as the space it stands for: what is left is a
+                    // path on the host. Uri.parse escapes a bare `%` on its
+                    // way in, so this never throws on one.
+                    source: Uri.decodeComponent(uri.path),
+                    label: label,
+                  );
+                },
+                // The package's own picks a fixed blue for links and a
+                // colour that vanishes on a dark page for checkboxes.
+                styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                  a: TextStyle(
+                    color: scheme.primary,
+                    decoration: TextDecoration.underline,
+                    decorationColor: scheme.primary,
+                  ),
+                  code: body.copyWith(
+                    fontFamily: terminal.fontFamily,
+                    fontFamilyFallback: terminal.fontFamilyFallback,
+                    fontSize: body.fontSize! * 0.9,
+                    backgroundColor: scheme.surfaceContainerHighest,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  checkbox: body.copyWith(color: scheme.primary),
+                  // Sized to what they hold, so a wide one scrolls sideways
+                  // the way a code block does, rather than squeezing.
+                  tableColumnWidth: const IntrinsicColumnWidth(),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The Markdown preview's code: a ```mermaid fence is a diagram, as
+/// [MermaidBuilder] draws it, any other block gets a button that copies it,
+/// and inline code is left to the package.
+///
+/// A mermaid fence deliberately gets no button. What it shows is a picture
+/// rather than the text, and the button would have to sit over a web view's
+/// own surface to be near it; Source has the whole file, that block included.
+class _CodeBuilder extends MermaidBuilder {
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final diagram = super.visitElementAfterWithContext(
+      context,
+      element,
+      preferredStyle,
+      parentStyle,
+    );
+    if (diagram != null) return diagram;
+    // Inline code is no block: it keeps the package's own span and gets no
+    // button. What tells the two apart is the line break the parser puts at
+    // the end of every block and never at the end of inline code — the <pre>
+    // around a block is gone by the time a builder is asked about its code.
+    final source = element.textContent;
+    if (!source.endsWith('\n')) return null;
+    return _CodeBlock(
+      // That last break is the fence's, not the code's: pasting a block
+      // should not bring a blank line along.
+      source: source.substring(0, source.length - 1),
+      style: preferredStyle,
+    );
+  }
+}
+
+/// One code block in the Markdown preview: the source, scrolling sideways as
+/// the package's own does, and a button that copies the whole of it.
+///
+/// No ceiling of its own — the preview stops at 100 KB, well inside what the
+/// clipboard takes.
+class _CodeBlock extends StatefulWidget {
+  const _CodeBlock({required this.source, this.style});
+
+  final String source;
+  final TextStyle? style;
+
+  @override
+  State<_CodeBlock> createState() => _CodeBlockState();
+}
+
+class _CodeBlockState extends State<_CodeBlock> {
+  /// Its own, because a scrollbar needs the controller its view is on.
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(
+        child: Scrollbar(
+          controller: _scroll,
+          child: SingleChildScrollView(
+            controller: _scroll,
+            scrollDirection: Axis.horizontal,
+            // What MarkdownStyleSheet.codeblockPadding gives a block the
+            // package builds itself, which this stands in for.
+            padding: const EdgeInsets.all(8),
+            child: Text.rich(
+              TextSpan(text: widget.source, style: widget.style),
+            ),
+          ),
+        ),
+      ),
+      // Beside the code, not over it: an overlay would cover the first line
+      // of a wide block and take the drag that scrolls it. 40 dp square, so a
+      // one-line block does not grow to fit a full-sized button.
+      IconButton(
+        tooltip: 'Copy code',
+        onPressed: () => copyAndSay(
+          context,
+          'code block',
+          () => Clipboard.setData(ClipboardData(text: widget.source)),
+        ),
+        icon: const Icon(Icons.content_copy, size: 18),
+        // onSurfaceVariant on the block's surfaceContainerHighest: the pair
+        // Material keeps legible either way round, light theme or dark.
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+      ),
+    ],
+  );
 }
 
 /// Find, and replace once asked for, across the top of the editor.

@@ -21,6 +21,7 @@ class HostProfile {
     required this.host,
     required this.username,
     this.port = 22,
+    this.altHost = '',
     this.authMethod = SshAuthMethod.password,
     this.fileRoot = '',
     this.forwardPorts = false,
@@ -34,6 +35,14 @@ class HostProfile {
   final String host;
   final String username;
   final int port;
+
+  /// A second address for the same machine, tried alongside [host] and used
+  /// if it answers first: the LAN address of a host normally reached over a
+  /// tailnet, so a tailnet that is down costs no edit. Blank means there is
+  /// only [host]. It shares [port], [username] and the credentials, being the
+  /// same sshd — see [addresses].
+  final String altHost;
+
   final SshAuthMethod authMethod;
 
   /// Where the file tree opens on this host. Blank means the login home, and
@@ -59,6 +68,13 @@ class HostProfile {
   /// badge. Null until it first connects — see `LiveSession`.
   final OsInfo? os;
 
+  /// Where this host may be dialled, the saved address first. One address
+  /// unless [altHost] holds another — see `firstToAnswer`, which races them.
+  List<String> get addresses => [
+        host,
+        if (altHost.trim().isNotEmpty && altHost.trim() != host) altHost.trim(),
+      ];
+
   /// What we show under the label, e.g. `root@10.0.2.2` or `me@box:2222`.
   String get target =>
       '$username@$host${port == 22 ? '' : ':$port'}';
@@ -66,11 +82,16 @@ class HostProfile {
   /// Falls back to the target so a profile always has something to show.
   String get displayName => label.trim().isEmpty ? target : label.trim();
 
+  /// A copy with the fields given changed. A new [id] makes it a separate
+  /// saved host — what Home's Duplicate does — and every other field comes
+  /// along, so a field added here travels with a duplicate by itself.
   HostProfile copyWith({
+    String? id,
     String? label,
     String? host,
     String? username,
     int? port,
+    String? altHost,
     SshAuthMethod? authMethod,
     String? fileRoot,
     bool? forwardPorts,
@@ -79,11 +100,12 @@ class HostProfile {
     OsInfo? os,
   }) {
     return HostProfile(
-      id: id,
+      id: id ?? this.id,
       label: label ?? this.label,
       host: host ?? this.host,
       username: username ?? this.username,
       port: port ?? this.port,
+      altHost: altHost ?? this.altHost,
       authMethod: authMethod ?? this.authMethod,
       fileRoot: fileRoot ?? this.fileRoot,
       forwardPorts: forwardPorts ?? this.forwardPorts,
@@ -99,6 +121,7 @@ class HostProfile {
         'host': host,
         'username': username,
         'port': port,
+        'altHost': altHost,
         'authMethod': authMethod.name,
         'fileRoot': fileRoot,
         'forwardPorts': forwardPorts,
@@ -117,6 +140,7 @@ class HostProfile {
       host: json['host'] as String? ?? '',
       username: json['username'] as String? ?? '',
       port: json['port'] as int? ?? 22,
+      altHost: json['altHost'] as String? ?? '',
       authMethod: SshAuthMethod.values.firstWhere(
         (method) => method.name == json['authMethod'],
         orElse: () => SshAuthMethod.password,

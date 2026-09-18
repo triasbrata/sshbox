@@ -24,9 +24,19 @@ class Dartssh2Transport implements SessionTransport {
     KnownHostStore? knownHosts,
     this.confirmHostKey,
     this.onAuthBanner,
+    this.onNotice,
+    this.loadHosts,
   }) : _knownHosts = knownHosts ?? KnownHostStore();
 
   final KnownHostStore _knownHosts;
+
+  /// The saved hosts a jump chain is resolved against.
+  ///
+  /// Left out, they come from [HostRepository], which needs shared
+  /// preferences — a Flutter plugin, and so out of reach of the worker
+  /// isolate `IsolateTransport` runs this on. That one hands over a loader
+  /// that asks the UI isolate instead.
+  final Future<List<HostProfile>> Function()? loadHosts;
 
   /// Asked when a host's key is not the one pinned for it — the first
   /// connect, or a key that has changed — so the user decides rather than
@@ -37,6 +47,10 @@ class Dartssh2Transport implements SessionTransport {
   /// "visit this URL" check in here.
   final void Function(String banner)? onAuthBanner;
 
+  /// A line for the user about the connection itself, quietly: today, that a
+  /// host answered at its alternative address rather than its saved one.
+  final void Function(String message)? onNotice;
+
   @override
   Future<TerminalSession> connect({
     required HostProfile host,
@@ -45,15 +59,22 @@ class Dartssh2Transport implements SessionTransport {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
-    final session = _Dartssh2Session(_knownHosts, confirmHostKey, onAuthBanner)
-      .._environment = environment;
+    final session = _Dartssh2Session(
+      _knownHosts,
+      confirmHostKey,
+      onAuthBanner,
+      onNotice,
+      loadHosts,
+    ).._environment = environment;
     await session._open(
       host: host,
       secrets: secrets,
       columns: columns,
       rows: rows,
       shell: shell,
+      beforeShell: beforeShell,
     );
     return session;
   }
@@ -85,6 +106,70 @@ List<HostProfile> jumpChain(HostProfile host, List<HostProfile> hosts) {
   return chain;
 }
 
+/// How long a dial has to itself before the next address is tried as well:
+/// the connection attempt delay of a browser's happy eyeballs (RFC 8305),
+/// which uses the same 250 ms.
+const _attemptDelay = Duration(milliseconds: 250);
+
+/// Opens the first of [dials] that answers, by the address it answered at.
+///
+/// The first goes out at once; the next starts 250 ms later, or as soon as
+/// every one before it has failed. So a saved address that is up wins the
+/// head start it was given, and one that is down — a tailnet that is off,
+/// with its packets going nowhere — costs a quarter of a second rather than a
+/// TCP timeout.
+///
+/// A loser is destroyed the moment it arrives, before a byte is written to
+/// it, so only the winner ever starts an SSH handshake: a wrong password or a
+/// host key that does not match happens afterwards, on that one connection,
+/// and is never retried anywhere else. Every dial failing throws the first
+/// one's error, which is about the address the host is saved with.
+@visibleForTesting
+Future<({String address, SSHSocket socket})> firstToAnswer(
+  Map<String, Future<SSHSocket> Function()> dials, {
+  Duration delay = _attemptDelay,
+}) {
+  final answered = Completer<({String address, SSHSocket socket})>();
+  final addresses = dials.keys.toList();
+  final errors = <String, Object>{};
+  final started = <int>{};
+  final timers = <Timer>[];
+
+  void dial(int index) {
+    if (index >= addresses.length || answered.isCompleted) return;
+    // The timer and the failure of an earlier dial both ask for this one.
+    if (!started.add(index)) return;
+    final address = addresses[index];
+    if (index + 1 < addresses.length) {
+      timers.add(Timer(delay, () => dial(index + 1)));
+    }
+    dials[address]!().then(
+      (socket) {
+        if (answered.isCompleted) {
+          socket.destroy();
+          return;
+        }
+        for (final timer in timers) {
+          timer.cancel();
+        }
+        answered.complete((address: address, socket: socket));
+      },
+      onError: (Object error) {
+        errors[address] = error;
+        if (answered.isCompleted) return;
+        if (errors.length == addresses.length) {
+          answered.completeError(errors[addresses.first]!);
+        } else {
+          dial(index + 1);
+        }
+      },
+    );
+  }
+
+  dial(0);
+  return answered.future;
+}
+
 class _Dartssh2Session
     implements
         TerminalSession,
@@ -97,11 +182,15 @@ class _Dartssh2Session
     this._knownHosts,
     this._confirmHostKey,
     this._onAuthBannerReceived,
+    this._onNotice,
+    this._loadHosts,
   );
 
   final KnownHostStore _knownHosts;
   final Future<bool> Function(HostKeyCheck check)? _confirmHostKey;
   final void Function(String banner)? _onAuthBannerReceived;
+  final void Function(String message)? _onNotice;
+  final Future<List<HostProfile>> Function()? _loadHosts;
 
   final _output = StreamController<String>.broadcast();
   final _status = ValueNotifier(SessionStatus.connecting);
@@ -138,24 +227,35 @@ class _Dartssh2Session
     required int columns,
     required int rows,
     required bool shell,
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
     // The host being signed in to, so a failure on a jump host says so.
     var hop = host;
     try {
       final chain = [
         if (host.jumpHostId.isNotEmpty)
-          ...jumpChain(host, await HostRepository(secrets).load()),
+          ...jumpChain(
+            host,
+            await (_loadHosts?.call() ?? HostRepository(secrets).load()),
+          ),
         host,
       ];
 
       hop = chain.first;
+      // No pacing on the socket: this runs on an isolate of its own, where
+      // nothing is waiting for a frame. Handing dartssh2 the reads in pieces
+      // was what kept the UI isolate's frames coming, and it cost the whole
+      // of the link — see `IsolateTransport`.
       var client = await _login(
         hop,
         secrets,
-        () => SSHSocket.connect(
-          hop.host,
-          hop.port,
-          timeout: const Duration(seconds: 15),
+        () => _dial(
+          hop,
+          (address) => SSHSocket.connect(
+            address,
+            hop.port,
+            timeout: const Duration(seconds: 15),
+          ),
         ),
       );
       for (final next in chain.skip(1)) {
@@ -166,16 +266,22 @@ class _Dartssh2Session
         client = await _login(
           next,
           secrets,
-          () => jump
-              .forwardLocal(next.host, next.port)
-              .timeout(const Duration(seconds: 15)),
+          () => _dial(
+            next,
+            (address) => jump
+                .forwardLocal(address, next.port)
+                .timeout(const Duration(seconds: 15)),
+          ),
         );
       }
       _client = client;
+      // What opening a shell would otherwise wait out, and fail on.
+      await client.authenticated;
+      if (beforeShell != null) {
+        _environment = {..._environment, ...await beforeShell(this)};
+      }
 
       if (!shell) {
-        // What opening a shell would otherwise wait out, and fail on.
-        await _client!.authenticated;
         unawaited(
           _client!.done.catchError((Object _) {}).whenComplete(_markClosed),
         );
@@ -209,6 +315,31 @@ class _Dartssh2Session
     }
   }
 
+  /// Opens a connection to [hop] at whichever of its addresses answers, with
+  /// [open] dialling one of them — a socket for the host in front of the
+  /// chain, a channel through the jump host for the rest, so both get the
+  /// fallback.
+  ///
+  /// The address that answered comes back with the socket, because that is
+  /// the machine the host key belongs to and the one the trust prompt has to
+  /// name — see [_verifyHostKey].
+  Future<({String address, SSHSocket socket})> _dial(
+    HostProfile hop,
+    Future<SSHSocket> Function(String address) open,
+  ) async {
+    final addresses = hop.addresses;
+    final answered = await firstToAnswer({
+      for (final address in addresses) address: () => open(address),
+    });
+    if (answered.address != addresses.first) {
+      _onNotice?.call(
+        'Reached ${hop.displayName} at ${answered.address}\n'
+        'Its alternative address answered first.',
+      );
+    }
+    return answered;
+  }
+
   /// Signs in to [host] over the connection [dial] opens: straight to it, or
   /// through the jump host before it. Its credentials are read before
   /// dialling, so a host with nothing stored fails without a connection
@@ -216,14 +347,15 @@ class _Dartssh2Session
   Future<SSHClient> _login(
     HostProfile host,
     SecretStore secrets,
-    Future<SSHSocket> Function() dial,
+    Future<({String address, SSHSocket socket})> Function() dial,
   ) async {
     final identities = await _loadIdentities(host, secrets);
     final password = await _loadPassword(host, secrets);
     final isTailscale = host.authMethod == SshAuthMethod.tailscale;
 
+    final answered = await dial();
     return SSHClient(
-      await dial(),
+      answered.socket,
       username: host.username,
       identities: identities,
       // Offer nothing for Tailscale SSH. dartssh2 always appends `none` as
@@ -236,7 +368,20 @@ class _Dartssh2Session
       // deadline is far too short.
       authTimeout: isTailscale ? const Duration(minutes: 5) : null,
       onVerifyHostKey: (type, fingerprint) =>
-          _verifyHostKey(host, utf8.decode(fingerprint)),
+          _verifyHostKey(host, answered.address, utf8.decode(fingerprint)),
+      // OpenSSH's own order. dartssh2 puts AES-GCM first, and pointycastle's
+      // GCM runs about 1.3 MB/s, some 30 times slower than ChaCha20 or
+      // AES-CTR, all of it on the UI isolate: a 70 MB download held it for
+      // a minute and Android called the app not responding.
+      algorithms: const SSHAlgorithms(
+        cipher: [
+          SSHCipherType.chacha20poly1305,
+          SSHCipherType.aes128ctr,
+          SSHCipherType.aes256ctr,
+          SSHCipherType.aes128gcm,
+          SSHCipherType.aes256gcm,
+        ],
+      ),
     );
   }
 
@@ -248,11 +393,23 @@ class _Dartssh2Session
   }
 
   /// Runs before authentication, so a refused key costs no credential.
-  Future<bool> _verifyHostKey(HostProfile host, String fingerprint) async {
-    if (await _knownHosts.trust(host, fingerprint, _confirmHostKey)) {
+  ///
+  /// [address] is the one that answered, and the key is pinned against it
+  /// rather than against the profile: a prompt has to name the machine that
+  /// is really on the other end. The same key already trusted at the host's
+  /// other address is taken silently, so an alternative address that reaches
+  /// the same machine still neither asks again nor cries "the host key has
+  /// changed", which has to keep meaning what it says — see
+  /// `KnownHostStore.trust`.
+  Future<bool> _verifyHostKey(
+    HostProfile host,
+    String address,
+    String fingerprint,
+  ) async {
+    if (await _knownHosts.trust(host, address, fingerprint, _confirmHostKey)) {
       return true;
     }
-    _hostKeyRefused = await _knownHosts.pinnedKey(host.host, host.port) == null
+    _hostKeyRefused = await _knownHosts.pinnedKey(address, host.port) == null
         ? 'The host key was not trusted, so nothing was sent to the host.'
         : 'Host key changed since the last connection. This can mean the '
             'server was rebuilt — or that something is intercepting the '
@@ -406,11 +563,15 @@ class _Dartssh2Session
   }
 
   /// A tcpip-forward on the connection the shell holds. Its channels come
-  /// only from the port asked for: dartssh2 refuses any other.
+  /// only from the port asked for, or the one the host picked for port 0:
+  /// dartssh2 refuses any other.
+  ///
+  /// While connecting too: a shell's notification port is asked for before
+  /// the shell starts — see [SessionTransport.connect]'s `beforeShell`.
   @override
   Future<RemotePort> listen(String host, int port) async {
     final client = _client;
-    if (client == null || _status.value != SessionStatus.connected) {
+    if (client == null || _status.value == SessionStatus.closed) {
       throw const SshSessionException('Not connected.');
     }
     final forward = await client.forwardRemote(host: host, port: port);
@@ -421,6 +582,7 @@ class _Dartssh2Session
       );
     }
     return (
+      port: forward.port,
       connections: forward.connections.map(
         (channel) => (output: channel.stream, input: channel.sink),
       ),
@@ -447,23 +609,23 @@ class _Dartssh2Session
     required String localPath,
     required String fileName,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     final client = _client;
     if (client == null || _status.value != SessionStatus.connected) {
       throw const SshSessionException('Not connected.');
     }
 
-    final source = File(localPath);
-    final total = await source.length();
     var remotePath = _remotePathFor(fileName);
 
     final sftp = await client.sftp();
     try {
-      // Exclusive, and 0600 before the bytes go in: /tmp is shared, so a link
-      // planted under the name would aim this write at another file, and
-      // whatever is left readable there every login on the host can read. An
-      // earlier upload of ours under the name is replaced; someone else's,
-      // which we cannot remove, makes way for a name nobody can guess.
+      // Exclusive, and 0600 before the bytes go in (see
+      // [SftpFileBrowser.sendFile]): /tmp is shared, so a link planted under
+      // the name would aim this write at another file, and whatever is left
+      // readable there every login on the host can read. An earlier upload of
+      // ours under the name is replaced; someone else's, which we cannot
+      // remove, makes way for a name nobody can guess.
       Future<SftpFile> create(String path) => sftp.open(
             path,
             mode: SftpFileOpenMode.create |
@@ -479,27 +641,18 @@ class _Dartssh2Session
             '${remotePath.substring('/tmp/'.length)}';
         remote = await create(remotePath);
       }
-      await remote.setStat(
-        SftpFileAttrs(mode: const SftpFileMode.value(0x180)),
-      );
-      final handle = await source.open();
-
       try {
-        // dartssh2 offers no streaming write, so we chunk by hand against the
-        // file offset. Reading a whole video into memory first is not
-        // something a phone forgives.
-        const chunkSize = 256 * 1024;
-        var offset = 0;
-        while (offset < total) {
-          final chunk = await handle.read(chunkSize);
-          if (chunk.isEmpty) break;
-          await remote.writeBytes(chunk, offset: offset);
-          offset += chunk.length;
-          onProgress?.call(offset, total);
-        }
-      } finally {
-        await handle.close();
-        await remote.close();
+        await SftpFileBrowser.sendFile(
+          remote,
+          localPath,
+          onProgress: onProgress,
+          cancel: cancel,
+        );
+      } catch (_) {
+        // Ours, made just now, and in a sticky /tmp nobody else can have
+        // swapped it since: half a file is no use to anyone.
+        await sftp.remove(remotePath).catchError((Object _) {});
+        rethrow;
       }
     } finally {
       sftp.close();

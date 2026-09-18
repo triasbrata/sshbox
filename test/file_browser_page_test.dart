@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show File;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
@@ -10,6 +14,7 @@ import 'package:sshbox/src/ui/terminal_link.dart';
 import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
+import 'fake_file_picker.dart';
 
 /// The pages, driven by a filesystem that is not SFTP.
 ///
@@ -724,4 +729,321 @@ void main() {
 
     expect(find.text('Save root to host config'), findsNothing);
   });
+
+  testWidgets('a folder offers Upload here…, a file Download', (tester) async {
+    await _pumpBrowser(tester, FakeFileBrowser());
+
+    await tester.longPress(_row('dev'));
+    await tester.pumpAndSettle();
+    expect(find.text('Upload here…'), findsOneWidget);
+    expect(find.text('Download'), findsNothing);
+    await tester.tapAt(Offset.zero);
+    await tester.pumpAndSettle();
+
+    await tester.longPress(_row('notes.txt'));
+    await tester.pumpAndSettle();
+    expect(find.text('Download'), findsOneWidget);
+    expect(find.text('Upload here…'), findsNothing);
+  });
+
+  testWidgets('uploads what the phone picks into the folder it was asked for',
+      (tester) async {
+    useFakePicker().next = [_PhoneFile('photo.jpg'), _PhoneFile('song.mp3')];
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    await _rowAction(tester, 'dev', 'Upload here…');
+
+    expect(browser.uploads, [
+      (from: '/phone/photo.jpg', to: '/home/me/dev/photo.jpg', replace: false),
+      (from: '/phone/song.mp3', to: '/home/me/dev/song.mp3', replace: false),
+    ]);
+    // The folder opened and read again, so what arrived is in sight.
+    expect(_row('photo.jpg'), findsOneWidget);
+    expect(_row('song.mp3'), findsOneWidget);
+  });
+
+  testWidgets('a name already there asks: replace, keep both or skip',
+      (tester) async {
+    useFakePicker().next = [_PhoneFile('notes.txt')];
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    Future<void> uploadAnswering(String answer) async {
+      await tester.tap(find.byTooltip('Upload here'));
+      // Not settled: the tree's busy bar runs until the question is answered.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('notes.txt is already there'), findsOneWidget);
+      await tester.tap(find.text(answer));
+      await tester.pumpAndSettle();
+    }
+
+    await uploadAnswering('Skip');
+    expect(browser.uploads, isEmpty);
+
+    await uploadAnswering('Replace');
+    expect(browser.uploads, [
+      (from: '/phone/notes.txt', to: '/home/me/notes.txt', replace: true),
+    ]);
+
+    await uploadAnswering('Keep both');
+    await uploadAnswering('Keep both');
+    expect(browser.uploads.skip(1), [
+      (from: '/phone/notes.txt', to: '/home/me/notes (1).txt', replace: false),
+      (from: '/phone/notes.txt', to: '/home/me/notes (2).txt', replace: false),
+    ]);
+    expect(_row('notes (2).txt'), findsOneWidget);
+  });
+
+  testWidgets('an upload the host refuses says why', (tester) async {
+    useFakePicker().next = [_PhoneFile('photo.jpg')];
+    const refused = 'Could not upload photo.jpg to /home/me/dev: '
+        'permission denied.';
+    final browser = FakeFileBrowser()
+      ..failWriteWith = const FileBrowserException(
+        refused,
+        fault: FileBrowserFault.permissionDenied,
+      );
+    await _pumpBrowser(tester, browser);
+
+    await tester.longPress(_row('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Upload here…'));
+    // Not settled, which would wait out the toast: its overlay, the toast,
+    // and its slide in.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(
+      find.descendant(of: find.byType(ToastCard), matching: find.text(refused)),
+      findsOneWidget,
+    );
+    expect(browser.uploads, isEmpty);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('downloads a file through the save dialog, byte for byte',
+      (tester) async {
+    final picker = useFakePicker();
+    await _pumpBrowser(tester, FakeFileBrowser());
+
+    await _rowAction(tester, 'notes.txt', 'Download');
+
+    expect(picker.saved?.name, 'notes.txt');
+    expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+    // Handed over as the app's own copy, which goes once it is saved.
+    expect(File(picker.savedFrom!).existsSync(), isFalse);
+  });
+
+  testWidgets('leaves no copy on the phone when not saved', (tester) async {
+    final picker = useFakePicker()..save = false;
+    final browser = FakeFileBrowser();
+    await _pumpBrowser(tester, browser);
+
+    // Dismissed: the dialog had the whole file, and nothing is said.
+    await _rowAction(tester, 'notes.txt', 'Download');
+    expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
+    expect(File(picker.savedFrom!).existsSync(), isFalse);
+    expect(find.byType(ToastCard), findsNothing);
+
+    // Failed with the bytes in: no dialog, and the copy goes all the same.
+    picker.saved = null;
+    const lost = 'The connection to the host was lost.';
+    browser.failReadWith = const FileBrowserException(
+      lost,
+      fault: FileBrowserFault.disconnected,
+    );
+    await tester.longPress(_row('notes.txt'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Download'));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(picker.saved, isNull);
+    expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
+    expect(
+      find.descendant(of: find.byType(ToastCard), matching: find.text(lost)),
+      findsOneWidget,
+    );
+    await tester.pumpAndSettle();
+  });
+
+  group('Copy content', () {
+    testWidgets('puts the file on the clipboard without opening it',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      final browser = FakeFileBrowser();
+      await _pumpBrowser(tester, browser);
+
+      await _rowActionUnsettled(tester, 'notes.txt', 'Copy content');
+
+      expect(copied, ['first line\nsecond line\n']);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copied notes.txt'),
+        ),
+        findsOneWidget,
+      );
+      // The tree is still the tree: nothing was opened in a tab.
+      expect(find.byType(FileEditorPage), findsNothing);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('is offered on a file, and not on a folder or a picture',
+        (tester) async {
+      await _pumpBrowser(
+        tester,
+        _ExtraRowBrowser(const RemoteEntry(
+          name: 'photo.png',
+          path: '/home/me/photo.png',
+          kind: RemoteEntryKind.file,
+          size: 4096,
+        )),
+      );
+
+      await tester.longPress(_row('notes.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy content'), findsOneWidget);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      // A folder is not one thing to copy.
+      await tester.longPress(_row('dev'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy content'), findsNothing);
+      expect(find.text('Copy path'), findsOneWidget);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      // A picture goes to the image tab, which offers Copy image instead —
+      // the same name rule decides both.
+      await tester.longPress(_row('photo.png'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copy content'), findsNothing);
+      expect(find.text('Download'), findsOneWidget);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('refuses a file past the ceiling without fetching it',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      // 90 MB, the log the listing already knows the size of.
+      final browser = _ExtraRowBrowser(const RemoteEntry(
+        name: 'huge.log',
+        path: '/home/me/huge.log',
+        kind: RemoteEntryKind.file,
+        size: 90 * 1024 * 1024,
+      ));
+      await _pumpBrowser(tester, browser);
+
+      await _rowActionUnsettled(tester, 'huge.log', 'Copy content');
+
+      expect(copied, isEmpty);
+      expect(find.textContaining('too large to copy'), findsOneWidget);
+      // The whole point of checking the listing first: not a byte was asked
+      // for.
+      expect(browser.reads, isEmpty);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('says what the host said when the fetch fails',
+        (tester) async {
+      final copied = _useFakeClipboard();
+      const refused = 'This looks like a binary file.';
+      final browser = FakeFileBrowser()
+        ..failReadWith = const FileBrowserException(
+          refused,
+          fault: FileBrowserFault.notText,
+        );
+      await _pumpBrowser(tester, browser);
+
+      await _rowActionUnsettled(tester, 'notes.txt', 'Copy content');
+
+      expect(copied, isEmpty);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text(refused),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+  });
+}
+
+/// Home with one more row in it, for the kinds of file the default fake tree
+/// has none of.
+class _ExtraRowBrowser extends FakeFileBrowser {
+  _ExtraRowBrowser(this.extra);
+
+  final RemoteEntry extra;
+
+  @override
+  Future<List<RemoteEntry>> list(String path) async => path == '/home/me'
+      ? [...await super.list(path), extra]
+      : super.list(path);
+}
+
+/// Records what [Clipboard.setData] was given, the platform call and all.
+List<String> _useFakeClipboard() {
+  final copied = <String>[];
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+    if (call.method == 'Clipboard.setData') {
+      copied.add((call.arguments as Map)['text'] as String);
+    }
+    return null;
+  });
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+  );
+  return copied;
+}
+
+/// Long-presses [name] and picks [action], stopping short of settling so a
+/// toast is still on screen to look at.
+Future<void> _rowActionUnsettled(
+  WidgetTester tester,
+  String name,
+  String action,
+) async {
+  await tester.longPress(_row(name));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(action));
+  await tester.pump();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
+/// A file on the phone, as the picker hands one over: a copy with a path.
+final class _PhoneFile extends PlatformFile {
+  _PhoneFile(this.name);
+
+  @override
+  final String name;
+
+  @override
+  Uri get uri => Uri.file('/phone/$name');
+
+  @override
+  get xFile => throw UnimplementedError();
+
+  @override
+  int? lengthSync() => 0;
+
+  @override
+  Future<int> length() async => 0;
+
+  @override
+  Future<Uint8List> readAsBytes() async => Uint8List(0);
+
+  @override
+  Stream<Uint8List> readAsByteStream() => const Stream.empty();
 }

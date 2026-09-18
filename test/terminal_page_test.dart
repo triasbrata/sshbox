@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/file_browser.dart';
+import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
@@ -59,6 +61,25 @@ class _NoSecrets implements SecretStore {
   Future<void> purgeHost(String hostId) async {}
 }
 
+/// A connect that fails at once, without leaving this isolate.
+///
+/// The real transport now runs on an isolate of its own, whose answers arrive
+/// on the real event loop rather than the one `testWidgets` drives, so a
+/// widget test that let it start would wait for ever.
+class _Refused implements SessionTransport {
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async =>
+      throw const SshSessionException('No password saved for this host.');
+}
+
 /// A shell that is up the moment it is asked for, on a host whose files are
 /// [FakeFileBrowser]'s and whose terminal is running `claude` in /home/me.
 class _Shell
@@ -66,6 +87,7 @@ class _Shell
         SessionTransport,
         TerminalSession,
         FileBrowseCapable,
+        FileUploadCapable,
         CommandCapable {
   final sent = <String>[];
 
@@ -77,6 +99,7 @@ class _Shell
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async => this;
 
   @override
@@ -114,7 +137,26 @@ class _Shell
   @override
   Stream<String> run(String command, {bool pty = false}) =>
       answer(command) ?? Stream.value(probe);
+
+  /// Every upload asked for, and where each landed.
+  final uploaded = <({String path, String name})>[];
+
+  @override
+  Future<String> uploadToTmp({
+    required String localPath,
+    required String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    uploaded.add((path: localPath, name: fileName));
+    return '/tmp/$fileName';
+  }
 }
+
+/// Every paste test runs as Android: the clipboard's image comes over a
+/// channel that exists there and nowhere else, and so does the guard in front
+/// of it.
+final _android = TargetPlatformVariant.only(TargetPlatform.android);
 
 /// The toast saying [message], if it is one of [type]'s.
 Finder _toast(String message, ToastificationType type) => find.ancestor(
@@ -135,6 +177,7 @@ void main() {
         host: '10.0.2.2',
         username: 'me',
       ),
+      transport: (_, _) => _Refused(),
     );
     addTearDown(session.dispose);
 
@@ -145,6 +188,7 @@ void main() {
           secrets: _NoSecrets(),
           onOpenFile: (_, {line}) {},
           onOpenWeb: (_) {},
+          onOpenChat: () {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -191,6 +235,7 @@ void main() {
           secrets: _NoSecrets(),
           onOpenFile: (_, {line}) {},
           onOpenWeb: (_) {},
+          onOpenChat: () {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -241,6 +286,7 @@ void main() {
           secrets: _NoSecrets(),
           onOpenFile: (_, {line}) {},
           onOpenWeb: (_) {},
+          onOpenChat: () {},
           onSaveFileRoot: (_) async {},
         ),
       ),
@@ -251,7 +297,7 @@ void main() {
 
     await keyBarSettings.choose([
       // First, so it is in sight on a bar as wide as a phone.
-      (id: 'custom:a', custom: (label: 'LS', send: r'ls\n')),
+      (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
       for (final item in KeyBarSettings.defaults)
         if (item.id != 'esc') item,
     ]);
@@ -417,6 +463,7 @@ void main() {
             secrets: _NoSecrets(),
             onOpenFile: (path, {line}) => opened.add(path),
             onOpenWeb: openedWeb.add,
+            onOpenChat: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -557,6 +604,38 @@ void main() {
         contains('TextInput.show'),
       );
     });
+
+    testWidgets('an armed CTRL takes the tap but never the scroll, so the '
+        'alternate screen still scrolls under a finger', (tester) async {
+      await pumpPage(tester);
+      // The alternate screen, where Claude Code, vim and less live: xterm2
+      // has no scrollback of its own to move, so a drag becomes the arrow
+      // keys the program scrolls by. That is the only way a finger can
+      // scroll there — a tablet has no wheel.
+      tester.widget<TerminalView>(find.byType(TerminalView)).terminal
+        ..resize(40, 10)
+        ..write('\x1b[?1049h');
+      await tester.pump();
+
+      await tester.tap(find.text('CTRL'));
+      await tester.pump();
+      shell.sent.clear();
+
+      final drag = await tester.startGesture(
+        tester.getCenter(find.byType(TerminalView)),
+      );
+      for (var i = 0; i < 10; i++) {
+        await drag.moveBy(const Offset(0, 20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // Suspending every pointer input, as arming CTRL used to, swallowed
+      // these and froze the terminal until the app was killed.
+      expect(shell.sent, isNotEmpty);
+      expect(shell.sent, everyElement('\x1b[A'));
+    });
   });
 
   group('cd from the files drawer', () {
@@ -584,6 +663,7 @@ void main() {
             secrets: _NoSecrets(),
             onOpenFile: (_, {line}) {},
             onOpenWeb: (_) {},
+            onOpenChat: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -698,6 +778,7 @@ void main() {
             secrets: _NoSecrets(),
             onOpenFile: (_, {line}) {},
             onOpenWeb: openedWeb.add,
+            onOpenChat: () {},
             onSaveFileRoot: (_) async {},
           ),
         ),
@@ -928,5 +1009,240 @@ void main() {
       expect(find.byType(SnackBar), findsNothing);
       await tester.pumpAndSettle();
     });
+  });
+
+  group('paste', () {
+    late _Shell shell;
+    late Directory temp;
+
+    /// What MainActivity answers when asked for the clipboard's image: a file
+    /// of ours, no image at all, or a refusal.
+    Map<String, String>? image;
+    PlatformException? refusal;
+
+    /// What the system clipboard holds as text, for the paste that is not an
+    /// image.
+    String? clipboardText;
+
+    const channel = MethodChannel('sshbox/share');
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('paste-test');
+      image = null;
+      refusal = null;
+      clipboardText = null;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method != 'clipboardImage') return null;
+        if (refusal case final refused?) throw refused;
+        return image;
+      });
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method != 'Clipboard.getData') return null;
+        return clipboardText == null ? null : {'text': clipboardText};
+      });
+    });
+
+    tearDown(() {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, null);
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+      temp.deleteSync(recursive: true);
+      transfers.clearFinished();
+    });
+
+    /// A picture already copied out of the clipboard, as MainActivity hands
+    /// one over: our own file, and the name to give it on the host.
+    Map<String, String> pictureNamed(String name) {
+      final file = File('${temp.path}/$name')..writeAsBytesSync([1, 2, 3]);
+      return {'path': file.path, 'name': name};
+    }
+
+    Future<void> pumpPage(WidgetTester tester) async {
+      shell = _Shell();
+      final session = LiveSession(
+        host: const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+        ),
+        transport: (_, _) => shell,
+      );
+      addTearDown(session.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TerminalPage(
+            session: session,
+            secrets: _NoSecrets(),
+            onOpenFile: (_, {line}) {},
+            onOpenWeb: (_) {},
+            onOpenChat: () {},
+            onSaveFileRoot: (_) async {},
+          ),
+        ),
+      );
+      await session.connect(secrets: _NoSecrets());
+      await tester.pump();
+      tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .focusNode!
+          .requestFocus();
+      await tester.pump();
+    }
+
+    /// The paste a hardware keyboard sends, which xterm2 would otherwise
+    /// answer itself with the clipboard's text alone.
+    Future<void> pressCtrlV(WidgetTester tester) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      await tester.pump();
+      // Long enough for the toast that follows to have slid in.
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    /// Ctrl+V held down, as Android reports it: one press and then a repeat
+    /// about every 50 ms for as long as the thumb stays there.
+    Future<void> holdCtrlV(WidgetTester tester, {int repeats = 3}) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      for (var i = 0; i < repeats; i++) {
+        await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyV);
+      }
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('an image goes to the host and its path is typed', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      image = pictureNamed('Screenshot.png');
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, [(path: image!['path'], name: 'Screenshot.png')]);
+      // A trailing space, so the next thing written is an argument.
+      expect(shell.sent, contains('/tmp/Screenshot.png '));
+      expect(
+        _toast('Uploaded to /tmp/Screenshot.png', ToastificationType.success),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('with no image on it, the clipboard is text as before', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      clipboardText = 'ls -la';
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, isEmpty);
+      expect(shell.sent, contains('ls -la'));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('a held Ctrl+V pastes once, not once per auto-repeat', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      clipboardText = 'ls -la';
+
+      await holdCtrlV(tester);
+
+      // Each repeat used to fall past the chord handler to xterm2's own paste
+      // shortcut, whose SingleActivator takes repeats, so a thumb left on the
+      // key pasted again every 50 ms — and would have uploaded a picture
+      // again every 50 ms.
+      expect(shell.sent.where((data) => data == 'ls -la'), hasLength(1));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('a held Ctrl+V uploads the picture once', (tester) async {
+      await pumpPage(tester);
+      image = pictureNamed('Screenshot.png');
+
+      await holdCtrlV(tester);
+
+      expect(shell.uploaded, hasLength(1));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('nothing it can use is said, not passed over in silence', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+
+      await pressCtrlV(tester);
+
+      expect(
+        _toast(
+          'Nothing on the clipboard a terminal can paste',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('a picture the owning app will not hand over says so', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      refusal = PlatformException(
+        code: 'unreadable',
+        message: 'com.android.chrome.FileProvider would not hand over the '
+            'picture on the clipboard. Try copying it again, or share it into '
+            'Jeansh.',
+      );
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, isEmpty);
+      expect(
+        _toast(
+          'com.android.chrome.FileProvider would not hand over the picture on '
+              'the clipboard. Try copying it again, or share it into Jeansh.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('an image too big to send is refused, not uploaded', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      refusal = PlatformException(
+        code: 'too_big',
+        message: 'That image is bigger than 20 MB — send it from the files '
+            'drawer instead.',
+      );
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, isEmpty);
+      expect(
+        _toast(
+          'That image is bigger than 20 MB — send it from the files drawer '
+              'instead.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    }, variant: _android);
   });
 }

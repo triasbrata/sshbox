@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Jeansh: Play icon, 512 × 512</title>
+<style>
+  html, body { margin: 0; background: transparent; }
+  canvas { display: block; }
+</style>
+<canvas id="c" width="512" height="512"></canvas>
+<script type="module">
+  // Play's icon from the launcher tile, assets/branding/app_icon.png: a
+  // 500 px squircle with a 6 px transparent margin in a 512 px image. Play
+  // draws its own rounded mask, so the icon fills the square: the same crop
+  // as assets/branding/app_icon_ios.png, 40 px in from each side and inside
+  // the tile's rounded corners, scaled from 432 to 512 px.
+  const img = new Image();
+  img.src = '../../../assets/branding/app_icon.png';
+  await img.decode();
+  const ctx = document.getElementById('c').getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 40, 40, 432, 432, 0, 0, 512, 512);
+  document.body.dataset.ready = '1';
+</script>

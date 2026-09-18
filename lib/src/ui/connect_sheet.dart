@@ -200,7 +200,13 @@ class _ConnectSheetState extends State<_ConnectSheet> {
           else if (error != null)
             ConnectionError(
               message: error,
-              onRetry: _connect,
+              // A tab brought back after its tmux session went: trying again
+              // finds the same, so it offers a new one.
+              retryLabel: _session.tmuxGone ? 'Start a new session' : null,
+              onRetry: () {
+                if (_session.tmuxGone) _session.startNewTmux();
+                unawaited(_connect());
+              },
               onClose: () => Navigator.of(context).pop(false),
             )
           else if (url != null)
@@ -229,9 +235,12 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
 /// A host key that is not the one pinned for its host: the first connect to
 /// it, or a key that has changed since, shown beside the old one. Named by
-/// its host, because a jump host and the host behind it can ask one after
-/// the other. [onAnswer] with true, from Trust or Replace key, is the only
-/// yes.
+/// the address that answered, never by the address the host is saved with:
+/// a key reached over the alternative address belongs to whatever is at that
+/// address, and a prompt that named the other one would ask the user to trust
+/// a machine that was never reached. The host's own name comes along, because
+/// a jump host and the host behind it can ask one after the other.
+/// [onAnswer] with true, from Trust or Replace key, is the only yes.
 class _HostKeyPrompt extends StatelessWidget {
   const _HostKeyPrompt({required this.check, required this.onAnswer});
 
@@ -242,8 +251,12 @@ class _HostKeyPrompt extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final host = check.host;
-    final where = host.port == 22 ? host.host : '${host.host}:${host.port}';
+    final where = host.port == 22
+        ? check.address
+        : '${check.address}:${host.port}';
+    final alternative = check.address != host.host;
     final pinned = check.pinned;
+    final other = check.otherAddress;
     final error = theme.colorScheme.error;
     const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
 
@@ -253,7 +266,7 @@ class _HostKeyPrompt extends StatelessWidget {
       children: [
         Row(
           children: [
-            if (pinned != null) ...[
+            if (pinned != null || other != null) ...[
               Icon(Icons.gpp_maybe, color: error),
               const SizedBox(width: 8),
             ],
@@ -267,15 +280,38 @@ class _HostKeyPrompt extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(
-          pinned == null
-              ? 'First connection to ${host.displayName}. Trust it only if '
-                    'this fingerprint matches the one '
-                    '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
-                    'prints on the server.'
-              : '${host.displayName} is not showing the key pinned for it. '
-                    'The server may have been rebuilt — or something may be '
-                    'intercepting the connection.',
+          switch ((pinned, alternative)) {
+            (final String _, _) =>
+              'Something at $where is answering for ${host.displayName} with '
+                  'a key that is not the one pinned for that address. The '
+                  'server may have been rebuilt — or something may be '
+                  'intercepting the connection.',
+            (null, true) =>
+              'First connection to ${host.displayName} at its alternative '
+                  'address, $where. Trust it only if this fingerprint '
+                  'matches the one '
+                  '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
+                  'prints on the server.',
+            (null, false) =>
+              'First connection to ${host.displayName} at $where. Trust it '
+                  'only if this fingerprint matches the one '
+                  '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` '
+                  'prints on the server.',
+          },
         ),
+        if (other != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            'The other address of ${host.displayName}, ${other.address}, is '
+            'pinned to a different key. Two addresses of one machine show '
+            'the same key, so this is either a different machine or '
+            'something sitting on $where.',
+            style: TextStyle(color: error),
+          ),
+          const SizedBox(height: 12),
+          Text('Pinned for ${other.address}'),
+          SelectableText(other.fingerprint, style: mono),
+        ],
         if (pinned != null) ...[
           const SizedBox(height: 12),
           const Text('Pinned'),

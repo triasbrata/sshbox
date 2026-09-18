@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart';
 import 'package:sshbox/src/ui/terminal_text_input.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -21,7 +24,10 @@ void main() {
 
   /// Mounts the widget the way [TerminalPage] does — the focus node belongs to
   /// the child, and this adds no [Focus] of its own.
-  Future<void> pumpInput(WidgetTester tester) async {
+  Future<void> pumpInput(
+    WidgetTester tester, {
+    void Function(KeyboardInsertedContent content)? onContent,
+  }) async {
     final key = GlobalKey<TerminalTextInputState>();
     final focusNode = FocusNode();
     addTearDown(focusNode.dispose);
@@ -35,11 +41,17 @@ void main() {
         key: key,
         terminal: terminal,
         focusNode: focusNode,
+        onContent: onContent,
         child: Focus(focusNode: focusNode, child: const SizedBox()),
       ),
     );
 
     input = key.currentState!;
+    // The key bar's keyboard button: the IME connection every test below
+    // speaks through, opened the one way that works whether or not a hardware
+    // keyboard has typed.
+    input.showKeyboard();
+    await tester.pump();
   }
 
   group('floating cursor — a held space bar on iOS', () {
@@ -209,6 +221,83 @@ void main() {
       expect(sent, [' ']);
     });
 
+    testWidgets('keeps the space a run begins with', (tester) async {
+      await pumpInput(tester);
+
+      // Gboard commits a paste a word at a time, each chunk arriving with the
+      // space in front of it. Read by scanning past the padding, that space
+      // was skipped and the slice slid into the trailing padding: `world `.
+      input.updateEditingValue(
+        _value('${' ' * _padding} world${' ' * _padding}', _padding + 6),
+      );
+
+      expect(sent, [' world']);
+    });
+
+    testWidgets('keeps the space a run ends with', (tester) async {
+      await pumpInput(tester);
+
+      // The other way round, and the reason the caret decides: ` world` at the
+      // caret and `world ` a space earlier leave the same buffer behind.
+      input.updateEditingValue(
+        _value('${' ' * _padding}world ${' ' * _padding}', _padding + 6),
+      );
+
+      expect(sent, ['world ']);
+    });
+
+    testWidgets('keeps every space of a sentence pasted word by word',
+        (tester) async {
+      await pumpInput(tester);
+
+      for (final chunk in [
+        'tinggal',
+        ' buka',
+        ' lagi',
+        ' dan pane tmux-nya masih di',
+        ' tempat.',
+      ]) {
+        input.updateEditingValue(_value(
+          '${' ' * _padding}$chunk${' ' * _padding}',
+          _padding + chunk.length,
+        ));
+      }
+
+      expect(sent.join(), 'tinggal buka lagi dan pane tmux-nya masih di '
+          'tempat.');
+    });
+
+    testWidgets('reads a run inserted where a slide left the caret',
+        (tester) async {
+      await pumpInput(tester);
+
+      // A slide short of the margin does not re-centre, so the next insert
+      // lands two to the right of the middle.
+      input.updateEditingValue(_value(_baseText, _padding + 2));
+      sent.clear();
+      input.updateEditingValue(_value(
+        '${' ' * (_padding + 2)} ls${' ' * (_padding - 2)}',
+        _padding + 5,
+      ));
+
+      expect(sent, [' ls']);
+    });
+
+    testWidgets('sends what changed when the IME replaced part of the padding',
+        (tester) async {
+      await pumpInput(tester);
+
+      // Four padding characters gone, `cukup` in their place: no offset leaves
+      // the padding whole, so the run is not six characters long wherever it
+      // is read from.
+      input.updateEditingValue(_value(
+        '${' ' * _padding}cukup${' ' * (_padding - 4)}',
+        _padding + 5,
+      ));
+
+      expect(sent, ['cukup']);
+    });
+
     testWidgets('sends backspace when the buffer shrinks', (tester) async {
       await pumpInput(tester);
 
@@ -267,6 +356,57 @@ void main() {
       );
 
       expect(sent, ['b']);
+    });
+  });
+
+  group('a picture the keyboard commits', () {
+    final png = KeyboardInsertedContent(
+      mimeType: 'image/png',
+      uri: 'content://media/external/images/1',
+      data: Uint8List.fromList([137, 80, 78, 71]),
+    );
+
+    testWidgets('goes to the page, and nothing of it down the wire',
+        (tester) async {
+      final taken = <KeyboardInsertedContent>[];
+      await pumpInput(tester, onContent: taken.add);
+
+      input.insertContent(png);
+
+      expect(taken, [png]);
+      expect(sent, isEmpty);
+    });
+
+    test('is written out under a name that says what it is', () async {
+      final image = await insertedImage(KeyboardInsertedContent(
+        mimeType: 'image/jpeg',
+        uri: 'content://media/external/images/1',
+        data: Uint8List.fromList([255, 216, 255]),
+      ));
+
+      expect(image!.name, 'pasted.jpg');
+      expect(File(image.path).readAsBytesSync(), [255, 216, 255]);
+    });
+
+    test('is refused past the ceiling rather than sent', () async {
+      await expectLater(
+        insertedImage(KeyboardInsertedContent(
+          mimeType: 'image/png',
+          uri: 'content://media/external/images/1',
+          data: Uint8List(pasteImageLimit + 1),
+        )),
+        throwsA(isA<PlatformException>()),
+      );
+    });
+
+    test('anything that is not a picture is left alone', () async {
+      final other = KeyboardInsertedContent(
+        mimeType: 'text/plain',
+        uri: png.uri,
+        data: png.data,
+      );
+
+      expect(await insertedImage(other), isNull);
     });
   });
 }

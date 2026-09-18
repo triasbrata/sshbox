@@ -1,16 +1,22 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../chat/claude_chat.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
+import '../db/db_session.dart';
 import '../files/file_browser.dart';
 import '../models/host_profile.dart';
 import '../models/os_info.dart';
-import 'dartssh2_transport.dart';
+import '../notifications/direct_notify.dart';
+import '../notifications/notify_key.dart';
+import 'isolate_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 import 'tmux.dart';
@@ -27,6 +33,15 @@ typedef TransportMaker =
       Future<bool> Function(HostKeyCheck check)? confirmHostKey,
       void Function(String banner) onAuthBanner,
     );
+
+/// Posts a notification that opens [hostId] when tapped, as a push does:
+/// `NotificationGateway.showForHost`.
+typedef ShowNotification =
+    Future<void> Function({
+      required String hostId,
+      required String title,
+      required String body,
+    });
 
 /// What a session's terminal is running on the host, as
 /// [LiveSession.foreground] reads it: whether the shell itself has the
@@ -46,8 +61,13 @@ class LiveSession extends ChangeNotifier {
     required this._host,
     bool Function(int port)? forwardedElsewhere,
     this._transport,
-    this._pushToken,
-  }) {
+    this._notifyKeys,
+    this._onNotify,
+    String? tmuxName,
+    bool restored = false,
+  }) : tmuxName = tmuxName ?? _newTmuxName(),
+       _autoConnect = restored,
+       _checkTmux = restored {
     forwarder = TailnetForwarder(
       onChanged: _notify,
       forwardedElsewhere: forwardedElsewhere,
@@ -64,9 +84,13 @@ class LiveSession extends ChangeNotifier {
   /// carries that attempt's host key and banner callbacks.
   final TransportMaker? _transport;
 
-  /// Reads the device's push token, at every connect: FCM replaces it now
-  /// and then. See [SessionManager.pushToken].
-  final String? Function()? _pushToken;
+  /// The relay keys, one per host, read at every connect: see
+  /// [SessionManager.notifyKeys].
+  final NotifyKeys? _notifyKeys;
+
+  /// Shows what a host sent down this session's connection: see
+  /// [SessionManager.onNotify].
+  final ShowNotification? _onNotify;
 
   HostProfile get host => _host;
 
@@ -105,14 +129,17 @@ class LiveSession extends ChangeNotifier {
   /// Every key a hardware keyboard sends is turned into bytes by this input
   /// handler, which makes it the one place to change what a key means. The
   /// kitty handler goes first so a program that has switched that protocol on
-  /// still gets the protocol's own encoding.
+  /// still gets the protocol's own encoding, and a key's release goes only to
+  /// a program that asked for it: see [_ReleaseOnlyIfAsked].
   static Terminal _newTerminal() => Terminal(
     maxLines: 10000,
-    inputHandler: const CascadeInputHandler([
-      KittyKeyboardInputHandler(),
-      _ShiftEnterInputHandler(),
-      defaultInputHandler,
-    ]),
+    inputHandler: const _ReleaseOnlyIfAsked(
+      CascadeInputHandler([
+        KittyKeyboardInputHandler(),
+        _ShiftEnterInputHandler(),
+        defaultInputHandler,
+      ]),
+    ),
   );
 
   /// The shell's terminal, and in tmux mode the one shown until tmux is up.
@@ -128,12 +155,52 @@ class LiveSession extends ChangeNotifier {
 
   /// What the tmux session is called on the host. Made once per tab and kept
   /// across reconnects, which is what brings a dropped connection back to the
-  /// same panes. Random rather than [id], which restarts with the app: a new
-  /// tab must not land in a session left behind by an earlier run, or by
-  /// another device.
-  late final tmuxName =
-      'sshbox-${_random.nextInt(1 << 32).toRadixString(36)}';
+  /// same panes, and saved with the tab, which brings it back after the app
+  /// restarts: see [SessionManager.restoreTabs]. Random rather than [id],
+  /// which restarts with the app: a new tab must not land in a session left
+  /// behind by an earlier run, or by another device.
+  final String tmuxName;
   static final _random = math.Random();
+  static String _newTmuxName() =>
+      'sshbox-${_random.nextInt(1 << 32).toRadixString(36)}';
+
+  /// What a saved tmux name must look like to be used: it goes into a
+  /// command on the host.
+  static final tmuxNamePattern = RegExp(r'^sshbox-[0-9a-z]+$');
+
+  /// Brought back from an earlier run and not connected since: see
+  /// [takeAutoConnect].
+  bool _autoConnect;
+
+  /// Whether the next connect asks the host if [tmuxName] is still there
+  /// before attaching, which would otherwise make a new one: a tab brought
+  /// back from an earlier run, until it has connected.
+  bool _checkTmux;
+
+  bool _tmuxGone = false;
+
+  /// This tab's tmux session is no longer on the host: it restarted, or the
+  /// session was ended there. [startNewTmux] makes a new one instead.
+  bool get tmuxGone => _tmuxGone;
+
+  /// True once, for a tab brought back from an earlier run that has not
+  /// connected since: what makes it connect the first time it shows.
+  bool takeAutoConnect() {
+    final auto = _autoConnect;
+    _autoConnect = false;
+    return auto;
+  }
+
+  /// Gives up on the tmux session that went: the next connect makes a new one
+  /// under the same name.
+  void startNewTmux() {
+    _checkTmux = false;
+    _tmuxGone = false;
+  }
+
+  /// Files that were open over this session when the app last went away,
+  /// opened again once it connects: a file tab reads through the connection.
+  final List<String> _restoredFiles = [];
 
   /// Why this host's tmux could not be used, for the page to say once.
   String? _tmuxProblem;
@@ -231,6 +298,51 @@ class LiveSession extends ChangeNotifier {
     if (_openFiles.remove(path)) _notify();
   }
 
+  bool _chatOpen = false;
+
+  /// Whether this session has a chat tab beside its shell. At most one: it is
+  /// this host's one conversation, not a document there can be several of.
+  bool get chatOpen => _chatOpen;
+
+  /// Whether Claude can be run beside the shell at all — a transport that
+  /// carries only a terminal, as mosh does, cannot.
+  bool get canChat => _session is ChannelCapable;
+
+  ClaudeChat? _chat;
+
+  /// The conversation the chat tab shows, made the first time it is asked
+  /// for and kept until the tab closes.
+  ///
+  /// It outlives a reconnect: the process on the host dies with the
+  /// connection, but what was said is here, and its [ClaudeChat.restart]
+  /// resumes the same conversation on the new one by its id.
+  ClaudeChat get chat => _chat ??= ClaudeChat(
+    open: (command) async {
+      final session = _session;
+      if (session is! ChannelCapable || !isConnected) {
+        throw const SshSessionException('Not connected.');
+      }
+      return (session as ChannelCapable).open(command);
+    },
+    cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
+  );
+
+  void openChat() {
+    if (_chatOpen) return;
+    _chatOpen = true;
+    _notify();
+  }
+
+  /// Closing the tab takes the conversation with it: the process on the host
+  /// is ended, and what was said goes with it, as a shell's tab does.
+  void closeChat() {
+    if (!_chatOpen) return;
+    _chatOpen = false;
+    _chat?.dispose();
+    _chat = null;
+    _notify();
+  }
+
   final List<WebTab> _webTabs = [];
 
   /// The web pages opened from links in this session, in tab order. They sit
@@ -317,6 +429,7 @@ class LiveSession extends ChangeNotifier {
     (int columns, int rows)? size,
   }) async {
     if (isConnected || _connecting) return;
+    _autoConnect = false;
 
     _wireTerminal();
     if (size != null) _size = size;
@@ -337,22 +450,34 @@ class LiveSession extends ChangeNotifier {
 
       final transport =
           _transport?.call(confirmHostKey, banner) ??
-          Dartssh2Transport(
+          IsolateTransport(
             confirmHostKey: confirmHostKey,
             onAuthBanner: banner,
           );
-      // Which device to notify and which host a tap opens, for
-      // `sshbox-notify` on the host to read rather than anyone copying them
-      // over by hand; nothing without a token. `LC_` because sshd takes only
-      // the names its AcceptEnv lists, and Debian, Ubuntu and macOS ship
-      // `AcceptEnv LANG LC_*`: how iTerm2's `LC_TERMINAL` gets through.
-      final token = _pushToken?.call();
-      final environment = {
-        if (token != null) ...{
-          'LC_SSHBOX_TOKEN': token,
-          'LC_SSHBOX_HOST_ID': host.id,
-        },
-      };
+      // The key this host's servers sign a push to the relay with, and the
+      // host a tap opens, for a script on the host to read rather than anyone
+      // copying them over by hand; never the FCM token. A host's first
+      // connect registers its key while SSH signs in, and the shell waits a
+      // little more for it at most: a relay out of reach leaves it to the
+      // next connect, and this one goes without. `LC_` because sshd takes
+      // only the names its AcceptEnv lists, and Debian, Ubuntu and macOS ship
+      // `AcceptEnv LANG LC_*`: how iTerm2's `LC_TERMINAL` gets through. The
+      // direct way's two join them from [_openNotifyPort].
+      final key = _notifyKeys?.forConnect(host.id);
+      Future<Map<String, String>> environment(ForwardCapable connection) async {
+        final value = await key?.timeout(
+          const Duration(seconds: 3),
+          onTimeout: () => null,
+        );
+        return {
+          if (value != null) ...{
+            'LC_SSHBOX_KEY': value,
+            'LC_SSHBOX_HOST_ID': host.id,
+          },
+          if (_onNotify != null) ...await _openNotifyPort(connection),
+        };
+      }
+
       // What the shell is opened at, to be put right once it is up.
       var opened = _size;
       Future<TerminalSession> open({required bool shell}) {
@@ -363,11 +488,22 @@ class LiveSession extends ChangeNotifier {
           columns: _size.$1,
           rows: _size.$2,
           shell: shell,
-          environment: environment,
+          beforeShell: environment,
         );
       }
 
       var session = await open(shell: !host.useTmux);
+      if (host.useTmux && _checkTmux && await _tmuxMissing(session)) {
+        await session.dispose();
+        if (current()) {
+          _tmuxGone = true;
+          _error =
+              'The tmux session $tmuxName is no longer on '
+              '${host.displayName}: the host restarted, or the session was '
+              'ended there.';
+        }
+        return;
+      }
       final tmux = host.useTmux ? await _attachTmux(session) : null;
       if (host.useTmux && tmux == null) {
         // The plain shell the host would have had without the switch.
@@ -386,6 +522,12 @@ class LiveSession extends ChangeNotifier {
       }
 
       _tmux = tmux;
+      _checkTmux = false;
+      _tmuxGone = false;
+      for (final path in _restoredFiles) {
+        if (!_openFiles.contains(path)) _openFiles.add(path);
+      }
+      _restoredFiles.clear();
       _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
@@ -406,6 +548,34 @@ class LiveSession extends ChangeNotifier {
         _connecting = false;
         _notify();
       }
+    }
+  }
+
+  /// Asks the host for a port on its loopback that comes down this
+  /// connection, for a server to notify the phone straight through it with
+  /// no FCM: see [DirectNotify]. What it returns joins the shell's
+  /// variables. A host that will not — `AllowTcpForwarding no`, or anything
+  /// else — leaves this connection without them, and nothing is said.
+  ///
+  /// Asked for on every connection that opens a shell or tmux, before it
+  /// does, and gone with that connection: the host stops listening when it
+  /// ends, and no channel comes after.
+  Future<Map<String, String>> _openNotifyPort(ForwardCapable connection) async {
+    final show = _onNotify!;
+    try {
+      // The shell waits on this, so a host that never answers must not
+      // hold it up.
+      final port = await connection
+          .listen('127.0.0.1', 0)
+          .timeout(const Duration(seconds: 10));
+      final direct = DirectNotify(
+        (title, body) => show(hostId: host.id, title: title, body: body),
+      );
+      // A caller that hangs up before its answer is nobody's problem.
+      port.connections.listen((tunnel) => direct.serve(tunnel).ignore());
+      return direct.environment(port.port);
+    } catch (_) {
+      return const {};
     }
   }
 
@@ -438,6 +608,26 @@ class LiveSession extends ChangeNotifier {
     tmux.dispose();
     _tmuxProblem = tmux.problem ?? 'tmux did not answer.';
     return null;
+  }
+
+  /// Whether this tab's tmux session is gone from the host, asked before a
+  /// tab brought back from an earlier run attaches: attaching would make a
+  /// new one. A host that cannot say counts as still having it, and the
+  /// attach says what is wrong.
+  Future<bool> _tmuxMissing(TerminalSession session) async {
+    if (session is! CommandCapable) return false;
+    try {
+      final lines = await (session as CommandCapable)
+          .run(TmuxSession.exists(tmuxName))
+          .toList();
+      final last = lines.lastWhere(
+        (line) => line.trim().isNotEmpty,
+        orElse: () => '',
+      );
+      return last.trim() == 'no';
+    } catch (_) {
+      return false;
+    }
   }
 
   /// tmux ending is this tab's shell ending, however it came about — the last
@@ -652,6 +842,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     required String localPath,
     required String fileName,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
     final session = _session;
     // `is!` already rules out null. The explicit cast that follows is what
@@ -665,6 +856,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
       localPath: localPath,
       fileName: fileName,
       onProgress: onProgress,
+      cancel: cancel,
     );
   }
 
@@ -721,6 +913,8 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     // it triggers must not touch a disposed notifier.
     _disposed = true;
     unawaited(_teardown(kill: true));
+    _chat?.dispose();
+    _chat = null;
     _terminal.dispose();
     super.dispose();
   }
@@ -728,7 +922,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
 
 /// What a tab shows: the shell on a host, a file opened over that shell, or
 /// a web page a link in it opened.
-enum TabKind { terminal, file, web }
+enum TabKind { terminal, chat, file, web }
 
 /// A web page in a tab beside the shell whose link opened it.
 class WebTab {
@@ -758,6 +952,22 @@ class WebTab {
   }
 }
 
+/// A database open in a tab of its own — see `DbBrowserPage`. It keeps its
+/// own connection, so it hangs off no session, and its tab comes after every
+/// session's.
+class DbTab {
+  DbTab._(this.db, this.title);
+
+  /// Names the tab for as long as it is open.
+  final int id = _nextId++;
+  static int _nextId = 0;
+
+  final DbConnection db;
+
+  /// What the tab is called: the database's name, or its kind and host.
+  final String title;
+}
+
 /// Registry of open terminals, keyed by session id. A host can have any number
 /// of them: each tap in the host list opens another.
 ///
@@ -769,13 +979,18 @@ class WebTab {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
-  SessionManager({this.pushToken = _noToken});
+  SessionManager({this.notifyKeys, this.onNotify});
 
-  /// Reads the device's push token, or null while it has none: what each
-  /// connection hands its host, and what Settings copies for a host that
-  /// will not take it.
-  final String? Function() pushToken;
-  static String? _noToken() => null;
+  /// The relay keys, one per host: what each connection hands its host as
+  /// `LC_SSHBOX_KEY`, what a host's edit page copies and what Settings
+  /// resets. Null where push is not wired, as in most tests, and then no
+  /// connection hands one.
+  final NotifyKeys? notifyKeys;
+
+  /// Shows a notification a host sent straight down one of its connections
+  /// — see [DirectNotify] — as a push is shown, a tap opening the host.
+  /// Null, and no connection offers the host that way.
+  final ShowNotification? onNotify;
 
   /// Insertion-ordered, and that order is the tab order.
   final Map<int, LiveSession> _sessions = {};
@@ -816,28 +1031,113 @@ class SessionManager extends ChangeNotifier {
   /// when another tab is shown, so coming back does not move the cursor.
   int? get activeLine => _activeLine;
 
-  /// null selects the pinned host list.
+  /// Databases open in tabs of their own, after every session's: see
+  /// [openDb].
+  final List<DbTab> _dbTabs = [];
+
+  List<DbTab> get dbTabs => List.unmodifiable(_dbTabs);
+
+  /// The database whose tab is showing. [activeId] is null then, as for the
+  /// host list: a database's tab hangs off no session.
+  DbTab? _activeDb;
+
+  DbTab? get activeDb => _activeDb;
+
+  /// Whether the Transfers tab is on the strip, after every other: see
+  /// [showTransfers]. Not saved with the tabs: what it lists ends with the
+  /// app.
+  bool _transfersTab = false;
+
+  bool get transfersTab => _transfersTab;
+
+  /// Whether the Transfers tab is the one showing. [activeId] is null then,
+  /// as for the host list.
+  bool _transfersActive = false;
+
+  bool get transfersActive => _transfersActive;
+
+  /// null selects the pinned host list, or with [db], that database's tab,
+  /// or with [transfers], the Transfers tab.
   void select(
     int? id, {
     TabKind kind = TabKind.terminal,
     String? path,
     WebTab? web,
+    DbTab? db,
+    bool transfers = false,
   }) {
+    final showTransfers = id == null && db == null && transfers;
     if (_activeId == id &&
         _activeKind == kind &&
         _activePath == path &&
-        _activeWeb == web) {
+        _activeWeb == web &&
+        _activeDb == db &&
+        _transfersActive == showTransfers) {
       return;
     }
     _activeId = id;
     _activeKind = kind;
     _activePath = kind == TabKind.file ? path : null;
     _activeWeb = kind == TabKind.web ? web : null;
+    _activeDb = id == null ? db : null;
+    _transfersActive = showTransfers;
+    if (showTransfers) _transfersTab = true;
     _activeLine = null;
     // Going back to the host list leaves the last session standing as the
     // active one: a file shared from another app still has somewhere to go.
     if (id != null) _active = _sessions[id];
     notifyListeners();
+  }
+
+  /// Opens [db] in a tab of its own, named [title], after every session's,
+  /// and shows it. A database already open just goes back to its tab.
+  void openDb(DbConnection db, String title) {
+    var tab = _dbTabs.where((tab) => tab.db.id == db.id).firstOrNull;
+    if (tab == null) _dbTabs.add(tab = DbTab._(db, title));
+    select(null, db: tab);
+  }
+
+  /// Closes a database's tab, which lets its connection go. The one showing
+  /// lands on its left-hand neighbour: the database before it, else the last
+  /// session's shell, else the host list.
+  void closeDb(DbTab tab) {
+    final index = _dbTabs.indexOf(tab);
+    if (index < 0) return;
+    _dbTabs.removeAt(index);
+    if (_activeDb != tab) {
+      notifyListeners();
+    } else if (index > 0) {
+      select(null, db: _dbTabs[index - 1]);
+    } else {
+      select(_sessions.keys.lastOrNull);
+    }
+  }
+
+  /// Puts the Transfers tab on the strip, after every other, and with
+  /// [select], shows it.
+  void showTransfers({bool select = false}) {
+    if (select) {
+      this.select(null, transfers: true);
+    } else if (!_transfersTab) {
+      _transfersTab = true;
+      notifyListeners();
+    }
+  }
+
+  /// Takes the Transfers tab off the strip; what it lists carries on. The
+  /// one showing lands on its left-hand neighbour: the last database, else
+  /// the last session's shell, else the host list.
+  void closeTransfers() {
+    if (!_transfersTab) return;
+    _transfersTab = false;
+    final db = _dbTabs.lastOrNull;
+    if (!_transfersActive) {
+      notifyListeners();
+    } else if (db != null) {
+      select(null, db: db);
+    } else {
+      select(_sessions.keys.lastOrNull);
+    }
   }
 
   /// Opens a file picked in the drawer as a tab of its own, and shows it.
@@ -865,6 +1165,24 @@ class SessionManager extends ChangeNotifier {
         _activePath == path) {
       select(id);
     }
+  }
+
+  /// Opens this session's chat with Claude in a tab beside its shell, and
+  /// shows it. Asking again goes back to the tab already there.
+  void openChat(int id) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.openChat();
+    select(id, kind: TabKind.chat);
+  }
+
+  /// Closing the chat tab lands on the shell it sits beside, and ends the
+  /// Claude running for it.
+  void closeChat(int id) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.closeChat();
+    if (_activeId == id && _activeKind == TabKind.chat) select(id);
   }
 
   /// Opens a link as a web page in a tab beside the session's shell, and
@@ -905,14 +1223,25 @@ class SessionManager extends ChangeNotifier {
   /// connects it, and [add] gives it one once it is up, or once its sign-in
   /// has gone to a web tab beside it. [transport] is a test's, as
   /// [LiveSession] takes one.
-  LiveSession create(HostProfile host, {TransportMaker? transport}) {
+  ///
+  /// [tmuxName] and [restored] bring back a tab saved by an earlier run: see
+  /// [restoreTabs].
+  LiveSession create(
+    HostProfile host, {
+    TransportMaker? transport,
+    String? tmuxName,
+    bool restored = false,
+  }) {
     late final LiveSession created;
     created = LiveSession(
       host: host,
       forwardedElsewhere: (port) => sessionsFor(created.host.id)
           .any((s) => s != created && s.forwarder.isForwarding(port)),
       transport: transport,
-      pushToken: pushToken,
+      notifyKeys: notifyKeys,
+      onNotify: onNotify,
+      tmuxName: tmuxName,
+      restored: restored,
     );
     return created;
   }
@@ -926,6 +1255,8 @@ class SessionManager extends ChangeNotifier {
     _activeKind = TabKind.terminal;
     _activePath = null;
     _activeWeb = null;
+    _activeDb = null;
+    _transfersActive = false;
     notifyListeners();
   }
 
@@ -992,6 +1323,132 @@ class SessionManager extends ChangeNotifier {
       await close(id);
     }
   }
+
+  /// Where the open tabs are saved as they change: see [restoreTabs].
+  static const _savedKey = 'sshbox.tabs.v1';
+
+  /// Whether tab changes are saved: from the end of [restoreTabs], so what it
+  /// brings back is not written over first, until [shutdown].
+  bool _saving = false;
+
+  /// What was last written, so an unchanged list is not written again.
+  String? _saved;
+
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    _save();
+  }
+
+  /// The open tabs as they are saved: what finds each again, and nothing
+  /// secret. Each terminal's host and tmux name, its files, and its web
+  /// pages by address alone; then the databases, by id.
+  void _save() {
+    if (!_saving) return;
+    final json = jsonEncode({
+      'sessions': [
+        for (final session in _sessions.values)
+          {
+            'hostId': session.host.id,
+            'tmux': session.tmuxName,
+            // Whether the chat tab was on the strip, never what was said in
+            // it: the conversation lives in the Claude the host ran, and that
+            // went when the app did.
+            if (session._chatOpen) 'chat': true,
+            'files': [...session._restoredFiles, ...session._openFiles],
+            'web': [
+              for (final web in session._webTabs)
+                if (!web._signIn) ?_savedUrl(web.url),
+            ],
+          },
+      ],
+      'databases': [for (final tab in _dbTabs) tab.db.id],
+    });
+    if (json == _saved) return;
+    _saved = json;
+    unawaited(
+      SharedPreferences.getInstance().then(
+        (prefs) => prefs.setString(_savedKey, json),
+      ),
+    );
+  }
+
+  /// A web page's address as it is saved: without credentials, query or
+  /// fragment, which can carry a token, and never a Tailscale sign-in, whose
+  /// link works once.
+  static String? _savedUrl(Uri url) =>
+      (url.isScheme('http') || url.isScheme('https')) &&
+          url.host != 'login.tailscale.com'
+      ? Uri(
+          scheme: url.scheme,
+          host: url.host,
+          port: url.hasPort ? url.port : null,
+          path: url.path,
+        ).toString()
+      : null;
+
+  /// Brings back the tabs open when the app last went away, as a browser
+  /// does, and saves them from then on as they change. Each terminal comes
+  /// back unconnected, under its old tmux name, and connects the first time
+  /// its tab shows; its files come back once it has. A tab whose host or
+  /// database has been deleted since does not come back. [transport] is a
+  /// test's, as [create] takes one.
+  Future<void> restoreTabs({
+    required List<HostProfile> hosts,
+    required List<DbConnection> databases,
+    TransportMaker? transport,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      final saved =
+          jsonDecode(prefs.getString(_savedKey) ?? '{}')
+              as Map<String, dynamic>;
+      for (final tab in saved['sessions'] as List? ?? const []) {
+        if (tab is! Map<String, dynamic>) continue;
+        final host = hosts.where((host) => host.id == tab['hostId']).firstOrNull;
+        if (host == null) continue;
+        final tmux = tab['tmux'];
+        final session = create(
+          host,
+          transport: transport,
+          tmuxName: tmux is String && LiveSession.tmuxNamePattern.hasMatch(tmux)
+              ? tmux
+              : null,
+          restored: true,
+        );
+        session._chatOpen = tab['chat'] == true;
+        session._restoredFiles.addAll(
+          (tab['files'] as List? ?? const []).whereType<String>(),
+        );
+        for (final url in (tab['web'] as List? ?? const []).whereType<String>()) {
+          final uri = Uri.tryParse(url);
+          if (uri != null && _savedUrl(uri) != null) session.openWeb(uri);
+        }
+        session.addListener(_onSessionChanged);
+        _sessions[session.id] = session;
+      }
+      for (final id in saved['databases'] as List? ?? const []) {
+        final db = databases.where((db) => db.id == id).firstOrNull;
+        if (db == null || _dbTabs.any((tab) => tab.db.id == id)) continue;
+        final host = hosts.where((host) => host.id == db.hostId).firstOrNull;
+        _dbTabs.add(DbTab._(db, db.displayName(host)));
+      }
+    } catch (_) {
+      // A corrupt list costs its tabs, not the app's start.
+    }
+    _saving = true;
+    notifyListeners();
+  }
+
+  /// What the app going away does: every connection is let go, and every
+  /// tmux session left running on its host for its tab to come back to, as
+  /// the tabs were last saved. Only a tab's own close ends its tmux session.
+  Future<void> shutdown() async {
+    _saving = false;
+    for (final session in _sessions.values.toList()) {
+      await session.disconnect();
+    }
+  }
 }
 
 /// Sends Shift+Enter from a hardware keyboard as ESC CR — Alt+Enter.
@@ -1010,5 +1467,31 @@ class _ShiftEnterInputHandler implements TerminalInputHandler {
     if (event.key != TerminalKey.enter || !event.shift) return null;
     if (event.ctrl || event.alt || event.superKey) return null;
     return '\x1b\r';
+  }
+}
+
+/// Keeps a key's release to itself unless the program asked for releases,
+/// which it does with kitty's flag 2, "report event types".
+///
+/// xterm2's kitty handler encodes a release whenever the protocol is on, and
+/// without flag 2 it has nothing to mark it with, so the release went out as
+/// the press all over again. Claude Code pushes flags 1 and 4 (`ESC [>5u`),
+/// so one hardware Ctrl+T reached it twice, and Shift+Enter made two new
+/// lines. The key bar was never affected, since it sends bytes rather than
+/// presses and releases. Every other handler already drops releases.
+class _ReleaseOnlyIfAsked implements TerminalInputHandler {
+  const _ReleaseOnlyIfAsked(this._keys);
+
+  final TerminalInputHandler _keys;
+
+  static const _reportEventTypes = 0x02;
+
+  @override
+  String? call(TerminalKeyboardEvent event) {
+    if (event.type == TerminalKeyEventType.release &&
+        event.state.kittyKeyboardMode & _reportEventTypes == 0) {
+      return null;
+    }
+    return _keys(event);
   }
 }

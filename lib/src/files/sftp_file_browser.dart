@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -199,7 +200,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     final size = attrs.size ?? 0;
     if (size > maxBytes) {
       throw FileBrowserException(
-        '${_formatBytes(size)} is too large to open here. '
+        '${formatBytes(size)} is too large to open here. '
         'Use the terminal for a file this size.',
         fault: FileBrowserFault.tooLarge,
       );
@@ -370,6 +371,158 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         'create ${RemotePath.basename(path)}',
         () async => (await _channel()).mkdir(path),
       );
+
+  @override
+  Future<void> upload(
+    String localPath,
+    String path, {
+    bool replace = false,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) =>
+      _guard(
+        'upload ${RemotePath.basename(path)} to ${RemotePath.parent(path)}',
+        () async {
+          final sftp = await _channel();
+          // Straight to the name when it is free: exclusive, so a name taken
+          // since it was looked at, by a file or by a link planted there,
+          // fails the upload rather than being written over or through. A
+          // replace goes in beside it and is renamed over it, which swaps a
+          // link for the file rather than following it, and leaves the old
+          // file whole until the new one is.
+          final target = replace
+              ? RemotePath.join(
+                  RemotePath.parent(path),
+                  '.${RemotePath.basename(path)}.${randomName()}'
+                  '.sshbox-upload',
+                )
+              : path;
+          final file = await sftp.open(
+            target,
+            mode: SftpFileOpenMode.create |
+                SftpFileOpenMode.exclusive |
+                SftpFileOpenMode.write,
+          );
+          try {
+            await sendFile(
+              file,
+              localPath,
+              onProgress: onProgress,
+              cancel: cancel,
+            );
+            if (replace) {
+              try {
+                await sftp.rename(target, path);
+              } on SftpStatusError {
+                // No posix-rename on this server, and a plain rename will not
+                // land on a name that is taken: the old file goes first.
+                await sftp.remove(path);
+                await sftp.rename(target, path);
+              }
+            }
+          } catch (_) {
+            // Ours, made just now: half a file is no use to anyone.
+            await _removeQuietly(sftp, target);
+            rethrow;
+          }
+        },
+      );
+
+  /// Fills [remote], a file of ours just made by an exclusive open, from the
+  /// phone's file at [localPath], then closes it. [cancel] completing stops
+  /// it with [FileBrowserException.cancelled].
+  ///
+  /// Private (0600) before any byte goes in: whatever is left readable there,
+  /// every login that can see the directory can read. The one way a file
+  /// goes up: the key bar's upload to /tmp and the tree's both end here.
+  ///
+  /// Streamed, never the whole file in memory: the phone's file is read
+  /// 64 KB at a time, each read an event-loop turn of its own, so what is
+  /// sealed on the UI isolate between two frames is one read's worth.
+  ///
+  /// 64 writes wait on the host at most, 2 MB in flight. An upload never
+  /// reaches the paced socket — the acknowledgements that free the next write
+  /// are far too small to fill a read, so a 16 MB upload stands aside for two
+  /// event-loop turns where a download of the same file gives up five hundred
+  /// — so what bounds it is how much is allowed on the wire at once. On a
+  /// link 30 ms away, which is what the tailnet is, 16 writes ran at
+  /// 10.5 MB/s and 64 at 38.4; on a local link both reach about 50 and the
+  /// wider window costs nothing: see tool/transfer_bench.dart.
+  static Future<void> sendFile(
+    SftpFile remote,
+    String localPath, {
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    try {
+      await remote.setStat(
+        SftpFileAttrs(mode: const SftpFileMode.value(0x180)),
+      );
+      final source = File(localPath);
+      final total = await source.length();
+      final writer = remote.write(
+        source.openRead().cast<Uint8List>(),
+        onProgress: (sent) => onProgress?.call(sent, total),
+        // One SSH packet each, headers and all, in the 32 KB a host takes.
+        chunkSize: 32 * 1024 - 64,
+        maxPendingRequests: 64,
+      );
+      var stopped = false;
+      unawaited(
+        cancel?.then((_) {
+          stopped = true;
+          return writer.abort();
+        }),
+      );
+      await writer.done;
+      if (stopped) throw FileBrowserException.cancelled;
+    } finally {
+      await remote.close();
+    }
+  }
+
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) =>
+      _guard('download ${RemotePath.basename(path)}', () async {
+        final sftp = await _channel();
+        final size = (await sftp.stat(path)).size ?? 0;
+        final file = await sftp.open(path);
+        final local = File(localPath).openWrite();
+        var stopped = false;
+        unawaited(cancel?.then((_) => stopped = true));
+        try {
+          // 64 reads at once, 2 MB in flight. Every reply is decrypted on the
+          // UI isolate, dartssh2 being pure Dart, and the paced socket in
+          // paced_socket.dart bounds what one event-loop turn spends on that
+          // by time rather than by bytes — so how much is in flight no longer
+          // decides how long a turn runs, and the window can be opened for
+          // the link instead. On one 30 ms away that is worth 14.5 MB/s
+          // against 8.8 for the half megabyte this held before, and the
+          // stalls are unmoved: see tool/transfer_bench.dart.
+          var received = 0;
+          await for (final chunk in file.read(
+            chunkSize: 32 * 1024,
+            maxPendingRequests: 64,
+          )) {
+            if (stopped) throw FileBrowserException.cancelled;
+            local.add(chunk);
+            onProgress?.call(received += chunk.length, size);
+            // Written out every 2 MB: a disk slower than the link holds no
+            // more than that in memory.
+            if (received % (2 * 1024 * 1024) < chunk.length) {
+              await local.flush();
+            }
+          }
+        } finally {
+          await local.close();
+          await file.close();
+        }
+      });
 
   @override
   Future<void> delete(String path, {bool recursive = false}) => _guard(
@@ -813,19 +966,5 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
       );
     }
     return FileBrowserException('Could not $action: $error');
-  }
-
-  static String _formatBytes(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var value = bytes.toDouble();
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    final rounded = unit == 0 || value >= 100
-        ? value.toStringAsFixed(0)
-        : value.toStringAsFixed(1);
-    return '$rounded ${units[unit]}';
   }
 }

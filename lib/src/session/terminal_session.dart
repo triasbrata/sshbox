@@ -48,11 +48,13 @@ abstract class TerminalSession {
 /// a transport that lacks it simply does not implement it.
 abstract class FileUploadCapable {
   /// Uploads a local file into `/tmp` on the remote host and returns the
-  /// absolute remote path, ready to be typed into the shell.
+  /// absolute remote path, ready to be typed into the shell. [cancel]
+  /// completing stops it part way, and what was sent goes.
   Future<String> uploadToTmp({
     required String localPath,
     required String fileName,
     void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   });
 }
 
@@ -113,9 +115,14 @@ abstract class ChannelCapable {
 /// end sends, and a sink for ours whose close says we are done.
 typedef Tunnel = ({Stream<Uint8List> output, StreamSink<List<int>> input});
 
-/// A port the host listens on for us — see [ForwardCapable.listen]: each
-/// connection made to it, and a way to stop listening.
-typedef RemotePort = ({Stream<Tunnel> connections, void Function() close});
+/// A port the host listens on for us — see [ForwardCapable.listen]: the port
+/// it listens on, the one it picked when asked for port 0, each connection
+/// made to it, and a way to stop listening.
+typedef RemotePort = ({
+  int port,
+  Stream<Tunnel> connections,
+  void Function() close,
+});
 
 /// Optional capability: TCP connections through the host, as `ssh -L` and
 /// `ssh -R` make them — what `LocalForwarder` pipes a port on the tablet
@@ -139,6 +146,11 @@ abstract class SessionTransport {
   /// [environment] goes with the shell, and with each command
   /// [ChannelCapable.open] starts, for the programs there to read. A host
   /// may refuse it, which costs the variables, never the connection.
+  ///
+  /// [beforeShell] is called once the host has let us in, before the shell
+  /// or any command starts, with the connection to listen on, and what it
+  /// returns joins [environment]. It answers for its own failures: it hands
+  /// back nothing rather than throw.
   Future<TerminalSession> connect({
     required HostProfile host,
     required SecretStore secrets,
@@ -146,5 +158,6 @@ abstract class SessionTransport {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   });
 }

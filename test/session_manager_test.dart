@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+
+import 'fake_relay.dart';
 
 class _NoSecrets implements SecretStore {
   @override
@@ -19,13 +23,26 @@ class _NoSecrets implements SecretStore {
 }
 
 /// A shell that is up the moment it is asked for, on a host that answers
-/// every command with [reply], whenever the test completes it.
-class _Host implements SessionTransport, TerminalSession, CommandCapable {
+/// every command with [reply], whenever the test completes it, and listens
+/// on a port for us when asked, unless [listenRefusal] says why not.
+class _Host
+    implements SessionTransport, TerminalSession, CommandCapable, ForwardCapable {
   final commands = <String>[];
   final reply = Completer<List<String>>();
 
-  /// What the last connect was asked to send with the shell.
+  /// What the last connect was asked to send with the shell, with what its
+  /// `beforeShell` added, as the SSH transport sends them.
   Map<String, String>? environment;
+
+  /// Where it was asked to listen for us.
+  final listened = <String>[];
+
+  /// The port it listens on for us, once asked: a program on the host
+  /// connects to it by adding to it.
+  StreamController<Tunnel>? notifyPort;
+
+  /// Why it will not listen, while it will not.
+  SshSessionException? listenRefusal;
 
   @override
   Future<TerminalSession> connect({
@@ -35,10 +52,24 @@ class _Host implements SessionTransport, TerminalSession, CommandCapable {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async {
-    this.environment = environment;
+    this.environment = {...environment, ...?await beforeShell?.call(this)};
     return this;
   }
+
+  @override
+  Future<RemotePort> listen(String host, int port) async {
+    listened.add('$host:$port');
+    final refusal = listenRefusal;
+    if (refusal != null) throw refusal;
+    final connections = notifyPort = StreamController<Tunnel>();
+    // The port the host picked for port 0.
+    return (port: 34567, connections: connections.stream, close: () {});
+  }
+
+  @override
+  Future<Tunnel> forward(String host, int port) => throw UnimplementedError();
 
   @override
   final status = ValueNotifier(SessionStatus.connected);
@@ -463,24 +494,125 @@ void main() {
     });
   });
 
-  group('tells the host which device to notify', () {
-    Future<Map<String, String>?> sent(SessionManager manager) async {
-      final host = _Host();
-      final session = manager.create(_host, transport: (_, _) => host);
+  group('tells the host how to notify this device', () {
+    /// What a connect through [host] sent with the shell.
+    Future<Map<String, String>?> sent(
+      SessionManager manager, [
+      _Host? host,
+    ]) async {
+      final connection = host ?? _Host();
+      final session = manager.create(_host, transport: (_, _) => connection);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
-      return host.environment;
+      return connection.environment;
     }
 
-    test('its push token and the host id, once it has a token', () async {
-      expect(await sent(SessionManager(pushToken: () => 'device-token')), {
-        'LC_SSHBOX_TOKEN': 'device-token',
+    /// The relay keys, once FCM has given its token.
+    Future<NotifyKeys> withToken(FakeRelay relay) async {
+      final notifyKeys = NotifyKeys(InMemorySecretStore(), relay: relay);
+      await notifyKeys.useFcmToken('fcm-token');
+      return notifyKeys;
+    }
+
+    test("the host's own relay key, registered as it connects, and its id; "
+        'never the FCM token, nor the bearer key of old', () async {
+      final notifyKeys = await withToken(FakeRelay());
+      final environment = await sent(SessionManager(notifyKeys: notifyKeys));
+      expect(environment, {
+        'LC_SSHBOX_KEY': await notifyKeys.valueFor('host-1'),
         'LC_SSHBOX_HOST_ID': 'host-1',
+      });
+      expect(environment!['LC_SSHBOX_KEY'], startsWith('jnk_'));
+      expect(environment.keys, isNot(contains('LC_SSHBOX_TOKEN')));
+      expect(environment.values, isNot(contains('fcm-token')));
+    });
+
+    test('no key while the relay is out of reach, and one at the next '
+        'connect', () async {
+      final relay = FakeRelay()..down = true;
+      final manager = SessionManager(notifyKeys: await withToken(relay));
+
+      expect(await sent(manager), isEmpty);
+      relay.down = false;
+      expect((await sent(manager))!.keys, {
+        'LC_SSHBOX_KEY',
+        'LC_SSHBOX_HOST_ID',
       });
     });
 
-    test('nothing without one', () async {
-      expect(await sent(SessionManager()), isEmpty);
+    test('nothing without push', () async {
+      final host = _Host();
+      expect(await sent(SessionManager(), host), isEmpty);
+      expect(host.listened, isEmpty);
+    });
+
+    group('straight down the connection', () {
+      late List<({String hostId, String title, String body})> shown;
+      late SessionManager manager;
+
+      setUp(() {
+        shown = [];
+        manager = SessionManager(
+          onNotify: ({required hostId, required title, required body}) async =>
+              shown.add((hostId: hostId, title: title, body: body)),
+        );
+      });
+
+      test('a URL and secret, once the host listens on its loopback for '
+          'us', () async {
+        final host = _Host();
+        expect(await sent(manager, host), {
+          'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:34567/v1/send',
+          'LC_SSHBOX_NOTIFY_SECRET': hasLength(43),
+        });
+        expect(host.listened, ['127.0.0.1:0']);
+      });
+
+      test('nothing of it when the host will not listen', () async {
+        final host = _Host()
+          ..listenRefusal = const SshSessionException('refused');
+        expect(await sent(manager, host), isEmpty);
+      });
+
+      test('beside the relay key when there is one', () async {
+        final both = SessionManager(
+          notifyKeys: await withToken(FakeRelay()),
+          onNotify: manager.onNotify,
+        );
+        expect((await sent(both))!.keys, {
+          'LC_SSHBOX_KEY',
+          'LC_SSHBOX_HOST_ID',
+          'LC_SSHBOX_NOTIFY_URL',
+          'LC_SSHBOX_NOTIFY_SECRET',
+        });
+      });
+
+      test('what a server sends shows for the host it came through', () async {
+        final host = _Host();
+        final session = manager.create(_otherHost, transport: (_, _) => host);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        final secret = host.environment!['LC_SSHBOX_NOTIFY_SECRET'];
+
+        const body = 'title=Build&body=all+done';
+        final up = StreamController<Uint8List>();
+        final down = StreamController<List<int>>();
+        final answer = down.stream.expand((bytes) => bytes).toList();
+        host.notifyPort!.add((output: up.stream, input: down.sink));
+        up.add(
+          utf8.encode(
+            'POST /v1/send HTTP/1.1\r\n'
+            'Authorization: Bearer $secret\r\n'
+            'Content-Type: application/x-www-form-urlencoded\r\n'
+            'Content-Length: ${body.length}\r\n'
+            '\r\n'
+            '$body',
+          ),
+        );
+
+        expect(utf8.decode(await answer), startsWith('HTTP/1.1 200'));
+        expect(shown, [(hostId: 'host-2', title: 'Build', body: 'all done')]);
+      });
     });
   });
 }

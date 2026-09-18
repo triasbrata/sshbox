@@ -389,21 +389,54 @@ class TmuxSession {
   ///
   /// The device's variables (see `LiveSession.connect`) reach the client with
   /// the channel, but a pane gets the tmux server's environment: what it
-  /// started with, perhaps nothing, or a token since replaced. Listed in
+  /// started with, perhaps nothing, or a key since replaced. Listed in
   /// `update-environment`, tmux copies them from the client into the session
   /// when it makes it and at every attach, so the first pane, and any split
   /// off after a reconnect, has this connection's; a pane already running
-  /// keeps its own, as any process does. Not `new-session -e`, which tmux
-  /// before 3.0 refuses and which would show the token in `ps`. Added once
-  /// per server, since the list holds at most 1000 names.
+  /// keeps its own, as any process does: the direct way's URL and secret
+  /// too, which die with the connection that gave them. Not
+  /// `new-session -e`, which tmux before 3.0 refuses and which would show
+  /// the values in `ps`. Added once per server, since the list holds at most
+  /// 1000 names, and looked for by the newest name, so a server that
+  /// listed an earlier version's names gets the new ones; a name listed
+  /// twice is harmless.
+  ///
+  /// tmux is found once, as an absolute path `$t`, and every tmux here runs
+  /// from it. An exec channel's shell is not a login shell, so its PATH
+  /// lacks what a profile adds: on a Mac it is `/usr/bin:/bin:/usr/sbin:/sbin`
+  /// and Homebrew's tmux is not on it. So after PATH come the places package
+  /// managers put tmux, then the login shell's own PATH — asked with nothing
+  /// on stdin, its errors dropped and only its last line kept, so whatever a
+  /// profile prints never reaches the channel, let alone control mode.
   static String command(String name) =>
-      "sh -c 'command -v tmux >/dev/null || "
-      "{ echo tmux is not installed on this host; exit 1; }; "
-      'tmux show -gv update-environment 2>/dev/null | '
-      'grep -q LC_SSHBOX_TOKEN || '
-      r'set -- set -ga update-environment " LC_SSHBOX_TOKEN LC_SSHBOX_HOST_ID" '
-      r'\;; exec tmux -u -C "$@" '
+      "sh -c '$_findTmux"
+      r'"$t" show -gv update-environment 2>/dev/null | '
+      'grep -q LC_SSHBOX_KEY || '
+      r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
+      r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
+      r'\;; exec "$t" -u -C "$@" '
       "new-session -A -s $name 2>&1'";
+
+  /// What the host runs to say whether the session called [name] is still
+  /// there, as its last line: `yes` or `no`. `=` makes the name exact, where
+  /// tmux would otherwise take a session whose name only starts with it.
+  static String exists(String name) =>
+      "sh -c '$_findTmux"
+      '"\$t" has-session -t "=$name" 2>/dev/null && echo yes || echo no\'';
+
+  /// Finds tmux as [command] says, into `$t`, or says it is not installed and
+  /// stops.
+  static const _findTmux =
+      r'ok() { case $1 in /*) [ -f "$1" ] && [ -x "$1" ];; *) return 1;; esac; }; '
+      r't=$(command -v tmux); '
+      r'ok "$t" || for t in /opt/homebrew/bin/tmux /usr/local/bin/tmux '
+      r'/opt/local/bin/tmux /home/linuxbrew/.linuxbrew/bin/tmux '
+      r'"$HOME/.nix-profile/bin/tmux" /run/current-system/sw/bin/tmux '
+      r'"$HOME/.local/bin/tmux" /snap/bin/tmux; do ok "$t" && break; t=; done; '
+      r'ok "$t" || t=$("$SHELL" -lc "command -v tmux" </dev/null 2>/dev/null '
+      '| tail -n 1); '
+      r'ok "$t" || { echo "tmux is not installed on this host (looked on PATH, '
+      'in Homebrew and the other usual places)"; exit 1; }; ';
 
   /// How far back a pane's history reaches when it is filled in on attach.
   // ponytail: a fixed 2000 lines, a fifth of the plain terminal's 10k,

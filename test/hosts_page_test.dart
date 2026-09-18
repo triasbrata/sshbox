@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/models/os_info.dart';
+import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/known_hosts_page.dart';
 import 'package:sshbox/src/ui/os_icon.dart';
+
+import 'fake_relay.dart';
 
 /// A shell that is up the moment it is asked for.
 class _Shell implements SessionTransport, TerminalSession {
@@ -25,6 +27,7 @@ class _Shell implements SessionTransport, TerminalSession {
     required int rows,
     bool shell = true,
     Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
   }) async => this;
 
   @override
@@ -214,52 +217,121 @@ void main() {
     expect(find.text('Nothing trusted yet'), findsOneWidget);
   });
 
-  testWidgets('the push token is copied in Settings, no longer on Home', (
-    tester,
-  ) async {
+  testWidgets('deleting a host revokes its notification key', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    final copied = <Object?>[];
-    final platform = tester.binding.defaultBinaryMessenger;
-    platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-      if (call.method == 'Clipboard.setData') copied.add(call.arguments);
-      return null;
-    });
-    addTearDown(
-      () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
-    );
     final secrets = InMemorySecretStore();
+    final repository = HostRepository(secrets);
+    await repository.upsert(
+      const HostProfile(id: 'box', label: 'box', host: '10.0.0.5', username: 'me'),
+    );
+    final relay = FakeRelay();
+    final notifyKeys = NotifyKeys(secrets, relay: relay);
+    await notifyKeys.useFcmToken('fcm-token');
+    final key = await notifyKeys.forConnect('box');
     await tester.pumpWidget(
       MaterialApp(
         home: HostsPage(
-          repository: HostRepository(secrets),
+          repository: repository,
           secrets: secrets,
-          sessions: SessionManager(pushToken: () => 'device-token'),
+          sessions: SessionManager(notifyKeys: notifyKeys),
           onOpenHost: (_) async {},
         ),
       ),
     );
     await tester.pumpAndSettle();
+    // Nothing of it on Home: a host's own is copied from its edit page.
     expect(find.byIcon(Icons.key_outlined), findsNothing);
 
-    await tester.tap(find.byTooltip('Settings'));
+    await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
-    final copy = find.text('Copy notification token');
-    // Settings' own list, not its preview terminal's.
-    await tester.scrollUntilVisible(
-      copy,
-      300,
-      scrollable: find.byType(Scrollable).first,
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('notification key is revoked'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    expect(relay.revoked, [key!.split(':').first]);
+    expect(await notifyKeys.valueFor('box'), isNull);
+    expect(await repository.load(), isEmpty);
+  });
+
+  testWidgets('Duplicate copies a host into one of its own, its secrets with '
+      'it, and leaves the original as it was', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final secrets = InMemorySecretStore();
+    final repository = HostRepository(secrets);
+    // Every field the editor shows set to something other than its default,
+    // so one left behind stands out.
+    const original = HostProfile(
+      id: 'box',
+      label: 'wsl windows',
+      host: '10.0.0.9',
+      altHost: '192.168.1.20',
+      username: 'me',
+      port: 2222,
+      authMethod: SshAuthMethod.privateKey,
+      fileRoot: '/srv',
+      forwardPorts: true,
+      useTmux: true,
+      jumpHostId: 'gate',
+      os: OsInfo(
+        id: 'ubuntu',
+        prettyName: 'Ubuntu 22.04.5 LTS',
+        arch: 'x86_64',
+      ),
     );
-    await tester.tap(copy);
-    // A frame for the toast's overlay, one to start its slide, and the slide.
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(copied, [
-      {'text': 'device-token'},
-    ]);
-    expect(find.text('FCM token copied'), findsOneWidget);
-    // The toast's countdown run out, rather than left running past the test.
+    await repository.upsert(original);
+    for (final key in SecretKeys.allFor('box')) {
+      await secrets.write(key, 'secret at $key');
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostsPage(
+          repository: repository,
+          secrets: secrets,
+          sessions: SessionManager(),
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate'));
+    await tester.pumpAndSettle();
+
+    final hosts = await repository.load();
+    expect(hosts, hasLength(2));
+    final copy = hosts.last;
+    // A host of its own, under a name that says where it came from.
+    expect(copy.id, isNot('box'));
+    expect(copy.label, 'wsl windows (copy)');
+    // The original is untouched.
+    expect(hosts.first.toJson(), original.toJson());
+    // Everything else comes along. Compared whole, so a field added to
+    // HostProfile and not carried over fails here rather than going missing.
+    expect(
+      copy.toJson()
+        ..remove('id')
+        ..remove('label'),
+      original.toJson()
+        ..remove('id')
+        ..remove('label'),
+    );
+    // The password, private key and passphrase are readable under the new id.
+    final from = SecretKeys.allFor('box');
+    final to = SecretKeys.allFor(copy.id);
+    for (var i = 0; i < from.length; i++) {
+      expect(await secrets.read(to[i]), 'secret at ${from[i]}');
+    }
+
+    // A second copy of the same host takes the next name free.
+    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate'));
+    await tester.pumpAndSettle();
+    expect((await repository.load()).last.label, 'wsl windows (copy 2)');
   });
 }

@@ -5,6 +5,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
 import 'notification_gateway.dart';
+import 'notify_key.dart';
 
 /// FCM wiring. This is only the *delivery* half — everything about what a tap
 /// does already lives in [NotificationGateway] and the `sshbox://` router, and
@@ -24,15 +25,15 @@ class PushMessaging {
   PushMessaging({
     required this.notifications,
     required this.onOpenLink,
+    required this.notifyKeys,
   });
 
   final NotificationGateway notifications;
   final Future<void> Function(Uri uri) onOpenLink;
 
-  String? _token;
-
-  /// The registration token a server needs in order to reach this device.
-  String? get token => _token;
+  /// Given every registration token FCM hands over, to register each host's
+  /// key for with the relay: the token itself goes to no server.
+  final NotifyKeys notifyKeys;
 
   Future<void> initialize() async {
     try {
@@ -51,15 +52,16 @@ class PushMessaging {
     // first launch and clears on the next one. Letting it escape would abort
     // the rest of this method and leave the message handlers unregistered,
     // so push would stay dead for the whole run rather than just this attempt.
+    // Never logged: debugPrint reaches logcat in a release build too.
     try {
-      _token = await messaging.getToken();
-      // debugPrint still reaches logcat in a release build, and the token is
-      // what lets a sender reach this device.
-      if (kDebugMode) debugPrint('sshbox: FCM token $_token');
+      final token = await messaging.getToken();
+      if (token != null) unawaited(notifyKeys.useFcmToken(token));
     } catch (error) {
       debugPrint('sshbox: FCM registration failed, will retry on next launch ($error)');
     }
-    messaging.onTokenRefresh.listen((token) => _token = token);
+    messaging.onTokenRefresh.listen(
+      (token) => unawaited(notifyKeys.useFcmToken(token)),
+    );
 
     // App in the foreground: FCM hands us the message and posts nothing, so we
     // raise the notification ourselves.
