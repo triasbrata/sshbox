@@ -401,10 +401,15 @@ class ClaudeChat extends ChangeNotifier {
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
     final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
-    return "sh -c '$_findClaude$start"
+    // Quoted once for each shell it passes through: the directory and the
+    // session for sh, then the whole script for the login shell that runs sh.
+    // Splicing a quoted value into an outer '…' closes that quote instead, so
+    // the value reached sh bare: a space split the directory, and a $( ) ran.
+    final script = '$_findClaude$start'
         r'exec "$c" -p --input-format stream-json --output-format stream-json '
         '--verbose --permission-mode ${permission.flag} '
-        '--permission-prompts none$again 2>&1\'';
+        '--permission-prompts none$again 2>&1';
+    return 'sh -c ${_shellQuote(script)}';
   }
 
   /// Finds Claude Code into `$c`, or says it is not there and stops.

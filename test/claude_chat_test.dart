@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -261,16 +262,43 @@ void main() {
     expect(command, contains('--output-format stream-json'));
     expect(command, contains('--permission-mode bypassPermissions'));
     expect(command, contains('--permission-prompts none'));
-    expect(command, contains('--resume ${"'"}f44e6c8b${"'"}'));
     // An exec channel's shell is not a login shell: PATH first, then the
     // installer's own places, then the login shell's PATH.
     expect(command, contains(r'command -v claude'));
     expect(command, contains(r'"$HOME/.local/bin/claude"'));
     expect(command, contains(r'"$SHELL" -lc "command -v claude"'));
-    // The quote in the directory is passed along, not acted on.
-    expect(command, contains(r"""cd '/srv/it'\''s here'"""));
     // Only stdout crosses the channel, so stderr has to join it.
     expect(command, contains('2>&1'));
+  });
+
+  test('the directory and the session reach Claude exactly as given, '
+      'whatever they hold', () async {
+    // Run the command the way an SSH exec does — handed to a shell, which
+    // runs its sh -c — with a stand-in claude that says where it started and
+    // what it was given. Asserting on the command's text is what let a
+    // quote that closed the outer one through: it read right and ran wrong.
+    final root = await Directory.systemTemp.createTemp('chat-command');
+    addTearDown(() => root.delete(recursive: true));
+    final bin = await Directory('${root.path}/bin').create();
+    final claude = File('${bin.path}/claude')
+      ..writeAsStringSync('#!/bin/sh\npwd\nprintf "%s\\n" "\$@"\n');
+    await Process.run('chmod', ['+x', claude.path]);
+    const session = r"s'1 $(echo RAN)";
+
+    for (final name in ['my dir', "it's here", r'$(echo RAN)', 'a;b']) {
+      final dir = await Directory('${root.path}/$name').create();
+      final result = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.command(cwd: dir.path, resume: session)],
+        environment: {'PATH': '${bin.path}:/usr/bin:/bin'},
+      );
+      final lines = (result.stdout as String).split('\n');
+      expect(lines.first, dir.path, reason: 'started in "$name"');
+      final at = lines.indexOf('--resume');
+      expect(at, isNot(-1), reason: 'resumed in "$name"');
+      expect(lines[at + 1], session, reason: 'the session, in "$name"');
+      expect(result.stdout, isNot(contains('RAN\n')), reason: name);
+    }
   });
 
   test('with no directory of its own it starts where the login does', () {
@@ -309,7 +337,9 @@ void main() {
     expect(commands.length, 2);
     expect(commands.first, isNot(contains('--resume')));
     // The second process picks the conversation up where the first left it.
-    expect(commands.last, contains("--resume 'abc-123'"));
+    // How the id is quoted is the test above's; this one is that it is there.
+    expect(commands.last, contains('--resume'));
+    expect(commands.last, contains('abc-123'));
     expect(commands.last, contains('--permission-mode plan'));
     expect(chat.ready, isTrue);
     // Stopping on purpose is not Claude going away.

@@ -96,7 +96,10 @@ void main() {
     );
     await tester.pump();
 
-    expect(shell.commands.single, contains("cd '/srv/app'"));
+    // Started in the files' root; how the path is quoted is claude_chat_test's,
+    // which runs the command through a shell rather than reading it.
+    expect(shell.commands.single, contains('cd '));
+    expect(shell.commands.single, contains('/srv/app'));
     expect(shell.commands.single, contains('--output-format stream-json'));
     // Nothing said yet, so the tab says where Claude is running.
     expect(find.textContaining('/srv/app'), findsOneWidget);
