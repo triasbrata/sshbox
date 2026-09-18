@@ -128,10 +128,28 @@ Future<void> _pumpHome(
 
 void main() {
   group('the keys a desktop does not need', () {
-    testWidgets('go, key bar and magic key both', (tester) async {
+    testWidgets('go, and the magic key with them — but the bar stays', (
+      tester,
+    ) async {
       await _connected(tester);
 
-      expect(find.byType(TerminalKeyBar), findsNothing);
+      // The bar is where this page's own buttons live, so it stays whatever
+      // keyboard the machine has.
+      final bar = find.byType(TerminalKeyBar);
+      expect(bar, findsOneWidget);
+      for (final tooltip in ['Git', 'Browse files', 'Upload a file to /tmp']) {
+        expect(
+          find.descendant(of: bar, matching: find.byTooltip(tooltip)),
+          findsOneWidget,
+        );
+      }
+      // The keys themselves, and the way back to a soft keyboard there is
+      // none of, do not.
+      expect(find.text('ESC'), findsNothing);
+      expect(
+        find.descendant(of: bar, matching: find.byTooltip('Show the keyboard')),
+        findsNothing,
+      );
       expect(find.byType(MagicKey), findsNothing);
     }, variant: _desktop);
 
@@ -141,6 +159,8 @@ void main() {
       await _connected(tester);
 
       expect(find.byType(TerminalKeyBar), findsOneWidget);
+      expect(find.text('ESC'), findsOneWidget);
+      expect(find.byTooltip('Show the keyboard'), findsOneWidget);
       expect(find.byType(MagicKey), findsOneWidget);
     }, variant: _phone);
   });

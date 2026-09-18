@@ -574,66 +574,66 @@ class _TerminalPageState extends State<TerminalPage> {
       // soft keyboard and the button below floats clear of it. Its keys are
       // the ones Settings arranged, redrawn the moment they change there.
       //
-      // A desktop has none of it: the bar stands in for the keys a soft
-      // keyboard lacks, and there the keyboard has them all. Its own two
-      // buttons — the files drawer and upload — go with it, the way they did
-      // before the header left; on a desktop they ride in the tab strip's
-      // long-press menu instead.
-      bottomNavigationBar: isDesktop
-          ? null
-          : ValueListenableBuilder(
-              valueListenable: keyBarSettings,
-              builder: (context, _, _) => TerminalKeyBar(
-                controller: _keyBar,
-                terminal: _session.terminal,
-                onEmit: _send,
-                showKeys: _session.isConnected,
-                keys: keyBarSettings.keys,
-                customKeys: keyBarSettings.customKeys,
-                leading: [
-                  IconButton(
-                    tooltip: 'Chat with Claude',
-                    onPressed: (_session.isConnected && _session.canChat)
-                        ? widget.onOpenChat
-                        : null,
-                    icon: const Icon(Icons.forum_outlined),
-                  ),
-                  IconButton(
-                    tooltip: 'Git',
-                    onPressed: (_session.isConnected && _session.canGit)
-                        ? widget.onOpenGit
-                        : null,
-                    icon: const Icon(Icons.account_tree_outlined),
-                  ),
-                  IconButton(
-                    tooltip: 'Browse files',
-                    onPressed: (_session.isConnected && _session.canBrowseFiles)
-                        ? _openFiles
-                        : null,
-                    icon: const Icon(Icons.folder_outlined),
-                  ),
-                  IconButton(
-                    tooltip: 'Upload a file to /tmp',
-                    onPressed:
-                        (_session.isConnected &&
-                            _session.canUploadFiles &&
-                            _sending == null)
-                        ? _attachFile
-                        : null,
-                    icon: const Icon(Icons.attach_file),
-                  ),
-                  // The only way back to the soft keyboard once a hardware key has
-                  // shut it: a tap on the terminal cannot reopen it without making
-                  // the next key arrive twice. Always here, so a tablet out of its
-                  // keyboard case is never left without one.
-                  IconButton(
-                    tooltip: 'Show the keyboard',
-                    onPressed: _showKeyboard,
-                    icon: const Icon(Icons.keyboard_outlined),
-                  ),
-                ],
-              ),
+      // A desktop keeps the bar but not the keys: ESC, CTRL and the arrows
+      // stand in for what a soft keyboard lacks, and there the keyboard has
+      // them all — but the bar is also where this page's own buttons live,
+      // the files drawer, upload, git and Claude, and taking the whole bar
+      // away left no way to reach any of them.
+      bottomNavigationBar: ValueListenableBuilder(
+        valueListenable: keyBarSettings,
+        builder: (context, _, _) => TerminalKeyBar(
+          controller: _keyBar,
+          terminal: _session.terminal,
+          onEmit: _send,
+          showKeys: _session.isConnected && !isDesktop,
+          keys: keyBarSettings.keys,
+          customKeys: keyBarSettings.customKeys,
+          leading: [
+            IconButton(
+              tooltip: 'Chat with Claude',
+              onPressed: (_session.isConnected && _session.canChat)
+                  ? widget.onOpenChat
+                  : null,
+              icon: const Icon(Icons.forum_outlined),
             ),
+            IconButton(
+              tooltip: 'Git',
+              onPressed: (_session.isConnected && _session.canGit)
+                  ? widget.onOpenGit
+                  : null,
+              icon: const Icon(Icons.account_tree_outlined),
+            ),
+            IconButton(
+              tooltip: 'Browse files',
+              onPressed: (_session.isConnected && _session.canBrowseFiles)
+                  ? _openFiles
+                  : null,
+              icon: const Icon(Icons.folder_outlined),
+            ),
+            IconButton(
+              tooltip: 'Upload a file to /tmp',
+              onPressed:
+                  (_session.isConnected &&
+                      _session.canUploadFiles &&
+                      _sending == null)
+                  ? _attachFile
+                  : null,
+              icon: const Icon(Icons.attach_file),
+            ),
+            // The only way back to the soft keyboard once a hardware key has
+            // shut it: a tap on the terminal cannot reopen it without making
+            // the next key arrive twice. Always here, so a tablet out of its
+            // keyboard case is never left without one — but a desktop has
+            // no soft keyboard for it to bring back.
+            if (!isDesktop)
+              IconButton(
+                tooltip: 'Show the keyboard',
+                onPressed: _showKeyboard,
+                icon: const Icon(Icons.keyboard_outlined),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
