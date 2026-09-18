@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../chat/claude_chat.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
@@ -295,6 +296,51 @@ class LiveSession extends ChangeNotifier {
 
   void closeFile(String path) {
     if (_openFiles.remove(path)) _notify();
+  }
+
+  bool _chatOpen = false;
+
+  /// Whether this session has a chat tab beside its shell. At most one: it is
+  /// this host's one conversation, not a document there can be several of.
+  bool get chatOpen => _chatOpen;
+
+  /// Whether Claude can be run beside the shell at all — a transport that
+  /// carries only a terminal, as mosh does, cannot.
+  bool get canChat => _session is ChannelCapable;
+
+  ClaudeChat? _chat;
+
+  /// The conversation the chat tab shows, made the first time it is asked
+  /// for and kept until the tab closes.
+  ///
+  /// It outlives a reconnect: the process on the host dies with the
+  /// connection, but what was said is here, and its [ClaudeChat.restart]
+  /// resumes the same conversation on the new one by its id.
+  ClaudeChat get chat => _chat ??= ClaudeChat(
+    open: (command) async {
+      final session = _session;
+      if (session is! ChannelCapable || !isConnected) {
+        throw const SshSessionException('Not connected.');
+      }
+      return (session as ChannelCapable).open(command);
+    },
+    cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
+  );
+
+  void openChat() {
+    if (_chatOpen) return;
+    _chatOpen = true;
+    _notify();
+  }
+
+  /// Closing the tab takes the conversation with it: the process on the host
+  /// is ended, and what was said goes with it, as a shell's tab does.
+  void closeChat() {
+    if (!_chatOpen) return;
+    _chatOpen = false;
+    _chat?.dispose();
+    _chat = null;
+    _notify();
   }
 
   final List<WebTab> _webTabs = [];
@@ -867,6 +913,8 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     // it triggers must not touch a disposed notifier.
     _disposed = true;
     unawaited(_teardown(kill: true));
+    _chat?.dispose();
+    _chat = null;
     _terminal.dispose();
     super.dispose();
   }
@@ -874,7 +922,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
 
 /// What a tab shows: the shell on a host, a file opened over that shell, or
 /// a web page a link in it opened.
-enum TabKind { terminal, file, web }
+enum TabKind { terminal, chat, file, web }
 
 /// A web page in a tab beside the shell whose link opened it.
 class WebTab {
@@ -1119,6 +1167,24 @@ class SessionManager extends ChangeNotifier {
     }
   }
 
+  /// Opens this session's chat with Claude in a tab beside its shell, and
+  /// shows it. Asking again goes back to the tab already there.
+  void openChat(int id) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.openChat();
+    select(id, kind: TabKind.chat);
+  }
+
+  /// Closing the chat tab lands on the shell it sits beside, and ends the
+  /// Claude running for it.
+  void closeChat(int id) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.closeChat();
+    if (_activeId == id && _activeKind == TabKind.chat) select(id);
+  }
+
   /// Opens a link as a web page in a tab beside the session's shell, and
   /// shows it. A link already open there just goes back to its tab.
   void openWeb(int id, Uri url) {
@@ -1285,6 +1351,10 @@ class SessionManager extends ChangeNotifier {
           {
             'hostId': session.host.id,
             'tmux': session.tmuxName,
+            // Whether the chat tab was on the strip, never what was said in
+            // it: the conversation lives in the Claude the host ran, and that
+            // went when the app did.
+            if (session._chatOpen) 'chat': true,
             'files': [...session._restoredFiles, ...session._openFiles],
             'web': [
               for (final web in session._webTabs)
@@ -1346,6 +1416,7 @@ class SessionManager extends ChangeNotifier {
               : null,
           restored: true,
         );
+        session._chatOpen = tab['chat'] == true;
         session._restoredFiles.addAll(
           (tab['files'] as List? ?? const []).whereType<String>(),
         );

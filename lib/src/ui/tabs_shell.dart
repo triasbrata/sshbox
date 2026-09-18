@@ -10,6 +10,7 @@ import '../session/isolate_transport.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
+import 'chat_page.dart';
 import 'connect_sheet.dart';
 import 'db_browser_page.dart';
 import 'db_editor_page.dart' show DbBadge;
@@ -142,6 +143,8 @@ class _TabsShellState extends State<TabsShell> {
   List<TabRef> _tabs() => [
     for (final session in widget.sessions.sessions) ...[
       (session: session, kind: TabKind.terminal, path: null, web: null),
+      if (session.chatOpen)
+        (session: session, kind: TabKind.chat, path: null, web: null),
       for (final path in session.openFiles)
         (session: session, kind: TabKind.file, path: path, web: null),
       for (final web in session.webTabs)
@@ -184,6 +187,7 @@ class _TabsShellState extends State<TabsShell> {
       onOpenFile: (path, {line}) =>
           widget.sessions.openFile(tab.session.id, path, line: line),
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
+      onOpenChat: () => widget.sessions.openChat(tab.session.id),
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
@@ -202,6 +206,13 @@ class _TabsShellState extends State<TabsShell> {
               tab.path == widget.sessions.activePath
           ? widget.sessions.activeLine
           : null,
+    ),
+    // Like a web tab: a chat brought back from an earlier run starts Claude
+    // on the host the first time it shows, not as the app starts.
+    TabKind.chat when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
+    TabKind.chat => ChatPage(
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
+      session: tab.session,
     ),
     TabKind.web when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
     TabKind.web => WebPage(
@@ -306,6 +317,7 @@ class _TabsShellState extends State<TabsShell> {
               onSelectDatabase: (tab) => widget.sessions.select(null, db: tab),
               onClose: (tab) => switch (tab.kind) {
                 TabKind.terminal => widget.sessions.close(tab.session.id),
+                TabKind.chat => widget.sessions.closeChat(tab.session.id),
                 TabKind.file => widget.sessions.closeFile(
                   tab.session.id,
                   tab.path!,
@@ -527,6 +539,7 @@ class _TabStripState extends State<TabStrip> {
         _TabChip(
           key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
           icon: switch (tab.kind) {
+            TabKind.chat => Icons.forum_outlined,
             TabKind.file => Icons.description_outlined,
             TabKind.web => Icons.public,
             // tmux, said quietly: the same chip, split.
@@ -535,6 +548,7 @@ class _TabStripState extends State<TabStrip> {
             TabKind.terminal => Icons.terminal,
           },
           label: switch (tab.kind) {
+            TabKind.chat => 'Claude',
             TabKind.file => tab.session.fileTabTitle(tab.path!),
             TabKind.web => tab.web!.title,
             TabKind.terminal => tab.session.title,

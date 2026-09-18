@@ -37,6 +37,7 @@ class TerminalPage extends StatefulWidget {
     required this.secrets,
     required this.onOpenFile,
     required this.onOpenWeb,
+    required this.onOpenChat,
     required this.onSaveFileRoot,
   });
 
@@ -50,6 +51,9 @@ class TerminalPage extends StatefulWidget {
   /// Opens a web link from this session in a tab of its own, next to this
   /// one — see [openUrl].
   final void Function(Uri url) onOpenWeb;
+
+  /// Opens this session's chat with Claude in a tab beside this one.
+  final VoidCallback onOpenChat;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -570,6 +574,13 @@ class _TerminalPageState extends State<TerminalPage> {
           keys: keyBarSettings.keys,
           customKeys: keyBarSettings.customKeys,
           leading: [
+            IconButton(
+              tooltip: 'Chat with Claude',
+              onPressed: (_session.isConnected && _session.canChat)
+                  ? widget.onOpenChat
+                  : null,
+              icon: const Icon(Icons.forum_outlined),
+            ),
             IconButton(
               tooltip: 'Browse files',
               onPressed: (_session.isConnected && _session.canBrowseFiles)

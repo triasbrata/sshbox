@@ -152,6 +152,58 @@ void main() {
     expect(await _saved(), {'sessions': [], 'databases': []});
   });
 
+  test('a chat tab is saved and comes back, without a word of what was '
+      'said in it', () async {
+    final manager = SessionManager();
+    await manager.restoreTabs(hosts: [_box], databases: []);
+    final session = manager.open(_box);
+    manager.openChat(session.id);
+    await pumpEventQueue();
+    expect(await _saved(), {
+      'sessions': [
+        {
+          'hostId': 'box',
+          'tmux': session.tmuxName,
+          'chat': true,
+          'files': <String>[],
+          'web': <String>[],
+        },
+      ],
+      'databases': <String>[],
+    });
+
+    // Closing the chat takes it off the strip and off the list.
+    manager.closeChat(session.id);
+    await pumpEventQueue();
+    expect(session.chatOpen, isFalse);
+    expect(
+      (((await _saved())! as Map)['sessions'] as List).single,
+      isNot(contains('chat')),
+    );
+  });
+
+  test('a chat tab brought back is on the strip, and starts nothing until '
+      'it is shown', () async {
+    _saveBefore({
+      'sessions': [
+        {'hostId': 'box', 'tmux': 'sshbox-abc', 'chat': true},
+      ],
+      'databases': <String>[],
+    });
+    final host = _Host();
+    final manager = SessionManager();
+    await manager.restoreTabs(
+      hosts: [_box],
+      databases: [],
+      transport: (_, _) => host,
+    );
+    final session = manager.sessions.single;
+    expect(session.chatOpen, isTrue);
+    // Nothing has run on the host: the page starts Claude when it first
+    // shows, and it has not.
+    expect(host.opened, isEmpty);
+  });
+
   test('saved tabs come back unconnected, and each connects when asked, '
       'checking once that its tmux session is still there', () async {
     _saveBefore({
