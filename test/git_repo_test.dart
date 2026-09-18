@@ -189,5 +189,39 @@ void main() {
       expect(repos.repos, isEmpty);
       expect(repos.problem, contains('/home/me'));
     });
+
+    test(
+      'lets the shell expand the login home, rather than quoting it',
+      () async {
+        final host = _Host({
+          'find': (lines: ['/root/app'], status: -1),
+        });
+        final repos = GitRepos(run: host.run, start: GitRepos.loginHome);
+
+        await repos.discover();
+
+        // Single quotes would send the shell a folder with a dollar in its
+        // name, and nothing would ever be found on a host with no root set.
+        expect(host.asked.single, contains(r'"$HOME"'));
+        expect(host.asked.single, isNot(contains(r"'$HOME'")));
+        expect(repos.repos.single.root, '/root/app');
+      },
+    );
+
+    test('asks nothing more once the tab that owned it has gone', () async {
+      final host = _Host({
+        'find': (lines: ['/w'], status: -1),
+      });
+      final repos = GitRepos(run: host.run, start: '/w');
+      await repos.discover();
+      final asked = host.asked.length;
+
+      // Closing the git tab disposes it while the page is still listening,
+      // and the page's own listener asks for one more search on the way out.
+      repos.dispose();
+
+      await repos.discover();
+      expect(host.asked, hasLength(asked));
+    });
   });
 }

@@ -43,9 +43,9 @@ const _swipeFullSpeedFrom = 200.0;
 int? swipeRepeatMs(double distance) {
   if (distance < _swipeRepeatFrom) return null;
 
-  final reach = ((distance - _swipeRepeatFrom) /
-          (_swipeFullSpeedFrom - _swipeRepeatFrom))
-      .clamp(0.0, 1.0);
+  final reach =
+      ((distance - _swipeRepeatFrom) / (_swipeFullSpeedFrom - _swipeRepeatFrom))
+          .clamp(0.0, 1.0);
   return (2000 - reach * 1700).round();
 }
 
@@ -204,7 +204,7 @@ class CursorPad {
 /// has put the terminal in. CTRL, ALT, SPACE and the divider do more than
 /// send, or nothing at all, and the bar builds them itself.
 final Map<String, ({String label, String Function(Terminal)? send})>
-    terminalKeys = {
+terminalKeys = {
   'esc': (label: 'ESC', send: (_) => '\x1b'),
   'tab': (label: 'TAB', send: (_) => '\t'),
   'ctrl': (label: 'CTRL', send: null),
@@ -348,11 +348,8 @@ String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
   if (mac) {
     if (macTextEditing[keyComboName(combo)] case final edit?) return edit;
   }
-  final modifier = 1 +
-      (shift ? 1 : 0) +
-      (alt ? 2 : 0) +
-      (ctrl ? 4 : 0) +
-      (superKey ? 8 : 0);
+  final modifier =
+      1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0) + (superKey ? 8 : 0);
   final csi = _csiKeys[key];
   if (csi == null && superKey) {
     final code = (_charKeys[key] ?? keyCapOf(key)).codeUnitAt(0);
@@ -378,12 +375,12 @@ String encodeKeyCombo(Terminal terminal, KeyCombo combo) {
 /// How [combo] reads on a PC, `Ctrl+Alt+R`, whatever its layout: how a custom
 /// key saves it for [parseKeyCombo], and what [macTextEditing] goes by.
 String keyComboName(KeyCombo combo) => [
-      if (combo.ctrl) 'Ctrl',
-      if (combo.alt) 'Alt',
-      if (combo.shift) 'Shift',
-      if (combo.superKey) 'Super',
-      combo.key,
-    ].join('+');
+  if (combo.ctrl) 'Ctrl',
+  if (combo.alt) 'Alt',
+  if (combo.shift) 'Shift',
+  if (combo.superKey) 'Super',
+  combo.key,
+].join('+');
 
 /// How [combo] reads in its own layout: [keyComboName] on a PC, and on a Mac
 /// the symbols in the Mac's order, `⌃⌥⇧⌘`, then the key, `⌘→`.
@@ -404,7 +401,8 @@ KeyCombo? parseKeyCombo(String saved, {bool mac = false}) {
   final parts = saved.split('+');
   final key = parts.removeLast();
   final modifiers = parts.toSet();
-  final known = _shifted.containsKey(key) ||
+  final known =
+      _shifted.containsKey(key) ||
       _charKeys.containsKey(key) ||
       _csiKeys.containsKey(key);
   if (!known ||
@@ -431,8 +429,9 @@ String keyComboLabel(KeyCombo combo) {
   final (:key, :ctrl, :alt, :shift, :superKey, :mac) = combo;
   final typing = _shifted.containsKey(key);
   final cap = keyCapOf(key, shift: shift);
-  final control =
-      ctrl && typing && !superKey ? _controlCode(cap.codeUnitAt(0)) : null;
+  final control = ctrl && typing && !superKey
+      ? _controlCode(cap.codeUnitAt(0))
+      : null;
   final label = mac
       ? keyComboText(combo)
       : [
@@ -456,19 +455,17 @@ const _keyEscapes = {'n': '\r', 'r': '\r', 't': '\t', 'e': '\x1b', r'\': r'\'};
 /// its own. `\n` is Enter, as is `\r`; `\t` is Tab, `\e` is Esc, `\\` is a
 /// backslash, and `\xHH` is the character with that hex code, `\x03` being
 /// Ctrl+C. Any other backslash throws a [FormatException] that says which.
-String decodeKeyText(String typed) => typed.replaceAllMapped(
-      RegExp(r'\\(x[0-9a-fA-F]{2}|.?)'),
-      (match) {
-        final escape = match[1]!;
-        if (escape.length == 3) {
-          return String.fromCharCode(int.parse(escape.substring(1), radix: 16));
-        }
-        return _keyEscapes[escape] ??
-            (throw FormatException(
-              'Unknown escape \\$escape: use \\n, \\r, \\t, \\e, \\\\ or \\xHH',
-            ));
-      },
-    );
+String decodeKeyText(String typed) =>
+    typed.replaceAllMapped(RegExp(r'\\(x[0-9a-fA-F]{2}|.?)'), (match) {
+      final escape = match[1]!;
+      if (escape.length == 3) {
+        return String.fromCharCode(int.parse(escape.substring(1), radix: 16));
+      }
+      return _keyEscapes[escape] ??
+          (throw FormatException(
+            'Unknown escape \\$escape: use \\n, \\r, \\t, \\e, \\\\ or \\xHH',
+          ));
+    });
 
 /// The accessory row that sits directly above the soft keyboard.
 ///
@@ -483,6 +480,7 @@ class TerminalKeyBar extends StatelessWidget {
     required this.onEmit,
     this.leading = const [],
     this.showKeys = true,
+    this.compact = false,
     this.keys = terminalKeyBarDefault,
     this.customKeys = const {},
   });
@@ -503,6 +501,11 @@ class TerminalKeyBar extends StatelessWidget {
   /// showed its buttons, greyed out until there was something to reach.
   final bool showKeys;
 
+  /// Draws the bar for a pointer rather than a thumb: shorter, with smaller
+  /// buttons. A phone's keys are sized to be hit while walking; on a desktop
+  /// that same size reads as an enormous toolbar.
+  final bool compact;
+
   /// The ids from [terminalKeys] and [customKeys] to show, in order: the
   /// arrangement picked in Settings. [leading] and the divider after it are
   /// the page's own, and always come first.
@@ -514,35 +517,35 @@ class TerminalKeyBar extends StatelessWidget {
   String _cursor(String finalChar) => cursorKey(terminal, finalChar);
 
   Widget _key(String id) => switch (id) {
-        keyBarDivider => const _KeyDivider(),
-        'ctrl' => KeyButton(
-            label: 'CTRL',
-            active: controller.ctrl,
-            onTap: controller.toggleCtrl,
-          ),
-        'alt' => KeyButton(
-            label: 'ALT',
-            active: controller.alt,
-            onTap: controller.toggleAlt,
-          ),
-        'space' => _SpacePad(
-            onSpace: () => onEmit(' '),
-            onCursor: (finalChar) => onEmit(_cursor(finalChar)),
-          ),
-        // A custom key goes out the way the built-in ones do, through
-        // [onEmit], so the page lets go of a selection for it and sends it to
-        // the pane in use, and armed modifiers wait for the keyboard.
-        _ => KeyButton(
-            label: customKeys[id]?.label ?? terminalKeys[id]!.label,
-            onTap: () => onEmit(switch (customKeys[id]) {
-              final key? => switch (key.combo) {
-                  final combo? => encodeKeyCombo(terminal, combo),
-                  null => decodeKeyText(key.send),
-                },
-              null => terminalKeys[id]!.send!(terminal),
-            }),
-          ),
-      };
+    keyBarDivider => const _KeyDivider(),
+    'ctrl' => KeyButton(
+      label: 'CTRL',
+      active: controller.ctrl,
+      onTap: controller.toggleCtrl,
+    ),
+    'alt' => KeyButton(
+      label: 'ALT',
+      active: controller.alt,
+      onTap: controller.toggleAlt,
+    ),
+    'space' => _SpacePad(
+      onSpace: () => onEmit(' '),
+      onCursor: (finalChar) => onEmit(_cursor(finalChar)),
+    ),
+    // A custom key goes out the way the built-in ones do, through
+    // [onEmit], so the page lets go of a selection for it and sends it to
+    // the pane in use, and armed modifiers wait for the keyboard.
+    _ => KeyButton(
+      label: customKeys[id]?.label ?? terminalKeys[id]!.label,
+      onTap: () => onEmit(switch (customKeys[id]) {
+        final key? => switch (key.combo) {
+          final combo? => encodeKeyCombo(terminal, combo),
+          null => decodeKeyText(key.send),
+        },
+        null => terminalKeys[id]!.send!(terminal),
+      }),
+    ),
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -563,7 +566,8 @@ class TerminalKeyBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: SizedBox(
-          height: 48,
+          // A thumb's key is 48 tall; a pointer's does not need to be.
+          height: compact ? 34 : 48,
           child: ListenableBuilder(
             listenable: controller,
             builder: (context, _) {
@@ -571,7 +575,8 @@ class TerminalKeyBar extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 children: [
-                  for (final button in leading) _IconKey(button),
+                  for (final button in leading)
+                    _IconKey(button, compact: compact),
                   if (showKeys && shown.isNotEmpty) ...[
                     const _KeyDivider(),
                     for (final id in shown) _key(id),
@@ -623,9 +628,9 @@ class EditorKeyBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     Widget arrow(String label, String key) => KeyButton(
-          label: label,
-          onTap: () => controller.moveCursor(_arrows[key]!),
-        );
+      label: label,
+      onTap: () => controller.moveCursor(_arrows[key]!),
+    );
 
     return Material(
       color: theme.colorScheme.surfaceContainerHighest,
@@ -641,16 +646,20 @@ class EditorKeyBar extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 6),
               children: [
-                _IconKey(IconButton(
-                  tooltip: 'Undo',
-                  onPressed: controller.canUndo ? controller.undo : null,
-                  icon: const Icon(Icons.undo),
-                )),
-                _IconKey(IconButton(
-                  tooltip: 'Redo',
-                  onPressed: controller.canRedo ? controller.redo : null,
-                  icon: const Icon(Icons.redo),
-                )),
+                _IconKey(
+                  IconButton(
+                    tooltip: 'Undo',
+                    onPressed: controller.canUndo ? controller.undo : null,
+                    icon: const Icon(Icons.undo),
+                  ),
+                ),
+                _IconKey(
+                  IconButton(
+                    tooltip: 'Redo',
+                    onPressed: controller.canRedo ? controller.redo : null,
+                    icon: const Icon(Icons.redo),
+                  ),
+                ),
                 const _KeyDivider(),
                 KeyButton(
                   label: 'TAB',
@@ -712,8 +721,9 @@ class KeyButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final foreground =
-        active ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface;
+    final foreground = active
+        ? theme.colorScheme.onPrimary
+        : theme.colorScheme.onSurface;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
@@ -804,16 +814,22 @@ class _SpacePadState extends State<_SpacePad> {
 /// An [IconButton] the page hands in, given the face of the keys around it so
 /// the header it came from does not show.
 class _IconKey extends StatelessWidget {
-  const _IconKey(this.child);
+  const _IconKey(this.child, {this.compact = false});
 
   final Widget child;
+
+  /// Sized for a pointer rather than a thumb — see [TerminalKeyBar.compact].
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
+      padding: EdgeInsets.symmetric(
+        vertical: compact ? 4 : 6,
+        horizontal: compact ? 2 : 3,
+      ),
       child: IconButtonTheme(
         data: IconButtonThemeData(
           style: IconButton.styleFrom(
@@ -821,8 +837,8 @@ class _IconKey extends StatelessWidget {
             backgroundColor: colors.surfaceContainerHigh,
             // Greyed out rather than gone: still a key, just not one to press.
             disabledBackgroundColor: colors.surfaceContainerHigh,
-            iconSize: 20,
-            minimumSize: const Size(44, 36),
+            iconSize: compact ? 15 : 20,
+            minimumSize: compact ? const Size(30, 24) : const Size(44, 36),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(6),
@@ -951,7 +967,8 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     Offset? end,
     double line,
     TextSelectionToolbarAnchors toolbar,
-  })? _shown;
+  })?
+  _shown;
 
   /// Set while a re-placing waits for the frame to be out.
   bool _placing = false;
@@ -1092,8 +1109,8 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
 
     final line = render.cellSize.height;
     Offset foot(CellOffset cell) => box.globalToLocal(
-          render.localToGlobal(render.getOffset(cell) + Offset(0, line)),
-        );
+      render.localToGlobal(render.getOffset(cell) + Offset(0, line)),
+    );
     final start = foot(range.begin);
     final end = foot(range.end);
     final size = box.size;
@@ -1103,8 +1120,8 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     // takes its drag with it.
     Offset? inSight(Offset foot) =>
         _pinned != null || (foot.dy >= 0 && foot.dy <= size.height)
-            ? foot
-            : null;
+        ? foot
+        : null;
     final x = start.dy == end.dy ? (start.dx + end.dx) / 2 : size.width / 2;
     // Held inside the pad, as a text field holds them inside itself. The
     // lower one is held a toolbar short of the bottom, because this pad clips
@@ -1137,7 +1154,8 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
 
     setState(() {
       _pinned = start ? range.end : range.begin;
-      _dragAt = render.getOffset(start ? range.begin : range.end) +
+      _dragAt =
+          render.getOffset(start ? range.begin : range.end) +
           Offset(0, render.cellSize.height / 2);
     });
   }
@@ -1189,10 +1207,10 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// come back without being under it, and a handle kept while held goes if
   /// it is out of sight.
   void _settle() => setState(() {
-        _wordFrom = null;
-        _pinned = null;
-        if (_selecting) _place();
-      });
+    _wordFrom = null;
+    _pinned = null;
+    if (_selecting) _place();
+  });
 
   /// While a selection is up the pad takes every touch, so a drag that missed
   /// the handles is handed to the scroll position of the terminal's own
@@ -1340,7 +1358,8 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   Widget _handle(TextSelectionHandleType type, Offset foot, double line) {
     final controls = materialTextSelectionControls;
     final size = controls.getHandleSize(line);
-    final at = foot -
+    final at =
+        foot -
         controls.getHandleAnchor(type, line) -
         Offset(
           (kMinInteractiveDimension - size.width) / 2,
@@ -1405,21 +1424,22 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
               // a cell either side too if people keep missing the letter.
               LongPressGestureRecognizer:
                   GestureRecognizerFactoryWithHandlers<
-                      LongPressGestureRecognizer>(
-                () => LongPressGestureRecognizer(
-                  debugOwner: this,
-                  supportedDevices: const {PointerDeviceKind.touch},
-                ),
-                (instance) {
-                  instance
-                    ..onLongPressStart = _start
-                    ..onLongPressMoveUpdate = _onUpdate
-                    ..onLongPressEnd = (_) {
-                      _swiping ? _stop() : _settle();
-                    }
-                    ..onLongPressCancel = _stop;
-                },
-              ),
+                    LongPressGestureRecognizer
+                  >(
+                    () => LongPressGestureRecognizer(
+                      debugOwner: this,
+                      supportedDevices: const {PointerDeviceKind.touch},
+                    ),
+                    (instance) {
+                      instance
+                        ..onLongPressStart = _start
+                        ..onLongPressMoveUpdate = _onUpdate
+                        ..onLongPressEnd = (_) {
+                          _swiping ? _stop() : _settle();
+                        }
+                        ..onLongPressCancel = _stop;
+                    },
+                  ),
               // ponytail: this holds the arena for kDoubleTapTimeout, so a
               // single tap raises the keyboard ~300ms later than it used to.
               // Detect the second tap from a plain Listener instead if that
@@ -1428,33 +1448,34 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
               if (!_selecting)
                 DoubleTapGestureRecognizer:
                     GestureRecognizerFactoryWithHandlers<
-                        DoubleTapGestureRecognizer>(
-                  () => DoubleTapGestureRecognizer(debugOwner: this),
-                  (instance) =>
-                      instance.onDoubleTap = () => widget.onEmit('\t'),
-                ),
+                      DoubleTapGestureRecognizer
+                    >(
+                      () => DoubleTapGestureRecognizer(debugOwner: this),
+                      (instance) =>
+                          instance.onDoubleTap = () => widget.onEmit('\t'),
+                    ),
               if (_selecting) ...{
                 VerticalDragGestureRecognizer:
                     GestureRecognizerFactoryWithHandlers<
-                        VerticalDragGestureRecognizer>(
-                  () => VerticalDragGestureRecognizer(debugOwner: this),
-                  (instance) {
-                    instance
-                      ..onStart = _scrollStart
-                      ..onUpdate = (details) {
-                        _scroll?.update(details);
-                      }
-                      ..onEnd = (details) {
-                        _scroll?.end(details);
-                      };
-                  },
-                ),
+                      VerticalDragGestureRecognizer
+                    >(() => VerticalDragGestureRecognizer(debugOwner: this), (
+                      instance,
+                    ) {
+                      instance
+                        ..onStart = _scrollStart
+                        ..onUpdate = (details) {
+                          _scroll?.update(details);
+                        }
+                        ..onEnd = (details) {
+                          _scroll?.end(details);
+                        };
+                    }),
                 TapGestureRecognizer:
                     GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-                  () => TapGestureRecognizer(debugOwner: this),
-                  (instance) =>
-                      instance.onTap = widget.controller.clearSelection,
-                ),
+                      () => TapGestureRecognizer(debugOwner: this),
+                      (instance) =>
+                          instance.onTap = widget.controller.clearSelection,
+                    ),
               },
             },
           ),

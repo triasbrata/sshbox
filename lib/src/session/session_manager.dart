@@ -367,7 +367,9 @@ class LiveSession extends ChangeNotifier {
       }
       return (session as CommandCapable).run(command);
     },
-    start: host.fileRoot.trim().isEmpty ? r'$HOME' : host.fileRoot.trim(),
+    start: host.fileRoot.trim().isEmpty
+        ? GitRepos.loginHome
+        : host.fileRoot.trim(),
   );
 
   void openGit() {

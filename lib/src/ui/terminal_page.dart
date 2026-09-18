@@ -586,6 +586,7 @@ class _TerminalPageState extends State<TerminalPage> {
           terminal: _session.terminal,
           onEmit: _send,
           showKeys: _session.isConnected && !isDesktop,
+          compact: isDesktop,
           keys: keyBarSettings.keys,
           customKeys: keyBarSettings.customKeys,
           leading: [

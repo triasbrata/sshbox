@@ -65,6 +65,10 @@ class _GitPageState extends State<GitPage> {
   bool _wasConnected = false;
   void _onSession() {
     if (!mounted) return;
+    // The tab closing notifies too, and by then the session has let go of its
+    // repositories: asking for another search there is asking a disposed
+    // object.
+    if (!widget.session.gitOpen) return;
     final connected = widget.session.isConnected;
     if (connected && !_wasConnected) unawaited(_discover());
     _wasConnected = connected;

@@ -237,8 +237,17 @@ class GitRepos extends ChangeNotifier {
   /// How a command reaches the host these repositories are on.
   final GitRunner run;
 
-  /// Where the search begins: the host's file tree root, else the login home.
+  /// Where the search begins: the host's file tree root, else [loginHome].
   final String start;
+
+  /// The login home, for a host with no file tree root of its own.
+  ///
+  /// It stays a shell word rather than a path because only the host knows
+  /// where its home is. [_roots] is what keeps it one: quoting it the way a
+  /// path is quoted would send `cd '$HOME'`, which is a folder with a dollar
+  /// in its name, and the search would find nothing on every host that has
+  /// no root set.
+  static const loginHome = r'$HOME';
 
   List<GitRepo> _repos = const [];
   List<GitRepo> get repos => _repos;
@@ -254,7 +263,21 @@ class GitRepos extends ChangeNotifier {
   bool _loading = false;
   bool get loading => _loading;
 
+  /// Closing the git tab disposes this while the page that draws it is still
+  /// listening: the session notifies as the tab goes, the page hears it and
+  /// asks for another search, and a [ChangeNotifier] used after disposal
+  /// throws. Every way in checks this rather than the page having to know how
+  /// it was torn down.
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   void select(GitRepo repo) {
+    if (_disposed) return;
     if (_selected?.root == repo.root) return;
     _selected = repo;
     notifyListeners();
@@ -264,7 +287,7 @@ class GitRepos extends ChangeNotifier {
   /// among them — a rediscovery after a commit must not throw the user back
   /// to the first repo in the list.
   Future<void> discover() async {
-    if (_loading) return;
+    if (_disposed || _loading) return;
     _loading = true;
     _problem = null;
     notifyListeners();
@@ -276,7 +299,9 @@ class GitRepos extends ChangeNotifier {
           _repos.where((repo) => repo.root == kept?.root).firstOrNull ??
           _repos.firstOrNull;
       if (_repos.isEmpty) {
-        _problem = 'No git repository under $start.';
+        _problem = start == loginHome
+            ? 'No git repository in your home folder on this host.'
+            : 'No git repository under $start.';
       }
     } on GitException catch (error) {
       _problem = error.message;
@@ -296,7 +321,9 @@ class GitRepos extends ChangeNotifier {
   /// down. `-prune` so a repository's own history is not walked, which is
   /// where the time would go.
   Future<List<String>> _roots() async {
-    final quoted = GitRepo._quote(start);
+    // Double quotes for the home, which the shell must expand and which may
+    // still hold a space; single quotes for a path, which it must not touch.
+    final quoted = start == loginHome ? '"$loginHome"' : GitRepo._quote(start);
     final command =
         'cd $quoted 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null; '
         "find $quoted -mindepth 2 -maxdepth 3 -name .git -prune "
