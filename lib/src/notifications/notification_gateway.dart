@@ -26,8 +26,15 @@ class NotificationGateway {
 
   Future<void> initialize() async {
     await _plugin.initialize(
+      // Every platform the app is built for has to be named here, or the
+      // plugin throws "settings must be set when targeting <platform>" as it
+      // starts — which is what the Mac did, before the shell was even drawn.
+      // The Darwin ones ask for permission to post as they initialise; the
+      // icon is the app's own there, so there is nothing to name.
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@drawable/ic_stat_jeansh'),
+        iOS: DarwinInitializationSettings(),
+        macOS: DarwinInitializationSettings(),
       ),
       onDidReceiveNotificationResponse: _onTap,
     );
@@ -43,7 +50,8 @@ class NotificationGateway {
     // Android 13+ refuses to post anything without this.
     await _plugin
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.requestNotificationsPermission();
   }
 

@@ -191,6 +191,11 @@ class _SshboxAppState extends State<SshboxApp> {
   /// Same two arrival paths as a link: a cold start leaves the files waiting on
   /// the Android side until we ask, a warm one pushes them at us.
   Future<void> _listenForShares() async {
+    // Android alone answers this channel — MainActivity is what takes the
+    // files and copies them somewhere SFTP can read. Asking anywhere else
+    // throws MissingPluginException as the app starts, which is what the Mac
+    // did; the guard is the same one `clipboardImage` and `saveAs` use.
+    if (defaultTargetPlatform != TargetPlatform.android) return;
     _shareChannel.setMethodCallHandler((call) async {
       if (call.method == 'shared') _handleShared(call.arguments);
     });
