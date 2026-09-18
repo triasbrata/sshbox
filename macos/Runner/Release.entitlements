@@ -9,6 +9,11 @@
 	     is what makes the choice ours to make. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- No `keychain-access-groups` here, deliberately: it is an entitlement
+	     Xcode will only sign with a development certificate, and this app is
+	     signed ad-hoc. Without the sandbox the login keychain takes us anyway,
+	     which is what `usesDataProtectionKeychain: false` in `SecretStore`
+	     asks for. -->
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<key>com.apple.security.network.client</key>

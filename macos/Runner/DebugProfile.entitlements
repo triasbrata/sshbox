@@ -6,6 +6,8 @@
 	     sees the container instead of the user's home. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- No `keychain-access-groups`, for the same reason as the release
+	     build's: it would demand a development certificate to sign. -->
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
