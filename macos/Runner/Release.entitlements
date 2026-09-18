@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- No app sandbox: the local shell is the reason. A sandboxed child gets
+	     the container's view of the disk, so `ls ~/Projects` in the shell would
+	     come back empty and every SSH key on the machine would be out of reach.
+	     This build ships as a .dmg rather than through the Mac App Store, which
+	     is what makes the choice ours to make. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- No `keychain-access-groups` here, deliberately: it is an entitlement
+	     Xcode will only sign with a development certificate, and this app is
+	     signed ad-hoc. Without the sandbox the login keychain takes us anyway,
+	     which is what `usesDataProtectionKeychain: false` in `SecretStore`
+	     asks for. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
@@ -12,6 +13,7 @@ import 'package:xterm2/xterm.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../files/transfers.dart';
+import '../platform.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -38,6 +40,7 @@ class TerminalPage extends StatefulWidget {
     required this.onOpenFile,
     required this.onOpenWeb,
     required this.onOpenChat,
+    required this.onOpenGit,
     required this.onSaveFileRoot,
   });
 
@@ -54,6 +57,9 @@ class TerminalPage extends StatefulWidget {
 
   /// Opens this session's chat with Claude in a tab beside this one.
   final VoidCallback onOpenChat;
+
+  /// Opens this session's git panel in a tab beside this one.
+  final VoidCallback onOpenGit;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -303,8 +309,9 @@ class _TerminalPageState extends State<TerminalPage> {
         title: _session.host.displayName,
         initialRoot: _browseRoot ?? _session.host.fileRoot,
         initialExpanded: _browseExpanded,
-        initialScrollOffset:
-            _browseScroll.root == _browseRoot ? _browseScroll.offset : 0,
+        initialScrollOffset: _browseScroll.root == _browseRoot
+            ? _browseScroll.offset
+            : 0,
         ownsBrowser: false,
         onRootChanged: (root) => _browseRoot = root,
         onExpandedChanged: (expanded) => _browseExpanded = expanded,
@@ -447,8 +454,8 @@ class _TerminalPageState extends State<TerminalPage> {
   /// shell would act on rather than pass along.
   static String _shellQuote(String path) =>
       RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
-          ? path
-          : "'${path.replaceAll("'", r"'\''")}'";
+      ? path
+      : "'${path.replaceAll("'", r"'\''")}'";
 
   /// Puts a path at the prompt, ready for a command to be written around it.
   void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
@@ -485,9 +492,11 @@ class _TerminalPageState extends State<TerminalPage> {
       },
     );
     if (now == null) {
-      refuse(slow
-          ? 'No answer from the host in time — not moving the shell'
-          : 'The host cannot say what the shell is running — not moving it');
+      refuse(
+        slow
+            ? 'No answer from the host in time — not moving the shell'
+            : 'The host cannot say what the shell is running — not moving it',
+      );
     } else if (!now.shellInForeground) {
       refuse('${now.program} is running — not moving the shell');
     } else if (now.cwd != path) {
@@ -576,13 +585,20 @@ class _TerminalPageState extends State<TerminalPage> {
       // In the Scaffold's own slot rather than the body so it rides above the
       // soft keyboard and the button below floats clear of it. Its keys are
       // the ones Settings arranged, redrawn the moment they change there.
+      //
+      // A desktop keeps the bar but not the keys: ESC, CTRL and the arrows
+      // stand in for what a soft keyboard lacks, and there the keyboard has
+      // them all — but the bar is also where this page's own buttons live,
+      // the files drawer, upload, git and Claude, and taking the whole bar
+      // away left no way to reach any of them.
       bottomNavigationBar: ValueListenableBuilder(
         valueListenable: keyBarSettings,
         builder: (context, _, _) => TerminalKeyBar(
           controller: _keyBar,
           terminal: _session.terminal,
           onEmit: _send,
-          showKeys: _session.isConnected,
+          showKeys: _session.isConnected && !isDesktop,
+          compact: isDesktop,
           keys: keyBarSettings.keys,
           customKeys: keyBarSettings.customKeys,
           leading: [
@@ -594,6 +610,13 @@ class _TerminalPageState extends State<TerminalPage> {
               icon: const Icon(Icons.forum_outlined),
             ),
             IconButton(
+              tooltip: 'Git',
+              onPressed: (_session.isConnected && _session.canGit)
+                  ? widget.onOpenGit
+                  : null,
+              icon: const Icon(Icons.account_tree_outlined),
+            ),
+            IconButton(
               tooltip: 'Browse files',
               onPressed: (_session.isConnected && _session.canBrowseFiles)
                   ? _openFiles
@@ -602,7 +625,8 @@ class _TerminalPageState extends State<TerminalPage> {
             ),
             IconButton(
               tooltip: 'Upload a file to /tmp',
-              onPressed: (_session.isConnected &&
+              onPressed:
+                  (_session.isConnected &&
                       _session.canUploadFiles &&
                       _sending == null)
                   ? _attachFile
@@ -612,12 +636,14 @@ class _TerminalPageState extends State<TerminalPage> {
             // The only way back to the soft keyboard once a hardware key has
             // shut it: a tap on the terminal cannot reopen it without making
             // the next key arrive twice. Always here, so a tablet out of its
-            // keyboard case is never left without one.
-            IconButton(
-              tooltip: 'Show the keyboard',
-              onPressed: _showKeyboard,
-              icon: const Icon(Icons.keyboard_outlined),
-            ),
+            // keyboard case is never left without one — but a desktop has
+            // no soft keyboard for it to bring back.
+            if (!isDesktop)
+              IconButton(
+                tooltip: 'Show the keyboard',
+                onPressed: _showKeyboard,
+                icon: const Icon(Icons.keyboard_outlined),
+              ),
           ],
         ),
       ),
@@ -657,12 +683,7 @@ class _TerminalPageState extends State<TerminalPage> {
     return Stack(
       children: [
         if (tmux == null)
-          _paneView(
-            _session.terminal,
-            style,
-            focused: true,
-            padding: _padding,
-          )
+          _paneView(_session.terminal, style, focused: true, padding: _padding)
         else
           TmuxPaneLayout(
             tmux: tmux,
@@ -716,12 +737,11 @@ class _TerminalPageState extends State<TerminalPage> {
           ),
         // In the body rather than the Scaffold's button slot so it can be
         // parked anywhere, and so its ring is free to open over the terminal.
-        if (_session.isConnected)
+        // Not on a desktop: it is a thumb's Enter key, and a mouse dragging it
+        // around over the output is only in the way.
+        if (_session.isConnected && !isDesktop)
           Positioned.fill(
-            child: MagicKey(
-              terminal: _session.terminal,
-              onEmit: _send,
-            ),
+            child: MagicKey(terminal: _session.terminal, onEmit: _send),
           ),
       ],
     );
@@ -1078,8 +1098,12 @@ Future<void> openUrl(
   Uri url, {
   void Function(Uri url)? inTab,
 }) async {
+  // A desktop has a browser of its own, with the user's own extensions,
+  // sessions and bookmarks; a web tab drawn by the system web view has none of
+  // them, and no address bar worth the name. So every link there goes out to
+  // that browser and no web tab is ever opened.
   final web = url.isScheme('http') || url.isScheme('https');
-  if (web && inTab != null && context.mounted) {
+  if (web && inTab != null && !isDesktop && context.mounted) {
     inTab(url);
     return;
   }

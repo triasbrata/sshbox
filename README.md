@@ -283,6 +283,43 @@ Tests:
 flutter test
 ```
 
+### Building for macOS and iOS
+
+On a Mac with Xcode:
+
+```sh
+tools/build_apple.sh                  # macos, ios-sim and ios, release
+tools/build_apple.sh macos            # just the Mac app
+tools/build_apple.sh --team ABCDE12345 ios   # a signed .ipa
+```
+
+It runs `flutter pub get`, `flutter analyze` and `flutter test`
+(`--skip-checks` drops the last two), then builds each target and leaves its
+packages in `dist/<version>+<build>/` with a `SHA256SUMS`:
+
+| Target | Package | Notes |
+| --- | --- | --- |
+| `macos` | `Jeansh-…-macos.zip`, `Jeansh-…-macos.dmg` | Signed ad hoc ("Sign to Run Locally"): it runs on the Mac that built it; another Mac's Gatekeeper refuses it until the quarantine flag is cleared (`xattr -dr com.apple.quarantine Jeansh.app`) |
+| `ios-sim` | `Jeansh-…-ios-simulator.zip` | Always a debug build. `xcrun simctl install booted Runner.app` |
+| `ios` | `Jeansh-…-ios-unsigned.ipa` | Without `--team`: unsigned, to sign later or sideload |
+| `ios --team ID` | `Jeansh-…-ios.ipa`, `…-ios-dSYMs.zip` | Archived and exported with automatic signing; `--export-method` picks `debugging` (default), `release-testing`, `app-store-connect` or `enterprise` |
+
+A signed build needs Xcode signed in to the team's Apple account (Xcode →
+Settings → Accounts) so it can fetch a provisioning profile, or an App Store
+Connect API key in `ASC_KEY_PATH`, `ASC_KEY_ID` and `ASC_ISSUER_ID`. A device
+only takes a `debugging` build once it is registered with the team.
+
+The Flutter SDK comes from `$FLUTTER` if set, else the version `.fvmrc` pins,
+through fvm (installed if missing), else `flutter` on `PATH`.
+
+The macOS app keeps its secrets in the login keychain, not the data protection
+keychain `flutter_secure_storage` uses by default, which only answers an app
+signed with a provisioning profile (`lib/src/data/secret_store.dart`). Because
+an ad hoc signature changes with every build, macOS asks for the keychain
+password the first time a new build reads a saved secret. Its sandbox allows
+outgoing connections (SSH, web tabs), listening sockets (`ssh -L` port
+forwards) and reading a file the user picks (private keys, uploads).
+
 ### UI flows
 
 `.maestro/` holds [Maestro](https://maestro.mobile.dev) flows:

@@ -32,6 +32,10 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# tools/build_apple.sh writes its packages here.
+/dist/
+# fvm's link to the SDK pinned in .fvmrc.
+.fvm/
 
 # The Play service account key that tool/play_publish.py signs in with. It
 # belongs beside the upload keystore, outside the repo; this is in case a copy

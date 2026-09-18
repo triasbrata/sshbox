@@ -15,6 +15,7 @@ import 'connect_sheet.dart';
 import 'db_browser_page.dart';
 import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
+import 'git_page.dart';
 import 'hosts_page.dart';
 import 'terminal_page.dart';
 import 'toast.dart';
@@ -51,6 +52,7 @@ class TabsShell extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
+    this.onOpenLocal,
     this.openDatabase,
   });
 
@@ -58,6 +60,10 @@ class TabsShell extends StatefulWidget {
   final SecretStore secrets;
   final SessionManager sessions;
   final Future<void> Function(String hostId) onOpenHost;
+
+  /// Opens a shell on this machine, on the builds that can have one — see
+  /// `LocalTransport`. Null elsewhere, and Home draws no card for it.
+  final Future<void> Function()? onOpenLocal;
 
   /// What a database's tab connects with: [DbSession.open], unless a test
   /// brings a stand-in.
@@ -145,6 +151,8 @@ class _TabsShellState extends State<TabsShell> {
       (session: session, kind: TabKind.terminal, path: null, web: null),
       if (session.chatOpen)
         (session: session, kind: TabKind.chat, path: null, web: null),
+      if (session.gitOpen)
+        (session: session, kind: TabKind.git, path: null, web: null),
       for (final path in session.openFiles)
         (session: session, kind: TabKind.file, path: path, web: null),
       for (final web in session.webTabs)
@@ -188,6 +196,7 @@ class _TabsShellState extends State<TabsShell> {
           widget.sessions.openFile(tab.session.id, path, line: line),
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       onOpenChat: () => widget.sessions.openChat(tab.session.id),
+      onOpenGit: () => widget.sessions.openGit(tab.session.id),
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
@@ -202,7 +211,8 @@ class _TabsShellState extends State<TabsShell> {
       draftKey: '${tab.session.host.id}:${tab.path}',
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       host: tab.session.fileTabHost,
-      line: tab.session.id == widget.sessions.activeId &&
+      line:
+          tab.session.id == widget.sessions.activeId &&
               tab.path == widget.sessions.activePath
           ? widget.sessions.activeLine
           : null,
@@ -211,6 +221,13 @@ class _TabsShellState extends State<TabsShell> {
     // on the host the first time it shows, not as the app starts.
     TabKind.chat when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
     TabKind.chat => ChatPage(
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
+      session: tab.session,
+    ),
+    // Like the chat: a git tab brought back from an earlier run asks the host
+    // what it has the first time it shows, not as the app starts.
+    TabKind.git when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
+    TabKind.git => GitPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       session: tab.session,
     ),
@@ -236,18 +253,19 @@ class _TabsShellState extends State<TabsShell> {
   Widget _databasePage(DbTab tab) => !_shown.contains(_dbIdOf(tab))
       ? const SizedBox.shrink()
       : DbBrowserPage(
-    key: _pageKeys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
-    db: tab.db,
-    title: tab.title,
-    open:
-        widget.openDatabase ??
-        (db, {required confirmHostKey, required onSignIn}) => DbSession.open(
-          db,
-          secrets: widget.secrets,
-          confirmHostKey: confirmHostKey,
-          onSignIn: onSignIn,
-        ),
-  );
+          key: _pageKeys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
+          db: tab.db,
+          title: tab.title,
+          open:
+              widget.openDatabase ??
+              (db, {required confirmHostKey, required onSignIn}) =>
+                  DbSession.open(
+                    db,
+                    secrets: widget.secrets,
+                    confirmHostKey: confirmHostKey,
+                    onSignIn: onSignIn,
+                  ),
+        );
 
   @override
   Widget build(BuildContext context) {
@@ -318,6 +336,7 @@ class _TabsShellState extends State<TabsShell> {
               onClose: (tab) => switch (tab.kind) {
                 TabKind.terminal => widget.sessions.close(tab.session.id),
                 TabKind.chat => widget.sessions.closeChat(tab.session.id),
+                TabKind.git => widget.sessions.closeGit(tab.session.id),
                 TabKind.file => widget.sessions.closeFile(
                   tab.session.id,
                   tab.path!,
@@ -354,6 +373,7 @@ class _TabsShellState extends State<TabsShell> {
                       secrets: widget.secrets,
                       sessions: widget.sessions,
                       onOpenHost: widget.onOpenHost,
+                      onOpenLocal: widget.onOpenLocal,
                     ),
                     ...tabs.map(_pageFor),
                     ...databases.map(_databasePage),
@@ -540,6 +560,7 @@ class _TabStripState extends State<TabStrip> {
           key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
           icon: switch (tab.kind) {
             TabKind.chat => Icons.forum_outlined,
+            TabKind.git => Icons.account_tree_outlined,
             TabKind.file => Icons.description_outlined,
             TabKind.web => Icons.public,
             // tmux, said quietly: the same chip, split.
@@ -549,6 +570,7 @@ class _TabStripState extends State<TabStrip> {
           },
           label: switch (tab.kind) {
             TabKind.chat => 'Claude',
+            TabKind.git => 'Git',
             TabKind.file => tab.session.fileTabTitle(tab.path!),
             TabKind.web => tab.web!.title,
             TabKind.terminal => tab.session.title,
@@ -589,8 +611,7 @@ class _TabStripState extends State<TabStrip> {
           builder: (context, _) => _TabChip(
             icon: Icons.swap_vert,
             label: 'Transfers',
-            selected:
-                tabs.length + databases.length + 1 == widget.activeIndex,
+            selected: tabs.length + databases.length + 1 == widget.activeIndex,
             connected: transfers.anyRunning,
             expand: single,
             onTap: () => widget.onSelectTransfers?.call(),
@@ -771,9 +792,7 @@ class _TabChip extends StatelessWidget {
                   Icon(
                     icon,
                     size: _iconSize,
-                    color: connected
-                        ? theme.colorScheme.primary
-                        : foreground,
+                    color: connected ? theme.colorScheme.primary : foreground,
                   ),
               if (title != null) ...[
                 const SizedBox(width: 6),

@@ -36,6 +36,10 @@ dependencies:
   cupertino_icons: ^1.0.8
   xterm2: ^5.2.0
   dartssh2: ^4.1.0
+  # The local shell on a desktop build: a real pty, so vim, htop and job
+  # control work the way they do in Terminal. Nothing on Android or iOS opens
+  # one — see `LocalTransport`.
+  flutter_pty: ^0.4.2
   flutter_secure_storage: ^11.0.0
   shared_preferences: ^2.5.5
   app_links: ^7.2.1
@@ -110,6 +114,13 @@ flutter_launcher_icons:
   # is only a guard.
   image_path_ios: assets/branding/app_icon_ios.png
   remove_alpha_ios: true
+  # macOS draws no mask over an icon and its grid puts the tile at 824 of
+  # 1024 px, so assets/branding/app_icon_macos.png is the tile scaled until its
+  # 500 px squircle spans 824 px, on a transparent 1024 px canvas:
+  #   ffmpeg -i assets/branding/app_icon.png -vf "scale=844:844:flags=lanczos,pad=1024:1024:90:90:color=0x00000000,format=rgba" assets/branding/app_icon_macos.png
+  macos:
+    generate: true
+    image_path: assets/branding/app_icon_macos.png
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
