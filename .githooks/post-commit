@@ -5,8 +5,10 @@
 # .githooks/pre-commit raised. Any other name, such as an old 1.0.N+N line a
 # merge brought back, is left untagged for pre-commit to put right. The tag is
 # annotated with the build number, which pre-commit counts the patch's ten
-# builds from. It stays on this machine: pushing a v* tag releases that build
-# on Play (.github/workflows/release.yml), so it goes up only by hand.
+# builds from. It is never pushed: .github/workflows/tag.yml makes the same
+# tag on GitHub once main is pushed, and that one releases the build. The two
+# are different tag objects on one commit, so a plain `git fetch` keeps this
+# one and `git fetch --tags` refuses to replace it.
 # ponytail: amending or rebasing a tagged commit leaves its tag on the old one;
 # move it by hand with git tag -f -a.
 #

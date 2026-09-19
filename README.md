@@ -1046,10 +1046,12 @@ hand, with the patch back to 0, in the version line or with
 `tool/release.sh --name X.Y`; an X.Y nobody has tagged yet is kept as
 written. `.githooks/post-commit` tags the first commit
 to carry each name, `vX.Y.Z`, annotated with its build number, so a new
-major or minor and every patch get a tag. The tags stay on this machine:
-pushing one releases that build on Play's closed testing (see From CI
-below), so a tag goes up only when a release is meant, never with a push
-of `main`. Leave `push.followTags` off.
+major or minor and every patch get a tag, which the next commit counts its
+ten builds from. GitHub gets the same tag by itself: `tag.yml` makes it
+once `main` is pushed, and that tag releases the build (see From CI
+below). So the tags here never need pushing; leave `push.followTags` off.
+Fetch with a plain `git fetch`: the two are different tag objects on one
+commit, and `git fetch --tags` refuses to swap this one for GitHub's.
 
 The hooks stay off until a clone turns them on, once. Worktrees share the
 setting, and a relative path makes each run the hooks its own branch holds:
