@@ -299,8 +299,9 @@ void main() {
     final hosts = await HostRepository(InMemorySecretStore()).load();
     expect(hosts.map((host) => host.id), ['db', 'gw', 'web']);
     // Everything it was saved with, and the alternative address it was saved
-    // before: blank, so it is dialled at the one address it has.
-    expect(hosts.first.toJson(), {...db, 'altHost': ''});
+    // before: blank, so it is dialled at the one address it has. Pane records
+    // came after it too, and are on, as for a host saved since.
+    expect(hosts.first.toJson(), {...db, 'altHost': '', 'recordPanes': true});
 
     // Once: a setting deleted since stays deleted.
     await forwards.delete(run.setting.id);
