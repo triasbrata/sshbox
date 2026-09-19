@@ -1,0 +1,34 @@
+# flutter analyze and flutter test on every pull request and every push to
+# main. `check` is the status the main branch ruleset asks a pull request for.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2 # .fvmrc
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter analyze
+      # The *_live_test files skip themselves: no SSH server, database or
+      # tmux runs here.
+      - run: flutter test

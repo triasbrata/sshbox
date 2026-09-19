@@ -1082,7 +1082,7 @@ The script:
 
 ### Publishing to Play, from the same machine
 
-There is no CI: the release goes to Play from here, with `--publish`.
+The release goes to Play from here, with `--publish`, or from CI below.
 
 ```sh
 tool/release.sh --publish --dry-run   # everything but the commit
@@ -1134,6 +1134,37 @@ happy path can only be checked against Play itself.
 If Play answers the commit with "Changes cannot be sent for review
 automatically", the app has a change waiting that only the Console can send:
 finish that release there once, then `--publish` again.
+
+### From CI
+
+The repository is public, so GitHub Actions costs nothing.
+
+- `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
+  every pull request and every push to `main`, as the job `check`.
+- `.github/workflows/release.yml` runs `tool/release.sh --publish` on a `v*`
+  tag (`git tag v1.0.66 && git push origin v1.0.66`), which releases on
+  Closed testing. Run by hand from the Actions tab it is a `--dry-run` unless
+  its box is unticked.
+
+The release reads these secrets from the `release` environment, which only
+`v*` tags and `main` can deploy to, so a workflow on any other branch never
+sees them:
+
+| Secret | Holds |
+| --- | --- |
+| `ANDROID_UPLOAD_KEYSTORE_BASE64` | the upload keystore, from `base64 -w0 jeansh-upload.jks` |
+| `ANDROID_UPLOAD_STORE_PASSWORD` | the keystore's password |
+| `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
+| `ANDROID_UPLOAD_KEY_PASSWORD` | the key's password |
+| `PLAY_SERVICE_ACCOUNT_JSON` | the service account's JSON key, its contents rather than a path |
+
+Only collaborators can contribute. Pull requests and issues can only be
+opened by collaborators. On `main`, a ruleset refuses deletion and force
+pushes and asks anyone but an admin for a pull request with one approval and
+a green `check`. Another ruleset lets only an admin create, move or delete a
+`v*` tag. A workflow from a fork waits for approval, `GITHUB_TOKEN` is read-only
+by default, and secret scanning with push protection, Dependabot alerts and
+private vulnerability reporting are on.
 
 ### The first upload, by hand
 

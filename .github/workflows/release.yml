@@ -1,0 +1,78 @@
+# tool/release.sh --publish from CI: on a v* tag it builds the signed bundle
+# and releases it on Play's closed testing track. By hand from the Actions tab
+# it is a --dry-run unless told otherwise. The secrets live in the `release`
+# environment, which only v* tags and main can reach. README.md, Releasing.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Everything but the commit that reaches testers
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+
+      # AGP 9 and Gradle 9 need JDK 17 or newer; release.sh needs its keytool.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2 # .fvmrc
+          channel: stable
+          cache: true
+
+      # compileSdk 37 resolves to the minor-versioned platform android-37.0.
+      - name: Install Android platform 37
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'platforms;android-37.0' > /dev/null
+
+      - run: flutter pub get
+
+      - name: Write the signing config and the Play key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          PLAY_KEY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          for secret in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD PLAY_KEY; do
+            [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
+          done
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+          printenv PLAY_KEY > "$RUNNER_TEMP/play.json"
+          # A Java properties file: a backslash in a password would need doubling.
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/upload.jks"
+            printf 'storePassword=%s\n' "$STORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+          } > android/key.properties
+
+      - name: Build and publish
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play.json
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: tool/release.sh --publish $DRY_RUN
+
+      - name: Remove the signing files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks" "$RUNNER_TEMP/play.json" android/key.properties
