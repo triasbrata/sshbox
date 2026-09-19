@@ -17,6 +17,7 @@ import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
 import 'git_page.dart';
 import 'hosts_page.dart';
+import 'tab_groups.dart';
 import 'terminal_page.dart';
 import 'toast.dart';
 import 'transfers_page.dart';
@@ -45,6 +46,10 @@ typedef TabRef = ({
 /// The pages sit in an [IndexedStack] so switching tabs keeps each terminal's
 /// key bar and scroll position, and each file its scroll position, exactly as
 /// they were left.
+///
+/// Tabs can be grouped, and a group shows every page it holds at once, each
+/// in a pane: see [TabGroups]. The groups are this widget's, not
+/// [SessionManager]'s: a group is only how the tabs are laid out.
 class TabsShell extends StatefulWidget {
   const TabsShell({
     super.key,
@@ -74,10 +79,13 @@ class TabsShell extends StatefulWidget {
 }
 
 class _TabsShellState extends State<TabsShell> {
+  final _groups = TabGroups();
+
   @override
   void initState() {
     super.initState();
     widget.sessions.addListener(_onSessionsChanged);
+    _groups.addListener(_onSessionsChanged);
     transfers.addListener(_onTransfers);
     // A port forward has no page of its own on screen to ask about a host
     // key from, or to speak through, and this shell always is.
@@ -92,6 +100,7 @@ class _TabsShellState extends State<TabsShell> {
   @override
   void dispose() {
     widget.sessions.removeListener(_onSessionsChanged);
+    _groups.dispose();
     transfers.removeListener(_onTransfers);
     portForwards
       ..confirmHostKey = null
@@ -272,12 +281,13 @@ class _TabsShellState extends State<TabsShell> {
     final tabs = _tabs();
     final databases = widget.sessions.dbTabs;
     final showTransfers = widget.sessions.transfersTab;
-    final ids = {
+    final ids = [
       ...tabs.map(_idOf),
       ...databases.map(_dbIdOf),
       if (showTransfers) _transfersId,
-    };
+    ];
     _pageKeys.removeWhere((id, _) => !ids.contains(id));
+    _groups.keepOnly(ids);
     final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
     final activePath = widget.sessions.activePath;
@@ -299,12 +309,21 @@ class _TabsShellState extends State<TabsShell> {
                     tab.web == activeWeb,
               ) +
               1;
+    final active = activeIndex == 0 ? null : ids[activeIndex - 1];
+
+    // What the pages are laid out in: a tab on its own, or a group of them.
+    final slots = _groups.slots(ids);
+    final showing = slots.indexWhere(
+      (slot) => slot == active || slot is TabGroup && slot.ids.contains(active),
+    );
+    final group = showing < 0 ? null : slots[showing];
+    if (group is TabGroup) group.focused = active;
+
     _shown.removeWhere((id) => !ids.contains(id));
-    if (activeIndex > tabs.length && activeIndex < transfersIndex) {
-      _shown.add(_dbIdOf(databases[activeIndex - 1 - tabs.length]));
-    } else if (activeIndex > 0 && activeIndex <= tabs.length) {
+    // Every pane of a group is showing, not only the focused one.
+    _shown.addAll(group is TabGroup ? group.ids : [?active]);
+    if (activeIndex > 0 && activeIndex <= tabs.length) {
       final tab = tabs[activeIndex - 1];
-      _shown.add(_idOf(tab));
       // A tab brought back from an earlier run connects the first time it
       // shows, in its sheet, as a new one does.
       if (tab.kind == TabKind.terminal && tab.session.takeAutoConnect()) {
@@ -321,6 +340,28 @@ class _TabsShellState extends State<TabsShell> {
         });
       }
     }
+
+    final pages = <String, Widget>{
+      for (final tab in tabs) _idOf(tab): _pageFor(tab),
+      for (final tab in databases) _dbIdOf(tab): _databasePage(tab),
+      if (showTransfers)
+        _transfersId: TransfersPage(
+          key: _pageKeys.putIfAbsent(_transfersId, GlobalKey.new),
+        ),
+    };
+    // What a tap on each tab's chip does, for a touch on its pane.
+    final selects = <String, VoidCallback>{
+      for (final tab in tabs)
+        _idOf(tab): () => widget.sessions.select(
+          tab.session.id,
+          kind: tab.kind,
+          path: tab.path,
+          web: tab.web,
+        ),
+      for (final tab in databases)
+        _dbIdOf(tab): () => widget.sessions.select(null, db: tab),
+      _transfersId: () => widget.sessions.showTransfers(select: true),
+    };
 
     return Scaffold(
       body: SafeArea(
@@ -362,10 +403,11 @@ class _TabsShellState extends State<TabsShell> {
               // What a tap in the host list does: another shell on the host,
               // added at the end of the strip and shown.
               onDuplicate: widget.onOpenHost,
+              groups: _groups,
             ),
             Expanded(
               child: IndexedStack(
-                index: activeIndex,
+                index: showing + 1,
                 children: [
                   for (final (index, page) in [
                     HostsPage(
@@ -375,12 +417,16 @@ class _TabsShellState extends State<TabsShell> {
                       onOpenHost: widget.onOpenHost,
                       onOpenLocal: widget.onOpenLocal,
                     ),
-                    ...tabs.map(_pageFor),
-                    ...databases.map(_databasePage),
-                    if (showTransfers)
-                      TransfersPage(
-                        key: _pageKeys.putIfAbsent(_transfersId, GlobalKey.new),
-                      ),
+                    for (final slot in slots)
+                      slot is TabGroup
+                          ? TabGroupView(
+                              key: slot.key,
+                              group: slot,
+                              pages: pages,
+                              focused: slot == group ? active : null,
+                              onFocus: (id) => selects[id]?.call(),
+                            )
+                          : pages[slot]!,
                   ].indexed)
                     // Every page stays in the tree so its terminal keeps
                     // scroll, key bar and connection — but only the visible
@@ -389,7 +435,7 @@ class _TabsShellState extends State<TabsShell> {
                     // one grabbed focus last: typed commands going to the
                     // wrong host. Shown again, each page puts the focus back
                     // on its own terminal, text or web view.
-                    ExcludeFocus(excluding: index != activeIndex, child: page),
+                    ExcludeFocus(excluding: index != showing + 1, child: page),
                 ],
               ),
             ),
@@ -417,9 +463,14 @@ class TabStrip extends StatefulWidget {
     this.showTransfers = false,
     this.onSelectTransfers,
     this.onCloseTransfers,
+    this.groups,
   });
 
   final List<TabRef> tabs;
+
+  /// The tab groups, each drawn as one tab holding its tabs' chips. Null
+  /// offers no grouping at all.
+  final TabGroups? groups;
 
   /// The databases open in tabs of their own, after every session's tabs.
   final List<DbTab> databases;
@@ -525,6 +576,103 @@ class _TabStripState extends State<TabStrip> {
     ];
   }
 
+  /// What a long press on any tab offers towards grouping: putting it in a
+  /// pane beside another tab, or group, and taking it out of its own.
+  List<(String, VoidCallback)> _groupMenu(
+    String id,
+    List<Object> slots,
+    Map<String, String> names,
+    Map<String, VoidCallback> selects,
+  ) {
+    final groups = widget.groups;
+    if (groups == null) return const [];
+    return [
+      if (slots.length > 1)
+        ('Group with…', () => _groupWith(id, slots, names, selects)),
+      if (groups.of(id) != null) ('Take out of group', () => groups.leave(id)),
+    ];
+  }
+
+  /// Asks which tab, or group, [id] goes beside, and shows it there.
+  Future<void> _groupWith(
+    String id,
+    List<Object> slots,
+    Map<String, String> names,
+    Map<String, VoidCallback> selects,
+  ) async {
+    final groups = widget.groups!;
+    final own = groups.of(id);
+    final target = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('Group ${names[id]} with'),
+        children: [
+          for (final slot in slots)
+            if (slot != id && slot != own)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(
+                  context,
+                  slot is TabGroup ? slot.ids.first : slot as String,
+                ),
+                child: Text(
+                  slot is TabGroup
+                      ? slot.ids.map((id) => names[id]).join(' + ')
+                      : names[slot]!,
+                ),
+              ),
+        ],
+      ),
+    );
+    if (target == null || !mounted) return;
+    groups.join(id, target);
+    selects[id]?.call();
+  }
+
+  /// A group on the strip: its button, then its tabs' own chips in pane
+  /// order, in one outline, lit while the group is showing.
+  Widget _groupChip(
+    TabGroup group,
+    Map<String, Widget> chips,
+    Map<String, VoidCallback> selects,
+    String? active,
+  ) {
+    final theme = Theme.of(context);
+    final groups = widget.groups!;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: group.ids.contains(active)
+              ? theme.colorScheme.primary.withValues(alpha: 0.7)
+              : theme.colorScheme.outlineVariant,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _TabChip(
+            icon: group.stacked
+                ? Icons.view_agenda_outlined
+                : Icons.view_column_outlined,
+            label: null,
+            tooltip: 'Tab group',
+            selected: false,
+            onTap: () => selects[group.focused ?? group.ids.first]?.call(),
+            menu: [
+              (
+                group.stacked ? 'Side by side' : 'Stacked',
+                () => groups.flip(group),
+              ),
+              ('Ungroup', () => groups.ungroup(group)),
+            ],
+          ),
+          for (final id in group.ids) chips[id]!,
+        ],
+      ),
+    );
+  }
+
   /// Below this the strip is too narrow to let the new-tab button wander:
   /// Material's compact breakpoint, which is every phone in portrait.
   static const double _wideStrip = 600;
@@ -534,12 +682,16 @@ class _TabStripState extends State<TabStrip> {
     final theme = Theme.of(context);
     final tabs = widget.tabs;
     final databases = widget.databases;
-    final ids = {
+    final ids = [
       ...tabs.map(_idOf),
       ...databases.map(_dbIdOf),
       if (widget.showTransfers) _transfersId,
-    };
+    ];
     _keys.removeWhere((id, _) => !ids.contains(id));
+    final active = widget.activeIndex > 0 && widget.activeIndex <= ids.length
+        ? ids[widget.activeIndex - 1]
+        : null;
+    final slots = widget.groups?.slots(ids) ?? ids;
 
     // A lone tab takes the whole strip, the way Terminus lays it out: there
     // is nothing to scroll to or to make room for, so capping it would only
@@ -554,73 +706,103 @@ class _TabStripState extends State<TabStrip> {
       onTap: () => widget.onSelect(null),
     );
 
-    final chips = [
-      for (final (index, tab) in tabs.indexed)
-        _TabChip(
-          key: _keys.putIfAbsent(_idOf(tab), GlobalKey.new),
-          icon: switch (tab.kind) {
-            TabKind.chat => Icons.forum_outlined,
-            TabKind.git => Icons.account_tree_outlined,
-            TabKind.file => Icons.description_outlined,
-            TabKind.web => Icons.public,
-            // tmux, said quietly: the same chip, split.
-            TabKind.terminal when tab.session.tmux != null =>
-              Icons.vertical_split_outlined,
-            TabKind.terminal => Icons.terminal,
-          },
-          label: switch (tab.kind) {
-            // As a file tab reads: the host, then what the tab is.
-            TabKind.chat => '${tab.session.fileTabHost} · Claude',
-            TabKind.git => 'Git',
-            TabKind.file => tab.session.fileTabTitle(tab.path!),
-            TabKind.web => tab.web!.title,
-            TabKind.terminal => tab.session.title,
-          },
-          cutFirst: tab.kind == TabKind.file || tab.kind == TabKind.chat
-              ? tab.session.fileTabHost
-              : null,
-          selected: index + 1 == widget.activeIndex,
-          connected: tab.kind == TabKind.terminal && tab.session.isConnected,
+    // Each tab's chip, name and tap, by id: a group gathers its tabs' chips
+    // into one, and its menu asks for their names.
+    final chips = <String, Widget>{};
+    final names = <String, String>{};
+    final selects = <String, VoidCallback>{};
+    List<(String, VoidCallback)> grouping(String id) =>
+        _groupMenu(id, slots, names, selects);
+
+    for (final tab in tabs) {
+      final id = _idOf(tab);
+      final name = names[id] = switch (tab.kind) {
+        // As a file tab reads: the host, then what the tab is.
+        TabKind.chat => '${tab.session.fileTabHost} · Claude',
+        TabKind.git => 'Git',
+        TabKind.file => tab.session.fileTabTitle(tab.path!),
+        TabKind.web => tab.web!.title,
+        TabKind.terminal => tab.session.title,
+      };
+      final select = selects[id] = () => widget.onSelect(
+        tab.session.id,
+        kind: tab.kind,
+        path: tab.path,
+        web: tab.web,
+      );
+      chips[id] = _TabChip(
+        key: _keys.putIfAbsent(id, GlobalKey.new),
+        icon: switch (tab.kind) {
+          TabKind.chat => Icons.forum_outlined,
+          TabKind.git => Icons.account_tree_outlined,
+          TabKind.file => Icons.description_outlined,
+          TabKind.web => Icons.public,
+          // tmux, said quietly: the same chip, split.
+          TabKind.terminal when tab.session.tmux != null =>
+            Icons.vertical_split_outlined,
+          TabKind.terminal => Icons.terminal,
+        },
+        label: name,
+        cutFirst: tab.kind == TabKind.file || tab.kind == TabKind.chat
+            ? tab.session.fileTabHost
+            : null,
+        selected: id == active,
+        connected: tab.kind == TabKind.terminal && tab.session.isConnected,
+        expand: single,
+        onTap: select,
+        onClose: () => widget.onClose(tab),
+        onReconnect: tab.kind == TabKind.terminal && tab.session.ended
+            ? () => widget.onReconnect(tab.session)
+            : null,
+        menu: [
+          if (tab.kind == TabKind.terminal) ..._menuFor(tab),
+          ...grouping(id),
+        ],
+      );
+    }
+    for (final tab in databases) {
+      final id = _dbIdOf(tab);
+      names[id] = tab.title;
+      final select = selects[id] = () => widget.onSelectDatabase?.call(tab);
+      chips[id] = _TabChip(
+        key: _keys.putIfAbsent(id, GlobalKey.new),
+        icon: Icons.storage,
+        mark: DbBadge(tab.db.kind, size: _TabChip._iconSize),
+        label: tab.title,
+        selected: id == active,
+        expand: single,
+        onTap: select,
+        onClose: () => widget.onCloseDatabase?.call(tab),
+        menu: grouping(id),
+      );
+    }
+    if (widget.showTransfers) {
+      names[_transfersId] = 'Transfers';
+      final select = selects[_transfersId] = () =>
+          widget.onSelectTransfers?.call();
+      // Only this chip follows the transfers, lit while one is on its way
+      // as a live shell's is; the strip is built again only as tabs change.
+      chips[_transfersId] = ListenableBuilder(
+        key: _keys.putIfAbsent(_transfersId, GlobalKey.new),
+        listenable: transfers,
+        builder: (context, _) => _TabChip(
+          icon: Icons.swap_vert,
+          label: 'Transfers',
+          selected: _transfersId == active,
+          connected: transfers.anyRunning,
           expand: single,
-          onTap: () => widget.onSelect(
-            tab.session.id,
-            kind: tab.kind,
-            path: tab.path,
-            web: tab.web,
-          ),
-          onClose: () => widget.onClose(tab),
-          onReconnect: tab.kind == TabKind.terminal && tab.session.ended
-              ? () => widget.onReconnect(tab.session)
-              : null,
-          menu: tab.kind == TabKind.terminal ? _menuFor(tab) : const [],
+          onTap: select,
+          onClose: () => widget.onCloseTransfers?.call(),
+          menu: grouping(_transfersId),
         ),
-      for (final (index, tab) in databases.indexed)
-        _TabChip(
-          key: _keys.putIfAbsent(_dbIdOf(tab), GlobalKey.new),
-          icon: Icons.storage,
-          mark: DbBadge(tab.db.kind, size: _TabChip._iconSize),
-          label: tab.title,
-          selected: tabs.length + index + 1 == widget.activeIndex,
-          expand: single,
-          onTap: () => widget.onSelectDatabase?.call(tab),
-          onClose: () => widget.onCloseDatabase?.call(tab),
-        ),
-      if (widget.showTransfers)
-        // Only this chip follows the transfers, lit while one is on its way
-        // as a live shell's is; the strip is built again only as tabs change.
-        ListenableBuilder(
-          key: _keys.putIfAbsent(_transfersId, GlobalKey.new),
-          listenable: transfers,
-          builder: (context, _) => _TabChip(
-            icon: Icons.swap_vert,
-            label: 'Transfers',
-            selected: tabs.length + databases.length + 1 == widget.activeIndex,
-            connected: transfers.anyRunning,
-            expand: single,
-            onTap: () => widget.onSelectTransfers?.call(),
-            onClose: () => widget.onCloseTransfers?.call(),
-          ),
-        ),
+      );
+    }
+
+    final strip = [
+      for (final slot in slots)
+        slot is TabGroup
+            ? _groupChip(slot, chips, selects, active)
+            : chips[slot]!,
     ];
 
     return Container(
@@ -649,11 +831,11 @@ class _TabStripState extends State<TabStrip> {
               ),
               Expanded(
                 child: single
-                    ? chips.single
+                    ? strip.single
                     : SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
                         child: Row(
-                          children: [...chips, if (followsTabs) addTab],
+                          children: [...strip, if (followsTabs) addTab],
                         ),
                       ),
               ),
