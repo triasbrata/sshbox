@@ -89,11 +89,18 @@ class GitRepo {
   /// `run` carries only what the command wrote — there is no status in the
   /// stream itself. `--no-pager` because a host whose git is configured to
   /// page would otherwise sit waiting for a terminal that is not there.
+  ///
+  /// The status line starts with a newline of its own: output that does not
+  /// end in one — `git log --pretty=format:`, which separates entries rather
+  /// than ending them — would otherwise have the marker glued to its last
+  /// line, where it is never found, and every history with a commit in it
+  /// read as a failure. The blank line this leaves after output that does
+  /// end in a newline goes with the trimRight below.
   Future<String> _git(List<String> arguments) async {
     final command =
         'git --no-pager -C ${_quote(root)} '
         '${arguments.map(_quote).join(' ')} 2>&1; '
-        'printf "$_status%s\\n" "\$?"';
+        'printf "\\n$_status%s\\n" "\$?"';
     final lines = await run(command).toList();
     var status = -1;
     final output = <String>[];

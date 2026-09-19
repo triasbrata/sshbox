@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/git/git_repo.dart';
 
@@ -121,6 +124,41 @@ void main() {
       await expectLater(repo.commit('  '), throwsA(isA<GitException>()));
       expect(host.asked, isEmpty);
     });
+  });
+
+  test('a history whose last line has no newline still reads, through a '
+      'real shell', () async {
+    // The scripted host above always puts the status marker on a line of its
+    // own, which a real shell does not promise: git log --pretty=format:
+    // ends its last commit with no newline, and the marker used to land on
+    // that line and never be found. So this one runs the very command the
+    // repo builds, through sh, with a git that answers as that git does.
+    final bin = await Directory.systemTemp.createTemp('git-shell');
+    addTearDown(() => bin.delete(recursive: true));
+    final git = File('${bin.path}/git')
+      ..writeAsStringSync(
+        '#!/bin/sh\n'
+        r"printf 'c470bf5\tAda\t2 days ago\tfix wrong path\n"
+        r"454e7f5\tAda\t3 days ago\tfirst'"
+        '\n',
+      );
+    await Process.run('chmod', ['+x', git.path]);
+
+    Stream<String> run(String command) async* {
+      final process = await Process.start(
+        'sh',
+        ['-c', command],
+        environment: {'PATH': '${bin.path}:/usr/bin:/bin'},
+      );
+      yield* process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter());
+    }
+
+    final log = await GitRepo(root: '/app', run: run).log();
+
+    expect(log.map((commit) => commit.sha), ['c470bf5', '454e7f5']);
+    expect(log.last.subject, 'first');
   });
 
   test('the history is read a commit to a line', () async {
