@@ -203,6 +203,8 @@ jobs:
 
       # Into a private bucket, and nowhere else: no Actions artifact, no GitHub
       # release, and nothing in this public log names the bucket or an object.
+      # Only the latest build is kept: desktop/<target>/ is synced with
+      # --delete, so the release before's files go as this one's arrive.
       - name: Keep the build in R2
         env:
           LABEL: ${{ needs.version.outputs.label }}
@@ -217,8 +219,8 @@ jobs:
           for secret in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
             [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
           done
-          aws s3 cp --recursive --only-show-errors --endpoint-url "$R2_ENDPOINT" \
-            "dist/$LABEL" "s3://$R2_BUCKET/desktop/$LABEL/${{ matrix.target }}/"
+          aws s3 sync --delete --only-show-errors --endpoint-url "$R2_ENDPOINT" \
+            "dist/$LABEL" "s3://$R2_BUCKET/desktop/${{ matrix.target }}/"
 
   notes:
     needs: [version, android, desktop]

@@ -1155,8 +1155,9 @@ The repository is public, so GitHub Actions costs nothing.
   - `desktop` builds Linux (`tools/build_desktop.sh`), Windows (the same
     zip, built on Windows itself) and macOS (`tools/build_apple.sh`, signed
     ad-hoc), and keeps each in the private R2 bucket `jeansh-builds`, under
-    `desktop/<X.Y.Z+N>/<linux|windows|macos>/` with its `SHA256SUMS`. Nothing
-    else keeps a build: no Actions artifact, no GitHub release, the bucket
+    `desktop/<linux|windows|macos>/` with its `SHA256SUMS`. Only the latest
+    build is kept: each release replaces the one before, whose files are
+    deleted. Nothing else keeps a build: no Actions artifact, no GitHub release, the bucket
     has no public URL or domain, and the public run log names neither the
     bucket nor an object.
   - `notes`, once both succeed, hands the app's commit messages since the
