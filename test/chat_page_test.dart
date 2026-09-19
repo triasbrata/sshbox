@@ -539,4 +539,63 @@ void main() {
     expect(rows, ['pinned', 'not pinned']);
     expect(find.byIcon(Icons.push_pin), findsOneWidget);
   });
+
+  testWidgets('a tool row opens to its input and its result', (tester) async {
+    final shell = _Shell();
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'check the nginx log');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_09',
+            'name': 'Bash',
+            'input': {'command': 'tail -n 50 error.log'},
+          },
+        ],
+      },
+    });
+    shell.event({
+      'type': 'user',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_result',
+            'tool_use_id': 'toolu_09',
+            'content': '3 upstream timeouts',
+          },
+        ],
+      },
+    });
+    // The turn ends, so nothing is left spinning.
+    shell.event({'type': 'result', 'subtype': 'success'});
+    await tester.pump();
+    await tester.pump();
+
+    // The tile keeps its open-or-shut bool in page storage under its own
+    // key; the scroll views inside once stored their offset under the same
+    // one and read that bool back as a double, which threw — and a release
+    // build draws a widget that threw as nothing.
+    await tester.tap(find.text('Bash'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('"command": "tail -n 50 error.log"'),
+        findsOneWidget);
+    expect(find.text('3 upstream timeouts'), findsOneWidget);
+  });
 }
