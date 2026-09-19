@@ -22,6 +22,10 @@ const _path = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
 ///
 /// [environment] is whatever else the channel brought, as the device's
 /// variables come with it.
+///
+/// HOME is [dir] too: the attach prunes pane records under HOME against the
+/// panes of the server it asks, which here is the test's own, so under the
+/// real HOME it would take the machine's own records for gone.
 Future<(Process, CommandChannel)> _start(
   String name,
   Directory dir, {
@@ -32,7 +36,7 @@ Future<(Process, CommandChannel)> _start(
     '/bin/sh',
     ['-c', 'exec ${TmuxSession.command(name)}'],
     environment: {
-      'HOME': Platform.environment['HOME'] ?? dir.path,
+      'HOME': dir.path,
       'PATH': path,
       'SHELL': '/bin/sh',
       'TMUX_TMPDIR': dir.path,
