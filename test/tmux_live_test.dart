@@ -62,10 +62,13 @@ Future<ProcessResult> _tmux(Directory dir, List<String> args) => Process.run(
   includeParentEnvironment: false,
 );
 
-Future<void> _until(bool Function() condition) async {
+/// Waits for [condition], and on giving up says what [state] was then.
+Future<void> _until(bool Function() condition, [String Function()? state]) async {
   final deadline = DateTime.now().add(const Duration(seconds: 5));
   while (!condition()) {
-    if (DateTime.now().isAfter(deadline)) fail('timed out');
+    if (DateTime.now().isAfter(deadline)) {
+      fail(state == null ? 'timed out' : 'timed out: ${state()}');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 20));
   }
 }
@@ -109,7 +112,10 @@ void main() {
       var (process, channel) = await _start(name, dir);
       var tmux = _session(name, channel);
       expect(await tmux.attached, isTrue);
-      await _until(() => tmux.panes.length == 1);
+      await _until(
+        () => tmux.panes.length == 1,
+        () => '${tmux.panes.length} panes',
+      );
       final first = tmux.panes.single;
       expect((first.terminal.viewWidth, first.terminal.viewHeight), (60, 20));
 
@@ -182,13 +188,23 @@ void main() {
           r'echo "<$LC_SSHBOX_KEY $LC_SSHBOX_HOST_ID>"'
           '\r',
         );
-        await _until(() => _text(tmux.focused!).contains('<$values>'));
+        await _until(
+          () => _text(tmux.focused!).contains('<$values>'),
+          () =>
+              'no <$values> on the focused pane, which shows:\n'
+              '${_text(tmux.focused!).trimRight()}\n'
+              'where tmux has:\n'
+              '${Process.runSync('tmux', ['capture-pane', '-p', '-t', '%${tmux.focused!.id}'], environment: {'PATH': _path, 'TMUX_TMPDIR': dir.path}, includeParentEnvironment: false).stdout}'.trimRight(),
+        );
       }
 
       var (process, channel) = await start('key-1');
       var tmux = _session(name, channel);
       expect(await tmux.attached, isTrue);
-      await _until(() => tmux.panes.length == 1);
+      await _until(
+        () => tmux.panes.length == 1,
+        () => '${tmux.panes.length} panes',
+      );
       await printed(tmux, 'key-1 host-1');
 
       // Back after a reconnect, with a key a reset has replaced since.
@@ -197,7 +213,10 @@ void main() {
       (process, channel) = await start('key-2');
       tmux = _session(name, channel);
       expect(await tmux.attached, isTrue);
-      await _until(() => tmux.panes.length == 1);
+      await _until(
+        () => tmux.panes.length == 1,
+        () => '${tmux.panes.length} panes',
+      );
       await tmux.split(sideBySide: true);
       await _until(
         () => tmux.panes.length == 2 && tmux.focused == tmux.panes.last,

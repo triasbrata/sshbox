@@ -14,10 +14,15 @@ List<int> _line(String line) => utf8.encode('$line\n');
 /// tmux's end of control mode, as far as a session needs it on attach: every
 /// command gets an empty reply, in order, except the question of where things
 /// stand, which gets [layout] with pane %1 active.
+///
+/// Given [afterCapture], a pane's history is the line `before` with the
+/// cursor under it, and tmux goes straight on from answering its capture to
+/// [afterCapture] in the same read.
 class _FakeTmux {
-  _FakeTmux(this.layout);
+  _FakeTmux(this.layout, {this.afterCapture});
 
   final String layout;
+  final String? afterCapture;
   final _output = StreamController<Uint8List>();
   final commands = <String>[];
   var _number = 0;
@@ -34,11 +39,23 @@ class _FakeTmux {
     for (final command in utf8.decode(data).trim().split('\n')) {
       commands.add(command);
       final number = ++_number;
-      say('%begin 1789000000 $number 1');
+      final reply = ['%begin 1789000000 $number 1'];
       if (command.startsWith('display -p "#{window_id}')) {
-        say('@1\t$layout\t%1');
+        reply.add('@1\t$layout\t%1');
       }
-      say('%end 1789000000 $number 1');
+      final after = afterCapture;
+      final capture = after != null && command.startsWith('capture-pane');
+      if (after != null && command.startsWith('display -p -t')) {
+        reply.add('0\t1\t0\t0\t1');
+      }
+      if (capture) reply.add('before');
+      reply.add('%end 1789000000 $number 1');
+      if (capture) {
+        reply.add(after);
+        _output.add(Uint8List.fromList(reply.expand(_line).toList()));
+      } else {
+        reply.forEach(say);
+      }
     }
   }
 }
@@ -218,6 +235,30 @@ void main() {
     expect(
       tmux.panes.single.terminal.buffer.lines[0].getText().trimRight(),
       r'~ $',
+    );
+  });
+
+  test('what a pane writes as its history is read is drawn after it', () async {
+    final fake = _FakeTmux(
+      'b25d,80x24,0,0,1',
+      afterCapture: r'%output %1 after\015\012',
+    );
+    final tmux = TmuxSession(
+      name: 'sshbox-test',
+      channel: fake.channel,
+      newTerminal: Terminal.new,
+      transform: (data) => data,
+      onChanged: () {},
+      onEnded: () {},
+    );
+    addTearDown(tmux.dispose);
+    fake.say('%session-changed \$1 sshbox-test');
+    await pumpEventQueue();
+
+    final lines = tmux.panes.single.terminal.buffer.lines;
+    expect(
+      [lines[0].getText().trimRight(), lines[1].getText().trimRight()],
+      ['before', 'after'],
     );
   });
 

@@ -172,6 +172,15 @@ class TmuxClient {
 
   bool _closed = false;
 
+  /// How many commands this client has written, and how many of them tmux
+  /// has answered, counted as each answer is read rather than when whoever
+  /// waits for it hears: a pane's `%output` read once the Nth answer has been
+  /// is what the pane wrote after the Nth command ran.
+  int get sent => _sent;
+  int get answered => _answered;
+  int _sent = 0;
+  int _answered = 0;
+
   /// Runs [command] and hands back what it printed, a line at a time. Throws
   /// [TmuxException] with tmux's own words when tmux refuses it.
   ///
@@ -184,6 +193,7 @@ class TmuxClient {
       reply.completeError(const TmuxException('tmux is not running.'));
     } else {
       _waiting.add(reply);
+      _sent++;
       write(utf8.encode('$command\n'));
     }
     return reply.future;
@@ -253,6 +263,7 @@ class TmuxClient {
     _reply = null;
     if (!_replyIsOurs || _waiting.isEmpty) return;
     final waiting = _waiting.removeFirst();
+    _answered++;
     if (ok) {
       waiting.complete(List.of(_replyLines));
     } else {
@@ -307,6 +318,10 @@ class TmuxPane {
 
   /// True while tmux's output is being written into [terminal].
   bool _feeding = false;
+
+  /// What the pane writes while [TmuxSession._fill] asks tmux what it already
+  /// holds, each piece with how many answers had been read when it came.
+  List<(int, Uint8List)>? _held;
 
   void _write(String text) {
     _feeding = true;
@@ -608,7 +623,16 @@ class TmuxSession {
     }
   }
 
-  void _onOutput(int id, Uint8List data) => _panes[id]?._decoder.add(data);
+  void _onOutput(int id, Uint8List data) {
+    final pane = _panes[id];
+    if (pane == null) return;
+    final held = pane._held;
+    if (held != null) {
+      held.add((_client.answered, data));
+    } else {
+      pane._decoder.add(data);
+    }
+  }
 
   void _onNotification(String line) {
     final words = line.split(' ');
@@ -703,21 +727,30 @@ class TmuxSession {
   /// Draws what the pane already holds, for a pane that existed before we
   /// saw it: after attaching, or one split off since.
   ///
-  /// The capture is taken after everything tmux has sent so far, so the
-  /// terminal starts over from it rather than adding to what arrived in the
-  /// meantime. The cursor and the modes a program would have set on its way
-  /// in are put back too — vim is on the alternate screen, and wants its
-  /// arrow keys in application form.
+  /// The terminal starts over from the capture. What the pane writes in the
+  /// meantime is held rather than drawn: what came before tmux answered the
+  /// capture is in it, and what came after is drawn on top once it is. Drawn
+  /// as it came, the latter would be wiped by the capture, since tmux can
+  /// answer and go straight on to more output in one read, all of it handled
+  /// before whoever awaits the answer hears it — which is how a command typed
+  /// just after attaching lost its output. The cursor and the modes a
+  /// program would have set on its way in are put back too — vim is on the
+  /// alternate screen, and wants its arrow keys in application form.
   Future<void> _fill(TmuxPane pane) async {
     final target = '-t %${pane.id}';
+    final held = pane._held = [];
+    // Held output read before this many answers is in the capture.
+    var drawnUpTo = 0;
     try {
-      final [state, lines] = await Future.wait([
+      final replies = [
         _client.command(
           'display -p $target "#{cursor_x}\t#{cursor_y}\t#{alternate_on}\t'
           '#{keypad_cursor_flag}\t#{cursor_flag}"',
         ),
         _client.command('capture-pane -p -e -J $target -S -$_history'),
-      ]);
+      ];
+      final captured = _client.sent;
+      final [state, lines] = await Future.wait(replies);
       if (_panes[pane.id] != pane) return;
       final flags = (state.firstOrNull ?? '').split('\t');
       if (flags.length < 5) return;
@@ -731,8 +764,16 @@ class TmuxSession {
         '${flags[3] == '1' ? '\x1b[?1h' : ''}'
         '${flags[4] == '0' ? '\x1b[?25l' : ''}',
       );
+      drawnUpTo = captured;
     } on TmuxException {
       // The pane closed between asking and answering.
+    } finally {
+      pane._held = null;
+      if (_panes[pane.id] == pane) {
+        for (final (answered, data) in held) {
+          if (answered >= drawnUpTo) pane._decoder.add(data);
+        }
+      }
     }
   }
 }
