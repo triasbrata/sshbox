@@ -1755,13 +1755,19 @@ void main() {
     test('a version is three numbers, and nothing else is one', () {
       expect(ClaudeChat.parseVersion('2.1.277 (Claude Code)\n'), (2, 1, 277));
       expect(ClaudeChat.parseVersion('2.1.259'), (2, 1, 259));
+      // stderr comes along: a warning before the version does not hide it.
+      expect(
+        ClaudeChat.parseVersion('warning: old node\n2.1.277 (Claude Code)\n'),
+        (2, 1, 277),
+      );
       for (final other in [
         '',
         'claude: command not found',
         '2.1 (Claude Code)',
         '2.1.277-beta (Claude Code)',
         'v2.1.277',
-        'warning: something\n2.1.277 (Claude Code)',
+        '2.1.277 (Claude Code)\nwarning: after it',
+        '2.1.277 (Something Else)',
         '99999999999999999999.1.1',
       ]) {
         expect(ClaudeChat.parseVersion(other), isNull, reason: other);

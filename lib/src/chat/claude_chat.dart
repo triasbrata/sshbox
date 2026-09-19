@@ -1426,13 +1426,15 @@ class ClaudeChat extends ChangeNotifier {
       'sh -c ${_shellQuote('$_findClaude"\$c" --version 2>&1')}';
 
   /// The version in what `claude --version` printed — `2.1.277 (Claude
-  /// Code)` — or null for anything else: three numbers, and after them, if
-  /// anything, only the CLI's own name. A line the host added, a build of
-  /// some other program, or nothing at all is not taken for a version.
+  /// Code)` — or null for anything else. Its last line, since stderr comes
+  /// along and a warning can go before it, must be three numbers and after
+  /// them, if anything, only the CLI's own name: a pre-release tag, a build
+  /// of some other program, or nothing at all is not taken for a version.
   static (int, int, int)? parseVersion(String output) {
+    final lines = output.trim().split('\n');
     final match = RegExp(
       r'^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?: \(Claude Code\))?$',
-    ).firstMatch(output.trim());
+    ).firstMatch(lines.last.trim());
     if (match == null) return null;
     return (int.parse(match[1]!), int.parse(match[2]!), int.parse(match[3]!));
   }
