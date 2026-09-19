@@ -1,6 +1,8 @@
-# tool/release.sh --publish from CI: on a v* tag it builds the signed bundle
-# and releases it on Play's closed testing track. By hand from the Actions tab
-# it is a --dry-run unless told otherwise. The secrets live in the `release`
+# On a v* tag, or by hand from the Actions tab. Mobile goes straight to its
+# store: `android` runs tool/release.sh --publish, which releases on Play's
+# closed testing track (by hand it is a --dry-run unless told otherwise).
+# Desktop goes to R2: `desktop` builds Linux, Windows and macOS and keeps them
+# in a private bucket, and nowhere else. The secrets live in the `release`
 # environment, which only v* tags and main can reach. README.md, Releasing.
 name: Release
 
@@ -10,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Everything but the commit that reaches testers
+        description: Android - everything but the commit that reaches testers
         type: boolean
         default: true
 
@@ -20,7 +22,7 @@ permissions:
 concurrency: release
 
 jobs:
-  release:
+  android:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: release
@@ -76,3 +78,71 @@ jobs:
       - name: Remove the signing files
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks" "$RUNNER_TEMP/play.json" android/key.properties
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux, os: ubuntu-latest }
+          - { target: windows, os: windows-latest }
+          - { target: macos, os: macos-latest }
+    name: desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    environment: release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2 # .fvmrc
+          channel: stable
+          cache: true
+
+      - name: Install the Linux build's packages
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq clang cmake ninja-build pkg-config libgtk-3-dev \
+            liblzma-dev libstdc++-12-dev libsecret-1-dev
+
+      # Each lands in dist/<X.Y.Z+N>/ as the scripts package it by hand.
+      - name: Build
+        run: |
+          label=$(sed -n 's/^version: *//p' pubspec.yaml | tr -d '\r')
+          echo "LABEL=$label" >> "$GITHUB_ENV"
+          case ${{ matrix.target }} in
+            linux) tools/build_desktop.sh --skip-checks linux ;;
+            macos) tools/build_apple.sh --skip-checks macos ;;
+            # tools/build_desktop.sh builds Windows from WSL; here is Windows
+            # itself, so the same build and the same zip, by hand.
+            windows)
+              flutter build windows --release
+              name="Jeansh-$label"
+              cp -r build/windows/x64/runner/Release "$RUNNER_TEMP/$name"
+              mkdir -p "dist/$label"
+              (cd "$RUNNER_TEMP" && 7z a -tzip -bso0 "$GITHUB_WORKSPACE/dist/$label/$name-windows-x64.zip" "$name")
+              (cd "dist/$label" && sha256sum -- * > SHA256SUMS) ;;
+          esac
+
+      # Into a private bucket, and nowhere else: no Actions artifact, no GitHub
+      # release, and nothing in this public log names the bucket or an object.
+      - name: Keep the build in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          for secret in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
+            [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
+          done
+          aws s3 cp --recursive --only-show-errors --endpoint-url "$R2_ENDPOINT" \
+            "dist/$LABEL" "s3://$R2_BUCKET/desktop/$LABEL/${{ matrix.target }}/"
