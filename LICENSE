@@ -1,0 +1,76 @@
+Jeansh License
+
+Copyright (c) 2026 Trias BYM. All rights reserved.
+
+Jeansh's source code is public, but Jeansh is not open source software. The
+official builds are paid for. Anyone may build Jeansh from this repository
+and use what they build for free, but may not give that build, or the source,
+to anyone else.
+
+"The Software" means the source code in this repository and anything built
+from it, changed or not. "The Licensor" means Trias BYM. "Official builds"
+means builds of the Software that the Licensor publishes, on Google Play or on
+any other channel the Licensor names.
+
+1. Official builds
+
+   You may use an official build on the terms of the channel you got it from,
+   including any price that channel charges.
+
+2. Building it yourself
+
+   You may download, read, compile and change the source code, and use what
+   you build, free of charge and for any purpose, including your work, on
+   devices you use yourself.
+
+3. Contributions
+
+   You may change the source code to propose a contribution to the
+   Licensor, for example as a pull request. By submitting a contribution you
+   confirm that you have the right to submit it, and you grant the Licensor a
+   perpetual, worldwide, irrevocable, royalty-free licence to use, copy,
+   change, sublicense and distribute it under any terms, including in
+   official builds that are sold.
+
+4. What you may not do
+
+   Except as sections 1 to 3 allow, you may not:
+   a. distribute the Software to anyone, as source code or as a build,
+      changed or not, free or paid, including through an app store, a
+      website, a package repository or a download link;
+   b. sell, rent, lease or lend the Software, or offer it as a service;
+   c. remove or change the copyright notices or this licence.
+
+   Forking this repository on GitHub, as GitHub's Terms of Service allow, is
+   not distribution; the fork stays under this licence.
+
+5. Name and icon
+
+   This licence gives no right to use the name Jeansh, its icon or its logo,
+   except to say truthfully where a build of yours comes from.
+
+6. Third-party components
+
+   Parts of this repository belong to others and stay under their own
+   licences, which this licence does not change: the fonts in
+   assets/fonts/, Mermaid in assets/mermaid/, and the packages in
+   third_party/, each with its licence file beside it. Packages fetched by
+   `flutter pub get` come under their own licences too.
+
+7. Termination
+
+   This licence ends automatically if you break it. You must then stop using
+   the Software and delete every copy you have.
+
+8. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+9. Limitation of liability
+
+   IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE, INCLUDING LOST DATA OR LOST PROFITS.

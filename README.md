@@ -5,6 +5,14 @@ A mobile-first SSH client built with Flutter, targeting Android and iOS.
 It was called sshbox; the Dart and Kotlin package names, the `sshbox://`
 deep-link scheme and the repo keep that name.
 
+## License
+
+Source-available, not open source: see [LICENSE](LICENSE). The official
+builds, on Google Play, are paid for. Build it yourself from this repository
+and you may use your build for free, but you may not give it, or the source,
+to anyone else. Pull requests are welcome from collaborators, and whatever is
+contributed may ship in the paid builds.
+
 ## Why this stack
 
 | Layer | Choice | Reason |
