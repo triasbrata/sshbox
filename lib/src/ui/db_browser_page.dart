@@ -21,6 +21,56 @@ typedef DbOpener =
       required void Function(Uri url) onSignIn,
     });
 
+/// How each kind of database's side list reads: the SQL view's tables by
+/// schema, the NoSQL view's collections by database, and the KV view's keys,
+/// and how its filter is typed. [types] names each type of object as the
+/// database reports it ([DbObject.type]), in the order its chips go, with
+/// its icon; a key's type has none and shows as the word TYPE gives.
+typedef _ObjectView = ({
+  String label,
+  String hint,
+  IconData group,
+  Map<String, (String, IconData?)> types,
+});
+
+const _views = <DbKind, _ObjectView>{
+  DbKind.postgres: (
+    label: 'Tables',
+    hint: 'Filter tables, or schema.table',
+    group: Icons.folder_outlined,
+    types: {
+      'BASE TABLE': ('Tables', Icons.table_chart_outlined),
+      'VIEW': ('Views', Icons.visibility_outlined),
+      'MATERIALIZED VIEW': ('Materialized views', Icons.layers_outlined),
+      'FOREIGN': ('Foreign tables', Icons.link),
+      'LOCAL TEMPORARY': ('Temporary tables', Icons.timer_outlined),
+    },
+  ),
+  DbKind.mongo: (
+    label: 'Collections',
+    hint: 'Filter collections, or database.collection',
+    group: Icons.storage_outlined,
+    types: {
+      'collection': ('Collections', Icons.description_outlined),
+      'view': ('Views', Icons.visibility_outlined),
+      'timeseries': ('Time series', Icons.timeline),
+    },
+  ),
+  DbKind.redis: (
+    label: 'Keys',
+    hint: 'Filter keys, or a pattern like user:*',
+    group: Icons.key,
+    types: {
+      'string': ('String', null),
+      'hash': ('Hash', null),
+      'list': ('List', null),
+      'set': ('Set', null),
+      'zset': ('Sorted set', null),
+      'stream': ('Stream', null),
+    },
+  ),
+};
+
 /// One database, open: its tables, collections or keys at the side (in a
 /// drawer on a phone), and a box to type SQL, a database command or a Redis
 /// command into, with what it gave back under it: in a grid, or as JSON.
@@ -62,12 +112,18 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   /// The whole side list as last read, or null while it is read. The filter
   /// narrows it here, without asking the database again; only Refresh and
   /// Reconnect read it anew.
-  Map<String, List<String>>? _objects;
+  Map<String, List<DbObject>>? _objects;
   String? _objectsError;
 
   /// Whether [_objects] stopped at the most keys a Redis list reads, so a
   /// filter still asks the server for the keys it would otherwise miss.
   var _capped = false;
+
+  /// The one type of object the side list shows, when one is picked.
+  String? _type;
+
+  /// Schemas and databases folded shut, showing their name alone.
+  final _collapsed = <String>{};
 
   DbResult? _result;
   String? _runError;
@@ -141,19 +197,21 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     final session = _session;
     if (session == null) return;
     final filter = _capped ? _filter.text : '';
+    final type = _capped ? _type : null;
+    final whole = filter.isEmpty && type == null;
     setState(() {
       _objects = null;
       _objectsError = null;
     });
     try {
-      final objects = await session.objects(filter);
+      final objects = await session.objects(filter, type: type);
       if (mounted && identical(session, _session)) {
         setState(() {
           _objects = objects;
-          if (filter.isEmpty) _capped = session.capped(objects);
+          if (whole) _capped = session.capped(objects);
         });
-        // Found too long just now, with a filter already typed.
-        if (filter.isEmpty && _capped && _filter.text.isNotEmpty) {
+        // Found too long just now, with a filter already typed or picked.
+        if (whole && _capped && (_filter.text.isNotEmpty || _type != null)) {
           await _loadObjects();
         }
       }
@@ -284,15 +342,21 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   static String _count(int changes) =>
       '$changes change${changes == 1 ? '' : 's'}';
 
+  /// Shows [type] alone, or every type for null. Past the cap the server
+  /// picks them out.
+  void _pickType(String? type) {
+    setState(() => _type = type);
+    if (_capped) {
+      _filtering?.cancel();
+      unawaited(_loadObjects());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final session = _session;
-    final objectsLabel = switch (widget.db.kind) {
-      DbKind.postgres => 'Tables',
-      DbKind.mongo => 'Collections',
-      DbKind.redis => 'Keys',
-    };
+    final objectsLabel = _views[widget.db.kind]!.label;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -377,18 +441,43 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     );
   }
 
+  /// The side list, as its kind of database reads: the SQL view's tables
+  /// by schema, the NoSQL view's collections by database, and the KV view's
+  /// keys by pattern, each narrowed by type too.
   Widget _objectsPane(String label) {
     final theme = Theme.of(context);
+    final view = _views[widget.db.kind]!;
     final all = _objects;
-    final objects = all == null ? null : filterObjects(all, _filter.text);
+    final objects = all == null
+        ? null
+        : filterObjects(widget.db.kind, all, _filter.text, type: _type);
     final error = _objectsError;
-    // A header row per group that has a name, then its names.
-    final entries = <(String, String?)>[
+    // A filter shows every match, folded or not.
+    final filtering = _filter.text.trim().isNotEmpty || _type != null;
+    // A header row per group that has a name, then its names, unless it is
+    // folded.
+    final entries = <(String, DbObject?)>[
       for (final MapEntry(key: group, value: names) in (objects ?? {}).entries) ...[
         if (group.isNotEmpty) (group, null),
-        for (final name in names) (group, name),
+        if (group.isEmpty || filtering || !_collapsed.contains(group))
+          for (final name in names) (group, name),
       ],
     ];
+    // How many of each type were read. Past the cap they are only some, so
+    // every type is offered, uncounted.
+    final counts = <String, int>{};
+    for (final names in (all ?? {}).values) {
+      for (final object in names) {
+        counts.update(object.type, (n) => n + 1, ifAbsent: () => 1);
+      }
+    }
+    final types = {
+      for (final type in view.types.keys)
+        if (_capped || counts.containsKey(type)) type,
+      ...counts.keys.where((type) => type.isNotEmpty),
+      ?_type,
+    };
+    final mark = theme.colorScheme.onSurfaceVariant;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -399,7 +488,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             controller: _filter,
             decoration: InputDecoration(
               isDense: true,
-              hintText: 'Filter ${label.toLowerCase()}',
+              hintText: view.hint,
               prefixIcon: const Icon(Icons.search),
               suffixIcon: IconButton(
                 tooltip: 'Refresh',
@@ -419,6 +508,38 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             },
           ),
         ),
+        if (types.length > 1 || _type != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final type in types)
+                  FilterChip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(
+                      [
+                        view.types[type]?.$1 ?? type,
+                        if (!_capped) '${counts[type] ?? 0}',
+                      ].join(' '),
+                    ),
+                    selected: _type == type,
+                    onSelected: (on) => _pickType(on ? type : null),
+                  ),
+              ],
+            ),
+          ),
+        if (_capped)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(
+              'Too many ${label.toLowerCase()} to list them all: the filter '
+              'and type are matched by the server.',
+              style: theme.textTheme.bodySmall?.copyWith(color: mark),
+            ),
+          ),
+        const SizedBox(height: 4),
         Expanded(
           child: error != null
               ? Padding(
@@ -434,28 +555,67 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               ? Center(child: Text('No ${label.toLowerCase()}'))
               : ListView.builder(
                   itemCount: entries.length,
-                  itemBuilder: (context, i) => switch (entries[i]) {
-                    (final group, null) => ListTile(
-                      dense: true,
-                      leading: const Icon(Icons.folder_outlined),
-                      title: Text(
-                        group,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    (final group, final String name) => ListTile(
+                  itemBuilder: (context, i) {
+                    final (group, object) = entries[i];
+                    if (object == null) {
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(view.group),
+                        title: Text(
+                          group,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '${objects[group]!.length}',
+                              style: TextStyle(color: mark),
+                            ),
+                            if (!filtering)
+                              Icon(
+                                _collapsed.contains(group)
+                                    ? Icons.expand_more
+                                    : Icons.expand_less,
+                                color: mark,
+                              ),
+                          ],
+                        ),
+                        onTap: filtering
+                            ? null
+                            : () => setState(() {
+                                if (!_collapsed.remove(group)) {
+                                  _collapsed.add(group);
+                                }
+                              }),
+                      );
+                    }
+                    // A table's or a collection's type shows as its icon, a
+                    // key's as the word TYPE gives.
+                    final icon = view.types[object.type]?.$2;
+                    return ListTile(
                       dense: true,
                       contentPadding: EdgeInsetsDirectional.only(
-                        start: group.isEmpty ? 16 : 40,
+                        start: group.isEmpty ? 16 : 32,
                         end: 16,
                       ),
+                      leading: icon == null ? null : Icon(icon, size: 18),
                       title: Text(
-                        name,
+                        object.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      onTap: () => _open(group, name),
-                    ),
+                      trailing: icon != null || object.type.isEmpty
+                          ? null
+                          : Text(
+                              object.type,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: mark,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                      onTap: () => _open(group, object.name),
+                    );
                   },
                 ),
         ),

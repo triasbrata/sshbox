@@ -44,10 +44,30 @@ void main() {
       "INSERT INTO \"Jeansh People\" VALUES (1, 'ann'), (2, NULL)",
     );
     expect(made.note, 'CREATE TABLE · TRUNCATE TABLE · INSERT 0 2');
-    addTearDown(() => session.run('DROP TABLE "Jeansh People"'));
+    addTearDown(() => session.run('DROP TABLE "Jeansh People" CASCADE'));
+    await session.run(
+      'CREATE OR REPLACE VIEW jeansh_people_v AS '
+      'SELECT * FROM "Jeansh People"; '
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS jeansh_people_m AS '
+      'SELECT * FROM "Jeansh People"',
+    );
 
+    const view = (name: 'jeansh_people_v', type: 'VIEW');
+    const materialized = (name: 'jeansh_people_m', type: 'MATERIALIZED VIEW');
     expect(await session.objects('people'), {
-      'public': ['Jeansh People'],
+      'public': [
+        (name: 'Jeansh People', type: 'BASE TABLE'),
+        materialized,
+        view,
+      ],
+    });
+    // As its schema qualifies it, and of one kind alone.
+    expect(await session.objects('public.jeansh_'), {
+      'public': [materialized, view],
+    });
+    expect(await session.objects('audit.jeansh'), isEmpty);
+    expect(await session.objects('people', type: 'VIEW'), {
+      'public': [view],
     });
     final query = await session.queryFor('public', 'Jeansh People');
     expect(query, 'SELECT * FROM public."Jeansh People" LIMIT 100;');
@@ -368,8 +388,23 @@ void main() {
     );
     expect(inserted.note, 'OK');
     expect(inserted.columns, containsAll(['n', 'ok']));
+    await session
+        .run('{"drop": "people_v", "\$db": "jeansh"}')
+        .catchError((_) => const DbResult());
+    await session.run(
+      '{"create": "people_v", "viewOn": "people", "pipeline": [], '
+      '"\$db": "jeansh"}',
+    );
+    addTearDown(() => session.run('{"drop": "people_v", "\$db": "jeansh"}'));
 
-    expect((await session.objects('people'))['jeansh'], ['people']);
+    const people = (name: 'people', type: 'collection');
+    const view = (name: 'people_v', type: 'view');
+    expect((await session.objects('people'))['jeansh'], [people, view]);
+    // As its database qualifies it, and of one kind alone.
+    expect(await session.objects('jeansh.people_'), {
+      'jeansh': [view],
+    });
+    expect((await session.objects('', type: 'view'))['jeansh'], [view]);
     final query = await session.queryFor('jeansh', 'people');
     expect(query, contains('"find": "people"'));
     expect(query, contains('"\$db": "jeansh"'));
@@ -408,11 +443,19 @@ void main() {
     await session.run('HSET jeansh-session:h a 1 b 2');
     await session.run('SET "jeansh-session:sp ace" x');
 
+    const hashKey = (name: 'jeansh-session:h', type: 'hash');
+    const stringKey = (name: 'jeansh-session:sp ace', type: 'string');
     expect(await session.objects('jeansh-session:'), {
-      '': ['jeansh-session:h', 'jeansh-session:sp ace'],
+      '': [hashKey, stringKey],
     });
-    // A glob character in the filter matches only itself.
-    expect(await session.objects('*'), isEmpty);
+    // A pattern, as SCAN MATCH reads it, and a type SCAN picks out.
+    expect(await session.objects('jeansh-session:?'), {
+      '': [hashKey],
+    });
+    expect(await session.objects('jeansh-session:*', type: 'string'), {
+      '': [stringKey],
+    });
+    expect(await session.objects('jeansh-nothing:*'), isEmpty);
 
     final hash = await session.queryFor('', 'jeansh-session:h');
     expect(hash, 'HGETALL jeansh-session:h');
@@ -430,5 +473,72 @@ void main() {
       ['x'],
     ]);
     expect((await session.run('GET jeansh-session:none')).note, '(nil)');
+  });
+
+  test('Redis: the side list narrows keys in memory as the server matches '
+      'them', () async {
+    final tunnel = await _dial(56379);
+    if (tunnel == null) return printOnFailure('skipped: no server on 56379');
+    final session = await DbSession.over(
+      tunnel,
+      const DbConnection(
+        id: 'redis',
+        kind: DbKind.redis,
+        hostId: 'box',
+        port: 56379,
+      ),
+      'redsecret',
+    );
+    addTearDown(session.close);
+
+    const prefix = 'jeansh-glob:';
+    final keys = [
+      for (final key in [
+        'user:1',
+        'user:22',
+        'superuser:1',
+        'héllo',
+        'a*b',
+        '[x]',
+        'ab',
+        'bb',
+        r'back\slash',
+        '',
+      ])
+        '$prefix$key',
+    ];
+    final quoted = keys.map((key) => "'$key'").join(' ');
+    await session.run('DEL $quoted');
+    await session.run('MSET ${keys.map((key) => "'$key' 1").join(' ')}');
+    addTearDown(() => session.run('DEL $quoted'));
+
+    final all = await session.objects('$prefix*');
+    expect(all['']!.length, keys.length);
+    for (final filter in [
+      'user',
+      '${prefix}user:?',
+      '*user*',
+      '${prefix}h?llo',
+      '${prefix}h??llo',
+      '$prefix[a-b]*',
+      '$prefix[b-a]b',
+      '$prefix[^u]*',
+      r'jeansh-glob:a\*b',
+      r'jeansh-glob:\[x\]',
+      r'jeansh-glob:back\\slash',
+      '$prefix[',
+      '$prefix[^',
+      '*glob:*',
+    ]) {
+      final server = [
+        for (final key in (await session.objects(filter))[''] ?? const [])
+          if (key.name.startsWith(prefix)) key.name,
+      ];
+      final memory = [
+        for (final key in filterObjects(DbKind.redis, all, filter)[''] ?? [])
+          key.name,
+      ];
+      expect(memory, server, reason: filter);
+    }
   });
 }

@@ -76,7 +76,10 @@ class _Db extends DbSession {
   String get hint => '';
 
   @override
-  Future<Map<String, List<String>>> objects(String filter) async => {};
+  Future<Map<String, List<DbObject>>> objects(
+    String filter, {
+    String? type,
+  }) async => {};
 
   @override
   Future<String> queryFor(String group, String name) async => '';

@@ -18,8 +18,12 @@ class _FakeSession extends DbSession {
   String get hint => 'SQL';
 
   @override
-  Future<Map<String, List<String>>> objects(String filter) async => {
-    if ('users'.contains(filter)) 'public': ['users'],
+  Future<Map<String, List<DbObject>>> objects(
+    String filter, {
+    String? type,
+  }) async => {
+    if ('users'.contains(filter))
+      'public': [(name: 'users', type: 'BASE TABLE')],
   };
 
   @override

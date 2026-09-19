@@ -336,18 +336,25 @@ class DbChanges {
       : "E'${value.replaceAll(r'\', r'\\').replaceAll("'", "''")}'";
 }
 
+/// A table, collection or key the side list shows, and its [type] as the
+/// database reports it: information_schema's table_type (`BASE TABLE`,
+/// `VIEW`) or `MATERIALIZED VIEW`, listCollections' type (`collection`,
+/// `view`, `timeseries`), or what Redis's TYPE says (`hash`, `zset`).
+typedef DbObject = ({String name, String type});
+
 /// An open database, and the SSH connection it goes through: what the
 /// database browser lists, and runs what the user types on.
 abstract class DbSession {
   TerminalSession? _ssh;
 
   /// What the side list shows, by group: tables by schema, collections by
-  /// database, and Redis's keys under one blank group. [filter] narrows it.
-  Future<Map<String, List<String>>> objects(String filter);
+  /// database, and Redis's keys under one blank group, each group's in name
+  /// order. [filter] and [type] narrow it, as [filterObjects] does.
+  Future<Map<String, List<DbObject>>> objects(String filter, {String? type});
 
   /// Whether [objects], read with no filter, stopped before the whole list,
   /// so a filter has to ask the database rather than narrow what came back.
-  bool capped(Map<String, List<String>> objects) => false;
+  bool capped(Map<String, List<DbObject>> objects) => false;
 
   /// What a tap on [name] under [group] runs.
   Future<String> queryFor(String group, String name);
@@ -458,32 +465,49 @@ abstract class DbSession {
   }
 }
 
-/// [objects] as [filter] narrows it, without asking the database again.
-Map<String, List<String>> filterObjects(
-  Map<String, List<String>> objects,
-  String filter,
-) {
-  final groups = <String, List<String>>{};
-  objects.forEach((group, names) => _addGroup(groups, group, names, filter));
+/// [objects] of a [db] as [filter] and [type] narrow them, without asking
+/// the database again: to the one [type], when one is picked, and to the
+/// names [filter] matches. For Redis that is a key pattern, as SCAN MATCH
+/// reads it ([redisPattern]); for the others, text anywhere in the name as
+/// its schema or database qualifies it, ignoring case, so `aud` keeps a
+/// whole schema, `peo` a table in any, and `public.peo` or `app.users` one
+/// in that schema or database alone.
+Map<String, List<DbObject>> filterObjects(
+  DbKind db,
+  Map<String, List<DbObject>> objects,
+  String filter, {
+  String? type,
+}) {
+  final pattern = redisPattern(filter);
+  final wanted = filter.trim().toLowerCase();
+  bool matches(String group, String name) => db == DbKind.redis
+      ? redisMatch(pattern, name)
+      : '$group.$name'.toLowerCase().contains(wanted);
+  final groups = <String, List<DbObject>>{};
+  objects.forEach((group, names) {
+    final kept = [
+      for (final object in names)
+        if ((type == null || object.type == type) &&
+            matches(group, object.name))
+          object,
+    ];
+    if (kept.isNotEmpty) groups[group] = kept;
+  });
   return groups;
 }
 
-/// [names] under [group], with only those holding [filter] when the group's
-/// own name does not.
-void _addGroup(
-  Map<String, List<String>> groups,
-  String group,
-  Iterable<String> names,
-  String filter,
+/// [objects] by group, each group's in name order.
+Map<String, List<DbObject>> _grouped(
+  Iterable<(String group, DbObject object)> objects,
 ) {
-  final wanted = filter.trim().toLowerCase();
-  final kept = group.toLowerCase().contains(wanted)
-      ? names.toList()
-      : [
-          for (final name in names)
-            if (name.toLowerCase().contains(wanted)) name,
-        ];
-  if (kept.isNotEmpty) groups[group] = kept..sort();
+  final groups = <String, List<DbObject>>{};
+  for (final (group, object) in objects) {
+    (groups[group] ??= []).add(object);
+  }
+  for (final names in groups.values) {
+    names.sort((a, b) => a.name.compareTo(b.name));
+  }
+  return groups;
 }
 
 /// A JSON value as a cell shows it: a string as itself.
@@ -502,17 +526,32 @@ class _PostgresSession extends DbSession {
   String get hint => 'SQL, like SELECT * FROM users LIMIT 10;';
 
   @override
-  Future<Map<String, List<String>>> objects(String filter) async {
+  Future<Map<String, List<DbObject>>> objects(
+    String filter, {
+    String? type,
+  }) async {
+    // Materialized views are not in information_schema, and are read as a
+    // table is.
     final rows = (await _client.query(
-      'SELECT table_schema, table_name FROM information_schema.tables '
+      'SELECT table_schema::text, table_name::text, table_type::text '
+      'FROM information_schema.tables '
       "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
-      'ORDER BY 1, 2',
+      'UNION ALL '
+      "SELECT schemaname::text, matviewname::text, 'MATERIALIZED VIEW' "
+      'FROM pg_matviews '
+      "WHERE has_table_privilege(format('%I.%I', schemaname, matviewname), "
+      "'SELECT') "
+      'ORDER BY 1',
     )).single.rows;
-    final bySchema = <String, List<String>>{};
-    for (final [schema, table] in rows) {
-      (bySchema[schema!] ??= []).add(table!);
-    }
-    return filterObjects(bySchema, filter);
+    return filterObjects(
+      DbKind.postgres,
+      _grouped([
+        for (final [schema, table, kind] in rows)
+          (schema!, (name: table!, type: kind!)),
+      ]),
+      filter,
+      type: type,
+    );
   }
 
   /// Bare when it would read back the same, in double quotes otherwise.
@@ -610,26 +649,25 @@ class _MongoSession extends DbSession {
       '"limit": 10, "\$db": "app"}';
 
   @override
-  Future<Map<String, List<String>>> objects(String filter) async {
-    List<String> names(Map<String, Object?> reply, String field) => [
-      for (final item in reply[field] as List? ?? const [])
-        if (item case {'name': final String name}) name,
-    ];
-
+  Future<Map<String, List<DbObject>>> objects(
+    String filter, {
+    String? type,
+  }) async {
     var databases = [_authSource];
     try {
-      databases = names(
-        await _client.command('admin', {
-          'listDatabases': 1,
-          'nameOnly': true,
-          'authorizedDatabases': true,
-        }),
-        'databases',
-      );
+      final reply = await _client.command('admin', {
+        'listDatabases': 1,
+        'nameOnly': true,
+        'authorizedDatabases': true,
+      });
+      databases = [
+        for (final item in reply['databases'] as List? ?? const [])
+          if (item case {'name': final String name}) name,
+      ];
     } on DbException {
       // Not allowed to: the one signed in to.
     }
-    final groups = <String, List<String>>{};
+    final found = <(String, DbObject)>[];
     for (final db in databases) {
       final reply = await _client.command(db, {
         'listCollections': 1,
@@ -638,14 +676,17 @@ class _MongoSession extends DbSession {
       });
       // ponytail: the first batch only, 101 collections by default; add
       // getMore when a database has more.
-      _addGroup(
-        groups,
-        db,
-        names(reply['cursor'] as Map<String, Object?>? ?? const {}, 'firstBatch'),
-        filter,
-      );
+      if (reply['cursor'] case {'firstBatch': final List batch}) {
+        for (final item in batch) {
+          // nameOnly still says which are views and time series.
+          if (item case {'name': final String name}) {
+            final kind = item['type'];
+            found.add((db, (name: name, type: kind is String ? kind : '')));
+          }
+        }
+      }
     }
-    return groups;
+    return filterObjects(DbKind.mongo, _grouped(found), filter, type: type);
   }
 
   @override
@@ -822,14 +863,17 @@ class _RedisSession extends DbSession {
   String get hint => 'A command, like GET key or HGETALL key';
 
   @override
-  bool capped(Map<String, List<String>> objects) =>
+  bool capped(Map<String, List<DbObject>> objects) =>
       (objects['']?.length ?? 0) >= maxKeys;
 
+  /// The keys [filter] matches as a pattern ([redisPattern]), of [type]
+  /// alone when one is picked, which SCAN's own MATCH and TYPE pick out
+  /// (TYPE since Redis 6.0), so the cap counts only keys that match.
   @override
-  Future<Map<String, List<String>>> objects(String filter) async {
-    // Glob characters in the filter match themselves.
-    final pattern =
-        '*${filter.trim().replaceAllMapped(RegExp(r'[*?\[\]\\]'), (m) => '\\${m[0]}')}*';
+  Future<Map<String, List<DbObject>>> objects(
+    String filter, {
+    String? type,
+  }) async {
     final keys = <String>{};
     var cursor = '0';
     do {
@@ -837,9 +881,10 @@ class _RedisSession extends DbSession {
         'SCAN',
         cursor,
         'MATCH',
-        pattern,
+        redisPattern(filter),
         'COUNT',
         '500',
+        if (type != null) ...['TYPE', type],
       ]);
       if (reply case [final String next, final List batch]) {
         cursor = next;
@@ -848,7 +893,22 @@ class _RedisSession extends DbSession {
         break;
       }
     } while (cursor != '0' && keys.length < maxKeys);
-    return keys.isEmpty ? {} : {'': keys.toList()..sort()};
+    final names = keys.toList()..sort();
+    // Each key's type, for its tag and the type filter: TYPE for all of
+    // them in one round trip, no more than the scan's cap.
+    final types = type != null || names.isEmpty
+        ? const []
+        : await _client.pipeline([
+            for (final name in names) ['TYPE', name],
+          ]);
+    final found = <DbObject>[];
+    for (final (i, name) in names.indexed) {
+      final kind = type ?? types[i];
+      // Gone since the scan.
+      if (kind == 'none') continue;
+      found.add((name: name, type: kind is String ? kind : ''));
+    }
+    return found.isEmpty ? {} : {'': found};
   }
 
   /// As [redisArgs] reads it back.
