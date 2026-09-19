@@ -1161,10 +1161,15 @@ The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
-- `.github/workflows/release.yml` runs `tool/release.sh --publish` on a `v*`
-  tag, which releases on Closed testing. The hooks make the tags (Build
-  numbers above), so releasing one is pushing it: `git push origin v1.0.7`. Run by hand from the Actions tab it is a `--dry-run` unless
-  its box is unticked.
+- `.github/workflows/release.yml` does what `tool/release.sh --publish` does
+  on a `v*` tag, and releases on Closed testing. The hooks make the tags
+  (Build numbers above), so releasing one is pushing it:
+  `git push origin v1.0.7`. Run by hand from the Actions tab it is a
+  `--dry-run` unless its box is unticked. Between the build and Play it
+  keeps the bundle, dry runs too, in the private R2 bucket `jeansh-builds`
+  as `android/jeansh-<X.Y.Z>-<N>-<commit>.aab`. Nothing else keeps a build:
+  no Actions artifact, no GitHub release, the bucket has no public URL or
+  domain, and the public run log names neither the bucket nor the object.
 
 The release reads these secrets from the `release` environment, which only
 `v*` tags and `main` can deploy to, so a workflow on any other branch never
@@ -1177,6 +1182,10 @@ sees them:
 | `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
 | `ANDROID_UPLOAD_KEY_PASSWORD` | the key's password |
 | `PLAY_SERVICE_ACCOUNT_JSON` | the service account's JSON key, its contents rather than a path |
+| `R2_ACCESS_KEY_ID` | an R2 API token's Access Key ID, **Object Read & Write** on `jeansh-builds` only |
+| `R2_SECRET_ACCESS_KEY` | that token's Secret Access Key |
+| `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
+| `R2_BUCKET` | `jeansh-builds` |
 
 Only collaborators can contribute. Pull requests and issues can only be
 opened by collaborators. On `main`, a ruleset refuses deletion and force

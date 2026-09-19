@@ -67,11 +67,40 @@ jobs:
             printf 'keyPassword=%s\n' "$KEY_PASSWORD"
           } > android/key.properties
 
-      - name: Build and publish
+      # What tool/release.sh --publish does, with R2 between the build and
+      # Play, so every bundle that reaches testers is kept, dry runs too.
+      - name: Check the Play key and track
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play.json
+        run: python3 tool/play_publish.py --preflight
+
+      - run: tool/release.sh
+
+      # Into a private bucket, and nowhere else: no Actions artifact, no GitHub
+      # release, and nothing in this public log names the bucket or the object.
+      - name: Keep the bundle in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          for secret in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
+            [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
+          done
+          version=$(sed -n 's/^version: *\([0-9.]*\)+\([0-9]*\).*/\1-\2/p' pubspec.yaml)
+          aws s3 cp --only-show-errors --endpoint-url "$R2_ENDPOINT" \
+            build/app/outputs/bundle/release/app-release.aab \
+            "s3://$R2_BUCKET/android/jeansh-$version-${GITHUB_SHA::7}.aab"
+
+      - name: Publish
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play.json
           DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
-        run: tool/release.sh --publish $DRY_RUN
+        run: python3 tool/play_publish.py $DRY_RUN build/app/outputs/bundle/release/app-release.aab
 
       - name: Remove the signing files
         if: always()
