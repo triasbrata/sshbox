@@ -110,6 +110,21 @@ class _TerminalPageState extends State<TerminalPage> {
 
   LiveSession get _session => widget.session;
 
+  /// While the host is asked which Claude Code it has, so a second tap does
+  /// not ask again.
+  bool _checkingClaude = false;
+
+  /// Opens the chat once the host's Claude Code is one chat works with, and
+  /// otherwise says why and opens nothing.
+  Future<void> _openChat() async {
+    setState(() => _checkingClaude = true);
+    final why = await _session.chatRefusal();
+    if (!mounted) return;
+    setState(() => _checkingClaude = false);
+    if (why == null) return widget.onOpenChat();
+    showToast(context, why, type: ToastificationType.warning);
+  }
+
   /// Forwards and problems already announced, so each is said once. Held by
   /// identity: a server that restarts is a new forward, and says so.
   final _announced = <Object>{};
@@ -604,8 +619,11 @@ class _TerminalPageState extends State<TerminalPage> {
           leading: [
             IconButton(
               tooltip: 'Chat with Claude',
-              onPressed: (_session.isConnected && _session.canChat)
-                  ? widget.onOpenChat
+              onPressed:
+                  (_session.isConnected &&
+                      _session.canChat &&
+                      !_checkingClaude)
+                  ? _openChat
                   : null,
               icon: const Icon(Icons.forum_outlined),
             ),

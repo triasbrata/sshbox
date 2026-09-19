@@ -1388,6 +1388,121 @@ void main() {
       );
     });
   });
+
+  group('the chat button', () {
+    /// Opens a page on a host whose Claude Code says it is [version], and
+    /// counts the chats the button opened and the times the host was asked.
+    Future<({List<void> opened, _ClaudeHost host})> pumpChat(
+      WidgetTester tester,
+      String version,
+    ) async {
+      final host = _ClaudeHost(version);
+      final opened = <void>[];
+      final session = LiveSession(
+        host: const HostProfile(
+          id: 'host-1',
+          label: 'box',
+          host: '10.0.2.2',
+          username: 'me',
+        ),
+        transport: (_, _) => host,
+      );
+      addTearDown(session.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TerminalPage(
+            session: session,
+            secrets: _NoSecrets(),
+            onOpenFile: (_, {line}) {},
+            onOpenWeb: (_) {},
+            onOpenChat: () => opened.add(null),
+            onOpenGit: () {},
+            onSaveFileRoot: (_) async {},
+          ),
+        ),
+      );
+      await session.connect(secrets: _NoSecrets());
+      await tester.pump();
+      return (opened: opened, host: host);
+    }
+
+    Future<void> tapChat(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await tester.pump();
+      await tester.pump();
+      // The toast's slide in.
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    testWidgets('on a host whose Claude Code is too old it says so, with both '
+        'versions, and opens nothing', (tester) async {
+      final (:opened, :host) = await pumpChat(tester, '2.0.14 (Claude Code)');
+
+      await tapChat(tester);
+
+      expect(opened, isEmpty);
+      expect(
+        _toast(
+          'Claude Code 2.0.14 on this host is too old for chat — it needs '
+          '2.1.259 or newer.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(SnackBar), findsNothing);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('on a host whose Claude Code is new enough it opens the chat, '
+        'and asks the host once a connection', (tester) async {
+      final (:opened, :host) = await pumpChat(tester, '2.1.277 (Claude Code)');
+
+      await tapChat(tester);
+      await tapChat(tester);
+
+      expect(opened, hasLength(2));
+      expect(host.asked, 1);
+      expect(find.byType(ToastCard), findsNothing);
+    });
+
+    testWidgets('a host with no Claude Code keeps saying so', (tester) async {
+      final (:opened, :host) = await pumpChat(
+        tester,
+        'Claude Code is not installed on this host (looked on PATH, in '
+        '~/.local/bin, ~/.claude/local and the usual package managers)',
+      );
+
+      await tapChat(tester);
+
+      expect(opened, isEmpty);
+      expect(
+        find.textContaining('Claude Code is not installed on this host'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+  });
+}
+
+/// A host the chat can run on: a shell with command channels beside it,
+/// whose `claude --version` answers [version].
+class _ClaudeHost extends _Shell implements ChannelCapable {
+  _ClaudeHost(this.version);
+
+  final String version;
+
+  /// How many times the host was asked which Claude Code it has.
+  var asked = 0;
+
+  @override
+  Future<CommandChannel> open(String command) async {
+    if (command.contains('--version')) asked++;
+    return (
+      output: Stream.value(Uint8List.fromList('$version\n'.codeUnits)),
+      write: (Uint8List data) {},
+      close: () {},
+    );
+  }
 }
 
 /// A file picked on the phone, standing on a real file so the upload can read

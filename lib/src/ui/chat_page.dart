@@ -44,11 +44,42 @@ class _ChatPageState extends State<ChatPage> {
   /// scrolls into view and a rebuild for anything else does not.
   int _drawn = 0;
 
+  /// The sessions on the host, as last asked for. Held here rather than by
+  /// the list, which goes whenever the sidebar is hidden or the drawer shut:
+  /// held there, it came back empty. Asked for when the connection comes up,
+  /// and again only by Refresh or when this chat starts a session of its own.
+  Future<List<ClaudeAgent>>? _agents;
+
+  // A block, not an arrow: an arrow would hand setState the future. Its
+  // error is the list's to show, and it may not be showing yet.
+  void _listAgents() {
+    _agents = _chat.agents(all: true)..ignore();
+  }
+
+  /// Nearer the end than this, the reader is at the bottom: new entries
+  /// scroll into view, and a session left here is come back to at its end.
+  static const _nearEnd = 240.0;
+
+  /// Where each session was left scrolled up, by host and session: kept for
+  /// as long as the app runs, so picking one again, or closing the tab and
+  /// opening it again, comes back to the same place. A session left at the
+  /// bottom has no entry, and comes back at its bottom — newest first, and
+  /// still following what it goes on to write.
+  static final _leftAt = <String, double>{};
+
+  String? _placeOf(String? sessionId) =>
+      sessionId == null ? null : '${widget.session.host.id} $sessionId';
+
+  /// True while one session is being swapped for another, when what the
+  /// list scrolls to is the old one's place and not to be kept for the new.
+  bool _switching = false;
+
   @override
   void initState() {
     super.initState();
     widget.session.addListener(_onChanged);
     _chat.addListener(_onChanged);
+    _scroll.addListener(_onScrolled);
     _onChanged();
   }
 
@@ -66,6 +97,7 @@ class _ChatPageState extends State<ChatPage> {
     final connected = widget.session.isConnected;
     if (connected && !_wasConnected) {
       _wasConnected = true;
+      _listAgents();
       // After a reconnect the old process, or the follow of a session being
       // watched, went with the old connection: it is picked up again on the
       // new one, the same conversation either way.
@@ -77,21 +109,54 @@ class _ChatPageState extends State<ChatPage> {
     _followTranscript();
   }
 
+  /// Notes where the session showing was left: as it is scrolled, since by
+  /// the time the tab closes the list has already let go of its position.
+  void _onScrolled() {
+    final place = _placeOf(_chat.pickedFrom);
+    if (_switching || place == null) return;
+    final position = _scroll.position;
+    if (position.maxScrollExtent - position.pixels > _nearEnd) {
+      _leftAt[place] = position.pixels;
+    } else {
+      _leftAt.remove(place);
+    }
+  }
+
   /// Keeps the newest entry in view, unless the reader has scrolled up to
   /// look at something — then it stays where they put it.
   void _followTranscript() {
     final entries = _chat.entries.length;
     if (entries == _drawn) return;
     _drawn = entries;
+    if (_switching) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final end = _scroll.position.maxScrollExtent;
-      if (end - _scroll.offset > 240) return;
+      if (end - _scroll.offset > _nearEnd) return;
       _scroll.animateTo(
         end,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
       );
+    });
+  }
+
+  /// Puts a session just picked where it was left, [at] — or, left at the
+  /// bottom or never seen, at its bottom.
+  void _land(double? at) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_scroll.hasClients) {
+        final end = _scroll.position.maxScrollExtent;
+        _scroll.jumpTo(at == null ? end : math.min(at, end));
+      }
+      // A lazy list only knows how long it is once the rows near its end
+      // are built, so the bottom is found again once they are.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _switching = false;
+        if (!mounted || at != null || !_scroll.hasClients) return;
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      });
     });
   }
 
@@ -126,24 +191,43 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  /// Picks [agent] up in this chat, and, on a narrow screen, gets the drawer
-  /// out of the way of what it brought.
+  /// Picks [agent] up in this chat, where it was left, and, on a narrow
+  /// screen, gets the drawer out of the way of what it brought.
   Future<void> _pick(ClaudeAgent agent) async {
     _scaffoldKey.currentState?.closeDrawer();
+    final at = _leftAt[_placeOf(agent.sessionId)];
+    _switching = true;
     await _chat.continueFrom(agent);
     if (!mounted) return;
-    _drawn = -1;
-    _followTranscript();
+    _drawn = _chat.entries.length;
+    _land(at);
+  }
+
+  /// Leaves what this chat shows for a new one, which the next message
+  /// starts on the host. What it showed carries on there, and stays listed.
+  Future<void> _newChat() async {
+    _scaffoldKey.currentState?.closeDrawer();
+    await _chat.newChat();
+    if (mounted) setState(() {});
   }
 
   void _send() {
     final text = _input.text;
     if (text.trim().isEmpty) return;
-    _chat.send(text);
+    final starts = _chat.composing;
+    final sent = _chat.send(text);
     _input.clear();
     // Whatever was said, the reader wants to be at the bottom again.
     _drawn = -1;
     _followTranscript();
+    // A session this chat started is not in a list read before it was.
+    if (starts) {
+      unawaited(
+        sent.then((_) {
+          if (mounted && _chat.pickedFrom != null) setState(_listAgents);
+        }),
+      );
+    }
   }
 
   @override
@@ -153,8 +237,11 @@ class _ChatPageState extends State<ChatPage> {
       final sidebar = wide && _sidebarOpen;
       final sessions = _SessionList(
         chat: _chat,
+        agents: _agents,
         connected: widget.session.isConnected,
         onPick: _pick,
+        onRefresh: () => setState(_listAgents),
+        onNewChat: _newChat,
       );
       return Scaffold(
         key: _scaffoldKey,
@@ -215,7 +302,12 @@ class _ChatPageState extends State<ChatPage> {
                 ),
               ),
               const SizedBox(width: 8),
-              Text('Claude is working…', style: theme.textTheme.bodySmall),
+              Text(
+                chat.composing
+                    ? 'Starting a new session on the host…'
+                    : 'Claude is working…',
+                style: theme.textTheme.bodySmall,
+              ),
             ],
           ),
         const Divider(height: 1),
@@ -238,11 +330,15 @@ class _ChatPageState extends State<ChatPage> {
   }) {
     final chat = _chat;
     final watching = chat.watching;
+    final connected = widget.session.isConnected;
+    // Before there is a conversation, what is sent starts one.
+    final composing = chat.composing && connected;
     // Into a session being watched, what is typed goes to that session and
     // queues behind whatever it is doing; to this chat's own Claude, only
     // between its turns.
-    final open = watching != null || chat.ready;
-    final canSend = watching != null || (chat.ready && !chat.busy);
+    final open = watching != null || chat.ready || composing;
+    final canSend =
+        watching != null || ((chat.ready || composing) && !chat.busy);
     return SafeArea(
       top: false,
       child: Padding(
@@ -265,11 +361,19 @@ class _ChatPageState extends State<ChatPage> {
               onSelected: (choice) {
                 if (choice is ChatPermission) {
                   unawaited(chat.restart(permission: choice));
+                } else if (choice == 'new') {
+                  unawaited(_newChat());
                 } else {
                   unawaited(chat.restart());
                 }
               },
               itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 'new',
+                  enabled: connected,
+                  child: const Text('New chat'),
+                ),
+                const PopupMenuDivider(),
                 for (final mode in ChatPermission.values)
                   CheckedPopupMenuItem(
                     value: mode,
@@ -296,9 +400,11 @@ class _ChatPageState extends State<ChatPage> {
                   border: const OutlineInputBorder(),
                   hintText: watching != null
                       ? 'Message “${watching.name}”…'
+                      : composing
+                      ? 'Start a new chat…'
                       : chat.ready
                       ? 'Ask Claude…'
-                      : widget.session.isConnected
+                      : connected
                       ? 'Starting Claude on the host…'
                       : 'Connect this session first',
                 ),
@@ -356,6 +462,13 @@ class _Empty extends StatelessWidget {
                   ? 'It runs on the host, in the login directory, and sees '
                         'the files there.'
                   : 'It runs on the host, in $root, and sees the files there.',
+              style: theme.textTheme.bodySmall,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'What you send starts a new session there, listed with the '
+              'others, which carries on when this app is closed.',
               style: theme.textTheme.bodySmall,
               textAlign: TextAlign.center,
             ),
@@ -639,44 +752,37 @@ class _Notice extends StatelessWidget {
 
 
 /// The sessions `claude agents` can see on the host, to pick one up in this
-/// chat: the sidebar on a wide screen, the drawer on a narrow one.
+/// chat: the sidebar on a wide screen, the drawer on a narrow one. Pinned
+/// ones first, then the ones running, then the finished ones, each under a
+/// heading of its own.
+///
+/// ponytail: every finished session is listed, 80 on a working machine,
+/// in a lazy list below the running ones. Cap it, or page it, if a host's
+/// runs to thousands.
 ///
 /// Every row is data from the host — a name is whatever the person who
 /// started it typed — so it is drawn and never run.
-class _SessionList extends StatefulWidget {
+class _SessionList extends StatelessWidget {
   const _SessionList({
     required this.chat,
+    required this.agents,
     required this.connected,
     required this.onPick,
+    required this.onRefresh,
+    required this.onNewChat,
   });
 
   final ClaudeChat chat;
 
-  /// Whether the session is up: the list is asked for over its connection,
-  /// and asked again when it comes back.
+  /// As the page last asked for them; null before the session first came
+  /// up.
+  final Future<List<ClaudeAgent>>? agents;
+
+  /// Whether the session is up: the list is asked for over its connection.
   final bool connected;
   final ValueChanged<ClaudeAgent> onPick;
-
-  @override
-  State<_SessionList> createState() => _SessionListState();
-}
-
-class _SessionListState extends State<_SessionList> {
-  Future<List<ClaudeAgent>>? _agents;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.connected) _agents = widget.chat.agents();
-  }
-
-  @override
-  void didUpdateWidget(covariant _SessionList old) {
-    super.didUpdateWidget(old);
-    if (widget.connected && !old.connected) _again();
-  }
-
-  void _again() => setState(() => _agents = widget.chat.agents());
+  final VoidCallback onRefresh;
+  final VoidCallback onNewChat;
 
   /// How long ago, in as few characters as a row can spare.
   static String _ago(DateTime? at) {
@@ -691,7 +797,7 @@ class _SessionListState extends State<_SessionList> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final agents = _agents;
+    final agents = this.agents;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -706,8 +812,13 @@ class _SessionListState extends State<_SessionList> {
                 ),
               ),
               IconButton(
+                tooltip: 'New chat',
+                onPressed: connected ? onNewChat : null,
+                icon: const Icon(Icons.add_comment_outlined),
+              ),
+              IconButton(
                 tooltip: 'Refresh',
-                onPressed: widget.connected ? _again : null,
+                onPressed: connected ? onRefresh : null,
                 icon: const Icon(Icons.refresh),
               ),
             ],
@@ -716,8 +827,8 @@ class _SessionListState extends State<_SessionList> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(
-            'One still running is picked up as a copy, so it carries on '
-            'untouched and nothing said here reaches it.',
+            'One still running is watched live, and what you send goes into '
+            'it. A finished one is continued where it stopped.',
             style: theme.textTheme.bodySmall,
           ),
         ),
@@ -741,18 +852,50 @@ class _SessionListState extends State<_SessionList> {
                     if (rows.isEmpty) {
                       return _say(
                         context,
-                        'No Claude sessions are running on this host.',
+                        'No Claude sessions on this host yet.',
                       );
                     }
+                    // Already in this order; the headings go where each
+                    // part starts.
+                    final pinned = rows.where((row) => row.pinned);
+                    final running = rows.where(
+                      (row) => !row.pinned && row.live,
+                    );
+                    final finished = rows.where(
+                      (row) => !row.pinned && !row.live,
+                    );
+                    final items = <Object>[
+                      if (pinned.isNotEmpty) ...['Pinned', ...pinned],
+                      if (running.isNotEmpty) ...['Running', ...running],
+                      if (finished.isNotEmpty) ...[
+                        'Finished (${finished.length})',
+                        ...finished,
+                      ],
+                    ];
                     return ListView.builder(
-                      itemCount: rows.length,
-                      itemBuilder: (context, index) =>
-                          _row(context, rows[index]),
+                      itemCount: items.length,
+                      itemBuilder: (context, index) => switch (items[index]) {
+                        final ClaudeAgent agent => _row(context, agent),
+                        final Object heading => _heading(context, '$heading'),
+                      },
                     );
                   },
                 ),
         ),
       ],
+    );
+  }
+
+  Widget _heading(BuildContext context, String text) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Text(
+        text,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: theme.colorScheme.primary,
+        ),
+      ),
     );
   }
 
@@ -786,7 +929,7 @@ class _SessionListState extends State<_SessionList> {
     return ListTile(
       // The one this chat was picked up from, so which is showing is never a
       // guess.
-      selected: agent.sessionId == widget.chat.pickedFrom,
+      selected: agent.sessionId == chat.pickedFrom,
       leading: agent.busy
           ? const SizedBox(
               width: 20,
@@ -817,7 +960,7 @@ class _SessionListState extends State<_SessionList> {
               ),
             )
           : null,
-      onTap: () => widget.onPick(agent),
+      onTap: () => onPick(agent),
     );
   }
 }

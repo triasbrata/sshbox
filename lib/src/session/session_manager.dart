@@ -307,6 +307,39 @@ class LiveSession extends ChangeNotifier {
   /// carries only a terminal, as mosh does, cannot.
   bool get canChat => _session is ChannelCapable;
 
+  /// The connection whose Claude Code passed [chatRefusal]. Asked once a
+  /// connection, since a version does not change under a session unless it
+  /// is upgraded — and a refusal is not kept, so after an upgrade the next
+  /// tap asks again without a reconnect.
+  Object? _claudeFitOn;
+
+  /// Why chat cannot open on this host — no Claude Code, or one older than
+  /// [ClaudeChat.minimumVersion] — or null when it can.
+  Future<String?> chatRefusal() async {
+    final session = _session;
+    if (session is! ChannelCapable || !isConnected) return 'Not connected.';
+    if (identical(_claudeFitOn, session)) return null;
+    final String output;
+    try {
+      final channel = await (session as ChannelCapable).open(
+        ClaudeChat.versionCommand(),
+      );
+      try {
+        output = await utf8.decoder
+            .bind(channel.output)
+            .join()
+            .timeout(const Duration(seconds: 20));
+      } finally {
+        channel.close();
+      }
+    } catch (error) {
+      return 'Could not ask the host which Claude Code it has: $error';
+    }
+    final why = ClaudeChat.versionRefusal(output);
+    if (why == null) _claudeFitOn = session;
+    return why;
+  }
+
   ClaudeChat? _chat;
 
   /// The conversation the chat tab shows, made the first time it is asked
