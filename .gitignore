@@ -59,3 +59,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# CMake's scratch for a plugin's native code, left by an Android build.
+**/android/.cxx/

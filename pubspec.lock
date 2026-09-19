@@ -268,10 +268,9 @@ packages:
   firebase_core:
     dependency: "direct main"
     description:
-      name: firebase_core
-      sha256: "2343710d8a164e3157a5e2fbb00663503c669be4aa06185311df48626760fdf1"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/firebase_core"
+      relative: true
+    source: path
     version: "4.14.0"
   firebase_core_platform_interface:
     dependency: transitive
