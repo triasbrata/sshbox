@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/chat/claude_chat.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
@@ -85,6 +87,25 @@ class _Shell
   /// A session that has said nothing, unless a test says otherwise.
   String history = '0\n';
 
+  /// A whole transcript on the host, where a test gives one: the history
+  /// command then gets its size and its end, as a real host hands them over,
+  /// and a read of an earlier part the bytes it asks for.
+  Uint8List? transcript;
+
+  Uint8List _fromTranscript(Uint8List all, String command) {
+    if (command.contains('wc -c')) {
+      final from = math.max(0, all.length - ClaudeChat.historyLimit);
+      return Uint8List.fromList([
+        ...utf8.encode('${all.length}\n'),
+        ...all.sublist(from),
+      ]);
+    }
+    int number(String pattern) =>
+        int.parse(RegExp(pattern).firstMatch(command)!.group(1)!);
+    final from = number(r'tail -c \+(\d+)') - 1;
+    return all.sublist(from, from + number(r'head -c (\d+)'));
+  }
+
   /// The running session's transcript as it grows, once something follows
   /// it.
   StreamController<Uint8List>? follow;
@@ -109,6 +130,14 @@ class _Shell
       follow = controller;
       return (
         output: controller.stream,
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    final all = transcript;
+    if (all != null && command.contains('.jsonl')) {
+      return (
+        output: Stream.value(_fromTranscript(all, command)),
         write: (Uint8List data) {},
         close: () {},
       );
@@ -185,6 +214,12 @@ final _nightlyHistory = _history([
     },
   },
 ]);
+
+/// Where the conversation is scrolled to: its list, not the sidebar's.
+ScrollPosition _conversationAt(WidgetTester tester) =>
+    tester.widget<CustomScrollView>(find.byType(CustomScrollView))
+        .controller!
+        .position;
 
 /// Lets a pick-up run out. Closing the drawer, reading the history and
 /// starting Claude are futures, not frames, so settling the frames alone
@@ -887,6 +922,118 @@ void main() {
     expect(row.selected, isFalse);
   });
 
+  testWidgets('a session somebody is typing into at a terminal is shown '
+      'read-only, and the box says to type there instead', (tester) async {
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = jsonEncode([
+        {
+          'pid': 1259765,
+          'cwd': '/home/me',
+          'kind': 'interactive',
+          'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+          'name': 'dev-e0',
+          'status': 'idle',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'dev-e0');
+
+    // Followed live, like any running session, and its turns drawn.
+    expect(shell.commands.last, contains(' -f '));
+    expect(find.text('It failed at the lint step.'), findsOneWidget);
+    // Said to be read-only, and nowhere said to take what is sent.
+    expect(find.textContaining('live, read-only'), findsOneWidget);
+    expect(find.textContaining('what you send goes into it'), findsNothing);
+    // The box is shut, and says where typing goes; there is nothing to send.
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.enabled, isFalse);
+    expect(
+      field.decoration!.hintText,
+      'Read-only: type into “dev-e0” at its terminal',
+    );
+    expect(
+      tester
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.arrow_upward))
+          .onPressed,
+      isNull,
+    );
+    expect(shell.typed, isEmpty);
+  });
+
+  testWidgets('earlier turns go in above the first one showing, and what is '
+      'on screen stays where it is', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    // More than the first read takes, and less than one earlier chunk.
+    final lines = [
+      for (var n = 0; n < 200; n++)
+        jsonEncode({
+          'type': 'assistant',
+          'message': {
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'turn $n'},
+            ],
+          },
+          'pad': 'x' * 6000,
+        }),
+    ];
+    final all = Uint8List.fromList(utf8.encode('${lines.join('\n')}\n'));
+    // The first turn the first read has whole: the one after the line its
+    // start falls in.
+    final cut = all.length - ClaudeChat.historyLimit;
+    var first = 0;
+    for (var end = 0; end <= cut; first++) {
+      end += utf8.encode(lines[first]).length + 1;
+    }
+    final shell = _Shell()
+      ..transcript = all
+      ..listing = jsonEncode([_finished('dddd0001', 'long one')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await _settlePickUp(tester);
+    await tester.tap(find.text('long one'));
+    await _settlePickUp(tester);
+
+    // Up at the top of what the first read brought, the offer of more.
+    final at = _conversationAt(tester);
+    at.jumpTo(at.minScrollExtent);
+    await tester.pump();
+    expect(find.text('turn ${first - 1}'), findsNothing);
+    final y = tester.getTopLeft(find.text('turn $first')).dy;
+    final pixels = at.pixels;
+
+    await tester.tap(find.text('Load earlier turns'));
+    await _settlePickUp(tester);
+
+    // Nothing on screen moved; the earlier turns are above it, all the way
+    // to the first, and there is nothing further back to offer.
+    expect(tester.getTopLeft(find.text('turn $first')).dy, y);
+    expect(at.pixels, pixels);
+    expect(find.text('Load earlier turns'), findsNothing);
+    expect(
+      tester.getTopLeft(find.text('turn ${first - 1}')).dy,
+      lessThan(y),
+    );
+    at.jumpTo(at.minScrollExtent);
+    await tester.pump();
+    expect(find.text('turn 0'), findsOneWidget);
+  });
+
   group('where a session was left', () {
     /// A transcript long enough to scroll: [count] answers.
     String long(String word, int count) => _history([
@@ -926,11 +1073,7 @@ void main() {
       await _settlePickUp(tester);
       // The conversation's list, not the sidebar's: the one with a
       // controller of its own.
-      ScrollPosition at() => tester
-          .widgetList<ListView>(find.byType(ListView))
-          .firstWhere((list) => list.controller != null)
-          .controller!
-          .position;
+      ScrollPosition at() => _conversationAt(tester);
       return (shell: shell, at: at);
     }
 

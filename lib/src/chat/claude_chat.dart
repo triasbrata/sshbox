@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -263,9 +264,50 @@ class ClaudeChat extends ChangeNotifier {
   /// so changing it goes through [restart].
   ChatPermission get permission => _permission;
 
-  final List<ChatEntry> _entries = [];
+  /// Not final: [loadEarlier] draws an earlier part into a list of its own,
+  /// through the same handlers, before it goes in above.
+  List<ChatEntry> _entries = [];
 
   List<ChatEntry> get entries => List.unmodifiable(_entries);
+
+  /// How many of [entries], from the first, [loadEarlier] put there: drawn
+  /// above where the chat opened, so the page can grow them upwards without
+  /// moving what is on screen.
+  int _earlier = 0;
+
+  int get earlier => _earlier;
+
+  /// Where what is shown of the transcript starts, in bytes: everything
+  /// before it is only on the host. Zero when the start has been reached,
+  /// or the whole transcript was read at once.
+  int _shownFrom = 0;
+
+  /// True while the bytes just before [_shownFrom] belong to one event too
+  /// large to show, whose start is further back still.
+  bool _skipping = false;
+
+  /// How much of the transcript this chat has read, against
+  /// [transcriptBudget].
+  int _read = 0;
+
+  bool _loadingEarlier = false;
+
+  bool get loadingEarlier => _loadingEarlier;
+
+  /// Whether the transcript goes back further than what is shown.
+  bool get hasEarlier => _shownFrom > 0;
+
+  /// Whether [loadEarlier] may read more of it.
+  bool get canLoadEarlier => hasEarlier && _read < transcriptBudget;
+
+  /// Tool results read before the part of the transcript holding their
+  /// call, by `tool_use_id`: filled in when [loadEarlier] reaches the call,
+  /// rather than the call opening to nothing.
+  final Map<String, ({String result, bool failed})> _orphans = {};
+
+  /// Bumped whenever what is shown is thrown away, so an earlier part still
+  /// on its way for the old session is dropped rather than drawn into the new.
+  int _shown = 0;
 
   CommandChannel? _channel;
   StreamSubscription<String>? _lines;
@@ -320,8 +362,9 @@ class ClaudeChat extends ChangeNotifier {
   /// it crashed, or the connection went.
   bool get ended => _ended;
 
-  /// The tool calls still waiting for their result, by `tool_use_id`.
-  final Map<String, ChatToolRun> _running = {};
+  /// The tool calls still waiting for their result, by `tool_use_id`. Not
+  /// final, for the same reason as [_entries].
+  Map<String, ChatToolRun> _running = {};
 
   /// Starts Claude on the host. Safe to call again: a chat already up, or on
   /// its way up, stays as it is.
@@ -526,8 +569,12 @@ class ClaudeChat extends ChangeNotifier {
       _watching = agent;
       _say(
         ChatNotice(
-          'Watching “${agent.name}” live: what it does on the host shows '
-          'here as it happens, and what you send goes into it.',
+          agent.interactive
+              ? 'Watching “${agent.name}” live, read-only: somebody is typing '
+                    'into it at a terminal on the host. What it does shows '
+                    'here as it happens; to type into it, use that terminal.'
+              : 'Watching “${agent.name}” live: what it does on the host '
+                    'shows here as it happens, and what you send goes into it.',
         ),
       );
       await _follow(agent, pid: pid, from: read.from, carry: read.carry);
@@ -553,6 +600,13 @@ class ClaudeChat extends ChangeNotifier {
     await _stop();
     _entries.clear();
     _running.clear();
+    _orphans.clear();
+    _shown++;
+    _earlier = 0;
+    _shownFrom = 0;
+    _skipping = false;
+    _read = 0;
+    _loadingEarlier = false;
     _busy = false;
     _ended = false;
     _watching = null;
@@ -962,17 +1016,10 @@ class ClaudeChat extends ChangeNotifier {
     }
     final Uint8List bytes;
     try {
-      final channel = await open(historyCommand(sessionId, wait: wait));
-      try {
-        // A host that never closes the channel costs its history, not the
-        // pick-up.
-        bytes = await channel.output
-            .fold(BytesBuilder(copy: false), (all, chunk) => all..add(chunk))
-            .then((all) => all.takeBytes())
-            .timeout(Duration(seconds: wait ? 40 : 20));
-      } finally {
-        channel.close();
-      }
+      bytes = await _readAll(
+        historyCommand(sessionId, wait: wait),
+        Duration(seconds: wait ? 40 : 20),
+      );
     } catch (error) {
       _say(ChatNotice('Its earlier turns could not be read: $error'));
       return null;
@@ -994,16 +1041,22 @@ class ClaudeChat extends ChangeNotifier {
       return null;
     }
     var body = bytes.sublist(firstLine + 1);
+    _read = body.length;
     if (size > historyLimit) {
-      // Read from the middle of a line; that line is only its end.
+      // Read from the middle of a line; that line is only its end, and
+      // [loadEarlier] reads it whole, from where it starts. [hasEarlier]
+      // says there is more, for the page to offer it.
+      final from = size - body.length;
       final cut = body.indexOf(10);
-      body = cut < 0 ? Uint8List(0) : body.sublist(cut + 1);
-      _entries.add(
-        ChatNotice(
-          'Only the latest part of this session is shown; its earlier turns '
-          'are on the host.',
-        ),
-      );
+      if (cut < 0) {
+        // All of it one event still being written, bigger than the read.
+        body = Uint8List(0);
+        _shownFrom = from;
+        _skipping = true;
+      } else {
+        body = body.sublist(cut + 1);
+        _shownFrom = from + cut + 1;
+      }
     }
     // Only whole lines are drawn; what follows the last one is a line still
     // being written, for the follow to finish.
@@ -1021,6 +1074,122 @@ class ClaudeChat extends ChangeNotifier {
     }
     notifyListeners();
     return (from: size, carry: body.sublist(whole));
+  }
+
+  /// What [command] prints, whole, once the host closes it. A host that
+  /// never closes the channel costs what was being read, not the chat.
+  Future<Uint8List> _readAll(String command, Duration timeout) async {
+    final channel = await open(command);
+    try {
+      return await channel.output
+          .fold(BytesBuilder(copy: false), (all, chunk) => all..add(chunk))
+          .then((all) => all.takeBytes())
+          .timeout(timeout);
+    } finally {
+      channel.close();
+    }
+  }
+
+  /// Reads the transcript from before what is shown and draws it above,
+  /// through the same handlers the history and the follow go through:
+  /// [earlierChunk] at a time, going on until something to show turns up or
+  /// the start is reached, and never much past [transcriptBudget] in all.
+  ///
+  /// Every chunk ends where a line starts, so no event is read in halves: a
+  /// line a chunk cut into is not drawn from it, and the next chunk ends where
+  /// that line starts and reads it whole. One event bigger than a whole chunk
+  /// cannot be held that way; it is left out, and the chat says so where it
+  /// was.
+  ///
+  /// Throws with why, when the host could not hand it over.
+  Future<void> loadEarlier() async {
+    final sessionId = _pickedFrom;
+    if (sessionId == null || _loadingEarlier || !canLoadEarlier) return;
+    final shown = _shown;
+    _loadingEarlier = true;
+    notifyListeners();
+    final older = <ChatEntry>[];
+    // Calls in what is read whose result is not in it, nor in anything read
+    // before: still running, for a session being watched.
+    final running = <String, ChatToolRun>{};
+    var drew = false;
+    try {
+      while (!drew && canLoadEarlier) {
+        final end = _shownFrom;
+        final start = math.max(0, end - earlierChunk);
+        final body = await _readAll(
+          earlierCommand(sessionId, from: start, to: end),
+          const Duration(seconds: 30),
+        );
+        // Another session picked meanwhile: this one's turns are not its.
+        if (shown != _shown) return;
+        if (body.length != end - start) {
+          throw SshSessionException(
+            'The transcript is not what it was on the host. Pick the '
+            'session again to read it afresh.',
+          );
+        }
+        _read += body.length;
+        var lineEnd = body.length;
+        if (_skipping) {
+          // What follows the last line break is more of the event given up
+          // on; before it, lines again.
+          lineEnd = body.lastIndexOf(10) + 1;
+          if (lineEnd == 0) {
+            _shownFrom = start;
+            continue;
+          }
+          _skipping = false;
+        }
+        final whole = start == 0 ? 0 : body.indexOf(10) + 1;
+        if (start > 0 && whole == lineEnd && lineEnd == body.length) {
+          // One line, all of this chunk and more before it.
+          _skipping = true;
+          _shownFrom = start;
+          older.insert(
+            0,
+            ChatNotice(
+              'An event bigger than ${earlierChunk ~/ (1024 * 1024)} MB is '
+              'left out here; it is on the host.',
+            ),
+          );
+          continue;
+        }
+        _shownFrom = start + whole;
+        final shownEntries = _entries;
+        final shownRunning = _running;
+        _entries = [];
+        _running = running;
+        try {
+          for (final line in const LineSplitter().convert(
+            const Utf8Decoder(
+              allowMalformed: true,
+            ).convert(body.sublist(whole, lineEnd)),
+          )) {
+            _replay(line);
+          }
+          drew = _entries.isNotEmpty;
+          older.insertAll(0, _entries);
+        } finally {
+          _entries = shownEntries;
+          _running = shownRunning;
+        }
+      }
+    } finally {
+      if (shown == _shown) {
+        if (_watching != null) {
+          _running.addAll(running);
+        } else {
+          for (final run in running.values) {
+            run.result = '';
+          }
+        }
+        _entries.insertAll(0, older);
+        _earlier += older.length;
+        _loadingEarlier = false;
+        notifyListeners();
+      }
+    }
   }
 
   /// One line of a transcript. Only the conversation is kept: a transcript
@@ -1163,7 +1332,14 @@ class ClaudeChat extends ChangeNotifier {
             },
           );
           _entries.add(run);
-          _running[run.id] = run;
+          // Its result may have been read already, before this call was.
+          if (_orphans.remove(run.id) case final orphan?) {
+            run
+              ..result = orphan.result
+              ..failed = orphan.failed;
+          } else {
+            _running[run.id] = run;
+          }
           changed = true;
       }
     }
@@ -1180,11 +1356,19 @@ class ClaudeChat extends ChangeNotifier {
     for (final block in content) {
       if (block is! Map<String, dynamic>) continue;
       if (block['type'] != 'tool_result') continue;
-      final run = _running.remove(block['tool_use_id']);
-      if (run == null) continue;
+      final id = block['tool_use_id'];
+      final result = _resultText(block['content']);
+      final failed = block['is_error'] == true;
+      final run = _running.remove(id);
+      if (run == null) {
+        // Its call is further back than anything read yet: kept for when
+        // [loadEarlier] reaches it.
+        if (id is String) _orphans[id] = (result: result, failed: failed);
+        continue;
+      }
       run
-        ..result = _resultText(block['content'])
-        ..failed = block['is_error'] == true;
+        ..result = result
+        ..failed = failed;
       changed = true;
     }
     return changed;
@@ -1303,9 +1487,37 @@ class ClaudeChat extends ChangeNotifier {
   /// ponytail: the last 512 KB. Transcripts measured on a working machine run
   /// to 1 MB at the median, 11 MB at the 90th percentile and past 100 MB at
   /// the top, and a single line can be 12 MB — a tool's whole answer, or a
-  /// picture — so the cut is by bytes, never by lines. Page further back on
-  /// request if the tail proves too short.
+  /// picture — so the cut is by bytes, never by lines. [loadEarlier] pages
+  /// further back.
   static const historyLimit = 512 * 1024;
+
+  /// How much [loadEarlier] reads in one go: a few minutes of the busiest
+  /// hour measured, and more of an ordinary one. Held only while it is drawn.
+  static const earlierChunk = 2 * 1024 * 1024;
+
+  /// ponytail: at most about 32 MB of one transcript is read into a chat,
+  /// the tail and every earlier chunk together; past it the rest stays on the
+  /// host. Measured on this machine's transcripts, the busiest hour wrote
+  /// 30 MB and the p90 hour 2–23 MB, and what the chat keeps of them — text,
+  /// tool inputs, results cut to 4000 characters — is 2–9 % of what is read,
+  /// so about 3 MB at most. A transcript that is nothing but text would keep
+  /// all of it. Let the oldest entries go as earlier ones come in, if a chat
+  /// has to reach further back than that.
+  static const transcriptBudget = 32 * 1024 * 1024;
+
+  /// What the host runs to hand over bytes [from] to [to] of a session's
+  /// transcript, for [loadEarlier]: the transcript found and quoted as
+  /// [historyCommand] does it, and then only numbers, so nothing from the
+  /// host reaches the command. `tail -c +N` seeks in a file rather than
+  /// reading up to it, so a chunk near the start of 100 MB costs what one
+  /// near the end does.
+  static String earlierCommand(
+    String sessionId, {
+    required int from,
+    required int to,
+  }) => 'sh -c '
+      '${_shellQuote('${_findTranscript(sessionId)}'
+          'tail -c +${from + 1} "\$f" | head -c ${to - from}')}';
 
   /// What the host runs to hand over the end of a session's transcript: its
   /// size in bytes on the first line, then the last [historyLimit] bytes.
