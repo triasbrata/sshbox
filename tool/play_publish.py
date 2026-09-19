@@ -177,7 +177,7 @@ def access_token(key):
 def build_number():
     line = re.search(r"^version:\s*\S*?\+(\d+)\s*$", (ROOT / "pubspec.yaml").read_text(), re.M)
     if not line:
-        die("pubspec.yaml has no version: X.Y.N+N line to read the build number from")
+        die("pubspec.yaml has no version: X.Y.Z+N line to read the build number from")
     return int(line.group(1))
 
 
@@ -205,7 +205,7 @@ def publish(args):
         if version in had:
             die(f"Play already has build {version}, and takes each one only once",
                 "commit a change to the app, which raises the build number, and",
-                "build again: .githooks/pre-commit keeps pubspec.yaml's N+N.")
+                "build again: .githooks/pre-commit raises pubspec.yaml's +N.")
 
         print(f"uploading {size / 1e6:.1f} MB", flush=True)
         with open(args.bundle, "rb") as bundle:

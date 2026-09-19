@@ -1017,31 +1017,45 @@ why search is stated as a separate capability rather than folded into
 
 ### Build numbers
 
-`pubspec.yaml`'s `version: X.Y.N+N` holds the version name, X.Y.N, and the
-build number, N, which is Android's `versionCode` and iOS's
-`CFBundleVersion`. The name ends in the build number, so build 13 is version
-1.0.13.
+`pubspec.yaml`'s `version: X.Y.Z+N` holds the version name, X.Y.Z, which
+users see, and the build number, N, which is Android's `versionCode` and
+iOS's `CFBundleVersion`.
 
-Every commit that changes the app raises N by one in both places, through
-`.githooks/pre-commit`; X.Y stay as they are. These count as changes to the
-app:
-- anything in `lib/`, `android/`, `ios/` or `assets/`;
+Every commit that changes the app raises N by one, through
+`.githooks/pre-commit`. These count as changes to the app:
+- anything in `lib/`, `android/`, `ios/`, `macos/`, `linux/`, `windows/`,
+  `assets/` or `third_party/`;
 - `pubspec.lock`;
 - a `pubspec.yaml` change beyond its version line.
 
 Docs, tests and `tool/` don't. A commit that changes the version line gets
 `[build vN]` in its message, placed above any trailers.
 
+The name is semver. The patch, Z, is X.Y's newest tag's, and goes up by
+itself on the tenth build past the one that tag was made at, so 1.0.6 tagged
+at build 65 becomes 1.0.7 at build 75. The major and minor are changed by
+hand, with the patch back to 0, in the version line or with
+`tool/release.sh --name X.Y`; an X.Y nobody has tagged yet is kept as
+written. `.githooks/post-commit` tags the first commit
+to carry each name, `vX.Y.Z`, annotated with its build number, so a new
+major or minor and every patch get a tag. Annotated tags go up with their
+commits once `push.followTags` is on:
+
+```sh
+git config push.followTags true
+```
+
 The hooks stay off until a clone turns them on, once. Worktrees share the
-setting:
+setting, and a relative path makes each run the hooks its own branch holds:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
 `tool/test_hooks.sh` runs the hooks against a throwaway repo. Parallel
-branches collide on the version line, X.Y.N+N on both sides: keep the line
-with the higher N, and the hook raises it again on the merge commit.
+branches collide on the version line, X.Y.Z+N on both sides: keep the line
+with the higher N, with `main`'s X.Y if the two differ, and the hook raises
+it again on the merge commit and names its patch from the tags.
 
 ### A release from this machine
 

@@ -2,9 +2,9 @@
 # Builds the bundle to upload to Google Play, signed with the upload key, and
 # with --publish releases it on a testing track:
 #   tool/release.sh [--name X.Y] [--publish [--track alpha] [--dry-run] [--draft]]
-# --name first sets X.Y of pubspec.yaml's version, X.Y.N+N, keeping the build
-# number N; commit that after. N is whatever the pre-commit hook last made it,
-# and Play takes each one only once.
+# --name first sets pubspec.yaml's version, X.Y.Z+N, to X.Y.0, keeping the
+# build number N; commit that after, and the commit is tagged vX.Y.0. N is
+# whatever the pre-commit hook last made it, and Play takes each one only once.
 # Without --publish nothing is uploaded: publishing is always something asked
 # for, never a side effect of a build. tool/play_publish.py does that half, and
 # --dry-run there does everything except the commit that reaches testers.
@@ -42,7 +42,7 @@ case $store in /*) ;; *) store=android/app/$store ;; esac # Gradle reads it from
   die "the working tree has changes: commit or stash them, so the bundle matches a commit"
 
 if [ -n "$name" ]; then
-  sed "s/^\(version:[^0-9]*\)[^+]*+\([0-9][0-9]*\)/\1$name.\2+\2/" pubspec.yaml > pubspec.yaml.tmp
+  sed "s/^\(version:[^0-9]*\)[^+]*+\([0-9][0-9]*\)/\1$name.0+\2/" pubspec.yaml > pubspec.yaml.tmp
   mv pubspec.yaml.tmp pubspec.yaml
 fi
 
