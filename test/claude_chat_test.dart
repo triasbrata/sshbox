@@ -194,6 +194,15 @@ const _live = ClaudeAgent(
   pid: 1241689,
 );
 
+/// [_live], once its process has gone: continued in place, not watched.
+final _finished = ClaudeAgent(
+  sessionId: _live.sessionId,
+  name: _live.name,
+  cwd: _live.cwd,
+  kind: 'background',
+  id: _live.id,
+);
+
 /// The history command's answer for a session that has said nothing yet.
 CommandChannel _noHistory() => (
   output: Stream.value(Uint8List.fromList(utf8.encode('0\n'))),
@@ -887,16 +896,12 @@ void main() {
     await chat.continueFrom(_live);
 
     // How much the host reads is the shell test's to prove, below; this one
-    // is what the chat does with a read that cut a line.
+    // is what the chat does with a read that cut a line: drops it, and says
+    // there is more for the page to offer.
     expect(host.commands.first, contains('.jsonl'));
-    expect(
-      chat.entries.first,
-      isA<ChatNotice>().having(
-        (notice) => notice.text,
-        'text',
-        contains('earlier'),
-      ),
-    );
+    expect(chat.hasEarlier, isTrue);
+    expect(chat.canLoadEarlier, isTrue);
+    expect(chat.entries.first, isA<ChatSaid>());
     expect(chat.entries.whereType<ChatSaid>().first.text, 'why is nginx slow?');
   });
 
@@ -1935,5 +1940,244 @@ void main() {
           reason: id);
     }
     expect(File('${root.path}/RAN').existsSync(), isFalse);
+  });
+
+  group('earlier turns, through a real shell', () {
+    late Directory root;
+    late File transcript;
+    final started = <Process>[];
+
+    setUp(() async {
+      root = await Directory.systemTemp.createTemp('chat-earlier');
+      final projects = await Directory(
+        '${root.path}/config/projects/-srv',
+      ).create(recursive: true);
+      transcript = File('${projects.path}/${_live.sessionId}.jsonl');
+    });
+    tearDown(() async {
+      for (final process in started) {
+        process.kill();
+      }
+      started.clear();
+      await root.delete(recursive: true);
+    });
+
+    /// This machine as the host: every command the chat sends to read the
+    /// transcript runs through a real `sh`, exactly as it was built. Claude
+    /// itself is never run: that command gets a channel that ends at once.
+    Future<CommandChannel> host(String command) async {
+      if (!command.contains('.jsonl')) {
+        return (
+          output: const Stream<Uint8List>.empty(),
+          write: (Uint8List data) {},
+          close: () {},
+        );
+      }
+      final process = await Process.start(
+        'sh',
+        ['-c', command],
+        environment: {
+          'HOME': '${root.path}/nowhere',
+          'CLAUDE_CONFIG_DIR': '${root.path}/config',
+          'PATH': '/usr/bin:/bin',
+        },
+      );
+      started.add(process);
+      unawaited(process.stderr.drain<void>());
+      return (
+        output: process.stdout.map(Uint8List.fromList),
+        write: (Uint8List data) => process.stdin.add(data),
+        // What the channel closing looks like to the host: stdin at its end.
+        close: () => unawaited(process.stdin.close().catchError((_) {})),
+      );
+    }
+
+    /// One line of the transcript, [pad] bytes bigger than [event] alone.
+    String line(Map<String, Object?> event, [int pad = 0]) =>
+        jsonEncode({...event, 'pad': 'x' * pad});
+
+    int sizeOf(Iterable<String> lines) =>
+        lines.fold(0, (all, line) => all + utf8.encode(line).length + 1);
+
+    /// Lines of about [size] bytes in all, each a thing Claude said, named
+    /// [word] and a number — sized unevenly, so that chunks end inside lines
+    /// — with what each said added to [said], in order.
+    List<String> talk(String word, int size, List<String> said) {
+      final lines = <String>[];
+      for (var n = 0; sizeOf(lines) < size; n++) {
+        // A character of three bytes, so a cut can fall inside one too.
+        final text = '$word $n ✓';
+        said.add(text);
+        lines.add(line(_said(text), 700 + n * 7919 % 50000));
+      }
+      return lines;
+    }
+
+    Map<String, Object?> toolUse(String id, String name, String key,
+        String value) => {
+      'type': 'assistant',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': id,
+            'name': name,
+            'input': {key: value},
+          },
+        ],
+      },
+    };
+
+    Map<String, Object?> toolResult(String id, String content) => {
+      'type': 'user',
+      'message': {
+        'role': 'user',
+        'content': [
+          {'type': 'tool_result', 'tool_use_id': id, 'content': content},
+        ],
+      },
+    };
+
+    test('they come back chunk by chunk, every event whole and in order — '
+        'the one the first read cut, and the ones chunks cut', () async {
+      final said = <String>[];
+      final call = line(
+        toolUse('toolu_edge', 'Bash', 'command', 'make test'),
+        40000,
+      );
+      final result = line(toolResult('toolu_edge', 'all 12 passed'));
+      final before = [
+        ...talk('early', 3 * 1024 * 1024, said),
+        // Bigger than a whole chunk: no chunk holds it whole, so it is left
+        // out, and said to be.
+        line(_said('too big to hold'), ClaudeChat.earlierChunk + 100000),
+        ...talk('middle', 3 * 1024 * 1024, said),
+        call,
+        result,
+      ];
+      // The tail, sized so that where the first read starts falls in the
+      // middle of the tool call: it reads the call's result, not the call.
+      final tailSize =
+          ClaudeChat.historyLimit - sizeOf([result]) - sizeOf([call]) ~/ 2;
+      final after = talk('late', tailSize - 100000, said);
+      final filler = line({'type': 'mode'});
+      after.add(
+        line({'type': 'mode'}, tailSize - sizeOf(after) - sizeOf([filler])),
+      );
+      final lines = [...before, ...after];
+      transcript.writeAsStringSync('${lines.join('\n')}\n');
+      final size = transcript.lengthSync();
+      final cutAt = size - ClaudeChat.historyLimit;
+      final callStarts = sizeOf(before) - sizeOf([call, result]);
+      expect(cutAt, inExclusiveRange(callStarts, callStarts + sizeOf([call])));
+
+      final chat = ClaudeChat(open: host);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+
+      // At first only the tail: the call cut off, its result read, nothing
+      // earlier.
+      expect(chat.entries.whereType<ChatSaid>().first.text, 'late 0 ✓');
+      expect(chat.entries.whereType<ChatToolRun>(), isEmpty);
+      expect(chat.hasEarlier, isTrue);
+
+      var pages = 0;
+      while (chat.canLoadEarlier) {
+        await chat.loadEarlier();
+        pages++;
+      }
+
+      expect(pages, greaterThan(2));
+      expect(chat.hasEarlier, isFalse);
+      // Every event but the one too big, once each, in the order written, and
+      // no character broken where a chunk cut through it.
+      expect(chat.entries.whereType<ChatSaid>().map((e) => e.text), said);
+      // The call the first read cut is read whole from an earlier chunk, and
+      // its result, read before it, is folded into it rather than lost.
+      final run = chat.entries.whereType<ChatToolRun>().single;
+      expect(run.summary, 'make test');
+      expect(run.result, 'all 12 passed');
+      // Where the big one was, the chat says so, once.
+      final texts = [
+        for (final entry in chat.entries)
+          switch (entry) {
+            ChatSaid(:final text) => text,
+            ChatNotice(:final text) => text,
+            ChatToolRun() => 'tool',
+          },
+      ];
+      final gap = texts.indexWhere((text) => text.contains('left out'));
+      expect(texts[gap - 1], startsWith('early '));
+      expect(texts[gap + 1], 'middle 0 ✓');
+      expect(texts.where((text) => text.contains('left out')), hasLength(1));
+      // All of it above where the chat opened.
+      expect(chat.earlier, texts.indexOf('late 0 ✓'));
+    });
+
+    test('while a running session is watched, what it adds still goes in '
+        'below, and a call in the earlier part gets its result live',
+        () async {
+      final said = <String>[];
+      final before = [
+        line(toolUse('toolu_long', 'Task', 'description', 'audit the repo')),
+        ...talk('earlier', 1024 * 1024, said),
+      ];
+      final after = talk('tail', ClaudeChat.historyLimit, said);
+      transcript.writeAsStringSync('${[...before, ...after].join('\n')}\n');
+      final alive = await Process.start('sleep', ['60']);
+      started.add(alive);
+
+      final chat = ClaudeChat(open: host);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(
+        ClaudeAgent(
+          sessionId: _live.sessionId,
+          name: _live.name,
+          cwd: _live.cwd,
+          kind: 'background',
+          id: _live.id,
+          pid: alive.pid,
+        ),
+      );
+      expect(chat.watching, isNotNull);
+
+      Future<void> shows(String text) async {
+        for (var look = 0; look < 100; look++) {
+          if (chat.entries.whereType<ChatSaid>().any((e) => e.text == text)) {
+            return;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        fail('“$text” never showed');
+      }
+
+      transcript.writeAsStringSync(
+        '${line(_said('live 1'))}\n',
+        mode: FileMode.append,
+      );
+      await shows('live 1');
+
+      while (chat.canLoadEarlier) {
+        await chat.loadEarlier();
+      }
+      final run = chat.entries.whereType<ChatToolRun>().single;
+      // Nothing has answered it yet, and the session is still running.
+      expect(run.done, isFalse);
+
+      transcript.writeAsStringSync(
+        '${line(toolResult('toolu_long', 'clean'))}\n'
+        '${line(_said('live 2'))}\n',
+        mode: FileMode.append,
+      );
+      await shows('live 2');
+
+      expect(run.result, 'clean');
+      expect(chat.entries.first, same(run));
+      expect(
+        chat.entries.whereType<ChatSaid>().map((e) => e.text),
+        [...said, 'live 1', 'live 2'],
+      );
+    });
   });
 }

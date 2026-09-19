@@ -3,8 +3,9 @@
 # with --publish releases it on a testing track:
 #   tool/release.sh [--name X.Y] [--publish [--track alpha] [--dry-run] [--draft]]
 # --name first sets pubspec.yaml's version, X.Y.Z+N, to X.Y.0, keeping the
-# build number N; commit that after, and the commit is tagged vX.Y.0. N is
-# whatever the pre-commit hook last made it, and Play takes each one only once.
+# build number N; commit and push that, and CI's next release is vX.Y.0.
+# CI numbers its releases itself; a bundle built here takes N as the line
+# has it, and Play takes each number only once.
 # Without --publish nothing is uploaded: publishing is always something asked
 # for, never a side effect of a build. tool/play_publish.py does that half, and
 # --dry-run there does everything except the commit that reaches testers.

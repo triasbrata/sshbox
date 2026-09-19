@@ -8,6 +8,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'toast.dart';
 
 /// A conversation with Claude Code running on the host, beside that host's
 /// shell — what the VS Code plugin shows in its side panel: what was asked,
@@ -40,9 +41,16 @@ class _ChatPageState extends State<ChatPage> {
   /// moment it starts, and starting again on every change would be a loop.
   bool _wasConnected = false;
 
-  /// How long the transcript was when it was last drawn, so a new entry
-  /// scrolls into view and a rebuild for anything else does not.
+  /// How long the transcript was when it was last drawn, below where it
+  /// opened, so a new entry scrolls into view and a rebuild for anything
+  /// else — earlier turns going in above — does not.
   int _drawn = 0;
+
+  int get _below => _chat.entries.length - _chat.earlier;
+
+  /// Where the conversation opened: earlier turns grow up from it, and new
+  /// ones down, so neither moves what is on screen.
+  final _opened = UniqueKey();
 
   /// The sessions on the host, as last asked for. Held here rather than by
   /// the list, which goes whenever the sidebar is hidden or the drawer shut:
@@ -125,7 +133,7 @@ class _ChatPageState extends State<ChatPage> {
   /// Keeps the newest entry in view, unless the reader has scrolled up to
   /// look at something — then it stays where they put it.
   void _followTranscript() {
-    final entries = _chat.entries.length;
+    final entries = _below;
     if (entries == _drawn) return;
     _drawn = entries;
     if (_switching) return;
@@ -147,8 +155,11 @@ class _ChatPageState extends State<ChatPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (_scroll.hasClients) {
-        final end = _scroll.position.maxScrollExtent;
-        _scroll.jumpTo(at == null ? end : math.min(at, end));
+        final position = _scroll.position;
+        final end = position.maxScrollExtent;
+        _scroll.jumpTo(
+          at == null ? end : at.clamp(position.minScrollExtent, end),
+        );
       }
       // A lazy list only knows how long it is once the rows near its end
       // are built, so the bottom is found again once they are.
@@ -199,8 +210,23 @@ class _ChatPageState extends State<ChatPage> {
     _switching = true;
     await _chat.continueFrom(agent);
     if (!mounted) return;
-    _drawn = _chat.entries.length;
+    _drawn = _below;
     _land(at);
+  }
+
+  /// Reads the turns before the first one showing, which go in above it.
+  Future<void> _loadEarlier() async {
+    try {
+      await _chat.loadEarlier();
+    } catch (error) {
+      if (mounted) {
+        showToast(
+          context,
+          'Earlier turns could not be read\n$error',
+          type: ToastificationType.error,
+        );
+      }
+    }
   }
 
   /// Leaves what this chat shows for a new one, which the next message
@@ -282,11 +308,40 @@ class _ChatPageState extends State<ChatPage> {
                   // them would do nothing.
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
-              : ListView.builder(
+              : CustomScrollView(
                   controller: _scroll,
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-                  itemCount: entries.length,
-                  itemBuilder: (context, index) => _entry(entries[index]),
+                  center: _opened,
+                  slivers: [
+                    // Above [_opened], slivers grow upwards: the nearest to it
+                    // is the list of earlier turns, newest of them first, and
+                    // over them what says there are more.
+                    if (chat.hasEarlier)
+                      SliverToBoxAdapter(
+                        child: _Earlier(chat: chat, onLoad: _loadEarlier),
+                      ),
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      sliver: SliverList.builder(
+                        itemCount: chat.earlier,
+                        itemBuilder: (context, index) =>
+                            _entry(entries[chat.earlier - 1 - index]),
+                      ),
+                    ),
+                    SliverPadding(
+                      key: _opened,
+                      padding: EdgeInsets.fromLTRB(
+                        12,
+                        chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
+                        12,
+                        4,
+                      ),
+                      sliver: SliverList.builder(
+                        itemCount: entries.length - chat.earlier,
+                        itemBuilder: (context, index) =>
+                            _entry(entries[chat.earlier + index]),
+                      ),
+                    ),
+                  ],
                 ),
         ),
         if (chat.busy)
@@ -333,12 +388,14 @@ class _ChatPageState extends State<ChatPage> {
     final connected = widget.session.isConnected;
     // Before there is a conversation, what is sent starts one.
     final composing = chat.composing && connected;
+    // Somebody is typing into it at a terminal: shown here, typed there.
+    final readOnly = watching != null && watching.interactive;
     // Into a session being watched, what is typed goes to that session and
     // queues behind whatever it is doing; to this chat's own Claude, only
     // between its turns.
-    final open = watching != null || chat.ready || composing;
+    final open = !readOnly && (watching != null || chat.ready || composing);
     final canSend =
-        watching != null || ((chat.ready || composing) && !chat.busy);
+        open && (watching != null || ((chat.ready || composing) && !chat.busy));
     return SafeArea(
       top: false,
       child: Padding(
@@ -398,7 +455,10 @@ class _ChatPageState extends State<ChatPage> {
                 decoration: InputDecoration(
                   isDense: true,
                   border: const OutlineInputBorder(),
-                  hintText: watching != null
+                  hintText: readOnly
+                      ? 'Read-only: type into “${watching.name}” at its '
+                            'terminal'
+                      : watching != null
                       ? 'Message “${watching.name}”…'
                       : composing
                       ? 'Start a new chat…'
@@ -484,6 +544,45 @@ class _Empty extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Over the earliest turn showing, when the transcript on the host goes back
+/// further: a button that reads more of it, or, once a chat has read all it
+/// may of one transcript, that the rest is on the host.
+class _Earlier extends StatelessWidget {
+  const _Earlier({required this.chat, required this.onLoad});
+
+  final ClaudeChat chat;
+  final VoidCallback onLoad;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      child: Center(
+        child: chat.loadingEarlier
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : chat.canLoadEarlier
+            ? TextButton.icon(
+                onPressed: onLoad,
+                icon: const Icon(Icons.history),
+                label: const Text('Load earlier turns'),
+              )
+            : Text(
+                'Earlier turns are on the host: a chat reads at most '
+                '${ClaudeChat.transcriptBudget ~/ (1024 * 1024)} MB of one '
+                'session.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall,
+              ),
       ),
     );
   }
@@ -828,7 +927,8 @@ class _SessionList extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(
             'One still running is watched live, and what you send goes into '
-            'it. A finished one is continued where it stopped.',
+            'it; one open in a terminal is only watched. A finished one is '
+            'continued where it stopped.',
             style: theme.textTheme.bodySmall,
           ),
         ),
