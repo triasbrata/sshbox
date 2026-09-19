@@ -1,9 +1,14 @@
-# On a v* tag, or by hand from the Actions tab. Mobile goes straight to its
-# store: `android` runs tool/release.sh --publish, which releases on Play's
-# closed testing track (by hand it is a --dry-run unless told otherwise).
-# Desktop goes to R2: `desktop` builds Linux, Windows and macOS and keeps them
-# in a private bucket, and nowhere else. The secrets live in the `release`
-# environment, which only v* tags and main can reach. README.md, Releasing.
+# On a v* tag, which tag.yml makes for every push to main that changes the
+# app, or by hand from the Actions tab. `version` reads the release's number
+# from the tag, "Jeansh X.Y.Z, build N", and every build writes it into its
+# own copy of pubspec.yaml. Mobile goes straight to its store: `android` runs
+# tool/release.sh --publish, which releases on Play's closed testing track (by
+# hand it is a --dry-run unless told otherwise). Desktop goes to R2: `desktop`
+# builds Linux, Windows and macOS and keeps them in a private bucket, and
+# nowhere else. Then `notes` has the release notes written, in English and
+# Indonesian, for jeansh.brata.cloud/releases. The secrets live in the
+# `release` environment, which only v* tags and main can reach.
+# README.md, Releasing.
 name: Release
 
 on:
@@ -22,12 +27,53 @@ permissions:
 concurrency: release
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.v.outputs.name }}
+      build: ${{ steps.v.outputs.build }}
+      label: ${{ steps.v.outputs.name }}+${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" \
+              --jq 'select(.object.type == "tag") | .object.sha')
+            [ -n "$object" ] || { echo "::error::$GITHUB_REF_NAME is not an annotated tag"; exit 1; }
+            build=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" --jq .message |
+              sed -n 's/^Jeansh .*, build \([0-9][0-9]*\)$/\1/p' | head -n 1)
+            name=${GITHUB_REF_NAME#v}
+          else
+            # By hand from main: pubspec.yaml's line as it stands.
+            line=$(sed -n 's/^version: *//p' pubspec.yaml)
+            name=${line%+*}
+            build=${line#*+}
+          fi
+          [ -n "$build" ] || { echo "::error::no build number for $GITHUB_REF_NAME"; exit 1; }
+          echo "$name, build $build"
+          { echo "name=$name"; echo "build=$build"; } >> "$GITHUB_OUTPUT"
+
   android:
+    needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: release
     steps:
       - uses: actions/checkout@v7
+
+      # The release's number, committed in this runner only: tool/release.sh
+      # builds from a clean tree, and main's pubspec.yaml only sets X.Y.
+      - name: Set the version
+        env:
+          VERSION: ${{ needs.version.outputs.label }}
+        run: |
+          sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
+          git diff --quiet pubspec.yaml ||
+            git -c user.name=CI -c user.email=ci@invalid commit -q -m "Version $VERSION" pubspec.yaml
 
       # AGP 9 and Gradle 9 need JDK 17 or newer; release.sh needs its keytool.
       - uses: actions/setup-java@v6
@@ -80,6 +126,7 @@ jobs:
         run: rm -f "$RUNNER_TEMP/upload.jks" "$RUNNER_TEMP/play.json" android/key.properties
 
   desktop:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +144,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The release's number, in this runner's copy only.
+      - name: Set the version
+        env:
+          VERSION: ${{ needs.version.outputs.label }}
+        run: |
+          sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.2 # .fvmrc
@@ -112,9 +166,9 @@ jobs:
 
       # Each lands in dist/<X.Y.Z+N>/ as the scripts package it by hand.
       - name: Build
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
         run: |
-          label=$(sed -n 's/^version: *//p' pubspec.yaml | tr -d '\r')
-          echo "LABEL=$label" >> "$GITHUB_ENV"
           case ${{ matrix.target }} in
             linux) tools/build_desktop.sh --skip-checks linux ;;
             macos) tools/build_apple.sh --skip-checks macos ;;
@@ -122,17 +176,18 @@ jobs:
             # itself, so the same build and the same zip, by hand.
             windows)
               flutter build windows --release
-              name="Jeansh-$label"
+              name="Jeansh-$LABEL"
               cp -r build/windows/x64/runner/Release "$RUNNER_TEMP/$name"
-              mkdir -p "dist/$label"
-              (cd "$RUNNER_TEMP" && 7z a -tzip -bso0 "$GITHUB_WORKSPACE/dist/$label/$name-windows-x64.zip" "$name")
-              (cd "dist/$label" && sha256sum -- * > SHA256SUMS) ;;
+              mkdir -p "dist/$LABEL"
+              (cd "$RUNNER_TEMP" && 7z a -tzip -bso0 "$GITHUB_WORKSPACE/dist/$LABEL/$name-windows-x64.zip" "$name")
+              (cd "dist/$LABEL" && sha256sum -- * > SHA256SUMS) ;;
           esac
 
       # Into a private bucket, and nowhere else: no Actions artifact, no GitHub
       # release, and nothing in this public log names the bucket or an object.
       - name: Keep the build in R2
         env:
+          LABEL: ${{ needs.version.outputs.label }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
@@ -146,3 +201,56 @@ jobs:
           done
           aws s3 cp --recursive --only-show-errors --endpoint-url "$R2_ENDPOINT" \
             "dist/$LABEL" "s3://$R2_BUCKET/desktop/$LABEL/${{ matrix.target }}/"
+
+  notes:
+    needs: [version, android, desktop]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # From the app's commits since the previous tag, onto site/releases.json
+      # in R2, which jeansh.brata.cloud/releases reads: no deploy per release.
+      - name: Write the release notes onto the website
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+          NAME: ${{ needs.version.outputs.name }}
+          BUILD: ${{ needs.version.outputs.build }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          for secret in OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
+            [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
+          done
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$GITHUB_REF_NAME" -- \
+            lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
+            > "$RUNNER_TEMP/changes.txt"
+
+          r2() { aws --endpoint-url "$R2_ENDPOINT" "$@"; }
+          list="$RUNNER_TEMP/releases.json"
+          # No list yet starts one. Any other failure to read it stops here,
+          # rather than writing a list that has lost every older release.
+          if r2 s3api head-object --bucket "$R2_BUCKET" --key site/releases.json > /dev/null 2> "$RUNNER_TEMP/head.err"; then
+            r2 s3 cp --only-show-errors "s3://$R2_BUCKET/site/releases.json" "$list"
+          elif grep -qE '\(404\)|Not Found' "$RUNNER_TEMP/head.err"; then
+            echo '[]' > "$list"
+          else
+            echo "::error::could not read the release notes from R2"
+            exit 1
+          fi
+          python3 tool/release_notes.py --version "$NAME" --build "$BUILD" \
+            --changes "$RUNNER_TEMP/changes.txt" "$list"
+          r2 s3 cp --only-show-errors --content-type application/json \
+            "$list" "s3://$R2_BUCKET/site/releases.json"

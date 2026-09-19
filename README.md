@@ -1163,15 +1163,18 @@ The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
-- `.github/workflows/tag.yml` makes the tags on GitHub, so every new version
-  name releases by itself. Once a push to `main` brings a name with no tag
-  there, it tags `vX.Y.Z` the way the post-commit hook does on this machine:
-  annotated `Jeansh X.Y.Z, build N`, on the first commit since the last
-  tag to carry the name. "Since the last tag" matters: the old `1.0.N+N`
-  names, 1.0.13 to 1.0.65, all came before `v1.0.6`.
-  It uses `CLAUDE_GITHUB_TOKEN`, because a tag made with `GITHUB_TOKEN`
-  starts no workflow and only an admin may make a `v*` tag.
-- `.github/workflows/release.yml` runs on a `v*` tag.
+- `.github/workflows/tag.yml` numbers every release. Each push to `main`
+  that changes the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`,
+  `windows/`, `assets/`, `third_party/`, `pubspec.*`) gets the next version:
+  after the highest tag, `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes
+  `vX.Y.(Z+1)` with build N+1 on the pushed commit. It goes to X.Y.0 when
+  `pubspec.yaml`'s version line asks for a new X.Y by hand, which is all
+  that line still decides. Nothing is committed back to `main`. It uses
+  `CLAUDE_GITHUB_TOKEN`, because a tag made with `GITHUB_TOKEN` starts no
+  workflow and only an admin may make a `v*` tag.
+- `.github/workflows/release.yml` runs on that tag. `version` reads the
+  tag's number, and each build writes it into its own copy of
+  `pubspec.yaml`.
   - `android` runs `tool/release.sh --publish`, which releases on Closed
     testing. Mobile goes straight to its store, and nowhere else. Run by
     hand from the Actions tab it is a `--dry-run` unless its box is
@@ -1183,6 +1186,15 @@ The repository is public, so GitHub Actions costs nothing.
     else keeps a build: no Actions artifact, no GitHub release, the bucket
     has no public URL or domain, and the public run log names neither the
     bucket nor an object.
+  - `notes`, once both succeed, hands the app's commit messages since the
+    previous tag to a model through OpenRouter (`tool/release_notes.py`,
+    `anthropic/claude-sonnet-5` unless the repository variable
+    `RELEASE_NOTES_MODEL` names another). The model writes the notes in
+    English and Indonesian, and they are put first in `site/releases.json`
+    in the same bucket. [jeansh.brata.cloud/releases](https://jeansh.brata.cloud/releases)
+    reads that one file through an R2 binding, so a release shows there
+    without a deploy. `tool/test_release_notes.py` checks what it does with
+    a reply.
 
 The release reads these secrets from the `release` environment, which only
 `v*` tags and `main` can deploy to, so a workflow on any other branch never
@@ -1200,6 +1212,7 @@ sees them:
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | `jeansh-builds` |
 | `CLAUDE_GITHUB_TOKEN` | the owner's fine-grained token for this repository alone, **Contents: Read and write**, for `tag.yml` |
+| `OPENROUTER_API_KEY` | an OpenRouter API key, for the release notes |
 
 Only collaborators can contribute. Pull requests and issues can only be
 opened by collaborators. On `main`, a ruleset refuses deletion and force

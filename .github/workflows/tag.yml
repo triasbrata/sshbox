@@ -1,74 +1,96 @@
-# Tags vX.Y.Z on GitHub once a push to main brings a version name with no tag
-# there, which starts release.yml. The tag is the one .githooks/post-commit
-# makes on this machine: annotated "Jeansh X.Y.Z, build N", on the first commit
-# whose pubspec.yaml carries the name.
+# CI numbers every release. A push to main that changes the app gets the next
+# version: the highest v* tag, annotated "Jeansh X.Y.Z, build N", gives way to
+# vX.Y.(Z+1) with build N+1 on the pushed commit, or to X.Y.0 when
+# pubspec.yaml's version line asks for a new X.Y by hand. That tag starts
+# release.yml. Nothing is committed back: pubspec.yaml's version line only
+# sets X.Y, and release.yml writes the whole version into its own copy.
 #
-# It is made with CLAUDE_GITHUB_TOKEN, a token of the repository's owner, for
-# two reasons: a tag made with GITHUB_TOKEN starts no other workflow, and the
-# v* tag ruleset lets only an admin make one. `check` needs no secret, so only
-# a push with something to tag touches the release environment.
+# The tag is made with CLAUDE_GITHUB_TOKEN, a token of the repository's owner,
+# for two reasons: a tag made with GITHUB_TOKEN starts no other workflow, and
+# the v* tag ruleset lets only an admin make one. `next` needs no secret, so
+# only a push with something to release touches the release environment.
 name: Tag
 
 on:
   push:
     branches: [main]
+    # What the app is built from; a push of docs, tests or CI alone is no release.
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'ios/**'
+      - 'macos/**'
+      - 'linux/**'
+      - 'windows/**'
+      - 'assets/**'
+      - 'third_party/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
 
 permissions:
   contents: read
 
+# One at a time, so each run counts from the tag the one before it made.
 concurrency: tag
 
 jobs:
-  check:
+  next:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.find.outputs.tag }}
-      commit: ${{ steps.find.outputs.commit }}
-      message: ${{ steps.find.outputs.message }}
+      tag: ${{ steps.next.outputs.tag }}
+      message: ${{ steps.next.outputs.message }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          fetch-tags: true # git describe below needs them
+          fetch-tags: true
 
-      - id: find
+      - id: next
         run: |
-          name=$(sed -n 's/^version: *\([0-9]*\.[0-9]*\.[0-9]*\)+.*/\1/p' pubspec.yaml)
-          [ -n "$name" ] || { echo "::error::pubspec.yaml has no version: X.Y.Z+N line"; exit 1; }
-          if git ls-remote --exit-code --tags origin "refs/tags/v$name" > /dev/null; then
-            echo "v$name is on GitHub already"
+          if [ -n "$(git tag --points-at HEAD 'v[0-9]*')" ]; then
+            echo "$(git tag --points-at HEAD 'v[0-9]*') is this commit already"
             exit 0
           fi
-          # The oldest commit since the last tag that added "version: X.Y.Z+" is
-          # the first to carry the name. Since the last tag, because the old
-          # 1.0.N+N names (1.0.13 to 1.0.65) came before v1.0.6 and would
-          # otherwise put a new tag on months-old code.
-          since=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
-          commit=$(git log --reverse --format=%H -S"version: $name+" ${since:+"$since.."}HEAD -- pubspec.yaml | head -n 1)
-          [ -n "$commit" ] || { echo "::error::no commit since ${since:-the start} adds version $name"; exit 1; }
-          build=$(git show "$commit:pubspec.yaml" | sed -n 's/^version: *[0-9.]*+\([0-9]*\).*/\1/p')
-          echo "v$name goes on $commit, build $build"
+          last=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+          [ -n "$last" ] || { echo "::error::no vX.Y.Z tag to count from"; exit 1; }
+          build=$(git for-each-ref --format='%(contents:subject)' "refs/tags/$last" |
+            sed -n 's/^Jeansh .*, build \([0-9][0-9]*\)$/\1/p')
+          [ -n "$build" ] || { echo "::error::$last is not annotated \"Jeansh X.Y.Z, build N\""; exit 1; }
+
+          xy=$(sed -n 's/^version: *\([0-9]*\.[0-9]*\)\..*/\1/p' pubspec.yaml)
+          last_xy=${last#v}
+          last_xy=${last_xy%.*}
+          if [ "$xy" = "$last_xy" ]; then
+            name=$xy.$((${last##*.} + 1))
+          else
+            name=$xy.0
+          fi
+          build=$((build + 1))
+          if git rev-parse -q --verify "refs/tags/v$name" > /dev/null; then
+            echo "::error::v$name is taken, yet it follows $last: is pubspec.yaml's X.Y behind it?"
+            exit 1
+          fi
+
+          echo "v$name, build $build, after $last"
           {
             echo "tag=v$name"
-            echo "commit=$commit"
             echo "message=Jeansh $name, build $build"
           } >> "$GITHUB_OUTPUT"
 
   tag:
-    needs: check
-    if: needs.check.outputs.tag != ''
+    needs: next
+    if: needs.next.outputs.tag != ''
     runs-on: ubuntu-latest
     environment: release
     steps:
       - name: Make the tag
         env:
           GH_TOKEN: ${{ secrets.CLAUDE_GITHUB_TOKEN }}
-          TAG: ${{ needs.check.outputs.tag }}
-          COMMIT: ${{ needs.check.outputs.commit }}
-          MESSAGE: ${{ needs.check.outputs.message }}
+          TAG: ${{ needs.next.outputs.tag }}
+          MESSAGE: ${{ needs.next.outputs.message }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::error::The secret behind CLAUDE_GITHUB_TOKEN is not set"; exit 1; }
           object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="$MESSAGE" \
-            -f object="$COMMIT" -f type=commit --jq .sha)
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
-          echo "tagged $COMMIT as $TAG"
+          echo "tagged $GITHUB_SHA as $TAG"
