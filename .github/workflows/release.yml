@@ -204,8 +204,11 @@ jobs:
       # Into a private bucket, and nowhere else: no Actions artifact, no GitHub
       # release, and nothing in this public log names the bucket or an object.
       # Only the latest build is kept: desktop/<target>/ is synced with
-      # --delete, so the release before's files go as this one's arrive.
+      # --delete, so the release before's files go as this one's arrive. So
+      # only a tag's real release lands there; a dry run or main as it stands
+      # builds, and keeps nothing.
       - name: Keep the build in R2
+        if: inputs.tag != '' && !inputs.dry_run
         env:
           LABEL: ${{ needs.version.outputs.label }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
