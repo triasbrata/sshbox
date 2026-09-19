@@ -678,6 +678,7 @@ class LiveSession extends ChangeNotifier {
         onChanged: _notify,
         onEnded: _onTmuxEnded,
         size: _size,
+        record: _host.recordPanes,
       );
     } catch (error) {
       _tmuxProblem = '$error';

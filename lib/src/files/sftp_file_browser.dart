@@ -485,12 +485,14 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   Future<void> download(
     String path,
     String localPath, {
+    int offset = 0,
+    int? length,
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
   }) =>
       _guard('download ${RemotePath.basename(path)}', () async {
         final sftp = await _channel();
-        final size = (await sftp.stat(path)).size ?? 0;
+        final size = length ?? (await sftp.stat(path)).size ?? 0;
         final file = await sftp.open(path);
         final local = File(localPath).openWrite();
         var stopped = false;
@@ -506,6 +508,8 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
           // stalls are unmoved: see tool/transfer_bench.dart.
           var received = 0;
           await for (final chunk in file.read(
+            offset: offset,
+            length: length,
             chunkSize: 32 * 1024,
             maxPendingRequests: 64,
           )) {

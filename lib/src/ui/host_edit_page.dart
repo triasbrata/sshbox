@@ -185,6 +185,7 @@ class _HostEditPageState extends State<HostEditPage> {
   late SshAuthMethod _authMethod;
   late bool _forwardPorts;
   late bool _useTmux;
+  late bool _recordPanes;
   late String _jumpHostId;
 
   /// The hosts this one can jump through: every other saved host, once read.
@@ -206,6 +207,7 @@ class _HostEditPageState extends State<HostEditPage> {
     _authMethod = existing?.authMethod ?? SshAuthMethod.password;
     _forwardPorts = existing?.forwardPorts ?? false;
     _useTmux = existing?.useTmux ?? false;
+    _recordPanes = existing?.recordPanes ?? true;
     _jumpHostId = existing?.jumpHostId ?? '';
     unawaited(_loadJumpHosts());
   }
@@ -318,6 +320,7 @@ class _HostEditPageState extends State<HostEditPage> {
       fileRoot: _fileRoot.text.trim(),
       forwardPorts: _forwardPorts,
       useTmux: _useTmux,
+      recordPanes: _recordPanes,
       jumpHostId: _jumpHostId,
       // Not the form's: the host says it again on its next connect.
       os: widget.existing?.os,
@@ -492,6 +495,19 @@ class _HostEditPageState extends State<HostEditPage> {
                 'tab ends them. Needs tmux on the host.',
               ),
             ),
+            if (_useTmux)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _recordPanes,
+                onChanged: (value) => setState(() => _recordPanes = value),
+                title: const Text('Keep a record of each pane'),
+                subtitle: const Text(
+                  'The host writes all a pane prints to a file under '
+                  '~/.local/state/jeansh, even with the app closed, so what '
+                  'clear or a full screen wiped can be read from the tab\'s '
+                  'long-press menu. Up to 16 MB a pane, the newest kept.',
+                ),
+              ),
             if (_isEditing && widget.notifyKeys != null)
               ListTile(
                 contentPadding: EdgeInsets.zero,

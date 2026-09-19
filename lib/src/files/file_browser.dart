@@ -215,9 +215,14 @@ abstract class FileBrowser {
   /// got. Nothing is held in memory, so only the phone's disk bounds it.
   /// [cancel] completing stops it part way with
   /// [FileBrowserException.cancelled].
+  ///
+  /// With [offset] and [length], only that stretch of it: how a pane's
+  /// record is read from its end without the whole of it coming down.
   Future<void> download(
     String path,
     String localPath, {
+    int offset = 0,
+    int? length,
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
   });

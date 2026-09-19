@@ -342,4 +342,46 @@ void main() {
       refused('64 KB'),
     );
   });
+
+  testWidgets('a tmux host keeps a record of each pane unless told not to, '
+      'and only a tmux host is asked', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.binding.setSurfaceSize(const Size(800, 2000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final secrets = InMemorySecretStore();
+    final repository = HostRepository(secrets);
+    const box = HostProfile(
+      id: 'box',
+      label: 'box',
+      host: '10.0.0.5',
+      username: 'me',
+    );
+    await repository.upsert(box);
+    await tester.pumpWidget(
+      ToastificationWrapper(
+        child: MaterialApp(
+          home: HostEditPage(
+            repository: repository,
+            secrets: secrets,
+            existing: box,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    const record = 'Keep a record of each pane';
+    expect(find.text(record), findsNothing);
+    await tester.tap(find.text('Use tmux'));
+    await tester.pumpAndSettle();
+    final toggle = find.widgetWithText(SwitchListTile, record);
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+
+    await tester.tap(toggle);
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+    final saved = (await repository.load()).single;
+    expect(saved.useTmux, isTrue);
+    expect(saved.recordPanes, isFalse);
+  });
 }

@@ -132,6 +132,17 @@ void main() {
     );
     expect(progress, [(4, 12), (8, 12), (12, 12)]);
 
+    // A stretch of a file, as a pane's record is read from its end.
+    var end = 0;
+    await browser.download(
+      '/home/notes.txt',
+      '/tmp/notes.txt',
+      offset: 3,
+      length: 7,
+      onProgress: (_, total) => end = total,
+    );
+    expect(end, 10);
+
     // Cancel stops it part way and raises the cancelled failure here.
     final stop = Completer<void>();
     final cancelled = browser.download(
@@ -484,6 +495,8 @@ class _FakeBrowser implements FileBrowser {
   Future<void> download(
     String path,
     String localPath, {
+    int offset = 0,
+    int? length,
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
   }) async {
@@ -491,7 +504,8 @@ class _FakeBrowser implements FileBrowser {
     unawaited(cancel?.then((_) => stopped = true));
     for (var received = 4; received <= 12; received += 4) {
       if (stopped) throw FileBrowserException.cancelled;
-      onProgress?.call(received, 12);
+      // Where a stretch would end, so a test sees that both crossed.
+      onProgress?.call(received, offset + (length ?? 12));
       if (path == '/home/slow') {
         await Future<void>.delayed(const Duration(milliseconds: 20));
       }

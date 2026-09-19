@@ -255,6 +255,19 @@ class FakeFileBrowser implements FileBrowser {
   /// as they are, where anything else goes down as its text.
   final Map<String, List<int>> binary = {};
 
+  /// Puts [bytes] at [path], listed in its folder with their size.
+  void putBinary(String path, List<int> bytes) {
+    binary[path] = bytes;
+    _tree.putIfAbsent(RemotePath.parent(path), () => []).add(
+      RemoteEntry(
+        name: RemotePath.basename(path),
+        path: path,
+        kind: RemoteEntryKind.file,
+        size: bytes.length,
+      ),
+    );
+  }
+
   /// A size to report for a download without holding that many bytes, as SFTP
   /// stats the file before streaming it: for the cap a viewer puts on what it
   /// will open.
@@ -266,11 +279,17 @@ class FakeFileBrowser implements FileBrowser {
   Future<void> download(
     String path,
     String localPath, {
+    int offset = 0,
+    int? length,
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
   }) async {
     downloads.add((from: path, to: localPath));
-    final bytes = binary[path] ?? utf8.encode(_read(path).text);
+    final whole = binary[path] ?? utf8.encode(_read(path).text);
+    final bytes = whole.sublist(
+      offset,
+      length == null ? null : offset + length,
+    );
     final size = statedSize[path] ?? bytes.length;
     File(localPath).writeAsBytesSync(bytes);
     onProgress?.call(bytes.length ~/ 2, size);

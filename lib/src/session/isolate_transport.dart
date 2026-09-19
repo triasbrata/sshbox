@@ -461,6 +461,8 @@ class _Server {
           (onProgress, cancel) async => browser.download(
             a[0]! as String,
             a[1]! as String,
+            offset: a[2]! as int,
+            length: a[3] as int?,
             onProgress: onProgress,
             cancel: cancel,
           ),
@@ -1031,10 +1033,15 @@ class _ProxyBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   Future<void> download(
     String path,
     String localPath, {
+    int offset = 0,
+    int? length,
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
-  }) =>
-      _moved(_moving('download', [path, localPath]), onProgress, cancel);
+  }) => _moved(
+    _moving('download', [path, localPath, offset, length]),
+    onProgress,
+    cancel,
+  );
 
   @override
   Stream<SearchHit> search({required String root, required String query}) =>

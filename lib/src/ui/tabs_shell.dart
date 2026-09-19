@@ -7,6 +7,7 @@ import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../files/transfers.dart';
 import '../session/isolate_transport.dart';
+import '../session/pane_record.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
@@ -17,6 +18,7 @@ import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
 import 'git_page.dart';
 import 'hosts_page.dart';
+import 'pane_record_page.dart';
 import 'tab_groups.dart';
 import 'terminal_page.dart';
 import 'toast.dart';
@@ -578,8 +580,37 @@ class _TabStripState extends State<TabStrip> {
         ('Split down', () => _tmux(() => tmux.split(sideBySide: false))),
         // The last pane goes with the tab, by the tab's own close button.
         if (tmux.panes.length > 1) ('Close pane', () => _tmux(tmux.closePane)),
+        ('Pane record', () => _openRecord(session, tmux)),
       ],
     ];
+  }
+
+  /// Opens the focused pane's record, as the host has kept it.
+  Future<void> _openRecord(LiveSession session, TmuxSession tmux) async {
+    final pane = tmux.focused;
+    final name = pane == null ? null : await tmux.recordName(pane);
+    if (!mounted) return;
+    if (pane == null || name == null) {
+      showToast(
+        context,
+        'tmux did not say which pane this is.',
+        type: ToastificationType.error,
+      );
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PaneRecordPage(
+          reader: PaneRecordReader(
+            session.fileBrowser,
+            session: session.tmuxName,
+            name: name,
+          ),
+          columns: pane.cells.width,
+          rows: pane.cells.height,
+        ),
+      ),
+    );
   }
 
   /// What a long press on any tab offers towards grouping: putting it in a

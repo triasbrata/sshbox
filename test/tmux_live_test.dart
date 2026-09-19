@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/session/pane_record.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
 import 'package:xterm2/xterm.dart';
@@ -73,7 +74,11 @@ Future<void> _until(bool Function() condition, [String Function()? state]) async
   }
 }
 
-TmuxSession _session(String name, CommandChannel channel) => TmuxSession(
+TmuxSession _session(
+  String name,
+  CommandChannel channel, {
+  bool record = false,
+}) => TmuxSession(
   name: name,
   channel: channel,
   newTerminal: Terminal.new,
@@ -81,6 +86,7 @@ TmuxSession _session(String name, CommandChannel channel) => TmuxSession(
   onChanged: () {},
   onEnded: () {},
   size: (60, 20),
+  record: record,
 );
 
 String _text(TmuxPane pane) => pane.terminal.buffer.getText();
@@ -236,6 +242,152 @@ void main() {
     },
     skip: hasTmux ? false : 'tmux is not installed here',
   );
+
+  group('pane records', () {
+    const name = 'sshbox-rec';
+    // The host's home is the test's own, where the records go.
+    Future<(Process, CommandChannel)> start() =>
+        _start(name, dir, environment: {'HOME': dir.path});
+    Directory records() =>
+        Directory('${dir.path}/${PaneRecord.dir(name)}');
+    // The record as the app shows it.
+    String read(String record) {
+      final file = File('${records().path}/$record');
+      if (!file.existsSync()) return '';
+      return renderRecord(
+        file.readAsBytesSync(),
+        columns: 60,
+        rows: 20,
+      ).join('\n');
+    }
+
+    Future<String> tmuxSays(List<String> args) async =>
+        '${(await _tmux(dir, args)).stdout}'.trim();
+    String tmuxNow(List<String> args) => '${Process.runSync(
+      'tmux',
+      args,
+      environment: {'PATH': _path, 'TMUX_TMPDIR': dir.path},
+      includeParentEnvironment: false,
+    ).stdout}'.trim();
+
+    test(
+      'keeps what clear wiped, what came with nothing attached, and a pane '
+      'split off later, in private files, and only for the app\'s session',
+      () async {
+        var (process, channel) = await start();
+        var tmux = _session(name, channel, record: true);
+        expect(await tmux.attached, isTrue);
+        // One of the user's own, on the same server.
+        await _tmux(dir, ['new-session', '-d', '-s', 'elsewhere']);
+        await _until(() => tmux.panes.length == 1);
+        final first = (await tmux.recordName(tmux.panes.single))!;
+        await _until(() => File('${records().path}/$first').existsSync());
+
+        // 1. Wiped from the pane by clear, and still in the record.
+        tmux.send(r'echo wiped-$((6*7)); clear' '\r');
+        await _until(
+          () => read(first).contains('wiped-42'),
+          () => read(first),
+        );
+        await _until(
+          () => !tmuxNow(['capture-pane', '-p', '-t', '$name:'])
+              .contains('wiped-42'),
+        );
+        expect(read(first), contains('wiped-42'));
+
+        // 2. Written while nothing is attached: the phone locked.
+        tmux.dispose();
+        await process.exitCode;
+        expect(await tmuxSays(['list-clients']), isEmpty);
+        await _tmux(dir, [
+          'send-keys', '-t', '$name:', r'echo away-$((6*7))', 'Enter',
+        ]);
+        await _until(() => read(first).contains('away-42'), () => read(first));
+
+        // 3. A pane split off later, with nothing attached either.
+        await _tmux(dir, ['split-window', '-t', '$name:']);
+        final panes = (await tmuxSays([
+          'list-panes', '-s', '-t', name, '-F', '#{pid}-#{pane_id}',
+        ])).split('\n');
+        expect(panes, hasLength(2));
+        final split = panes.last;
+        await _tmux(dir, [
+          'send-keys', '-t', split.split('-').last, r'echo split-$((6*7))',
+          'Enter',
+        ]);
+        await _until(() => read(split).contains('split-42'), () => read(split));
+
+        // Private: the files 0600, the app's directories 0700.
+        for (final record in [first, split]) {
+          final mode = File('${records().path}/$record').statSync().mode;
+          expect(mode & 0x1ff, 0x180, reason: record);
+        }
+        for (final path in [
+          records().path,
+          records().parent.path,
+          records().parent.parent.path,
+        ]) {
+          expect(Directory(path).statSync().mode & 0x1ff, 0x1c0, reason: path);
+        }
+
+        // Nothing for the user's own session, nor for every session.
+        await _tmux(dir, ['split-window', '-t', 'elsewhere:']);
+        expect(
+          await tmuxSays([
+            'list-panes', '-s', '-t', 'elsewhere', '-F', '#{pane_pipe}',
+          ]),
+          '0\n0',
+        );
+        for (final hook in PaneRecord.hooks) {
+          expect(await tmuxSays(['show-hooks', '-g', hook]), hook);
+        }
+        expect(records().parent.listSync(), hasLength(1));
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+
+    test(
+      'turned off, stops; and an attach prunes what a gone pane left',
+      () async {
+        var (process, channel) = await start();
+        var tmux = _session(name, channel, record: true);
+        expect(await tmux.attached, isTrue);
+        await _until(() => tmux.panes.length == 1);
+        final live = (await tmux.recordName(tmux.panes.single))!;
+        await _until(() => File('${records().path}/$live').existsSync());
+        tmux.dispose();
+        await process.exitCode;
+
+        // A week and more untouched: a pane still there, and one gone, in a
+        // session gone too.
+        final gone = File('${records().parent.path}/sshbox-old/1-%9');
+        await gone.create(recursive: true);
+        for (final path in [gone.path, '${records().path}/$live']) {
+          await Process.run('touch', ['-d', '10 days ago', path]);
+        }
+
+        (process, channel) = await start();
+        tmux = _session(name, channel);
+        expect(await tmux.attached, isTrue);
+        await _until(
+          () => !gone.parent.existsSync(),
+          () => '${gone.parent.listSync()}',
+        );
+        expect(File('${records().path}/$live').existsSync(), isTrue);
+
+        // Off: the pipes close and the hooks go.
+        await _until(
+          () =>
+              tmuxNow(['list-panes', '-s', '-t', name, '-F', '#{pane_pipe}']) ==
+              '0',
+        );
+        expect(await tmuxSays(['show-hooks', '-t', '=$name:']), isEmpty);
+        tmux.dispose();
+        await process.exitCode;
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+  });
 
   group(
     'on a host whose exec channel has no tmux on PATH',

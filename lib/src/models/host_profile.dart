@@ -26,6 +26,7 @@ class HostProfile {
     this.fileRoot = '',
     this.forwardPorts = false,
     this.useTmux = false,
+    this.recordPanes = true,
     this.jumpHostId = '',
     this.os,
   });
@@ -58,6 +59,12 @@ class HostProfile {
   /// app's own — see `TmuxSession`. Off by default: it needs tmux on the
   /// host, and changes what a tab is.
   final bool useTmux;
+
+  /// Whether, in tmux, the host keeps a record of every pane of this host's
+  /// tabs, which the tab can read back — see `PaneRecord`. On by default: a
+  /// record cannot be started after the fact, so it has to be running before
+  /// whatever it is wanted for happens.
+  final bool recordPanes;
 
   /// The saved host this one is reached through, as OpenSSH's ProxyJump does:
   /// the app signs in there with that host's own login, and tunnels on from
@@ -96,6 +103,7 @@ class HostProfile {
     String? fileRoot,
     bool? forwardPorts,
     bool? useTmux,
+    bool? recordPanes,
     String? jumpHostId,
     OsInfo? os,
   }) {
@@ -110,6 +118,7 @@ class HostProfile {
       fileRoot: fileRoot ?? this.fileRoot,
       forwardPorts: forwardPorts ?? this.forwardPorts,
       useTmux: useTmux ?? this.useTmux,
+      recordPanes: recordPanes ?? this.recordPanes,
       jumpHostId: jumpHostId ?? this.jumpHostId,
       os: os ?? this.os,
     );
@@ -126,6 +135,7 @@ class HostProfile {
         'fileRoot': fileRoot,
         'forwardPorts': forwardPorts,
         'useTmux': useTmux,
+        'recordPanes': recordPanes,
         'jumpHostId': jumpHostId,
         'os': ?os?.toJson(),
       };
@@ -148,6 +158,7 @@ class HostProfile {
       fileRoot: json['fileRoot'] as String? ?? '',
       forwardPorts: json['forwardPorts'] as bool? ?? false,
       useTmux: json['useTmux'] as bool? ?? false,
+      recordPanes: json['recordPanes'] as bool? ?? true,
       jumpHostId: json['jumpHostId'] as String? ?? '',
       os: switch (json['os']) {
         final Map<String, dynamic> os => OsInfo.fromJson(os),

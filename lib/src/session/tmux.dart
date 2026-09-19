@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:xterm2/xterm.dart';
 
+import 'pane_record.dart';
 import 'terminal_session.dart';
 
 /// tmux turned a command down, or went away before answering it.
@@ -314,7 +315,7 @@ class TmuxPane {
   TmuxLayout cells = const TmuxLayout(width: 0, height: 0, x: 0, y: 0);
 
   late final _decoder = const Utf8Decoder(allowMalformed: true)
-      .startChunkedConversion(_PaneSink(this));
+      .startChunkedConversion(PaneSink(_write));
 
   /// True while tmux's output is being written into [terminal].
   bool _feeding = false;
@@ -340,11 +341,12 @@ class TmuxPane {
 /// programs in its panes — may name the window with `ESC k title ESC \`.
 /// tmux takes that for itself, but `%output` hands it on raw, and xterm2 does
 /// not know it: it would print the title at every prompt. Turned into APC
-/// (`ESC _`), it is read to its end and dropped.
-class _PaneSink implements Sink<String> {
-  _PaneSink(this.pane);
+/// (`ESC _`), it is read to its end and dropped. A pane's record, being the
+/// same bytes, is replayed through it too.
+class PaneSink implements Sink<String> {
+  PaneSink(this.write);
 
-  final TmuxPane pane;
+  final void Function(String text) write;
 
   /// An ESC that ended the last piece, held until the next says whether it
   /// began one.
@@ -355,7 +357,7 @@ class _PaneSink implements Sink<String> {
     var text = _escape ? '\x1b$data' : data;
     _escape = text.endsWith('\x1b');
     if (_escape) text = text.substring(0, text.length - 1);
-    pane._write(text.replaceAll('\x1bk', '\x1b_'));
+    write(text.replaceAll('\x1bk', '\x1b_'));
   }
 
   @override
@@ -380,6 +382,7 @@ class TmuxSession {
     required this.onChanged,
     required this.onEnded,
     this._size,
+    this.record = false,
   }) {
     _client = TmuxClient(
       write: _channel.write,
@@ -423,13 +426,16 @@ class TmuxSession {
   /// managers put tmux, then the login shell's own PATH — asked with nothing
   /// on stdin, its errors dropped and only its last line kept, so whatever a
   /// profile prints never reaches the channel, let alone control mode.
+  ///
+  /// Pane records gone stale are pruned on the way: see [PaneRecord.prune].
   static String command(String name) =>
       "sh -c '$_findTmux"
       r'"$t" show -gv update-environment 2>/dev/null | '
       'grep -q LC_SSHBOX_KEY || '
       r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
       r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
-      r'\;; exec "$t" -u -C "$@" '
+      '\\;; ${PaneRecord.prune}'
+      r'exec "$t" -u -C "$@" '
       "new-session -A -s $name 2>&1'";
 
   /// What the host runs to say whether the session called [name] is still
@@ -475,6 +481,11 @@ class TmuxSession {
   /// tmux ended after attaching: the last pane exited, the session was killed
   /// elsewhere, or the connection went.
   final void Function() onEnded;
+
+  /// Whether the session's panes are recorded on the host — see
+  /// [PaneRecord]. Set up, or taken down, at every attach, so a switch
+  /// changed since reaches a session that is already there.
+  final bool record;
 
   final _panes = <int, TmuxPane>{};
   final _attached = Completer<bool>();
@@ -588,6 +599,59 @@ class TmuxSession {
 
   static const _shells = {'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'tcsh'};
 
+  /// The name [pane]'s record has on the host, in [PaneRecord.dir]: the tmux
+  /// server's pid and the pane, as `pipe-pane` named it. null when tmux
+  /// cannot say.
+  Future<String?> recordName(TmuxPane pane) async {
+    try {
+      final reply = await _client.command(
+        'display -p -t %${pane.id} "#{pid}-#{pane_id}"',
+      );
+      final name = reply.firstOrNull ?? '';
+      return RegExp(r'^\d+-%\d+$').hasMatch(name) ? name : null;
+    } on TmuxException {
+      return null;
+    }
+  }
+
+  /// Starts every pane of the session recording, and has tmux start each
+  /// one made later, with nobody attached — or, with [record] off, stops
+  /// them. A pane already recording is left as it is: `-o` opens a pipe only
+  /// where there is none.
+  ///
+  /// The hooks are the session's own. One of the same name set for every
+  /// session is the user's, and one here would hide it from this session, so
+  /// then there is none, and a pane made while nothing is attached records
+  /// from the next attach.
+  Future<void> _recordPanes() async {
+    final pipe = PaneRecord.pipe(name);
+    try {
+      final panes = await _client.command(
+        'list-panes -s -t "=$name" -F "#{pane_id}"',
+      );
+      for (final pane in panes) {
+        if (!RegExp(r'^%\d+$').hasMatch(pane)) continue;
+        _client
+            .command(
+              record ? 'pipe-pane -o -t $pane $pipe' : 'pipe-pane -t $pane',
+            )
+            .ignore();
+      }
+      for (final hook in PaneRecord.hooks) {
+        final session = '-t "=$name:" $hook';
+        if (!record) {
+          _client.command('set-hook -u $session').ignore();
+          continue;
+        }
+        final global = await _client.command('show-hooks -g $hook');
+        if (global.any((line) => line.trim() != hook)) continue;
+        _client.command("set-hook $session 'pipe-pane -o $pipe'").ignore();
+      }
+    } on TmuxException {
+      // Gone, or a tmux older than hooks: the channel ending says the rest.
+    }
+  }
+
   /// Ends the tmux session and everything running in it — closing the tab,
   /// as opposed to losing the connection.
   Future<void> kill() async {
@@ -639,7 +703,10 @@ class TmuxSession {
     switch (words.first) {
       case '%session-changed':
         unawaited(_sync());
-        if (!_attached.isCompleted) _attached.complete(true);
+        if (!_attached.isCompleted) {
+          _attached.complete(true);
+          unawaited(_recordPanes());
+        }
       case '%session-window-changed':
         unawaited(_sync());
       // The visible layout rather than the whole one: a pane zoomed from
