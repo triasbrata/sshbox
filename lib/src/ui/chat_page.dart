@@ -563,12 +563,14 @@ class _ToolRow extends StatelessWidget {
                 if (run.input.isNotEmpty)
                   _block(
                     context,
+                    'input',
                     const JsonEncoder.withIndent('  ').convert(run.input),
                     mono,
                   ),
                 if (result != null && result.isNotEmpty)
                   _block(
                     context,
+                    'result',
                     result,
                     mono.copyWith(color: run.failed ? scheme.error : null),
                   ),
@@ -582,7 +584,18 @@ class _ToolRow extends StatelessWidget {
 
   /// A slab of text that never grows past a screenful — a tool's answer can
   /// be hundreds of lines, and the transcript has to stay readable.
-  Widget _block(BuildContext context, String text, TextStyle style) =>
+  ///
+  /// [slot] names the block's own place in page storage. Without it the
+  /// scroll view's offset was stored under the tile's PageStorageKey, where
+  /// the ExpansionTile keeps its open-or-shut bool, so an opened row read a
+  /// bool as a double and threw — which a release build draws as nothing,
+  /// the "expanded and empty" the user saw.
+  Widget _block(
+    BuildContext context,
+    String slot,
+    String text,
+    TextStyle style,
+  ) =>
       Container(
         width: double.infinity,
         margin: const EdgeInsets.only(top: 8),
@@ -592,7 +605,10 @@ class _ToolRow extends StatelessWidget {
           color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(6),
         ),
-        child: SingleChildScrollView(child: SelectableText(text, style: style)),
+        child: SingleChildScrollView(
+          key: PageStorageKey(slot),
+          child: SelectableText(text, style: style),
+        ),
       );
 }
 
