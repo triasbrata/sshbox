@@ -1,0 +1,68 @@
+# Tags vX.Y.Z on GitHub once a push to main brings a version name with no tag
+# there, which starts release.yml. The tag is the one .githooks/post-commit
+# makes on this machine: annotated "Jeansh X.Y.Z, build N", on the first commit
+# whose pubspec.yaml carries the name.
+#
+# It is made with CLAUDE_GITHUB_TOKEN, a token of the repository's owner, for
+# two reasons: a tag made with GITHUB_TOKEN starts no other workflow, and the
+# v* tag ruleset lets only an admin make one. `check` needs no secret, so only
+# a push with something to tag touches the release environment.
+name: Tag
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency: tag
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.find.outputs.tag }}
+      commit: ${{ steps.find.outputs.commit }}
+      message: ${{ steps.find.outputs.message }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: find
+        run: |
+          name=$(sed -n 's/^version: *\([0-9]*\.[0-9]*\.[0-9]*\)+.*/\1/p' pubspec.yaml)
+          [ -n "$name" ] || { echo "::error::pubspec.yaml has no version: X.Y.Z+N line"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$name" > /dev/null; then
+            echo "v$name is on GitHub already"
+            exit 0
+          fi
+          # The oldest commit that added "version: X.Y.Z+" is the first to carry the name.
+          commit=$(git log --reverse --format=%H -S"version: $name+" -- pubspec.yaml | head -n 1)
+          build=$(git show "$commit:pubspec.yaml" | sed -n 's/^version: *[0-9.]*+\([0-9]*\).*/\1/p')
+          echo "v$name goes on $commit, build $build"
+          {
+            echo "tag=v$name"
+            echo "commit=$commit"
+            echo "message=Jeansh $name, build $build"
+          } >> "$GITHUB_OUTPUT"
+
+  tag:
+    needs: check
+    if: needs.check.outputs.tag != ''
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Make the tag
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_GITHUB_TOKEN }}
+          TAG: ${{ needs.check.outputs.tag }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+          MESSAGE: ${{ needs.check.outputs.message }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::The secret behind CLAUDE_GITHUB_TOKEN is not set"; exit 1; }
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="$MESSAGE" \
+            -f object="$COMMIT" -f type=commit --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
+          echo "tagged $COMMIT as $TAG"

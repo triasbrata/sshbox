@@ -1161,9 +1161,13 @@ The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
-- `.github/workflows/release.yml` runs on a `v*` tag. The hooks make the
-  tags (Build numbers above), so releasing one is pushing it:
-  `git push origin v1.0.7`.
+- `.github/workflows/tag.yml` makes the tags on GitHub, so every new version
+  name releases by itself. Once a push to `main` brings a name with no tag
+  there, it tags `vX.Y.Z` the way the post-commit hook does on this machine:
+  annotated `Jeansh X.Y.Z, build N`, on the first commit carrying the name.
+  It uses `CLAUDE_GITHUB_TOKEN`, because a tag made with `GITHUB_TOKEN`
+  starts no workflow and only an admin may make a `v*` tag.
+- `.github/workflows/release.yml` runs on a `v*` tag.
   - `android` runs `tool/release.sh --publish`, which releases on Closed
     testing. Mobile goes straight to its store, and nowhere else. Run by
     hand from the Actions tab it is a `--dry-run` unless its box is
@@ -1191,6 +1195,7 @@ sees them:
 | `R2_SECRET_ACCESS_KEY` | that token's Secret Access Key |
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | `jeansh-builds` |
+| `CLAUDE_GITHUB_TOKEN` | the owner's fine-grained token for this repository alone, **Contents: Read and write**, for `tag.yml` |
 
 Only collaborators can contribute. Pull requests and issues can only be
 opened by collaborators. On `main`, a ruleset refuses deletion and force
