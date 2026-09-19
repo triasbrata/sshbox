@@ -10,8 +10,10 @@ on:
 permissions:
   contents: read
 
+# A pull request's new push replaces its old run; every commit on main keeps
+# its own, since pushes to main come several a minute.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
   cancel-in-progress: true
 
 jobs:
