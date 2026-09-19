@@ -30,7 +30,7 @@ echo r > README.md
 git add -A
 git commit -qm init --no-verify # skips pre-commit, not post-commit
 tags v1.0.6 'the first commit with a name'; at v1.0.6 'the first commit with a name'
-[ "$(git cat-file -t v1.0.6)" = tag ] || fail 'v1.0.6 is not annotated, so push.followTags would leave it behind'
+[ "$(git cat-file -t v1.0.6)" = tag ] || fail 'v1.0.6 is not annotated'
 [ "$(git tag -l --format='%(contents:subject)' v1.0.6)" = 'Jeansh 1.0.6, build 65' ] ||
   fail "tag message: $(git tag -l --format='%(contents)' v1.0.6)"
 
