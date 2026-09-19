@@ -1169,16 +1169,17 @@ The repository is public, so GitHub Actions costs nothing.
   after the highest tag, `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes
   `vX.Y.(Z+1)` with build N+1 on the pushed commit. It goes to X.Y.0 when
   `pubspec.yaml`'s version line asks for a new X.Y by hand, which is all
-  that line still decides. Nothing is committed back to `main`. It uses
-  `CLAUDE_GITHUB_TOKEN`, because a tag made with `GITHUB_TOKEN` starts no
-  workflow and only an admin may make a `v*` tag.
-- `.github/workflows/release.yml` runs on that tag. `version` reads the
-  tag's number, and each build writes it into its own copy of
+  that line still decides. Nothing is committed back to `main`. The tag is
+  made with the run's own `GITHUB_TOKEN`. A tag made that way starts no
+  workflow of its own, so the same run then calls `release.yml` for it.
+- `.github/workflows/release.yml` releases a tag's commit. `tag.yml` calls
+  it. From the Actions tab you can run it by hand with a tag, to release
+  that tag again, or with none, for `main` as it stands. `version` reads
+  the tag's number, and each build writes it into its own copy of
   `pubspec.yaml`.
   - `android` runs `tool/release.sh --publish`, which releases on Closed
     testing. Mobile goes straight to its store, and nowhere else. Run by
-    hand from the Actions tab it is a `--dry-run` unless its box is
-    unticked.
+    hand it is a `--dry-run` unless its box is unticked.
   - `desktop` builds Linux (`tools/build_desktop.sh`), Windows (the same
     zip, built on Windows itself) and macOS (`tools/build_apple.sh`, signed
     ad-hoc), and keeps each in the private R2 bucket `jeansh-builds`, under
@@ -1197,8 +1198,8 @@ The repository is public, so GitHub Actions costs nothing.
     a reply.
 
 The release reads these secrets from the `release` environment, which only
-`v*` tags and `main` can deploy to, so a workflow on any other branch never
-sees them:
+`main` can deploy to. So they reach no workflow on any other branch or tag,
+and a `v*` tag made anywhere else releases nothing:
 
 | Secret | Holds |
 | --- | --- |
@@ -1211,14 +1212,15 @@ sees them:
 | `R2_SECRET_ACCESS_KEY` | that token's Secret Access Key |
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | `jeansh-builds` |
-| `CLAUDE_GITHUB_TOKEN` | the owner's fine-grained token for this repository alone, **Contents: Read and write**, for `tag.yml` |
 | `OPENROUTER_API_KEY` | an OpenRouter API key, for the release notes |
 
 Only collaborators can contribute. Pull requests and issues can only be
 opened by collaborators. On `main`, a ruleset refuses deletion and force
 pushes and asks anyone but an admin for a pull request with one approval and
-a green `check`. Another ruleset lets only an admin create, move or delete a
-`v*` tag. A workflow from a fork waits for approval, `GITHUB_TOKEN` is read-only
+a green `check`. Another ruleset lets only an admin move or delete a `v*`
+tag. Anyone who can write may make one, since GitHub will not let Actions
+bypass a ruleset on a personal repository, but a tag releases only when
+`tag.yml` makes it on `main`. A workflow from a fork waits for approval, `GITHUB_TOKEN` is read-only
 by default, and secret scanning with push protection, Dependabot alerts and
 private vulnerability reporting are on.
 

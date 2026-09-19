@@ -1,14 +1,14 @@
-# CI numbers every release. A push to main that changes the app gets the next
-# version: the highest v* tag, annotated "Jeansh X.Y.Z, build N", gives way to
+# CI numbers and releases every push to main that changes the app. The
+# highest v* tag, annotated "Jeansh X.Y.Z, build N", gives way to
 # vX.Y.(Z+1) with build N+1 on the pushed commit, or to X.Y.0 when
-# pubspec.yaml's version line asks for a new X.Y by hand. That tag starts
-# release.yml. Nothing is committed back: pubspec.yaml's version line only
-# sets X.Y, and release.yml writes the whole version into its own copy.
+# pubspec.yaml's version line asks for a new X.Y by hand. Nothing is committed
+# back: pubspec.yaml's version line only sets X.Y.
 #
-# The tag is made with CLAUDE_GITHUB_TOKEN, a token of the repository's owner,
-# for two reasons: a tag made with GITHUB_TOKEN starts no other workflow, and
-# the v* tag ruleset lets only an admin make one. `next` needs no secret, so
-# only a push with something to release touches the release environment.
+# The tag is made with this run's own GITHUB_TOKEN; the v* tag ruleset lets
+# GitHub Actions through. A tag made that way starts no other workflow, so
+# this run releases it itself, calling release.yml for the new tag. Running
+# on main is what reaches the `release` environment's secrets: only main can
+# deploy to it, so a tag made anywhere else releases nothing.
 name: Tag
 
 on:
@@ -81,16 +81,23 @@ jobs:
     needs: next
     if: needs.next.outputs.tag != ''
     runs-on: ubuntu-latest
-    environment: release
+    permissions:
+      contents: write
     steps:
       - name: Make the tag
         env:
-          GH_TOKEN: ${{ secrets.CLAUDE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.next.outputs.tag }}
           MESSAGE: ${{ needs.next.outputs.message }}
         run: |
-          [ -n "$GH_TOKEN" ] || { echo "::error::The secret behind CLAUDE_GITHUB_TOKEN is not set"; exit 1; }
           object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="$MESSAGE" \
             -f object="$GITHUB_SHA" -f type=commit --jq .sha)
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
           echo "tagged $GITHUB_SHA as $TAG"
+
+  release:
+    needs: [next, tag]
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.next.outputs.tag }}
+    secrets: inherit

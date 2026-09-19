@@ -1,21 +1,32 @@
-# On a v* tag, which tag.yml makes for every push to main that changes the
-# app, or by hand from the Actions tab. `version` reads the release's number
-# from the tag, "Jeansh X.Y.Z, build N", and every build writes it into its
-# own copy of pubspec.yaml. Mobile goes straight to its store: `android` runs
+# Releases a v* tag's commit: called by tag.yml with the tag it just made,
+# or by hand from the Actions tab, with a tag to release again or none for
+# main as it stands. `version` reads the release's number from the tag,
+# "Jeansh X.Y.Z, build N", and every build writes it into its own copy of
+# pubspec.yaml. Mobile goes straight to its store: `android` runs
 # tool/release.sh --publish, which releases on Play's closed testing track (by
 # hand it is a --dry-run unless told otherwise). Desktop goes to R2: `desktop`
 # builds Linux, Windows and macOS and keeps them in a private bucket, and
 # nowhere else. Then `notes` has the release notes written, in English and
 # Indonesian, for jeansh.brata.cloud/releases. The secrets live in the
-# `release` environment, which only v* tags and main can reach.
+# `release` environment, which only a workflow running on main can reach.
 # README.md, Releasing.
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
+      tag:
+        description: A v* tag to release again; empty is main as it stands
+        type: string
+        default: ''
       dry_run:
         description: Android - everything but the commit that reaches testers
         type: boolean
@@ -35,25 +46,28 @@ jobs:
       label: ${{ steps.v.outputs.name }}+${{ steps.v.outputs.build }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
 
       - id: v
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" \
+          if [ -n "$TAG" ]; then
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" \
               --jq 'select(.object.type == "tag") | .object.sha')
-            [ -n "$object" ] || { echo "::error::$GITHUB_REF_NAME is not an annotated tag"; exit 1; }
+            [ -n "$object" ] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
             build=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" --jq .message |
               sed -n 's/^Jeansh .*, build \([0-9][0-9]*\)$/\1/p' | head -n 1)
-            name=${GITHUB_REF_NAME#v}
+            name=${TAG#v}
           else
-            # By hand from main: pubspec.yaml's line as it stands.
+            # By hand with no tag: pubspec.yaml's line on main as it stands.
             line=$(sed -n 's/^version: *//p' pubspec.yaml)
             name=${line%+*}
             build=${line#*+}
           fi
-          [ -n "$build" ] || { echo "::error::no build number for $GITHUB_REF_NAME"; exit 1; }
+          [ -n "$build" ] || { echo "::error::no build number for ${TAG:-main}"; exit 1; }
           echo "$name, build $build"
           { echo "name=$name"; echo "build=$build"; } >> "$GITHUB_OUTPUT"
 
@@ -64,6 +78,8 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
 
       # The release's number, committed in this runner only: tool/release.sh
       # builds from a clean tree, and main's pubspec.yaml only sets X.Y.
@@ -143,6 +159,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
 
       # The release's number, in this runner's copy only.
       - name: Set the version
@@ -204,13 +222,15 @@ jobs:
 
   notes:
     needs: [version, android, desktop]
-    if: github.ref_type == 'tag'
+    # A tag's release, not a dry run and not main as it stands.
+    if: inputs.tag != '' && !inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -220,6 +240,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+          TAG: ${{ inputs.tag }}
           NAME: ${{ needs.version.outputs.name }}
           BUILD: ${{ needs.version.outputs.build }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -233,8 +254,8 @@ jobs:
           for secret in OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
             [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
           done
-          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
-          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$GITHUB_REF_NAME" -- \
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)
+          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
             lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
             > "$RUNNER_TEMP/changes.txt"
 
