@@ -144,6 +144,7 @@ class ClaudeAgent {
     this.state,
     this.pid,
     this.startedAt,
+    this.waitingFor,
     this.pinned = false,
   });
 
@@ -174,6 +175,11 @@ class ClaudeAgent {
 
   final int? pid;
   final DateTime? startedAt;
+
+  /// What a session held at a dialog is waiting on, as the CLI puts it —
+  /// measured `permission prompt` while a tool waits to be approved. Absent
+  /// when nothing is being asked.
+  final String? waitingFor;
 
   /// Whether the process is still running. Measured against the CLI: a live
   /// session is the one that refuses `-p --resume`, and a finished one is the
@@ -206,6 +212,9 @@ class ClaudeAgent {
       pid: row['pid'] is int ? row['pid'] as int : null,
       startedAt: started is int && started > 0
           ? DateTime.fromMillisecondsSinceEpoch(started)
+          : null,
+      waitingFor: row['waitingFor'] is String
+          ? row['waitingFor'] as String
           : null,
       pinned: row['id'] is String && pins.contains(row['id']),
     );
@@ -288,6 +297,13 @@ class ClaudeChat extends ChangeNotifier {
   /// channel simply ending with the connection.
   bool _sessionGone = false;
 
+  /// True while this chat has no conversation of its own yet: what is sent
+  /// next starts one, as a background session on the host. Where a new tab
+  /// starts, and where [newChat] goes back to.
+  bool _composing = true;
+
+  bool get composing => _composing;
+
   bool _starting = false;
   bool _ready = false;
   bool _busy = false;
@@ -311,6 +327,9 @@ class ClaudeChat extends ChangeNotifier {
   /// its way up, stays as it is.
   Future<void> start() async {
     if (_starting || _ready) return;
+    // A Claude of this chat's own: its messages go to it, not into a new
+    // session.
+    _composing = false;
     _starting = true;
     _ended = false;
     notifyListeners();
@@ -336,13 +355,19 @@ class ClaudeChat extends ChangeNotifier {
     }
   }
 
-  /// Sends a message and waits for the turn it starts.
-  void send(String text) {
+  /// Sends a message and waits for the turn it starts. Before this chat has
+  /// a conversation, the message starts one, and what this returns settles
+  /// once it has started, or failed to.
+  Future<void> send(String text) async {
     final message = text.trim();
     if (message.isEmpty) return;
     final watching = _watching;
     if (watching != null) {
       _typeInto(watching, message);
+      return;
+    }
+    if (_composing) {
+      if (!_busy) await _startInBackground(message);
       return;
     }
     if (!_ready || _busy) return;
@@ -369,6 +394,8 @@ class ClaudeChat extends ChangeNotifier {
     // Watching runs no Claude of its own to restart: follow it afresh.
     final watching = _watching;
     if (watching != null) return continueFrom(watching);
+    // Nothing is running yet: the mode goes with the first message.
+    if (_composing) return notifyListeners();
     await _stop();
     _busy = false;
     _ended = false;
@@ -376,17 +403,20 @@ class ClaudeChat extends ChangeNotifier {
   }
 
   /// What `claude agents` can see on the host: the sessions running there,
-  /// background and interactive alike.
+  /// background and interactive alike, and with [all] the background ones
+  /// that have finished too — which [continueFrom] continues in place, since
+  /// the CLI resumes a session once its process has gone.
   ///
-  /// Only the ones still running, which is what the CLI lists without
-  /// `--all` and what was asked for. A finished session is still resumable,
-  /// and could be offered later; nothing here would have to change but the
-  /// flag, since [continueFrom] already picks its way by [ClaudeAgent.live].
+  /// In the order the sidebar shows them: pinned ones first, in the order
+  /// they were pinned — the order the file keeps them in — then the ones
+  /// running, then the finished ones, each newest first. `startedAt` is the
+  /// one time every row carries; a finished row says nothing of when it
+  /// ended.
   ///
   /// Throws with what the host said when it could not list them — an old
   /// Claude Code with no `agents` command, or none installed at all.
-  Future<List<ClaudeAgent>> agents() async {
-    final channel = await open(agentsCommand());
+  Future<List<ClaudeAgent>> agents({bool all = false}) async {
+    final channel = await open(agentsCommand(all: all));
     final String output;
     try {
       output = await utf8.decoder.bind(channel.output).join();
@@ -409,14 +439,18 @@ class ClaudeChat extends ChangeNotifier {
     final agents = [
       for (final row in rows) ?ClaudeAgent.fromJson(row, pins: pins.toSet()),
     ];
-    // Pinned ones first, in the order they were pinned — the order the file
-    // keeps them in — then the rest as the CLI listed them.
-    int rank(ClaudeAgent agent) =>
-        agent.pinned ? pins.indexOf(agent.id!) : pins.length;
+    int group(ClaudeAgent agent) => agent.pinned
+        ? pins.indexOf(agent.id!)
+        : pins.length + (agent.live ? 0 : 1);
+    int started(ClaudeAgent agent) =>
+        agent.startedAt?.millisecondsSinceEpoch ?? 0;
+    // List.sort is not stable, so ties keep the CLI's order by its index.
     final ordered = agents.indexed.toList()
       ..sort((a, b) {
-        final byPin = rank(a.$2).compareTo(rank(b.$2));
-        return byPin != 0 ? byPin : a.$1.compareTo(b.$1);
+        final byGroup = group(a.$2).compareTo(group(b.$2));
+        if (byGroup != 0) return byGroup;
+        final byAge = started(b.$2).compareTo(started(a.$2));
+        return byAge != 0 ? byAge : a.$1.compareTo(b.$1);
       });
     return [for (final (_, agent) in ordered) agent];
   }
@@ -468,18 +502,23 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// ponytail: never `claude stop`, which would end somebody's session from a
   /// tap on a phone.
-  Future<void> continueFrom(ClaudeAgent agent) async {
-    await _stop();
-    _entries.clear();
-    _running.clear();
-    _busy = false;
-    _ended = false;
-    _watching = null;
-    _pending.clear();
+  ///
+  /// [waitForTranscript] gives a session this chat has just started a few
+  /// seconds to write its first line.
+  Future<void> continueFrom(
+    ClaudeAgent agent, {
+    bool waitForTranscript = false,
+  }) async {
+    await _reset();
+    _composing = false;
     _sessionId = agent.sessionId;
     _pickedFrom = agent.sessionId;
     final pid = agent.pid;
-    final read = await _loadHistory(agent.sessionId, keepRunning: pid != null);
+    final read = await _loadHistory(
+      agent.sessionId,
+      keepRunning: pid != null,
+      wait: waitForTranscript,
+    );
     if (pid != null) {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
@@ -487,8 +526,8 @@ class ClaudeChat extends ChangeNotifier {
       _watching = agent;
       _say(
         ChatNotice(
-          'Watching “${agent.name}” live. What it does on the host shows '
-          'here as it happens.',
+          'Watching “${agent.name}” live: what it does on the host shows '
+          'here as it happens, and what you send goes into it.',
         ),
       );
       await _follow(agent, pid: pid, from: read.from, carry: read.carry);
@@ -498,12 +537,97 @@ class ClaudeChat extends ChangeNotifier {
     await start();
   }
 
+  /// Leaves whatever this chat shows for a new conversation, which the next
+  /// message starts. Nothing is lost by it: a session being watched carries
+  /// on untouched on the host, and one continued here is still listed there
+  /// under its own id, with everything said in it.
+  Future<void> newChat() async {
+    await _reset();
+    _sessionId = null;
+    _pickedFrom = null;
+    _composing = true;
+    notifyListeners();
+  }
+
+  Future<void> _reset() async {
+    await _stop();
+    _entries.clear();
+    _running.clear();
+    _busy = false;
+    _ended = false;
+    _watching = null;
+    _pending.clear();
+  }
+
+  /// Starts a new conversation on the host as a background session, with
+  /// [message] as its first, and watches it as any running session is
+  /// watched: so it is listed with the others, can be pinned, carries on
+  /// when the app closes, and is found again in the list. A chat started
+  /// any other way, as a `claude -p` of this app's own, is listed only while
+  /// its process lives, and would be lost from here the moment it ended.
+  ///
+  /// The first message goes on the command line rather than being typed in,
+  /// so it arrives in one round trip and is never taken for a paste.
+  Future<void> _startInBackground(String message) async {
+    final said = ChatSaid(message, mine: true)..delivery = Delivery.sending;
+    _busy = true;
+    _say(said);
+    try {
+      final channel = await open(
+        backgroundCommand(message, cwd: cwd, permission: _permission),
+      );
+      final String output;
+      try {
+        output = await utf8.decoder
+            .bind(channel.output)
+            .join()
+            .timeout(const Duration(seconds: 60));
+      } finally {
+        channel.close();
+      }
+      final id = backgroundId(output);
+      if (id == null) {
+        final why = _plain(output).trim();
+        throw SshSessionException(
+          why.isEmpty ? 'The host started no session.' : why,
+        );
+      }
+      // Listed the moment `--bg` returns, measured; a slow host gets a few
+      // more looks.
+      ClaudeAgent? agent;
+      for (var look = 0; look < 5 && agent == null; look++) {
+        if (look > 0) await Future<void>.delayed(const Duration(seconds: 1));
+        agent = (await agents()).where((row) => row.id == id).firstOrNull;
+      }
+      if (agent == null) {
+        throw SshSessionException(
+          'It started as $id, but `claude agents` does not list it. Open it '
+          'in a terminal with `claude attach $id`.',
+        );
+      }
+      // Something else was picked meanwhile: the new session stays on the
+      // host, in the list, and this chat shows what was picked.
+      if (!_composing) return;
+      _busy = false;
+      await continueFrom(agent, waitForTranscript: true);
+    } catch (error) {
+      said
+        ..delivery = Delivery.failed
+        ..why = 'Not started: $error';
+    } finally {
+      if (_composing) _busy = false;
+      notifyListeners();
+    }
+  }
+
   /// What the page does when the connection comes (back): a watched session
-  /// is picked up again — its follow went with the old connection — and
-  /// anything else is started, or restarted if it had ended.
+  /// is picked up again — its follow went with the old connection — one
+  /// continued here is started again, or restarted if it had ended, and a
+  /// chat not yet begun waits for its first message.
   Future<void> resume() async {
     final watching = _watching;
     if (watching != null) return continueFrom(watching);
+    if (_composing) return;
     return _ended ? restart() : start();
   }
 
@@ -590,13 +714,23 @@ class ClaudeChat extends ChangeNotifier {
     unawaited(start());
   }
 
-  /// The states `claude agents` gives a session it is safe to type into,
-  /// both measured: `done`, waiting for its next message, where a message is
-  /// taken as the next turn; and `working`, mid-turn, where it is queued
-  /// behind the turn and answered after it. Anything else — `blocked` at a
-  /// dialog, a state a later CLI adds, none at all — is refused, since a
+  /// Whether [agent] is safe to type into, by what `claude agents` says of
+  /// it, every case measured on throwaway sessions:
+  /// - `done`, waiting for its next message: taken as the next turn.
+  /// - `working`, mid-turn: queued behind the turn and answered after it.
+  /// - `blocked` while `idle`, with nothing in `waitingFor`: its turn ended
+  ///   on a question for the user, or it was started with no prompt and
+  ///   waits for one. What is typed is the answer.
+  ///
+  /// A session at a dialog is `blocked` too, but `waiting`, with what it is
+  /// waiting on in `waitingFor` — `permission prompt` for a tool to approve.
+  /// That, a state a later CLI adds, or none at all is refused, since a
   /// keystroke there could answer a prompt nobody meant to answer.
-  static const _typeable = {'done', 'working'};
+  static bool _typeable(ClaudeAgent agent) => switch (agent.state) {
+    'done' || 'working' => true,
+    'blocked' => agent.status == 'idle' && agent.waitingFor == null,
+    _ => false,
+  };
 
   /// Messages typed into the watched session that it has not recorded yet.
   final List<ChatSaid> _pending = [];
@@ -648,9 +782,10 @@ class ClaudeChat extends ChangeNotifier {
       return _undelivered(said, 'Somebody is typing into “${agent.name}” at a '
           'terminal. Type there, so two people are not typing at once.');
     }
-    if (!_typeable.contains(now.state)) {
-      return _undelivered(said, '“${agent.name}” is waiting for something on '
-          'the host${now.state == null ? '' : ' (${now.state})'}. Open it in a '
+    if (!_typeable(now)) {
+      return _undelivered(said, '“${agent.name}” is waiting for '
+          '${now.waitingFor ?? 'something'} on the host'
+          '${now.state == null ? '' : ' (${now.state})'}. Open it in a '
           'terminal with `claude attach $id` to answer it.');
     }
     if (!_sessionIdShape.hasMatch(id)) {
@@ -685,9 +820,7 @@ class ClaudeChat extends ChangeNotifier {
       }
       // A moment for the rest of the screen to settle under the prompt.
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      terminal.write(
-        Uint8List.fromList(utf8.encode('\x1b[200~${_pasteable(said.text)}\x1b[201~')),
-      );
+      terminal.write(Uint8List.fromList(utf8.encode(_keystrokes(said.text))));
       await Future<void>.delayed(const Duration(milliseconds: 500));
       terminal.write(Uint8List.fromList(const [13]));
       // Sent only once the session has it: recorded as its next turn, or
@@ -717,6 +850,34 @@ class ClaudeChat extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Up to this many characters are typed into the session as keys; more
+  /// are pasted. Measured on 2.1.277: 695 characters written at once went in
+  /// as typed, and 1868 were taken for a paste.
+  static const _typedLimit = 600;
+
+  /// What goes into the session's input line for [text].
+  ///
+  /// Typed, not pasted, when it is short enough to be taken for typing:
+  /// from 2.1.277 the CLI records a paste as `<pasted_content>`, and Claude
+  /// reads a message that is nothing but pasted text as something to ask
+  /// about before following — measured, it answered "Should I follow it?"
+  /// where the same words typed were simply done. Typed, a newline is
+  /// Ctrl+J, which the input line takes as a new line (measured), and a tab
+  /// becomes spaces, since Tab there takes a suggestion. A `!` first
+  /// switches the input to bash mode and runs the rest as a shell command on
+  /// the host — measured, even in plan mode — so a space goes before it,
+  /// which keeps it a message (measured too).
+  ///
+  /// ponytail: longer than [_typedLimit] it is still a paste, which Claude
+  /// may ask about first; typing it in pieces was tried, and a 1.8 KB message
+  /// in 200-character pieces never arrived at all.
+  static String _keystrokes(String text) {
+    final clean = _pasteable(text);
+    if (clean.length > _typedLimit) return '\x1b[200~$clean\x1b[201~';
+    final typed = clean.replaceAll('\t', '  ');
+    return typed.startsWith('!') ? ' $typed' : typed;
+  }
+
   /// Text as it may go into a paste: no escape, and no control but a newline
   /// or a tab. A paste ends at `ESC[201~`, so an escape left in it would end
   /// it early and let the rest be read as keys; the C1 controls go too, since
@@ -744,7 +905,11 @@ class ClaudeChat extends ChangeNotifier {
     }
     if (text == null) return;
     final key = _normal(text);
-    final said = _pending.where((said) => _normal(said.text) == key).firstOrNull;
+    // What reached the session is what was sent less what [_pasteable] took
+    // out, so that is what is compared.
+    final said = _pending
+        .where((said) => _normal(_pasteable(said.text)) == key)
+        .firstOrNull;
     if (said == null) return;
     // Either way the session has it, and the attach can go.
     _recorded.remove(said)?.complete();
@@ -789,6 +954,7 @@ class ClaudeChat extends ChangeNotifier {
   Future<({int from, List<int> carry})?> _loadHistory(
     String sessionId, {
     bool keepRunning = false,
+    bool wait = false,
   }) async {
     if (!_sessionIdShape.hasMatch(sessionId)) {
       _say(ChatNotice('This session has no id that can be looked up.'));
@@ -796,14 +962,14 @@ class ClaudeChat extends ChangeNotifier {
     }
     final Uint8List bytes;
     try {
-      final channel = await open(historyCommand(sessionId));
+      final channel = await open(historyCommand(sessionId, wait: wait));
       try {
         // A host that never closes the channel costs its history, not the
         // pick-up.
         bytes = await channel.output
             .fold(BytesBuilder(copy: false), (all, chunk) => all..add(chunk))
             .then((all) => all.takeBytes())
-            .timeout(const Duration(seconds: 20));
+            .timeout(Duration(seconds: wait ? 40 : 20));
       } finally {
         channel.close();
       }
@@ -898,7 +1064,7 @@ class ClaudeChat extends ChangeNotifier {
   /// terminal records it, or the text blocks this chat sends. Null for a
   /// line that is a tool's result instead.
   static String? _userText(Object? content) => switch (content) {
-    final String text => text,
+    final String text => text.replaceAll(_pasteTag, ''),
     final List blocks
         when !blocks.any(
           (block) => block is Map && block['type'] == 'tool_result',
@@ -910,6 +1076,12 @@ class ClaudeChat extends ChangeNotifier {
           .join('\n'),
     _ => null,
   };
+
+  /// How 2.1.277 marks what was pasted into a message:
+  /// `<pasted_content id="…">` and `</pasted_content id="…">` around it.
+  /// Taken out, so a paste reads as what was pasted, and a message this chat
+  /// pasted is recognised as the one it sent.
+  static final _pasteTag = RegExp(r'</?pasted_content id="[^"]*">');
 
   void _write(Map<String, dynamic> message) {
     final channel = _channel;
@@ -1111,16 +1283,18 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// `--json` is the one that does not want a terminal, which is what makes
   /// this possible over an exec channel at all. Without `--all` it lists the
-  /// sessions still running, which is what was asked for. Claude is found and
-  /// the whole script quoted exactly as [command] does it.
+  /// sessions still running; with it, the finished background ones as well
+  /// (80 rows, 21 KB, on a working machine). Claude is found and the whole
+  /// script quoted exactly as [command] does it.
   ///
   /// The pins follow it after a line of their own, so one round trip brings
   /// both: `jobs/pins.json` beside the CLI's other state, a JSON array of the
   /// short ids pinned in `claude agents` — found by watching which file
   /// changed when a session was pinned, since the listing itself never says.
-  static String agentsCommand() => 'sh -c '
+  static String agentsCommand({bool all = false}) => 'sh -c '
       '${_shellQuote('$_findClaude'
-          r'"$c" agents --json 2>&1; printf "\n--- pins\n"; '
+          '"\$c" agents --json${all ? ' --all' : ''} 2>&1; '
+          r'printf "\n--- pins\n"; '
           r'cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/pins.json" '
           '2>/dev/null')}';
 
@@ -1142,8 +1316,11 @@ class ClaudeChat extends ChangeNotifier {
   /// file. Where the projects live follows CLAUDE_CONFIG_DIR, as the CLI
   /// does. The id is quoted for sh, and the whole script once more for the
   /// login shell, as [command] quotes its values.
-  static String historyCommand(String sessionId) => 'sh -c '
-      '${_shellQuote('${_findTranscript(sessionId)}'
+  ///
+  /// [wait] gives a transcript that is not there yet up to 10 s to appear.
+  static String historyCommand(String sessionId, {bool wait = false}) =>
+      'sh -c '
+      '${_shellQuote('${_findTranscript(sessionId, wait: wait)}'
           // The size is read once, and the read stops there: a session
           // still writing must not have its newest bytes handed over twice,
           // here and again by the follow that starts at this size.
@@ -1185,6 +1362,116 @@ class ClaudeChat extends ChangeNotifier {
           r'kill $$ 2>/dev/null ) & w=$!; '
           r'cat >/dev/null 2>&1; kill $t $w 2>/dev/null')}';
 
+  /// What the host runs to start a new conversation as a background session
+  /// with [prompt] as its first message: `claude --bg`, in [cwd] as [command]
+  /// runs, with the chat's permission mode.
+  ///
+  /// The prompt is what the user typed, so it is quoted once for sh and the
+  /// whole script once more, and it comes after `--`, so a message that
+  /// opens with a dash is a message and not an option — measured, a prompt
+  /// of `--help: …` was taken as said. Measured too: `--bg` starts a session
+  /// with no prompt at all, but one that is then `blocked`; `--session-id` is
+  /// ignored with `--bg`, which is why the id is read back from what it
+  /// prints; and `--permission-prompts none` changes nothing there, a tool
+  /// needing approval still waiting at its dialog.
+  ///
+  /// ponytail: a message is one argument, so past the host's limit on one
+  /// (128 KB on Linux) the shell refuses it, and says so in the chat.
+  static String backgroundCommand(
+    String prompt, {
+    String? cwd,
+    ChatPermission permission = ChatPermission.acceptEdits,
+  }) {
+    final start = cwd == null || cwd.trim().isEmpty
+        ? ''
+        : 'cd ${_shellQuote(cwd)} || exit 1; ';
+    final script = '$_findClaude$start'
+        '"\$c" --bg --permission-mode ${permission.flag} '
+        '-- ${_shellQuote(_pasteable(prompt))} </dev/null 2>&1';
+    return 'sh -c ${_shellQuote(script)}';
+  }
+
+  /// The short id `claude --bg` printed for the session it started, from
+  /// its first line: `backgrounded · e02182f4 · name`, coloured. Null when
+  /// it printed no such line — the host saying why instead.
+  static String? backgroundId(String output) {
+    final id = RegExp(
+      r'^backgrounded · ([0-9A-Za-z-]+)',
+      multiLine: true,
+    ).firstMatch(_plain(output))?.group(1);
+    return id != null && _sessionIdShape.hasMatch(id) ? id : null;
+  }
+
+  /// [text] without the colours a terminal program writes.
+  static String _plain(String text) =>
+      text.replaceAll(RegExp(r'\x1b\[[0-9;?]*[A-Za-z]'), '');
+
+  /// The oldest Claude Code that has everything chat mode uses, read off the
+  /// CLI's own changelog (CHANGELOG.md in github.com/anthropics/claude-code):
+  /// - `--permission-prompts none`, which every `claude -p` this chat runs
+  ///   starts with: 2.1.259. The newest of them all, so the minimum.
+  /// - `claude agents --json`: 2.1.145; its `waitingFor`: 2.1.162; its `id`,
+  ///   `state` and `--all`: 2.1.169.
+  /// - `claude --bg`: 2.1.140 names it; `claude attach`: 2.1.198 is the
+  ///   first to, so it may be older. Both older than the minimum either way.
+  /// - `-p` with stream-json out: 0.2.66, and in: 1.0.18. `--resume`: 0.2.93.
+  ///   `--fork-session` is no longer used.
+  /// - `jobs/pins.json` is not in the changelog, only pinning itself, in
+  ///   2.1.147; a host without the file only shows nothing pinned.
+  static const minimumVersion = (2, 1, 259);
+
+  /// What the host runs to say which Claude Code it has: `--version`, with
+  /// Claude found as [command] finds it and the script quoted as it quotes.
+  static String versionCommand() =>
+      'sh -c ${_shellQuote('$_findClaude"\$c" --version 2>&1')}';
+
+  /// The version in what `claude --version` printed — `2.1.277 (Claude
+  /// Code)` — or null for anything else: three numbers, and after them, if
+  /// anything, only the CLI's own name. A line the host added, a build of
+  /// some other program, or nothing at all is not taken for a version.
+  static (int, int, int)? parseVersion(String output) {
+    final match = RegExp(
+      r'^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?: \(Claude Code\))?$',
+    ).firstMatch(output.trim());
+    if (match == null) return null;
+    return (int.parse(match[1]!), int.parse(match[2]!), int.parse(match[3]!));
+  }
+
+  /// Whether [version] is [minimum] or newer, compared part by part as
+  /// numbers: 2.1.100 is newer than 2.1.99.
+  static bool meetsMinimum(
+    (int, int, int) version, [
+    (int, int, int) minimum = minimumVersion,
+  ]) {
+    final (major, minor, patch) = version;
+    final (needMajor, needMinor, needPatch) = minimum;
+    if (major != needMajor) return major > needMajor;
+    if (minor != needMinor) return minor > needMinor;
+    return patch >= needPatch;
+  }
+
+  static String _versionName((int, int, int) version) =>
+      '${version.$1}.${version.$2}.${version.$3}';
+
+  /// Why chat cannot run with the Claude Code that answered [output] to
+  /// [versionCommand], or null when it can. An answer that is not a version
+  /// is not taken as new enough: chat stays shut, and says what came back.
+  static String? versionRefusal(String output) {
+    final text = output.trim();
+    if (text.startsWith(_notInstalled)) return text;
+    final needs = _versionName(minimumVersion);
+    final version = parseVersion(text);
+    if (version == null) {
+      final said = text.length > 120 ? '${text.substring(0, 120)}…' : text;
+      return 'Could not tell which Claude Code this host has — chat needs '
+          '$needs or newer, and the host answered '
+          '${said.isEmpty ? 'nothing' : '“$said”'}.';
+    }
+    if (meetsMinimum(version)) return null;
+    return 'Claude Code ${_versionName(version)} on this host is too old for '
+        'chat — it needs $needs or newer.';
+  }
+
   /// What the host runs to type into a running background session: `claude
   /// attach` with its short [id], on the pty [openTerminal] gives it. Claude
   /// is found as [command] finds it, and the id quoted once for sh, the whole
@@ -1194,13 +1481,22 @@ class ClaudeChat extends ChangeNotifier {
           'exec "\$c" attach ${_shellQuote(id)}')}';
 
   /// Finds [sessionId]'s transcript into `$f`, or says there is none and
-  /// stops — by its id, not by the directory the CLI files it under.
-  static String _findTranscript(String sessionId) =>
-      r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"; '
-      'f=\$(find "\$d" -type f -name ${_shellQuote('$sessionId.jsonl')} '
-      r'2>/dev/null | head -n 1); '
-      r'[ -n "$f" ] || { echo "No transcript for this session on the '
-      r'host."; exit 1; }; ';
+  /// stops — by its id, not by the directory the CLI files it under. With
+  /// [wait], a transcript not there yet is looked for once a second for
+  /// 10 s: a session just started writes its first line a moment later.
+  static String _findTranscript(String sessionId, {bool wait = false}) {
+    final find =
+        'f=\$(find "\$d" -type f -name ${_shellQuote('$sessionId.jsonl')} '
+        '2>/dev/null | head -n 1); ';
+    final again = wait
+        ? 'i=0; while [ -z "\$f" ] && [ \$i -lt 10 ]; do sleep 1; '
+              'i=\$((i + 1)); ${find}done; '
+        : '';
+    return r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"; '
+        '$find$again'
+        r'[ -n "$f" ] || { echo "No transcript for this session on the '
+        r'host."; exit 1; }; ';
+  }
 
   /// Finds Claude Code into `$c`, or says it is not there and stops.
   static const _findClaude =
@@ -1211,9 +1507,14 @@ class ClaudeChat extends ChangeNotifier {
       r'do ok "$c" && break; c=; done; '
       r'ok "$c" || c=$("$SHELL" -lc "command -v claude" </dev/null 2>/dev/null '
       r'| tail -n 1); '
-      r'ok "$c" || { echo "Claude Code is not installed on this host (looked on '
-      r'PATH, in ~/.local/bin, ~/.claude/local and the usual package managers)"; '
-      r'exit 1; }; ';
+      r'ok "$c" || { echo "'
+      '$_notInstalled'
+      r' (looked on PATH, in ~/.local/bin, ~/.claude/local and the usual '
+      r'package managers)"; exit 1; }; ';
+
+  /// How the host says it has no Claude Code, which the version check passes
+  /// on as it is.
+  static const _notInstalled = 'Claude Code is not installed on this host';
 
   /// Wraps a value so the remote shell sees exactly these bytes.
   static String _shellQuote(String value) =>

@@ -75,6 +75,12 @@ class _Shell
   /// What `claude agents --json` answers, when a test sets one.
   String? listing;
 
+  /// What `claude --bg` prints, as it printed it on a real host: the short
+  /// id of the session it started.
+  String background =
+      'backgrounded · \x1b[36m9e1f2a3b\x1b[39m · nginx look\n'
+      '\x1b[2m  claude attach 9e1f2a3b    open in this terminal\x1b[22m\n';
+
   /// What the history command answers: the transcript's size, then its end.
   /// A session that has said nothing, unless a test says otherwise.
   String history = '0\n';
@@ -91,6 +97,13 @@ class _Shell
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains(' --bg ')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(background))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     if (command.contains(' -f ')) {
       final controller = StreamController<Uint8List>();
       follow = controller;
@@ -185,6 +198,26 @@ Future<void> _settlePickUp(WidgetTester tester) async {
   await tester.pump();
 }
 
+/// A session on the host whose process has finished, as `--all` lists it.
+Map<String, Object?> _finished(String id, String name, {int started = 0}) => {
+  'id': id,
+  'cwd': '/srv/app',
+  'kind': 'background',
+  'startedAt': started,
+  'sessionId': '$id-0000-4000-8000-000000000000',
+  'name': name,
+  'state': 'done',
+};
+
+/// Picks the finished session [name] from the list, on a phone's drawer:
+/// it is continued in place, by a Claude of this chat's own.
+Future<void> _continue(WidgetTester tester, String name) async {
+  await tester.tap(find.text('Sessions on this host'));
+  await _settlePickUp(tester);
+  await tester.tap(find.text(name));
+  await _settlePickUp(tester);
+}
+
 const _host = HostProfile(
   id: 'host-1',
   label: 'box',
@@ -194,10 +227,29 @@ const _host = HostProfile(
 );
 
 void main() {
-  testWidgets('a connected session starts Claude where its files are', (
+  testWidgets('a new chat starts nothing on the host until its first '
+      'message, which starts a background session there and watches it', (
     tester,
   ) async {
-    final shell = _Shell();
+    final shell = _Shell()
+      ..listing = jsonEncode([
+        {
+          'pid': 7,
+          'id': '9e1f2a3b',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '9e1f2a3b-0000-4000-8000-000000000000',
+          'name': 'nginx look',
+          'status': 'busy',
+          'state': 'working',
+        },
+      ])
+      ..history = _history([
+        {
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'why is nginx slow?'},
+        },
+      ]);
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
@@ -205,21 +257,52 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: Scaffold(body: ChatPage(session: session))),
     );
-    await tester.pump();
+    await _settlePickUp(tester);
 
-    // Started in the files' root; how the path is quoted is claude_chat_test's,
-    // which runs the command through a shell rather than reading it.
-    expect(shell.commands.single, contains('cd '));
-    expect(shell.commands.single, contains('/srv/app'));
-    expect(shell.commands.single, contains('--output-format stream-json'));
-    // Nothing said yet, so the tab says where Claude is running.
+    // Only the list is asked for: no Claude of its own, no session.
+    expect(
+      shell.commands.where((c) => !c.contains('agents --json')),
+      isEmpty,
+    );
+    // Nothing said yet, so the tab says where Claude will run, and how.
     expect(find.textContaining('/srv/app'), findsOneWidget);
+    expect(find.textContaining('starts a new session'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration!.hintText,
+      'Start a new chat…',
+    );
+
+    await tester.enterText(find.byType(TextField), 'why is nginx slow?');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await _settlePickUp(tester);
+
+    // Started as a background session, in the files' root; how the message
+    // and the path are quoted is claude_chat_test's, through a real shell.
+    final started = shell.commands.singleWhere((c) => c.contains(' --bg '));
+    expect(started, contains('/srv/app'));
+    expect(shell.commands.any((c) => c.contains('stream-json')), isFalse);
+    // Then watched, like any session running there, and typed into.
+    expect(
+      shell.commands.lastWhere((c) => c.contains(' -f ')),
+      contains('9e1f2a3b-0000-4000-8000'),
+    );
+    expect(find.text('why is nginx slow?'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration!.hintText,
+      'Message “nginx look”…',
+    );
+    // And asked for again, so the list has the session just started.
+    expect(
+      shell.commands.where((c) => c.contains('agents --json --all')),
+      hasLength(2),
+    );
   });
 
-  testWidgets('what is typed goes to Claude, and what comes back is drawn', (
-    tester,
-  ) async {
-    final shell = _Shell();
+  testWidgets('a finished session continued here takes what is typed, and '
+      'draws what comes back', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
@@ -228,6 +311,9 @@ void main() {
       MaterialApp(home: Scaffold(body: ChatPage(session: session))),
     );
     await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+    // Continued in place by a Claude of this chat's own, resumed.
+    expect(shell.commands.last, contains('--resume'));
 
     await tester.enterText(find.byType(TextField), 'check the nginx log');
     await tester.pump();
@@ -490,7 +576,7 @@ void main() {
     // Into the running session itself, through its attach.
     expect(shell.commands.any((command) => command.contains('attach')),
         isTrue);
-    expect(shell.typed.single.first, '\x1b[200~run it once more\x1b[201~');
+    expect(shell.typed.single.first, 'run it once more');
     expect(find.text('Sending…'), findsOneWidget);
 
     shell.adds({
@@ -502,6 +588,66 @@ void main() {
     expect(find.text('Sending…'), findsNothing);
     expect(find.text('run it once more'), findsOneWidget);
   });
+
+  for (final wide in [true, false]) {
+    testWidgets('the sessions are still there when the '
+        '${wide ? 'sidebar' : 'drawer'} is hidden and shown again, without '
+        'asking the host again', (tester) async {
+      tester.view
+        ..physicalSize = wide ? const Size(1280, 800) : const Size(400, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+
+      Future<void> show() async {
+        await tester.tap(find.byTooltip('Sessions on this host').first);
+        await _settlePickUp(tester);
+      }
+
+      Future<void> hide() async {
+        if (wide) {
+          await tester.tap(find.byTooltip('Hide the sessions on this host'));
+        } else {
+          // Tapped beside the drawer, as a thumb does.
+          await tester.tapAt(const Offset(390, 400));
+        }
+        await _settlePickUp(tester);
+      }
+
+      if (!wide) await show();
+      expect(find.text('the nightly build'), findsOneWidget);
+      final asked = shell.commands.where((c) => c.contains('agents')).length;
+
+      await hide();
+      expect(find.text('the nightly build'), findsNothing);
+      await show();
+
+      expect(find.text('the nightly build'), findsOneWidget);
+      expect(
+        shell.commands.where((c) => c.contains('agents')).length,
+        asked,
+      );
+    });
+  }
 
   testWidgets('a session pinned in claude agents is pinned in the sidebar, '
       'first', (tester) async {
@@ -541,7 +687,8 @@ void main() {
   });
 
   testWidgets('a tool row opens to its input and its result', (tester) async {
-    final shell = _Shell();
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
@@ -550,6 +697,7 @@ void main() {
       MaterialApp(home: Scaffold(body: ChatPage(session: session))),
     );
     await tester.pump();
+    await _continue(tester, 'Zsh config fix');
     await tester.enterText(find.byType(TextField), 'check the nginx log');
     await tester.pump();
     await tester.tap(find.byIcon(Icons.arrow_upward));
@@ -597,5 +745,232 @@ void main() {
     expect(find.textContaining('"command": "tail -n 50 error.log"'),
         findsOneWidget);
     expect(find.text('3 upstream timeouts'), findsOneWidget);
+  });
+
+  testWidgets('the list has the finished sessions too, under their own '
+      'heading, after the pinned and the running ones', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing =
+          '${jsonEncode([
+            _finished('aaaa0001', 'finished long ago', started: 100),
+            {
+              'pid': 1,
+              'id': 'bbbb0002',
+              'cwd': '/srv',
+              'kind': 'background',
+              'startedAt': 200,
+              'sessionId': 'bbbb0002-0000-4000-8000-000000000000',
+              'name': 'running',
+              'status': 'idle',
+              'state': 'done',
+            },
+            _finished('cccc0003', 'finished lately', started: 300),
+            _finished('dddd0004', 'pinned and finished', started: 50),
+          ])}'
+          '\n--- pins\n["dddd0004"]\n';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await _settlePickUp(tester);
+
+    expect(shell.commands.first, contains('agents --json --all'));
+    final order = [
+      for (final text in tester.widgetList<Text>(
+        find.descendant(
+          of: find.byType(ListView),
+          matching: find.byType(Text),
+        ),
+      ))
+        if (const {
+          'Pinned',
+          'Running',
+          'Finished (2)',
+          'pinned and finished',
+          'running',
+          'finished lately',
+          'finished long ago',
+        }.contains(text.data))
+          text.data,
+    ];
+    expect(order, [
+      'Pinned',
+      'pinned and finished',
+      'Running',
+      'running',
+      'Finished (2)',
+      'finished lately',
+      'finished long ago',
+    ]);
+    expect(find.textContaining('finished ·'), findsNWidgets(3));
+  });
+
+  testWidgets('the sidebar says what picking a session does now: watched live '
+      'and typed into, not copied', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()..listing = '[]';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await _settlePickUp(tester);
+
+    expect(find.textContaining('copy'), findsNothing);
+    expect(find.textContaining('nothing said here reaches it'), findsNothing);
+    expect(find.textContaining('watched live'), findsOneWidget);
+    expect(find.textContaining('what you send goes into it'), findsOneWidget);
+  });
+
+  testWidgets('New chat leaves the session being watched running, and the '
+      'next message starts another', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'idle',
+          'state': 'done',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await _settlePickUp(tester);
+    await tester.tap(find.text('the nightly build'));
+    await _settlePickUp(tester);
+    expect(find.text('It failed at the lint step.'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('New chat'));
+    await _settlePickUp(tester);
+
+    // A new one: nothing of the old on screen, and the box starts one.
+    expect(find.text('It failed at the lint step.'), findsNothing);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).decoration!.hintText,
+      'Start a new chat…',
+    );
+    // The old one was let go of, not stopped, and is still listed.
+    expect(shell.commands.any((c) => c.contains(' stop ')), isFalse);
+    expect(find.text('the nightly build'), findsOneWidget);
+    final row = tester.widget<ListTile>(
+      find.ancestor(
+        of: find.text('the nightly build'),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(row.selected, isFalse);
+  });
+
+  group('where a session was left', () {
+    /// A transcript long enough to scroll: [count] answers.
+    String long(String word, int count) => _history([
+      for (var n = 0; n < count; n++)
+        {
+          'type': 'assistant',
+          'message': {
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': '$word $n'},
+            ],
+          },
+        },
+    ]);
+
+    /// Two finished sessions to move between. Where one was left is kept
+    /// for as long as the app runs, so each test has sessions of its own.
+    Future<({_Shell shell, ScrollPosition Function() at})> twoSessions(
+      WidgetTester tester,
+      String ids,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing = jsonEncode([
+          _finished('${ids}0001', 'first', started: 2),
+          _finished('${ids}0002', 'second', started: 1),
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      // The conversation's list, not the sidebar's: the one with a
+      // controller of its own.
+      ScrollPosition at() => tester
+          .widgetList<ListView>(find.byType(ListView))
+          .firstWhere((list) => list.controller != null)
+          .controller!
+          .position;
+      return (shell: shell, at: at);
+    }
+
+    Future<void> pick(WidgetTester tester, _Shell shell, String name,
+        String history) async {
+      shell.history = history;
+      await tester.tap(find.text(name));
+      await _settlePickUp(tester);
+    }
+
+    testWidgets('picked again, a session comes back where it was scrolled '
+        'to', (tester) async {
+      final (:shell, :at) = await twoSessions(tester, 'aaaa');
+      await pick(tester, shell, 'first', long('first', 60));
+      // Opened at its newest.
+      expect(at().pixels, at().maxScrollExtent);
+
+      at().jumpTo(400);
+      await tester.pump();
+      await pick(tester, shell, 'second', long('second', 60));
+      expect(at().pixels, at().maxScrollExtent);
+
+      await pick(tester, shell, 'first', long('first', 60));
+      expect(at().pixels, 400);
+      expect(at().maxScrollExtent - at().pixels, greaterThan(240));
+    });
+
+    testWidgets('one left at its bottom comes back at its bottom', (
+      tester,
+    ) async {
+      final (:shell, :at) = await twoSessions(tester, 'bbbb');
+      await pick(tester, shell, 'first', long('first', 60));
+      await pick(tester, shell, 'second', long('second', 60));
+      at().jumpTo(300);
+      await tester.pump();
+
+      // Grown meanwhile, as a running session does: still its bottom.
+      await pick(tester, shell, 'first', long('first', 90));
+      expect(at().pixels, at().maxScrollExtent);
+      expect(find.text('first 89'), findsOneWidget);
+    });
   });
 }
