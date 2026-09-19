@@ -17,3 +17,11 @@ bool get isDesktop => switch (defaultTargetPlatform) {
   TargetPlatform.linux => true,
   _ => false,
 };
+
+/// Whether webview_flutter can draw a page here. It has Android, iOS and
+/// macOS and nothing else: on Linux or Windows the first `WebViewController`
+/// throws, so what would be a web view there has to be something else.
+bool get hasWebView => switch (defaultTargetPlatform) {
+  TargetPlatform.android || TargetPlatform.iOS || TargetPlatform.macOS => true,
+  _ => false,
+};

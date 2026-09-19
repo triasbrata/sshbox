@@ -58,6 +58,7 @@ class TabsShell extends StatefulWidget {
     required this.sessions,
     required this.onOpenHost,
     this.onOpenLocal,
+    this.onOpenWsl,
     this.openDatabase,
   });
 
@@ -69,6 +70,10 @@ class TabsShell extends StatefulWidget {
   /// Opens a shell on this machine, on the builds that can have one — see
   /// `LocalTransport`. Null elsewhere, and Home draws no card for it.
   final Future<void> Function()? onOpenLocal;
+
+  /// Opens a shell in a WSL distro, on the Windows build alone: see
+  /// `wslDistros`. Null elsewhere.
+  final Future<void> Function(String distro)? onOpenWsl;
 
   /// What a database's tab connects with: [DbSession.open], unless a test
   /// brings a stand-in.
@@ -416,6 +421,7 @@ class _TabsShellState extends State<TabsShell> {
                       sessions: widget.sessions,
                       onOpenHost: widget.onOpenHost,
                       onOpenLocal: widget.onOpenLocal,
+                      onOpenWsl: widget.onOpenWsl,
                     ),
                     for (final slot in slots)
                       slot is TabGroup

@@ -26,6 +26,8 @@ class HostsPage extends StatefulWidget {
     required this.sessions,
     required this.onOpenHost,
     this.onOpenLocal,
+    this.onOpenWsl,
+    this.findWslDistros = wslDistros,
   });
 
   final HostRepository repository;
@@ -41,6 +43,14 @@ class HostsPage extends StatefulWidget {
   /// card for it is then not drawn.
   final Future<void> Function()? onOpenLocal;
 
+  /// Opens a shell in one of [findWslDistros]'s distros, each of which gets a
+  /// card beside the local shell's. Only the Windows build hands one over.
+  final Future<void> Function(String distro)? onOpenWsl;
+
+  /// The WSL distros to draw cards for: [wslDistros], which finds none
+  /// anywhere but Windows, unless a test brings its own.
+  final Future<List<String>> Function() findWslDistros;
+
   @override
   State<HostsPage> createState() => _HostsPageState();
 }
@@ -55,11 +65,22 @@ class _HostsPageState extends State<HostsPage> {
   List<HostProfile>? _hosts;
   List<DbConnection>? _databases;
 
+  /// Asked for once, as Home first shows: a distro installed while the app
+  /// runs shows the next time it starts.
+  List<String> _wsl = const [];
+
   @override
   void initState() {
     super.initState();
     _reload();
     widget.sessions.addListener(_onSessionsChanged);
+    if (_local && widget.onOpenWsl != null) {
+      unawaited(
+        widget.findWslDistros().then((distros) {
+          if (mounted) setState(() => _wsl = distros);
+        }),
+      );
+    }
   }
 
   @override
@@ -363,6 +384,16 @@ class _HostsPageState extends State<HostsPage> {
                         sessions: widget.sessions.sessionsFor(localHostId),
                         onOpen: () => widget.onOpenLocal!(),
                       ),
+                      for (final distro in _wsl)
+                        _LocalTile(
+                          title: distro,
+                          idle: 'A WSL shell',
+                          icon: Icons.terminal,
+                          sessions: widget.sessions.sessionsFor(
+                            wslHost(distro).id,
+                          ),
+                          onOpen: () => widget.onOpenWsl!(distro),
+                        ),
                     ]),
                   ],
                   if (hosts.isNotEmpty && headed) const _SectionHeader('Hosts'),
@@ -389,11 +420,24 @@ class _HostsPageState extends State<HostsPage> {
 /// It counts the shells open on this machine the way a host's card counts its
 /// sessions, and a tap opens another — the tab strip is the way back to the
 /// ones already up.
+///
+/// A WSL distro on Windows gets one the same, named for the distro.
 class _LocalTile extends StatelessWidget {
-  const _LocalTile({required this.sessions, required this.onOpen});
+  const _LocalTile({
+    required this.sessions,
+    required this.onOpen,
+    this.title = 'Local shell',
+    this.idle = 'A shell on this machine',
+    this.icon = Icons.laptop_mac,
+  });
 
   final List<LiveSession> sessions;
   final VoidCallback onOpen;
+  final String title;
+
+  /// What it says with no shell open.
+  final String idle;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
@@ -409,7 +453,7 @@ class _LocalTile extends StatelessWidget {
           padding: const EdgeInsets.all(14),
           child: Row(
             children: [
-              Icon(Icons.laptop_mac, color: theme.colorScheme.primary),
+              Icon(icon, color: theme.colorScheme.primary),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -417,13 +461,13 @@ class _LocalTile extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Local shell',
+                      title,
                       style: theme.textTheme.titleMedium,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
-                      open == 0 ? 'A shell on this machine' : '$open open',
+                      open == 0 ? idle : '$open open',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),

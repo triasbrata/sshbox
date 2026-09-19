@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
+import '../platform.dart';
 import 'notification_gateway.dart';
 import 'notify_key.dart';
 
@@ -36,6 +37,10 @@ class PushMessaging {
   final NotifyKeys notifyKeys;
 
   Future<void> initialize() async {
+    // FCM delivers to phones. firebase_messaging has nothing at all for Linux
+    // or Windows, and no desktop build carries a Firebase config, so there
+    // the direct way — see SessionManager — is how a host reaches the app.
+    if (isDesktop) return;
     try {
       await Firebase.initializeApp();
     } catch (error) {

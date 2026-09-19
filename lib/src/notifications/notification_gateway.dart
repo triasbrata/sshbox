@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../files/file_browser.dart';
@@ -30,17 +31,29 @@ class NotificationGateway {
       // plugin throws "settings must be set when targeting <platform>" as it
       // starts — which is what the Mac did, before the shell was even drawn.
       // The Darwin ones ask for permission to post as they initialise; the
-      // icon is the app's own there, so there is nothing to name.
+      // icon is the app's own there, so there is nothing to name. Windows
+      // names the app to its toasts by the Play package name, and the GUID is
+      // Jeansh's own, made once: it is what a tapped toast activates.
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@drawable/ic_stat_jeansh'),
         iOS: DarwinInitializationSettings(),
         macOS: DarwinInitializationSettings(),
+        linux: LinuxInitializationSettings(defaultActionName: 'Open'),
+        windows: WindowsInitializationSettings(
+          appName: 'Jeansh',
+          appUserModelId: 'cloud.brata.terminal',
+          guid: '526e8ae7-be97-40b8-b1f8-fbd5e998b685',
+        ),
       ),
       onDidReceiveNotificationResponse: _onTap,
     );
 
     // Cold start: the tap is what launched the app, so the response is waiting
-    // here rather than arriving through the callback above.
+    // here rather than arriving through the callback above. Not on Linux,
+    // where a notification never starts the app and the plugin throws
+    // UnimplementedError for asking — which, uncaught, left the Linux build
+    // with no transfer notifications at all.
+    if (defaultTargetPlatform == TargetPlatform.linux) return;
     final launch = await _plugin.getNotificationAppLaunchDetails();
     if (launch?.didNotificationLaunchApp ?? false) {
       final payload = launch?.notificationResponse?.payload;

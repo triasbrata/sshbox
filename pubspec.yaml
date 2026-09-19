@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.62+62
+version: 1.0.63+63
 
 environment:
   sdk: ^3.13.2
@@ -38,8 +38,12 @@ dependencies:
   dartssh2: ^4.1.0
   # The local shell on a desktop build: a real pty, so vim, htop and job
   # control work the way they do in Terminal. Nothing on Android or iOS opens
-  # one — see `LocalTransport`.
-  flutter_pty: ^0.4.2
+  # one — see `LocalTransport`. 0.4.2 from pub.dev, kept here with its Windows
+  # command line fixed (see third_party/flutter_pty/src/flutter_pty_win.c):
+  # as published it cannot start wsl.exe with a distro, nor any program under
+  # a path with a space in it.
+  flutter_pty:
+    path: third_party/flutter_pty
   flutter_secure_storage: ^11.0.0
   shared_preferences: ^2.5.5
   app_links: ^7.2.1
@@ -121,6 +125,14 @@ flutter_launcher_icons:
   macos:
     generate: true
     image_path: assets/branding/app_icon_macos.png
+  # windows/runner/resources/app_icon.ico, from the tile itself: Windows draws
+  # no mask either, and the tile's own rounded corners are what a Windows
+  # icon looks like. The Linux build installs the tile as it is — see
+  # linux/CMakeLists.txt.
+  windows:
+    generate: true
+    image_path: assets/branding/app_icon.png
+    icon_size: 256
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

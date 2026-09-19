@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
@@ -183,6 +184,18 @@ class _SshboxAppState extends State<SshboxApp> {
     await session.connect(secrets: _secrets);
   }
 
+  /// A shell in the WSL distro [distro], on the Windows build alone — see
+  /// [wslDistros] — opened as [openLocal] opens one.
+  Future<void> openWsl(String distro) async {
+    if (!Platform.isWindows) return;
+    final session = _sessions.create(
+      wslHost(distro),
+      transport: (_, _) => LocalTransport(wslDistro: distro),
+    );
+    _sessions.add(session);
+    await session.connect(secrets: _secrets);
+  }
+
   /// Files and texts shared into the app before there was anywhere to put
   /// them: see [LiveSession.queueUploads].
   final List<Object> _pendingShares = [];
@@ -290,6 +303,7 @@ class _SshboxAppState extends State<SshboxApp> {
               sessions: _sessions,
               onOpenHost: (hostId) => openHost(hostId, newSession: true),
               onOpenLocal: openLocal,
+              onOpenWsl: Platform.isWindows ? openWsl : null,
             ),
           );
         },

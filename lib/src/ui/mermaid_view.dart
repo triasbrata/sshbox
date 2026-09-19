@@ -8,9 +8,12 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../platform.dart';
+
 /// Draws a Markdown file's ```mermaid blocks as diagrams, as the builder for
 /// `code` in [Markdown.builders]. Any other code, block or inline, is left to
-/// the package.
+/// the package — and so is a mermaid block where there is no web view to draw
+/// it in, Linux and Windows, which show its source as code.
 class MermaidBuilder extends MarkdownElementBuilder {
   @override
   Widget? visitElementAfterWithContext(
@@ -19,6 +22,7 @@ class MermaidBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
+    if (!hasWebView) return null;
     if (element.attributes['class'] != 'language-mermaid') return null;
     final source = element.textContent;
     return MermaidView(key: ValueKey(source), source: source);
