@@ -569,13 +569,16 @@ class _TabStripState extends State<TabStrip> {
             TabKind.terminal => Icons.terminal,
           },
           label: switch (tab.kind) {
-            TabKind.chat => 'Claude',
+            // As a file tab reads: the host, then what the tab is.
+            TabKind.chat => '${tab.session.fileTabHost} · Claude',
             TabKind.git => 'Git',
             TabKind.file => tab.session.fileTabTitle(tab.path!),
             TabKind.web => tab.web!.title,
             TabKind.terminal => tab.session.title,
           },
-          cutFirst: tab.kind == TabKind.file ? tab.session.fileTabHost : null,
+          cutFirst: tab.kind == TabKind.file || tab.kind == TabKind.chat
+              ? tab.session.fileTabHost
+              : null,
           selected: index + 1 == widget.activeIndex,
           connected: tab.kind == TabKind.terminal && tab.session.isConnected,
           expand: single,

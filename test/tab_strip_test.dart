@@ -78,6 +78,9 @@ class _NoSecrets implements SecretStore {
 TabRef _file(TabRef shell, String path) =>
     (session: shell.session, kind: TabKind.file, path: path, web: null);
 
+TabRef _chat(TabRef shell) =>
+    (session: shell.session, kind: TabKind.chat, path: null, web: null);
+
 Rect _pill(WidgetTester tester, String label) => tester.getRect(
   find.ancestor(of: find.text(label), matching: find.byType(Material)).first,
 );
@@ -187,6 +190,17 @@ void main() {
     RenderParagraph paragraph(Finder text) => tester.renderObject(text);
     expect(paragraph(find.text(' · a.c')).didExceedMaxLines, isFalse);
     expect(paragraph(find.text('box').last).didExceedMaxLines, isTrue);
+  });
+
+  testWidgets('a chat tab reads host · Claude, as a file tab does', (
+    tester,
+  ) async {
+    final shell = _shell(tester, 'host-1', 'box');
+    await _pump(tester, [shell, _chat(shell)]);
+
+    // Cut the same way as a file tab's name, the host first, which the file
+    // tab's test covers: the test font is too wide to measure it here.
+    expect(find.byTooltip('Close box · Claude'), findsOneWidget);
   });
 
   testWidgets('long-pressing a shell offers another session on its host', (
