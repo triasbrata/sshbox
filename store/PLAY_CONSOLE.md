@@ -56,8 +56,8 @@ Releases go out from your own machine, not from CI.
 4. Run `tool/release.sh --publish --dry-run` first: it does everything but the
    commit. Then `tool/release.sh --publish`, which releases on `alpha`, or
    `--track <id>` for a track of your own.
-5. Every upload needs a build number Play hasn't seen. The pre-commit hook
-   raises it with each app commit, and the publisher refuses a number Play
+5. Every upload needs a build number Play hasn't seen. CI's `tag.yml` gives
+   each release the next one, and the publisher refuses a number Play
    already has before it uploads anything.
 
 ## 4. Policy → App content

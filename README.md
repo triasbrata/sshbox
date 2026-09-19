@@ -1029,41 +1029,13 @@ why search is stated as a separate capability rather than folded into
 users see, and the build number, N, which is Android's `versionCode` and
 iOS's `CFBundleVersion`.
 
-Every commit that changes the app raises N by one, through
-`.githooks/pre-commit`. These count as changes to the app:
-- anything in `lib/`, `android/`, `ios/`, `macos/`, `linux/`, `windows/`,
-  `assets/` or `third_party/`;
-- `pubspec.lock`;
-- a `pubspec.yaml` change beyond its version line.
-
-Docs, tests and `tool/` don't. A commit that changes the version line gets
-`[build vN]` in its message, placed above any trailers.
-
-The name is semver. The patch, Z, is X.Y's newest tag's, and goes up by
-itself on the tenth build past the one that tag was made at, so 1.0.6 tagged
-at build 65 becomes 1.0.7 at build 75. The major and minor are changed by
-hand, with the patch back to 0, in the version line or with
-`tool/release.sh --name X.Y`; an X.Y nobody has tagged yet is kept as
-written. `.githooks/post-commit` tags the first commit
-to carry each name, `vX.Y.Z`, annotated with its build number, so a new
-major or minor and every patch get a tag, which the next commit counts its
-ten builds from. GitHub gets the same tag by itself: `tag.yml` makes it
-once `main` is pushed, and that tag releases the build (see From CI
-below). So the tags here never need pushing; leave `push.followTags` off.
-Fetch with a plain `git fetch`: the two are different tag objects on one
-commit, and `git fetch --tags` refuses to swap this one for GitHub's.
-
-The hooks stay off until a clone turns them on, once. Worktrees share the
-setting, and a relative path makes each run the hooks its own branch holds:
-
-```sh
-git config core.hooksPath .githooks
-```
-
-`tool/test_hooks.sh` runs the hooks against a throwaway repo. Parallel
-branches collide on the version line, X.Y.Z+N on both sides: keep the line
-with the higher N, with `main`'s X.Y if the two differ, and the hook raises
-it again on the merge commit and names its patch from the tags.
+CI numbers every release, and nothing on this machine does: each push to
+`main` that changes the app gets the next patch and build number as a
+`vX.Y.Z` tag, and each build writes that number into its own copy of
+`pubspec.yaml` (see From CI below). So the line in the repository decides
+only X.Y. For a new major or minor, set it there by hand, or with
+`tool/release.sh --name X.Y`, and push. Its Z and N stay as they were and
+are only what a local build reports. The repository has no git hooks.
 
 ### A release from this machine
 

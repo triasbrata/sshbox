@@ -204,8 +204,8 @@ def publish(args):
         had = {b.get("versionCode") for b in bundles.get("bundles", [])}
         if version in had:
             die(f"Play already has build {version}, and takes each one only once",
-                "commit a change to the app, which raises the build number, and",
-                "build again: .githooks/pre-commit raises pubspec.yaml's +N.")
+                "CI numbers each release: push the change to main, or set",
+                "pubspec.yaml's +N past the newest v* tag's build to publish from here.")
 
         print(f"uploading {size / 1e6:.1f} MB", flush=True)
         with open(args.bundle, "rb") as bundle:
