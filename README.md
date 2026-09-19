@@ -1161,15 +1161,20 @@ The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
-- `.github/workflows/release.yml` does what `tool/release.sh --publish` does
-  on a `v*` tag, and releases on Closed testing. The hooks make the tags
-  (Build numbers above), so releasing one is pushing it:
-  `git push origin v1.0.7`. Run by hand from the Actions tab it is a
-  `--dry-run` unless its box is unticked. Between the build and Play it
-  keeps the bundle, dry runs too, in the private R2 bucket `jeansh-builds`
-  as `android/jeansh-<X.Y.Z>-<N>-<commit>.aab`. Nothing else keeps a build:
-  no Actions artifact, no GitHub release, the bucket has no public URL or
-  domain, and the public run log names neither the bucket nor the object.
+- `.github/workflows/release.yml` runs on a `v*` tag. The hooks make the
+  tags (Build numbers above), so releasing one is pushing it:
+  `git push origin v1.0.7`.
+  - `android` runs `tool/release.sh --publish`, which releases on Closed
+    testing. Mobile goes straight to its store, and nowhere else. Run by
+    hand from the Actions tab it is a `--dry-run` unless its box is
+    unticked.
+  - `desktop` builds Linux (`tools/build_desktop.sh`), Windows (the same
+    zip, built on Windows itself) and macOS (`tools/build_apple.sh`, signed
+    ad-hoc), and keeps each in the private R2 bucket `jeansh-builds`, under
+    `desktop/<X.Y.Z+N>/<linux|windows|macos>/` with its `SHA256SUMS`. Nothing
+    else keeps a build: no Actions artifact, no GitHub release, the bucket
+    has no public URL or domain, and the public run log names neither the
+    bucket nor an object.
 
 The release reads these secrets from the `release` environment, which only
 `v*` tags and `main` can deploy to, so a workflow on any other branch never
