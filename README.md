@@ -1164,7 +1164,9 @@ The repository is public, so GitHub Actions costs nothing.
 - `.github/workflows/tag.yml` makes the tags on GitHub, so every new version
   name releases by itself. Once a push to `main` brings a name with no tag
   there, it tags `vX.Y.Z` the way the post-commit hook does on this machine:
-  annotated `Jeansh X.Y.Z, build N`, on the first commit carrying the name.
+  annotated `Jeansh X.Y.Z, build N`, on the first commit since the last
+  tag to carry the name. "Since the last tag" matters: the old `1.0.N+N`
+  names, 1.0.13 to 1.0.65, all came before `v1.0.6`.
   It uses `CLAUDE_GITHUB_TOKEN`, because a tag made with `GITHUB_TOKEN`
   starts no workflow and only an admin may make a `v*` tag.
 - `.github/workflows/release.yml` runs on a `v*` tag.
