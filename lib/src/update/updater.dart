@@ -6,6 +6,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../files/file_browser.dart' show formatBytes;
+
 /// Where the desktop builds are served from, baked in at build time with
 /// `--dart-define JEANSH_UPDATE_HOST=https://…` (see tools/build_desktop.sh
 /// and tools/build_apple.sh). The feed gives a path under it and nothing
@@ -25,6 +27,11 @@ const buildVersion = String.fromEnvironment('JEANSH_VERSION');
 /// redirects to. Metadata only — no build is ever downloaded from GitHub.
 const updateFeed =
     'https://github.com/triasbrata/sshbox/releases/latest/download/latest.json';
+
+/// The largest a build in the feed may say it is. The desktop builds run to
+/// tens of megabytes, so this is room to grow many times over and still a
+/// bound on what one tap can pull onto the disk.
+const maxUpdateSize = 512 * 1024 * 1024;
 
 /// What the feed calls this platform's build, and '' where there are no
 /// desktop builds to update (Android goes through Play, iOS through the App
@@ -96,12 +103,17 @@ class Updater {
     this.host = updateHost,
     this.version = buildVersion,
     this.feed = updateFeed,
+    this.downloads,
   }) : _fetch = fetch ?? _get;
 
   final Fetch _fetch;
   final String host;
   final String version;
   final String feed;
+
+  /// Where a download lands, for a test that must not write to the user's own
+  /// Downloads. Null is [downloadsFolder].
+  final Directory? downloads;
 
   /// Whether this build takes updates at all: a host and a version baked in,
   /// on a platform that has desktop builds.
@@ -147,14 +159,22 @@ class Updater {
     if (host.isEmpty) {
       throw const UpdateException('This build takes no updates.');
     }
-    final folder = into ?? downloadsFolder();
-    folder.createSync(recursive: true);
+    final folder = into ?? downloads ?? downloadsFolder();
     final separator = Platform.pathSeparator;
     final part = File('${folder.path}$separator${update.name}.part');
     var stop = false;
     unawaited(cancelled?.then((_) => stop = true));
 
-    final sink = part.openWrite();
+    final IOSink sink;
+    try {
+      folder.createSync(recursive: true);
+      sink = part.openWrite();
+    } on FileSystemException catch (error) {
+      throw UpdateException(
+        'Could not write to ${folder.path}: '
+        '${error.osError?.message ?? error.message}',
+      );
+    }
     var done = 0;
     try {
       // ponytail: a cancel takes effect on the next chunk, which over a real
@@ -211,13 +231,23 @@ class Updater {
   }
 
   /// The feed, as text; a body far too big to be one is refused part-read.
+  ///
+  /// Everything that can go wrong on the way comes out as an
+  /// [UpdateException], so what is shown is a line rather than a raw error,
+  /// and so no caller is left waiting on something it did not expect.
   Future<String> _read(Uri url) async {
     final bytes = <int>[];
-    await for (final chunk in await _fetch(url)) {
-      bytes.addAll(chunk);
-      if (bytes.length > 256 * 1024) {
-        throw const UpdateException('The update feed is too big to be one.');
+    try {
+      await for (final chunk in await _fetch(url)) {
+        bytes.addAll(chunk);
+        if (bytes.length > 256 * 1024) {
+          throw const UpdateException('The update feed is too big to be one.');
+        }
       }
+    } on UpdateException {
+      rethrow;
+    } catch (error) {
+      throw UpdateException('Could not read the update feed: $error');
     }
     return utf8.decode(bytes, allowMalformed: true);
   }
@@ -225,6 +255,12 @@ class Updater {
   /// One GET, with no token: the feed is a public release's asset, and the
   /// build is a file under the baked host. Redirects are followed, which is
   /// how `releases/latest/download/…` reaches the asset.
+  ///
+  /// Everything it can throw — a refused connection, a name that does not
+  /// resolve, a certificate it will not take, a URL that is no URL — comes
+  /// out as an [UpdateException], so a caller has one kind of error to catch
+  /// and what is shown is a line rather than a raw error. The stream it
+  /// gives back can still fail later; [_read] and [download] wrap that.
   static Future<Stream<List<int>>> _get(Uri url) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
@@ -240,9 +276,15 @@ class Updater {
       // Between chunks rather than for the whole download: a stalled link
       // fails rather than hanging.
       return response.timeout(const Duration(seconds: 60));
+    } on UpdateException {
+      client.close(force: true);
+      rethrow;
     } on SocketException catch (error) {
       client.close(force: true);
       throw UpdateException('Could not reach ${url.host}: ${error.message}');
+    } catch (error) {
+      client.close(force: true);
+      throw UpdateException('Could not reach ${url.host}: $error');
     }
   }
 }
@@ -292,14 +334,26 @@ Update parseFeed(String body, String platform) {
       'cannot read.',
     );
   }
+  // A desktop build is tens of megabytes. A feed asking for far more than any
+  // of them could be is refused before it is offered, rather than filling the
+  // disk on the way to a hash that was never going to match.
+  if (size > maxUpdateSize) {
+    throw UpdateException(
+      "Release $version says its $platform build is ${formatBytes(size)}, "
+      'which is too big to be one.',
+    );
+  }
   // The host is this build's own. A path that could leave it — an absolute
   // URL, a root path, a walk upwards — is the one thing a feed must not be
-  // able to do, so it is refused rather than joined.
+  // able to do, so it is refused rather than joined. A backslash goes with
+  // them: it cannot leave the folder, but on Windows it would name a
+  // subfolder that is not there and the write would simply fail.
   if (path.isEmpty ||
       path.startsWith('/') ||
       path.contains('..') ||
       path.contains('//') ||
-      path.contains(':')) {
+      path.contains(':') ||
+      path.contains(r'\')) {
     throw UpdateException(
       'Release $version points its $platform build somewhere this build will '
       'not download from.',

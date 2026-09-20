@@ -9,6 +9,12 @@ import '../files/file_browser.dart' show formatBytes;
 import '../update/updater.dart';
 import 'toast.dart';
 
+/// What to show for [error]: the updater's own errors are a line written to
+/// be read, and anything else is said as it is rather than swallowed.
+String _said(Object error) => error is UpdateException
+    ? error.message
+    : 'The update check went wrong: $error';
+
 /// Settings' Check for updates, on the desktop builds: the app's version,
 /// and a tap that always asks the feed. A build with no update host baked in
 /// says so and asks nothing — see [Updater.enabled].
@@ -30,10 +36,13 @@ class _UpdateTileState extends State<UpdateTile> {
     final Update? update;
     try {
       update = await _updater.check();
-    } on UpdateException catch (error) {
+    } catch (error) {
+      // Everything, not [UpdateException] alone: an error nobody expected
+      // would otherwise leave the row spinning and disabled for good, with
+      // no way out but leaving Settings.
       if (!mounted) return;
       setState(() => _checking = false);
-      showToast(context, error.message, type: ToastificationType.error);
+      showToast(context, _said(error), type: ToastificationType.error);
       return;
     }
     if (!mounted) return;
@@ -128,13 +137,20 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         return;
       }
       setState(() => _file = file);
-    } on UpdateException catch (error) {
+    } catch (error) {
+      // As above: anything at all, or the dialog is stuck on its bar.
       if (!mounted) return;
       Navigator.of(context).pop();
-      showToast(context, error.message, type: ToastificationType.error);
+      showToast(context, _said(error), type: ToastificationType.error);
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
+  }
+
+  /// Stops the download, and does nothing if it is already stopping.
+  void _cancelNow() {
+    final cancel = _cancel;
+    if (cancel != null && !cancel.isCompleted) cancel.complete();
   }
 
   /// What to do with the file, which differs per platform because each ships
@@ -191,7 +207,10 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         ),
         actions: [
           TextButton(
-            onPressed: () => _cancel?.complete(),
+            // Cancel stays up until the next chunk arrives, so it can be
+            // tapped again in that window; a Completer completed twice
+            // throws.
+            onPressed: () => _cancelNow(),
             child: const Text('Cancel'),
           ),
         ],
