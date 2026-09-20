@@ -407,7 +407,7 @@ links-open-as-a-web-tab-beside-their:
 
 ctrl-tap-a-path-or-link-to-open:
   guard: todo
-  why: "PROVEN BROKEN on the tablet while its test stayed green. ctrl_click_test.dart tests findLinks(), a string helper, and never the key bar's CTRL, the underlining, the tap or the opening -- so the whole feature died and nothing went red. Needs a flow, and a widget test over the wiring"
+  why: "ctrl_click_test.dart has no testWidgets at all: six tests on findLinks(), a string helper. Nothing arms the CTRL latch, underlines a link, taps one or opens one, so that file cannot see this feature break. Reported broken on the tablet once and found working on a recheck -- no regression, and the report is not what makes this thin. Needs a widget test over the wiring, and a flow"
 
 magic-key-two-concentric-rings-and-it-fades:
   guard: unit
