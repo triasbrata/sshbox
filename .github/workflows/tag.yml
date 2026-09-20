@@ -1,14 +1,20 @@
-# CI numbers and releases every push to main that changes the app. The
-# highest v* tag, annotated "Jeansh X.Y.Z, build N", gives way to
-# vX.Y.(Z+1) with build N+1 on the pushed commit, or to X.Y.0 when
-# pubspec.yaml's version line asks for a new X.Y by hand. Nothing is committed
-# back: pubspec.yaml's version line only sets X.Y.
+# CI numbers every push to main that changes the app, and releases it only
+# once the end-to-end tests have passed on it.
 #
-# The tag is made with this run's own GITHUB_TOKEN; the v* tag ruleset lets
+# The highest release tag, annotated "Jeansh X.Y.Z, build N", gives way to
+# vX.Y.(Z+1) with build N+1, or to X.Y.0 when pubspec.yaml's version line asks
+# for a new X.Y by hand. That number is tagged on the pushed commit as a
+# release candidate first — vX.Y.Z-rc.1 — and e2e.yml runs against a build of
+# it. Passing promotes the very same commit to vX.Y.Z, which release.yml then
+# builds and publishes; failing opens an issue and publishes nothing, and the
+# next push tries again as -rc.2. Nothing is committed back: pubspec.yaml's
+# version line only sets X.Y.
+#
+# Both tags are made with this run's own GITHUB_TOKEN; the v* tag ruleset lets
 # GitHub Actions through. A tag made that way starts no other workflow, so
-# this run releases it itself, calling release.yml for the new tag. Running
-# on main is what reaches the `release` environment's secrets: only main can
-# deploy to it, so a tag made anywhere else releases nothing.
+# this run drives every stage itself. Running on main is what reaches the
+# `release` environment's secrets: only main can deploy to it, so a tag made
+# anywhere else releases nothing.
 name: Tag
 
 on:
@@ -37,7 +43,11 @@ jobs:
   next:
     runs-on: ubuntu-latest
     outputs:
+      # vX.Y.Z-rc.N, what is built and tested.
+      rc: ${{ steps.next.outputs.rc }}
+      # vX.Y.Z, made only once the tests have passed on the rc.
       tag: ${{ steps.next.outputs.tag }}
+      label: ${{ steps.next.outputs.label }}
       message: ${{ steps.next.outputs.message }}
     steps:
       - uses: actions/checkout@v7
@@ -51,7 +61,10 @@ jobs:
             echo "$(git tag --points-at HEAD 'v[0-9]*') is this commit already"
             exit 0
           fi
-          last=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+          # Release tags only. An rc is not something to count from: it may
+          # never have passed its tests, and vX.Y.Z-rc.1 sorts after vX.Y.Z
+          # in git's own version order, so it would also count as newer.
+          last=$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           [ -n "$last" ] || { echo "::error::no vX.Y.Z tag to count from"; exit 1; }
           build=$(git for-each-ref --format='%(contents:subject)' "refs/tags/$last" |
             sed -n 's/^Jeansh .*, build \([0-9][0-9]*\)$/\1/p')
@@ -71,23 +84,36 @@ jobs:
             exit 1
           fi
 
-          echo "v$name, build $build, after $last"
+          # An rc of its own each time round. A failed run leaves its rc tag
+          # behind on the commit that failed, so the number says how many
+          # tries this release has had, and no tag is ever moved.
+          rc=1
+          while git rev-parse -q --verify "refs/tags/v$name-rc.$rc" > /dev/null; do
+            rc=$((rc + 1))
+          done
+
+          echo "v$name-rc.$rc, build $build, after $last"
           {
+            echo "rc=v$name-rc.$rc"
             echo "tag=v$name"
+            echo "label=$name+$build"
             echo "message=Jeansh $name, build $build"
           } >> "$GITHUB_OUTPUT"
 
-  tag:
+  # The release candidate: the number, on the commit, before anything is
+  # built. Both tags carry the same message, so whichever one a later stage
+  # reads gives the same version and build number.
+  rc:
     needs: next
-    if: needs.next.outputs.tag != ''
+    if: needs.next.outputs.rc != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Make the tag
+      - name: Make the rc tag
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.next.outputs.tag }}
+          TAG: ${{ needs.next.outputs.rc }}
           MESSAGE: ${{ needs.next.outputs.message }}
         run: |
           object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="$MESSAGE" \
@@ -95,9 +121,68 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
           echo "tagged $GITHUB_SHA as $TAG"
 
+  # Builds the rc and drives the app on a real Android emulator against a real
+  # sshd. Owned by e2e.yml; this workflow only cares whether it passed and
+  # what it covered.
+  e2e:
+    needs: [next, rc]
+    uses: ./.github/workflows/e2e.yml
+    with:
+      tag: ${{ needs.next.outputs.rc }}
+      version: ${{ needs.next.outputs.label }}
+    secrets: inherit
+
+  # The promotion the diagram asks for: the same commit, tagged as the
+  # release it turned out to be. Only reached when e2e passed.
+  promote:
+    needs: [next, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Promote the rc to a release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.next.outputs.tag }}
+          RC: ${{ needs.next.outputs.rc }}
+          MESSAGE: ${{ needs.next.outputs.message }}
+          COVERAGE: ${{ needs.e2e.outputs.coverage }}
+        run: |
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$TAG" -f message="$MESSAGE" \
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
+          echo "$RC passed e2e${COVERAGE:+ at $COVERAGE% coverage}; promoted $GITHUB_SHA to $TAG"
+
   release:
-    needs: [next, tag]
+    needs: [next, promote]
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.next.outputs.tag }}
     secrets: inherit
+
+  # e2e failed, so nothing is promoted and nothing is published. The run is
+  # red already; this is what makes it something to pick up rather than
+  # something to notice.
+  issue:
+    needs: [next, e2e]
+    if: always() && needs.e2e.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue for the failed candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC: ${{ needs.next.outputs.rc }}
+          LABEL: ${{ needs.next.outputs.label }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "$RC did not pass its end-to-end tests" \
+            --body "$(printf '%s\n' \
+              "\`$RC\` ($LABEL) was tagged on $GITHUB_SHA and its end-to-end tests failed, so it was not promoted and nothing was published." \
+              "" \
+              "The run, with the flow that failed and its recording: $RUN" \
+              "" \
+              "The next push to \`main\` that changes the app tries the same release number again as the next \`-rc\`. This issue is closed by that push passing, not by this one being fixed in place." \
+            )"

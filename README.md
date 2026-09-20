@@ -1135,15 +1135,42 @@ The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
-- `.github/workflows/tag.yml` numbers every release. Each push to `main`
-  that changes the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`,
-  `windows/`, `assets/`, `third_party/`, `pubspec.*`) gets the next version:
-  after the highest tag, `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes
-  `vX.Y.(Z+1)` with build N+1 on the pushed commit. It goes to X.Y.0 when
-  `pubspec.yaml`'s version line asks for a new X.Y by hand, which is all
-  that line still decides. Nothing is committed back to `main`. The tag is
-  made with the run's own `GITHUB_TOKEN`. A tag made that way starts no
-  workflow of its own, so the same run then calls `release.yml` for it.
+- `.github/workflows/tag.yml` numbers every release and drives it through
+  the gate. Each push to `main` that changes the app (`lib/`, `android/`,
+  `ios/`, `macos/`, `linux/`, `windows/`, `assets/`, `third_party/`,
+  `pubspec.*`) gets the next version: after the highest release tag,
+  `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes `vX.Y.(Z+1)` with build
+  N+1 on the pushed commit. It goes to X.Y.0 when `pubspec.yaml`'s version
+  line asks for a new X.Y by hand, which is all that line still decides.
+  Nothing is committed back to `main`.
+
+  That number is not a release yet. It is tagged as a candidate,
+  `vX.Y.Z-rc.1`, and `e2e.yml` builds it and drives it on a device:
+
+  - **passed** — `promote` tags the same commit `vX.Y.Z`, with the same
+    message, and the run calls `release.yml` for it;
+  - **failed** — nothing is promoted, nothing is published, and an issue is
+    opened naming the candidate and linking the run. The next push that
+    changes the app tries the same number again as `-rc.2`, and on. A
+    candidate's tag is never moved or reused, so the rc number is a count of
+    how many tries a release has had.
+
+  Only release tags are counted from, so a candidate that never passed
+  cannot become the number the next release follows — which also settles
+  git's own version order, where `v1.0.68-rc.1` sorts after `v1.0.68`.
+
+  Both tags are made with the run's own `GITHUB_TOKEN`. A tag made that way
+  starts no workflow of its own, so the one run drives every stage.
+- `.github/workflows/e2e.yml` is the gate: it takes the candidate's tag and
+  the version to build it as, drives the app through the `.maestro/` flows
+  against a real sshd, and reports back whether they passed and what share
+  of `lib/` they reached. Nothing it builds is ever kept — the candidate is
+  built to be driven and thrown away, and only `release.yml`'s own build,
+  from the promoted tag, is published. Its coverage shows in the promotion's
+  log line and in the issue when the gate fails; a run that could not measure
+  coverage is not a failed one. **The flows themselves belong to the e2e
+  session**, and the three things above are all the release pipeline
+  depends on.
 - `.github/workflows/release.yml` releases a tag's commit. `tag.yml` calls
   it. From the Actions tab you can run it by hand with a tag, to release
   that tag again, or with none, for `main` as it stands. `version` reads
