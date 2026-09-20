@@ -25,6 +25,8 @@ import 'ui/connect_sheet.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
 import 'ui/toast.dart';
+import 'ui/update_dialog.dart';
+import 'update/updater.dart';
 
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key});
@@ -74,6 +76,24 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_startNotifications());
     unawaited(_listenForLinks());
     unawaited(_listenForShares());
+    unawaited(_checkForUpdate());
+  }
+
+  /// Once a day, on a desktop build with an update host baked in: a newer
+  /// release offers itself, and anything else — no update, a feed out of
+  /// reach, a release with no build for this platform — says nothing here.
+  /// Settings' Check for updates is where an answer is always given.
+  Future<void> _checkForUpdate() async {
+    final Update? update;
+    try {
+      update = await updater.checkDaily();
+    } catch (_) {
+      return;
+    }
+    if (update == null) return;
+    final context = _navigator.currentContext;
+    if (context == null || !context.mounted) return;
+    await showUpdate(context, update);
   }
 
   /// The tabs open when the app last went away, back as they were: see

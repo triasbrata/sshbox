@@ -110,6 +110,14 @@ case "$pub_version" in
 esac
 version_args=(--build-name "$build_name" --build-number "$build_number")
 label="$build_name+$build_number"
+
+# Baked into the build for the updater (lib/src/update/updater.dart): the
+# version it compares against the release feed, and the host the feed's paths
+# hang off. No JEANSH_UPDATE_HOST in the environment leaves the updater off,
+# and Settings says so.
+version_args+=(--dart-define "JEANSH_VERSION=$label")
+[ -z "${JEANSH_UPDATE_HOST:-}" ] ||
+  version_args+=(--dart-define "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")
 out="$out_root/$label"
 mkdir -p "$out"
 
@@ -206,11 +214,18 @@ build_windows() {
     --exclude /macos/ --exclude /linux/ \
     "$ROOT/" "$src/"
 
+  # The same two defines as the Linux build, written out here because this
+  # build goes through PowerShell rather than through version_args.
+  local defines
+  defines="--dart-define $(psq "JEANSH_VERSION=$label")"
+  [ -z "${JEANSH_UPDATE_HOST:-}" ] ||
+    defines="$defines --dart-define $(psq "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")"
+
   step "Windows: flutter build windows --$mode (Flutter $flutter_bat, Visual Studio $vs)"
   # Each line Flutter writes to stderr turned back into plain text: redirected,
   # PowerShell would wrap them as errors.
   powershell "Set-Location -LiteralPath $(psq "$wsrc")
-& $(psq "$flutter_bat") build windows --$mode --build-name $(psq "$build_name") --build-number $(psq "$build_number") 2>&1 | ForEach-Object { \"\$_\" }
+& $(psq "$flutter_bat") build windows --$mode --build-name $(psq "$build_name") --build-number $(psq "$build_number") $defines 2>&1 | ForEach-Object { \"\$_\" }
 exit \$LASTEXITCODE"
 
   local built="$src/build/windows/x64/runner/$config"

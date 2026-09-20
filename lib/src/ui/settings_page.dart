@@ -5,7 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../notifications/notify_key.dart';
+import '../platform.dart';
 import 'key_bar.dart';
+import 'update_dialog.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
@@ -334,6 +336,12 @@ class SettingsPage extends StatelessWidget {
             ),
           ),
           _NotificationsSection(notifyKeys),
+          // Desktop alone: Android updates through Play, and there is no
+          // desktop build to offer anywhere else.
+          if (isDesktop) ...[
+            const _SectionHeader('Updates'),
+            const UpdateTile(),
+          ],
         ],
       ),
     );

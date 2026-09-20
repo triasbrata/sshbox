@@ -122,6 +122,16 @@ case "$pub_version" in
 esac
 version_args=(--build-name "$build_name" --build-number "$build_number")
 label="$build_name+$build_number"
+
+# Baked into the build for the updater (lib/src/update/updater.dart): the
+# version it compares against the release feed, and the host the feed's paths
+# hang off. No JEANSH_UPDATE_HOST in the environment leaves the updater off,
+# and Settings says so. iOS takes them too and ignores them: it updates
+# through the App Store.
+version_args+=(--dart-define "JEANSH_VERSION=$label")
+[ -z "${JEANSH_UPDATE_HOST:-}" ] ||
+  version_args+=(--dart-define "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")
+
 out="$out_root/$label"
 mkdir -p "$out"
 
