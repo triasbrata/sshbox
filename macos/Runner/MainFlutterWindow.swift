@@ -23,8 +23,12 @@ class MainFlutterWindow: NSWindow {
         result(FlutterMethodNotImplemented)
         return
       }
+      // No limit rather than none allowed, for an argument that is not a
+      // number: the Dart side always sends one, and failing open here beats
+      // refusing every picture as too big.
       ClipboardImage.take(
-        limit: (call.arguments as? NSNumber)?.intValue ?? 0, result: result)
+        limit: (call.arguments as? NSNumber)?.intValue ?? Int.max,
+        result: result)
     }
 
     super.awakeFromNib()
