@@ -1215,7 +1215,8 @@ The feed and the download are deliberately apart:
 - **The download** is the path from the feed, under the host baked into the
   build at compile time. So the feed never decides which host a build
   downloads from, and a path that could leave that host (an absolute URL, a
-  root path, a `..`) is refused unread.
+  root path, a `..`, a backslash) is refused unread, as is a build the feed
+  says is far bigger than any Jeansh build could be.
 
 Two `--dart-define`s carry it, which `tools/build_desktop.sh` and
 `tools/build_apple.sh` pass on:
