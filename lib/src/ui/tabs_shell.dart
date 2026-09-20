@@ -1087,11 +1087,22 @@ class _TabChip extends StatelessWidget {
       ),
     );
 
+    // Dropped to its icon — the host list while a session is showing — the chip
+    // carries no text at all, so a screen reader announces an unnamed button
+    // and there is nothing to tap by name. A Tooltip alone does not fix that:
+    // it sets Android's tooltipText, which is not the node's name. The tooltip
+    // is the name the chip already has, so say it out loud.
+    final named = title == null && tooltip != null
+        ? Semantics(label: tooltip, button: true, child: chip)
+        : chip;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 2),
       child: SizedBox(
         height: _height,
-        child: tooltip == null ? chip : Tooltip(message: tooltip!, child: chip),
+        child: tooltip == null
+            ? named
+            : Tooltip(message: tooltip!, child: named),
       ),
     );
   }

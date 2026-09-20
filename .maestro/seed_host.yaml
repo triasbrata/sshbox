@@ -1,0 +1,92 @@
+# Creates the host every other flow needs, and trusts its key once.
+#
+# Run this FIRST on a clean device. Every flow but smoke and deeplink_resume
+# waits on a host row matching HOST_LABEL, and on a fresh emulator there is no
+# such row — so without this they all fail at their first extendedWaitUntil,
+# for a reason that has nothing to do with the build under test.
+#
+# It seeds through the UI rather than by pushing a preferences file, because
+# the UI path is itself worth exercising: the Add sheet, the host editor and
+# the trust prompt are all features the user has passed, and a seed that wrote
+# storage directly would skip them and rot the moment the editor changed.
+#
+# The last steps connect once, so the host-key prompt is answered here and the
+# key is pinned. Every other flow still carries an optional Trust tap, so they
+# work whether or not this one ran — but they are deterministic after it.
+#
+#   maestro test \
+#     -e SSH_HOST=10.0.2.2 -e SSH_PORT=22 \
+#     -e SSH_USER=runner -e SSH_PASSWORD=... \
+#     .maestro/seed_host.yaml
+#
+# 10.0.2.2 is how an emulator reaches the machine running it, which is where
+# CI's own sshd listens. test/ssh_transport_live_test.dart already handshakes
+# against that same sshd, so the server half is a known quantity.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+  SSH_HOST: "10.0.2.2"
+  SSH_PORT: "22"
+  SSH_USER: "runner"
+  SSH_PASSWORD: "runner"
+---
+# clearState, unlike every other flow: this one is what makes the state the
+# others rely on, so it must not inherit a half-made host from a failed run.
+- stopApp
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "Add"
+    timeout: 15000
+
+- tapOn: "Add"
+- tapOn: "Host"
+
+- tapOn: "Label"
+- inputText: "${HOST_LABEL} tailnet"
+
+- tapOn: "Host"
+- inputText: "${SSH_HOST}"
+
+- tapOn: "Port"
+- eraseText
+- inputText: "${SSH_PORT}"
+
+- tapOn: "Username"
+- inputText: "${SSH_USER}"
+
+# Password is already the default method; tapping it is harmless and makes the
+# flow say out loud which of the three it means.
+- tapOn: "Password"
+- tapOn: "Password"
+- inputText: "${SSH_PASSWORD}"
+
+- tapOn: "Save"
+
+# The row now exists, which is the whole point of the flow.
+- extendedWaitUntil:
+    visible: "(?s)${HOST_LABEL}.*"
+    timeout: 15000
+
+# Connect once so the key is pinned and the prompt never interrupts a later
+# flow. Not optional here: on a clean device this prompt MUST appear, and if it
+# does not, something is wrong with the host key check that the other flows
+# would then silently skip past.
+- tapOn: "(?s)${HOST_LABEL}.*"
+- extendedWaitUntil:
+    visible: "Trust"
+    timeout: 20000
+- tapOn: "Trust"
+
+# A live session: the key bar only renders once the session reports connected,
+# so this doubles as proof the credential works before any other flow leans on
+# it.
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 20000
+
+# Leave the device on the host list with the session closed, so every flow
+# after this one starts from the same place.
+- tapOn: "(?s)Close .*"
+- assertVisible: "(?s)${HOST_LABEL}.*"

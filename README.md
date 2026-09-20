@@ -338,13 +338,39 @@ maestro --device <serial> test .maestro/
 
 | Flow | Covers | Needs |
 | --- | --- | --- |
+| `seed_host` | makes the host the others need, through the Add sheet and the host editor, then connects once and trusts the key | an sshd and its credentials, passed as `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_PASSWORD` |
 | `smoke` | app starts, host list renders | nothing |
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | a reachable host with a stored credential — a tab that cannot connect offers reconnect in place of its close button |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
 | `file_browser` | the file tree opens and shows a listing rather than an error | a reachable host with a stored credential |
 
+**Run `seed_host` first on a clean device.** Every flow but `smoke` and
+`deeplink_resume` waits on a host row, and a fresh emulator has none — without
+it they all fail at their first `extendedWaitUntil`, for a reason that has
+nothing to do with the build under test.
+
+**The trust prompt.** A first connection to a host raises `Trust <where>?` from
+`connect_sheet.dart`, and no flow used to press it, so every connecting flow
+hung on a button nobody would touch and reported it as a timeout somewhere
+unrelated. Each now carries an optional `Trust` tap, and `seed_host` answers it
+for real — the one place it is *not* optional, since on a clean device that
+prompt must appear.
+
+**Every feature the user has passed says what guards it.** `e2e/coverage.yaml`
+maps each `UAT passed` row in CLAUDE.md to its guard — a flow, an
+`integration_test`, the widget tests, or an honest `manual` with the reason —
+and `python3 tool/e2e_coverage.py` fails when a passed feature has none. Most
+are guarded by the widget tests and want no flow at all; e2e is for where the
+real platform is load-bearing.
+
 Two things worth knowing before editing these:
+
+**Substring matching hides bugs.** Maestro matches substrings, so an
+assertion can pass against the wrong widget entirely: `tabs` asserted "Host"
+and was matched by the "Hosts" section header, which is itself only drawn when
+the list has hosts and a heading. A green assertion on the wrong widget is
+worse than a red one. Assert on something that can only be the thing you mean.
 
 **Selectors need regex.** Flutter merges a `ListTile`'s title and subtitle into
 a single accessibility node, so the host row reads as

@@ -89,6 +89,22 @@ void main() {
   // The default 800dp test surface is a wide strip, where "+" would follow
   // the last tab — so these also show which layout wins for each count.
 
+  testWidgets('the host-list chip is named even when it is only an icon', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    // activeIndex is 1 here, so the host-list chip hands its room back to the
+    // session's tab and drops to the bare home icon.
+    await _pump(tester, [_shell(tester, 'host-1', 'box')]);
+    expect(find.text('Home'), findsNothing);
+    // Without a label of its own that chip is an InkWell round an Icon: a
+    // screen reader announces an unnamed button, and a Maestro flow has
+    // nothing to tap by name — which is how .maestro/tabs.yaml came to assert
+    // "Hosts", a string the app has not had since e93419e.
+    expect(find.bySemanticsLabel('Home'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('a lone tab stretches between square end buttons', (
     tester,
   ) async {

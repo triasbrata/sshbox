@@ -25,6 +25,14 @@ env:
     timeout: 15000
 - tapOn: "(?s)${HOST_LABEL}.*"
 
+# The first connection to a host this device has never seen puts up the trust
+# prompt, and nothing else in this flow would ever press it. Optional, so a
+# device that already trusts the key -- the seeded case -- passes straight
+# through rather than failing on a prompt that correctly never came.
+- tapOn:
+    text: "Trust"
+    optional: true
+
 - extendedWaitUntil:
     visible: "Browse files"
     timeout: 20000
