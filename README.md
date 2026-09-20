@@ -1199,6 +1199,56 @@ bypass a ruleset on a personal repository, but a tag releases only when
 by default, and secret scanning with push protection, Dependabot alerts and
 private vulnerability reporting are on.
 
+### Updating a desktop build
+
+Android updates through Play and iOS through the App Store. A desktop build
+looks after itself: `lib/src/update/updater.dart` reads a feed, and Settings →
+Updates → **Check for updates** asks it at any time. Jeansh also looks once a
+day when it starts, and says nothing unless there is something newer.
+
+The feed and the download are deliberately apart:
+
+- **The feed** is `latest.json`, an asset of the newest GitHub release, read
+  from `https://github.com/triasbrata/sshbox/releases/latest/download/latest.json`.
+  It is metadata only — a version, a build number, and for each of linux,
+  windows and macos a path, a size and a SHA-256.
+- **The download** is the path from the feed, under the host baked into the
+  build at compile time. So the feed never decides which host a build
+  downloads from, and a path that could leave that host (an absolute URL, a
+  root path, a `..`) is refused unread.
+
+Two `--dart-define`s carry it, which `tools/build_desktop.sh` and
+`tools/build_apple.sh` pass on:
+
+| Define | Holds |
+| --- | --- |
+| `JEANSH_UPDATE_HOST` | where the builds are served, e.g. `https://dl.jeansh.brata.cloud`; taken from the environment variable of the same name |
+| `JEANSH_VERSION` | this build's own `X.Y.Z+N`, which the feed is compared against |
+
+Without `JEANSH_UPDATE_HOST` the updater is off, and Settings says the build
+takes no updates. A debug build has neither, so nothing is ever checked while
+developing.
+
+What comes down is checked against the feed's SHA-256 before it is kept, and
+deleted if it does not match. Nothing is run and nothing is replaced: the file
+lands in the user's Downloads and the dialog says what to do with it.
+
+Two things are still needed for it to work end to end:
+
+1. **Serve the bucket.** `jeansh-builds` is private with no public URL today.
+   A Worker or a custom domain in front of `desktop/` would give
+   `JEANSH_UPDATE_HOST` something to point at. Then set the repository
+   variable `JEANSH_UPDATE_HOST` so CI bakes it into each build.
+2. **Publish the feed.** `release.yml` has to write `latest.json` — the
+   paths, sizes and SHA-256s its `desktop` jobs already compute — onto the
+   release's GitHub Release. Until it does, no build sees an update.
+
+Signing the feed is the next step and is not done: an ed25519 key in CI, its
+public key baked in beside the host, and the signature checked before the feed
+is believed. Today the feed is trusted because GitHub serves it over TLS and
+only an admin can publish a release, and the SHA-256 in it is what guards the
+download.
+
 ### The first upload, by hand
 
 Play's API can't upload to an app that has never had a bundle, so the first
