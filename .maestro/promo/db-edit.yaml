@@ -1,0 +1,42 @@
+# Promo shot: edit MongoDB rows in the grid, see the unsaved colours, Save.
+#
+# Needs the "MongoDB on demo" tab open on shop.customers with nothing unsaved.
+# It changes the demo data; README.md has the one-line reset.
+appId: cloud.brata.terminal
+---
+- tapOn: "MongoDB on demo"
+- extendedWaitUntil:
+    visible: "Surabaya"
+    timeout: 15000
+- extendedWaitUntil: {visible: "__hold__", timeout: 1000, optional: true}
+
+# Change one cell in its editor dialog.
+- tapOn: "Surabaya"
+- extendedWaitUntil:
+    visible: "Set NULL"
+    timeout: 5000
+- eraseText: 12
+- inputText: "Semarang"
+- extendedWaitUntil: {visible: "__hold__", timeout: 600, optional: true}
+- tapOn: "OK"
+- extendedWaitUntil: {visible: "__hold__", timeout: 1000, optional: true}
+
+# Add a row on top and fill its name.
+- tapOn: "Add row"
+- extendedWaitUntil: {visible: "__hold__", timeout: 700, optional: true}
+- tapOn:
+    point: "52%,57%"
+- extendedWaitUntil:
+    visible: "Set NULL"
+    timeout: 5000
+- inputText: "Linus Torvalds"
+- extendedWaitUntil: {visible: "__hold__", timeout: 500, optional: true}
+- tapOn: "OK"
+# Hold on the colours: a green new row, a blue edited cell.
+- extendedWaitUntil: {visible: "__hold__", timeout: 1600, optional: true}
+
+- tapOn: "Save"
+- extendedWaitUntil:
+    notVisible: "(?s).*not saved.*"
+    timeout: 10000
+- extendedWaitUntil: {visible: "__hold__", timeout: 1500, optional: true}

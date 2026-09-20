@@ -1,0 +1,44 @@
+# Promo shot: close Jeansh completely, open it again, and the session is still
+# there — the tab comes back and tmux reattaches to panes that kept running.
+#
+# Needs the "demo" tab open with tmux split in two panes (left a shell, right
+# something alive such as top). stopApp is the swipe-away: the process is gone,
+# so what comes back is the app restoring its tabs, not a warm resume.
+#
+# The tab is matched by index, not by position: "demo" is also the host card on
+# the Home page the app opens on after a restart, and the tab's width changes
+# with how many tabs are open. The key bar's CTRL is the connected signal.
+#
+# The launcher is never part of the shot: the home screen holds the owner's
+# calendar widget, so the frames between stopApp and launchApp are cut out.
+appId: cloud.brata.terminal
+---
+- launchApp:
+    clearState: false
+- tapOn:
+    text: "demo"
+    index: 0
+- extendedWaitUntil:
+    visible: "CTRL"
+    timeout: 30000
+- extendedWaitUntil: {visible: "__hold__", timeout: 2500, optional: true}
+
+- stopApp
+- launchApp:
+    clearState: false
+
+# Back on the Home page, with the session's tab restored beside it. The wait is
+# on the tab, whose text is exactly "demo": Maestro matches a whole text, and
+# the Home page's own line reads "Jeansh\nTerminal buddy in your pocket".
+- extendedWaitUntil:
+    visible: "demo"
+    timeout: 20000
+- tapOn:
+    text: "demo"
+    index: 0
+
+# The session reconnects and tmux reattaches to the panes that kept running.
+- extendedWaitUntil:
+    visible: "CTRL"
+    timeout: 30000
+- extendedWaitUntil: {visible: "__hold__", timeout: 4000, optional: true}
