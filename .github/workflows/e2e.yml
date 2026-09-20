@@ -1,5 +1,5 @@
-# The end-to-end gate: a release candidate is driven on a real device before
-# it is allowed to become a release. tag.yml calls this with the rc tag it has
+# The end-to-end gate: a release candidate is driven as a real app before it
+# is allowed to become a release. tag.yml calls this with the rc tag it has
 # just made, and promotes that commit only if this succeeds.
 #
 # **The body of the `run` job belongs to the e2e session, not to the release
@@ -72,13 +72,15 @@ jobs:
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
       # ----------------------------------------------------------------------
-      # Everything from here to the coverage step is the e2e session's:
-      # an sshd on the runner for the flows to reach at 10.0.2.2, an emulator,
-      # the rc's APK installed on it, .maestro/ driven against it, and the
-      # coverage collected off the Dart VM service while it runs.
+      # Everything from here to the coverage step is the e2e session's, and
+      # the pipeline deliberately says nothing about what is in it. Which
+      # platform the candidate is driven on, what drives it, and what it is
+      # driven against are that session's to decide and the user's to settle;
+      # more than one suite can live here as long as one pass or fail and one
+      # coverage number come out the other end.
       #
-      # Until that lands this fails, and so nothing is promoted. That is the
-      # safe direction to be unfinished in: a gate that passed by default
+      # Until something lands this fails, and so nothing is promoted. That is
+      # the safe direction to be unfinished in: a gate that passed by default
       # would publish every release untested.
       # ----------------------------------------------------------------------
       - name: The flows

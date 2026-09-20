@@ -1162,15 +1162,18 @@ The repository is public, so GitHub Actions costs nothing.
   Both tags are made with the run's own `GITHUB_TOKEN`. A tag made that way
   starts no workflow of its own, so the one run drives every stage.
 - `.github/workflows/e2e.yml` is the gate: it takes the candidate's tag and
-  the version to build it as, drives the app through the `.maestro/` flows
-  against a real sshd, and reports back whether they passed and what share
-  of `lib/` they reached. Nothing it builds is ever kept — the candidate is
-  built to be driven and thrown away, and only `release.yml`'s own build,
-  from the promoted tag, is published. Its coverage shows in the promotion's
-  log line and in the issue when the gate fails; a run that could not measure
-  coverage is not a failed one. **The flows themselves belong to the e2e
-  session**, and the three things above are all the release pipeline
-  depends on.
+  the version to build it as, drives the app, and reports back whether that
+  passed and what share of `lib/` it reached. Nothing it builds is ever
+  kept — the candidate is built to be driven and thrown away, and only
+  `release.yml`'s own build, from the promoted tag, is published. Its
+  coverage shows in the promotion's log line and in the issue when the gate
+  fails; a run that could not measure coverage is not a failed one.
+
+  What drives the app, and on which platform, is deliberately not the
+  pipeline's business: **the suite belongs to the e2e session**, and more
+  than one can live in there as long as one pass or fail and one coverage
+  number come out. The tag, the version, the exit status and that number are
+  the whole of what the release pipeline depends on.
 - `.github/workflows/release.yml` releases a tag's commit. `tag.yml` calls
   it. From the Actions tab you can run it by hand with a tag, to release
   that tag again, or with none, for `main` as it stands. `version` reads
