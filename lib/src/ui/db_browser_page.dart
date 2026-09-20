@@ -76,6 +76,24 @@ const _views = <DbKind, _ObjectView>{
 /// database has.
 enum _MongoTab { find, aggregate, command }
 
+/// The SQL editor's tabs, as TablePlus splits them: a filter built from the
+/// table's own columns, and the free-text box.
+enum _PgTab { filters, sql }
+
+/// One row of the Filters tab, and the field it types into.
+class _Condition {
+  final value = TextEditingController();
+  String column = '';
+  PgOp op = PgOp.eq;
+
+  /// Its tick: off leaves the row out without deleting it.
+  bool on = true;
+
+  PgFilter get filter => (on: on, column: column, op: op, value: value.text);
+
+  void dispose() => value.dispose();
+}
+
 /// A stage the Aggregate tab's Add stage offers, as JSON on one line: the
 /// common ones, each arriving as a template to edit.
 const _stageTemplates = <String>[
@@ -184,13 +202,35 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   var _mDb = '';
   var _mCollection = '';
 
+  /// Which of PostgreSQL's tabs is shown, the table the Filters tab asks
+  /// about, and its conditions. Kept in the page's state for the same
+  /// reasons MongoDB's fields are.
+  var _pgTab = _PgTab.filters;
+  var _pgSchema = '';
+  var _pgTable = '';
+  final _pgConditions = <_Condition>[];
+
+  /// Whether the conditions are joined by OR rather than AND.
+  var _pgAny = false;
+
+  /// The columns the Filters tab offers: the ones the table's own
+  /// `SELECT *` last came back with. They cost no query of their own, and
+  /// are exactly what the grid shows, name for name.
+  var _pgColumns = <String>[];
+
   bool get _redis => widget.db.kind == DbKind.redis;
 
   bool get _mongo => widget.db.kind == DbKind.mongo;
 
+  bool get _pg => widget.db.kind == DbKind.postgres;
+
+  /// Whether the Filters tab is what a run sends.
+  bool get _onFilters => _pg && _pgTab == _PgTab.filters;
+
   @override
   void initState() {
     super.initState();
+    if (_pg) _pgConditions.add(_Condition());
     unawaited(_connect());
   }
 
@@ -206,6 +246,9 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     }
     for (final stage in _mStages) {
       stage.dispose();
+    }
+    for (final condition in _pgConditions) {
+      condition.dispose();
     }
     super.dispose();
   }
@@ -301,15 +344,39 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         if (_tab != _MongoTab.command) _tab = _MongoTab.find;
       });
     }
+    if (_pg && mounted) {
+      // Filters start afresh on the table tapped: its own conditions say
+      // nothing about another table's columns.
+      setState(() {
+        _pgSchema = group;
+        _pgTable = name;
+        _clearConditions();
+        if (_pgTab != _PgTab.sql) _pgTab = _PgTab.filters;
+      });
+    }
     await _read();
+    // The table's own SELECT * just came back: its columns are what the
+    // Filters tab offers, whichever tab ran it.
+    if (_pg && mounted && _result != null) {
+      setState(() => _pgColumns = _result!.columns);
+    }
   }
 
-  /// Shows [tab], once whatever is not saved may go: the grid shown
-  /// belongs to the tab that ran it.
-  Future<void> _pickTab(_MongoTab tab) async {
-    if (tab == _tab || !await mayDrop() || !mounted) return;
+  void _clearConditions() {
+    for (final condition in _pgConditions) {
+      condition.dispose();
+    }
+    _pgConditions
+      ..clear()
+      ..add(_Condition());
+  }
+
+  /// Shows another tab of the editor, once whatever is not saved may go:
+  /// the grid shown belongs to the tab that ran it.
+  Future<void> _pickTab(bool changing, void Function() show) async {
+    if (!changing || !await mayDrop() || !mounted) return;
     setState(() {
-      _tab = tab;
+      show();
       if (_changes != null) _changes = DbChanges();
     });
   }
@@ -383,9 +450,18 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     }
   }
 
-  /// What a run sends: the Find and Aggregate tabs build theirs from their
-  /// fields, and every other box holds its own.
-  String _queryText() => switch (_mongo ? _tab : _MongoTab.command) {
+  /// What a run sends: the Filters, Find and Aggregate tabs build theirs
+  /// from their fields, and every other box holds its own.
+  String _queryText() => _onFilters
+      ? postgresFilterQuery(
+          schema: _pgSchema,
+          table: _pgTable,
+          filters: [for (final c in _pgConditions) c.filter],
+          any: _pgAny,
+        )
+      : _boxQuery();
+
+  String _boxQuery() => switch (_mongo ? _tab : _MongoTab.command) {
     _MongoTab.find => mongoFindCommand(
       db: _mDb,
       collection: _mCollection,
@@ -748,7 +824,12 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (_mongo) _mongoEditor(mono, session, note) else _commandBox(mono, session),
+          if (_mongo)
+            _mongoEditor(mono, session, note)
+          else if (_pg)
+            _pgEditor(mono, session, note)
+          else
+            _commandBox(mono, session),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
@@ -796,7 +877,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                 FilledButton.icon(
                   onPressed: _running ? null : _run,
                   icon: const Icon(Icons.play_arrow),
-                  label: const Text('Run'),
+                  label: Text(_onFilters ? 'Apply' : 'Run'),
                 ),
               ],
             ),
@@ -890,6 +971,179 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     ),
   );
 
+  /// PostgreSQL's editor, split as TablePlus splits it: a filter built from
+  /// the table's own columns, and the free-text SQL box for what it does
+  /// not cover. The tabs are over the box, and which is shown decides what
+  /// a run sends.
+  Widget _pgEditor(TextStyle mono, DbSession session, TextStyle? note) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SegmentedButton<_PgTab>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: _PgTab.filters, label: Text('Filters')),
+                  ButtonSegment(value: _PgTab.sql, label: Text('SQL')),
+                ],
+                selected: {_pgTab},
+                onSelectionChanged: (picked) => _pickTab(
+                  picked.single != _pgTab,
+                  () => _pgTab = picked.single,
+                ),
+              ),
+            ),
+          ),
+          switch (_pgTab) {
+            _PgTab.sql => _commandBox(mono, session),
+            _PgTab.filters => _pgFilters(mono, note),
+          },
+        ],
+      );
+
+  /// The Filters tab: a condition a row, AND or OR between them once there
+  /// is more than one, and Apply — the Run button, named for what it does
+  /// here — under them.
+  Widget _pgFilters(TextStyle mono, TextStyle? note) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _pgTable.isEmpty
+                    ? 'Tap a table in the list to filter it'
+                    : '${_pgSchema.isEmpty ? '' : '$_pgSchema.'}$_pgTable',
+                style: note,
+              ),
+            ),
+            if (_pgConditions.length > 1)
+              SegmentedButton<bool>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                segments: const [
+                  ButtonSegment(value: false, label: Text('AND')),
+                  ButtonSegment(value: true, label: Text('OR')),
+                ],
+                selected: {_pgAny},
+                onSelectionChanged: (picked) =>
+                    setState(() => _pgAny = picked.single),
+              ),
+          ],
+        ),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 220),
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: _pgConditions.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 6),
+            itemBuilder: (context, index) => _pgConditionRow(index, mono),
+          ),
+        ),
+        Row(
+          children: [
+            TextButton.icon(
+              onPressed: () => setState(() => _pgConditions.add(_Condition())),
+              icon: const Icon(Icons.add),
+              label: const Text('Add condition'),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: () => setState(_clearConditions),
+              child: const Text('Clear'),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  /// One condition: its tick, a column of the table, what to ask of it, and
+  /// the value — which the operators that need none do not show.
+  Widget _pgConditionRow(int index, TextStyle mono) {
+    final condition = _pgConditions[index];
+    // The column picked stays on offer even where a new result has not got
+    // it, so a filter is never silently emptied.
+    final columns = {
+      ..._pgColumns,
+      if (condition.column.isNotEmpty) condition.column,
+    }.toList();
+    return Row(
+      children: [
+        Checkbox(
+          value: condition.on,
+          onChanged: (on) => setState(() => condition.on = on ?? true),
+        ),
+        Expanded(
+          flex: 3,
+          child: DropdownButton<String>(
+            isExpanded: true,
+            style: mono,
+            value: condition.column.isEmpty ? null : condition.column,
+            hint: const Text('Column'),
+            items: [
+              for (final name in columns)
+                DropdownMenuItem(
+                  value: name,
+                  child: Text(name, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: (name) => setState(() => condition.column = name ?? ''),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          flex: 3,
+          child: DropdownButton<PgOp>(
+            isExpanded: true,
+            value: condition.op,
+            items: [
+              for (final op in PgOp.values)
+                DropdownMenuItem(
+                  value: op,
+                  child: Text(op.label, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: (op) => setState(() => condition.op = op ?? PgOp.eq),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          flex: 4,
+          child: condition.op.needsValue
+              ? TextField(
+                  controller: condition.value,
+                  style: mono,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  decoration: InputDecoration(
+                    labelText: 'Value ${index + 1}',
+                    hintText: condition.op == PgOp.inList ? 'a, b, c' : null,
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                  ),
+                )
+              : const SizedBox(),
+        ),
+        IconButton(
+          tooltip: 'Remove condition ${index + 1}',
+          onPressed: _pgConditions.length == 1
+              ? null
+              : () => setState(() => _pgConditions.removeAt(index).dispose()),
+          icon: const Icon(Icons.remove_circle_outline),
+        ),
+      ],
+    );
+  }
+
   /// MongoDB's editor, split as Mongo Compass splits it: the fields of a
   /// find, a pipeline of stages, and the command box for what neither
   /// covers. The tabs are over the box, and which is shown decides what a
@@ -916,7 +1170,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                 ButtonSegment(value: _MongoTab.command, label: Text('Command')),
               ],
               selected: {_tab},
-              onSelectionChanged: (picked) => _pickTab(picked.single),
+              onSelectionChanged: (picked) =>
+                  _pickTab(picked.single != _tab, () => _tab = picked.single),
             ),
           ),
         ),

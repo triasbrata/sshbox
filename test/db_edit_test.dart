@@ -82,6 +82,9 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
     ),
   );
   await tester.pumpAndSettle();
+  // PostgreSQL opens on Filters; this is the free-text box's own tab.
+  await tester.tap(find.text('SQL'));
+  await tester.pumpAndSettle();
   await tester.enterText(
     find.byWidgetPredicate(
       (widget) =>

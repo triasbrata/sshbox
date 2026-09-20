@@ -11,7 +11,8 @@ import 'package:sshbox/src/session/terminal_session.dart';
 /// through a host, each test skipping itself when nothing listens on its
 /// port:
 ///
-/// - PostgreSQL on 55432, user `postgres`, password `pgsecret`, with
+/// - PostgreSQL on 55432 — or the port `JEANSH_PG_PORT` names — user
+///   `postgres`, password `pgsecret`, with
 ///   `--auth=scram-sha-256`;
 /// - Redis on 56379, `--requirepass redsecret`;
 /// - MongoDB on 57017 with `--auth` and no users yet, or with the users
@@ -29,10 +30,15 @@ Future<Tunnel?> _dial(int port) async {
   }
 }
 
+/// The port PostgreSQL answers on: 55432, or the one `JEANSH_PG_PORT`
+/// names, for a machine where 55432 is taken.
+final pgPort =
+    int.tryParse(Platform.environment['JEANSH_PG_PORT'] ?? '') ?? 55432;
+
 void main() {
   test('PostgreSQL: signs in with SCRAM, runs statements, says why not', () async {
-    final tunnel = await _dial(55432);
-    if (tunnel == null) return printOnFailure('skipped: no server on 55432');
+    final tunnel = await _dial(pgPort);
+    if (tunnel == null) return printOnFailure('skipped: no server on \$pgPort');
     final client = await PostgresClient.connect(
       tunnel,
       user: 'postgres',
@@ -73,7 +79,7 @@ void main() {
       ['2'],
     ]);
 
-    final wrong = await _dial(55432);
+    final wrong = await _dial(pgPort);
     await expectLater(
       PostgresClient.connect(wrong!, user: 'postgres', password: 'nope'),
       throwsA(isA<DbException>().having(

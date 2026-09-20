@@ -22,17 +22,23 @@ Future<Tunnel?> _dial(int port) async {
   }
 }
 
+/// The port PostgreSQL answers on, 55432 unless `JEANSH_PG_PORT` names
+/// another: a machine where 55432 is taken can put its own server
+/// elsewhere.
+final _pgPort =
+    int.tryParse(Platform.environment['JEANSH_PG_PORT'] ?? '') ?? 55432;
+
 void main() {
   test('PostgreSQL: lists tables by schema and shows one', () async {
-    final tunnel = await _dial(55432);
-    if (tunnel == null) return printOnFailure('skipped: no server on 55432');
+    final tunnel = await _dial(_pgPort);
+    if (tunnel == null) return printOnFailure('skipped: no server on $_pgPort');
     final session = await DbSession.over(
       tunnel,
-      const DbConnection(
+      DbConnection(
         id: 'pg',
         kind: DbKind.postgres,
         hostId: 'box',
-        port: 55432,
+        port: _pgPort,
       ),
       'pgsecret',
     );
@@ -81,15 +87,15 @@ void main() {
   });
 
   test('PostgreSQL: saves what the grid changed, all or nothing', () async {
-    final tunnel = await _dial(55432);
-    if (tunnel == null) return printOnFailure('skipped: no server on 55432');
+    final tunnel = await _dial(_pgPort);
+    if (tunnel == null) return printOnFailure('skipped: no server on $_pgPort');
     final session = await DbSession.over(
       tunnel,
-      const DbConnection(
+      DbConnection(
         id: 'pg',
         kind: DbKind.postgres,
         hostId: 'box',
-        port: 55432,
+        port: _pgPort,
       ),
       'pgsecret',
     );
@@ -140,6 +146,109 @@ void main() {
       ..set(again.rows, 1, 2, 'not a number');
     await expectLater(again.edit!.save(refused), throwsA(isA<Exception>()));
     expect((await session.run(all)).rows, saved);
+  });
+
+  test('PostgreSQL: a filter reads back the value it was given', () async {
+    final tunnel = await _dial(_pgPort);
+    if (tunnel == null) return printOnFailure('skipped: no server on $_pgPort');
+    final session = await DbSession.over(
+      tunnel,
+      DbConnection(
+        id: 'pg',
+        kind: DbKind.postgres,
+        hostId: 'box',
+        port: _pgPort,
+      ),
+      'pgsecret',
+    );
+    addTearDown(session.close);
+
+    // A quote, a backslash, a per cent, an underscore, a newline and
+    // non-ASCII, put there by dollar quoting — which reads nothing in what
+    // it holds — so the filter's own quoting is not what proves itself.
+    const awkward = "it's a \\ 50% _ théré\nline two";
+    await session.run(
+      'DROP TABLE IF EXISTS "Jeansh Filter"; '
+      'CREATE TABLE "Jeansh Filter" '
+      '(id serial PRIMARY KEY, "Name" text, n int); '
+      r'INSERT INTO "Jeansh Filter" ("Name", n) VALUES '
+      '(\$j\$$awkward\$j\$, 1), '
+      r"('50 off', 2), ('a_b', 3), ('axb', 4), (NULL, 5)",
+    );
+    addTearDown(() => session.run('DROP TABLE "Jeansh Filter"'));
+
+    Future<DbResult> filter(List<PgFilter> filters, {bool any = false}) =>
+        session.run(
+          postgresFilterQuery(
+            schema: 'public',
+            table: 'Jeansh Filter',
+            filters: filters,
+            any: any,
+          ),
+        );
+    Future<List<String?>> ns(List<PgFilter> filters, {bool any = false}) async {
+      final shown = await filter(filters, any: any);
+      return [for (final row in shown.rows) row[2]]..sort();
+    }
+
+    PgFilter on(String column, PgOp op, [String value = '']) =>
+        (on: true, column: column, op: op, value: value);
+
+    // The whole of it, and the one row that holds it, both ways round.
+    expect(
+      (await filter([on('Name', PgOp.eq, awkward)])).rows.single[1],
+      awkward,
+    );
+    expect(await ns([on('Name', PgOp.eq, awkward)]), ['1']);
+    expect(await ns([on('Name', PgOp.startsWith, "it's a \\")]), ['1']);
+    expect(await ns([on('Name', PgOp.endsWith, 'line two')]), ['1']);
+
+    // LIKE's own characters are the value's: 50% is not "50, anything".
+    expect(await ns([on('Name', PgOp.contains, '50%')]), ['1']);
+    expect(await ns([on('Name', PgOp.contains, 'a_b')]), ['3']);
+    expect(await ns([on('Name', PgOp.contains, 'a')]), ['1', '3', '4']);
+
+    expect(await ns([on('Name', PgOp.isNull)]), ['5']);
+    expect(await ns([on('Name', PgOp.isNotNull)]), ['1', '2', '3', '4']);
+    expect(await ns([on('Name', PgOp.inList, 'a_b, axb')]), ['3', '4']);
+    // A number is compared as a number, the literal being coerced.
+    expect(await ns([on('n', PgOp.ge, '4')]), ['4', '5']);
+    expect(await ns([on('n', PgOp.ne, '1')]), ['2', '3', '4', '5']);
+
+    // AND, OR, and a row its tick leaves out.
+    expect(await ns([on('n', PgOp.gt, '2'), on('Name', PgOp.isNotNull)]), [
+      '3',
+      '4',
+    ]);
+    expect(
+      await ns([on('n', PgOp.lt, '2'), on('n', PgOp.gt, '4')], any: true),
+      ['1', '5'],
+    );
+    expect(
+      await ns([
+        (on: false, column: 'n', op: PgOp.eq, value: '99'),
+        on('n', PgOp.eq, '2'),
+      ]),
+      ['2'],
+    );
+
+    // Off, a backslash in a plain '…' would be itself; the escape string
+    // the filter writes means the same either way.
+    await session.run('SET standard_conforming_strings = off');
+    expect(
+      (await filter([on('Name', PgOp.eq, awkward)])).rows.single[1],
+      awkward,
+    );
+    await session.run('SET standard_conforming_strings = on');
+
+    // Still one table's rows with its key among them, so the grid edits.
+    final shown = await filter([on('n', PgOp.eq, '2')]);
+    expect(shown.columns, ['id', 'Name', 'n']);
+    expect(
+      await shown.edit!.save(DbChanges()..set(shown.rows, 0, 1, awkward)),
+      isNull,
+    );
+    expect(await ns([on('Name', PgOp.eq, awkward)]), ['1', '2']);
   });
 
   test('MongoDB: saves what the grid changed, a write at a time', () async {

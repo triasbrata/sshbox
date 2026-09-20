@@ -190,6 +190,10 @@ void main() {
       }
       await tester.tap(find.text('users'));
       await tester.pumpAndSettle();
+      // PostgreSQL opens on Filters; the SQL tab holds what the tap filled
+      // in.
+      await tester.tap(find.text('SQL'));
+      await tester.pumpAndSettle();
       expect(
         tester.widget<TextField>(queryBox).controller!.text,
         'SELECT * FROM public.users;',

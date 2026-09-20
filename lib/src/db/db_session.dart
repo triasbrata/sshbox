@@ -317,30 +317,132 @@ class DbChanges {
   String sql(DbTable table, List<List<String?>> rows) {
     String where(int r) => [
       for (final c in table.key)
-        '${table.columns[c]} = ${_literal(rows[r][c])}',
+        '${table.columns[c]} = ${pgLiteral(rows[r][c])}',
     ].join(' AND ');
     return [
       for (final r in deleted) 'DELETE FROM ${table.name} WHERE ${where(r)};',
       for (final r in updated)
         'UPDATE ${table.name} SET ${[
           for (final MapEntry(key: c, :value) in edits[r]!.entries)
-            '${table.columns[c]} = ${_literal(value)}',
+            '${table.columns[c]} = ${pgLiteral(value)}',
         ].join(', ')} WHERE ${where(r)};',
       for (final cells in added)
         cells.isEmpty
             ? 'INSERT INTO ${table.name} DEFAULT VALUES;'
             : 'INSERT INTO ${table.name} '
                   '(${[for (final c in cells.keys) table.columns[c]].join(', ')}) '
-                  'VALUES (${cells.values.map(_literal).join(', ')});',
+                  'VALUES (${cells.values.map(pgLiteral).join(', ')});',
     ].join('\n');
   }
-
-  /// [value] as an escape string, which reads the same whatever
-  /// standard_conforming_strings says.
-  static String _literal(String? value) => value == null
-      ? 'NULL'
-      : "E'${value.replaceAll(r'\', r'\\').replaceAll("'", "''")}'";
 }
+
+/// [value] as SQL PostgreSQL reads back as itself: an escape string, whose
+/// backslashes mean what they say whatever `standard_conforming_strings` is
+/// on the server, so nothing has to be asked of it first. A NUL is refused
+/// rather than sent: a simple query ends at one, so the server would run
+/// what came before it and no more.
+String pgLiteral(String? value) {
+  if (value == null) return 'NULL';
+  if (value.contains('\u0000')) {
+    throw const DbException(
+      'A value cannot hold a NUL character: PostgreSQL ends the query at one.',
+    );
+  }
+  return "E'${value.replaceAll(r'\', r'\\').replaceAll("'", "''")}'";
+}
+
+/// Bare when it would read back the same, in double quotes otherwise.
+String pgIdentifier(String name) => RegExp(r'^[a-z_][a-z0-9_]*$').hasMatch(name)
+    ? name
+    : '"${name.replaceAll('"', '""')}"';
+
+/// What a condition in the SQL editor's Filters tab asks, as TablePlus's own
+/// filter bar offers them. [sql] is the operator where the condition is
+/// `<column> <sql> <value>`, and empty where it is built another way.
+enum PgOp {
+  eq('=', '='),
+  ne('≠', '<>'),
+  gt('>', '>'),
+  lt('<', '<'),
+  ge('≥', '>='),
+  le('≤', '<='),
+  contains('contains', ''),
+  startsWith('starts with', ''),
+  endsWith('ends with', ''),
+  inList('in', ''),
+  isNull('is null', 'IS NULL'),
+  isNotNull('is not null', 'IS NOT NULL');
+
+  const PgOp(this.label, this.sql);
+
+  final String label;
+  final String sql;
+
+  /// Whether it asks for a value: `is null` does not.
+  bool get needsValue => this != PgOp.isNull && this != PgOp.isNotNull;
+}
+
+/// One row of the Filters tab: the column it asks about, what it asks, the
+/// value typed, and whether its tick leaves it in.
+typedef PgFilter = ({bool on, String column, PgOp op, String value});
+
+/// The `SELECT` the Filters tab builds: every ticked row of [filters] over
+/// [schema].[table], joined by OR where [any] says so and AND otherwise.
+/// Throws a [DbException] naming the row that is not filled in, before
+/// anything is sent.
+String postgresFilterQuery({
+  String schema = '',
+  required String table,
+  List<PgFilter> filters = const [],
+  bool any = false,
+  int limit = 100,
+}) {
+  if (table.isEmpty) {
+    throw const DbException('Tap a table in the list to filter it.');
+  }
+  final where = [
+    for (final (index, filter) in filters.indexed)
+      // A row with nothing filled in asks nothing: the Filters tab always
+      // holds one, so a table tapped reads it whole.
+      if (filter.on && !(filter.column.isEmpty && filter.value.isEmpty))
+        _pgCondition(index + 1, filter),
+  ];
+  final name = schema.isEmpty
+      ? pgIdentifier(table)
+      : '${pgIdentifier(schema)}.${pgIdentifier(table)}';
+  return 'SELECT * FROM $name'
+      '${where.isEmpty ? '' : ' WHERE ${where.join(any ? ' OR ' : ' AND ')}'}'
+      ' LIMIT $limit;';
+}
+
+String _pgCondition(int row, PgFilter filter) {
+  if (filter.column.isEmpty) {
+    throw DbException('Condition $row has no column picked.');
+  }
+  final column = pgIdentifier(filter.column);
+  if (!filter.op.needsValue) return '$column ${filter.op.sql}';
+  if (filter.value.isEmpty) {
+    throw DbException('Condition $row (${filter.op.label}) has no value.');
+  }
+  // LIKE takes the value as itself: its own % and _ are escaped, and the
+  // column is read as text so a number can be searched too.
+  String like(String pattern) =>
+      '$column::text LIKE ${pgLiteral(pattern)} ${r"ESCAPE E'\\'"}';
+  final text = filter.value
+      .replaceAll(r'\', r'\\')
+      .replaceAll('%', r'\%')
+      .replaceAll('_', r'\_');
+  return switch (filter.op) {
+    PgOp.contains => like('%$text%'),
+    PgOp.startsWith => like('$text%'),
+    PgOp.endsWith => like('%$text'),
+    // ponytail: a comma separates the items, so an item cannot hold one.
+    PgOp.inList =>
+      '$column IN (${[for (final item in filter.value.split(',')) pgLiteral(item.trim())].join(', ')})',
+    _ => '$column ${filter.op.sql} ${pgLiteral(filter.value)}',
+  };
+}
+
 
 /// A table, collection or key the side list shows, and its [type] as the
 /// database reports it: information_schema's table_type (`BASE TABLE`,
@@ -560,15 +662,9 @@ class _PostgresSession extends DbSession {
     );
   }
 
-  /// Bare when it would read back the same, in double quotes otherwise.
-  static String _identifier(String name) =>
-      RegExp(r'^[a-z_][a-z0-9_]*$').hasMatch(name)
-      ? name
-      : '"${name.replaceAll('"', '""')}"';
-
   @override
   Future<String> queryFor(String group, String name) async =>
-      'SELECT * FROM ${_identifier(group)}.${_identifier(name)} LIMIT 100;';
+      postgresFilterQuery(schema: group, table: name);
 
   @override
   Future<DbResult> run(String query) async {
