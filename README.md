@@ -1159,9 +1159,19 @@ The repository is public, so GitHub Actions costs nothing.
     build is kept: each release replaces the one before, whose files are
     deleted. A dry run, or a run for `main` as it stands, builds but keeps
     nothing, so it never replaces a real release. Nothing else keeps a
-    build: no Actions artifact, no GitHub release, the bucket
-    has no public URL or domain, and the public run log names neither the
-    bucket nor an object.
+    build: no Actions artifact, no build on a GitHub release, and the public
+    run log names neither the bucket nor an object. Each build has the host
+    it will look for its own updates on baked in, from the repository
+    variable `JEANSH_UPDATE_HOST`; unset leaves the updater off.
+  - `feed` writes `latest.json` and puts it on the tag's GitHub release, the
+    one thing this repository publishes. It reads the three builds back out
+    of R2, so the names, sizes and SHA-256s it gives are the objects that are
+    really there, and it stops rather than publish a feed whose files are not
+    this release's. The feed carries a path under each build's own baked-in
+    host and never a URL, so it cannot point a build anywhere else; there is
+    no binary on the release and it does not say where the builds are served
+    from. See *Updating a desktop build* below, and
+    `lib/src/update/updater.dart`.
   - `notes`, once both succeed, hands the app's commit messages since the
     previous tag to a model through OpenRouter (`tool/release_notes.py`,
     `anthropic/claude-sonnet-5` unless the repository variable
@@ -1188,6 +1198,14 @@ and a `v*` tag made anywhere else releases nothing:
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | `jeansh-builds` |
 | `OPENROUTER_API_KEY` | an OpenRouter API key, for the release notes |
+
+And two repository variables, which are not secrets and are visible to
+anyone who can read the settings:
+
+| Variable | Holds |
+| --- | --- |
+| `JEANSH_UPDATE_HOST` | where the desktop builds are served from, e.g. `https://builds.jeansh.brata.cloud`, baked into each build. Unset leaves the updater off |
+| `RELEASE_NOTES_MODEL` | the OpenRouter model the notes are written by, if not `anthropic/claude-sonnet-5` |
 
 Only collaborators can contribute. Pull requests and issues can only be
 opened by collaborators. On `main`, a ruleset refuses deletion and force
@@ -1234,15 +1252,22 @@ What comes down is checked against the feed's SHA-256 before it is kept, and
 deleted if it does not match. Nothing is run and nothing is replaced: the file
 lands in the user's Downloads and the dialog says what to do with it.
 
-Two things are still needed for it to work end to end:
+`release.yml`'s `feed` job publishes the feed on every release, reading the
+sizes and hashes back out of R2 so they describe the objects that are really
+there. One thing is still needed for it to work end to end:
 
-1. **Serve the bucket.** `jeansh-builds` is private with no public URL today.
-   A Worker or a custom domain in front of `desktop/` would give
-   `JEANSH_UPDATE_HOST` something to point at. Then set the repository
-   variable `JEANSH_UPDATE_HOST` so CI bakes it into each build.
-2. **Publish the feed.** `release.yml` has to write `latest.json` — the
-   paths, sizes and SHA-256s its `desktop` jobs already compute — onto the
-   release's GitHub Release. Until it does, no build sees an update.
+**Serve the bucket.** `jeansh-builds` is private with no public URL today. A
+Worker or a custom domain in front of `desktop/` would give
+`JEANSH_UPDATE_HOST` something to point at. Then set the repository variable
+`JEANSH_UPDATE_HOST`, and the next release bakes it into each build. Until
+then every build says it takes no updates, which is the intent: half a
+feed and no host would be worse than none.
+
+Serving `desktop/` puts the paid builds where anyone holding a path can fetch
+them. That is what an updater with no sign-in means, and the licence already
+allows anyone to build Jeansh themselves for free; if the official builds
+should stay behind something, the Worker in front of the bucket is where that
+belongs, not the feed.
 
 Signing the feed is the next step and is not done: an ed25519 key in CI, its
 public key baked in beside the host, and the signature checked before the feed
