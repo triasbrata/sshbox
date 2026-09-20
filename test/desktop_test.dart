@@ -192,6 +192,7 @@ Future<LiveSession> _connected(WidgetTester tester) async {
         onOpenWeb: (_) {},
         onOpenChat: () {},
         onOpenGit: () {},
+        onOpenDiff: (_) {},
         onSaveFileRoot: (_) async {},
       ),
     ),

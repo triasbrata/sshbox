@@ -13,6 +13,7 @@ import 'package:xterm2/xterm.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
 import '../files/transfers.dart';
+import '../git/git_diff.dart';
 import '../platform.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
@@ -42,6 +43,7 @@ class TerminalPage extends StatefulWidget {
     required this.onOpenWeb,
     required this.onOpenChat,
     required this.onOpenGit,
+    required this.onOpenDiff,
     required this.onSaveFileRoot,
   });
 
@@ -61,6 +63,9 @@ class TerminalPage extends StatefulWidget {
 
   /// Opens this session's git panel in a tab beside this one.
   final VoidCallback onOpenGit;
+
+  /// Opens a diff from the git panel in a file tab beside this one.
+  final void Function(GitDiff diff) onOpenDiff;
 
   /// Writes the file tree's root into this host's saved config.
   final Future<void> Function(String root) onSaveFileRoot;
@@ -338,7 +343,16 @@ class _TerminalPageState extends State<TerminalPage> {
   /// ✕ here to do it.
   Widget _buildGitDrawer() => Drawer(
     width: math.min(360, MediaQuery.sizeOf(context).width * 0.85),
-    child: GitPage(session: _session, onClose: _closeDrawer),
+    child: GitPage(
+      session: _session,
+      onClose: _closeDrawer,
+      // The diff goes to a tab beside this page, which the drawer would sit
+      // over: shut it, so the tab that just opened is what the user sees.
+      onOpenDiff: (diff) {
+        _closeDrawer();
+        widget.onOpenDiff(diff);
+      },
+    ),
   );
 
   Widget _buildFilesDrawer() {
