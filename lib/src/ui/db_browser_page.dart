@@ -71,6 +71,25 @@ const _views = <DbKind, _ObjectView>{
   ),
 };
 
+/// The MongoDB editor's tabs, as Mongo Compass splits them: the fields of
+/// a find, a pipeline, and the free-text command box every other kind of
+/// database has.
+enum _MongoTab { find, aggregate, command }
+
+/// A stage the Aggregate tab's Add stage offers, as JSON on one line: the
+/// common ones, each arriving as a template to edit.
+const _stageTemplates = <String>[
+  r'{"$match": {}}',
+  r'{"$group": {"_id": "$field", "count": {"$sum": 1}}}',
+  r'{"$sort": {"field": -1}}',
+  r'{"$project": {"field": 1}}',
+  r'{"$limit": 20}',
+  r'{"$lookup": {"from": "other", "localField": "id", '
+      r'"foreignField": "_id", "as": "joined"}}',
+  r'{"$unwind": "$field"}',
+  r'{"$count": "count"}',
+];
+
 /// One database, open: its tables, collections or keys at the side (in a
 /// drawer on a phone), and a box to type SQL, a database command or a Redis
 /// command into, with what it gave back under it: in a grid, or as JSON.
@@ -139,7 +158,35 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   var _asJson = false;
   var _running = false;
 
+  /// Which of MongoDB's tabs is shown, and what its fields hold. It is kept
+  /// in the page's state, so a trip to another tab of the app and back
+  /// comes back to it; it is deliberately not saved with the tab, since a
+  /// restored tab has no collection picked and would come back to an empty
+  /// Find or a pipeline about nothing.
+  var _tab = _MongoTab.find;
+  final _mFilter = TextEditingController(text: '{}');
+  final _mProject = TextEditingController();
+  final _mSort = TextEditingController();
+  final _mLimit = TextEditingController(text: '50');
+  final _mSkip = TextEditingController();
+
+  /// One per pipeline stage, in the order they run.
+  final _mStages = <TextEditingController>[];
+
+  /// Whether Find's Options — project, sort, limit, skip — are shown. Held
+  /// here rather than by an ExpansionTile's page storage, which stores a
+  /// bool under the same identifier a scroll view inside it stores a double
+  /// under, and throws.
+  var _mOptions = false;
+
+  /// The collection the Find and Aggregate tabs run on, as the side list
+  /// last gave it: its database, and its name.
+  var _mDb = '';
+  var _mCollection = '';
+
   bool get _redis => widget.db.kind == DbKind.redis;
+
+  bool get _mongo => widget.db.kind == DbKind.mongo;
 
   @override
   void initState() {
@@ -154,6 +201,12 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     unawaited(_session?.close());
     _filter.dispose();
     _query.dispose();
+    for (final field in [_mFilter, _mProject, _mSort, _mLimit, _mSkip]) {
+      field.dispose();
+    }
+    for (final stage in _mStages) {
+      stage.dispose();
+    }
     super.dispose();
   }
 
@@ -233,7 +286,32 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       if (mounted) setState(() => _runError = '$error');
       return;
     }
+    if (_mongo && mounted) {
+      // The Find tab starts afresh on the collection tapped; the pipeline
+      // is left as it was, its stages being work of the user's own that
+      // reads the same on another collection.
+      setState(() {
+        _mDb = group;
+        _mCollection = name;
+        _mFilter.text = '{}';
+        _mProject.clear();
+        _mSort.clear();
+        _mLimit.text = '50';
+        _mSkip.clear();
+        if (_tab != _MongoTab.command) _tab = _MongoTab.find;
+      });
+    }
     await _read();
+  }
+
+  /// Shows [tab], once whatever is not saved may go: the grid shown
+  /// belongs to the tab that ran it.
+  Future<void> _pickTab(_MongoTab tab) async {
+    if (tab == _tab || !await mayDrop() || !mounted) return;
+    setState(() {
+      _tab = tab;
+      if (_changes != null) _changes = DbChanges();
+    });
   }
 
   /// Runs [query], or what the box holds, once whatever is not saved may go.
@@ -274,13 +352,16 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   /// changed in the result before: every caller has asked about that first.
   Future<void> _read([String? query]) async {
     final session = _session;
-    final text = query ?? _query.text;
-    if (session == null || _running || text.trim().isEmpty) return;
+    if (session == null || _running) return;
     setState(() {
       _running = true;
       _runError = null;
     });
     try {
+      // What the tab shown makes of its fields, which says what is wrong
+      // with them rather than sending anything.
+      final text = query ?? _queryText();
+      if (text.trim().isEmpty) return;
       final result = await session.run(text);
       if (mounted) {
         setState(() {
@@ -301,6 +382,26 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       if (mounted) setState(() => _running = false);
     }
   }
+
+  /// What a run sends: the Find and Aggregate tabs build theirs from their
+  /// fields, and every other box holds its own.
+  String _queryText() => switch (_mongo ? _tab : _MongoTab.command) {
+    _MongoTab.find => mongoFindCommand(
+      db: _mDb,
+      collection: _mCollection,
+      filter: _mFilter.text,
+      project: _mProject.text,
+      sort: _mSort.text,
+      limit: _mLimit.text,
+      skip: _mSkip.text,
+    ),
+    _MongoTab.aggregate => mongoAggregateCommand(
+      db: _mDb,
+      collection: _mCollection,
+      stages: [for (final stage in _mStages) stage.text],
+    ),
+    _MongoTab.command => _query.text,
+  };
 
   /// Makes every change, then reads the rows back. When the database
   /// refuses the first it makes none, and they all stay, to fix or discard;
@@ -647,25 +748,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            child: TextField(
-              controller: _query,
-              style: mono,
-              minLines: _redis ? 1 : 3,
-              maxLines: _redis ? 1 : 8,
-              autocorrect: false,
-              enableSuggestions: false,
-              keyboardType: _redis ? TextInputType.text : TextInputType.multiline,
-              textInputAction: _redis ? TextInputAction.go : null,
-              onSubmitted: _redis ? (_) => _run() : null,
-              decoration: InputDecoration(
-                hintText: session.hint,
-                hintMaxLines: 2,
-                border: const OutlineInputBorder(),
-              ),
-            ),
-          ),
+          if (_mongo) _mongoEditor(mono, session, note) else _commandBox(mono, session),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
@@ -678,6 +761,17 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                     style: note,
                   ),
                 ),
+                if (result?.readOnly case final why?) ...[
+                  Tooltip(
+                    message: why,
+                    child: Icon(
+                      Icons.lock_outline,
+                      size: 18,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 if (result != null && result.rows.isNotEmpty) ...[
                   SegmentedButton<bool>(
                     showSelectedIcon: false,
@@ -773,6 +867,201 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       ),
     );
   }
+
+  /// The free-text box every kind of database has: SQL, a database command,
+  /// a Redis command — and, for MongoDB, the Command tab.
+  Widget _commandBox(TextStyle mono, DbSession session) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+    child: TextField(
+      controller: _query,
+      style: mono,
+      minLines: _redis ? 1 : 3,
+      maxLines: _redis ? 1 : 8,
+      autocorrect: false,
+      enableSuggestions: false,
+      keyboardType: _redis ? TextInputType.text : TextInputType.multiline,
+      textInputAction: _redis ? TextInputAction.go : null,
+      onSubmitted: _redis ? (_) => _run() : null,
+      decoration: InputDecoration(
+        hintText: session.hint,
+        hintMaxLines: 2,
+        border: const OutlineInputBorder(),
+      ),
+    ),
+  );
+
+  /// MongoDB's editor, split as Mongo Compass splits it: the fields of a
+  /// find, a pipeline of stages, and the command box for what neither
+  /// covers. The tabs are over the box, and which is shown decides what a
+  /// run sends.
+  Widget _mongoEditor(TextStyle mono, DbSession session, TextStyle? note) {
+    final on = _mCollection.isEmpty
+        ? 'Tap a collection in the list to run on'
+        : '${_mDb.isEmpty ? '' : '$_mDb.'}$_mCollection';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<_MongoTab>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(value: _MongoTab.find, label: Text('Find')),
+                ButtonSegment(
+                  value: _MongoTab.aggregate,
+                  label: Text('Aggregate'),
+                ),
+                ButtonSegment(value: _MongoTab.command, label: Text('Command')),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (picked) => _pickTab(picked.single),
+            ),
+          ),
+        ),
+        switch (_tab) {
+          _MongoTab.command => _commandBox(mono, session),
+          _MongoTab.find => _mongoFind(mono, on, note),
+          _MongoTab.aggregate => _mongoAggregate(mono, on, note),
+        },
+      ],
+    );
+  }
+
+  /// The Find tab: the filter, and the rest behind Options, so a phone
+  /// shows the one field that is nearly always the whole query.
+  Widget _mongoFind(TextStyle mono, String on, TextStyle? note) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(on, style: note),
+        const SizedBox(height: 6),
+        _mongoField(_mFilter, 'Filter', r'{"city": "Bandung"}', mono, lines: 3),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () => setState(() => _mOptions = !_mOptions),
+            icon: Icon(_mOptions ? Icons.expand_less : Icons.expand_more),
+            label: const Text('Options'),
+          ),
+        ),
+        if (_mOptions) ...[
+          _mongoField(_mProject, 'Project', r'{"name": 1}', mono),
+          const SizedBox(height: 8),
+          _mongoField(_mSort, 'Sort', r'{"name": 1}', mono),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _mongoField(_mLimit, 'Limit', '50', mono, number: true),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _mongoField(_mSkip, 'Skip', '0', mono, number: true),
+              ),
+            ],
+          ),
+        ],
+      ],
+    ),
+  );
+
+  /// The Aggregate tab: a stage a field, in the order they run, each one
+  /// removable, and Add stage offering the common ones as templates.
+  Widget _mongoAggregate(TextStyle mono, String on, TextStyle? note) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(on, style: note),
+        const SizedBox(height: 6),
+        if (_mStages.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text('No stages yet: add one below.', style: note),
+          ),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 260),
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: _mStages.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 8),
+            itemBuilder: (context, index) => Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: _mongoField(
+                    _mStages[index],
+                    'Stage ${index + 1}',
+                    r'{"$match": {}}',
+                    mono,
+                    lines: 2,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Remove stage ${index + 1}',
+                  onPressed: () => setState(() => _mStages.removeAt(index).dispose()),
+                  icon: const Icon(Icons.remove_circle_outline),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: PopupMenuButton<String>(
+            tooltip: 'Add a stage',
+            onSelected: (template) => setState(
+              () => _mStages.add(TextEditingController(text: template)),
+            ),
+            itemBuilder: (context) => [
+              for (final template in _stageTemplates)
+                PopupMenuItem(
+                  value: template,
+                  child: Text(
+                    // The operator alone: the template is what it fills in.
+                    template.substring(2, template.indexOf('"', 2)),
+                    style: mono,
+                  ),
+                ),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [Icon(Icons.add), SizedBox(width: 4), Text('Add stage')],
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _mongoField(
+    TextEditingController controller,
+    String label,
+    String hint,
+    TextStyle mono, {
+    int lines = 1,
+    bool number = false,
+  }) => TextField(
+    controller: controller,
+    style: mono,
+    minLines: lines,
+    maxLines: lines + 3,
+    autocorrect: false,
+    enableSuggestions: false,
+    keyboardType: number ? TextInputType.number : TextInputType.multiline,
+    decoration: InputDecoration(
+      labelText: label,
+      hintText: hint,
+      isDense: true,
+      border: const OutlineInputBorder(),
+    ),
+  );
 }
 
 /// A result's rows as JSON, a card each, laid out as a tree: an object or

@@ -201,6 +201,7 @@ class DbResult {
     this.note = '',
     this.details,
     this.edit,
+    this.readOnly,
   });
 
   final List<String> columns;
@@ -214,6 +215,11 @@ class DbResult {
 
   /// How its rows are changed, when they can be.
   final DbEdit? edit;
+
+  /// Why these rows cannot be edited, where the grid should say so rather
+  /// than leave the user to find out at save time: an aggregate's rows are
+  /// the pipeline's, not one collection's.
+  final String? readOnly;
 
   /// Row [index] as indented JSON: its document, or its columns and values
   /// as the database gave them.
@@ -634,6 +640,89 @@ class _PostgresSession extends DbSession {
   Future<void> _closeClient() => _client.close();
 }
 
+/// The `find` command the MongoDB editor's Find tab builds, as Compass's
+/// own fields make one: [filter], [project] and [sort] each a JSON object
+/// and [limit] and [skip] whole numbers, every one of them left out when
+/// blank. Throws a [DbException] naming the field that does not read,
+/// before anything is sent.
+String mongoFindCommand({
+  required String db,
+  required String collection,
+  String filter = '',
+  String project = '',
+  String sort = '',
+  String limit = '',
+  String skip = '',
+}) {
+  _mongoCollection(collection);
+  return _mongoJson({
+    'find': collection,
+    'filter': _mongoObject('Filter', filter) ?? const <String, Object?>{},
+    'projection': ?_mongoObject('Project', project),
+    'sort': ?_mongoObject('Sort', sort),
+    'limit': ?_mongoWhole('Limit', limit),
+    'skip': ?_mongoWhole('Skip', skip),
+  }, db);
+}
+
+/// The `aggregate` command the Aggregate tab builds, [stages] in the order
+/// they are shown, each one a JSON object. Throws a [DbException] naming
+/// the stage that does not read.
+String mongoAggregateCommand({
+  required String db,
+  required String collection,
+  required List<String> stages,
+}) {
+  _mongoCollection(collection);
+  return _mongoJson({
+    'aggregate': collection,
+    'pipeline': [
+      for (final (index, stage) in stages.indexed)
+        _mongoObject('Stage ${index + 1}', stage) ??
+            (throw DbException('Stage ${index + 1} is empty.')),
+    ],
+    // A cursor is how aggregate answers; without one the server refuses.
+    'cursor': const <String, Object?>{},
+  }, db);
+}
+
+void _mongoCollection(String collection) {
+  if (collection.isEmpty) {
+    throw const DbException('Tap a collection in the list to run this on.');
+  }
+}
+
+/// [text] as a JSON object, or null where it is blank.
+Map<String, Object?>? _mongoObject(String field, String text) {
+  if (text.trim().isEmpty) return null;
+  final Object? value;
+  try {
+    value = jsonDecode(text);
+  } on FormatException catch (error) {
+    throw DbException('$field is not JSON: ${error.message}');
+  }
+  if (value is! Map<String, Object?>) {
+    throw DbException('$field is a JSON object, like {"name": "ann"}.');
+  }
+  return value;
+}
+
+/// [text] as a whole number, or null where it is blank.
+int? _mongoWhole(String field, String text) {
+  if (text.trim().isEmpty) return null;
+  final value = int.tryParse(text.trim());
+  if (value == null || value < 0) {
+    throw DbException('$field is a whole number, or blank for none.');
+  }
+  return value;
+}
+
+String _mongoJson(Map<String, Object?> command, String db) =>
+    const JsonEncoder.withIndent('  ').convert({
+      ...command,
+      if (db.isNotEmpty) r'$db': db,
+    });
+
 class _MongoSession extends DbSession {
   _MongoSession(this._client, this._authSource);
 
@@ -754,6 +843,11 @@ class _MongoSession extends DbSession {
               columns,
               documents,
             )
+          : null,
+      readOnly: command.keys.first == 'aggregate'
+          ? 'Read-only: a pipeline works its rows out rather than reading '
+                'them from one collection, so there is nothing to save them '
+                'back to.'
           : null,
     );
   }

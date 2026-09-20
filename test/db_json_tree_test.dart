@@ -63,6 +63,9 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    // MongoDB opens on Find; a command of one's own is the Command tab.
+    await tester.tap(find.text('Command'));
+    await tester.pumpAndSettle();
     await tester.enterText(
       find.byWidgetPredicate(
         (widget) =>
