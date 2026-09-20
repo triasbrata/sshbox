@@ -1158,6 +1158,41 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: _android);
 
+    testWidgets('on a Mac the picture goes up too, from Cmd+V', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      image = pictureNamed('Screenshot.png');
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(shell.uploaded, [(path: image!['path'], name: 'Screenshot.png')]);
+      expect(shell.sent, contains('/tmp/Screenshot.png '));
+      await tester.pumpAndSettle();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('where no clipboard of ours answers, a paste is text', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      // Linux and Windows have no native half yet: the channel is not even
+      // asked, and what is on the clipboard as text is what is pasted.
+      image = pictureNamed('Screenshot.png');
+      clipboardText = 'plain';
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, isEmpty);
+      expect(shell.sent.join(), contains('plain'));
+      await tester.pumpAndSettle();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets('the upload button takes several files, and types every '
         'path in the order they were picked', (tester) async {
       useFakePicker().next = [

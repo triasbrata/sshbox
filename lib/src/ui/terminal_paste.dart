@@ -93,13 +93,16 @@ Future<String?> pasteShared(Terminal terminal, String shared) async {
 /// The image on the clipboard, copied into a file of the app's own, or null
 /// when the clipboard holds none.
 ///
-/// Android only: `Clipboard.getData` reads text and nothing else, and there
-/// is nothing behind this channel anywhere else. MainActivity takes the copy
-/// because SFTP cannot read a `content://` URI, and only the path crosses the
-/// channel — the same shape a share arrives in, and for the same reason: a
-/// picture sent over as bytes is what freezes the app.
+/// Android and macOS: `Clipboard.getData` reads text and nothing else, and
+/// there is nothing behind this channel on Linux or Windows, whose clipboards
+/// are a job of their own. The native half takes the copy — Android because
+/// SFTP cannot read a `content://` URI, the Mac because a pasteboard holds
+/// bytes rather than a file — and only the path crosses the channel, the same
+/// shape a share arrives in and for the same reason: a picture sent over as
+/// bytes is what freezes the app.
 Future<SharedFile?> clipboardImage() async {
-  if (defaultTargetPlatform != TargetPlatform.android) return null;
+  const native = {TargetPlatform.android, TargetPlatform.macOS};
+  if (!native.contains(defaultTargetPlatform)) return null;
   final file = await _android.invokeMapMethod<String, String>(
     'clipboardImage',
     pasteImageLimit,
