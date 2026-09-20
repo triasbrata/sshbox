@@ -1,0 +1,52 @@
+# Promo shot: a long job ends, the server pushes a notification, and it lands
+# on the phone while the app is somewhere else.
+#
+# The flow opens its own session first, and that is not decoration: each
+# session gets its own reverse forward, and LC_SSHBOX_NOTIFY_URL only points at
+# a live one inside the session it was opened for. A tmux session that outlived
+# its connection keeps the old URL, and the curl then fails with "Could not
+# connect to server".
+#
+# Needs `AcceptEnv LC_*` in the demo container's sshd (see README), otherwise
+# the variables never reach the shell at all.
+#
+# The notification is shown by pulling the shade down over the app. The
+# launcher is never filmed: the emulator's home screen carries the owner's
+# calendar widget.
+appId: cloud.brata.terminal
+---
+# The Home tab, then the host card. The card is tapped by point: its text
+# block is one node holding the address too, and the Flutter semantics tree is
+# sometimes empty when Maestro reads it, so a text match is the flakier way in.
+- tapOn:
+    text: "Home"
+- extendedWaitUntil:
+    visible: "Hosts"
+    timeout: 10000
+- tapOn:
+    point: 13%, 27%
+- extendedWaitUntil:
+    visible: "CTRL"
+    timeout: 40000
+- extendedWaitUntil: {visible: "__hold__", timeout: 1200, optional: true}
+
+# The job, then the push. One curl, no binary to install, and nothing with a
+# % in it: adb's input text turns printf formats into spaces.
+- tapOn:
+    point: 50%, 40%
+- inputText: "sleep 4 && curl -sS \"$LC_SSHBOX_NOTIFY_URL\" -H \"Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET\" --data-urlencode 'title=Orbit' --data-urlencode 'body=Tests passed'"
+- tapOn: "Send Enter"
+# The keyboard goes away before the push lands: the notification should arrive
+# over a terminal, not over half a screen of keys.
+- hideKeyboard
+- extendedWaitUntil: {visible: "__hold__", timeout: 7000, optional: true}
+
+# The push arrives. Pull the shade down over the app to hold it on screen.
+- swipe:
+    start: 50%, 1%
+    end: 50%, 55%
+- extendedWaitUntil: {visible: "__hold__", timeout: 3500, optional: true}
+- swipe:
+    start: 50%, 55%
+    end: 50%, 1%
+- extendedWaitUntil: {visible: "__hold__", timeout: 1500, optional: true}

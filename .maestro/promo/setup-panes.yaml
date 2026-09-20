@@ -1,0 +1,36 @@
+# Puts the "demo" tab into the state resume.yaml films: two tmux panes, a
+# clean shell showing `git status -sb` on the left and `top` running on the
+# right. Run it before resume.yaml, and after anything that leaves stray
+# typing in the scrollback.
+#
+# `clear` alone leaves the history one PGUP away, so the pane is reset with
+# tmux's own clear-history through the shell.
+appId: cloud.brata.terminal
+---
+- tapOn:
+    text: "demo"
+    index: 0
+- extendedWaitUntil:
+    visible: "CTRL"
+    timeout: 40000
+- tapOn:
+    point: 50%, 40%
+
+- inputText: "cd ~/project && clear && tmux clear-history && git status -sb"
+- tapOn: "Send Enter"
+- extendedWaitUntil: {visible: "__hold__", timeout: 1500, optional: true}
+
+# Split right, then run top in the new pane.
+- longPressOn:
+    text: "demo"
+    index: 0
+- extendedWaitUntil:
+    visible: "Split right"
+    timeout: 8000
+- tapOn: "Split right"
+- extendedWaitUntil: {visible: "__hold__", timeout: 3000, optional: true}
+- tapOn:
+    point: 75%, 40%
+- inputText: "clear && tmux clear-history && top"
+- tapOn: "Send Enter"
+- extendedWaitUntil: {visible: "__hold__", timeout: 3000, optional: true}

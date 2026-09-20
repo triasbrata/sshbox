@@ -21,6 +21,7 @@ appId: cloud.brata.terminal
 - extendedWaitUntil:
     visible: "CTRL"
     timeout: 30000
+- hideKeyboard
 - extendedWaitUntil: {visible: "__hold__", timeout: 2500, optional: true}
 
 - stopApp
@@ -41,4 +42,5 @@ appId: cloud.brata.terminal
 - extendedWaitUntil:
     visible: "CTRL"
     timeout: 30000
+- hideKeyboard
 - extendedWaitUntil: {visible: "__hold__", timeout: 4000, optional: true}
