@@ -41,9 +41,19 @@ final List<(RegExp, String)> _rules = [
   (RegExp(r'[\w.\-+]+@[\w.\-]+'), '<account>'),
   // A Windows path, C:\Users\… — the user's own name is usually in it.
   (RegExp(r'[A-Za-z]:\\\S*'), '<path>'),
-  // A POSIX path, and `~/…`. This also eats an `and/or` in prose, which is
-  // the sort of collateral this file accepts without arguing.
-  (RegExp(r'~?/[\w.\-+]+(?:/[\w.\-+]*)*'), '<path>'),
+  // A POSIX path, and `~/…`.
+  //
+  // The leading `/` must not follow a letter, a digit or a `+`, which is what
+  // keeps this rule out of the middle of a base64 blob: a host fingerprint
+  // reads `SHA256:47DEQpj8HBSa+/TImW…`, and without the lookbehind this rule
+  // took everything from that inner `/` onward and left half a hash sitting in
+  // the report. Blocked here, the run falls through to the key rule below and
+  // goes whole. `=` is deliberately *not* in the lookbehind, or `HOME=/home/…`
+  // would stop being a path and be short enough to survive the key rule too.
+  //
+  // It also means `and/or` in prose is left alone now, which it was not
+  // before, since that `/` follows a letter.
+  (RegExp(r'(?<![A-Za-z0-9+])~?/[\w.\-+]+(?:/[\w.\-+]*)*'), '<path>'),
   // An IPv6 literal, before IPv4 so that an embedded ::ffff:1.2.3.4 goes
   // whole rather than in halves.
   (RegExp(r'\b(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F.]*'), '<ip>'),

@@ -107,6 +107,26 @@ void main() {
       expect(out, contains('while opening'));
     });
 
+    test('takes a host fingerprint whole, not from its first slash on', () {
+      // The base64 of a SHA256 fingerprint has slashes in it. The path rule
+      // used to start at the first one and leave half a hash behind, which
+      // leaked nothing — a fingerprint is public — but read as though the
+      // scrubber had lost its grip.
+      final out = scrub(
+        'SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU does not match',
+      );
+      expect(out, 'SHA256:<redacted> does not match');
+    });
+
+    test('an absolute path after an = is still a path', () {
+      // The lookbehind that keeps the path rule out of base64 must not keep
+      // it out of this: `home/trias` is far too short for the key rule to
+      // catch, so blocking the path rule here would leak a login.
+      final out = scrub('HOME=/home/trias not set');
+      expect(out, isNot(contains('trias')));
+      expect(out, contains('<path>'));
+    });
+
     test('leaves a version number alone, being no hostname', () {
       expect(scrub('Release 1.0.62 has no build'), contains('1.0.62'));
     });

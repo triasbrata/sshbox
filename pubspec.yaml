@@ -154,13 +154,21 @@ flutter_launcher_icons:
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
-# firebase_core is pub.dev's 4.14.0 without its Windows platform, which
-# links a Firebase C++ SDK this machine's MSVC cannot, for FCM that no desktop
-# build uses: see third_party/firebase_core/JEANSH.md. An override, because
-# firebase_messaging asks for firebase_core from pub.dev too.
+# Two packages vendored for the same reason: each is pulled in for one
+# platform and each ships native code that this machine's MSVC will not
+# build, so Windows is taken out of the copy here. Overrides rather than
+# dependencies, because what asks for them — firebase_messaging for
+# firebase_core, sentry_flutter for jni — asks pub.dev for them by name.
 dependency_overrides:
   firebase_core:
     path: third_party/firebase_core
+  # jni 0.14.2 without its Windows half: its C does not compile under MSVC,
+  # and sentry_flutter 9.30.0 pins jni to that exact version, so it cannot be
+  # overridden upwards either. jni is Java interop and there is no JVM for it
+  # to reach on Windows — see third_party/jni/JEANSH.md. Linux and Android
+  # are untouched.
+  jni:
+    path: third_party/jni
 
 flutter:
 
