@@ -6,6 +6,7 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../files/transfers.dart';
+import '../git/git_diff.dart';
 import '../session/isolate_transport.dart';
 import '../session/pane_record.dart';
 import '../session/port_forwards.dart';
@@ -26,8 +27,9 @@ import 'transfers_page.dart';
 import 'web_page.dart';
 
 /// One tab, named by what it shows rather than by an index — indices shift
-/// every time a tab opens or closes. [path] is set only for a file tab, and
-/// [web] only for a web tab.
+/// every time a tab opens or closes. [path] is set for a file tab, where it is
+/// the file's path, and for a diff tab, where it is the diff's key; [web] only
+/// for a web tab.
 typedef TabRef = ({
   LiveSession session,
   TabKind kind,
@@ -169,6 +171,8 @@ class _TabsShellState extends State<TabsShell> {
         (session: session, kind: TabKind.chat, path: null, web: null),
       if (session.gitOpen)
         (session: session, kind: TabKind.git, path: null, web: null),
+      for (final diff in session.diffs)
+        (session: session, kind: TabKind.diff, path: diff.key, web: null),
       for (final path in session.openFiles)
         (session: session, kind: TabKind.file, path: path, web: null),
       for (final web in session.webTabs)
@@ -213,6 +217,7 @@ class _TabsShellState extends State<TabsShell> {
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
       onOpenChat: () => widget.sessions.openChat(tab.session.id),
       onOpenGit: () => widget.sessions.openGit(tab.session.id),
+      onOpenDiff: (diff) => widget.sessions.openDiff(tab.session.id, diff),
       onSaveFileRoot: (root) => _saveFileRoot(tab.session.host.id, root),
     ),
     TabKind.file => FileEditorPage(
@@ -246,7 +251,12 @@ class _TabsShellState extends State<TabsShell> {
     TabKind.git => GitPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       session: tab.session,
+      onOpenDiff: (diff) => widget.sessions.openDiff(tab.session.id, diff),
     ),
+    // The file tab, read-only over what git printed rather than over SFTP:
+    // see [GitDiffBrowser]. It is built as soon as the tab is, because the
+    // command is the session's own and costs one round trip.
+    TabKind.diff => _diffPage(tab),
     TabKind.web when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
     TabKind.web => WebPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
@@ -255,6 +265,25 @@ class _TabsShellState extends State<TabsShell> {
           tab.session.updateWeb(tab.web!, url: url, title: title),
     ),
   };
+
+  /// A diff's page: the same [FileEditorPage] a file opens in, read-only and
+  /// reading what git printed. The diff is looked up by the key its tab
+  /// carries, so the page and the strip cannot disagree about which it is.
+  Widget _diffPage(TabRef tab) {
+    final diff = tab.session.diffs
+        .where((open) => open.key == tab.path)
+        .firstOrNull;
+    if (diff == null) return const SizedBox.shrink();
+    return FileEditorPage(
+      key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
+      browser: GitDiffBrowser(diff),
+      path: diff.path,
+      readOnly: true,
+      title: diff.title,
+      subtitle: diff.subtitle,
+      onClose: () => widget.sessions.closeDiff(tab.session.id, diff.key),
+    );
+  }
 
   /// Closes [tab], once its page says the changes not saved in its grid may
   /// go: closing it takes the page, and them, with it.
@@ -385,6 +414,10 @@ class _TabsShellState extends State<TabsShell> {
                 TabKind.terminal => widget.sessions.close(tab.session.id),
                 TabKind.chat => widget.sessions.closeChat(tab.session.id),
                 TabKind.git => widget.sessions.closeGit(tab.session.id),
+                TabKind.diff => widget.sessions.closeDiff(
+                  tab.session.id,
+                  tab.path!,
+                ),
                 TabKind.file => widget.sessions.closeFile(
                   tab.session.id,
                   tab.path!,
@@ -757,6 +790,8 @@ class _TabStripState extends State<TabStrip> {
         // As a file tab reads: the host, then what the tab is.
         TabKind.chat => '${tab.session.fileTabHost} · Claude',
         TabKind.git => 'Git',
+        // The diff's own name already says what it is: "main.dart · diff".
+        TabKind.diff => tab.session.diffTabTitle(tab.path!),
         TabKind.file => tab.session.fileTabTitle(tab.path!),
         TabKind.web => tab.web!.title,
         TabKind.terminal => tab.session.title,
@@ -772,6 +807,7 @@ class _TabStripState extends State<TabStrip> {
         icon: switch (tab.kind) {
           TabKind.chat => Icons.forum_outlined,
           TabKind.git => Icons.account_tree_outlined,
+          TabKind.diff => Icons.difference_outlined,
           TabKind.file => Icons.description_outlined,
           TabKind.web => Icons.public,
           // tmux, said quietly: the same chip, split.
@@ -780,7 +816,10 @@ class _TabStripState extends State<TabStrip> {
           TabKind.terminal => Icons.terminal,
         },
         label: name,
-        cutFirst: tab.kind == TabKind.file || tab.kind == TabKind.chat
+        cutFirst:
+            tab.kind == TabKind.file ||
+                tab.kind == TabKind.chat ||
+                tab.kind == TabKind.diff
             ? tab.session.fileTabHost
             : null,
         selected: id == active,

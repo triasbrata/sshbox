@@ -37,6 +37,9 @@ class FileEditorPage extends StatelessWidget {
     this.line,
     this.onOpenWeb,
     this.host,
+    this.readOnly = false,
+    this.title,
+    this.subtitle,
   });
 
   final FileBrowser browser;
@@ -46,6 +49,15 @@ class FileEditorPage extends StatelessWidget {
   final VoidCallback? onClose;
   final String? draftKey;
   final int? line;
+
+  /// Shows the text and nothing that would change it: no typing, no save, no
+  /// download and no editing keys. What a git diff opens as — see [GitDiff].
+  final bool readOnly;
+
+  /// What the header says instead of the file's name and folder. For a tab
+  /// whose path is not a path a user would recognise.
+  final String? title;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) => isImageFile(path)
@@ -63,6 +75,9 @@ class FileEditorPage extends StatelessWidget {
           draftKey: draftKey,
           line: line,
           onOpenWeb: onOpenWeb,
+          readOnly: readOnly,
+          title: title,
+          subtitle: subtitle,
         );
 }
 
@@ -138,10 +153,20 @@ class _TextFileTab extends StatefulWidget {
     this.line,
     this.onOpenWeb,
     this.host,
+    this.readOnly = false,
+    this.title,
+    this.subtitle,
   });
 
   final FileBrowser browser;
   final String path;
+
+  /// See [FileEditorPage.readOnly].
+  final bool readOnly;
+
+  /// See [FileEditorPage.title].
+  final String? title;
+  final String? subtitle;
 
   /// The host the file is on, as its tab names it, for the Transfers tab to
   /// say where a download came from.
@@ -949,14 +974,17 @@ class _TextFileTabState extends State<_TextFileTab> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                RemotePath.basename(widget.path),
+                widget.title ?? RemotePath.basename(widget.path),
                 overflow: TextOverflow.ellipsis,
               ),
               Text(
-                [
-                  if (_asRoot) 'as root',
-                  _dirty ? 'Unsaved changes' : RemotePath.parent(widget.path),
-                ].join(' · '),
+                widget.subtitle ??
+                    [
+                      if (_asRoot) 'as root',
+                      _dirty
+                          ? 'Unsaved changes'
+                          : RemotePath.parent(widget.path),
+                    ].join(' · '),
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -989,22 +1017,25 @@ class _TextFileTabState extends State<_TextFileTab> {
               onPressed: _loading || _saving ? null : _reload,
               icon: const Icon(Icons.refresh),
             ),
-            IconButton(
-              tooltip: 'Save to host',
-              onPressed: canSave ? _save : null,
-              icon: const Icon(Icons.save_outlined),
-            ),
+            if (!widget.readOnly)
+              IconButton(
+                tooltip: 'Save to host',
+                onPressed: canSave ? _save : null,
+                icon: const Icon(Icons.save_outlined),
+              ),
             PopupMenuButton<VoidCallback>(
               tooltip: 'More',
               onSelected: (action) => action(),
               itemBuilder: (context) => [
                 // Only the path is needed, so a file that would not open as
-                // text can still be saved on the phone.
-                PopupMenuItem(
-                  value: _download,
-                  enabled: _transfer == null,
-                  child: const Text('Download'),
-                ),
+                // text can still be saved on the phone. A read-only tab has no
+                // file behind it to download.
+                if (!widget.readOnly)
+                  PopupMenuItem(
+                    value: _download,
+                    enabled: _transfer == null,
+                    child: const Text('Download'),
+                  ),
                 // Nothing to copy while the file is still coming, and nothing
                 // worth copying when it would not open as text.
                 if (!_loading && _error == null)
@@ -1014,10 +1045,11 @@ class _TextFileTabState extends State<_TextFileTab> {
                   ),
                 const PopupMenuDivider(),
                 if (!_loading && _error == null) ...[
-                  PopupMenuItem(
-                    value: () => _inSource(_find.replaceMode),
-                    child: const Text('Find and replace'),
-                  ),
+                  if (!widget.readOnly)
+                    PopupMenuItem(
+                      value: () => _inSource(_find.replaceMode),
+                      child: const Text('Find and replace'),
+                    ),
                   PopupMenuItem(
                     value: () => _inSource(_goToLine),
                     child: const Text('Go to line…'),
@@ -1048,7 +1080,10 @@ class _TextFileTabState extends State<_TextFileTab> {
             Expanded(child: _buildBody()),
           ],
         ),
-        bottomNavigationBar: _loading || _error != null || _preview
+        // Nothing to type with in a read-only tab: the bar is arrows, Tab and
+        // symbols for editing.
+        bottomNavigationBar:
+            _loading || _error != null || _preview || widget.readOnly
             ? null
             : EditorKeyBar(controller: _controller, useTabs: _useTabs),
       ),
@@ -1109,6 +1144,7 @@ class _TextFileTabState extends State<_TextFileTab> {
                   child: CodeEditor(
                     controller: _controller,
                     focusNode: _editorFocus,
+                    readOnly: widget.readOnly,
                     wordWrap: _wordWrap,
                     toolbarController: _toolbar,
                     findController: _find,
