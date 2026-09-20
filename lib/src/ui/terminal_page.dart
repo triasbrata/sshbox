@@ -19,6 +19,7 @@ import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
 import 'ctrl_click.dart';
 import 'file_browser_page.dart';
+import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
 import 'settings_page.dart';
@@ -306,9 +307,39 @@ class _TerminalPageState extends State<TerminalPage> {
   /// however deep in the tree you had wandered — which a full screen of its
   /// own could not do.
   Future<void> _openFiles() async {
-    setState(() => _browser ??= _session.openFileBrowser());
+    setState(() {
+      _gitDrawer = false;
+      _browser ??= _session.openFileBrowser();
+    });
     _scaffoldKey.currentState?.openEndDrawer();
   }
+
+  /// Which panel the one end drawer holds: the file tree, or the git panel
+  /// where Settings says the git button opens a drawer. A [Scaffold] has one
+  /// drawer, so the button tapped last is what is in it — asking for the other
+  /// one swaps the content of the drawer already open.
+  bool _gitDrawer = false;
+
+  /// Settings decides where the repositories show: a tab beside the shell, as
+  /// they always did, or this page's own drawer over the terminal. It is read
+  /// at the tap, so a change in Settings needs nothing reopened and leaves a
+  /// git tab already open alone.
+  void _openGit() {
+    if (!gitInDrawer.value) {
+      widget.onOpenGit();
+      return;
+    }
+    setState(() => _gitDrawer = true);
+    _scaffoldKey.currentState?.openEndDrawer();
+  }
+
+  /// The git panel in the drawer: the same [GitPage] the tab holds, at the
+  /// file tree's width, with a button to shut the drawer since there is no tab
+  /// ✕ here to do it.
+  Widget _buildGitDrawer() => Drawer(
+    width: math.min(360, MediaQuery.sizeOf(context).width * 0.85),
+    child: GitPage(session: _session, onClose: _closeDrawer),
+  );
 
   Widget _buildFilesDrawer() {
     final browser = _browser;
@@ -334,18 +365,18 @@ class _TerminalPageState extends State<TerminalPage> {
             _browseScroll = (root: _browseRoot, offset: offset),
         onSaveRoot: widget.onSaveFileRoot,
         terminal: _terminalLink,
-        onClose: _closeFilesDrawer,
+        onClose: _closeDrawer,
         onFileSelected: _openFileTab,
       ),
     );
   }
 
-  void _closeFilesDrawer() => _scaffoldKey.currentState?.closeEndDrawer();
+  void _closeDrawer() => _scaffoldKey.currentState?.closeEndDrawer();
 
   /// A picked file becomes a tab of its own, beside this session's — the same
   /// answer on every size, so there is one place a file is ever opened.
   void _openFileTab(String path, {int? line}) {
-    _closeFilesDrawer();
+    _closeDrawer();
     widget.onOpenFile(path, line: line);
   }
 
@@ -585,7 +616,7 @@ class _TerminalPageState extends State<TerminalPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-      endDrawer: _buildFilesDrawer(),
+      endDrawer: _gitDrawer ? _buildGitDrawer() : _buildFilesDrawer(),
       // Never by edge swipe: the terminal owns horizontal gestures, and having
       // the file list slide over the shell mid-command would be maddening.
       endDrawerEnableOpenDragGesture: false,
@@ -630,7 +661,7 @@ class _TerminalPageState extends State<TerminalPage> {
             IconButton(
               tooltip: 'Git',
               onPressed: (_session.isConnected && _session.canGit)
-                  ? widget.onOpenGit
+                  ? _openGit
                   : null,
               icon: const Icon(Icons.account_tree_outlined),
             ),

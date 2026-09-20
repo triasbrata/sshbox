@@ -15,9 +15,13 @@ import 'toast.dart';
 /// session, so a tab left open across a reconnect works again the moment the
 /// shell is back, and closing the tab lets the repositories go.
 class GitPage extends StatefulWidget {
-  const GitPage({super.key, required this.session});
+  const GitPage({super.key, required this.session, this.onClose});
 
   final LiveSession session;
+
+  /// Shuts the drawer this panel is in, where Settings opens it as one. Left
+  /// out in a tab, whose ✕ on the strip is how it closes.
+  final VoidCallback? onClose;
 
   @override
   State<GitPage> createState() => _GitPageState();
@@ -67,8 +71,9 @@ class _GitPageState extends State<GitPage> {
     if (!mounted) return;
     // The tab closing notifies too, and by then the session has let go of its
     // repositories: asking for another search there is asking a disposed
-    // object.
-    if (!widget.session.gitOpen) return;
+    // object. Asked of the repositories rather than of the tab, because this
+    // panel also opens in the terminal's drawer, where there is no tab at all.
+    if (_repos.disposed) return;
     final connected = widget.session.isConnected;
     if (connected && !_wasConnected) unawaited(_discover());
     _wasConnected = connected;
@@ -223,10 +228,17 @@ class _GitPageState extends State<GitPage> {
         ),
         if (_branch.isNotEmpty) ...[
           const SizedBox(width: 8),
-          Text(
-            _branch,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.primary,
+          // Flexible, because a branch name has no length: full width it fits,
+          // but in the drawer on a phone a long one pushed the buttons beside
+          // it off the edge of the screen.
+          Flexible(
+            child: Text(
+              _branch,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.primary,
+              ),
             ),
           ),
         ],
@@ -235,6 +247,12 @@ class _GitPageState extends State<GitPage> {
           onPressed: _busy ? null : () => unawaited(_reload()),
           icon: const Icon(Icons.refresh),
         ),
+        if (widget.onClose != null)
+          IconButton(
+            tooltip: 'Close',
+            onPressed: widget.onClose,
+            icon: const Icon(Icons.close),
+          ),
       ],
     ),
   );

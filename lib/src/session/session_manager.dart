@@ -1002,6 +1002,10 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     unawaited(_teardown(kill: true));
     _chat?.dispose();
     _chat = null;
+    // Not only the git tab's: the panel also opens in the terminal's drawer,
+    // which never closes them.
+    _repos?.dispose();
+    _repos = null;
     _terminal.dispose();
     super.dispose();
   }
