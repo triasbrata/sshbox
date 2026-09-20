@@ -277,6 +277,10 @@ class GitRepos extends ChangeNotifier {
   /// it was torn down.
   bool _disposed = false;
 
+  /// Whether the session has let these go: a page still listening checks it
+  /// before asking for anything.
+  bool get disposed => _disposed;
+
   @override
   void dispose() {
     _disposed = true;

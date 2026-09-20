@@ -13,6 +13,7 @@ Future<void> main() async {
   await terminalSettings.load();
   await keyBarSettings.load();
   await appTheme.load();
+  await gitInDrawer.load();
   // Before any session can connect, so its entry joins the saved log rather
   // than being wiped by it.
   await sessionLog.load();

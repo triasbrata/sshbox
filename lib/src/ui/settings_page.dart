@@ -301,6 +301,34 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
 /// The app's one; `main` reads the saved arrangement into it.
 final keyBarSettings = KeyBarSettings();
 
+/// Where the key bar's git button opens the repositories: in a tab beside the
+/// shell, as it always has, or in the terminal's own drawer over it.
+///
+/// Read at the tap rather than watched, so a change here reaches the next tap
+/// and leaves whatever is already open alone.
+class GitPanelSetting extends ValueNotifier<bool> {
+  GitPanelSetting() : super(false);
+
+  static const _key = 'sshbox.git.drawer';
+
+  /// Reads the saved choice. Nothing saved is a tab, which is what the git
+  /// button did before there was a choice.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? false;
+  }
+
+  /// Applies to the next tap, and is saved for the next start.
+  Future<void> choose(bool drawer) async {
+    value = drawer;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, drawer);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it. True is the drawer.
+final gitInDrawer = GitPanelSetting();
+
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.notifyKeys});
@@ -333,6 +361,7 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           ),
+          const _GitSection(),
           _NotificationsSection(notifyKeys),
         ],
       ),
@@ -1156,6 +1185,66 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Where the git button puts the repositories: a tab of their own, or a
+/// drawer over the terminal. The panel itself is the same either way.
+class _GitSection extends StatelessWidget {
+  const _GitSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _SectionHeader('Git'),
+        ValueListenableBuilder(
+          valueListenable: gitInDrawer,
+          builder: (context, drawer, _) => ListTile(
+            leading: const Icon(Icons.account_tree_outlined),
+            title: const Text('Open the git panel as'),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(
+                      value: false,
+                      label: Text('Tab'),
+                      icon: Icon(Icons.tab_outlined),
+                    ),
+                    ButtonSegment(
+                      value: true,
+                      label: Text('Drawer'),
+                      icon: Icon(Icons.vertical_split_outlined),
+                    ),
+                  ],
+                  selected: {drawer},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (picked) =>
+                      gitInDrawer.choose(picked.first),
+                ),
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Text(
+            'A tab sits beside the shell and stays until you close it; a '
+            'drawer slides over the terminal and goes when you tap away. A '
+            'git tab already open stays a tab.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

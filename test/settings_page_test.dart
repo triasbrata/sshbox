@@ -242,6 +242,11 @@ void main() {
         300,
         scrollable: find.byType(Scrollable).first,
       );
+      // The scroll stops as soon as the row is built, which a list builds a
+      // little past its bottom edge: on a short window the last section can be
+      // in the tree and still under the fold, where a tap misses it.
+      await tester.ensureVisible(reset);
+      await tester.pump();
       await tester.tap(reset);
       await tester.pumpAndSettle();
     }
