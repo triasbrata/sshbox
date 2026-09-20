@@ -2,9 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../files/file_browser.dart' show RemotePath;
+import '../git/git_diff.dart';
 import '../git/git_repo.dart';
 import '../session/session_manager.dart';
-import 'settings_page.dart' show terminalSettings;
 import 'toast.dart';
 
 /// The repositories on the host, beside that host's shell — what the editors
@@ -15,13 +16,22 @@ import 'toast.dart';
 /// session, so a tab left open across a reconnect works again the moment the
 /// shell is back, and closing the tab lets the repositories go.
 class GitPage extends StatefulWidget {
-  const GitPage({super.key, required this.session, this.onClose});
+  const GitPage({
+    super.key,
+    required this.session,
+    this.onClose,
+    this.onOpenDiff,
+  });
 
   final LiveSession session;
 
   /// Shuts the drawer this panel is in, where Settings opens it as one. Left
   /// out in a tab, whose ✕ on the strip is how it closes.
   final VoidCallback? onClose;
+
+  /// Opens a diff in a file tab beside the shell. Left out, tapping a change
+  /// or a commit does nothing — no panel of this app's ever leaves it out.
+  final void Function(GitDiff diff)? onOpenDiff;
 
   @override
   State<GitPage> createState() => _GitPageState();
@@ -142,15 +152,31 @@ class _GitPageState extends State<GitPage> {
     });
   }
 
-  /// The diff of a path, or of a commit, on a page of its own over this one:
-  /// a diff is wide and long, and the lists are what the user comes back to.
-  Future<void> _show(String title, Future<String> body) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => _DiffPage(title: title, body: body),
-      ),
-    );
-  }
+  /// The diff of a path, or of a commit, handed to a file tab of its own: a
+  /// diff is wide and long, and the file tab already reads that well — its
+  /// font, find, copy, word wrap and the place it was scrolled to — while
+  /// this panel keeps the lists, which are what the user comes back to.
+  ///
+  /// The command, not its answer, is what the tab is given, so its Reload runs
+  /// git again; and it is bound to this [GitRepo] rather than to the panel, so
+  /// a diff goes on working after the panel is closed or another repository is
+  /// picked in it.
+  void _show({
+    required String key,
+    required String title,
+    required String subtitle,
+    required Future<String> Function() read,
+  }) => widget.onOpenDiff?.call(
+    GitDiff(key: key, title: title, subtitle: subtitle, read: read),
+  );
+
+  /// The diff of one changed path, staged or not.
+  void _showFile(GitRepo repo, String path, {required bool staged}) => _show(
+    key: '${repo.root}:$path${staged ? ':staged' : ''}',
+    title: '${RemotePath.basename(path)} · ${staged ? 'staged diff' : 'diff'}',
+    subtitle: '$path · ${RemotePath.basename(repo.root)}',
+    read: () => repo.diff(path, staged: staged),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -293,12 +319,8 @@ class _GitPageState extends State<GitPage> {
                           onAct: () => unawaited(
                             _act((repo) => repo.unstage(entry.path)),
                           ),
-                          onOpen: () => unawaited(
-                            _show(
-                              entry.path,
-                              repo.diff(entry.path, staged: true),
-                            ),
-                          ),
+                          onOpen: () =>
+                              _showFile(repo, entry.path, staged: true),
                         ),
                     ],
                     if (unstaged.isNotEmpty) ...[
@@ -319,12 +341,8 @@ class _GitPageState extends State<GitPage> {
                           tooltip: 'Stage',
                           onAct: () =>
                               unawaited(_act((repo) => repo.stage(entry.path))),
-                          onOpen: () => unawaited(
-                            _show(
-                              entry.path,
-                              repo.diff(entry.path, staged: false),
-                            ),
-                          ),
+                          onOpen: () =>
+                              _showFile(repo, entry.path, staged: false),
                         ),
                     ],
                   ],
@@ -384,7 +402,12 @@ class _GitPageState extends State<GitPage> {
             overflow: TextOverflow.ellipsis,
           ),
           subtitle: Text('${commit.author} · ${commit.when} · ${commit.sha}'),
-          onTap: () => unawaited(_show(commit.sha, repo.show(commit.sha))),
+          onTap: () => _show(
+            key: '${repo.root}:${commit.sha}',
+            title: '${commit.sha} · diff',
+            subtitle: commit.subject,
+            read: () => repo.show(commit.sha),
+          ),
         );
       },
     );
@@ -513,73 +536,6 @@ class _Message extends StatelessWidget {
             ],
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// A diff, drawn in the terminal's own font at the terminal's own size, with
-/// added and removed lines coloured — the one place in the app where reading
-/// column by column matters as much as it does in the shell.
-class _DiffPage extends StatelessWidget {
-  const _DiffPage({required this.title, required this.body});
-
-  final String title;
-  final Future<String> body;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(title: Text(title, overflow: TextOverflow.ellipsis)),
-      body: FutureBuilder<String>(
-        future: body,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final error = snapshot.error;
-          if (error != null) return _Message(text: '$error');
-          final text = snapshot.data ?? '';
-          if (text.trim().isEmpty) {
-            return const _Message(text: 'Nothing to show');
-          }
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(12),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: ValueListenableBuilder(
-                valueListenable: terminalSettings,
-                builder: (context, style, _) => Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final line in text.split('\n'))
-                      Text(
-                        line,
-                        // The terminal's font and size, but its own colours:
-                        // what [terminalSettings] holds is xterm2's style for
-                        // a whole terminal, not a text style.
-                        style: TextStyle(
-                          fontFamily: style.fontFamily,
-                          fontSize: style.fontSize,
-                          color: switch (line) {
-                            _ when line.startsWith('+++') => null,
-                            _ when line.startsWith('---') => null,
-                            _ when line.startsWith('+') => Colors.green,
-                            _ when line.startsWith('-') =>
-                              theme.colorScheme.error,
-                            _ when line.startsWith('@@') =>
-                              theme.colorScheme.primary,
-                            _ => null,
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
       ),
     );
   }

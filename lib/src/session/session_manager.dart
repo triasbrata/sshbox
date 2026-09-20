@@ -16,6 +16,7 @@ import '../models/host_profile.dart';
 import '../models/os_info.dart';
 import '../notifications/direct_notify.dart';
 import '../notifications/notify_key.dart';
+import '../git/git_diff.dart';
 import '../git/git_repo.dart';
 import 'isolate_transport.dart';
 import 'tailnet_forwarder.dart';
@@ -428,6 +429,28 @@ class LiveSession extends ChangeNotifier {
     _notify();
   }
 
+  final List<GitDiff> _diffs = [];
+
+  /// The diffs opened from this session's git panel, in tab order. Each is a
+  /// file tab of its own holding what git printed; the panel keeps the lists,
+  /// and a diff outlives the panel that opened it, since it runs its own
+  /// command over this session rather than through the panel.
+  List<GitDiff> get diffs => List.unmodifiable(_diffs);
+
+  /// Opening a diff already on the strip goes back to its tab rather than
+  /// stacking a second copy, the way opening a file does.
+  void openDiff(GitDiff diff) {
+    if (_diffs.any((open) => open.key == diff.key)) return;
+    _diffs.add(diff);
+    _notify();
+  }
+
+  void closeDiff(String key) {
+    final before = _diffs.length;
+    _diffs.removeWhere((open) => open.key == key);
+    if (_diffs.length != before) _notify();
+  }
+
   final List<WebTab> _webTabs = [];
 
   /// The web pages opened from links in this session, in tab order. They sit
@@ -480,6 +503,14 @@ class LiveSession extends ChangeNotifier {
   /// A file tab's name: [fileTabHost], then the file.
   String fileTabTitle(String path) =>
       '$fileTabHost · ${RemotePath.basename(path)}';
+
+  /// A diff tab's name, the same way: [fileTabHost], then what the diff calls
+  /// itself — "main.dart · diff". A key with no diff left can only be a tab
+  /// on its way out.
+  String diffTabTitle(String key) {
+    final diff = _diffs.where((open) => open.key == key).firstOrNull;
+    return '$fileTabHost · ${diff?.title ?? 'diff'}';
+  }
 
   void _wireTerminal() {
     if (_wired) return;
@@ -1013,7 +1044,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
 
 /// What a tab shows: the shell on a host, a file opened over that shell, or
 /// a web page a link in it opened.
-enum TabKind { terminal, chat, git, file, web }
+enum TabKind { terminal, chat, git, diff, file, web }
 
 /// A web page in a tab beside the shell whose link opened it.
 class WebTab {
@@ -1168,7 +1199,10 @@ class SessionManager extends ChangeNotifier {
     }
     _activeId = id;
     _activeKind = kind;
-    _activePath = kind == TabKind.file ? path : null;
+    // A diff tab is named by its key the way a file tab is named by its path:
+    // one session can have several of either, and this is what tells them
+    // apart on the strip.
+    _activePath = kind == TabKind.file || kind == TabKind.diff ? path : null;
     _activeWeb = kind == TabKind.web ? web : null;
     _activeDb = id == null ? db : null;
     _transfersActive = showTransfers;
@@ -1281,6 +1315,26 @@ class SessionManager extends ChangeNotifier {
     if (session == null) return;
     session.openGit();
     select(id, kind: TabKind.git);
+  }
+
+  /// Opens a diff from this session's git panel in a file tab of its own, and
+  /// shows it. The same diff asked for again goes back to the tab it is in.
+  void openDiff(int id, GitDiff diff) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.openDiff(diff);
+    select(id, kind: TabKind.diff, path: diff.key);
+  }
+
+  /// Closing a diff lands on the shell it was opened beside; the git panel,
+  /// wherever it is, is untouched.
+  void closeDiff(int id, String key) {
+    final session = _sessions[id];
+    if (session == null) return;
+    session.closeDiff(key);
+    if (_activeId == id && _activeKind == TabKind.diff && _activePath == key) {
+      select(id);
+    }
   }
 
   /// Closing the git tab lands on the shell it sits beside, and lets go of

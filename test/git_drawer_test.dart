@@ -129,6 +129,7 @@ Future<List<int>> _pumpTerminal(WidgetTester tester) async {
         onOpenWeb: (_) {},
         onOpenChat: () {},
         onOpenGit: () => opened.add(1),
+        onOpenDiff: (_) {},
         onSaveFileRoot: (_) async {},
       ),
     ),
@@ -185,15 +186,8 @@ void main() {
     expect(find.text('dev'), findsOneWidget);
     expect(find.text('lib/main.dart'), findsOneWidget);
 
-    // A diff still opens on a page of its own over the drawer, and comes back
-    // to it.
-    await tester.tap(find.text('lib/main.dart'));
-    await tester.pumpAndSettle();
-    expect(find.text('+is this'), findsOneWidget);
-    await tester.pageBack();
-    await tester.pumpAndSettle();
-
-    // And it closes from inside, there being no tab ✕ to do it.
+    // It closes from inside, there being no tab ✕ to do it. (A diff tapped
+    // here goes to a file tab and shuts the drawer: git_diff_tab_test.)
     await tester.tap(find.byTooltip('Close'));
     await tester.pumpAndSettle();
     expect(find.byType(GitPage), findsNothing);
