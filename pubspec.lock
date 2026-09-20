@@ -519,12 +519,11 @@ packages:
     source: hosted
     version: "4.1.5+1"
   jni:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: jni
-      sha256: d2c361082d554d4593c3012e26f6b188f902acd291330f13d6427641a92b3da1
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/jni"
+      relative: true
+    source: path
     version: "0.14.2"
   json_annotation:
     dependency: transitive
