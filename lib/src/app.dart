@@ -21,6 +21,9 @@ import 'session/port_forwards.dart';
 import 'session/session_keepalive.dart';
 import 'session/session_log.dart';
 import 'session/session_manager.dart';
+import 'telemetry/crash_reporting.dart';
+import 'telemetry/telemetry.dart';
+import 'ui/bug_report.dart';
 import 'ui/connect_sheet.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
@@ -77,6 +80,57 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_listenForLinks());
     unawaited(_listenForShares());
     unawaited(_checkForUpdate());
+    unawaited(_countThisInstall());
+    lastFault.addListener(_offerToReport);
+  }
+
+  /// Once a day, and only while telemetry is on: the install id, the version,
+  /// the platform and the OS version, and nothing else. It says nothing here
+  /// whatever happens — see [Telemetry.pingDaily].
+  ///
+  /// The first run of a new install also gets a word about it, since the
+  /// switch is on to begin with and a count goes before the user has said
+  /// anything. A toast rather than a dialog: it is a thing to know, not a
+  /// thing to answer.
+  Future<void> _countThisInstall() async {
+    unawaited(telemetry.pingDaily());
+    if (!telemetryOn.value) return;
+    if (!await telemetry.claimFirstRunNotice()) return;
+    final context = _navigator.currentContext;
+    if (context == null || !context.mounted) return;
+    showToast(
+      context,
+      'Jeansh counts installs\nIt sends a daily count and any crashes, never '
+      'a hostname, a login, a path or a command. Settings turns it off.',
+      duration: const Duration(seconds: 8),
+      action: (
+        label: 'Settings',
+        onPressed: () => _navigator.currentState?.push(
+          MaterialPageRoute<void>(
+            builder: (_) => SettingsPage(notifyKeys: _notifyKeys),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The one offer a run makes: something went wrong, and here is a way to
+  /// say so. Shown whether or not telemetry is on, because reporting a bug is
+  /// the user's own act — see `showBugReport`.
+  void _offerToReport() {
+    final fault = lastFault.value;
+    if (fault == null) return;
+    final context = _navigator.currentContext;
+    if (context == null || !context.mounted) return;
+    showToast(
+      context,
+      'Jeansh hit an error',
+      type: ToastificationType.error,
+      action: (
+        label: 'Report',
+        onPressed: () => showBugReport(context, about: fault),
+      ),
+    );
   }
 
   /// Once a day, on a desktop build with an update host baked in: a newer
@@ -272,6 +326,7 @@ class _SshboxAppState extends State<SshboxApp> {
 
   @override
   void dispose() {
+    lastFault.removeListener(_offerToReport);
     unawaited(_linkSubscription?.cancel());
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());

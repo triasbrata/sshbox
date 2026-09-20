@@ -66,6 +66,22 @@ dependencies:
   # Already here under uuid, pure Dart: SCRAM and MD5 for the database
   # browser's PostgreSQL and MongoDB sign-ins.
   crypto: ^3.0.7
+  # Crash reporting (lib/src/telemetry/crash_reporting.dart), with the DSN
+  # baked in at build time and nothing sent without one. 9 rather than the 8
+  # pub picks by itself: 8.14.2's Android Gradle asks the Kotlin compiler for
+  # language version 1.6, which Flutter 3.47's no longer supports, so it does
+  # not build for Android at all. On Linux and Windows this builds
+  # sentry-native from source at CMake configure time — a clone, so a desktop
+  # build now wants a network — and tools/build_desktop.sh pins its crash
+  # backend to none rather than putting crashpad through MSVC.
+  sentry_flutter: ^9.30.0
+  # The version and build number at runtime, for the daily count and the bug
+  # report: tool/release.sh bakes no JEANSH_VERSION, so the desktop builds'
+  # define is no use on Android. Already here under sentry_flutter.
+  package_info_plus: ^10.2.1
+  # Already here under package_info_plus, pure Dart: the v4 install id, which
+  # is random and carries nothing of the machine.
+  uuid: ^4.6.0
 
 dev_dependencies:
   flutter_test:

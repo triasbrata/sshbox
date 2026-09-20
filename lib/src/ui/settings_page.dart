@@ -6,6 +6,9 @@ import 'package:xterm2/xterm.dart';
 
 import '../notifications/notify_key.dart';
 import '../platform.dart';
+import '../telemetry/crash_reporting.dart';
+import '../telemetry/telemetry.dart';
+import 'bug_report.dart';
 import 'key_bar.dart';
 import 'update_dialog.dart';
 import 'terminal_schemes.dart';
@@ -365,6 +368,7 @@ class SettingsPage extends StatelessWidget {
           ),
           const _GitSection(),
           _NotificationsSection(notifyKeys),
+          const _PrivacySection(),
           // Desktop alone: Android updates through Play, and there is no
           // desktop build to offer anywhere else.
           if (isDesktop) ...[
@@ -1255,6 +1259,79 @@ class _GitSection extends StatelessWidget {
       ],
     );
   }
+}
+
+/// What leaves this device, and the one switch that stops it.
+///
+/// Called Privacy rather than Telemetry because that is the question the
+/// section answers — what Jeansh sends about you — and because Report a bug
+/// belongs beside the switch: they are the two ways anything goes out, and a
+/// user looking for either is looking for the same thing.
+class _PrivacySection extends StatelessWidget {
+  const _PrivacySection();
+
+  /// The plain truth, which is short enough to say in full: a count and
+  /// crashes, and none of the things an SSH client knows.
+  static const _what =
+      'Counts this install once a day, and sends crashes so they can be '
+      'fixed. No hostname, username, path or command ever leaves this '
+      'device.';
+
+  static const _off =
+      'Nothing is sent. Report a bug below still works — that one is yours '
+      'to press.';
+
+  Future<void> _choose(BuildContext context, bool on) async {
+    await telemetryOn.choose(on);
+    if (!on) await stopCrashReporting();
+    if (!context.mounted) return;
+    if (!on && crashReportingStarted) {
+      // Honest rather than tidy: Sentry was started at launch, so its native
+      // crash handler is in the process until the app is started again.
+      // Nothing more is sent either way — see `scrubEvent`.
+      showToast(
+        context,
+        'Telemetry off\nNothing more is sent. Restart Jeansh to unload the '
+        'crash handler as well.',
+        duration: const Duration(seconds: 5),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const _SectionHeader('Privacy'),
+      ValueListenableBuilder<bool>(
+        valueListenable: telemetryOn,
+        builder: (context, on, _) => SwitchListTile(
+          secondary: const Icon(Icons.insights_outlined),
+          title: const Text('Telemetry'),
+          subtitle: Text(
+            on
+                ? (crashReportingConfigured
+                      ? _what
+                      : '$_what\n\nThis build has no crash reporting built '
+                            'in, so only the count is sent.')
+                : _off,
+          ),
+          isThreeLine: true,
+          value: on,
+          onChanged: (want) => _choose(context, want),
+        ),
+      ),
+      ListTile(
+        leading: const Icon(Icons.bug_report_outlined),
+        title: const Text('Report a bug'),
+        subtitle: const Text(
+          'Opens an issue on GitHub under your own name, or sends it '
+          'anonymously through Jeansh. You read what goes before it goes.',
+        ),
+        onTap: () => showBugReport(context),
+      ),
+    ],
+  );
 }
 
 /// The relay keys, one per host, that its shells get as `LC_SSHBOX_KEY` (see
