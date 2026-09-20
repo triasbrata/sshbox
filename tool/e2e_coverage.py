@@ -71,6 +71,41 @@ def features() -> list[tuple[str, str, str]]:
     return rows
 
 
+def helper_only_tests() -> set[str]:
+    """Test files that never build a widget.
+
+    A file with no `testWidgets(` exercises logic and nothing else. That is
+    often the right test -- but it cannot see a feature's wiring, and a
+    `guard: unit` resting on one alone is the trap ctrl_click_test.dart fell
+    into: six green tests on findLinks(), a string helper, while Ctrl+tap was
+    dead on the tablet because nothing tested the key bar, the underlining,
+    the tap or the opening.
+    """
+    pure = set()
+    for path in sorted((ROOT / 'test').glob('*_test.dart')):
+        if 'testWidgets(' not in path.read_text():
+            pure.add('test/' + path.name)
+    return pure
+
+
+def audit(entries: dict[str, dict]) -> list[tuple[str, str]]:
+    """`unit` guards backed only by tests that never build the UI.
+
+    An entry that says `ui: none` is exempt, for a feature that really is only
+    logic -- parsing os-release, picking a port, walking a jump chain. That has
+    to be claimed on purpose, so the alarm keeps meaning something.
+    """
+    pure = helper_only_tests()
+    flagged = []
+    for key, entry in entries.items():
+        if entry.get('guard') != 'unit' or entry.get('ui') == 'none':
+            continue
+        named = [b.strip() for b in entry.get('by', '').split(',') if b.strip()]
+        if named and all(b in pure for b in named):
+            flagged.append((key, ', '.join(named)))
+    return flagged
+
+
 def coverage() -> dict[str, dict]:
     """e2e/coverage.yaml, read without a yaml dependency.
 
@@ -139,8 +174,22 @@ def main() -> int:
     print('  %-12s %d' % ('todo', len(todo)))
     print('  %-12s %d' % ('UNGUARDED', len(unguarded)))
 
+    thin = audit(have)
+    if thin:
+        print('  %-12s %d  (unit, but no test builds the UI)' % ('THIN', len(thin)))
+
     if '--summary' in sys.argv:
         return 1 if unguarded or bad else 0
+
+    if thin:
+        print(
+            '\nThin guards -- the named tests never build a widget, so they '
+            'cannot see\nthe feature break the way Ctrl+tap did. Either add a '
+            'widget test, move it\nto todo, or say `ui: none` if the feature '
+            'really is only logic:'
+        )
+        for key, by in thin:
+            print('  %-50s %s' % (key[:50], by))
 
     for key, guard in bad:
         print('\nbad guard %r for %s -- allowed: %s' % (guard, key, ', '.join(sorted(GUARDS))))

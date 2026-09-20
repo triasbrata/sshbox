@@ -171,7 +171,7 @@ chat-mode-gets-a-button-to-start-a:
 
 chat-mode-follows-a-running-session-live-picked:
   guard: unit
-  by: test/claude_chat_test.dart
+  by: test/claude_chat_test.dart, test/chat_page_test.dart
   why: "the tail -f follow and the attach send are parsed and asserted against recorded transcripts"
 
 chat-mode-the-claude-code-plugin-s-panel:
@@ -181,18 +181,18 @@ chat-mode-the-claude-code-plugin-s-panel:
 
 chat-mode-picks-up-the-claude-code-sessions:
   guard: unit
-  by: test/claude_chat_test.dart
+  by: test/claude_chat_test.dart, test/chat_page_test.dart
   why: "claude agents --json parsing and the once-per-shell quoting, run through a real sh"
 
 the-host-key-prompt-names-the-machine-that:
-  guard: unit
-  by: test/alt_address_test.dart, test/known_host_store_test.dart
-  why: "which address answered rides through to the prompt -- asserted per address"
+  guard: todo
+  why: "the address rides through correctly in the store's tests, but nothing builds the prompt that names it -- the part the user reads before trusting a key"
 
 a-host-keeps-a-second-address-so-the:
   guard: unit
   by: test/alt_address_test.dart
   why: "happy eyeballs, the 250 ms delay and the loser's socket destroyed"
+  ui: none
 
 images-linked-from-a-markdown-file-show-as:
   guard: unit
@@ -268,9 +268,8 @@ database-browser-for-postgresql-mongodb-and-redis-saved:
   why: "each driver is exercised against a real server"
 
 database-editor-import-uri-fills-the-type-address:
-  guard: unit
-  by: test/db_uri_test.dart
-  why: "parsing, percent-decoding and the refusals"
+  guard: todo
+  why: "db_uri_test.dart parses the URI; nothing fills the form from it, which is the half the user touches"
 
 database-icons-are-each-product-s-own-brand:
   guard: unit
@@ -281,6 +280,7 @@ transfers-run-at-the-speed-of-the-link:
   guard: unit
   by: test/isolate_transport_test.dart, test/isolate_transfer_bench_test.dart
   why: "throughput is measured by the bench; a device number is a measurement, not an assertion"
+  ui: none
 
 transfers-tab-and-progress-notifications-and-a-download:
   guard: unit
@@ -296,6 +296,7 @@ big-downloads-and-uploads-no-longer-freeze-the:
   guard: unit
   by: test/isolate_transport_test.dart
   why: "the cipher order and the streaming download; the freeze was the UI isolate, now measured by the bench"
+  ui: none
 
 duplicate-on-a-host-card-the-menu-on:
   guard: unit
@@ -318,14 +319,14 @@ known-hosts-opened-from-the-fingerprint-button-on:
   why: "listing and Forget"
 
 logs-a-history-of-past-sessions-date-start:
-  guard: unit
-  by: test/session_log_test.dart
-  why: "entries written and read back"
+  guard: todo
+  why: "session_log_test.dart writes and reads entries; nothing builds the page that lists them"
 
 server-os-info-read-on-every-connect-os:
   guard: unit
   by: test/os_info_test.dart
   why: "os-release, uname and the macOS and Windows shapes all parsed"
+  ui: none
 
 port-forwarding-on-its-own-screen-from-home:
   guard: unit
@@ -336,6 +337,7 @@ proxy-jump-a-host-can-connect-through-another:
   guard: unit
   by: test/jump_chain_test.dart
   why: "the chain is built and walked, jump hosts of their own included"
+  ui: none
 
 theme-in-settings-light-dark-system-mode-and:
   guard: unit
@@ -346,6 +348,7 @@ theme-contrast-stronger-colours-for-every-named-theme:
   guard: unit
   by: test/terminal_theme_test.dart
   why: "the ratios are arithmetic and asserted as such"
+  ui: none
 
 settings-page-on-the-host-list-with-a:
   guard: unit
@@ -403,9 +406,8 @@ links-open-as-a-web-tab-beside-their:
   why: "the WebView is faked; the routing is the logic"
 
 ctrl-tap-a-path-or-link-to-open:
-  guard: unit
-  by: test/ctrl_click_test.dart
-  why: "what counts as a path or a link, and what opens"
+  guard: todo
+  why: "PROVEN BROKEN on the tablet while its test stayed green. ctrl_click_test.dart tests findLinks(), a string helper, and never the key bar's CTRL, the underlining, the tap or the opening -- so the whole feature died and nothing went red. Needs a flow, and a widget test over the wiring"
 
 magic-key-two-concentric-rings-and-it-fades:
   guard: unit
@@ -432,14 +434,14 @@ tmux-found-outside-a-non-login-path-the:
   why: "each candidate path is searched in order"
 
 security-hardening-a-new-host-key-asks-before:
-  guard: unit
-  by: test/known_host_store_test.dart
-  why: "the prompt, the change warning and the 0600 uploads; release signing and Android backup are settings a test cannot read and stay manual"
+  guard: todo
+  why: "known_host_store_test.dart covers the pinning; the prompt itself, and the 0600 uploads, are not built by any test. A security surface with no UI test is the one to fix first"
 
 tailnet-forwarding-never-forward-debugger-ports-9229-etc:
   guard: unit
   by: test/tailnet_forwarder_test.dart
   why: "the port filter and the reuse"
+  ui: none
 
 # ----------------------------------------------------------------- manual ---
 
