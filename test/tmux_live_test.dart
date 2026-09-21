@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -116,7 +117,18 @@ void main() {
   setUp(() async => dir = await Directory.systemTemp.createTemp('sshbox-tmux'));
   tearDown(() async {
     if (hasTmux) await _tmux(dir, ['kill-server']);
-    await dir.delete(recursive: true);
+    // A pane's shell may still be writing as it goes: bash, which is macOS's
+    // sh, saves its history into HOME on the hangup, and kill-server has
+    // returned by then.
+    for (var tries = 0; ; tries++) {
+      try {
+        await dir.delete(recursive: true);
+        return;
+      } on FileSystemException {
+        if (tries == 20) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
   });
 
   test(
@@ -427,8 +439,11 @@ void main() {
         // session gone too.
         final gone = File('${records().parent.path}/sshbox-old/1-%9');
         await gone.create(recursive: true);
+        // Not `touch -d '10 days ago'`: BSD touch takes no such date, fails,
+        // and leaves the file new, so nothing is old enough to prune.
+        final old = DateTime.now().subtract(const Duration(days: 10));
         for (final path in [gone.path, '${records().path}/$live']) {
-          await Process.run('touch', ['-d', '10 days ago', path]);
+          await File(path).setLastModified(old);
         }
 
         (process, channel) = await start();
@@ -744,12 +759,21 @@ void main() {
         // going, with nobody attached, two seconds on: a Detach that killed,
         // hung up on the pane or took its pipe down fails here.
         expect(alive(name), isTrue);
+        // Waited for rather than timed: a loaded machine forks slowly, and a
+        // tick every 0.1s has come to twelve in two seconds, not twenty.
         final before = counted();
         await Future<void>.delayed(const Duration(seconds: 2));
         expect(alive(name), isTrue);
-        expect(counted(), greaterThan(before + 10));
+        final then = counted();
+        await _until(
+          () => counted() > math.max(then, before + 10),
+          () => '${counted()} ticks, ${before + 10} wanted',
+        );
         final file = File('${dir.path}/${PaneRecord.dir(name)}/$record');
-        expect(file.readAsStringSync(), contains('tick-${before + 10}'));
+        await _until(
+          () => file.readAsStringSync().contains('tick-${before + 10}'),
+          () => file.readAsStringSync(),
+        );
 
         // Another tab on the host, so the listing has one in use to show.
         final other = await open(manager, here);
