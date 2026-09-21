@@ -497,7 +497,13 @@ void main() {
           'it\'s "x" \$(touch pwned-sub) `touch pwned-tick`; '
           'touch pwned-semi \\ #h %p';
       final bin = await Directory('${dir.path}/bin').create();
-      for (final tool in ['/bin/sh', '/usr/bin/tail', '/usr/bin/grep']) {
+      // touch too, so a name that ran would leave its mark.
+      for (final tool in [
+        '/bin/sh',
+        '/usr/bin/tail',
+        '/usr/bin/grep',
+        '/usr/bin/touch',
+      ]) {
         await Link('${bin.path}/${tool.split('/').last}').create(tool);
       }
       // A tmux that writes down each argument it was given, one to a line,
@@ -520,6 +526,11 @@ void main() {
             'SHELL': '/bin/sh',
           },
           includeParentEnvironment: false,
+        );
+        expect(
+          dir.listSync().map((entry) => entry.path.split('/').last),
+          isNot(anyElement(startsWith('pwned'))),
+          reason: 'something in the name ran',
         );
         expect(result.stderr, isEmpty, reason: command);
         final calls = <List<String>>[[]];
@@ -547,11 +558,6 @@ void main() {
       expect(start.last.take(3), ['-u', '-C', 'set']);
       final exists = await runs(TmuxSession.exists(nasty));
       expect(exists.single, ['has-session', '-t', '=$nasty']);
-
-      expect(
-        dir.listSync().map((entry) => entry.path.split('/').last),
-        isNot(anyElement(startsWith('pwned'))),
-      );
     },
   );
 
@@ -739,39 +745,58 @@ void main() {
         );
         expect(listed.single.name, stored);
         await _tmux(dir, [
-          'set-hook', '-t', '=$stored:', 'after-split-window', 'display ok',
-          ';', 'send-keys', '-t', '=$stored:', 'echo nasty-was-here', 'Enter',
+          'send-keys', '-t', '=$stored:', 'echo nasty-was-here', 'Enter',
+        ]);
+        // And one with an ordinary name, carrying a hook of the user's own:
+        // a name a record's pipe and a tmux target would both take, were
+        // anything of the app's to go near it.
+        const plain = 'my build';
+        await _tmux(dir, [
+          'new-session', '-d', '-s', plain, ';',
+          'set-hook', '-t', '=$plain:', 'after-split-window', 'display ok',
         ]);
 
         final manager = SessionManager();
-        final back = manager.create(
-          host,
-          transport: (_, _) => _Here(dir),
-          tmuxName: stored,
-          attachTmux: true,
-        );
-        manager.add(back);
-        await back.connect(secrets: InMemorySecretStore());
-        expect(back.error, isNull);
-        await _until(() => back.tmux?.panes.length == 1);
+        Future<LiveSession> attach(String name) async {
+          final session = manager.create(
+            host,
+            transport: (_, _) => _Here(dir),
+            tmuxName: name,
+            attachTmux: true,
+          );
+          manager.add(session);
+          await session.connect(secrets: InMemorySecretStore());
+          expect(session.error, isNull);
+          await _until(() => session.tmux?.panes.length == 1);
+          return session;
+        }
+
+        final back = await attach(stored);
         await _until(
           () => _text(back.tmux!.panes.single).contains('nasty-was-here'),
           () => _text(back.tmux!.panes.single),
         );
+        expect(File('${dir.path}/pwned').existsSync(), isFalse);
+        await manager.detach(back.id);
+        expect(alive(stored), isTrue);
+
+        final mine = await attach(plain);
+        // Whatever an attach sets going has gone to tmux by the time a
+        // question asked after it is answered.
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await mine.tmux!.foreground();
         final pipes = await _tmux(dir, [
-          'list-panes', '-s', '-t', '=$stored', '-F', '#{pane_pipe}',
+          'list-panes', '-s', '-t', '=$plain', '-F', '#{pane_pipe}',
         ]);
         expect('${pipes.stdout}'.trim(), '0');
-        final hooks = await _tmux(dir, ['show-hooks', '-t', '=$stored:']);
-        expect('${hooks.stdout}', contains('after-split-window'));
+        final hooks = await _tmux(dir, ['show-hooks', '-t', '=$plain:']);
+        expect('${hooks.stdout}', contains('display-message ok'));
         expect(
           Directory('${dir.path}/.local/state/jeansh').existsSync(),
           isFalse,
         );
-        expect(File('${dir.path}/pwned').existsSync(), isFalse);
-
-        await manager.detach(back.id);
-        expect(alive(stored), isTrue);
+        await manager.detach(mine.id);
+        expect(alive(plain), isTrue);
       },
       skip: hasTmux ? false : 'tmux is not installed here',
     );
