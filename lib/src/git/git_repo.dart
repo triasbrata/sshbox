@@ -60,18 +60,27 @@ typedef GitCommitEntry = ({
   String when,
 });
 
+/// A branch History can show: [ref] is what goes to git, [name] what the
+/// user reads, and [current] marks the one checked out.
+typedef GitBranch = ({String ref, String name, bool current});
+
 /// A git repository reached through a session's shell.
 ///
 /// Every command is `git -C <root>`, so nothing depends on where the shell
 /// happens to be standing, and a command run here never changes that.
 class GitRepo {
-  const GitRepo({required this.root, required this.run});
+  const GitRepo({required this.root, required this.run, this.mainRoot});
 
   /// The repository's top level, absolute on the host.
   final String root;
 
   /// How a command reaches the host this repository is on.
   final GitRunner run;
+
+  /// The repository's main checkout, when this is one of its linked
+  /// worktrees; null for a repository's own. The picker says whose worktree
+  /// it is, a worktree's folder name alone rarely saying.
+  final String? mainRoot;
 
   /// The last path segment, which is what the picker shows.
   String get name {
@@ -184,13 +193,50 @@ class GitRepo {
     }
   }
 
-  /// The newest commits first, as the History tab lists them.
-  Future<List<GitCommitEntry>> log({int limit = 50}) async {
+  /// Every local branch and every remote one, for History to show the
+  /// commits of without checking any of them out.
+  ///
+  /// The full ref is what goes back to git, never the short name: it starts
+  /// `refs/`, so no branch is read as an option however it is named — git
+  /// refuses `-x` as a branch name, but not as a ref — and it is never taken
+  /// for a tag or a file that happens to share the name.
+  Future<List<GitBranch>> branches() async {
+    final text = await _git([
+      'for-each-ref',
+      // Tabs, which no ref name can hold. A remote's HEAD is only a pointer
+      // to one of its branches, listed already under its own name, and the
+      // third field is how it is told apart.
+      '--format=%(HEAD)%09%(refname)%09%(symref)',
+      'refs/heads',
+      'refs/remotes',
+    ]);
+    final branches = <GitBranch>[];
+    for (final line in text.split('\n')) {
+      final parts = line.split('\t');
+      if (parts.length < 2 || (parts.length > 2 && parts[2].isNotEmpty)) {
+        continue;
+      }
+      final ref = parts[1];
+      branches.add((
+        ref: ref,
+        name: ref.replaceFirst(RegExp('^refs/(heads|remotes)/'), ''),
+        current: parts[0] == '*',
+      ));
+    }
+    return branches;
+  }
+
+  /// The newest commits first, as the History tab lists them: the checkout's
+  /// own, or those of [ref], a full ref from [branches].
+  Future<List<GitCommitEntry>> log({int limit = 50, String? ref}) async {
     final text = await _git([
       'log',
       '--max-count=$limit',
       // Tabs, because a subject can hold anything else.
       '--pretty=format:%h\t%an\t%ar\t%s',
+      ?ref,
+      // What comes before is a revision and never a path.
+      '--',
     ]);
     final commits = <GitCommitEntry>[];
     for (final line in text.split('\n')) {
@@ -209,6 +255,12 @@ class GitRepo {
   /// What one commit changed, as its own diff.
   Future<String> show(String sha) =>
       _git(['show', '--stat', '--patch', '--format=%s%n%n%an, %ar%n', sha]);
+
+  /// What [ref] has that the checkout does not: everything it changed since
+  /// the two parted, which is what a branch is looked at to find out. Three
+  /// dots, so what the checkout did since is left out of it.
+  Future<String> compare(String ref) =>
+      _git(['diff', '--stat', '--patch', 'HEAD...$ref', '--']);
 
   Future<void> stage(String path) => _git(['add', '--', path]);
 
@@ -303,11 +355,11 @@ class GitRepos extends ChangeNotifier {
     _problem = null;
     notifyListeners();
     try {
-      final roots = await _roots();
-      _repos = [for (final root in roots) GitRepo(root: root, run: run)];
+      _repos = await _find();
       final kept = _selected;
       _selected =
           _repos.where((repo) => repo.root == kept?.root).firstOrNull ??
+          _enclosing() ??
           _repos.firstOrNull;
       if (_repos.isEmpty) {
         _problem = start == loginHome
@@ -328,24 +380,91 @@ class GitRepos extends ChangeNotifier {
     }
   }
 
-  /// The enclosing repository first, then every `.git` one or two folders
-  /// down. `-prune` so a repository's own history is not walked, which is
-  /// where the time would go.
-  Future<List<String>> _roots() async {
+  /// The enclosing repository, every `.git` one or two folders down, and
+  /// every worktree of each of them, in one round trip. `-prune` so a
+  /// repository's own history is not walked, which is where the time would
+  /// go.
+  ///
+  /// The search alone misses worktrees, not because a worktree's `.git` is a
+  /// file rather than a folder — `find -name` takes either — but because of
+  /// where they live: Claude Code checks them out in `.claude/worktrees/`,
+  /// whose `.git` is four levels below the repository and past the search's
+  /// depth, and `git worktree add ../x` puts them outside the folder being
+  /// browsed altogether. So each repository found is asked for its own
+  /// worktrees, which names them wherever they are.
+  Future<List<GitRepo>> _find() async {
     // Double quotes for the home, which the shell must expand and which may
     // still hold a space; single quotes for a path, which it must not touch.
     final quoted = start == loginHome ? '"$loginHome"' : GitRepo._quote(start);
+    // A root read back from find reaches git only as "$root", a variable
+    // inside double quotes, which the shell never looks into.
     final command =
-        'cd $quoted 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null; '
-        "find $quoted -mindepth 2 -maxdepth 3 -name .git -prune "
-        r"-exec dirname {} \; 2>/dev/null";
-    final seen = <String>{};
-    await for (final line in run(command)) {
-      final path = line.trim();
-      if (path.isEmpty || !path.startsWith('/')) continue;
-      seen.add(path);
+        '{ cd $quoted && git rev-parse --show-toplevel; '
+        'find $quoted -mindepth 2 -maxdepth 3 -name .git -prune '
+        r'-exec dirname {} \; ; } 2>/dev/null | '
+        r'while IFS= read -r root; do printf "%s\n" "$root"; '
+        r'git -C "$root" worktree list --porcelain </dev/null 2>/dev/null; '
+        'done';
+
+    // Each root, and the main checkout it is a worktree of, if it is one.
+    final roots = <String, String?>{};
+    // The listing now being read: its first worktree is always the
+    // repository's main checkout, and every one after it a linked one.
+    String? main;
+    String? worktree;
+    var usable = true;
+    void end() {
+      final path = worktree;
+      worktree = null;
+      if (path == null) return;
+      final first = main == null;
+      main ??= path;
+      // A bare repository has no files to show, and a prunable worktree's
+      // folder is gone: git lists both, and picking either could only fail.
+      if (!usable) return;
+      if (first) {
+        roots.putIfAbsent(path, () => null);
+      } else {
+        roots[path] = main;
+      }
     }
-    final roots = seen.toList()..sort();
-    return roots;
+
+    await for (final line in run(command)) {
+      if (line.startsWith('/')) {
+        end();
+        main = null;
+        roots.putIfAbsent(line, () => null);
+      } else if (line.startsWith('worktree ')) {
+        end();
+        worktree = line.substring('worktree '.length);
+        usable = true;
+      } else if (line == 'bare' || line.startsWith('prunable')) {
+        usable = false;
+      } else if (line.trim().isEmpty) {
+        end();
+      }
+    }
+    end();
+
+    final sorted = roots.keys.toList()..sort();
+    return [
+      for (final root in sorted)
+        GitRepo(root: root, run: run, mainRoot: roots[root]),
+    ];
+  }
+
+  /// The repository the search started in, which is the one to look at
+  /// first. Its main checkout sorts ahead of a worktree the session is
+  /// standing in, so the first in the list is not always it. Unknowable for
+  /// the login home, which only the host can expand, but a home that is
+  /// itself a worktree is not a case worth a round trip.
+  GitRepo? _enclosing() {
+    if (start == loginHome) return null;
+    GitRepo? best;
+    for (final repo in _repos) {
+      final inside = start == repo.root || start.startsWith('${repo.root}/');
+      if (inside && repo.root.length > (best?.root.length ?? -1)) best = repo;
+    }
+    return best;
   }
 }

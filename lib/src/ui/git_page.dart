@@ -47,6 +47,14 @@ class _GitPageState extends State<GitPage> {
   String? _error;
   bool _busy = false;
 
+  /// The branches History can show, empty where git cannot list them.
+  List<GitBranch> _branches = const [];
+
+  /// The full ref History shows the commits of; null for the checkout's own.
+  /// Only looked at: nothing is checked out, so the files on the host, and
+  /// whatever is running over them, stay exactly as they are.
+  String? _viewing;
+
   /// The repository the lists below were read from, so a repository picked in
   /// the header loads its own rather than showing the last one's.
   String? _loaded;
@@ -101,19 +109,30 @@ class _GitPageState extends State<GitPage> {
   Future<void> _reload() async {
     final repo = _repos.selected;
     if (repo == null || !widget.session.isConnected) return;
+    // A branch looked at in one repository means nothing in the next.
+    if (repo.root != _loaded) _viewing = null;
+    final viewing = _viewing;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
       final status = await repo.status();
-      final log = await repo.log();
+      final branches = await _branchesOf(repo);
+      // One deleted since it was picked goes back to the checkout's history.
+      final shown = branches.any((b) => b.ref == viewing) ? viewing : null;
+      final log = await repo.log(ref: shown);
       final branch = await repo.branch();
       if (!mounted) return;
+      // Another repository or branch was picked while these were read: its
+      // own reload is the one whose answer belongs on screen.
+      if (_repos.selected?.root != repo.root || _viewing != viewing) return;
       setState(() {
         _status = status;
         _log = log;
         _branch = branch;
+        _branches = branches;
+        _viewing = shown;
         _loaded = repo.root;
       });
     } on GitException catch (error) {
@@ -123,6 +142,25 @@ class _GitPageState extends State<GitPage> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// The branches to offer, or none where git will not list them — a git
+  /// older than `for-each-ref`'s `%(HEAD)` — which leaves History showing
+  /// the checkout's own, as it did before it could show any other, rather
+  /// than failing the whole panel over something extra.
+  static Future<List<GitBranch>> _branchesOf(GitRepo repo) async {
+    try {
+      return await repo.branches();
+    } on GitException {
+      return const [];
+    }
+  }
+
+  /// Shows another branch's history, or the checkout's again for null.
+  void _view(String? ref) {
+    if (ref == _viewing) return;
+    setState(() => _viewing = ref);
+    unawaited(_reload());
   }
 
   /// Runs one action on the repository and reloads, saying why when git
@@ -236,8 +274,23 @@ class _GitPageState extends State<GitPage> {
                 for (final option in _repos.repos)
                   DropdownMenuItem(
                     value: option.root,
-                    child: Text(
-                      option.name,
+                    // A worktree's folder is named after whatever made it —
+                    // Claude Code calls them agent-a4c3… — so whose it is has
+                    // to be said beside it.
+                    child: Text.rich(
+                      TextSpan(
+                        text: option.name,
+                        children: [
+                          if (option.mainRoot case final main?)
+                            TextSpan(
+                              text:
+                                  '  worktree of ${RemotePath.basename(main)}',
+                              style: TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                        ],
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -387,29 +440,102 @@ class _GitPageState extends State<GitPage> {
 
   Widget _history(ThemeData theme, GitRepo? repo) {
     if (repo == null) return const _Message(text: 'No repository');
-    if (_log.isEmpty) {
-      return const _Message(text: 'No commits yet');
-    }
-    return ListView.builder(
-      itemCount: _log.length,
-      itemBuilder: (context, i) {
-        final commit = _log[i];
-        return ListTile(
-          dense: true,
-          title: Text(
-            commit.subject,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+    final viewing = _branches.where((b) => b.ref == _viewing).firstOrNull;
+    return Column(
+      children: [
+        if (_branches.isNotEmpty) _branchPicker(),
+        if (viewing != null)
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.compare_arrows, size: 20),
+            title: Text('Changes on ${viewing.name}'),
+            subtitle: Text('since it parted from $_branch'),
+            onTap: () => _show(
+              key: '${repo.root}:HEAD...${viewing.ref}',
+              title: '${viewing.name} · diff',
+              subtitle: 'since it parted from $_branch',
+              read: () => repo.compare(viewing.ref),
+            ),
           ),
-          subtitle: Text('${commit.author} · ${commit.when} · ${commit.sha}'),
-          onTap: () => _show(
-            key: '${repo.root}:${commit.sha}',
-            title: '${commit.sha} · diff',
-            subtitle: commit.subject,
-            read: () => repo.show(commit.sha),
+        Expanded(
+          child: _log.isEmpty
+              ? const _Message(text: 'No commits yet')
+              : ListView.builder(
+                  itemCount: _log.length,
+                  itemBuilder: (context, i) {
+                    final commit = _log[i];
+                    return ListTile(
+                      dense: true,
+                      title: Text(
+                        commit.subject,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${commit.author} · ${commit.when} · ${commit.sha}',
+                      ),
+                      onTap: () => _show(
+                        key: '${repo.root}:${commit.sha}',
+                        title: '${commit.sha} · diff',
+                        subtitle: commit.subject,
+                        read: () => repo.show(commit.sha),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  /// Which branch's commits History lists. It sits here rather than on the
+  /// branch in the header, which is the checkout: Changes and the commit box
+  /// act on that one whatever is being looked at, and the header must go on
+  /// saying so. Picking a branch only reads it — a checkout would change the
+  /// files under whatever runs on the host, and refuse or lose work while
+  /// there are changes.
+  Widget _branchPicker() {
+    final checkedOut = _branches.where((b) => b.current).firstOrNull;
+    // A detached head has no branch to stand for it, so it gets an entry of
+    // its own, named by its sha, to come back to.
+    const detached = '';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
+      child: Row(
+        children: [
+          const Icon(Icons.call_split, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                isExpanded: true,
+                value: _viewing ?? checkedOut?.ref ?? detached,
+                items: [
+                  if (checkedOut == null)
+                    DropdownMenuItem(
+                      value: detached,
+                      child: Text('$_branch (checked out)'),
+                    ),
+                  for (final b in _branches)
+                    DropdownMenuItem(
+                      value: b.ref,
+                      child: Text(
+                        b.current ? '${b.name} (checked out)' : b.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (ref) => _view(
+                  ref == null || ref == detached || ref == checkedOut?.ref
+                      ? null
+                      : ref,
+                ),
+              ),
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }

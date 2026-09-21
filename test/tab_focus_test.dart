@@ -113,6 +113,28 @@ void main() {
       .widget<TerminalView>(find.byType(TerminalView, skipOffstage: false))
       .focusNode!;
 
+  testWidgets('hardware arrows reach the shell as its cursor keys', (
+    tester,
+  ) async {
+    await pumpTabs(tester);
+
+    // Android's own key map, so each arrow arrives as the tablet's keyboard
+    // sends it: KEYCODE_DPAD_DOWN is scan code 108, as its log shows. A
+    // letter first, which shuts the soft keyboard's IME connection and leaves
+    // focus as the only way in (see TerminalTextInput).
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA, platform: 'android');
+    for (final key in [
+      LogicalKeyboardKey.arrowUp,
+      LogicalKeyboardKey.arrowDown,
+      LogicalKeyboardKey.arrowRight,
+      LogicalKeyboardKey.arrowLeft,
+    ]) {
+      await tester.sendKeyEvent(key, platform: 'android');
+    }
+
+    expect(shell.sent, ['a', '\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D']);
+  });
+
   testWidgets('keys typed once a file opens go to its editor, not the shell', (
     tester,
   ) async {

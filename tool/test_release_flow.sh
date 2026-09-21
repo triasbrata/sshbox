@@ -1,6 +1,8 @@
 #!/bin/bash
 # Runs the release flow's own steps for real, in throwaway repos:
 #
+#   - every call of one workflow from another: what GitHub checks before a run
+#     starts, which the steps' own shell never sees;
 #   - tag.yml's `next`: app commits gathering to ten, a `Release: feature`
 #     trailer releasing at once, what counts towards neither, and the rc
 #     numbering after a failed candidate;
@@ -35,6 +37,78 @@ export RELEASE_EVERY
 fails=0
 pass() { printf 'ok    %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n      %s\n' "$1" "$2"; fails=$((fails+1)); }
+
+## Every call of one workflow from another ##################################
+
+# What GitHub checks before it starts a run, and refuses the whole run over
+# with no job ever created: a called workflow's jobs may ask for no more than
+# the job calling it grants, and a call may pass no input the called workflow
+# does not declare, nor leave out one it requires. actionlint checks none of
+# this; tag.yml once failed every run on the first of them.
+calls=$(python3 - "$root/.github/workflows" <<'PY'
+import os, sys, yaml
+flows = sys.argv[1]
+LEVEL = {'none': 0, 'read': 1, 'write': 2}
+# With no permissions anywhere, this repository's token reads, and no more.
+DEFAULT = {'contents': 'read'}
+
+def perms(p, fallback):
+    if p is None:
+        return fallback
+    if isinstance(p, str):  # read-all, write-all
+        return {'*': p.split('-')[0]}
+    return p
+
+def level(grant, scope):
+    return LEVEL[grant.get(scope, grant.get('*', 'none'))]
+
+def load(name):
+    doc = yaml.safe_load(open(os.path.join(flows, name)))
+    return doc, doc.get('on', doc.get(True)) or {}   # YAML 1.1 reads on: as True
+
+bad = []
+for name in sorted(f for f in os.listdir(flows) if f.endswith(('.yml', '.yaml'))):
+    doc, _ = load(name)
+    for job_id, job in doc.get('jobs', {}).items():
+        uses = job.get('uses', '')
+        if not uses.startswith('./.github/workflows/'):
+            continue
+        callee = os.path.basename(uses)
+        where = f'{name} job {job_id} calling {callee}'
+        grant = perms(job.get('permissions'), perms(doc.get('permissions'), DEFAULT))
+        cdoc, con = load(callee)
+        call = (con.get('workflow_call') or {}) if isinstance(con, dict) else {}
+        for k_id, k in cdoc.get('jobs', {}).items():
+            want = perms(k.get('permissions'), perms(cdoc.get('permissions'), grant))
+            for scope, lvl in want.items():
+                if LEVEL[lvl] > level(grant, scope):
+                    bad.append(f"{where}: its job {k_id} asks for {scope}: {lvl}, "
+                               f"but {job_id} grants {scope}: {grant.get(scope, grant.get('*', 'none'))}")
+        declared = call.get('inputs') or {}
+        given = job.get('with') or {}
+        for key in given:
+            if key not in declared:
+                bad.append(f'{where}: passes input {key}, which {callee} does not declare')
+        for key, spec in declared.items():
+            if (spec or {}).get('required') and key not in given:
+                bad.append(f'{where}: leaves out {key}, which {callee} requires')
+        secrets = job.get('secrets')
+        if isinstance(secrets, dict):
+            for key in secrets:
+                if key not in (call.get('secrets') or {}):
+                    bad.append(f'{where}: passes secret {key}, which {callee} does not declare')
+        print(f'checked {where}')
+for line in bad:
+    print('BAD ' + line)
+PY
+) || { echo "could not read the workflows"; exit 1; }
+if grep -q '^BAD ' <<< "$calls"; then
+  fail "every call of one workflow from another would start" "$(sed -n 's/^BAD //p' <<< "$calls")"
+elif grep -q '^checked ' <<< "$calls"; then
+  pass "every call of one workflow from another would start ($(grep -c '^checked ' <<< "$calls") checked)"
+else
+  fail "every call of one workflow from another would start" "no calls found to check"
+fi
 
 repo() {
   rm -rf "$work/repo"; mkdir -p "$work/repo/lib"; cd "$work/repo"
