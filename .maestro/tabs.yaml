@@ -4,6 +4,20 @@
 # The point of the flow is that a session survives being switched away from —
 # which is why it closes the tab explicitly at the end rather than trusting
 # navigation to have thrown it away.
+#
+# Two things this flow used to get wrong, worth knowing before editing it:
+#
+# It asserted and tapped "Hosts", a label the app has not had since e93419e —
+# the pinned chip reads "Home". Worse, while a session is showing, that chip
+# drops to its bare icon and carried no name at all, so there was nothing to
+# tap by any string. It now answers to "Home" in both states: as visible text
+# on the host list, and as a semantics label when it is only an icon.
+#
+# It then asserted "Host" on the host list, which passed by accident: Maestro
+# matches substrings, so "Host" matched the "Hosts" section header — itself
+# only drawn when there are hosts and the list is headed. A green assertion
+# matching the wrong widget is worse than a red one. The host's own row is what
+# actually proves the list is showing, so that is what it asserts now.
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -13,12 +27,21 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "(?s).*${HOST_LABEL}.*"
     timeout: 15000
 
 # Tapping a host opens its tab and shows it. These two buttons only exist on
 # the terminal page, so they are what distinguishes it from the host list.
-- tapOn: "(?s)${HOST_LABEL}.*"
+- tapOn: "(?s).*${HOST_LABEL}.*"
+
+# The first connection to a host this device has never seen puts up the trust
+# prompt, and nothing else in the flow would ever press it. Optional, so a
+# device that already trusts the key — which is the seeded case — passes
+# straight through rather than failing on a prompt that correctly never came.
+- tapOn:
+    text: "Trust"
+    optional: true
+
 - extendedWaitUntil:
     visible: "Upload a file to /tmp"
     timeout: 20000
@@ -26,17 +49,17 @@ env:
 # The strip stays put, with a closable tab for the session on it. The tab
 # takes the title the remote reports once it connects, so it is matched on the
 # close button rather than on the host label.
-- assertVisible: "Hosts"
+- assertVisible: "Home"
 - assertVisible: "(?s)Close .*"
 
 # Back to the pinned host list — the session tab is still there, so nothing
 # was torn down by looking away from it.
-- tapOn: "Hosts"
-- assertVisible: "Host"
+- tapOn: "Home"
+- assertVisible: "(?s).*${HOST_LABEL}.*"
 - assertVisible: "(?s)Close .*"
 
 # Closing the tab is the only thing that ends the session, and lands on the
 # host list because there is no tab to its left.
 - tapOn: "(?s)Close .*"
 - assertNotVisible: "(?s)Close .*"
-- assertVisible: "Host"
+- assertVisible: "(?s).*${HOST_LABEL}.*"
