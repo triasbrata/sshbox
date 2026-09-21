@@ -320,8 +320,9 @@ known-hosts-opened-from-the-fingerprint-button-on:
   why: "listing and Forget"
 
 logs-a-history-of-past-sessions-date-start:
-  guard: todo
-  why: "session_log_test.dart writes and reads entries; nothing builds the page that lists them"
+  guard: e2e-android
+  by: .maestro/logs.yaml
+  why: "the one passed feature nothing else guarded -- logs_page.dart has no widget test and session_log_test.dart never builds the page. Asserts the Save bookmark, which exists only on a listed entry, so it proves the page opened and found a session. Report-only until it has earned the gate; green from its first run"
 
 server-os-info-read-on-every-connect-os:
   guard: unit
