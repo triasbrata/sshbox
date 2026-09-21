@@ -387,5 +387,47 @@ void main() {
       expect(repos.repos.map((repo) => repo.root), [proj, agent]);
       expect(repos.selected?.root, agent);
     });
+
+    test('shows a branch it is not on, however the branch is named, and '
+        'changes nothing on disk', () async {
+      final proj = await repository('${sandbox.path}/proj');
+      // A quote, a command substitution, a backtick and a semicolon: every
+      // one of them allowed in a branch name.
+      const evil = r"q'$(touch>pwned)`touch>pwned2`;x";
+      await git(proj, ['switch', '--quiet', '-c', evil]);
+      File('$proj/evil.txt').writeAsStringSync('from the evil branch\n');
+      await git(proj, ['add', 'evil.txt']);
+      await git(proj, ['commit', '--quiet', '-m', 'on the evil branch']);
+      await git(proj, ['switch', '--quiet', 'main']);
+      // Named like an option. `git branch` refuses a leading dash, update-ref
+      // does not, and `git log --output=` writes wherever it is told.
+      await git(proj, ['update-ref', 'refs/heads/--output=pwned3', 'HEAD']);
+
+      final repo = GitRepo(root: proj, run: run);
+      final branches = await repo.branches();
+
+      expect(branches.map((branch) => branch.name), [
+        '--output=pwned3',
+        'main',
+        evil,
+      ]);
+      expect(branches.where((branch) => branch.current).single.name, 'main');
+
+      final bad = branches.firstWhere((branch) => branch.name == evil);
+      expect((await repo.log(ref: bad.ref)).map((commit) => commit.subject), [
+        'on the evil branch',
+        'first',
+      ]);
+      expect(await repo.compare(bad.ref), contains('+from the evil branch'));
+
+      final option = branches.first;
+      expect((await repo.log(ref: option.ref)).single.subject, 'first');
+
+      // Looked at, not checked out: the branch and the files are as they
+      // were, and the shell made nothing it was not asked to.
+      expect(await repo.branch(), 'main');
+      expect(File('$proj/evil.txt').existsSync(), isFalse);
+      expect(planted(), isEmpty);
+    });
   });
 }

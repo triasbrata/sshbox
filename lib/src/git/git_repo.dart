@@ -60,6 +60,10 @@ typedef GitCommitEntry = ({
   String when,
 });
 
+/// A branch History can show: [ref] is what goes to git, [name] what the
+/// user reads, and [current] marks the one checked out.
+typedef GitBranch = ({String ref, String name, bool current});
+
 /// A git repository reached through a session's shell.
 ///
 /// Every command is `git -C <root>`, so nothing depends on where the shell
@@ -189,13 +193,50 @@ class GitRepo {
     }
   }
 
-  /// The newest commits first, as the History tab lists them.
-  Future<List<GitCommitEntry>> log({int limit = 50}) async {
+  /// Every local branch and every remote one, for History to show the
+  /// commits of without checking any of them out.
+  ///
+  /// The full ref is what goes back to git, never the short name: it starts
+  /// `refs/`, so no branch is read as an option however it is named — git
+  /// refuses `-x` as a branch name, but not as a ref — and it is never taken
+  /// for a tag or a file that happens to share the name.
+  Future<List<GitBranch>> branches() async {
+    final text = await _git([
+      'for-each-ref',
+      // Tabs, which no ref name can hold. A remote's HEAD is only a pointer
+      // to one of its branches, listed already under its own name, and the
+      // third field is how it is told apart.
+      '--format=%(HEAD)%09%(refname)%09%(symref)',
+      'refs/heads',
+      'refs/remotes',
+    ]);
+    final branches = <GitBranch>[];
+    for (final line in text.split('\n')) {
+      final parts = line.split('\t');
+      if (parts.length < 2 || (parts.length > 2 && parts[2].isNotEmpty)) {
+        continue;
+      }
+      final ref = parts[1];
+      branches.add((
+        ref: ref,
+        name: ref.replaceFirst(RegExp('^refs/(heads|remotes)/'), ''),
+        current: parts[0] == '*',
+      ));
+    }
+    return branches;
+  }
+
+  /// The newest commits first, as the History tab lists them: the checkout's
+  /// own, or those of [ref], a full ref from [branches].
+  Future<List<GitCommitEntry>> log({int limit = 50, String? ref}) async {
     final text = await _git([
       'log',
       '--max-count=$limit',
       // Tabs, because a subject can hold anything else.
       '--pretty=format:%h\t%an\t%ar\t%s',
+      ?ref,
+      // What comes before is a revision and never a path.
+      '--',
     ]);
     final commits = <GitCommitEntry>[];
     for (final line in text.split('\n')) {
@@ -214,6 +255,12 @@ class GitRepo {
   /// What one commit changed, as its own diff.
   Future<String> show(String sha) =>
       _git(['show', '--stat', '--patch', '--format=%s%n%n%an, %ar%n', sha]);
+
+  /// What [ref] has that the checkout does not: everything it changed since
+  /// the two parted, which is what a branch is looked at to find out. Three
+  /// dots, so what the checkout did since is left out of it.
+  Future<String> compare(String ref) =>
+      _git(['diff', '--stat', '--patch', 'HEAD...$ref', '--']);
 
   Future<void> stage(String path) => _git(['add', '--', path]);
 

@@ -95,11 +95,23 @@ class _Shell
     if (command.contains("'status'")) {
       return said([agent ? ' M lib/agent.dart' : ' M lib/main.dart']);
     }
+    if (command.contains("'for-each-ref'")) {
+      return said([
+        '${agent ? ' ' : '*'}\trefs/heads/main\t',
+        '${agent ? '*' : ' '}\trefs/heads/agent\t',
+        ' \trefs/heads/feature\t',
+        ' \trefs/remotes/origin/HEAD\trefs/remotes/origin/main',
+        ' \trefs/remotes/origin/main\t',
+      ]);
+    }
     if (command.contains("'log'")) {
       return said([
-        agent
-            ? '2222222\tme\t1 hour ago\tWork in the worktree'
-            : '1111111\tme\t2 hours ago\tThe first commit',
+        if (command.contains("'refs/heads/feature'"))
+          '3333333\tme\t5 minutes ago\tFeature work'
+        else if (agent)
+          '2222222\tme\t1 hour ago\tWork in the worktree'
+        else
+          '1111111\tme\t2 hours ago\tThe first commit',
       ]);
     }
     return const Stream.empty();
@@ -155,5 +167,51 @@ void main() {
     expect(find.text('lib/agent.dart'), findsOneWidget);
     expect(find.text('lib/main.dart'), findsNothing);
     expect(shell.ran.last, contains("-C '$_agent'"));
+  });
+
+  testWidgets('History shows another branch\'s commits without checking it '
+      'out, and comes back to the checkout\'s', (tester) async {
+    await pumpPanel(tester);
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    expect(find.text('main (checked out)'), findsOneWidget);
+    expect(find.text('The first commit'), findsOneWidget);
+
+    await tester.tap(find.text('main (checked out)'));
+    await tester.pumpAndSettle();
+    // A remote's HEAD only points at one of its branches, listed already.
+    expect(find.text('origin/main'), findsWidgets);
+    expect(find.text('origin/HEAD'), findsNothing);
+    await tester.tap(find.text('feature').last);
+    await _settle(tester);
+
+    expect(find.text('Feature work'), findsOneWidget);
+    expect(find.text('The first commit'), findsNothing);
+    // The header goes on naming the checkout, which Changes and the commit
+    // box still act on.
+    expect(find.text('main'), findsOneWidget);
+    expect(
+      shell.ran.where((command) => command.contains("'log'")).last,
+      contains("'refs/heads/feature' '--'"),
+    );
+    expect(
+      shell.ran.where(
+        (command) =>
+            command.contains("'checkout'") || command.contains("'switch'"),
+      ),
+      isEmpty,
+    );
+
+    await tester.tap(find.text('Changes on feature'));
+    await tester.pump();
+    expect(opened.single.title, 'feature · diff');
+    expect(opened.single.key, '$_main:HEAD...refs/heads/feature');
+
+    await tester.tap(find.text('feature'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('main (checked out)').last);
+    await _settle(tester);
+    expect(find.text('The first commit'), findsOneWidget);
+    expect(find.text('Changes on feature'), findsNothing);
   });
 }
