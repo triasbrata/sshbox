@@ -5,6 +5,7 @@ import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/session/tmux.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
 /// A connect that fails at once, without leaving this isolate.
@@ -43,6 +44,8 @@ Future<void> _pump(
   void Function(TabRef tab)? onClose,
   void Function(LiveSession session)? onReconnect,
   void Function(String hostId)? onDuplicate,
+  Future<void> Function(LiveSession from, String tmuxName)? onAttach,
+  Future<void> Function(LiveSession session)? onDetach,
 }) => tester.pumpWidget(
   MaterialApp(
     home: Scaffold(
@@ -55,6 +58,8 @@ Future<void> _pump(
             onClose: onClose ?? (_) {},
             onReconnect: onReconnect ?? (_) {},
             onDuplicate: onDuplicate ?? (_) {},
+            onAttach: onAttach,
+            onDetach: onDetach,
           ),
         ],
       ),
@@ -247,4 +252,93 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Duplicate session'), findsNothing);
   });
+
+  testWidgets('a shell with no tmux offers neither Attach nor Detach', (
+    tester,
+  ) async {
+    // Detaching a plain shell would be killing it, and listing sessions on a
+    // host with no tmux could only fail.
+    final tab = _shell(tester, 'host-1', 'box');
+    await _pump(
+      tester,
+      [tab],
+      onAttach: (_, _) async {},
+      onDetach: (_) async {},
+    );
+    await tester.longPress(find.text('box'));
+    await tester.pumpAndSettle();
+    expect(find.text('Duplicate session'), findsOneWidget);
+    expect(find.text('Attach to a session…'), findsNothing);
+    expect(find.text('Detach'), findsNothing);
+  });
+
+  testWidgets(
+    "Attach lists the app's own sessions first, each group most recently "
+    'busy first, a name as plain text, and one already open not offered',
+    (tester) async {
+      DateTime at(int minutes) =>
+          DateTime.now().subtract(Duration(minutes: minutes));
+      TmuxSessionInfo row(
+        String name, {
+        int wrote = 0,
+        int attached = 0,
+        int windows = 1,
+      }) => TmuxSessionInfo(
+        name: name,
+        windows: windows,
+        attached: attached,
+        created: at(600),
+        activity: at(wrote),
+      );
+      const nasty = 'it\'s "x" \$(touch pwned) `id`; y';
+      String? picked = 'unset';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => picked = await showTmuxAttach(
+                context,
+                host: 'box',
+                // Most recently busy first, as parseList sorts them.
+                sessions: [
+                  row(nasty, wrote: 1, attached: 1),
+                  row('sshbox-open', wrote: 2),
+                  row('build', wrote: 3, windows: 3),
+                  row('sshbox-away', wrote: 5),
+                ],
+                open: {'sshbox-open'},
+              ),
+              child: const Text('attach'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('attach'));
+      await tester.pumpAndSettle();
+
+      double top(String text) => tester.getTopLeft(find.text(text)).dy;
+      final order = [
+        "Jeansh's own",
+        'sshbox-open',
+        'sshbox-away',
+        'Started on the host',
+        nasty,
+        'build',
+      ].map(top).toList();
+      expect(order, orderedEquals([...order]..sort()));
+      expect(find.textContaining('in use'), findsOneWidget);
+      expect(find.textContaining('3 windows · started 10h ago · wrote 3m ago'),
+          findsOneWidget);
+      expect(find.textContaining('open in a tab here'), findsOneWidget);
+
+      // Already a tab: shown, and not offered.
+      await tester.tap(find.text('sshbox-open'));
+      await tester.pumpAndSettle();
+      expect(find.text('sshbox-away'), findsOneWidget);
+
+      await tester.tap(find.text(nasty));
+      await tester.pumpAndSettle();
+      expect(picked, nasty);
+    },
+  );
 }

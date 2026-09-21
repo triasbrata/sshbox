@@ -460,7 +460,8 @@ class TmuxSession {
   /// profile prints never reaches the channel, let alone control mode.
   ///
   /// Pane records gone stale are pruned on the way: see [PaneRecord.prune].
-  static String command(String name) => _attach('new-session -A -s "\$n"', name);
+  static String command(String name) =>
+      _attach('new-session -A -s "\$n"', name);
 
   /// What the host runs to join a session that is already there, rather than
   /// make one: the Attach picker's, for a session somebody left running.

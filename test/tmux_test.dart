@@ -76,7 +76,10 @@ void main() {
       expect(command, contains('grep -q LC_SSHBOX_KEY ||'));
       expect(command, isNot(contains('LC_SSHBOX_TOKEN')));
       // The name is an argument to the script rather than part of it.
-      expect(command, endsWith('new-session -A -s "\$n" 2>&1\' sh \'sshbox-abc\''));
+      expect(
+        command,
+        endsWith('new-session -A -s "\$n" 2>&1\' sh \'sshbox-abc\''),
+      );
     },
   );
 
@@ -113,6 +116,33 @@ void main() {
     expect(command, contains(r'exec "$t" -u -C "$@" new-session'));
     // None by name, which is what missed Homebrew's.
     expect(command.split(' '), isNot(contains('tmux')));
+  });
+
+  test('list-sessions reads into rows, a name keeping every space and '
+      'quote, and what is not a row dropped', () {
+    // As tmux 3.2a prints the listing, between what a shell might add.
+    final sessions = TmuxSession.parseList([
+      'Last login: today',
+      '0 1 1789000000 1789000100 sshbox-abc',
+      '2 3 1789000000 1789000300  my  "build" \$(x) `y`; z ',
+      'tmux is not installed on this host (looked on PATH, in Homebrew and '
+          'the other usual places)',
+      '1 1 1789000000 1789000200 x',
+      '1 1 notanumber 1789000200 y',
+      '1 1 1789000000 1789000200 ',
+    ]);
+    // The session that wrote most recently first.
+    expect(sessions.map((session) => session.name), [
+      ' my  "build" \$(x) `y`; z ',
+      'x',
+      'sshbox-abc',
+    ]);
+    final [build, x, ours] = sessions;
+    expect((build.attached, build.windows, build.inUse), (2, 3, true));
+    expect((ours.attached, ours.inUse), (0, false));
+    expect(x.windows, 1);
+    expect(ours.created, DateTime.fromMillisecondsSinceEpoch(1789000000000));
+    expect(ours.activity, DateTime.fromMillisecondsSinceEpoch(1789000100000));
   });
 
   test('%output unescapes to the bytes the pane wrote', () {
