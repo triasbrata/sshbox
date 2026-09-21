@@ -719,7 +719,8 @@ class LiveSession extends ChangeNotifier {
       if (!current()) {
         // Given up on while it connected, so nothing will ever show it. A
         // tab that has closed takes its tmux session with it, as closing a
-        // tab always does; one still open keeps it for its next reconnect.
+        // tab always does — one the app made, and not after Detach; one
+        // still open keeps it for its next reconnect.
         if (_disposed && _killsTmux) await tmux?.kill();
         tmux?.dispose();
         await session.dispose();
