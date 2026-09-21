@@ -294,6 +294,46 @@ class _TabsShellState extends State<TabsShell> {
     widget.sessions.closeDb(tab);
   }
 
+  /// Attach: a tmux session already running on [from]'s host, picked in
+  /// the connect sheet and opened in a tab of its own — over a connection of
+  /// its own, as every tab has, and over the same kind of transport [from]
+  /// uses, so a local shell's tab does not reach for SSH.
+  ///
+  /// A tab of its own rather than this one's: the tab the user was in is
+  /// still theirs, and one tab is one tmux session everywhere else in the
+  /// app.
+  Future<void> _attachTmux(LiveSession from) => openInSheet(
+    context,
+    widget.sessions,
+    from.host,
+    secrets: widget.secrets,
+    transport: from.transport,
+    pickTmux: true,
+  );
+
+  /// A shell tab's ✕. It ends the tab's tmux session, as it always has —
+  /// except one Jeansh did not start, which it leaves running and says so:
+  /// see [LiveSession.ownTmux].
+  void _closeShell(LiveSession session) {
+    final left = session.tmux != null && !session.ownTmux;
+    widget.sessions.close(session.id);
+    if (!left) return;
+    showToast(
+      context,
+      'Left ${session.tmuxName} running on ${session.host.displayName}: '
+      'Jeansh did not start it, so closing its tab does not end it.',
+    );
+  }
+
+  /// Lets a tab go and leaves its tmux session running on the host.
+  Future<void> _detachTmux(LiveSession session) async {
+    final name = session.tmuxName;
+    final host = session.host.displayName;
+    await widget.sessions.detach(session.id);
+    if (!mounted) return;
+    showToast(context, 'Detached from $name. It keeps running on $host.');
+  }
+
   /// A database's tab. Its page connects when first built, and lets the
   /// connection go when the tab closes.
   Widget _databasePage(DbTab tab) => !_shown.contains(_dbIdOf(tab))
@@ -412,7 +452,7 @@ class _TabsShellState extends State<TabsShell> {
               onSelect: widget.sessions.select,
               onSelectDatabase: (tab) => widget.sessions.select(null, db: tab),
               onClose: (tab) => switch (tab.kind) {
-                TabKind.terminal => widget.sessions.close(tab.session.id),
+                TabKind.terminal => _closeShell(tab.session),
                 TabKind.chat => widget.sessions.closeChat(tab.session.id),
                 TabKind.git => widget.sessions.closeGit(tab.session.id),
                 TabKind.diff => widget.sessions.closeDiff(
@@ -444,6 +484,8 @@ class _TabsShellState extends State<TabsShell> {
               // What a tap in the host list does: another shell on the host,
               // added at the end of the strip and shown.
               onDuplicate: widget.onOpenHost,
+              onAttach: _attachTmux,
+              onDetach: _detachTmux,
               groups: _groups,
             ),
             Expanded(
@@ -502,6 +544,8 @@ class TabStrip extends StatefulWidget {
     this.onCloseDatabase,
     required this.onReconnect,
     required this.onDuplicate,
+    this.onAttach,
+    this.onDetach,
     this.showTransfers = false,
     this.onSelectTransfers,
     this.onCloseTransfers,
@@ -529,6 +573,15 @@ class TabStrip extends StatefulWidget {
   final void Function(DbTab tab)? onCloseDatabase;
   final void Function(LiveSession session) onReconnect;
   final void Function(String hostId) onDuplicate;
+
+  /// Opens a tmux session already running on the host, picked once
+  /// connected, in a tab of its own. Null leaves Attach out of the menu,
+  /// which a test that lays out the strip alone wants.
+  final Future<void> Function(LiveSession from)? onAttach;
+
+  /// Closes a tab and leaves its tmux session running. Null leaves Detach
+  /// out of the menu.
+  final Future<void> Function(LiveSession session)? onDetach;
 
   @override
   State<TabStrip> createState() => _TabStripState();
@@ -608,13 +661,22 @@ class _TabStripState extends State<TabStrip> {
     final tmux = session.isConnected ? session.tmux : null;
     return [
       ('Duplicate session', () => widget.onDuplicate(session.host.id)),
+      if (tmux != null && widget.onAttach != null)
+        ('Attach to a session…', () => unawaited(widget.onAttach!(session))),
+      // Only where there is a tmux session to leave behind: a plain shell
+      // detached from is a shell killed.
+      if (tmux != null && widget.onDetach != null)
+        ('Detach', () => unawaited(widget.onDetach!(session))),
       if (session.ended) ('Close tab', () => widget.onClose(tab)),
       if (tmux != null) ...[
         ('Split right', () => _tmux(() => tmux.split(sideBySide: true))),
         ('Split down', () => _tmux(() => tmux.split(sideBySide: false))),
         // The last pane goes with the tab, by the tab's own close button.
         if (tmux.panes.length > 1) ('Close pane', () => _tmux(tmux.closePane)),
-        ('Pane record', () => _openRecord(session, tmux)),
+        // Not on a session somebody made by hand, which the app never sets
+        // recording.
+        if (tmux.record != null)
+          ('Pane record', () => _openRecord(session, tmux)),
       ],
     ];
   }

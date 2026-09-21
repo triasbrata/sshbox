@@ -115,6 +115,14 @@ Future<Object?> _saved() async {
   return raw == null ? null : jsonDecode(raw);
 }
 
+/// What the host is asked to run for a tab that starts, or joins, the tmux
+/// session called [name]: the name is an argument to the script, never part
+/// of it.
+Matcher _startsSession(String name) => allOf(
+  contains('new-session -A -s "\$n"'),
+  endsWith("sh '$name'"),
+);
+
 void _saveBefore(Map<String, Object?> tabs) =>
     SharedPreferences.setMockInitialValues({
       'sshbox.tabs.v1': jsonEncode(tabs),
@@ -231,8 +239,18 @@ void main() {
     );
     final [box, plain] = manager.sessions;
     expect(box.tmuxName, 'sshbox-abc');
-    // A name that is not one of ours never reaches the host.
-    expect(plain.tmuxName, matches(LiveSession.tmuxNamePattern));
+    // A name that is not one of ours is kept — Attach picks whatever the
+    // host calls its sessions — and goes to the host as one quoted argument
+    // rather than as script; a real shell proves that in tmux_live_test.
+    expect(plain.tmuxName, 'x; rm -rf ~');
+    expect(plain.ownTmux, isFalse);
+    // A name tmux itself could never hold, though, is a file that has been
+    // meddled with: tmux writes a control character out as an escape. And
+    // one starting with `$` is one tmux takes for an id, however asked.
+    expect(LiveSession.tmuxNameAllowed('two\nlines'), isFalse);
+    expect(LiveSession.tmuxNameAllowed(''), isFalse);
+    expect(LiveSession.tmuxNameAllowed(r'$1'), isFalse);
+    expect(LiveSession.tmuxNameAllowed(r'\$HOME'), isTrue);
     expect(box.isConnected, isFalse);
     expect([for (final web in box.webTabs) '${web.url}'], [
       'https://dev.example/app',
@@ -246,10 +264,14 @@ void main() {
 
     await box.connect(secrets: InMemorySecretStore());
     expect(
-      host.ran.where((run) => run.contains('has-session -t "=sshbox-abc"')),
+      host.ran.where(
+        (run) =>
+            run.contains('has-session -t "=\$1"') &&
+            run.endsWith("sh 'sshbox-abc'"),
+      ),
       hasLength(1),
     );
-    expect(host.opened.single, contains('new-session -A -s sshbox-abc'));
+    expect(host.opened.single, _startsSession('sshbox-abc'));
     expect(box.isConnected, isTrue);
     expect(box.openFiles, ['/etc/hosts']);
 
@@ -283,7 +305,51 @@ void main() {
     box.startNewTmux();
     await box.connect(secrets: InMemorySecretStore());
     expect(box.tmuxGone, isFalse);
-    expect(host.opened.single, contains('new-session -A -s sshbox-abc'));
+    expect(host.opened.single, _startsSession('sshbox-abc'));
+  });
+
+  test('a tab brought back on a session somebody made by hand only joins '
+      'it, and given a new session makes one under a name of its own', () async {
+    Future<(LiveSession, _Host)> restore({required bool there}) async {
+      _saveBefore({
+        'sessions': [
+          {'hostId': 'box', 'tmux': "my build; it's"},
+        ],
+      });
+      final host = _Host(tmuxThere: there);
+      final manager = SessionManager();
+      await manager.restoreTabs(
+        hosts: [_box],
+        databases: const [],
+        transport: (_, _) => host,
+      );
+      return (manager.sessions.single, host);
+    }
+
+    // Still there: joined, never made — `new-session -A` would make it
+    // again, empty, were it to go — and the name quoted as one argument.
+    final (kept, host) = await restore(there: true);
+    expect(kept.ownTmux, isFalse);
+    await kept.connect(secrets: InMemorySecretStore());
+    expect(
+      host.opened.single,
+      allOf(
+        contains('attach-session -t "=\$n"'),
+        isNot(contains('new-session')),
+        endsWith("sh 'my build; it'\\''s'"),
+      ),
+    );
+
+    // Gone, and a new one asked for: the app's own, under its own name, so
+    // it is recorded and its ✕ ends it like any other.
+    final (gone, again) = await restore(there: false);
+    await gone.connect(secrets: InMemorySecretStore());
+    expect(gone.tmuxGone, isTrue);
+    gone.startNewTmux();
+    expect(gone.tmuxName, matches(LiveSession.tmuxNamePattern));
+    expect(gone.ownTmux, isTrue);
+    await gone.connect(secrets: InMemorySecretStore());
+    expect(again.opened.single, _startsSession(gone.tmuxName));
   });
 
   test('the app going away leaves the saved tabs as they were', () async {
