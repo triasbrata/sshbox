@@ -8,7 +8,11 @@
 #     numbering after a failed candidate;
 #   - release.yml's notes: which commits a release's notes cover, against a
 #     stand-in for R2 and for tool/release_notes.py, so nothing leaves this
-#     machine.
+#     machine;
+#   - release.yml's feed: latest.json from R2 as the builds leave it, Windows'
+#     binary-mode SHA256SUMS included;
+#   - tag.yml's issue for a failed candidate, and promote closing it, against
+#     a stand-in for gh.
 #
 # Needs python3 with PyYAML, to read the steps out of the workflows, and jq.
 #
@@ -28,6 +32,8 @@ nxt = step('tag.yml', 'next', lambda s: s.get('id') == 'next')
 open(os.path.join(work, 'next.sh'), 'w').write(nxt['run'])
 notes = step('release.yml', 'notes', lambda s: 'release notes' in s.get('name', ''))
 open(os.path.join(work, 'notes.sh'), 'w').write(notes['run'])
+feed = step('release.yml', 'feed', lambda s: 'latest.json' in s.get('name', ''))
+open(os.path.join(work, 'feed.sh'), 'w').write(feed['run'])
 issue = step('tag.yml', 'issue', lambda s: 'run' in s)
 open(os.path.join(work, 'issue.sh'), 'w').write(issue['run'])
 close = step('tag.yml', 'promote', lambda s: 'issue' in s.get('name', ''))
@@ -37,6 +43,11 @@ PY
 ) || exit 1
 export RELEASE_EVERY
 [ "$RELEASE_EVERY" = 10 ] || { echo "these cases assume RELEASE_EVERY=10, tag.yml has $RELEASE_EVERY"; exit 1; }
+
+# Every step runs the way GitHub runs a bash `run:`, and not otherwise: -e
+# and pipefail are what turn a failed lookup into a failed job, and a step
+# run without them can pass here and fail there.
+step_shell="bash --noprofile --norc -eo pipefail"
 
 fails=0
 pass() { printf 'ok    %s\n' "$1"; }
@@ -132,7 +143,7 @@ docs() { n=$((n+1)); echo "$n" > README.md;  git add -A; git commit -qm "docs $n
 # expect <what> <the rc tag it should make, or '' for no release>
 expect() {
   export GITHUB_OUTPUT=$work/out; : > "$GITHUB_OUTPUT"
-  log=$(bash "$work/next.sh" 2>&1); code=$?
+  log=$($step_shell "$work/next.sh" 2>&1); code=$?
   got=$(sed -n 's/^rc=//p' "$GITHUB_OUTPUT")
   if [ $code -eq 0 ] && [ "$got" = "$2" ]; then pass "$1"
   else fail "$1" "want ${2:-no release}, got ${got:-no release} (exit $code): $log"; fi
@@ -205,7 +216,7 @@ notes() {
   local name=${2#v}
   log=$(PATH=$work/bin:$PATH TAG=$2 NAME=$name BUILD=1 \
     OPENROUTER_API_KEY=x AWS_ACCESS_KEY_ID=x AWS_SECRET_ACCESS_KEY=x R2_ENDPOINT=x R2_BUCKET=b \
-    bash "$work/notes.sh" 2>&1); code=$?
+    $step_shell "$work/notes.sh" 2>&1); code=$?
   rm -rf tool
   got=$(cat "$RUNNER_TEMP/releases.json.changes" 2>/dev/null)
   local bad=""
@@ -243,6 +254,81 @@ notes "with no list yet, from the release before" \
 notes "a listed version with no tag falls back to the release before" \
   v1.0.71 '[{"version":"9.9.9"}]' "d1" "c1"
 
+## release.yml's feed #######################################################
+
+# R2's desktop/, as the feed step reads it: each target's SHA256SUMS, and an
+# object's size by its key. Anything not in $FIXTURES is a 404, as R2 says it.
+mkdir -p "$work/feedbin"
+cat > "$work/feedbin/aws" <<'SH'
+#!/bin/bash
+args=("$@")
+case " $* " in
+  *" s3 cp "*) src=${args[-2]}; cp "$FIXTURES/${src#*/desktop/}" "${args[-1]}" ;;
+  *" head-object "*)
+    for i in "${!args[@]}"; do [ "${args[$i]}" = --key ] && key=${args[$((i+1))]}; done
+    [ -f "$FIXTURES/${key#desktop/}" ] || { echo 'An error occurred (404) when calling the HeadObject operation: Not Found' >&2; exit 254; }
+    stat -c %s "$FIXTURES/${key#desktop/}" ;;
+  *) echo "stub aws: unexpected $*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$work/feedbin/aws"
+
+# One release in R2 as the release builds leave it: Linux and macOS write
+# SHA256SUMS in text mode, and Windows' Git Bash in binary mode, "<hash> *<name>".
+builds() {
+  export FIXTURES=$work/r2
+  rm -rf "$FIXTURES"; mkdir -p "$FIXTURES"/{linux,windows,macos}
+  printf 'linux'   > "$FIXTURES/linux/Jeansh-$1-linux-x64.tar.gz"
+  printf 'windows!' > "$FIXTURES/windows/Jeansh-$1-windows-x64.zip"
+  printf 'mac zip'  > "$FIXTURES/macos/Jeansh-$1-macos.zip"
+  printf 'mac dmg!!' > "$FIXTURES/macos/Jeansh-$1-macos.dmg"
+  (cd "$FIXTURES/linux"   && sha256sum --text   -- * > SHA256SUMS)
+  (cd "$FIXTURES/windows" && sha256sum --binary -- * > SHA256SUMS)
+  (cd "$FIXTURES/macos"   && sha256sum --text   -- * > SHA256SUMS)
+}
+
+# feed <label> -> runs the step for that release; $feed_out is latest.json
+feed() {
+  export RUNNER_TEMP=$work/feedrun; rm -rf "$RUNNER_TEMP"; mkdir -p "$RUNNER_TEMP"
+  feed_log=$(PATH=$work/feedbin:$PATH NAME=${1%+*} BUILD=${1#*+} LABEL=$1 \
+    AWS_ACCESS_KEY_ID=x AWS_SECRET_ACCESS_KEY=x R2_ENDPOINT=x R2_BUCKET=b \
+    $step_shell "$work/feed.sh" 2>&1); feed_code=$?
+  feed_out=$(cat "$RUNNER_TEMP/latest.json" 2>/dev/null)
+}
+
+builds 1.0.73+77
+feed 1.0.73+77
+want() { # want <target> <file>
+  local f=$FIXTURES/$1/$2
+  jq -e --arg t "$1" --arg p "desktop/$1/$2" --arg s "$(sha256sum < "$f" | cut -c1-64)" \
+    --argjson z "$(stat -c %s "$f")" \
+    '.platforms[$t] == {path: $p, size: $z, sha256: $s}' <<< "$feed_out" > /dev/null
+}
+if [ $feed_code -eq 0 ] && want linux Jeansh-1.0.73+77-linux-x64.tar.gz &&
+   want windows Jeansh-1.0.73+77-windows-x64.zip && want macos Jeansh-1.0.73+77-macos.zip &&
+   jq -e '.version == "1.0.73" and .build == 77' <<< "$feed_out" > /dev/null; then
+  pass "the feed reads every build, Windows' binary-mode SHA256SUMS too"
+else
+  fail "the feed reads every build, Windows' binary-mode SHA256SUMS too" "exit $feed_code: $(tail -n 2 <<< "$feed_log") $feed_out"
+fi
+
+builds 1.0.72+76
+feed 1.0.73+77
+if [ $feed_code -ne 0 ] && grep -q "not this release's 1.0.73+77" <<< "$feed_log"; then
+  pass "a feed whose builds in R2 are not this release's is refused"
+else
+  fail "a feed whose builds in R2 are not this release's is refused" "exit $feed_code: $(tail -n 1 <<< "$feed_log")"
+fi
+
+builds 1.0.73+77
+rm "$FIXTURES/windows/Jeansh-1.0.73+77-windows-x64.zip"
+feed 1.0.73+77
+if [ $feed_code -ne 0 ] && grep -q "names Jeansh-1.0.73+77-windows-x64.zip for windows, and R2 has no such object" <<< "$feed_log"; then
+  pass "a build SHA256SUMS names but R2 does not hold is named in the error"
+else
+  fail "a build SHA256SUMS names but R2 does not hold is named in the error" "exit $feed_code: $(tail -n 1 <<< "$feed_log")"
+fi
+
 ## tag.yml's issue, and promote closing it ##################################
 
 # gh, as far as those steps use it: `issue list` answers with $GH_ISSUES, and
@@ -267,7 +353,7 @@ chmod +x "$work/bin/gh"
 gh_step() {
   export GH_LOG=$work/gh.log GH_ISSUES=$3; : > "$GH_LOG"
   log=$(PATH=$work/bin:$PATH GH_TOKEN=x GITHUB_REPOSITORY=o/r GITHUB_SHA=abc TAG=v1.0.73 \
-    RC=v1.0.73-rc.2 LABEL=1.0.73+74 RUN=https://run bash "$work/$2" 2>&1); code=$?
+    RC=v1.0.73-rc.2 LABEL=1.0.73+74 RUN=https://run $step_shell "$work/$2" 2>&1); code=$?
   got=$(cat "$GH_LOG")
   if [ $code -eq 0 ] && [ "$got" = "$4" ]; then pass "$1"
   else fail "$1" "want [${4}], got [${got}] (exit $code): $(tail -n 1 <<< "$log")"; fi
