@@ -546,14 +546,23 @@ void main() {
     TerminalController links(WidgetTester tester) =>
         tester.widget<TerminalView>(find.byType(TerminalView)).controller!;
 
-    Future<void> tapColumn(WidgetTester tester, int column) async {
+    /// Where on screen the middle of the cell at [column] on [row] is.
+    Offset cellAt(WidgetTester tester, int column, [int row = 0]) {
       final render = tester
           .state<TerminalViewState>(find.byType(TerminalView))
           .renderTerminal;
-      final cell =
-          render.getOffset(CellOffset(column, 0)) +
-          render.cellSize.center(Offset.zero);
-      await tester.tapAt(render.localToGlobal(cell));
+      return render.localToGlobal(
+        render.getOffset(CellOffset(column, row)) +
+            render.cellSize.center(Offset.zero),
+      );
+    }
+
+    Future<void> tapColumn(
+      WidgetTester tester,
+      int column, {
+      int row = 0,
+    }) async {
+      await tester.tapAt(cellAt(tester, column, row));
       // A lone tap lands once the double-tap window has run out.
       await tester.pump(kDoubleTapTimeout);
       await tester.pump();
@@ -706,6 +715,153 @@ void main() {
       // these and froze the terminal until the app was killed.
       expect(shell.sent, isNotEmpty);
       expect(shell.sent, everyElement('\x1b[A'));
+    });
+
+    group('an OSC 8 hyperlink', () {
+      /// The page, with [label] on the second row as a hyperlink to
+      /// [address], written the way Claude Code writes one once it believes
+      /// the terminal can show it: the label alone, its address hidden.
+      Future<void> pumpLink(
+        WidgetTester tester,
+        String address, {
+        String label = 'COR-6025',
+      }) async {
+        await pumpPage(tester);
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .write('\r\n\x1b]8;;$address\x07$label\x1b]8;;\x07 after');
+        await tester.pump();
+      }
+
+      testWidgets('is underlined under CTRL, and a Ctrl+tap on it opens '
+          'where it points', (tester) async {
+        await pumpLink(tester, 'https://edot.youtrack.cloud/issue/COR-6025');
+        await tester.tap(find.text('CTRL'));
+        await tester.pump();
+        // The first row's three, and the hyperlink's own.
+        expect(links(tester).underlines, hasLength(4));
+
+        await tapColumn(tester, 2, row: 1);
+
+        expect(openedWeb, [
+          Uri.parse('https://edot.youtrack.cloud/issue/COR-6025'),
+        ]);
+        expect(launcher.tried, isEmpty);
+        expect(shell.sent, isEmpty);
+      });
+
+      testWidgets('outranks what its label spells out', (tester) async {
+        await pumpLink(
+          tester,
+          'https://example.com/elsewhere',
+          label: 'https://dart.dev',
+        );
+        await tester.tap(find.text('CTRL'));
+        await tester.pump();
+        await tapColumn(tester, 3, row: 1);
+
+        expect(openedWeb, [Uri.parse('https://example.com/elsewhere')]);
+      });
+
+      testWidgets('to a file: opens that file on the host, as its path '
+          'would', (tester) async {
+        await pumpLink(tester, 'file:///home/me/notes.txt', label: 'notes');
+        await tester.tap(find.text('CTRL'));
+        await tester.pump();
+        await tapColumn(tester, 1, row: 1);
+
+        expect(opened, ['/home/me/notes.txt']);
+        expect(launcher.tried, isEmpty);
+      });
+
+      // The address was written by whatever program runs, and the label can
+      // say anything: openUrl's allowlist holds for it as for any link.
+      for (final address in [
+        'intent://x#Intent;component=cloud.brata.terminal/.MainActivity;end',
+        'javascript:alert(document.cookie)',
+        'sshbox://host/host-1',
+      ]) {
+        testWidgets('to $address is refused', (tester) async {
+          await pumpLink(tester, address, label: 'docs');
+          await tester.tap(find.text('CTRL'));
+          await tester.pump();
+          await tapColumn(tester, 1, row: 1);
+          await tester.pump(const Duration(milliseconds: 600));
+
+          expect(launcher.tried, isEmpty);
+          expect(openedWeb, isEmpty);
+          expect(opened, isEmpty);
+          final scheme = Uri.parse(address).scheme;
+          expect(
+            _toast(
+              'Not opened: a $scheme: link is not a web, mail or phone link',
+              ToastificationType.warning,
+            ),
+            findsOneWidget,
+          );
+          await tester.pumpAndSettle();
+        });
+      }
+
+      testWidgets('never opens on a tap without Ctrl', (tester) async {
+        await pumpLink(tester, 'https://edot.youtrack.cloud/issue/COR-6025');
+        await tapColumn(tester, 2, row: 1);
+
+        expect(launcher.tried, isEmpty);
+        expect(openedWeb, isEmpty);
+      });
+
+      testWidgets('shows and copies its address from a long press, before '
+          'anything opens it', (tester) async {
+        final copied = <Object?>[];
+        final platform = tester.binding.defaultBinaryMessenger;
+        platform.setMockMethodCallHandler(SystemChannels.platform, (
+          call,
+        ) async {
+          if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+          return null;
+        });
+        addTearDown(
+          () =>
+              platform.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        await pumpLink(tester, 'https://edot.youtrack.cloud/issue/COR-6025');
+
+        // Plain text has no address to copy.
+        final plain = await tester.startGesture(cellAt(tester, 18));
+        await tester.pump(kLongPressTimeout);
+        await plain.up();
+        await tester.pump();
+        expect(find.text('Copy'), findsOneWidget);
+        expect(find.text('Copy link address'), findsNothing);
+        await tester.tapAt(cellAt(tester, 30, 3));
+        await tester.pump(kDoubleTapTimeout);
+        await tester.pump();
+
+        final hold = await tester.startGesture(cellAt(tester, 2, 1));
+        await tester.pump(kLongPressTimeout);
+        await hold.up();
+        await tester.pump();
+        await tester.tap(find.text('Copy link address'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 600));
+
+        expect(copied, [
+          {'text': 'https://edot.youtrack.cloud/issue/COR-6025'},
+        ]);
+        expect(
+          _toast(
+            'Copied https://edot.youtrack.cloud/issue/COR-6025',
+            ToastificationType.success,
+          ),
+          findsOneWidget,
+        );
+        expect(openedWeb, isEmpty);
+        expect(launcher.tried, isEmpty);
+        await tester.pumpAndSettle();
+      });
     });
   });
 
@@ -1225,9 +1381,7 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: _android);
 
-    testWidgets('on a Mac the picture goes up too, from Cmd+V', (
-      tester,
-    ) async {
+    testWidgets('on a Mac the picture goes up too, from Cmd+V', (tester) async {
       await pumpPage(tester);
       image = pictureNamed('Screenshot.png');
 

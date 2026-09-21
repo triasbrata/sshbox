@@ -433,6 +433,16 @@ class _TerminalPageState extends State<TerminalPage> {
   /// With Ctrl, opens the link under the tap and types nothing; without, asks
   /// for focus — and for the soft keyboard too, unless a hardware keyboard has
   /// typed, in which case reopening it would double the next key.
+  ///
+  /// An OSC 8 hyperlink under the tap comes first: the address its program
+  /// gave it is what it means, where the text of its label is only what it
+  /// shows. It is opened here rather than through xterm2's own
+  /// `onHyperlinkTap`, which asks the hardware keyboard alone whether Ctrl is
+  /// down and so would never hear the key bar's CTRL, the one a tablet with
+  /// no keyboard has. Only ever on a Ctrl+tap: a hyperlink's address is
+  /// hidden and was written by whatever program is running, so nothing opens
+  /// one without being asked — and the selection menu's Copy link address
+  /// shows where it goes first.
   void _onTerminalTap(_PaneViewState view, CellOffset cell) {
     if (!_ctrl) {
       view.requestKeyboard();
@@ -440,7 +450,11 @@ class _TerminalPageState extends State<TerminalPage> {
     }
     // Used up by the tap, link or not, the way a key uses it up.
     if (_keyBar.ctrl) _keyBar.toggleCtrl();
-    final link = linkAt(view.widget.terminal.buffer, cell);
+    final terminal = view.widget.terminal;
+    final hyperlink = terminal.hyperlinkAt(cell);
+    final link = hyperlink != null
+        ? hyperlinkTarget(hyperlink)
+        : linkAt(terminal.buffer, cell);
     if (link != null) unawaited(_openLink(link));
   }
 
@@ -1190,6 +1204,8 @@ Future<void> openUrl(
           ? 'Not opened: a ${url.scheme}: link is not a web, mail or phone link'
           : 'Not opened: $url is not a web, mail or phone link',
       type: ToastificationType.warning,
+      // Time to read why, and to reach for Copy.
+      duration: const Duration(seconds: 5),
       action: (
         label: 'Copy',
         onPressed: () =>

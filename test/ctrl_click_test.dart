@@ -61,4 +61,22 @@ void main() {
     }
     expect(linkAt(terminal.buffer, const CellOffset(1, 0)), isNull);
   });
+
+  test('a file: hyperlink is a path on the host, whatever host it names; '
+      'anything else is a URL for openUrl to rule on', () {
+    String open(String address) {
+      final link = hyperlinkTarget(address);
+      return '${link.kind.name} ${link.target}';
+    }
+
+    expect(open('file:///home/me/notes.txt'), 'path /home/me/notes.txt');
+    // How `ls --hyperlink` writes one, with the host's name in it.
+    expect(
+      open('file://box/home/me/my%20notes.txt'),
+      'path /home/me/my notes.txt',
+    );
+    expect(open('https://dart.dev'), 'url https://dart.dev');
+    expect(open('intent:#Intent;end'), 'url intent:#Intent;end');
+    expect(open('COR-6025'), 'url COR-6025');
+  });
 }

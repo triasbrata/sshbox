@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
+import 'ctrl_click.dart' show hyperlinkIn;
 import 'toast.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -1229,6 +1230,23 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     widget.controller.clearSelection();
   }
 
+  /// The address of an OSC 8 hyperlink under the selection, if there is one:
+  /// see [hyperlinkIn].
+  String? get _selectedLink {
+    final range = widget.controller.selection;
+    return range == null ? null : hyperlinkIn(widget.terminal, range);
+  }
+
+  /// A hyperlink's label hides its address, and copying the label gives only
+  /// the label, so this is how a user finds out where a link goes before a
+  /// Ctrl+tap opens it — the toast says it in full, and it can be pasted
+  /// anywhere to look at.
+  void _copyLink(String address) {
+    Clipboard.setData(ClipboardData(text: address));
+    showToast(context, 'Copied $address', type: ToastificationType.success);
+    widget.controller.clearSelection();
+  }
+
   /// Handed to the page, which pastes text through xterm2's own paste — the
   /// one a hardware Ctrl+V takes, so it arrives bracketed when the shell asked
   /// for that — and sends an image to the host as a file instead.
@@ -1515,6 +1533,11 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
                     type: ContextMenuButtonType.selectAll,
                     onPressed: _selectAll,
                   ),
+                  if (_selectedLink case final address?)
+                    ContextMenuButtonItem(
+                      label: 'Copy link address',
+                      onPressed: () => _copyLink(address),
+                    ),
                 ],
               ),
             ),
