@@ -623,29 +623,43 @@ void main() {
         ).exitCode ==
         0;
 
+    /// A tab on this machine, added to [manager] as the connect sheet adds
+    /// one. With [pick], it is Attach's: once connected it is handed every
+    /// session the host lists, into [listed], and joins the one [pick]
+    /// names.
+    Future<LiveSession> open(
+      SessionManager manager,
+      _Here here, {
+      String? pick,
+      List<TmuxSessionInfo>? listed,
+    }) async {
+      final session = manager.create(
+        host,
+        transport: (_, _) => here,
+        pickTmux: pick != null,
+      );
+      manager.add(session);
+      await session.connect(
+        secrets: InMemorySecretStore(),
+        pickTmux: (found) async {
+          listed?.addAll(found);
+          return pick;
+        },
+      );
+      expect(session.error, isNull);
+      await _until(() => session.tmux?.panes.isNotEmpty ?? false);
+      return session;
+    }
+
     test(
       'Detach leaves the program running and writing and its record going; '
       'Attach lists it, idle, and joins the same pane; the ✕ ends it',
       () async {
         final here = _Here(dir);
         final manager = SessionManager();
-        final secrets = InMemorySecretStore();
-        LiveSession open({String? name, bool attach = false}) {
-          final session = manager.create(
-            host,
-            transport: (_, _) => here,
-            tmuxName: name,
-            attachTmux: attach,
-          );
-          manager.add(session);
-          return session;
-        }
-
-        final tab = open();
-        await tab.connect(secrets: secrets);
+        final tab = await open(manager, here);
         final name = tab.tmuxName;
         final tmux = tab.tmux!;
-        await _until(() => tmux.panes.length == 1);
         final record = (await tmux.recordName(tmux.panes.single))!;
         final ticks = File('${dir.path}/ticks');
         int counted() =>
@@ -669,41 +683,34 @@ void main() {
           isEmpty,
         );
         // ...and the session, what runs in it and its record are all still
-        // going, with nobody attached. A Detach that killed fails here.
+        // going, with nobody attached, two seconds on: a Detach that killed,
+        // hung up on the pane or took its pipe down fails here.
         expect(alive(name), isTrue);
         final before = counted();
-        await _until(
-          () => counted() > before + 5,
-          () => '$before ticks, then ${counted()}',
-        );
+        await Future<void>.delayed(const Duration(seconds: 2));
+        expect(alive(name), isTrue);
+        expect(counted(), greaterThan(before + 10));
         final file = File('${dir.path}/${PaneRecord.dir(name)}/$record');
-        await _until(
-          () => file.readAsStringSync().contains('tick-${before + 5}'),
-          () => 'no tick-${before + 5} in the record',
-        );
+        expect(file.readAsStringSync(), contains('tick-${before + 10}'));
 
-        // Another tab on the host lists it: nobody attached, one window.
-        final lister = open();
-        await lister.connect(secrets: secrets);
-        final listed = await lister.tmuxSessions();
+        // Another tab on the host, so the listing has one in use to show.
+        final other = await open(manager, here);
+
+        // Attach: the host lists it — nobody attached, one window — and the
+        // tab joins the same pane, still counting.
+        final listed = <TmuxSessionInfo>[];
+        final back = await open(manager, here, pick: name, listed: listed);
+        expect(back.tmuxName, name);
         expect(
           listed.map((session) => session.name),
-          containsAll([name, lister.tmuxName]),
+          unorderedEquals([name, other.tmuxName]),
         );
         final away = listed.firstWhere((session) => session.name == name);
         expect((away.windows, away.attached, away.inUse), (1, 0, false));
         expect(
-          listed.firstWhere((s) => s.name == lister.tmuxName).inUse,
+          listed.firstWhere((s) => s.name == other.tmuxName).inUse,
           isTrue,
         );
-        await manager.close(lister.id);
-        await _until(() => !alive(lister.tmuxName));
-
-        // Attach: the same pane, still counting.
-        final back = open(name: name, attach: true);
-        await back.connect(secrets: secrets);
-        expect(back.error, isNull);
-        await _until(() => back.tmux?.panes.length == 1);
         final pane = back.tmux!.panes.single;
         expect('${pane.id}', record.split('%').last);
         final seen = counted();
@@ -712,38 +719,39 @@ void main() {
           () => _text(pane),
         );
 
-        // The ✕: the session and what runs in it end.
+        // The ✕ on a session the app made: it and what runs in it end.
         await manager.close(back.id);
         await _until(() => !alive(name));
         final last = counted();
         await Future<void>.delayed(const Duration(milliseconds: 500));
         expect(counted(), lessThanOrEqualTo(last + 1));
+        await manager.close(other.id);
+        await _until(() => !alive(other.tmuxName));
       },
       skip: hasTmux ? false : 'tmux is not installed here',
     );
 
     test(
-      'a session the user made is joined by its exact name, and left as it '
-      'was: no record set up, no hook taken down',
+      'a session the user made is listed and joined by its exact name, and '
+      'left as it was: no record, no hook taken down, and the ✕ leaves it '
+      'running',
       () async {
-        const nasty = 'it\'s "x" \$(touch pwned) `id`; y \\ ##h %p';
+        // Not ASCII either: a listing without -u, on a channel with no
+        // UTF-8 locale, writes each of those characters down to `_`.
+        const nasty = 'it\'s "x" \$(touch pwned) `id`; y \\ ##h %p café 🚀';
         await _tmux(dir, ['new-session', '-d', '-s', nasty]);
         // tmux keeps the name as it was made — `#` read as its own format
         // there, so `##` is kept as one, and a backslash written out as two
         // — and what the listing gives is what attaching asks for, a `#` in
         // it taken as itself.
         final listing = await _tmux(dir, [
+          '-u',
           'list-sessions',
           '-F',
           '#{session_name}',
         ]);
         final stored = '${listing.stdout}'.trim();
-        expect(stored, 'it\'s "x" \$(touch pwned) `id`; y \\\\ #h %p');
-        // The app's own listing, through the same shell, reads it whole.
-        final listed = TmuxSession.parseList(
-          await _Here(dir).run(TmuxSession.list).toList(),
-        );
-        expect(listed.single.name, stored);
+        expect(stored, 'it\'s "x" \$(touch pwned) `id`; y \\\\ #h %p café 🚀');
         await _tmux(dir, [
           'send-keys', '-t', '=$stored:', 'echo nasty-was-here', 'Enter',
         ]);
@@ -757,21 +765,12 @@ void main() {
         ]);
 
         final manager = SessionManager();
-        Future<LiveSession> attach(String name) async {
-          final session = manager.create(
-            host,
-            transport: (_, _) => _Here(dir),
-            tmuxName: name,
-            attachTmux: true,
-          );
-          manager.add(session);
-          await session.connect(secrets: InMemorySecretStore());
-          expect(session.error, isNull);
-          await _until(() => session.tmux?.panes.length == 1);
-          return session;
-        }
-
-        final back = await attach(stored);
+        final here = _Here(dir);
+        // The app's own listing, through the same shell, reads it whole.
+        final listed = <TmuxSessionInfo>[];
+        final back = await open(manager, here, pick: stored, listed: listed);
+        expect(listed.map((session) => session.name), contains(stored));
+        expect(back.ownTmux, isFalse);
         await _until(
           () => _text(back.tmux!.panes.single).contains('nasty-was-here'),
           () => _text(back.tmux!.panes.single),
@@ -780,7 +779,8 @@ void main() {
         await manager.detach(back.id);
         expect(alive(stored), isTrue);
 
-        final mine = await attach(plain);
+        final mine = await open(manager, here, pick: plain);
+        expect(mine.tmux!.record, isNull);
         // Whatever an attach sets going has gone to tmux by the time a
         // question asked after it is answered.
         await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -795,8 +795,43 @@ void main() {
           Directory('${dir.path}/.local/state/jeansh').existsSync(),
           isFalse,
         );
-        await manager.detach(mine.id);
+        // The ✕, not Detach: a session the app did not make is not its to
+        // end.
+        await manager.close(mine.id);
+        await Future.wait([
+          for (final process in here.started) process.exitCode,
+        ]).timeout(const Duration(seconds: 5));
         expect(alive(plain), isTrue);
+        expect(alive(stored), isTrue);
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+
+    test(
+      'Attach on a host with no tmux sessions says so, and joins nothing',
+      () async {
+        final session = SessionManager().create(
+          host,
+          transport: (_, _) => _Here(dir),
+          pickTmux: true,
+        );
+        var asked = false;
+        await session.connect(
+          secrets: InMemorySecretStore(),
+          pickTmux: (_) async {
+            asked = true;
+            return null;
+          },
+        );
+        expect(asked, isFalse);
+        expect(session.isConnected, isFalse);
+        expect(session.error, 'No tmux sessions are running on here.');
+        expect(
+          (await _tmux(dir, ['list-sessions'])).exitCode,
+          isNot(0),
+          reason: 'asking made a session',
+        );
+        session.dispose();
       },
       skip: hasTmux ? false : 'tmux is not installed here',
     );
