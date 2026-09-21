@@ -387,23 +387,27 @@ class _ChatPageState extends State<ChatPage> {
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
   /// a file, a web page, a tool's output — so it is somebody else's text, and
-  /// only a web address opens, the way it would from the terminal. Anything
-  /// else would be a tap launching what that text chose: `javascript:`,
-  /// `file:`, `intent:`, or a scheme some app on the phone answers to, this
-  /// one's own `sshbox:` among them. A path, which Claude writes for the files
-  /// it touched, is on the host rather than here.
+  /// what it may open is [openUrl]'s to decide, as for the terminal and the
+  /// Markdown preview, which show text just as untrusted: a web page, a mail
+  /// or a call, and never `javascript:`, `file:`, `intent:` or this app's own
+  /// `sshbox:`. A chat once kept a stricter rule of its own, web links only,
+  /// but all that shut out beyond [openUrl]'s is a mail or a call, each of
+  /// which stops at a composer or a dialer for the user to send, and the one
+  /// thing a link in a reply could leak by is its address, which a web link
+  /// carries as well as any. Two rules would only be two lists to keep.
   ///
-  /// What is not opened still has its address copied: the label hides it, and
+  /// A path, which Claude writes for the files it touched, is on the host
+  /// rather than here, so its address is copied: the label hides it, and
   /// copying the label gives only the label.
   void _openLink(String text, String? href, String title) {
     final url = Uri.tryParse(href ?? '');
-    if (url != null && (url.isScheme('http') || url.isScheme('https'))) {
+    if (url != null && url.hasScheme) {
       unawaited(openUrl(context, url, inTab: widget.onOpenWeb));
       return;
     }
     final address = href ?? text;
     unawaited(Clipboard.setData(ClipboardData(text: address)));
-    showToast(context, 'Only web links open from a chat. Copied $address');
+    showToast(context, 'Not opened: $address is on the host. Copied it');
   }
 
   Widget _composer(

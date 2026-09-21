@@ -421,6 +421,66 @@ void main() {
       ]);
     });
 
+    testWidgets('a tel: goes where the phone sends it too', (tester) async {
+      const platform = PreferredLaunchMode.platformDefault;
+      expect(await open(tester, 'tel:+62123', {platform}), [
+        ('tel:+62123', platform),
+      ]);
+    });
+
+    // Every scheme but a web page, a mail and a call is refused, whoever
+    // asks: an intent: starts an activity, file: reads the phone, sshbox:
+    // connects to a saved host, and any app can answer to a scheme of its
+    // own. The phone is never asked, the tab never opened, and the address
+    // can still be copied.
+    for (final url in [
+      'intent://scan/#Intent;scheme=zxing;package=com.example;end',
+      'sshbox://host/host-1',
+      'javascript:alert(1)',
+      'file:///sdcard/Download/keys.txt',
+      'market://details?id=cloud.brata.terminal',
+      'INTENT:#Intent;end',
+    ]) {
+      testWidgets('refuses $url', (tester) async {
+        final tabbed = <Uri>[];
+        final tried = await open(
+          tester,
+          url,
+          PreferredLaunchMode.values.toSet(),
+          inTab: tabbed.add,
+        );
+        // The toast's own frame, after the one that put its overlay in, and
+        // its slide in.
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 600));
+
+        expect(tried, isEmpty);
+        expect(tabbed, isEmpty);
+        final scheme = Uri.parse(url).scheme;
+        expect(
+          _toast(
+            'Not opened: a $scheme: link is not a web, mail or phone link',
+            ToastificationType.warning,
+          ),
+          findsOneWidget,
+        );
+
+        String? copied;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied = (call.arguments as Map)['text'] as String;
+            }
+            return null;
+          },
+        );
+        await tester.tap(find.text('Copy'));
+        expect(copied, Uri.parse(url).toString());
+        await tester.pumpAndSettle();
+      });
+    }
+
     testWidgets('says so when nothing can open it', (tester) async {
       await open(tester, 'https://dart.dev', {});
       // The toast's own frame, after the one that put its overlay in, and its

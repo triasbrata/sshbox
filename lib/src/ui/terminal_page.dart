@@ -1141,8 +1141,28 @@ class _PaneViewState extends State<_PaneView> {
   }
 }
 
+/// The schemes [openUrl] opens: a web page, and a mail or a call, which the
+/// phone hands to a composer or a dialer that sends nothing until the user
+/// says so there.
+///
+/// Everything else is refused, because nearly every link that reaches here
+/// was written by somebody else: a program's output in the terminal, which
+/// can hide any address behind any label with an OSC 8 hyperlink, a Markdown
+/// file on the host, a reply in a chat that quotes what Claude read, a web
+/// page in a tab, which can navigate with no tap at all. Handed to the phone,
+/// an `intent:` names an activity to start, a `file:` a file on the phone,
+/// and this app's own `sshbox://host/<id>` connects to a saved host — and the
+/// label beside it could have said "open the docs". An allowlist rather than
+/// a list of the bad ones, since any app installed can answer to a scheme of
+/// its own.
+const _opens = {'http', 'https', 'mailto', 'tel'};
+
 /// Opens a link without leaving the app. Every link the app opens goes
-/// through here — a Ctrl+tap, a forwarded port, a sign-in check.
+/// through here — a Ctrl+tap, a forwarded port, a sign-in check, the Markdown
+/// preview, a chat, a web tab handing on what it will not show — so this is
+/// the one place that decides what may be opened at all: see [_opens]. What
+/// is refused says so, and its address can still be copied, so a link the
+/// user does mean to follow is one paste away rather than lost.
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
 /// [inTab] puts it there. With no shell to put it beside — the web tab's own
@@ -1161,6 +1181,23 @@ Future<void> openUrl(
   Uri url, {
   void Function(Uri url)? inTab,
 }) async {
+  // Dart keeps a scheme in lower case, so `HTTPS:` and `Tel:` are here too.
+  if (!_opens.contains(url.scheme)) {
+    if (!context.mounted) return;
+    showToast(
+      context,
+      url.hasScheme
+          ? 'Not opened: a ${url.scheme}: link is not a web, mail or phone link'
+          : 'Not opened: $url is not a web, mail or phone link',
+      type: ToastificationType.warning,
+      action: (
+        label: 'Copy',
+        onPressed: () =>
+            unawaited(Clipboard.setData(ClipboardData(text: '$url'))),
+      ),
+    );
+    return;
+  }
   // A desktop has a browser of its own, with the user's own extensions,
   // sessions and bookmarks; a web tab drawn by the system web view has none of
   // them, and no address bar worth the name. So every link there goes out to
