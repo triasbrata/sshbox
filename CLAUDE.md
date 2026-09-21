@@ -45,6 +45,15 @@ the user has tried it.
    sub-agents, because git against the main checkout is blocked from their
    worktrees. If `main` moved in the meantime, merge it into the branch again and
    re-verify. `main` must always build.
+
+   A **peer session whose own push to `main` is refused** — the public repo
+   session's classifier refuses it — hands its branch to the coordinator. When
+   the user asked that session for the change, the coordinator verifies it and
+   pushes without asking again, as the user decided on 2026-09-22 ("Ya, kalau
+   kamu yang meminta"). It still asks first when the change touches the app, a
+   release, security, or anything the user did not ask for: otherwise pushing
+   on a peer's behalf would be a way round that peer's own refusal, which is
+   exactly what the rule exists to prevent.
 3. Tell the coordinator the commit, what to test on the tablet, and what the
    change needs:
    - a hot reload, for most changes;
