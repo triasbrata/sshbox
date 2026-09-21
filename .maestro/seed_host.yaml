@@ -56,10 +56,14 @@ env:
 - tapOn: "Username"
 - inputText: "${SSH_USER}"
 
-# Password is already the default method; tapping it is harmless and makes the
-# flow say out loud which of the three it means.
-- tapOn: "Password"
-- tapOn: "Password"
+# "Password" names two things on this screen: the auth method's segment
+# (host_edit_page.dart, the ButtonSegment) and, below it, the field itself.
+# Maestro takes the first match, so a plain tapOn "Password" lands on the
+# segment every time and the text goes nowhere. Password is already the default
+# method, so the segment needs no tap; the field is the second match.
+- tapOn:
+    text: "Password"
+    index: 1
 - inputText: "${SSH_PASSWORD}"
 
 - tapOn: "Save"

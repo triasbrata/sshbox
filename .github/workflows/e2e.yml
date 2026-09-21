@@ -83,10 +83,91 @@ jobs:
       # the safe direction to be unfinished in: a gate that passed by default
       # would publish every release untested.
       # ----------------------------------------------------------------------
-      - name: The flows
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2 # .fvmrc
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # Debug, not release: it carries every ABI, so the emulator's x86_64 is in
+      # it without guessing, and it needs no signing key, since this build is
+      # driven and thrown away. release.yml builds what ships.
+      - run: flutter build apk --debug
+
+      # The host the flows connect to: this runner's own sshd, which the
+      # emulator reaches as 10.0.2.2 -- its alias for the host's loopback.
+      # A throwaway user with a throwaway password, both made here and gone
+      # with the runner.
+      - name: Start an sshd for the flows
         run: |
-          echo "::error::e2e.yml has no flows yet - see the comment in this file"
-          exit 1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server sshpass
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          sudo useradd -m -s /bin/bash e2e
+          echo "e2e:$password" | sudo chpasswd
+          # Loopback only: the emulator arrives there, and nothing else should.
+          # Cloud images switch password logins off in a drop-in of their own,
+          # so this one is named to sort last and win.
+          printf 'ListenAddress 127.0.0.1\nPasswordAuthentication yes\n' |
+            sudo tee /etc/ssh/sshd_config.d/99-e2e.conf >/dev/null
+          # Ubuntu 24.04 starts sshd from ssh.socket, which listens on every
+          # address whatever ListenAddress says. The service reads the config.
+          sudo systemctl disable --now ssh.socket 2>/dev/null || true
+          sudo systemctl restart ssh
+          # Through GITHUB_ENV, not a step output: GitHub drops any output
+          # holding a masked value, so the flows would get an empty password.
+          echo "SSH_PASSWORD=$password" >> "$GITHUB_ENV"
+          echo "SSH_USER=e2e" >> "$GITHUB_ENV"
+          # Prove it here, in seconds, rather than learn it from the emulator
+          # ten minutes later as a seed flow that could not sign in.
+          sshpass -p "$password" ssh -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null e2e@127.0.0.1 true
+          echo "sshd answers on 127.0.0.1:22 and the password works"
+
+      # The emulator needs hardware acceleration, which a GitHub runner has but
+      # does not hand to an unprivileged user until this rule says so.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # Each line of `script` runs in a shell of its own, so the whole of the
+      # logic lives in tools/e2e_android.sh: which flows gate, which only
+      # report, and seed_host first.
+      - name: The flows
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: tools/e2e_android.sh
+
+      # What Maestro saw when a flow failed. Screenshots of the app under test,
+      # never a build: nothing here can be installed.
+      - name: Keep Maestro's record of a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-${{ github.run_id }}
+          path: ~/.maestro/tests
+          retention-days: 7
+          if-no-files-found: ignore
 
       # Read by tag.yml: it goes in the promotion's log line, and in the issue
       # when the gate fails. An empty value means it could not be measured,
