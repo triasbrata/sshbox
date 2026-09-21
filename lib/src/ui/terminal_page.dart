@@ -759,22 +759,31 @@ class _TerminalPageState extends State<TerminalPage> {
 
     return Stack(
       children: [
-        if (tmux == null)
-          _paneView(_session.terminal, style, focused: true, padding: _padding)
-        else
-          TmuxPaneLayout(
-            tmux: tmux,
-            textStyle: style,
-            padding: _padding,
-            // Touching a pane is what focuses it, and the session sends the
-            // bar's keys to the focused pane, so every pane sends through it.
-            pane: (pane, focused) => _paneView(
-              pane.terminal,
-              style,
-              focused: focused,
-              autoResize: false,
-            ),
-          ),
+        // Both kinds of terminal take their size from here, the soft
+        // keyboard's slide included: see _SettledHeight.
+        _SettledHeight(
+          child: tmux == null
+              ? _paneView(
+                  _session.terminal,
+                  style,
+                  focused: true,
+                  padding: _padding,
+                )
+              : TmuxPaneLayout(
+                  tmux: tmux,
+                  textStyle: style,
+                  padding: _padding,
+                  // Touching a pane is what focuses it, and the session sends
+                  // the bar's keys to the focused pane, so every pane sends
+                  // through it.
+                  pane: (pane, focused) => _paneView(
+                    pane.terminal,
+                    style,
+                    focused: focused,
+                    autoResize: false,
+                  ),
+                ),
+        ),
         // Still at a sign-in once the connect sheet has sent it to a web
         // tab: the way back to that tab, rather than a blank terminal. Not
         // while a sheet is over the page, showing its own.
@@ -844,6 +853,86 @@ class _TerminalPageState extends State<TerminalPage> {
 }
 
 const _padding = EdgeInsets.all(6);
+
+/// Gives the terminal a new height only once the room for it has stopped
+/// changing, and until then keeps it at the height it had, its bottom row on
+/// the key bar and whatever no longer fits cut off at the top.
+///
+/// The soft keyboard does not arrive in one step. Android slides it in over a
+/// few hundred milliseconds and Flutter hands the app the inset of every
+/// frame of that slide, so the room under the tab strip shrinks a little each
+/// frame, and each time it loses a row the terminal was resized: xterm2 laid
+/// the buffer out again and repainted it whole, and the host was sent a
+/// window change — tmux a `refresh-client -C` — so the program in it redrew
+/// for a size that was gone a frame later. One keyboard, a dozen resizes and
+/// more, for every terminal tab at once, since the hidden ones sit laid out
+/// in the same IndexedStack. On the tablet that ran at a handful of frames a
+/// second, and Claude Code's redraws, each for a size already gone, arrived
+/// out of step with the rows under them and mangled its input box until the
+/// last one landed, half a second after the keyboard had stopped.
+///
+/// Held, the terminal is not laid out or painted again while the keyboard
+/// moves: xterm2's view is a repaint boundary, so it is only moved, and the
+/// one resize, the one window change and the one redraw come when the slide
+/// is over. The bottom stays pinned above the key bar, as it will be after
+/// the resize, so the prompt rides up with the keyboard rather than
+/// vanishing under it. Growing — the keyboard going away — shows the
+/// terminal's own background above it until then.
+///
+/// Height only: the keyboard never changes the width, and what does —
+/// turning the tablet, a tab group's divider — keeps resizing as it goes.
+class _SettledHeight extends StatefulWidget {
+  const _SettledHeight({required this.child});
+
+  final Widget child;
+
+  /// How long the height must stay put to count as settled. A frame of the
+  /// slide is 16 ms apart at most, so this is several frames of stillness,
+  /// and short enough that the resize seems to come with the keyboard.
+  static const settle = Duration(milliseconds: 150);
+
+  @override
+  State<_SettledHeight> createState() => _SettledHeightState();
+}
+
+class _SettledHeightState extends State<_SettledHeight> {
+  double? _height;
+  Timer? _settling;
+
+  @override
+  void dispose() {
+    _settling?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    color: terminalThemeOf(context).background,
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final room = constraints.maxHeight;
+        // The first height is taken as it comes: there is nothing to hold.
+        final held = _height ??= room;
+        _settling?.cancel();
+        // Back at the held height before it settled, a keyboard shown and
+        // put away again at once, and nothing needs resizing at all.
+        if (room != held) {
+          _settling = Timer(_SettledHeight.settle, () {
+            if (mounted) setState(() => _height = room);
+          });
+        }
+        return ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.bottomCenter,
+            minHeight: held,
+            maxHeight: held,
+            child: widget.child,
+          ),
+        );
+      },
+    ),
+  );
+}
 
 /// One terminal on the page, and what makes it usable by touch: the soft
 /// keyboard's input, the swipe pad, and xterm2's view. A plain session shows
