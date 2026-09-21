@@ -35,10 +35,13 @@ the user has tried it.
    UAT does not carry it. A release is tagged `vX.Y.Z-rc.N` first and must
    pass `e2e.yml` before it becomes `vX.Y.Z` and goes to Play's closed
    testing, the desktop builds to R2 and the notes to the website; a failed
-   candidate opens an issue instead. **Until the e2e session's flows land,
-   `e2e.yml` has none and fails on purpose, so no candidate is promoted and
-   nothing is released at all** — merged on 2026-09-22 by the user's
-   choice, knowing that. The coordinator does this step for
+   candidate opens an issue instead. The gate runs three flows —
+   `seed_host`, `smoke` and `connect_and_keybar` — on a CI emulator, since
+   Maestro's driver will not install on the tablet's HyperOS; `tabs` and
+   `file_browser` run too but only report, and a flow joins the gate once it
+   has been green there. (From the rc gate's merge until its flows landed,
+   both on 2026-09-22, `e2e.yml` had none and released nothing.) The
+   coordinator does this step for
    sub-agents, because git against the main checkout is blocked from their
    worktrees. If `main` moved in the meantime, merge it into the branch again and
    re-verify. `main` must always build.
@@ -86,8 +89,8 @@ it on the tablet and said it is OK.
   only the coordinator hears the user say it passed, so only the coordinator
   can record the real one.
   The seventy older rows that recorded no build are stamped in one go with
-  the build current at the time — done by the e2e session on its branch
-  `worktree-desktop-e2e-spike` (a71d179), so on `main` only once that merges —
+  the build current at the time, 1.0.68+72 — done by the e2e session and on
+  `main` since 2026-09-22 —
   on the user's instruction to treat everything already tested as passing now ("maka kamu nomorin ke build sekarang dengan
   anggapan semua yang sudah di test user adalah sudah pass"). Their wording has
   to keep saying that the stamp is the newest build the row is known to work
