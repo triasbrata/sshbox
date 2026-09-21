@@ -357,7 +357,10 @@ jobs:
           for secret in OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
             [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
           done
-          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)
+          # The release before, never a candidate: a failed rc on an earlier
+          # commit would otherwise cut this release's notes short of the
+          # changes gathered before it.
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$TAG^" 2>/dev/null || true)
           git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
             lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
             > "$RUNNER_TEMP/changes.txt"

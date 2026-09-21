@@ -1136,9 +1136,25 @@ The repository is public, so GitHub Actions costs nothing.
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
 - `.github/workflows/tag.yml` numbers every release and drives it through
-  the gate. Each push to `main` that changes the app (`lib/`, `android/`,
-  `ios/`, `macos/`, `linux/`, `windows/`, `assets/`, `third_party/`,
-  `pubspec.*`) gets the next version: after the highest release tag,
+  the gate. Releases come in batches, not one per push. Commits that change
+  the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`, `windows/`,
+  `assets/`, `third_party/`, `pubspec.*`) gather until there are **ten**
+  since the last release, or until one of them is a **new feature**, which
+  releases at once and takes everything gathered with it. A feature says so
+  with a trailer in its commit message, beside `Co-Authored-By:`:
+
+  ```
+  Release: feature
+  ```
+
+  or `git commit --trailer 'Release: feature'`. Merge commits, and commits
+  that change nothing the app is built from, count towards neither; the
+  trailer on one of those is ignored. A push short of a release says how
+  many have gathered and stops. An urgent fix that cannot wait for ten can
+  carry the same trailer. `tool/test_tag_next.sh` runs the step against
+  each of these cases in a throwaway repo.
+
+  A release gets the next version: after the highest release tag,
   `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes `vX.Y.(Z+1)` with build
   N+1 on the pushed commit. It goes to X.Y.0 when `pubspec.yaml`'s version
   line asks for a new X.Y by hand, which is all that line still decides.

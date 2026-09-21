@@ -1,5 +1,8 @@
-# CI numbers every push to main that changes the app, and releases it only
-# once the end-to-end tests have passed on it.
+# CI numbers and releases the app in batches, and only once the end-to-end
+# tests have passed on it. Not every push to main is a release: commits that
+# change the app gather until there are ten since the last release, or until
+# one of them is a new feature, marked with a `Release: feature` trailer.
+# A push short of that says how many have gathered and stops.
 #
 # The highest release tag, annotated "Jeansh X.Y.Z, build N", gives way to
 # vX.Y.(Z+1) with build N+1, or to X.Y.0 when pubspec.yaml's version line asks
@@ -56,6 +59,9 @@ jobs:
           fetch-tags: true
 
       - id: next
+        env:
+          # How many app commits make a release without a feature among them.
+          RELEASE_EVERY: 10
         run: |
           if [ -n "$(git tag --points-at HEAD 'v[0-9]*')" ]; then
             echo "$(git tag --points-at HEAD 'v[0-9]*') is this commit already"
@@ -69,6 +75,25 @@ jobs:
           build=$(git for-each-ref --format='%(contents:subject)' "refs/tags/$last" |
             sed -n 's/^Jeansh .*, build \([0-9][0-9]*\)$/\1/p')
           [ -n "$build" ] || { echo "::error::$last is not annotated \"Jeansh X.Y.Z, build N\""; exit 1; }
+
+          # Released in batches, not per push: once RELEASE_EVERY commits that
+          # change the app have gathered since the last release, or at once
+          # when one of them is a new feature. A feature says so with a
+          # `Release: feature` trailer, beside its Co-Authored-By. These are
+          # on.push.paths' own paths, and must stay the same list.
+          app=(lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock)
+          count=$(git rev-list --count --no-merges "$last..HEAD" -- "${app[@]}")
+          # Into a variable first: grep -q stopping early would SIGPIPE git
+          # log, and under pipefail a match would then read as no match.
+          trailers=$(git log --no-merges --format='%(trailers:key=Release,valueonly)' "$last..HEAD" -- "${app[@]}")
+          if grep -qiE '^[[:space:]]*feature[[:space:]]*$' <<< "$trailers"; then
+            why="a new feature among $count app commits since $last"
+          elif [ "$count" -ge "$RELEASE_EVERY" ]; then
+            why="$count app commits since $last"
+          else
+            echo "$count of $RELEASE_EVERY app commits since $last, and none a new feature: not a release yet"
+            exit 0
+          fi
 
           xy=$(sed -n 's/^version: *\([0-9]*\.[0-9]*\)\..*/\1/p' pubspec.yaml)
           last_xy=${last#v}
@@ -92,7 +117,7 @@ jobs:
             rc=$((rc + 1))
           done
 
-          echo "v$name-rc.$rc, build $build, after $last"
+          echo "v$name-rc.$rc, build $build: $why"
           {
             echo "rc=v$name-rc.$rc"
             echo "tag=v$name"

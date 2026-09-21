@@ -25,10 +25,17 @@ the user has tried it.
    `version:` line, which decides only X.Y — a new major or minor is set
    there by hand. If merging `main` conflicts on it, take `main`'s. The
    repository has no git hooks, and `core.hooksPath` stays unset.
-2. Fast-forward `main` to the branch and push. A push that changes the app
-   releases it, as the user chose: `tag.yml` tags the next version and
-   releases to Play's closed testing, the desktop builds to R2 and the notes
-   to the website. The coordinator does this step for
+2. Fast-forward `main` to the branch and push. Releases come in batches, as
+   the user chose ("di tumpuk dulu sampai ada 10 build kecuali itu adalah
+   feature baru"): `tag.yml` releases once ten commits that change the app
+   have gathered since the last release, or at once when one of them is a
+   new feature. **A commit that adds a new feature ends its message with a
+   `Release: feature` trailer**, beside `Co-Authored-By:`; without it the
+   feature waits for the batch. A fix, a polish or a follow-up to a failed
+   UAT does not carry it. A release is tagged `vX.Y.Z-rc.N` first and must
+   pass `e2e.yml` before it becomes `vX.Y.Z` and goes to Play's closed
+   testing, the desktop builds to R2 and the notes to the website; a failed
+   candidate opens an issue instead. The coordinator does this step for
    sub-agents, because git against the main checkout is blocked from their
    worktrees. If `main` moved in the meantime, merge it into the branch again and
    re-verify. `main` must always build.
