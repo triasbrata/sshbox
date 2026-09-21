@@ -244,6 +244,7 @@ class _TabsShellState extends State<TabsShell> {
     TabKind.chat => ChatPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       session: tab.session,
+      onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
     ),
     // Like the chat: a git tab brought back from an earlier run asks the host
     // what it has the first time it shows, not as the app starts.

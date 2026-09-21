@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 
 /// A conversation with Claude Code running on the host, beside that host's
@@ -19,9 +21,14 @@ import 'toast.dart';
 /// writes into it. Switching tabs, or scrolling away, leaves the process on
 /// the host running and everything said still there.
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key, required this.session});
+  const ChatPage({super.key, required this.session, this.onOpenWeb});
 
   final LiveSession session;
+
+  /// Opens a web page in a tab beside this chat's shell, as a link tapped in
+  /// the terminal or the Markdown preview does — see [openUrl], which decides
+  /// whether a tab is wanted at all.
+  final void Function(Uri url)? onOpenWeb;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -373,10 +380,31 @@ class _ChatPageState extends State<ChatPage> {
 
   Widget _entry(ChatEntry entry) => switch (entry) {
     ChatSaid(mine: true) => _Bubble(said: entry),
-    ChatSaid(:final text) => _Answer(text: text),
+    ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
   };
+
+  /// A link tapped in what Claude said. A reply quotes whatever Claude read —
+  /// a file, a web page, a tool's output — so it is somebody else's text, and
+  /// only a web address opens, the way it would from the terminal. Anything
+  /// else would be a tap launching what that text chose: `javascript:`,
+  /// `file:`, `intent:`, or a scheme some app on the phone answers to, this
+  /// one's own `sshbox:` among them. A path, which Claude writes for the files
+  /// it touched, is on the host rather than here.
+  ///
+  /// What is not opened still has its address copied: the label hides it, and
+  /// copying the label gives only the label.
+  void _openLink(String text, String? href, String title) {
+    final url = Uri.tryParse(href ?? '');
+    if (url != null && (url.isScheme('http') || url.isScheme('https'))) {
+      unawaited(openUrl(context, url, inTab: widget.onOpenWeb));
+      return;
+    }
+    final address = href ?? text;
+    unawaited(Clipboard.setData(ClipboardData(text: address)));
+    showToast(context, 'Only web links open from a chat. Copied $address');
+  }
 
   Widget _composer(
     ThemeData theme, {
@@ -660,9 +688,12 @@ class _Bubble extends StatelessWidget {
 /// What Claude said, as Markdown: it writes lists, headings and code, and
 /// this is the renderer the Markdown preview already uses.
 class _Answer extends StatelessWidget {
-  const _Answer({required this.text});
+  const _Answer({required this.text, required this.onTapLink});
 
   final String text;
+
+  /// Without it the package draws a link and does nothing when it is tapped.
+  final MarkdownTapLinkCallback onTapLink;
 
   @override
   Widget build(BuildContext context) {
@@ -676,6 +707,7 @@ class _Answer extends StatelessWidget {
         child: SelectionArea(
           child: MarkdownBody(
             data: text,
+            onTapLink: onTapLink,
             // A reply is text, and any picture in it lives on a server we do
             // not fetch from: its alt text says what was meant.
             imageBuilder: (uri, title, alt) =>
