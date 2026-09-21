@@ -1198,15 +1198,61 @@ The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
   every pull request and every push to `main`, as the job `check`.
-- `.github/workflows/tag.yml` numbers every release. Each push to `main`
-  that changes the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`,
-  `windows/`, `assets/`, `third_party/`, `pubspec.*`) gets the next version:
-  after the highest tag, `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes
-  `vX.Y.(Z+1)` with build N+1 on the pushed commit. It goes to X.Y.0 when
-  `pubspec.yaml`'s version line asks for a new X.Y by hand, which is all
-  that line still decides. Nothing is committed back to `main`. The tag is
-  made with the run's own `GITHUB_TOKEN`. A tag made that way starts no
-  workflow of its own, so the same run then calls `release.yml` for it.
+- `.github/workflows/tag.yml` numbers every release and drives it through
+  the gate. Releases come in batches, not one per push. Commits that change
+  the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`, `windows/`,
+  `assets/`, `third_party/`, `pubspec.*`) gather until there are **ten**
+  since the last release, or until one of them is a **new feature**, which
+  releases at once and takes everything gathered with it. A feature says so
+  with a trailer in its commit message, beside `Co-Authored-By:`:
+
+  ```
+  Release: feature
+  ```
+
+  or `git commit --trailer 'Release: feature'`. Merge commits, and commits
+  that change nothing the app is built from, count towards neither; the
+  trailer on one of those is ignored. A push short of a release says how
+  many have gathered and stops. An urgent fix that cannot wait for ten can
+  carry the same trailer. `tool/test_release_flow.sh` runs the step against
+  each of these cases in a throwaway repo.
+
+  A release gets the next version: after the highest release tag,
+  `vX.Y.Z` annotated `Jeansh X.Y.Z, build N`, comes `vX.Y.(Z+1)` with build
+  N+1 on the pushed commit. It goes to X.Y.0 when `pubspec.yaml`'s version
+  line asks for a new X.Y by hand, which is all that line still decides.
+  Nothing is committed back to `main`.
+
+  That number is not a release yet. It is tagged as a candidate,
+  `vX.Y.Z-rc.1`, and `e2e.yml` builds it and drives it on a device:
+
+  - **passed** — `promote` tags the same commit `vX.Y.Z`, with the same
+    message, and the run calls `release.yml` for it;
+  - **failed** — nothing is promoted, nothing is published, and an issue is
+    opened naming the candidate and linking the run. The next push that
+    changes the app tries the same number again as `-rc.2`, and on. A
+    candidate's tag is never moved or reused, so the rc number is a count of
+    how many tries a release has had.
+
+  Only release tags are counted from, so a candidate that never passed
+  cannot become the number the next release follows — which also settles
+  git's own version order, where `v1.0.68-rc.1` sorts after `v1.0.68`.
+
+  Both tags are made with the run's own `GITHUB_TOKEN`. A tag made that way
+  starts no workflow of its own, so the one run drives every stage.
+- `.github/workflows/e2e.yml` is the gate: it takes the candidate's tag and
+  the version to build it as, drives the app, and reports back whether that
+  passed and what share of `lib/` it reached. Nothing it builds is ever
+  kept — the candidate is built to be driven and thrown away, and only
+  `release.yml`'s own build, from the promoted tag, is published. Its
+  coverage shows in the promotion's log line and in the issue when the gate
+  fails; a run that could not measure coverage is not a failed one.
+
+  What drives the app, and on which platform, is deliberately not the
+  pipeline's business: **the suite belongs to the e2e session**, and more
+  than one can live in there as long as one pass or fail and one coverage
+  number come out. The tag, the version, the exit status and that number are
+  the whole of what the release pipeline depends on.
 - `.github/workflows/release.yml` releases a tag's commit. `tag.yml` calls
   it. From the Actions tab you can run it by hand with a tag, to release
   that tag again, or with none, for `main` as it stands. `version` reads
@@ -1222,11 +1268,22 @@ The repository is public, so GitHub Actions costs nothing.
     build is kept: each release replaces the one before, whose files are
     deleted. A dry run, or a run for `main` as it stands, builds but keeps
     nothing, so it never replaces a real release. Nothing else keeps a
-    build: no Actions artifact, no GitHub release, the bucket
-    has no public URL or domain, and the public run log names neither the
-    bucket nor an object.
+    build: no Actions artifact, no build on a GitHub release, and the public
+    run log names neither the bucket nor an object. Each build has the host
+    it will look for its own updates on baked in, from the repository
+    variable `JEANSH_UPDATE_HOST`; unset leaves the updater off.
+  - `feed` writes `latest.json` and puts it on the tag's GitHub release, the
+    one thing this repository publishes. It reads the three builds back out
+    of R2, so the names, sizes and SHA-256s it gives are the objects that are
+    really there, and it stops rather than publish a feed whose files are not
+    this release's. The feed carries a path under each build's own baked-in
+    host and never a URL, so it cannot point a build anywhere else; there is
+    no binary on the release and it does not say where the builds are served
+    from. See *Updating a desktop build* below, and
+    `lib/src/update/updater.dart`.
   - `notes`, once both succeed, hands the app's commit messages since the
-    previous tag to a model through OpenRouter (`tool/release_notes.py`,
+    last release that has notes to a model through OpenRouter
+    (`tool/release_notes.py`,
     `anthropic/claude-sonnet-5` unless the repository variable
     `RELEASE_NOTES_MODEL` names another). The model writes the notes in
     English and Indonesian, and they are put first in `site/releases.json`
@@ -1234,6 +1291,15 @@ The repository is public, so GitHub Actions costs nothing.
     reads that one file through an R2 binding, so a release shows there
     without a deploy. `tool/test_release_notes.py` checks what it does with
     a reply.
+
+    "Since the last release that has notes", rather than since the last
+    tag, because this job waits on every build: a release with a red build
+    gets no notes, even when Play has already taken it, and its changes are
+    told in the next release's notes rather than never. The list itself
+    says which release that is. A candidate never is one, and a tag released
+    again by hand counts from the release before it.
+    `tool/test_release_flow.sh` runs this step against a stand-in for R2
+    and for the model.
 
 The release reads these secrets from the `release` environment, which only
 `main` can deploy to. So they reach no workflow on any other branch or tag,
@@ -1251,6 +1317,15 @@ and a `v*` tag made anywhere else releases nothing:
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | `jeansh-builds` |
 | `OPENROUTER_API_KEY` | an OpenRouter API key, for the release notes |
+| `JEANSH_SENTRY_DSN` | the Sentry DSN crash reporting sends to, baked into every build, Android and desktop. Not truly a secret, but kept as one so it stays out of the public run log. Unset leaves crash reporting off |
+
+And two repository variables, which are not secrets and are visible to
+anyone who can read the settings:
+
+| Variable | Holds |
+| --- | --- |
+| `JEANSH_UPDATE_HOST` | where the desktop builds are served from, e.g. `https://builds.jeansh.brata.cloud`, baked into each build. Unset leaves the updater off |
+| `RELEASE_NOTES_MODEL` | the OpenRouter model the notes are written by, if not `anthropic/claude-sonnet-5` |
 
 Only collaborators can contribute. Pull requests and issues can only be
 opened by collaborators. On `main`, a ruleset refuses deletion and force
@@ -1297,15 +1372,22 @@ What comes down is checked against the feed's SHA-256 before it is kept, and
 deleted if it does not match. Nothing is run and nothing is replaced: the file
 lands in the user's Downloads and the dialog says what to do with it.
 
-Two things are still needed for it to work end to end:
+`release.yml`'s `feed` job publishes the feed on every release, reading the
+sizes and hashes back out of R2 so they describe the objects that are really
+there. One thing is still needed for it to work end to end:
 
-1. **Serve the bucket.** `jeansh-builds` is private with no public URL today.
-   A Worker or a custom domain in front of `desktop/` would give
-   `JEANSH_UPDATE_HOST` something to point at. Then set the repository
-   variable `JEANSH_UPDATE_HOST` so CI bakes it into each build.
-2. **Publish the feed.** `release.yml` has to write `latest.json` — the
-   paths, sizes and SHA-256s its `desktop` jobs already compute — onto the
-   release's GitHub Release. Until it does, no build sees an update.
+**Serve the bucket.** `jeansh-builds` is private with no public URL today. A
+Worker or a custom domain in front of `desktop/` would give
+`JEANSH_UPDATE_HOST` something to point at. Then set the repository variable
+`JEANSH_UPDATE_HOST`, and the next release bakes it into each build. Until
+then every build says it takes no updates, which is the intent: half a
+feed and no host would be worse than none.
+
+Serving `desktop/` puts the paid builds where anyone holding a path can fetch
+them. That is what an updater with no sign-in means, and the licence already
+allows anyone to build Jeansh themselves for free; if the official builds
+should stay behind something, the Worker in front of the bucket is where that
+belongs, not the feed.
 
 Signing the feed is the next step and is not done: an ed25519 key in CI, its
 public key baked in beside the host, and the signature checked before the feed

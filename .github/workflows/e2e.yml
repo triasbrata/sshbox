@@ -1,0 +1,97 @@
+# The end-to-end gate: a release candidate is driven as a real app before it
+# is allowed to become a release. tag.yml calls this with the rc tag it has
+# just made, and promotes that commit only if this succeeds.
+#
+# **The body of the `run` job belongs to the e2e session, not to the release
+# pipeline.** What this file guarantees the pipeline, and what must survive
+# any rewrite of it, is only this:
+#
+#   - it takes `tag` (the rc tag to check out) and `version` (the X.Y.Z+N to
+#     write into that checkout's pubspec.yaml, since main's line only sets
+#     X.Y);
+#   - it succeeds when every flow passed and fails otherwise, because that is
+#     the whole gate: a failure promotes nothing and publishes nothing;
+#   - it sets the `coverage` output to the percentage of lines of `lib/` the
+#     flows reached, or leaves it empty when that could not be measured. An
+#     unmeasured run is not a failed one.
+#
+# Nothing here publishes a build: the rc is built to be driven and thrown
+# away. Only release.yml's own build, made from the promoted tag, is ever
+# kept.
+name: E2E
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The rc tag to check out and drive
+        type: string
+        required: true
+      version:
+        description: X.Y.Z+N, written into this checkout's pubspec.yaml
+        type: string
+        required: true
+    outputs:
+      coverage:
+        description: Percentage of lines of lib/ the flows reached, or empty
+        value: ${{ jobs.run.outputs.coverage }}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: A tag to drive; empty is main as it stands
+        type: string
+        default: ''
+      version:
+        description: X.Y.Z+N to build as
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency: e2e
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      coverage: ${{ steps.coverage.outputs.pct }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      # main's version line only sets X.Y, so the build under test carries the
+      # number the release would carry, in this runner's copy only.
+      - name: Set the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
+
+      # ----------------------------------------------------------------------
+      # Everything from here to the coverage step is the e2e session's, and
+      # the pipeline deliberately says nothing about what is in it. Which
+      # platform the candidate is driven on, what drives it, and what it is
+      # driven against are that session's to decide and the user's to settle;
+      # more than one suite can live here as long as one pass or fail and one
+      # coverage number come out the other end.
+      #
+      # Until something lands this fails, and so nothing is promoted. That is
+      # the safe direction to be unfinished in: a gate that passed by default
+      # would publish every release untested.
+      # ----------------------------------------------------------------------
+      - name: The flows
+        run: |
+          echo "::error::e2e.yml has no flows yet - see the comment in this file"
+          exit 1
+
+      # Read by tag.yml: it goes in the promotion's log line, and in the issue
+      # when the gate fails. An empty value means it could not be measured,
+      # which is not a failure.
+      - name: Coverage
+        id: coverage
+        if: always()
+        run: echo "pct=" >> "$GITHUB_OUTPUT"

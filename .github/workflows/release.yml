@@ -6,8 +6,11 @@
 # tool/release.sh --publish, which releases on Play's closed testing track (by
 # hand it is a --dry-run unless told otherwise). Desktop goes to R2: `desktop`
 # builds Linux, Windows and macOS and keeps them in a private bucket, and
-# nowhere else. Then `notes` has the release notes written, in English and
-# Indonesian, for jeansh.brata.cloud/releases. The secrets live in the
+# nowhere else. `feed` then publishes latest.json, the metadata a desktop
+# build reads to find its update, on the tag's GitHub release — the one thing
+# this repository publishes, and it carries no build. Then `notes` has the
+# release notes written, in English and Indonesian, for
+# jeansh.brata.cloud/releases. The secrets live in the
 # `release` environment, which only a workflow running on main can reach.
 # README.md, Releasing.
 name: Release
@@ -135,6 +138,9 @@ jobs:
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play.json
           DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+          # Crash reporting's DSN, baked in by tool/release.sh. Unset leaves
+          # crash reporting off, and Settings says so.
+          JEANSH_SENTRY_DSN: ${{ secrets.JEANSH_SENTRY_DSN }}
         run: tool/release.sh --publish $DRY_RUN
 
       - name: Remove the signing files
@@ -186,6 +192,15 @@ jobs:
       - name: Build
         env:
           LABEL: ${{ needs.version.outputs.label }}
+          # Where this build looks for its updates, baked in by both build
+          # scripts. A repository variable, not a secret: it is a public URL,
+          # and `strings` on any build shows it. Unset leaves the updater off.
+          JEANSH_UPDATE_HOST: ${{ vars.JEANSH_UPDATE_HOST }}
+          # Crash reporting's DSN, baked in the same way. A secret although it
+          # is not one, so that it stays out of this public run log: nobody
+          # should be handed the means to fill the quota with junk. Unset
+          # leaves crash reporting off.
+          JEANSH_SENTRY_DSN: ${{ secrets.JEANSH_SENTRY_DSN }}
         run: |
           case ${{ matrix.target }} in
             linux) tools/build_desktop.sh --skip-checks linux ;;
@@ -193,7 +208,13 @@ jobs:
             # tools/build_desktop.sh builds Windows from WSL; here is Windows
             # itself, so the same build and the same zip, by hand.
             windows)
-              flutter build windows --release
+              # The same defines the build scripts pass, by hand here.
+              defines=(--dart-define "JEANSH_VERSION=$LABEL")
+              [ -z "${JEANSH_UPDATE_HOST:-}" ] ||
+                defines+=(--dart-define "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")
+              [ -z "${JEANSH_SENTRY_DSN:-}" ] ||
+                defines+=(--dart-define "JEANSH_SENTRY_DSN=$JEANSH_SENTRY_DSN")
+              flutter build windows --release "${defines[@]}"
               name="Jeansh-$LABEL"
               cp -r build/windows/x64/runner/Release "$RUNNER_TEMP/$name"
               mkdir -p "dist/$LABEL"
@@ -224,6 +245,93 @@ jobs:
           done
           aws s3 sync --delete --only-show-errors --endpoint-url "$R2_ENDPOINT" \
             "dist/$LABEL" "s3://$R2_BUCKET/desktop/${{ matrix.target }}/"
+
+  # The feed the desktop builds read to find their update: latest.json, on
+  # the tag's own GitHub release. Metadata only — file names, sizes and
+  # SHA-256s, and a path under the host each build has baked in, never a URL
+  # and never the host itself — so the release carries nothing to download and
+  # says nothing about where the builds are served from. The sizes and hashes
+  # are read back out of R2, so they describe the objects that are really
+  # there rather than what this run happened to build. A build's own host is
+  # decided when it is built, never by whoever writes this feed; see
+  # lib/src/update/updater.dart, which refuses a path that could leave it.
+  feed:
+    needs: [version, desktop]
+    # A tag's release, not a dry run and not main as it stands.
+    if: inputs.tag != '' && !inputs.dry_run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Write latest.json from what is in R2
+        env:
+          NAME: ${{ needs.version.outputs.name }}
+          BUILD: ${{ needs.version.outputs.build }}
+          LABEL: ${{ needs.version.outputs.label }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          for secret in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
+            [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
+          done
+          r2() { aws --endpoint-url "$R2_ENDPOINT" "$@"; }
+          : > "$RUNNER_TEMP/parts.json"
+          for target in linux windows macos; do
+            case $target in
+              linux)   match='-linux-.*\.tar\.gz$' ;;
+              windows) match='-windows-.*\.zip$' ;;
+              # The zip, not the dmg: it is what the app tells the user to
+              # unzip and drag into Applications.
+              macos)   match='-macos\.zip$' ;;
+            esac
+            r2 s3 cp --only-show-errors "s3://$R2_BUCKET/desktop/$target/SHA256SUMS" "$RUNNER_TEMP/sums"
+            # -- : every pattern starts with a dash, which grep would read as
+            # options of its own.
+            name=$(awk '{ print $2 }' "$RUNNER_TEMP/sums" | grep -E -- "$match" | head -n 1)
+            [ -n "$name" ] || { echo "::error::no $target build in R2"; exit 1; }
+            # R2 keeps only the newest build, so a name that is not this
+            # release's is a sync that did not land. Better a red run than a
+            # feed that offers this version and hands over the one before,
+            # which no amount of updating would ever satisfy.
+            case $name in
+              *"$LABEL"*) ;;
+              *) echo "::error::the $target build in R2 is $name, not this release's $LABEL"; exit 1 ;;
+            esac
+            sha=$(awk -v n="$name" '$2 == n { print $1 }' "$RUNNER_TEMP/sums")
+            size=$(r2 s3api head-object --bucket "$R2_BUCKET" \
+              --key "desktop/$target/$name" --query ContentLength --output text)
+            jq -n --arg t "$target" --arg p "desktop/$target/$name" \
+                  --arg s "$sha" --argjson z "$size" \
+              '{($t): {path: $p, size: $z, sha256: $s}}' >> "$RUNNER_TEMP/parts.json"
+          done
+          jq -n --arg v "$NAME" --argjson b "$BUILD" \
+            --slurpfile parts "$RUNNER_TEMP/parts.json" \
+            '{version: $v, build: $b, platforms: ($parts | add)}' \
+            > "$RUNNER_TEMP/latest.json"
+          cat "$RUNNER_TEMP/latest.json"
+
+      # An older tag released again by hand becomes the latest release, and so
+      # the feed every build reads. It offers a real build and the app updates
+      # to nothing older than it is already running, so it is a release that
+      # goes quiet rather than one that goes backwards.
+      - name: Put it on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          NAME: ${{ needs.version.outputs.name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Jeansh $NAME" \
+              --notes "Jeansh $NAME. The builds are served from Jeansh's own host; this release carries only latest.json, which the app reads to find them." \
+              --latest
+          gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
 
   notes:
     needs: [version, android, desktop]
@@ -259,11 +367,6 @@ jobs:
           for secret in OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
             [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
           done
-          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)
-          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
-            lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
-            > "$RUNNER_TEMP/changes.txt"
-
           r2() { aws --endpoint-url "$R2_ENDPOINT" "$@"; }
           list="$RUNNER_TEMP/releases.json"
           # No list yet starts one. Any other failure to read it stops here,
@@ -276,6 +379,26 @@ jobs:
             echo "::error::could not read the release notes from R2"
             exit 1
           fi
+
+          # From the last release that has notes, not merely the last tag.
+          # This job waits on every build, so a release with a red build gets
+          # no notes, and its changes belong in these rather than nowhere: a
+          # release that went out on Play with no notes would otherwise never
+          # reach the website at all. The list says where that is. Its tag
+          # must lie behind this one, which a tag released again by hand does
+          # not; then, and for a list with no such tag, the release before,
+          # never a candidate, whose failed rc would cut these short.
+          last=$(jq -r --arg v "$NAME" '[.[] | select(.version != $v)][0].version // empty' "$list")
+          if [ -n "$last" ] && git merge-base --is-ancestor "v$last" "$TAG" 2>/dev/null; then
+            prev=v$last
+          else
+            prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$TAG^" 2>/dev/null || true)
+          fi
+          echo "The notes cover ${prev:-everything} to $TAG"
+          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
+            lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
+            > "$RUNNER_TEMP/changes.txt"
+
           python3 tool/release_notes.py --version "$NAME" --build "$BUILD" \
             --changes "$RUNNER_TEMP/changes.txt" "$list"
           r2 s3 cp --only-show-errors --content-type application/json \
