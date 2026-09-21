@@ -75,9 +75,10 @@ it on the tablet and said it is OK.
   build it last worked in is the only thing that gives a range to bisect, and
   only the coordinator hears the user say it passed, so only the coordinator
   can record the real one.
-  The seventy older rows that recorded no build were stamped in one go with
-  the build current at the time, on the user's instruction to treat everything
-  already tested as passing now ("maka kamu nomorin ke build sekarang dengan
+  The seventy older rows that recorded no build are stamped in one go with
+  the build current at the time — done by the e2e session on its branch
+  `worktree-desktop-e2e-spike` (a71d179), so on `main` only once that merges —
+  on the user's instruction to treat everything already tested as passing now ("maka kamu nomorin ke build sekarang dengan
   anggapan semua yang sudah di test user adalah sudah pass"). Their wording has
   to keep saying that the stamp is the newest build the row is known to work
   in and **not** the first: a reader who takes it for the first will bisect
