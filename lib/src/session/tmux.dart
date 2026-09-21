@@ -511,9 +511,14 @@ class TmuxSession {
   /// the Attach picker: see [parseList].
   ///
   /// Fields apart by spaces, the name last: everything before it is a
-  /// number, so a name full of spaces cannot pass for another field. Not a
-  /// tab, which would have been the obvious choice: tmux 3.2a prints any
-  /// control character in a format's output as `_`, tab included.
+  /// number, so a name full of spaces cannot pass for another field, and
+  /// [parseList] splits at the first four spaces only.
+  ///
+  /// `-u`, as the attach itself has, and not for looks: an exec channel
+  /// seldom carries a UTF-8 locale, and a tmux client without one has what
+  /// it prints written down to ASCII, every other character a `_` — measured
+  /// on tmux 3.2a, `café 🚀` listed as `caf_ __`, a name that attaching then
+  /// asks for and does not find, or finds as somebody else's session.
   ///
   /// `#{window_activity}` rather than `#{session_activity}`, which sounds
   /// like the one to ask for and does not move when a pane writes — measured
@@ -521,7 +526,7 @@ class TmuxSession {
   /// activity time it was made with while its window's went up.
   static const list =
       "sh -c '$_findTmux"
-      r'exec "$t" list-sessions -F '
+      r'exec "$t" -u list-sessions -F '
       '"#{session_attached} #{session_windows} #{session_created} '
       '#{window_activity} #{session_name}" 2>/dev/null\'';
 

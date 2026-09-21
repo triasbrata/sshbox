@@ -10,6 +10,7 @@ import '../platform.dart';
 import '../session/local_transport.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
+import 'connect_sheet.dart';
 import 'db_editor_page.dart';
 import 'host_edit_page.dart';
 import 'known_hosts_page.dart';
@@ -333,6 +334,18 @@ class _HostsPageState extends State<HostsPage> {
                     onDuplicate: () => _duplicate(host),
                     onDelete: () => _confirmDelete(host),
                     onCloseSessions: () => widget.sessions.closeHost(host.id),
+                    // The way back to a session left running with Detach,
+                    // with nothing of the host open: a tap would make a new
+                    // session first, only to be closed again.
+                    onAttach: host.useTmux
+                        ? () => openInSheet(
+                            context,
+                            widget.sessions,
+                            host,
+                            secrets: widget.secrets,
+                            pickTmux: true,
+                          )
+                        : null,
                   );
                 }
 
@@ -572,6 +585,7 @@ class _HostTile extends StatelessWidget {
     required this.onDuplicate,
     required this.onDelete,
     required this.onCloseSessions,
+    this.onAttach,
   });
 
   final HostProfile host;
@@ -586,6 +600,10 @@ class _HostTile extends StatelessWidget {
   final VoidCallback onDuplicate;
   final VoidCallback onDelete;
   final VoidCallback onCloseSessions;
+
+  /// Joins a tmux session already running on the host. Null, and not in the
+  /// menu, for a host that does not use tmux.
+  final VoidCallback? onAttach;
 
   @override
   Widget build(BuildContext context) {
@@ -705,6 +723,7 @@ class _HostTile extends StatelessWidget {
                   'duplicate' => onDuplicate(),
                   'delete' => onDelete(),
                   'close' => onCloseSessions(),
+                  'attach' => onAttach?.call(),
                   _ => null,
                 },
                 itemBuilder: (_) => [
@@ -716,6 +735,11 @@ class _HostTile extends StatelessWidget {
                             ? 'Close session'
                             : 'Close $sessionCount sessions',
                       ),
+                    ),
+                  if (onAttach != null)
+                    const PopupMenuItem(
+                      value: 'attach',
+                      child: Text('Attach to a tmux session…'),
                     ),
                   const PopupMenuItem(value: 'edit', child: Text('Edit')),
                   const PopupMenuItem(

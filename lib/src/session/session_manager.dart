@@ -65,11 +65,17 @@ class LiveSession extends ChangeNotifier {
     this._onNotify,
     String? tmuxName,
     bool restored = false,
-    bool attachTmux = false,
-  }) : tmuxName = tmuxName ?? _newTmuxName(),
+    bool pickTmux = false,
+  }) : _tmuxName = tmuxName ?? _newTmuxName(),
        _autoConnect = restored,
-       _attachTmuxOnly = attachTmux,
-       _checkTmux = restored || attachTmux {
+       _pickTmux = pickTmux,
+       // A name the app did not make is only ever joined, however the tab
+       // came by it — Attach, or a tab brought back that Attach once opened —
+       // so nothing ever makes a session under somebody else's name.
+       _attachTmuxOnly =
+           pickTmux ||
+           (tmuxName != null && !tmuxNamePattern.hasMatch(tmuxName)),
+       _checkTmux = restored {
     forwarder = TailnetForwarder(
       onChanged: _notify,
       forwardedElsewhere: forwardedElsewhere,
@@ -166,7 +172,11 @@ class LiveSession extends ChangeNotifier {
   /// restarts: see [SessionManager.restoreTabs]. Random rather than [id],
   /// which restarts with the app: a new tab must not land in a session left
   /// behind by an earlier run, or by another device.
-  final String tmuxName;
+  ///
+  /// Or the name of a session already on the host, which Attach picked:
+  /// then set once the host has been asked, see [_pickTmux].
+  String get tmuxName => _tmuxName;
+  String _tmuxName;
   static final _random = math.Random();
   static String _newTmuxName() =>
       'sshbox-${_random.nextInt(1 << 32).toRadixString(36)}';
@@ -174,6 +184,13 @@ class LiveSession extends ChangeNotifier {
   /// What the app's own tmux names look like: what [_newTmuxName] makes, and
   /// what tells a tab's session from one the user made by hand.
   static final tmuxNamePattern = RegExp(r'^sshbox-[0-9a-z]+$');
+
+  /// Whether this tab's tmux session is one the app made, which its ✕ ends,
+  /// as closing a tab always has. One the user made by hand, and joined
+  /// through Attach, is left running when its tab closes: it was never the
+  /// app's to end, and it may be somebody's whole day's work, at a terminal
+  /// that is still attached to it.
+  bool get ownTmux => tmuxNamePattern.hasMatch(_tmuxName);
 
   /// Whether [name] may be used as a tmux session name — of a tab brought
   /// back from an earlier run, whose name was Attach's pick as easily as the
@@ -184,9 +201,17 @@ class LiveSession extends ChangeNotifier {
   /// to match a pattern against. What is left is that it has to be a name
   /// tmux could have: not empty, no control character — tmux stores those as
   /// escapes rather than as themselves — and short enough to be one.
+  ///
+  /// And one tmux can be asked for by name at all. A target starting with
+  /// `$` is read as a session's id before it is read as a name, `=` or no
+  /// `=`: measured on tmux 3.2a, a session named `$1` answers to `=$1` as
+  /// the session whose id is $1, which is another one, and `$99` or `$$`
+  /// answer to nothing. tmux writes `$` out as `\$` where a letter or `{`
+  /// follows, which is why `$HOME` is safe and `$1` is not.
   static bool tmuxNameAllowed(String name) =>
       name.isNotEmpty &&
       name.length <= 256 &&
+      !name.startsWith(r'$') &&
       !RegExp(r'[\x00-\x1f\x7f]').hasMatch(name);
 
   /// Brought back from an earlier run and not connected since: see
@@ -206,9 +231,19 @@ class LiveSession extends ChangeNotifier {
   /// start a new session rather than quietly doing it.
   bool _attachTmuxOnly;
 
+  /// Whether the next connect asks which of the host's tmux sessions to
+  /// join, rather than knowing: Attach, from a tab or from a host's card. The
+  /// question is [connect]'s `pickTmux`, asked once the connection is up.
+  bool _pickTmux;
+
   /// Whether this tab has let its tmux session go on purpose — Detach —
   /// so [dispose] must leave it running. Set by [detach] alone.
   bool _detached = false;
+
+  /// Whether letting this tab go ends its tmux session: only the ✕, only on
+  /// a session the app made. Detach never does, and neither does closing a
+  /// tab on a session somebody made by hand: see [ownTmux].
+  bool get _killsTmux => !_detached && ownTmux;
 
   bool _tmuxGone = false;
 
@@ -227,7 +262,12 @@ class LiveSession extends ChangeNotifier {
   /// Gives up on the tmux session that went: the next connect makes a new one
   /// under the same name — including one this tab had only attached to, the
   /// user having been told it is no longer there and asked for a new one.
+  ///
+  /// A session the user had made by hand is the exception: the new one is
+  /// the app's own, under a name of its own, so it is recorded, and the ✕
+  /// ends it, like any other the app made.
   void startNewTmux() {
+    if (!ownTmux) _tmuxName = _newTmuxName();
     _checkTmux = false;
     _attachTmuxOnly = false;
     _tmuxGone = false;
@@ -574,9 +614,14 @@ class LiveSession extends ChangeNotifier {
 
   /// Connects if there is no live shell, and does nothing while one is up or
   /// on its way.
+  ///
+  /// [pickTmux] is Attach's question, for a tab made to ask it: which of the
+  /// tmux sessions on the host to join, given every one there is. Null from
+  /// it, or no question to ask, and nothing is joined.
   Future<void> connect({
     required SecretStore secrets,
     Future<bool> Function(HostKeyCheck check)? confirmHostKey,
+    Future<String?> Function(List<TmuxSessionInfo> found)? pickTmux,
     (int columns, int rows)? size,
   }) async {
     if (isConnected || _connecting) return;
@@ -644,6 +689,15 @@ class LiveSession extends ChangeNotifier {
       }
 
       var session = await open(shell: !host.useTmux);
+      if (host.useTmux && _pickTmux) {
+        final picked = await _pick(session, pickTmux, current);
+        if (picked == null) {
+          await session.dispose();
+          return;
+        }
+        _tmuxName = picked;
+        _pickTmux = false;
+      }
       if (host.useTmux && _checkTmux && await _tmuxMissing(session)) {
         await session.dispose();
         if (current()) {
@@ -666,7 +720,7 @@ class LiveSession extends ChangeNotifier {
         // Given up on while it connected, so nothing will ever show it. A
         // tab that has closed takes its tmux session with it, as closing a
         // tab always does; one still open keeps it for its next reconnect.
-        if (_disposed) await tmux?.kill();
+        if (_disposed && _killsTmux) await tmux?.kill();
         tmux?.dispose();
         await session.dispose();
         return;
@@ -750,9 +804,12 @@ class LiveSession extends ChangeNotifier {
         onChanged: _notify,
         onEnded: _onTmuxEnded,
         size: _size,
-        // A session Attach joined is left as its owner set it up: see
-        // [TmuxSession.record].
-        record: _attachTmuxOnly ? null : _host.recordPanes,
+        // A session the app did not make is left as its owner set it up:
+        // see [TmuxSession.record]. By its name rather than by how the tab
+        // came to it, since a tab brought back, or given a new session, has
+        // forgotten that it came by Attach — and the name goes into the
+        // record's pipe as script.
+        record: ownTmux ? _host.recordPanes : null,
       );
     } catch (error) {
       _tmuxProblem = '$error';
@@ -790,20 +847,42 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
-  /// Every tmux session on this host, for the Attach picker, read over this
-  /// tab's own connection — which is why Attach is offered from a tab and
-  /// not from a host that has none open: asking costs a connection, and on a
-  /// tmux host making one would leave an empty session behind just for
-  /// having asked.
+  /// Attach's question, asked once the connection is up and before tmux is
+  /// touched: which of the host's tmux sessions this tab joins. The listing
+  /// goes over the connection the tab is about to use anyway, as a command
+  /// rather than as a tmux client, so asking makes no session and costs no
+  /// connection of its own — which is why Attach can be offered from a
+  /// host's card, with nothing of that host open.
   ///
-  /// Throws whatever the connection throws; an empty list is a host with no
-  /// tmux sessions running.
-  Future<List<TmuxSessionInfo>> tmuxSessions() async {
-    final session = _session;
-    if (session is! CommandCapable) return const [];
-    return TmuxSession.parseList(
-      await (session as CommandCapable).run(TmuxSession.list).toList(),
-    );
+  /// Null, with [_error] saying why, when there is nothing to join: no
+  /// sessions, or what the host printed instead of any, such as tmux not
+  /// being installed. Null and nothing said when the question went away
+  /// unanswered, its sheet closed.
+  Future<String?> _pick(
+    TerminalSession session,
+    Future<String?> Function(List<TmuxSessionInfo> found)? ask,
+    bool Function() current,
+  ) async {
+    final List<String> lines;
+    try {
+      lines = session is CommandCapable
+          ? await (session as CommandCapable).run(TmuxSession.list).toList()
+          : const [];
+    } catch (error) {
+      if (current()) _error = '$error';
+      return null;
+    }
+    final found = TmuxSession.parseList(lines);
+    if (!current()) return null;
+    if (found.isEmpty || ask == null) {
+      _error = lines.lastWhere(
+        (line) => line.trim().isNotEmpty,
+        orElse: () => 'No tmux sessions are running on ${host.displayName}.',
+      );
+      return null;
+    }
+    final picked = await ask(found);
+    return current() ? picked : null;
   }
 
   /// Lets go of this tab's tmux session and leaves it running on the host:
@@ -815,9 +894,13 @@ class LiveSession extends ChangeNotifier {
   /// stay exactly as they were. [dispose] is told not to kill it, so the tab
   /// closing behind this cannot end it after all.
   Future<void> detach() async {
+    // Before anything that can return: a tab asked to detach must not kill,
+    // whether or not it still has tmux to detach from — a connect still under
+    // way comes back to a tab that has closed, and ends what it attached to
+    // only where this is not set.
+    _detached = true;
     final tmux = _tmux;
     if (tmux == null) return;
-    _detached = true;
     await tmux.detach();
     await _teardown();
     _notify();
@@ -1083,10 +1166,15 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
   Future<void> reconnect({
     required SecretStore secrets,
     Future<bool> Function(HostKeyCheck check)? confirmHostKey,
+    Future<String?> Function(List<TmuxSessionInfo> found)? pickTmux,
   }) async {
     await disconnect();
     _terminal.write('\x1b[2J\x1b[H');
-    await connect(secrets: secrets, confirmHostKey: confirmHostKey);
+    await connect(
+      secrets: secrets,
+      confirmHostKey: confirmHostKey,
+      pickTmux: pickTmux,
+    );
   }
 
   /// Gives up on the connect under way — what closing its sheet does. A host
@@ -1107,9 +1195,8 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     // it triggers must not touch a disposed notifier.
     _disposed = true;
     // Closing the tab ends its tmux session — except where [detach] has
-    // already let it go on purpose, which is the one path that must not
-    // kill.
-    unawaited(_teardown(kill: !_detached));
+    // already let it go on purpose, or the session was never the app's.
+    unawaited(_teardown(kill: _killsTmux));
     _chat?.dispose();
     _chat = null;
     // Not only the git tab's: the panel also opens in the terminal's drawer,
@@ -1465,14 +1552,15 @@ class SessionManager extends ChangeNotifier {
   /// [LiveSession] takes one.
   ///
   /// [tmuxName] and [restored] bring back a tab saved by an earlier run: see
-  /// [restoreTabs]. [tmuxName] with [attachTmux] is Attach instead: a tmux
-  /// session already running on the host, joined rather than made.
+  /// [restoreTabs]. [pickTmux] is Attach instead: a tmux session already
+  /// running on the host, picked once the connection is up and joined rather
+  /// than made — see [LiveSession.connect].
   LiveSession create(
     HostProfile host, {
     TransportMaker? transport,
     String? tmuxName,
     bool restored = false,
-    bool attachTmux = false,
+    bool pickTmux = false,
   }) {
     late final LiveSession created;
     created = LiveSession(
@@ -1485,7 +1573,7 @@ class SessionManager extends ChangeNotifier {
       onNotify: onNotify,
       tmuxName: tmuxName,
       restored: restored,
-      attachTmux: attachTmux,
+      pickTmux: pickTmux,
     );
     return created;
   }
@@ -1529,7 +1617,7 @@ class SessionManager extends ChangeNotifier {
   /// [LiveSession.detach] does the leaving first, so by the time [close]
   /// disposes the session there is no tmux left to end and it has been told
   /// not to end one anyway. The tab's ✕ still goes to [close] alone and
-  /// still kills; the two paths meet nowhere.
+  /// still kills a session the app made; the two paths meet nowhere.
   Future<void> detach(int id) async {
     await _sessions[id]?.detach();
     await close(id);
