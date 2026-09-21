@@ -178,8 +178,15 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
           echo "$RC passed e2e${COVERAGE:+ at $COVERAGE% coverage}; promoted $GITHUB_SHA to $TAG"
 
+  # A called workflow's jobs get no more than the job calling it grants, and
+  # GitHub refuses the whole run before any job starts if one asks for more.
+  # release.yml's `feed` puts latest.json on the release, so this grants what
+  # it needs; tool/test_release_flow.sh checks every call here against what
+  # the called jobs ask for.
   release:
     needs: [next, promote]
+    permissions:
+      contents: write
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.next.outputs.tag }}

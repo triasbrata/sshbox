@@ -1170,8 +1170,15 @@ finish that release there once, then `--publish` again.
 
 The repository is public, so GitHub Actions costs nothing.
 
-- `.github/workflows/ci.yml` runs `flutter analyze` and `flutter test` on
-  every pull request and every push to `main`, as the job `check`.
+- `.github/workflows/ci.yml` runs `tool/test_release_flow.sh`,
+  `flutter analyze` and `flutter test` on every pull request and every push
+  to `main`, as the job `check`. The first checks, among the release flow's
+  own steps, that every call of one workflow from another is one GitHub will
+  start: a called workflow's jobs may ask for no more permissions than the
+  job calling it grants, and a call must pass the inputs it declares. GitHub
+  refuses a run that breaks either before any job exists, with nothing but
+  "a workflow file issue" to show for it, and actionlint does not check the
+  first.
 - `.github/workflows/tag.yml` numbers every release and drives it through
   the gate. Releases come in batches, not one per push. Commits that change
   the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`, `windows/`,

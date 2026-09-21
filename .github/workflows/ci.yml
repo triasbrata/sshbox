@@ -1,5 +1,6 @@
-# flutter analyze and flutter test on every pull request and every push to
-# main. `check` is the status the main branch ruleset asks a pull request for.
+# tool/test_release_flow.sh, flutter analyze and flutter test on every pull
+# request and every push to main. `check` is the status the main branch
+# ruleset asks a pull request for.
 name: CI
 
 on:
@@ -22,6 +23,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+
+      # The release flow's own steps, and every call of one workflow from
+      # another that GitHub would refuse to start. A workflow GitHub refuses
+      # fails no job of its own -- the run just never starts -- so this is
+      # where it shows. PyYAML reads the workflows.
+      - name: Release flow
+        run: |
+          python3 -c 'import yaml' 2> /dev/null ||
+            { sudo apt-get update -q && sudo apt-get install -yq python3-yaml; } > /dev/null
+          tool/test_release_flow.sh
 
       - uses: subosito/flutter-action@v2
         with:
