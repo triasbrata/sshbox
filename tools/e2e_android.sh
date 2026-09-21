@@ -28,12 +28,12 @@ APK="${APK:-build/app/outputs/flutter-apk/app-debug.apk}"
 GATING=(smoke connect_and_keybar)
 REPORT_ONLY=(tabs file_browser)
 
-# One label for every flow. The flows default to "WSL via", which would be a
-# lie on a CI runner; what matters is that seed_host and the rest agree.
-LABEL="E2E via"
-
+# No HOST_LABEL here. Maestro 2.10 applies a flow's own `env:` block after the
+# -e values, so every flow's default of "WSL via" would win over anything passed
+# -- the first run proved it, typing the defaults in place of these. The label
+# is only a name the flows agree on, so they keep their shared default. What
+# must come from here are the credentials, which no flow defaults any more.
 maestro_env=(
-  -e "HOST_LABEL=$LABEL"
   -e "SSH_HOST=10.0.2.2"
   -e "SSH_PORT=22"
   -e "SSH_USER=$SSH_USER"

@@ -158,14 +158,23 @@ jobs:
           disable-animations: true
           script: tools/e2e_android.sh
 
-      # What Maestro saw when a flow failed. Screenshots of the app under test,
-      # never a build: nothing here can be installed.
-      - name: Keep Maestro's record of a failure
+      # What Maestro saw when a flow failed: its screenshots, and nothing else.
+      #
+      # An allowlist, not the whole folder, and that is load-bearing. Maestro
+      # writes every variable it defines into maestro.log in plain text, and
+      # every string it types into commands.json -- the sshd password among
+      # them. GitHub masks the job's log, never an uploaded file, and on this
+      # public repository an artifact is downloadable by anyone signed in. The
+      # first run of this gate uploaded the whole folder and put the password
+      # there; it was a throwaway on a runner already gone, and the artifact
+      # was deleted, but the next one would not be. A screenshot shows a
+      # password field as dots.
+      - name: Keep Maestro's screenshots of a failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: maestro-${{ github.run_id }}
-          path: ~/.maestro/tests
+          path: ~/.maestro/tests/**/screenshots/*.png
           retention-days: 7
           if-no-files-found: ignore
 

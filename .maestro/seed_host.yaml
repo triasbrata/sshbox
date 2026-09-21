@@ -22,13 +22,18 @@
 # 10.0.2.2 is how an emulator reaches the machine running it, which is where
 # CI's own sshd listens. test/ssh_transport_live_test.dart already handshakes
 # against that same sshd, so the server half is a known quantity.
+# No defaults for the connection, on purpose. In Maestro 2.10 a flow's own
+# `env:` block is applied AFTER the -e values on the command line, so a default
+# written here silently beats what the caller passed: the first CI run typed
+# the defaults "runner"/"runner" in place of the runner's real credentials,
+# which would have failed sign-in with nothing saying why. Leaving them out
+# means -e is the only source, and a missing one fails loudly as literal text.
+#
+# HOST_LABEL keeps its default because every other flow defaults it to the same
+# "WSL via" and matches on it; defaulted here too, the two always agree.
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
-  SSH_HOST: "10.0.2.2"
-  SSH_PORT: "22"
-  SSH_USER: "runner"
-  SSH_PASSWORD: "runner"
 ---
 # clearState, unlike every other flow: this one is what makes the state the
 # others rely on, so it must not inherit a half-made host from a failed run.
@@ -56,11 +61,23 @@ env:
 - tapOn: "Username"
 - inputText: "${SSH_USER}"
 
-# "Password" names two things on this screen: the auth method's segment
-# (host_edit_page.dart, the ButtonSegment) and, below it, the field itself.
-# Maestro takes the first match, so a plain tapOn "Password" lands on the
-# segment every time and the text goes nowhere. Password is already the default
-# method, so the segment needs no tap; the field is the second match.
+# The keyboard is up from typing the username and covers the lower half of a
+# long form; the whole auth section sits below it, so Maestro -- which sees
+# only what is on screen -- found no "Password" at all. Put the keyboard away
+# and bring the method's segments to the middle, which leaves the field just
+# beneath them in view. "Key" is the anchor because on this screen, in password
+# mode, it names only that segment.
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: "Key"
+    direction: DOWN
+    centerElement: true
+
+# "Password" names two things here: the auth method's segment and, below it,
+# the field itself. Maestro takes the first match, so a plain tapOn "Password"
+# lands on the segment and the text goes nowhere. Password is already the
+# default method, so the segment needs no tap; the field is the second match.
 - tapOn:
     text: "Password"
     index: 1

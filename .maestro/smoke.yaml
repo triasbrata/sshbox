@@ -1,9 +1,12 @@
 # Does the app start and show the host list?
 #
-# HOST_LABEL is parameterised so one suite serves every device — an emulator
-# reaches the host at 10.0.2.2, a phone on the tailnet at its 100.x address,
-# and each has its own host entry. Override with:
-#   maestro test -e HOST_LABEL="WSL via emulator" .maestro/
+# HOST_LABEL is what every flow matches the host row on. It CANNOT be
+# overridden with -e: in Maestro 2.10 a flow's own `env:` block is applied
+# after the command line's, so `maestro test -e HOST_LABEL=...` is silently
+# ignored and the default below wins. This comment used to say the opposite,
+# and the first CI run of the release gate showed which was true. To use
+# another label, edit the default -- in every flow at once, since they have to
+# agree.
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
