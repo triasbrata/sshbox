@@ -2,6 +2,20 @@
 cmake_minimum_required(VERSION 3.14)
 project(jeansh LANGUAGES CXX)
 
+# Sentry's native crash backend is "none" for every build of this app, and on
+# purpose it is not a thing to override. Left to itself sentry_flutter picks
+# crashpad, and crashpad sends a minidump: a raw copy of the process's memory
+# at the crash. For an SSH client that memory can hold a private key or a
+# password in use, and a minidump never passes through the scrubber
+# (lib/src/telemetry/scrub.dart), which only ever sees Dart events — so it
+# would be the one thing that leaves the device unscrubbed. "none" still builds
+# the transport, so a Dart error is reported; a native crash is not. It is set
+# here rather than by a build script because CI's release.yml calls flutter
+# directly and never runs tools/build_desktop.sh, and a CI build must be the
+# same build as the one that was checked. sentry-native.cmake reads it from the
+# environment while the plugins below are configured.
+set(ENV{SENTRY_NATIVE_BACKEND} "none")
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "Jeansh")

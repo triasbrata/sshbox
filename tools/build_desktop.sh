@@ -129,14 +129,9 @@ version_args+=(--dart-define "JEANSH_VERSION=$label")
 
 # sentry_flutter builds sentry-native from source on Linux and Windows: its
 # sentry-native/sentry-native.cmake clones the upstream repository while CMake
-# configures, so a desktop build now wants a network. Its crash backend
-# defaults to crashpad, a large C++ tree of its own that nobody here has ever
-# put through MSVC — Firebase's prebuilt C++ SDK already cost this project its
-# desktop Firebase over a toolchain that could not link it. "none" builds the
-# transport and no crash handler, so a Dart error is still reported and a
-# native desktop crash is not. Set SENTRY_NATIVE_BACKEND in the environment to
-# try crashpad, and be ready for a long build.
-export SENTRY_NATIVE_BACKEND="${SENTRY_NATIVE_BACKEND:-none}"
+# configures, so a desktop build now wants a network. Its crash backend is
+# fixed at "none" in windows/CMakeLists.txt and linux/CMakeLists.txt, not here,
+# so that CI — which calls flutter directly — builds the same thing.
 
 out="$out_root/$label"
 mkdir -p "$out"
@@ -246,10 +241,7 @@ build_windows() {
   step "Windows: flutter build windows --$mode (Flutter $flutter_bat, Visual Studio $vs)"
   # Each line Flutter writes to stderr turned back into plain text: redirected,
   # PowerShell would wrap them as errors.
-  # SENTRY_NATIVE_BACKEND is read by CMake, and an exported variable in this
-  # shell does not cross into PowerShell, so it is set there as well.
   powershell "Set-Location -LiteralPath $(psq "$wsrc")
-\$env:SENTRY_NATIVE_BACKEND = $(psq "${SENTRY_NATIVE_BACKEND:-none}")
 & $(psq "$flutter_bat") build windows --$mode --build-name $(psq "$build_name") --build-number $(psq "$build_number") $defines 2>&1 | ForEach-Object { \"\$_\" }
 exit \$LASTEXITCODE"
 

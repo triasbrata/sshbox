@@ -2,6 +2,11 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
+# Sentry's native crash backend is "none", and not a thing to override: see the
+# same line in windows/CMakeLists.txt. crashpad would send minidumps, raw copies
+# of the process's memory, which never pass through the scrubber.
+set(ENV{SENTRY_NATIVE_BACKEND} "none")
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "jeansh")
