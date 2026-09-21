@@ -215,6 +215,14 @@ class _SshboxAppState extends State<SshboxApp> {
   /// however many it already has. Either way the tab strip, a view of the
   /// session registry, shows the session once it is up: nothing else is
   /// pushed on the navigator.
+  ///
+  /// A tap that opens nothing says why. A host no longer saved is the one
+  /// case that can: a notification posted for it before it was deleted, or a
+  /// link naming it. The other two ways out stay quiet on purpose. No
+  /// navigator cannot happen while the app runs — it is mounted in the same
+  /// build as this state, before any await here resumes — and there would be
+  /// nothing to say it on. A sheet closed before it connected was closed by
+  /// the user, who watched it go.
   Future<void> openHost(String hostId, {bool newSession = false}) async {
     final hosts = await _repository.load();
     HostProfile? host;
@@ -224,7 +232,17 @@ class _SshboxAppState extends State<SshboxApp> {
         break;
       }
     }
-    if (host == null) return;
+    if (host == null) {
+      final context = _navigator.currentContext;
+      if (context != null && context.mounted) {
+        showToast(
+          context,
+          'That host is no longer saved',
+          type: ToastificationType.warning,
+        );
+      }
+      return;
+    }
 
     var session = newSession ? null : _sessions.resume(host.id);
     if (session == null) {
