@@ -1,0 +1,49 @@
+# Long-press a shell's tab and pick Duplicate session: a second, independent
+# session on the same host, in a tab of its own.
+#
+# Also covers "several sessions per host": two live sessions on one host is
+# exactly the state that feature is about.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s).*${HOST_LABEL}.*"
+    timeout: 15000
+- tapOn: "(?s).*${HOST_LABEL}.*"
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# The shell's tab carries the host's name. On the terminal page the host's card
+# is not drawn, so the name matches the tab and nothing else.
+- longPressOn: "(?s).*${HOST_LABEL}.*"
+- tapOn: "Duplicate session"
+
+# A second connection: the key is already pinned, so no prompt, but it is still
+# a real handshake, so wait for the new session to come up.
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# Two tabs now, so two close buttons: index 1 exists only if there is a second.
+- assertVisible:
+    text: "(?s)Close .*"
+    index: 1
+
+# Close both, leaving the device on the host list as every other flow expects.
+- tapOn: "(?s)Close .*"
+- tapOn: "(?s)Close .*"
+- extendedWaitUntil:
+    visible: "(?s).*${HOST_LABEL}.*"
+    timeout: 10000
