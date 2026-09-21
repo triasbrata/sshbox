@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/pane_record.dart';
+import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
 import 'package:xterm2/xterm.dart';
@@ -481,6 +485,384 @@ void main() {
     // A real one there is found before anything these tests put down.
     skip: tmuxInPlace == null ? false : 'tmux is at $tmuxInPlace',
   );
+
+  test(
+    'a session name from the host reaches tmux whole, as one argument, and '
+    'nothing in it runs — through a real shell',
+    () async {
+      // Everything a name tmux accepts can hold that a shell would read:
+      // spaces, both quotes, a command substitution, a backtick, a
+      // semicolon, a backslash, and tmux's own `#` and `%`.
+      const nasty =
+          'it\'s "x" \$(touch pwned-sub) `touch pwned-tick`; '
+          'touch pwned-semi \\ #h %p';
+      final bin = await Directory('${dir.path}/bin').create();
+      for (final tool in ['/bin/sh', '/usr/bin/tail', '/usr/bin/grep']) {
+        await Link('${bin.path}/${tool.split('/').last}').create(tool);
+      }
+      // A tmux that writes down each argument it was given, one to a line,
+      // then a line of its own after each run, and says yes to anything.
+      await _script(
+        '${bin.path}/tmux',
+        'printf "%s\\n" "\$@" >> ${dir.path}/argv; '
+            'echo "<end>" >> ${dir.path}/argv; echo yes',
+      );
+      Future<List<List<String>>> runs(String command) async {
+        final argv = File('${dir.path}/argv');
+        if (argv.existsSync()) await argv.delete();
+        final result = await Process.run(
+          '/bin/sh',
+          ['-c', command],
+          workingDirectory: dir.path,
+          environment: {
+            'HOME': dir.path,
+            'PATH': bin.path,
+            'SHELL': '/bin/sh',
+          },
+          includeParentEnvironment: false,
+        );
+        expect(result.stderr, isEmpty, reason: command);
+        final calls = <List<String>>[[]];
+        for (final line in await argv.readAsLines()) {
+          line == '<end>' ? calls.add([]) : calls.last.add(line);
+        }
+        return calls..removeLast();
+      }
+
+      final attach = await runs(TmuxSession.attachExisting(nasty));
+      expect(attach.last.sublist(attach.last.length - 3), [
+        'attach-session',
+        '-t',
+        '=$nasty',
+      ]);
+      final start = await runs(TmuxSession.command(nasty));
+      expect(start.last.sublist(start.last.length - 4), [
+        'new-session',
+        '-A',
+        '-s',
+        nasty,
+      ]);
+      // Nothing of the name before tmux's own arguments: a name left in
+      // `$@` would be taken for a tmux command.
+      expect(start.last.take(3), ['-u', '-C', 'set']);
+      final exists = await runs(TmuxSession.exists(nasty));
+      expect(exists.single, ['has-session', '-t', '=$nasty']);
+
+      expect(
+        dir.listSync().map((entry) => entry.path.split('/').last),
+        isNot(anyElement(startsWith('pwned'))),
+      );
+    },
+  );
+
+  test(
+    'a session gone since it was listed is not swapped for one whose name '
+    'starts the same',
+    () async {
+      const name = 'build';
+      await _tmux(dir, ['new-session', '-d', '-s', 'build-2']);
+      // Without `=`, tmux takes a name that begins only one session's for
+      // that session.
+      expect(
+        (await _tmux(dir, ['has-session', '-t', name])).exitCode,
+        0,
+        reason: "tmux's own prefix match, which the exact match is there for",
+      );
+      final process = await Process.start(
+        '/bin/sh',
+        ['-c', 'exec ${TmuxSession.attachExisting(name)}'],
+        environment: {
+          'HOME': dir.path,
+          'PATH': _path,
+          'SHELL': '/bin/sh',
+          'TMUX_TMPDIR': dir.path,
+        },
+        includeParentEnvironment: false,
+      );
+      unawaited(process.stdin.done.catchError((Object _) {}));
+      final tmux = _session(name, (
+        output: process.stdout.map(Uint8List.fromList),
+        write: process.stdin.add,
+        close: process.kill,
+      ));
+      // tmux gives no reason: in control mode its refusal is an empty
+      // `%error` for a command nobody here wrote.
+      expect(await tmux.attached, isFalse);
+      tmux.dispose();
+      await process.exitCode;
+      expect(
+        (await _tmux(dir, ['has-session', '-t', '=$name'])).exitCode,
+        isNot(0),
+        reason: 'attaching never makes a session',
+      );
+    },
+    skip: hasTmux ? false : 'tmux is not installed here',
+  );
+
+  group('attach and detach, through a tab', () {
+    const host = HostProfile(
+      id: 'here',
+      label: 'here',
+      host: 'here',
+      username: 'me',
+      useTmux: true,
+    );
+
+    bool alive(String name) =>
+        Process.runSync(
+          'tmux',
+          ['has-session', '-t', '=$name'],
+          environment: {'PATH': _path, 'TMUX_TMPDIR': dir.path},
+          includeParentEnvironment: false,
+        ).exitCode ==
+        0;
+
+    test(
+      'Detach leaves the program running and writing and its record going; '
+      'Attach lists it, idle, and joins the same pane; the ✕ ends it',
+      () async {
+        final here = _Here(dir);
+        final manager = SessionManager();
+        final secrets = InMemorySecretStore();
+        LiveSession open({String? name, bool attach = false}) {
+          final session = manager.create(
+            host,
+            transport: (_, _) => here,
+            tmuxName: name,
+            attachTmux: attach,
+          );
+          manager.add(session);
+          return session;
+        }
+
+        final tab = open();
+        await tab.connect(secrets: secrets);
+        final name = tab.tmuxName;
+        final tmux = tab.tmux!;
+        await _until(() => tmux.panes.length == 1);
+        final record = (await tmux.recordName(tmux.panes.single))!;
+        final ticks = File('${dir.path}/ticks');
+        int counted() =>
+            ticks.existsSync() ? ticks.readAsLinesSync().length : 0;
+        // Something long-running: a count, to a file and to the pane.
+        tmux.send(
+          r'i=0; while :; do i=$((i+1)); echo $i >> "$HOME/ticks"; '
+          r'echo tick-$i; sleep 0.1; done'
+          '\r',
+        );
+        await _until(() => counted() >= 3, () => '${counted()} ticks');
+
+        await manager.detach(tab.id);
+        expect(manager.sessions, isEmpty);
+        // The tab's client is gone from the host, as a detach says...
+        await Future.wait([
+          for (final process in here.started) process.exitCode,
+        ]).timeout(const Duration(seconds: 5));
+        expect(
+          '${(await _tmux(dir, ['list-clients'])).stdout}'.trim(),
+          isEmpty,
+        );
+        // ...and the session, what runs in it and its record are all still
+        // going, with nobody attached. A Detach that killed fails here.
+        expect(alive(name), isTrue);
+        final before = counted();
+        await _until(
+          () => counted() > before + 5,
+          () => '$before ticks, then ${counted()}',
+        );
+        final file = File('${dir.path}/${PaneRecord.dir(name)}/$record');
+        await _until(
+          () => file.readAsStringSync().contains('tick-${before + 5}'),
+          () => 'no tick-${before + 5} in the record',
+        );
+
+        // Another tab on the host lists it: nobody attached, one window.
+        final lister = open();
+        await lister.connect(secrets: secrets);
+        final listed = await lister.tmuxSessions();
+        expect(
+          listed.map((session) => session.name),
+          containsAll([name, lister.tmuxName]),
+        );
+        final away = listed.firstWhere((session) => session.name == name);
+        expect((away.windows, away.attached, away.inUse), (1, 0, false));
+        expect(
+          listed.firstWhere((s) => s.name == lister.tmuxName).inUse,
+          isTrue,
+        );
+        await manager.close(lister.id);
+        await _until(() => !alive(lister.tmuxName));
+
+        // Attach: the same pane, still counting.
+        final back = open(name: name, attach: true);
+        await back.connect(secrets: secrets);
+        expect(back.error, isNull);
+        await _until(() => back.tmux?.panes.length == 1);
+        final pane = back.tmux!.panes.single;
+        expect('${pane.id}', record.split('%').last);
+        final seen = counted();
+        await _until(
+          () => _text(pane).contains('tick-${seen + 3}'),
+          () => _text(pane),
+        );
+
+        // The ✕: the session and what runs in it end.
+        await manager.close(back.id);
+        await _until(() => !alive(name));
+        final last = counted();
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(counted(), lessThanOrEqualTo(last + 1));
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+
+    test(
+      'a session the user made is joined by its exact name, and left as it '
+      'was: no record set up, no hook taken down',
+      () async {
+        const nasty = 'it\'s "x" \$(touch pwned) `id`; y \\ ##h %p';
+        await _tmux(dir, ['new-session', '-d', '-s', nasty]);
+        // tmux keeps the name as it was made — `#` read as its own format
+        // there, so `##` is kept as one, and a backslash written out as two
+        // — and what the listing gives is what attaching asks for, a `#` in
+        // it taken as itself.
+        final listing = await _tmux(dir, [
+          'list-sessions',
+          '-F',
+          '#{session_name}',
+        ]);
+        final stored = '${listing.stdout}'.trim();
+        expect(stored, 'it\'s "x" \$(touch pwned) `id`; y \\\\ #h %p');
+        // The app's own listing, through the same shell, reads it whole.
+        final listed = TmuxSession.parseList(
+          await _Here(dir).run(TmuxSession.list).toList(),
+        );
+        expect(listed.single.name, stored);
+        await _tmux(dir, [
+          'set-hook', '-t', '=$stored:', 'after-split-window', 'display ok',
+          ';', 'send-keys', '-t', '=$stored:', 'echo nasty-was-here', 'Enter',
+        ]);
+
+        final manager = SessionManager();
+        final back = manager.create(
+          host,
+          transport: (_, _) => _Here(dir),
+          tmuxName: stored,
+          attachTmux: true,
+        );
+        manager.add(back);
+        await back.connect(secrets: InMemorySecretStore());
+        expect(back.error, isNull);
+        await _until(() => back.tmux?.panes.length == 1);
+        await _until(
+          () => _text(back.tmux!.panes.single).contains('nasty-was-here'),
+          () => _text(back.tmux!.panes.single),
+        );
+        final pipes = await _tmux(dir, [
+          'list-panes', '-s', '-t', '=$stored', '-F', '#{pane_pipe}',
+        ]);
+        expect('${pipes.stdout}'.trim(), '0');
+        final hooks = await _tmux(dir, ['show-hooks', '-t', '=$stored:']);
+        expect('${hooks.stdout}', contains('after-split-window'));
+        expect(
+          Directory('${dir.path}/.local/state/jeansh').existsSync(),
+          isFalse,
+        );
+        expect(File('${dir.path}/pwned').existsSync(), isFalse);
+
+        await manager.detach(back.id);
+        expect(alive(stored), isTrue);
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+  });
+}
+
+/// This machine as a host whose exec channels run what the app sends them
+/// through a real `sh`, against the test's own tmux server and under its own
+/// HOME, as [_start] does: the SSH transport with the SSH taken out, so a
+/// [SessionManager] tab runs the real script and the real tmux.
+class _Here
+    implements
+        SessionTransport,
+        TerminalSession,
+        CommandCapable,
+        ChannelCapable {
+  _Here(this.dir);
+
+  final Directory dir;
+
+  /// Every channel opened, each a tmux client.
+  final started = <Process>[];
+
+  Map<String, String> get _environment => {
+    'HOME': dir.path,
+    'PATH': _path,
+    'SHELL': '/bin/sh',
+    'TMUX_TMPDIR': dir.path,
+  };
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async => this;
+
+  /// tmux's questions, run for real. The rest a connect asks — the hostname,
+  /// the OS — has no bearing here, and goes unanswered.
+  @override
+  Stream<String> run(String command, {bool pty = false}) async* {
+    if (!command.contains('command -v tmux')) return;
+    final result = await Process.run(
+      '/bin/sh',
+      ['-c', command],
+      environment: _environment,
+      includeParentEnvironment: false,
+    );
+    yield* Stream.fromIterable(
+      const LineSplitter().convert('${result.stdout}'),
+    );
+  }
+
+  @override
+  Future<CommandChannel> open(String command) async {
+    final process = await Process.start(
+      '/bin/sh',
+      ['-c', 'exec $command'],
+      environment: _environment,
+      includeParentEnvironment: false,
+    );
+    started.add(process);
+    unawaited(process.stdin.done.catchError((Object _) {}));
+    return (
+      output: process.stdout.map(Uint8List.fromList),
+      write: process.stdin.add,
+      close: process.kill,
+    );
+  }
+
+  @override
+  final status = ValueNotifier(SessionStatus.connected);
+
+  @override
+  Stream<String> get output => const Stream.empty();
+
+  @override
+  String? get failure => null;
+
+  @override
+  void send(String data) {}
+
+  @override
+  void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
+
+  @override
+  Future<void> dispose() async {}
 }
 
 /// A shell script at [path], ready to run.

@@ -509,17 +509,20 @@ class TmuxSession {
   /// What the host runs to list every tmux session it has, a line each, for
   /// the Attach picker: see [parseList].
   ///
-  /// The name comes last and everything before it is a number, so nothing a
-  /// name holds can be read as another field. `#{window_activity}` rather
-  /// than `#{session_activity}`, which sounds like the one to ask for and
-  /// does not move when a pane writes — measured on tmux 3.2a, where a
-  /// session printing for five seconds kept the activity time it was made
-  /// with while its window's went up.
+  /// Fields apart by spaces, the name last: everything before it is a
+  /// number, so a name full of spaces cannot pass for another field. Not a
+  /// tab, which would have been the obvious choice: tmux 3.2a prints any
+  /// control character in a format's output as `_`, tab included.
+  ///
+  /// `#{window_activity}` rather than `#{session_activity}`, which sounds
+  /// like the one to ask for and does not move when a pane writes — measured
+  /// on tmux 3.2a, where a session printing for five seconds kept the
+  /// activity time it was made with while its window's went up.
   static const list =
       "sh -c '$_findTmux"
       r'exec "$t" list-sessions -F '
-      '"#{session_attached}\t#{session_windows}\t#{session_created}\t'
-      '#{window_activity}\t#{session_name}" 2>/dev/null\'';
+      '"#{session_attached} #{session_windows} #{session_created} '
+      '#{window_activity} #{session_name}" 2>/dev/null\'';
 
   /// [value] as one argument to `sh`: in single quotes, with any single quote
   /// of its own closed, escaped and opened again.
@@ -532,22 +535,29 @@ class TmuxSession {
   ///
   /// A line that is not a row is dropped rather than guessed at: the script's
   /// own "tmux is not installed", a greeting a profile printed, a `%` line.
-  /// Splitting on the tab is safe both ways round — a session name reaches
-  /// tmux through `session_check_name`, which writes every control character
-  /// out as an escape (a tab is stored as the two characters `\t`), and the
-  /// name is last in the row in any case.
+  ///
+  /// Only the first four spaces split the row; the rest of it, spaces and
+  /// all, is the name. And a row is always one line: tmux stores a name
+  /// through `session_check_name`, which writes every control character out
+  /// as an escape — a newline is kept as the two characters `\n` — so no
+  /// name can carry a row break.
   static List<TmuxSessionInfo> parseList(Iterable<String> lines) {
     final sessions = <TmuxSessionInfo>[];
     for (final line in lines) {
-      final fields = line.split('\t');
-      if (fields.length < 5) continue;
+      final fields = <String>[];
+      var rest = line;
+      while (fields.length < 4) {
+        final space = rest.indexOf(' ');
+        if (space < 0) break;
+        fields.add(rest.substring(0, space));
+        rest = rest.substring(space + 1);
+      }
+      if (fields.length < 4) continue;
       final attached = int.tryParse(fields[0]);
       final windows = int.tryParse(fields[1]);
       final created = int.tryParse(fields[2]);
       final activity = int.tryParse(fields[3]);
-      // A name may hold a tab of its own only as those two characters, so
-      // there is nothing to join back; this is belt and braces.
-      final name = fields.skip(4).join('\t');
+      final name = rest;
       if (attached == null ||
           windows == null ||
           created == null ||
