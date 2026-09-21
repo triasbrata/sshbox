@@ -372,12 +372,26 @@ and was matched by the "Hosts" section header, which is itself only drawn when
 the list has hosts and a heading. A green assertion on the wrong widget is
 worse than a red one. Assert on something that can only be the thing you mean.
 
-**Selectors need regex.** Flutter merges a `ListTile`'s title and subtitle into
-a single accessibility node, so the host row reads as
-`"WSL via tailnet\ntriasbrata@… · password"`. Maestro regex-matches the whole
-string, so selectors use `"(?s)WSL via tailnet.*"` — plain text will not match.
-This is correct screen-reader behaviour, so the selector adapts rather than the
-app.
+**Selectors need regex, open at both ends.** Flutter merges a card's texts into
+a single accessibility node, and Maestro regex-matches the whole string, so
+plain text will not match; selectors use `"(?s).*WSL via.*"`. The wildcard in
+front is not optional. A host that has never connected reads
+`"WSL via tailnet\n…"`, but the first connection saves its OS and from then on
+the card leads with the badge — `"24.04.5 LTS\nWSL via tailnet\n…"` — so a
+selector anchored at the name passes on a fresh host and fails on a used one.
+That is how the release gate's second run failed, with the row plainly on
+screen. This is correct screen-reader behaviour, so the selector adapts rather
+than the app.
+
+**`-e` does not override a flow's `env:`.** In Maestro 2.10 a flow's own `env:`
+block is applied after the command line's, so `maestro test -e HOST_LABEL=…` is
+silently ignored wherever the flow defaults it. Leave out of `env:` anything a
+caller must set — `seed_host` keeps no connection defaults for exactly this
+reason — and change a shared default like `HOST_LABEL` in every flow at once.
+
+**Never upload Maestro's whole results folder.** It writes every variable into
+`maestro.log` and every typed string into `commands.json`, passwords included.
+The gate uploads screenshots alone.
 
 **Device choice matters.** Maestro installs a driver APK, and MIUI/HyperOS
 refuses new-package installs over adb, so flows cannot run on a Xiaomi device

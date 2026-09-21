@@ -21,10 +21,13 @@ env:
 # The title and its tagline may read as one node, like the ListTile below.
 - assertVisible: "(?s)Jeansh.*"
 
-# Flutter merges a ListTile's title and subtitle into one accessibility node,
-# so the row reads as "WSL via …\ntriasbrata@… · password". Maestro
-# regex-matches the whole string, hence the (?s) for DOTALL and the wildcard.
+# Flutter merges a card's texts into one accessibility node, and Maestro
+# regex-matches the WHOLE of it -- hence (?s) for DOTALL, and a wildcard at BOTH
+# ends. The leading one matters: once a host has connected, its card leads with
+# the OS badge ("24.04.5 LTS\nWSL via …"), so a selector anchored at the name
+# stops matching the moment the host is used. The release gate's second run
+# failed exactly there.
 # The host list also loads asynchronously, so this needs a timeout.
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "(?s).*${HOST_LABEL}.*"
     timeout: 15000

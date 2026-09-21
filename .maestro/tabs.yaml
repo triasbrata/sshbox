@@ -27,12 +27,12 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "(?s).*${HOST_LABEL}.*"
     timeout: 15000
 
 # Tapping a host opens its tab and shows it. These two buttons only exist on
 # the terminal page, so they are what distinguishes it from the host list.
-- tapOn: "(?s)${HOST_LABEL}.*"
+- tapOn: "(?s).*${HOST_LABEL}.*"
 
 # The first connection to a host this device has never seen puts up the trust
 # prompt, and nothing else in the flow would ever press it. Optional, so a
@@ -55,11 +55,11 @@ env:
 # Back to the pinned host list — the session tab is still there, so nothing
 # was torn down by looking away from it.
 - tapOn: "Home"
-- assertVisible: "(?s)${HOST_LABEL}.*"
+- assertVisible: "(?s).*${HOST_LABEL}.*"
 - assertVisible: "(?s)Close .*"
 
 # Closing the tab is the only thing that ends the session, and lands on the
 # host list because there is no tab to its left.
 - tapOn: "(?s)Close .*"
 - assertNotVisible: "(?s)Close .*"
-- assertVisible: "(?s)${HOST_LABEL}.*"
+- assertVisible: "(?s).*${HOST_LABEL}.*"

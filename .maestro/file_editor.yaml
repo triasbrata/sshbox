@@ -21,9 +21,9 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "(?s).*${HOST_LABEL}.*"
     timeout: 15000
-- tapOn: "(?s)${HOST_LABEL}.*"
+- tapOn: "(?s).*${HOST_LABEL}.*"
 
 # The first connection to a host this device has never seen puts up the trust
 # prompt, and nothing else in this flow would ever press it. Optional, so a

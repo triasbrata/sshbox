@@ -16,7 +16,7 @@
 #
 #   maestro test \
 #     -e SSH_HOST=10.0.2.2 -e SSH_PORT=22 \
-#     -e SSH_USER=runner -e SSH_PASSWORD=... \
+#     -e SSH_USER=<user> -e SSH_PASSWORD=<password> \
 #     .maestro/seed_host.yaml
 #
 # 10.0.2.2 is how an emulator reaches the machine running it, which is where
@@ -87,14 +87,14 @@ env:
 
 # The row now exists, which is the whole point of the flow.
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "(?s).*${HOST_LABEL}.*"
     timeout: 15000
 
 # Connect once so the key is pinned and the prompt never interrupts a later
 # flow. Not optional here: on a clean device this prompt MUST appear, and if it
 # does not, something is wrong with the host key check that the other flows
 # would then silently skip past.
-- tapOn: "(?s)${HOST_LABEL}.*"
+- tapOn: "(?s).*${HOST_LABEL}.*"
 - extendedWaitUntil:
     visible: "Trust"
     timeout: 20000
@@ -110,4 +110,4 @@ env:
 # Leave the device on the host list with the session closed, so every flow
 # after this one starts from the same place.
 - tapOn: "(?s)Close .*"
-- assertVisible: "(?s)${HOST_LABEL}.*"
+- assertVisible: "(?s).*${HOST_LABEL}.*"
