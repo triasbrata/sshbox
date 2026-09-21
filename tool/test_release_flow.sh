@@ -28,6 +28,10 @@ nxt = step('tag.yml', 'next', lambda s: s.get('id') == 'next')
 open(os.path.join(work, 'next.sh'), 'w').write(nxt['run'])
 notes = step('release.yml', 'notes', lambda s: 'release notes' in s.get('name', ''))
 open(os.path.join(work, 'notes.sh'), 'w').write(notes['run'])
+issue = step('tag.yml', 'issue', lambda s: 'run' in s)
+open(os.path.join(work, 'issue.sh'), 'w').write(issue['run'])
+close = step('tag.yml', 'promote', lambda s: 'issue' in s.get('name', ''))
+open(os.path.join(work, 'close.sh'), 'w').write(close['run'])
 print(nxt['env']['RELEASE_EVERY'])
 PY
 ) || exit 1
@@ -238,6 +242,48 @@ notes "with no list yet, from the release before" \
 
 notes "a listed version with no tag falls back to the release before" \
   v1.0.71 '[{"version":"9.9.9"}]' "d1" "c1"
+
+## tag.yml's issue, and promote closing it ##################################
+
+# gh, as far as those steps use it: `issue list` answers with $GH_ISSUES, and
+# everything else is written down rather than done.
+cat > "$work/bin/gh" <<'SH'
+#!/bin/bash
+case "$1 $2" in
+  "issue list") printf '%s' "$GH_ISSUES" ;;
+  "issue create"|"issue comment"|"issue close")
+    out="$1 $2"; shift 2
+    while [ $# -gt 0 ]; do
+      case $1 in --repo) shift 2 ;; --title) out="$out title=[$2]"; shift 2 ;;
+        --body|--comment) shift 2 ;; *) out="$out $1"; shift ;; esac
+    done
+    echo "$out" >> "$GH_LOG" ;;
+  *) echo "stub gh: unexpected $*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$work/bin/gh"
+
+# gh_step <what> <script> <open issues as JSON> <the one call it should make, or ''>
+gh_step() {
+  export GH_LOG=$work/gh.log GH_ISSUES=$3; : > "$GH_LOG"
+  log=$(PATH=$work/bin:$PATH GH_TOKEN=x GITHUB_REPOSITORY=o/r GITHUB_SHA=abc TAG=v1.0.73 \
+    RC=v1.0.73-rc.2 LABEL=1.0.73+74 RUN=https://run bash "$work/$2" 2>&1); code=$?
+  got=$(cat "$GH_LOG")
+  if [ $code -eq 0 ] && [ "$got" = "$4" ]; then pass "$1"
+  else fail "$1" "want [${4}], got [${got}] (exit $code): $(tail -n 1 <<< "$log")"; fi
+}
+
+title='v1.0.73 did not pass its end-to-end tests'
+gh_step "a failed candidate with no issue for its release opens one" \
+  issue.sh '[]' "issue create title=[$title]"
+gh_step "a later failed candidate of the same release adds to its issue" \
+  issue.sh "[{\"number\":5,\"title\":\"$title\"}]" "issue comment 5"
+gh_step "another release's issue is not the one" \
+  issue.sh '[{"number":4,"title":"v1.0.72 did not pass its end-to-end tests"}]' "issue create title=[$title]"
+gh_step "promoting closes the release's issue" \
+  close.sh "[{\"number\":4,\"title\":\"v1.0.72 did not pass its end-to-end tests\"},{\"number\":5,\"title\":\"$title\"}]" "issue close 5"
+gh_step "promoting with no issue closes nothing" \
+  close.sh '[]' ""
 
 [ $fails -eq 0 ] && echo "all passed" || echo "$fails failed"
 exit $fails

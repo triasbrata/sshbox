@@ -1209,11 +1209,14 @@ The repository is public, so GitHub Actions costs nothing.
 
   - **passed** — `promote` tags the same commit `vX.Y.Z`, with the same
     message, and the run calls `release.yml` for it;
-  - **failed** — nothing is promoted, nothing is published, and an issue is
-    opened naming the candidate and linking the run. The next push that
-    changes the app tries the same number again as `-rc.2`, and on. A
-    candidate's tag is never moved or reused, so the rc number is a count of
-    how many tries a release has had.
+  - **failed** — nothing is promoted, nothing is published, and an issue
+    `vX.Y.Z did not pass its end-to-end tests` is opened, naming the
+    candidate and linking the run. The next push that changes the app tries
+    the same number again as `-rc.2`, and on; each of those that fails is a
+    comment on the same issue rather than an issue of its own, and the
+    candidate that passes closes it when it is promoted. A candidate's tag is
+    never moved or reused, so the rc number is a count of how many tries a
+    release has had.
 
   Only release tags are counted from, so a candidate that never passed
   cannot become the number the next release follows — which also settles

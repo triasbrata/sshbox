@@ -164,6 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
     steps:
       - name: Promote the rc to a release tag
         env:
@@ -177,6 +178,22 @@ jobs:
             -f object="$GITHUB_SHA" -f type=commit --jq .sha)
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
           echo "$RC passed e2e${COVERAGE:+ at $COVERAGE% coverage}; promoted $GITHUB_SHA to $TAG"
+
+      # The issue the candidates before it opened, if any, is done with. A
+      # step of its own that cannot fail the job: `release` waits on this
+      # job, and no release should wait on tidying an issue.
+      - name: Close the release's e2e issue
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.next.outputs.tag }}
+          RC: ${{ needs.next.outputs.rc }}
+        run: |
+          title="$TAG did not pass its end-to-end tests"
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title |
+            jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          [ -z "$open" ] || gh issue close "$open" --repo "$GITHUB_REPOSITORY" \
+            --comment "\`$RC\` passed its end-to-end tests and was promoted to \`$TAG\`."
 
   # A called workflow's jobs get no more than the job calling it grants, and
   # GitHub refuses the whole run before any job starts if one asks for more.
@@ -202,19 +219,27 @@ jobs:
     permissions:
       issues: write
     steps:
-      - name: Open an issue for the failed candidate
+      # One issue per release number, not per candidate: every later rc of
+      # the same number that fails is a comment on it, so a run of failures
+      # is one thread rather than an issue each. `promote` closes it.
+      - name: Open an issue for the failed candidate, or add to its release's
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.next.outputs.tag }}
           RC: ${{ needs.next.outputs.rc }}
           LABEL: ${{ needs.next.outputs.label }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "$RC did not pass its end-to-end tests" \
-            --body "$(printf '%s\n' \
-              "\`$RC\` ($LABEL) was tagged on $GITHUB_SHA and its end-to-end tests failed, so it was not promoted and nothing was published." \
-              "" \
-              "The run, with the flow that failed and its recording: $RUN" \
-              "" \
-              "The next push to \`main\` that changes the app tries the same release number again as the next \`-rc\`. This issue is closed by that push passing, not by this one being fixed in place." \
-            )"
+          title="$TAG did not pass its end-to-end tests"
+          failed="\`$RC\` ($LABEL), tagged on $GITHUB_SHA, failed its end-to-end tests, so it was not promoted and nothing was published. The run, with what failed: $RUN"
+          # The list, not search: search lags behind an issue made a minute ago.
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title |
+            jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$failed"
+            echo "added $RC to #$open"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "$(printf '%s\n' "$failed" "" \
+                "The next push to \`main\` that changes the app tries $TAG again as the next \`-rc\`. Each one that fails is added here, and this issue closes itself when one passes and is promoted.")"
+          fi
