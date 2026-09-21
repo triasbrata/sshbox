@@ -217,7 +217,7 @@ through its sub-agents.
 | Toasts in the toastification style at the top, auto-closing (1s by default); the port-forward notice becomes a 5s toast with Open | Coordinator | 6764896, 89f37e0 | UAT passed (after a retest: the first port-forward test ran a server started before the session connected) |
 | Code editor: find and replace, go to line, and a search result opens at its line | text editor enhancement | bf404f2 | UAT passed |
 | Code editor key bar: arrows and a cursor pad, Tab, undo/redo, symbols (the user found no way to move the cursor in a file) | text editor enhancement | 13c7831, 47d9013 | UAT passed (after a first failed try: physical-keyboard arrows did not move the editor cursor) |
-| Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | 40bcdd9, 7df6997, 479c2a5, 46e9fcd | Dropped by the user after three failed UATs; removed in 46e9fcd |
+| Holding a selection handle at the top or bottom edge keeps the terminal scrolling | Coordinator | 40bcdd9, 7df6997, 479c2a5, 46e9fcd | Closed, dropped by the user: Dropped by the user after three failed UATs; removed in 46e9fcd |
 | Links open as a web tab beside their shell (WebView); the Tailscale sign-in stays on a Custom Tab | Coordinator | de465b5, f54e12f, 0168e48 | UAT passed (after a first failed try where the Custom Tab opened a separate screen) |
 | Native tmux split panes ("Use tmux" per host) | Coordinator | 89845de, eea0e47, f2c3d92 | UAT passed |
 | Terminal selection with the platform's start/end handles and toolbar | Coordinator | dbd8375 | UAT passed |
