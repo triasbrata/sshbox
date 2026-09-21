@@ -1,0 +1,498 @@
+# What guards each feature the user has passed.
+#
+# CLAUDE.md's Features table is what this app promises. A row reading
+# "UAT passed" is a promise the user checked themselves, and this file says,
+# for every one of them, what would catch it breaking. `tool/e2e_coverage.py`
+# fails when a passed feature is missing here, so the list cannot quietly rot.
+#
+# guard:
+#   e2e-android  a .maestro/ flow drives the real app on a device
+#   e2e-desktop  an integration_test/ test drives the real desktop app
+#   unit         widget or unit tests under test/ already reach it; an e2e
+#                flow would be slower and prove no more
+#   manual       cannot be automated on a runner -- `why` says what stops it
+#   todo         decided to need e2e, not built yet; counted in every report
+#
+# The bias is deliberate: e2e only where the real platform is load-bearing --
+# a real IME, a real intent, a real Activity, a real pty, a real SSH server.
+# 813 widget tests already cover the logic, and a slow flaky flow that re-proves
+# them is a worse guard than the test it duplicates, because it blocks releases.
+#
+# Suite-level caveat, true of every e2e-android entry below: the Maestro flows
+# need a seeded host with a stored credential and a known-hosts entry before
+# they pass on a clean runner. See .maestro/seed_host.yaml.
+
+# ---------------------------------------------------------------- desktop ---
+
+the-desktop-build-loses-what-stands-in-for:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  why: "no key bar, no magic key, and a real pty on Home -- only the real desktop embedder shows this; every test under test/ reports Android"
+
+# ---------------------------------------------------- real platform: e2e ----
+
+sharing-text-to-jeansh-pastes-it-into-the:
+  guard: todo
+  why: "an ACTION_SEND intent with EXTRA_TEXT and no stream -- needs a real Android intent, planned .maestro/share_text.yaml"
+
+share-with-jeansh-goes-to-the-session-of:
+  guard: todo
+  why: "ShareActivity routing into the running task rather than a second copy -- an Activity/task question a widget test cannot pose"
+
+never-two-live-copies-of-jeansh-whatever-starts:
+  guard: todo
+  why: "a second MainActivity finishing itself before it runs Dart -- Android task behaviour, planned .maestro/single_instance.yaml"
+
+tabs-survive-an-app-restart-like-a-browser:
+  guard: todo
+  why: "a real process death and relaunch; saved_tabs_test.dart covers the encoding, not the restart"
+
+pasting-an-image-into-a-terminal-uploads-it:
+  guard: todo
+  why: "the Android clipboard and a content:// provider, read by native Kotlin no widget test loads"
+
+pasting-into-a-terminal-keeps-its-spaces-the:
+  guard: todo
+  why: "Gboard commits a paste a word at a time; only a real IME reproduces the chunking that ate the spaces"
+
+keyboard-input-never-goes-dead-after-the-first:
+  guard: todo
+  why: "the platform input connection being torn down in key dispatch -- the cause was never reproducible off a device"
+
+no-hardware-key-arrives-twice-whatever-the-combination:
+  guard: unit
+  by: test/terminal_hardware_key_test.dart, test/hardware_keyboard_test.dart
+  why: "the kitty-protocol release bug is reproduced at the input handler, which is where the fault was; a device flow would add the IME half, worth doing later"
+
+native-tmux-split-panes-use-tmux-per-host:
+  guard: unit
+  by: test/tmux_test.dart, test/tmux_live_test.dart
+  why: "tmux_live_test drives a real tmux server, which is the part that breaks; the panes themselves are widget-tested"
+
+terminal-selection-with-the-platform-s-start-end:
+  guard: todo
+  why: "platform selection handles and the system toolbar are drawn by Android, not by Flutter widgets a test can find"
+
+long-press-on-text-selects-it-on-blank:
+  guard: todo
+  why: "same platform selection surface as the row above; one flow should cover both"
+
+terminal-arrows-only-after-a-long-press-a:
+  guard: e2e-android
+  by: .maestro/swipe_cursor.yaml
+  why: "a long press then a drag -- a real gesture stream"
+
+shift-enter-on-a-hardware-keyboard-starts-a:
+  guard: unit
+  by: test/terminal_hardware_key_test.dart
+  why: "ESC CR is asserted at the handler; a device adds only the physical keyboard, which no runner has"
+
+# ------------------------------------------------- existing Maestro flows ---
+
+the-host-list-tab-chip-reads-home-with:
+  guard: e2e-android
+  by: .maestro/tabs.yaml
+  why: "the chip label, which this flow asserted wrongly as Hosts until it was fixed"
+
+several-sessions-per-host-the-host-list-counts:
+  guard: e2e-android
+  by: .maestro/tabs.yaml
+  why: "opening a host twice and counting the active sessions on the card"
+
+long-press-a-shell-tab-duplicate-session:
+  guard: todo
+  why: "a long press on the tab strip then Duplicate session; tabs.yaml is the natural home once seeding lands"
+
+files-drawer-is-a-vs-code-style-tree:
+  guard: e2e-android
+  by: .maestro/file_browser.yaml
+  why: "the tree opens against a real host and lists rather than erroring"
+
+open-in-terminal-from-the-files-drawer:
+  guard: e2e-android
+  by: .maestro/file_browser.yaml
+  why: "a folder tapped through to the shell"
+
+follow-in-terminal-every-folder-tapped-in-the:
+  guard: e2e-android
+  by: .maestro/file_browser.yaml
+  why: "the cd that follows a tap, and the refusal while a program runs"
+
+files-drawer-reopens-at-its-last-scroll-position:
+  guard: unit
+  by: test/file_browser_page_test.dart
+  why: "a remembered offset, fully reachable in a widget test"
+
+files-drawer-copy-content-on-a-long-press:
+  guard: unit
+  by: test/file_browser_page_test.dart
+  why: "the fetch and the 256 KB ceiling are the logic; the clipboard write is one platform call"
+
+files-drawer-upload-here-on-a-folder-several:
+  guard: todo
+  why: "a real SFTP upload with the name-clash prompt, against the runner's own sshd"
+
+code-editor-line-numbers-syntax-colour-whole-file:
+  guard: e2e-android
+  by: .maestro/file_editor.yaml
+  why: "opening, editing and saving a real file over SFTP, CRLF kept"
+
+code-editor-find-and-replace-go-to-line:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "find, replace and go-to-line are editor logic, not platform"
+
+code-editor-key-bar-arrows-and-a-cursor:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "cursor movement from the bar, asserted on the controller"
+
+markdown-preview-in-the-code-editor-a-md:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "the rendered/source toggle is widget-level"
+
+connect-sheet-a-new-connection-or-reconnect-starts:
+  guard: e2e-android
+  by: .maestro/connect_and_keybar.yaml
+  why: "the sheet drives a real connection; the key bar rendering is the proof it authenticated"
+
+terminal-page-without-its-header-files-and-upload:
+  guard: e2e-android
+  by: .maestro/connect_and_keybar.yaml
+  why: "the bar carries files and upload where the header used to be"
+
+# ----------------------------------------------- guarded by widget tests ----
+
+chat-mode-gets-a-button-to-start-a:
+  guard: unit
+  by: test/chat_page_test.dart
+  why: "a new chat starting a background session, driven against a fake host"
+
+chat-mode-follows-a-running-session-live-picked:
+  guard: unit
+  by: test/claude_chat_test.dart, test/chat_page_test.dart
+  why: "the tail -f follow and the attach send are parsed and asserted against recorded transcripts"
+
+chat-mode-the-claude-code-plugin-s-panel:
+  guard: unit
+  by: test/chat_page_test.dart, test/claude_chat_test.dart
+  why: "the stream-json wire format is driven end to end by a recorded transcript"
+
+chat-mode-picks-up-the-claude-code-sessions:
+  guard: unit
+  by: test/claude_chat_test.dart, test/chat_page_test.dart
+  why: "claude agents --json parsing and the once-per-shell quoting, run through a real sh"
+
+the-host-key-prompt-names-the-machine-that:
+  guard: unit
+  by: test/connect_sheet_test.dart, test/alt_address_test.dart
+  why: "connect_sheet_test.dart asks about a key reached over the alternative address in the sheet itself, so the name the user reads before trusting is built and asserted"
+
+a-host-keeps-a-second-address-so-the:
+  guard: unit
+  by: test/alt_address_test.dart, test/host_edit_page_test.dart, test/connect_sheet_test.dart
+  why: "happy eyeballs, the 250 ms delay and the loser's socket destroyed"
+
+images-linked-from-a-markdown-file-show-as:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "path resolution, the caps and the refusal of web sources are all logic"
+
+the-terminal-s-content-cannot-be-scrolled-and:
+  guard: unit
+  by: test/terminal_page_test.dart
+  why: "the CTRL suspend no longer swallowing scroll, asserted where it was armed"
+
+mermaid-12-draws-the-markdown-preview-s-diagrams:
+  guard: manual
+  why: "the two mermaid tests fake the WebView, so nothing automated draws a diagram; the tablet settled it and would have to again"
+
+mermaid-diagrams-in-the-markdown-preview-a-mermaid:
+  guard: manual
+  why: "same fake WebView -- a real render needs a real WebView, which no runner test loads"
+
+the-markdown-preview-comes-back-where-it-was:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "the kept scroll offset across Reload and Source"
+
+file-tab-copy-content-and-copy-image-in:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "the text half is asserted; the image half is one native ClipData call"
+
+file-tab-download-in-the-menu-saves-the:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "the save dialog is stubbed; the unsaved-edits prompt is the logic worth guarding"
+
+file-tab-reads-hostname-file:
+  guard: unit
+  by: test/tab_strip_test.dart
+  why: "the label and its cut when the strip is short"
+
+images-open-in-the-file-tab-as-pictures:
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "routing by extension, the 20 MB refusal and the copy deleted on close"
+
+database-browser-the-side-list-s-filter-answers:
+  guard: unit
+  by: test/db_object_list_test.dart
+  why: "the in-memory narrowing and the Redis pattern port, with a live test behind them"
+
+database-browser-nothing-not-saved-goes-without-asking:
+  guard: unit
+  by: test/db_edit_test.dart
+  why: "every route out of the page asks; asserted per route"
+
+database-browser-mongodb-and-redis-rows-edited-in:
+  guard: unit
+  by: test/db_edit_test.dart, test/db_session_live_test.dart
+  why: "saves run against real MongoDB and Redis in the live tests"
+
+database-browser-a-postgresql-table-s-rows-edited:
+  guard: unit
+  by: test/db_edit_test.dart, test/db_session_live_test.dart
+  why: "the transaction and the read-back run against a real PostgreSQL"
+
+database-browser-a-table-json-switch-beside-run:
+  guard: unit
+  by: test/db_json_tree_test.dart
+  why: "the tree, its nesting and Copy JSON"
+
+database-browser-for-postgresql-mongodb-and-redis-saved:
+  guard: unit
+  by: test/db_live_test.dart, test/home_databases_test.dart
+  why: "each driver is exercised against a real server"
+
+database-editor-import-uri-fills-the-type-address:
+  guard: unit
+  by: test/home_databases_test.dart, test/db_uri_test.dart
+  why: "home_databases_test.dart taps Import URI in the editor and checks the form it fills; db_uri_test.dart covers the parsing and refusals"
+
+database-icons-are-each-product-s-own-brand:
+  guard: unit
+  by: test/db_badge_test.dart
+  why: "the codepoint and colour per type"
+
+transfers-run-at-the-speed-of-the-link:
+  guard: unit
+  by: test/isolate_transport_test.dart, test/isolate_transfer_bench_test.dart
+  why: "throughput is measured by the bench; a device number is a measurement, not an assertion"
+  ui: none
+
+transfers-tab-and-progress-notifications-and-a-download:
+  guard: unit
+  by: test/transfers_test.dart
+  why: "the tab, its rows and cancel; the notification itself is the manual row below"
+
+a-way-into-the-transfers-tab-without-a:
+  guard: unit
+  by: test/transfers_test.dart
+  why: "the Home button opening the one tab rather than a second"
+
+big-downloads-and-uploads-no-longer-freeze-the:
+  guard: unit
+  by: test/isolate_transport_test.dart
+  why: "the cipher order and the streaming download; the freeze was the UI isolate, now measured by the bench"
+  ui: none
+
+duplicate-on-a-host-card-the-menu-on:
+  guard: unit
+  by: test/hosts_page_test.dart
+  why: "copyWith compared whole, so a field added later cannot be dropped silently"
+
+host-editor-choose-file-reads-a-private-key:
+  guard: unit
+  by: test/host_edit_page_test.dart
+  why: "the key is parsed and refused by kind"
+
+host-list-as-cards-a-grid-1-column:
+  guard: unit
+  by: test/hosts_page_test.dart
+  why: "the column count by width"
+
+known-hosts-opened-from-the-fingerprint-button-on:
+  guard: unit
+  by: test/known_hosts_page_test.dart
+  why: "listing and Forget"
+
+logs-a-history-of-past-sessions-date-start:
+  guard: todo
+  why: "session_log_test.dart writes and reads entries; nothing builds the page that lists them"
+
+server-os-info-read-on-every-connect-os:
+  guard: unit
+  by: test/os_info_test.dart, test/hosts_page_test.dart
+  why: "os-release, uname and the macOS and Windows shapes all parsed"
+
+port-forwarding-on-its-own-screen-from-home:
+  guard: unit
+  by: test/port_forwarding_page_test.dart, test/port_forwards_test.dart
+  why: "direction, snippets and the advanced fields"
+
+proxy-jump-a-host-can-connect-through-another:
+  guard: unit
+  by: test/jump_chain_test.dart, test/host_edit_page_test.dart
+  why: "the chain is built and walked, jump hosts of their own included"
+
+theme-in-settings-light-dark-system-mode-and:
+  guard: unit
+  by: test/terminal_theme_test.dart, test/settings_page_test.dart
+  why: "each named scheme reaches both app and terminal"
+
+theme-contrast-stronger-colours-for-every-named-theme:
+  guard: unit
+  by: test/terminal_theme_test.dart
+  why: "the ratios are arithmetic and asserted as such"
+  ui: none
+
+settings-page-on-the-host-list-with-a:
+  guard: unit
+  by: test/settings_page_test.dart
+  why: "the font picker and size, live"
+
+key-bar-settings-settings-keyboard-key-bar-lists:
+  guard: unit
+  by: test/key_bar_test.dart, test/settings_page_test.dart
+  why: "show/hide, reorder and reset"
+
+key-bar-custom-keys-add-key-offers-the:
+  guard: unit
+  by: test/key_bar_test.dart
+  why: "the picker builds the sequence it will send"
+
+custom-key-picker-clear-resets-the-picked-key:
+  guard: unit
+  by: test/key_bar_test.dart
+  why: "Clear, Super/Cmd and the macOS layout"
+
+the-key-bar-s-alt-and-ctrl-reach:
+  guard: unit
+  by: test/key_bar_test.dart
+  why: "a modifier folding into a one-character key and leaving a ready-made sequence alone"
+
+every-message-shows-as-the-new-toast-with:
+  guard: unit
+  by: test/toast_test.dart
+  why: "no SnackBar is left anywhere, asserted across the tree"
+
+toasts-in-the-toastification-style-at-the-top:
+  guard: unit
+  by: test/toast_test.dart
+  why: "placement and auto-close"
+
+follow-s-busy-check-messages-as-a-toast:
+  guard: unit
+  by: test/toast_test.dart
+  why: "the busy check reports through the toast"
+
+hidden-tabs-cannot-take-keyboard-focus-switching-tabs:
+  guard: unit
+  by: test/tab_focus_test.dart
+  why: "focus follows the shown page; the bug was keys reaching a hidden shell"
+
+long-press-a-tab-that-failed-to-connect:
+  guard: unit
+  by: test/tab_strip_test.dart
+  why: "Close tab offered where the close button is Reconnect"
+
+links-open-as-a-web-tab-beside-their:
+  guard: unit
+  by: test/web_page_test.dart
+  why: "the WebView is faked; the routing is the logic"
+
+ctrl-tap-a-path-or-link-to-open:
+  guard: unit
+  by: test/terminal_page_test.dart, test/ctrl_click_test.dart
+  why: "group('Ctrl+tap') in terminal_page_test.dart arms CTRL, checks the underline, opens on a Ctrl+tap and not on a plain tap -- there since dd981a7, the commit that brought the feature in. ctrl_click_test.dart is only findLinks(); I read that file alone, called the wiring untested, and was wrong"
+
+magic-key-two-concentric-rings-and-it-fades:
+  guard: unit
+  by: test/magic_key_test.dart
+  why: "the rings and the idle fade"
+
+magic-key-throw-it-at-a-side-to:
+  guard: unit
+  by: test/magic_key_test.dart
+  why: "the throw and the tuck"
+
+tucked-magic-key-a-short-pull-32-dp:
+  guard: unit
+  by: test/magic_key_test.dart
+  why: "the pull past the dead zone switching ring"
+
+the-terminal-falls-back-to-a-bundled-symbols:
+  guard: manual
+  why: "whether a glyph draws or shows a box is a font question a widget test cannot see; the bundled subset is asserted to contain the codepoints, the drawing is the tablet's word"
+
+tmux-found-outside-a-non-login-path-the:
+  guard: unit
+  by: test/tmux_test.dart
+  why: "each candidate path is searched in order"
+
+security-hardening-a-new-host-key-asks-before:
+  guard: unit
+  by: test/connect_sheet_test.dart, test/known_host_store_test.dart
+  why: "connect_sheet_test.dart builds the new-host-key prompt and Trust and Cancel on it; the store's tests cover the pinning. Release signing and Android backup being off are settings no test can read, and stay the manual half"
+
+tailnet-forwarding-never-forward-debugger-ports-9229-etc:
+  guard: unit
+  by: test/tailnet_forwarder_test.dart
+  why: "the port filter and the reuse"
+  ui: none
+
+# ----------------------------------------------------------------- manual ---
+
+signed-relay-notifications-snap-style-the-app-makes:
+  guard: manual
+  why: "the signing and the relay's refusals are unit-tested against a fake relay; a push actually arriving needs FCM and a real phone"
+
+notifications-can-t-be-sent-to-the-wrong:
+  guard: unit
+  by: test/notify_key_test.dart, test/fake_relay.dart
+  why: "the signed register and every refusal are asserted; delivery to the right handset stays manual"
+
+server-notifications-direct-each-ssh-connection-forwards-a:
+  guard: unit
+  by: test/direct_notify_test.dart
+  why: "the reverse forward and the HTTP handler, secret checked; the notification appearing is the device's half"
+
+push-token-passed-to-each-host-on-connect:
+  guard: todo
+  why: "LC_SSHBOX_TOKEN and LC_SSHBOX_HOST_ID reaching the shell -- provable against the runner's own sshd by echoing them"
+
+notification-icon-every-notification-the-session-keep-alive:
+  guard: manual
+  why: "a drawable rendered by Android's notification shade; nothing on a runner can look at it"
+
+jeansh-promo-website-in-a-new-private-repo:
+  guard: manual
+  why: "a different repository, deployed by Cloudflare; not this suite's to guard"
+
+app-icon-from-the-user-s-third-picture:
+  guard: manual
+  why: "launcher icons are drawn by the launcher; only eyes settle them"
+
+app-renamed-to-jeansh-with-the-tagline-terminal:
+  guard: unit
+  by: test/hosts_page_test.dart
+  why: "the Home title and tagline are asserted; the launcher label itself is manifest, checked by reading it"
+
+app-renamed-to-clode-visible-name-only-package:
+  guard: manual
+  why: "superseded by the Jeansh rename above; kept because the row is still passed, and the package id it protects is asserted by the Android build"
+
+tailscale-sign-in-from-the-connect-sheet-opens:
+  guard: manual
+  why: "a real Tailscale auth URL and a real sign-in; nothing on a runner can complete it"
+
+the-tailscale-sign-in-link-opens-in-a:
+  guard: manual
+  why: "same live Tailscale sign-in"
+
+forward-servers-started-in-a-session-to-the:
+  guard: manual
+  why: "needs a real tailnet for the forwarded address to mean anything; the port-picking half is in tailnet_forwarder_test"

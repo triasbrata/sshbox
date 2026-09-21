@@ -338,20 +338,60 @@ maestro --device <serial> test .maestro/
 
 | Flow | Covers | Needs |
 | --- | --- | --- |
+| `seed_host` | makes the host the others need, through the Add sheet and the host editor, then connects once and trusts the key | an sshd and its credentials, passed as `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_PASSWORD` |
 | `smoke` | app starts, host list renders | nothing |
 | `deeplink_resume` | `sshbox://host/<id>` opens that host's terminal — the same payload a notification carries | nothing |
 | `tabs` | opening a host adds a tab, switching away keeps the session, closing the tab ends it | a reachable host with a stored credential — a tab that cannot connect offers reconnect in place of its close button |
 | `connect_and_keybar` | SSH connects and the accessory key bar renders | a reachable host with a stored credential |
 | `file_browser` | the file tree opens and shows a listing rather than an error | a reachable host with a stored credential |
 
+**Run `seed_host` first on a clean device.** Every flow but `smoke` and
+`deeplink_resume` waits on a host row, and a fresh emulator has none — without
+it they all fail at their first `extendedWaitUntil`, for a reason that has
+nothing to do with the build under test.
+
+**The trust prompt.** A first connection to a host raises `Trust <where>?` from
+`connect_sheet.dart`, and no flow used to press it, so every connecting flow
+hung on a button nobody would touch and reported it as a timeout somewhere
+unrelated. Each now carries an optional `Trust` tap, and `seed_host` answers it
+for real — the one place it is *not* optional, since on a clean device that
+prompt must appear.
+
+**Every feature the user has passed says what guards it.** `e2e/coverage.yaml`
+maps each `UAT passed` row in CLAUDE.md to its guard — a flow, an
+`integration_test`, the widget tests, or an honest `manual` with the reason —
+and `python3 tool/e2e_coverage.py` fails when a passed feature has none. Most
+are guarded by the widget tests and want no flow at all; e2e is for where the
+real platform is load-bearing.
+
 Two things worth knowing before editing these:
 
-**Selectors need regex.** Flutter merges a `ListTile`'s title and subtitle into
-a single accessibility node, so the host row reads as
-`"WSL via tailnet\ntriasbrata@… · password"`. Maestro regex-matches the whole
-string, so selectors use `"(?s)WSL via tailnet.*"` — plain text will not match.
-This is correct screen-reader behaviour, so the selector adapts rather than the
-app.
+**Substring matching hides bugs.** Maestro matches substrings, so an
+assertion can pass against the wrong widget entirely: `tabs` asserted "Host"
+and was matched by the "Hosts" section header, which is itself only drawn when
+the list has hosts and a heading. A green assertion on the wrong widget is
+worse than a red one. Assert on something that can only be the thing you mean.
+
+**Selectors need regex, open at both ends.** Flutter merges a card's texts into
+a single accessibility node, and Maestro regex-matches the whole string, so
+plain text will not match; selectors use `"(?s).*WSL via.*"`. The wildcard in
+front is not optional. A host that has never connected reads
+`"WSL via tailnet\n…"`, but the first connection saves its OS and from then on
+the card leads with the badge — `"24.04.5 LTS\nWSL via tailnet\n…"` — so a
+selector anchored at the name passes on a fresh host and fails on a used one.
+That is how the release gate's second run failed, with the row plainly on
+screen. This is correct screen-reader behaviour, so the selector adapts rather
+than the app.
+
+**`-e` does not override a flow's `env:`.** In Maestro 2.10 a flow's own `env:`
+block is applied after the command line's, so `maestro test -e HOST_LABEL=…` is
+silently ignored wherever the flow defaults it. Leave out of `env:` anything a
+caller must set — `seed_host` keeps no connection defaults for exactly this
+reason — and change a shared default like `HOST_LABEL` in every flow at once.
+
+**Never upload Maestro's whole results folder.** It writes every variable into
+`maestro.log` and every typed string into `commands.json`, passwords included.
+The gate uploads screenshots alone.
 
 **Device choice matters.** Maestro installs a driver APK, and MIUI/HyperOS
 refuses new-package installs over adb, so flows cannot run on a Xiaomi device

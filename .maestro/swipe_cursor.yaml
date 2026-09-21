@@ -21,10 +21,18 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s)${HOST_LABEL}.*"
+    visible: "(?s).*${HOST_LABEL}.*"
     timeout: 15000
 
-- tapOn: "(?s)${HOST_LABEL}.*"
+- tapOn: "(?s).*${HOST_LABEL}.*"
+
+# The first connection to a host this device has never seen puts up the trust
+# prompt, and nothing else in this flow would ever press it. Optional, so a
+# device that already trusts the key -- the seeded case -- passes straight
+# through rather than failing on a prompt that correctly never came.
+- tapOn:
+    text: "Trust"
+    optional: true
 
 # The keys only render once the session reports connected, so waiting on one
 # doubles as the assertion that SSH authentication succeeded.

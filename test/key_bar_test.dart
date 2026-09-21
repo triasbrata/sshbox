@@ -24,6 +24,23 @@ KeyCombo _combo(
     );
 
 void main() {
+  // The release gate's connect_and_keybar flow used to assert PGUP on a real
+  // device, where it is eleven keys past ALT and off screen on a phone. It no
+  // longer does, so this is where "the default bar carries it" is held.
+  test('the default bar carries its modifiers and paging keys, and every id '
+      'is a real key', () {
+    for (final id in ['esc', 'tab', 'ctrl', 'alt', 'pgup', 'pgdn']) {
+      expect(terminalKeyBarDefault, contains(id), reason: id);
+    }
+    // A default id with no entry in terminalKeys would draw nothing, and a
+    // Reset to default would silently lose a key.
+    for (final id in terminalKeyBarDefault) {
+      if (id == keyBarDivider) continue;
+      expect(terminalKeys, contains(id), reason: id);
+    }
+    expect(terminalKeys['pgup']!.label, 'PGUP');
+  });
+
   group('KeyBarController.applyModifiers', () {
     late KeyBarController controller;
 
