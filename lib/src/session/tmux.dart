@@ -364,6 +364,38 @@ class PaneSink implements Sink<String> {
   void close() {}
 }
 
+/// One tmux session on a host, as `list-sessions` describes it: a row of the
+/// Attach picker.
+class TmuxSessionInfo {
+  const TmuxSessionInfo({
+    required this.name,
+    required this.windows,
+    required this.attached,
+    required this.created,
+    required this.activity,
+  });
+
+  /// What tmux calls it, which is what attaching asks for. The host's own
+  /// text, whatever the user called it: shown as text and never as anything
+  /// a shell or tmux reads.
+  final String name;
+
+  final int windows;
+
+  /// How many clients are attached to it — another phone, or a terminal
+  /// somebody is sitting at. tmux lets several share a session.
+  final int attached;
+
+  final DateTime created;
+
+  /// When the session's current window last wrote anything. Its other
+  /// windows are not asked about: that would be a command per session, and
+  /// this one comes free with the listing.
+  final DateTime activity;
+
+  bool get inUse => attached > 0;
+}
+
 /// A tab's tmux session, spoken to in control mode: the panes of its window,
 /// how tmux has laid them out, and which one has focus.
 ///
@@ -428,22 +460,114 @@ class TmuxSession {
   /// profile prints never reaches the channel, let alone control mode.
   ///
   /// Pane records gone stale are pruned on the way: see [PaneRecord.prune].
-  static String command(String name) =>
-      "sh -c '$_findTmux"
+  static String command(String name) => _attach('new-session -A -s "\$n"', name);
+
+  /// What the host runs to join a session that is already there, rather than
+  /// make one: the Attach picker's, for a session somebody left running.
+  ///
+  /// `attach-session` rather than `new-session -A`, so a session that has
+  /// gone since it was listed is an error the tab can say out loud instead of
+  /// an empty session of the same name — and `=` makes the name exact, where
+  /// tmux would otherwise take a session whose name only starts with it.
+  static String attachExisting(String name) =>
+      _attach('attach-session -t "=\$n"', name);
+
+  /// [command] and [attachExisting], which differ only in the tmux command
+  /// they end with — given here with the name as `$n`.
+  ///
+  /// The name is the host's own text: a session somebody made can hold a
+  /// space, a quote, a `$( )`, a backtick or a semicolon (tmux takes all of
+  /// them; it turns `:` and `.` into `_` and writes control characters out as
+  /// escapes). So it never goes into the script: it is passed to `sh` as an
+  /// argument, quoted once for the shell that reads this command line, and
+  /// read back out of `$1` before `set --` can take the place. Inside the
+  /// script it is only ever `"$n"`, which no shell looks at twice.
+  ///
+  /// The `shift` matters: what follows puts tmux's own arguments in `$@` and
+  /// runs `"$@"` whether it set them or not, so the name left sitting in `$1`
+  /// would be handed to tmux as a command of its own.
+  static String _attach(String tmuxCommand, String name) =>
+      "sh -c '"
+      r'n=$1; shift; '
+      '$_findTmux'
       r'"$t" show -gv update-environment 2>/dev/null | '
       'grep -q LC_SSHBOX_KEY || '
       r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
       r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
       '\\;; ${PaneRecord.prune}'
       r'exec "$t" -u -C "$@" '
-      "new-session -A -s $name 2>&1'";
+      "$tmuxCommand 2>&1' sh ${quoteArgument(name)}";
 
   /// What the host runs to say whether the session called [name] is still
   /// there, as its last line: `yes` or `no`. `=` makes the name exact, where
   /// tmux would otherwise take a session whose name only starts with it.
   static String exists(String name) =>
       "sh -c '$_findTmux"
-      '"\$t" has-session -t "=$name" 2>/dev/null && echo yes || echo no\'';
+      r'"$t" has-session -t "=$1" 2>/dev/null && echo yes || echo no'
+      "' sh ${quoteArgument(name)}";
+
+  /// What the host runs to list every tmux session it has, a line each, for
+  /// the Attach picker: see [parseList].
+  ///
+  /// The name comes last and everything before it is a number, so nothing a
+  /// name holds can be read as another field. `#{window_activity}` rather
+  /// than `#{session_activity}`, which sounds like the one to ask for and
+  /// does not move when a pane writes — measured on tmux 3.2a, where a
+  /// session printing for five seconds kept the activity time it was made
+  /// with while its window's went up.
+  static const list =
+      "sh -c '$_findTmux"
+      r'exec "$t" list-sessions -F '
+      '"#{session_attached}\t#{session_windows}\t#{session_created}\t'
+      '#{window_activity}\t#{session_name}" 2>/dev/null\'';
+
+  /// [value] as one argument to `sh`: in single quotes, with any single quote
+  /// of its own closed, escaped and opened again.
+  static String quoteArgument(String value) =>
+      "'${value.replaceAll("'", r"'\''")}'";
+
+  /// What [list] printed, as sessions, the ones that wrote something most
+  /// recently first — which is the question somebody coming back to a host
+  /// is really asking.
+  ///
+  /// A line that is not a row is dropped rather than guessed at: the script's
+  /// own "tmux is not installed", a greeting a profile printed, a `%` line.
+  /// Splitting on the tab is safe both ways round — a session name reaches
+  /// tmux through `session_check_name`, which writes every control character
+  /// out as an escape (a tab is stored as the two characters `\t`), and the
+  /// name is last in the row in any case.
+  static List<TmuxSessionInfo> parseList(Iterable<String> lines) {
+    final sessions = <TmuxSessionInfo>[];
+    for (final line in lines) {
+      final fields = line.split('\t');
+      if (fields.length < 5) continue;
+      final attached = int.tryParse(fields[0]);
+      final windows = int.tryParse(fields[1]);
+      final created = int.tryParse(fields[2]);
+      final activity = int.tryParse(fields[3]);
+      // A name may hold a tab of its own only as those two characters, so
+      // there is nothing to join back; this is belt and braces.
+      final name = fields.skip(4).join('\t');
+      if (attached == null ||
+          windows == null ||
+          created == null ||
+          activity == null ||
+          name.isEmpty) {
+        continue;
+      }
+      sessions.add(
+        TmuxSessionInfo(
+          name: name,
+          windows: windows,
+          attached: attached,
+          created: DateTime.fromMillisecondsSinceEpoch(created * 1000),
+          activity: DateTime.fromMillisecondsSinceEpoch(activity * 1000),
+        ),
+      );
+    }
+    sessions.sort((a, b) => b.activity.compareTo(a.activity));
+    return sessions;
+  }
 
   /// Finds tmux as [command] says, into `$t`, or says it is not installed and
   /// stops.
@@ -485,7 +609,14 @@ class TmuxSession {
   /// Whether the session's panes are recorded on the host — see
   /// [PaneRecord]. Set up, or taken down, at every attach, so a switch
   /// changed since reaches a session that is already there.
-  final bool record;
+  ///
+  /// Null for a session the app did not make — what Attach joins — which is
+  /// left exactly as whoever made it set it up, recorded or not. Two reasons,
+  /// and either is enough: a record is kept in a directory named after the
+  /// session and piped to by a command tmux reads as a format string, and a
+  /// name from the host can hold a space, a `#` or a `%`; and the hooks are
+  /// set on the session, so taking them down would take down the user's own.
+  final bool? record;
 
   final _panes = <int, TmuxPane>{};
   final _attached = Completer<bool>();
@@ -624,6 +755,11 @@ class TmuxSession {
   /// then there is none, and a pane made while nothing is attached records
   /// from the next attach.
   Future<void> _recordPanes() async {
+    final record = this.record;
+    // Somebody else's session: nothing of ours goes near it, which also
+    // keeps a name the app did not make out of the pipe command and out of
+    // the tmux target below, neither of which is quoted for one.
+    if (record == null) return;
     final pipe = PaneRecord.pipe(name);
     try {
       final panes = await _client.command(
@@ -649,6 +785,36 @@ class TmuxSession {
       }
     } on TmuxException {
       // Gone, or a tmux older than hooks: the channel ending says the rest.
+    }
+  }
+
+  /// Leaves the session and everything running in it on the host, and lets
+  /// this client go: Detach, which is the whole point of the feature — walk
+  /// away from a build or an agent and find it alive later.
+  ///
+  /// Nothing else is undone, deliberately. The panes' pipes keep writing
+  /// their records, which is the case records were built for, and the hooks
+  /// that give a pane made later one stay on the session. tmux ends no
+  /// process: a session with no client attached is the ordinary state of a
+  /// tmux session.
+  ///
+  /// `detach-client` with no target is this client, the one that ran it.
+  /// tmux answers it and only then says `%exit`, so it completes rather than
+  /// hanging; an empty line detaches too but is answered by nothing, which
+  /// is why this asks in words. Closing the channel would do it in the end —
+  /// tmux's client exits when its input does — and this is the orderly way,
+  /// so what the host sees is a detach rather than a hang-up.
+  ///
+  /// Never [kill]: the two say opposite things to the host and share no code.
+  Future<void> detach() async {
+    if (!_attached.isCompleted || _disposed) return;
+    try {
+      await _client
+          .command('detach-client')
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Gone already, or the connection is. Either way the session is not
+      // this client's to end, and closing the channel is all that is left.
     }
   }
 

@@ -75,15 +75,20 @@ void main() {
       // A server that listed an earlier version's names gets the new ones.
       expect(command, contains('grep -q LC_SSHBOX_KEY ||'));
       expect(command, isNot(contains('LC_SSHBOX_TOKEN')));
-      expect(command, endsWith("new-session -A -s sshbox-abc 2>&1'"));
+      // The name is an argument to the script rather than part of it.
+      expect(command, endsWith('new-session -A -s "\$n" 2>&1\' sh \'sshbox-abc\''));
     },
   );
 
   test('tmux is looked for beyond PATH, and every tmux runs from there', () {
     final command = TmuxSession.command('sshbox-abc');
-    // One quoted argument: a quote inside would end it early.
+    // The script is one quoted argument: a quote inside would end it early.
     expect(command, startsWith("sh -c '"));
-    expect(command.substring(7, command.length - 1), isNot(contains("'")));
+    expect(command, endsWith("' sh 'sshbox-abc'"));
+    expect(
+      command.substring(7, command.length - "' sh 'sshbox-abc'".length),
+      isNot(contains("'")),
+    );
 
     // PATH first, then where package managers put it, then the login shell.
     final at = [

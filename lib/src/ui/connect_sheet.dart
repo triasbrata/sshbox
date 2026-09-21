@@ -15,14 +15,25 @@ import 'terminal_page.dart' show ConnectionError, openUrl;
 /// with nothing open. Null when the sheet was closed first: the session is
 /// let go, and never had a tab. [transport] is a test's, as
 /// [SessionManager.create] takes one.
+///
+/// [tmuxName] with [attachTmux] is Attach: the tab joins a tmux session
+/// already running on the host under that name instead of starting one of
+/// its own.
 Future<LiveSession?> openInSheet(
   BuildContext context,
   SessionManager sessions,
   HostProfile host, {
   required SecretStore secrets,
   TransportMaker? transport,
+  String? tmuxName,
+  bool attachTmux = false,
 }) async {
-  final session = sessions.create(host, transport: transport);
+  final session = sessions.create(
+    host,
+    transport: transport,
+    tmuxName: tmuxName,
+    attachTmux: attachTmux,
+  );
   final kept = await connectInSheet(
     context,
     session,

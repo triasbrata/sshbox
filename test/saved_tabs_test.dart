@@ -9,6 +9,7 @@ import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/session/tmux.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
 /// A host that is up the moment it is asked for, answers the check for a tmux
@@ -114,6 +115,14 @@ Future<Object?> _saved() async {
   );
   return raw == null ? null : jsonDecode(raw);
 }
+
+/// What the host is asked to run for a tab that starts, or joins, the tmux
+/// session called [name]: the name is an argument to the script, never part
+/// of it.
+Matcher _startsSession(String name) => allOf(
+  contains('new-session -A -s "\$n"'),
+  endsWith("sh '$name'"),
+);
 
 void _saveBefore(Map<String, Object?> tabs) =>
     SharedPreferences.setMockInitialValues({
@@ -231,8 +240,18 @@ void main() {
     );
     final [box, plain] = manager.sessions;
     expect(box.tmuxName, 'sshbox-abc');
-    // A name that is not one of ours never reaches the host.
-    expect(plain.tmuxName, matches(LiveSession.tmuxNamePattern));
+    // A name that is not one of ours is kept — Attach picks whatever the
+    // host calls its sessions — and goes to the host as one quoted argument
+    // rather than as script; a real shell proves that in tmux_live_test.
+    expect(plain.tmuxName, 'x; rm -rf ~');
+    expect(
+      TmuxSession.command(plain.tmuxName),
+      endsWith('new-session -A -s "\$n" 2>&1\' sh \'x; rm -rf ~\''),
+    );
+    // A name tmux itself could never hold, though, is a file that has been
+    // meddled with: tmux writes a control character out as an escape.
+    expect(LiveSession.tmuxNameAllowed('two\nlines'), isFalse);
+    expect(LiveSession.tmuxNameAllowed(''), isFalse);
     expect(box.isConnected, isFalse);
     expect([for (final web in box.webTabs) '${web.url}'], [
       'https://dev.example/app',
@@ -246,10 +265,14 @@ void main() {
 
     await box.connect(secrets: InMemorySecretStore());
     expect(
-      host.ran.where((run) => run.contains('has-session -t "=sshbox-abc"')),
+      host.ran.where(
+        (run) =>
+            run.contains('has-session -t "=\$1"') &&
+            run.endsWith("sh 'sshbox-abc'"),
+      ),
       hasLength(1),
     );
-    expect(host.opened.single, contains('new-session -A -s sshbox-abc'));
+    expect(host.opened.single, _startsSession('sshbox-abc'));
     expect(box.isConnected, isTrue);
     expect(box.openFiles, ['/etc/hosts']);
 
@@ -283,7 +306,7 @@ void main() {
     box.startNewTmux();
     await box.connect(secrets: InMemorySecretStore());
     expect(box.tmuxGone, isFalse);
-    expect(host.opened.single, contains('new-session -A -s sshbox-abc'));
+    expect(host.opened.single, _startsSession('sshbox-abc'));
   });
 
   test('the app going away leaves the saved tabs as they were', () async {
