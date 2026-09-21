@@ -666,6 +666,17 @@ class LiveSession extends ChangeNotifier {
           onTimeout: () => null,
         );
         return {
+          // That this terminal shows an OSC 8 hyperlink and a Ctrl+tap opens
+          // it, for a profile to turn `FORCE_HYPERLINK` on from, so Claude
+          // Code writes a link as its label alone rather than `LABEL (URL)`:
+          // `[ -n "$LC_SSHBOX_HYPERLINKS" ] && export FORCE_HYPERLINK=1`.
+          // Not `FORCE_HYPERLINK` itself, which sshd takes only where
+          // `AcceptEnv` names it — Debian's `LANG LC_*` does not — and a name
+          // refused costs the channel every variable here, the key's too.
+          // Sent always, where the key's two need a relay key, which a
+          // desktop without FCM never has. A tmux tab needs none of this:
+          // its script sets `FORCE_HYPERLINK` itself (see [TmuxSession]).
+          'LC_SSHBOX_HYPERLINKS': '1',
           if (value != null) ...{
             'LC_SSHBOX_KEY': value,
             'LC_SSHBOX_HOST_ID': host.id,

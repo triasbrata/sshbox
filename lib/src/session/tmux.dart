@@ -451,6 +451,23 @@ class TmuxSession {
   /// listed an earlier version's names gets the new ones; a name listed
   /// twice is harmless.
   ///
+  /// `FORCE_HYPERLINK=1` goes the same way, set by this script rather than
+  /// brought by the channel: sshd takes only the names its `AcceptEnv` lists,
+  /// and a name it refuses would cost the channel every variable, `LC_` ones
+  /// included. It is the honest way to tell Claude Code — and every program
+  /// built on the `supports-hyperlinks` package — that this terminal shows
+  /// an OSC 8 hyperlink, which a Ctrl+tap opens (see `TerminalPage`); without
+  /// it Claude Code writes a link as `LABEL (URL)`. Nothing is claimed about
+  /// being another terminal: a `TERM` or `LC_TERMINAL` of kitty's or iTerm2's
+  /// would have programs send those terminals' own escapes, which xterm2 does
+  /// not speak. Like the others it reaches a pane started from here on, and
+  /// not a shell already running in the session; a session somebody else
+  /// attaches to later from a terminal without it has it taken off again,
+  /// tmux removing a listed name its client does not have. The list is
+  /// looked for by its last two names side by side, as only this script
+  /// writes them, so a server where the user listed `FORCE_HYPERLINK` for
+  /// themselves still gets the rest.
+  ///
   /// tmux is found once, as an absolute path `$t`, and every tmux here runs
   /// from it. An exec channel's shell is not a login shell, so its PATH
   /// lacks what a profile adds: on a Mac it is `/usr/bin:/bin:/usr/sbin:/sbin`
@@ -491,11 +508,12 @@ class TmuxSession {
       "sh -c '"
       r'n=$1; shift; '
       '$_findTmux'
-      r'"$t" show -gv update-environment 2>/dev/null | '
-      'grep -q LC_SSHBOX_KEY || '
+      r'"$t" show -gv update-environment 2>/dev/null | tr "\n" " " | '
+      'grep -q "LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK" || '
       r'set -- set -ga update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
-      r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET" '
+      r'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK" '
       '\\;; ${PaneRecord.prune}'
+      'export FORCE_HYPERLINK=1; '
       r'exec "$t" -u -C "$@" '
       "$tmuxCommand 2>&1' sh ${quoteArgument(name)}";
 

@@ -199,7 +199,7 @@ void main() {
       // What the focused pane's shell has, and not the line typed to ask.
       Future<void> printed(TmuxSession tmux, String values) async {
         tmux.send(
-          r'echo "<$LC_SSHBOX_KEY $LC_SSHBOX_HOST_ID>"'
+          r'echo "<$LC_SSHBOX_KEY $LC_SSHBOX_HOST_ID $FORCE_HYPERLINK>"'
           '\r',
         );
         await _until(
@@ -219,7 +219,7 @@ void main() {
         () => tmux.panes.length == 1,
         () => '${tmux.panes.length} panes',
       );
-      await printed(tmux, 'key-1 host-1');
+      await printed(tmux, 'key-1 host-1 1');
 
       // Back after a reconnect, with a key a reset has replaced since.
       tmux.dispose();
@@ -235,7 +235,7 @@ void main() {
       await _until(
         () => tmux.panes.length == 2 && tmux.focused == tmux.panes.last,
       );
-      await printed(tmux, 'key-2 host-1');
+      await printed(tmux, 'key-2 host-1 1');
 
       // Listed once, however often a tab attaches.
       final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
@@ -244,6 +244,63 @@ void main() {
         'LC_SSHBOX_NOTIFY_SECRET'.allMatches('${listed.stdout}'),
         hasLength(1),
       );
+      expect('FORCE_HYPERLINK'.allMatches('${listed.stdout}'), hasLength(1));
+
+      tmux.dispose();
+      await process.exitCode;
+    },
+    skip: hasTmux ? false : 'tmux is not installed here',
+  );
+
+  test(
+    'FORCE_HYPERLINK reaches a server an earlier version listed its names '
+    "on, and never the user's own session",
+    () async {
+      // A server an earlier version attached to, holding its list, and a
+      // session of the user's own, which Claude Code would have write links
+      // for a terminal this app knows nothing about.
+      await _tmux(dir, [
+        'set',
+        '-g',
+        'default-shell',
+        '/bin/sh',
+        ';',
+        'set',
+        '-ga',
+        'update-environment',
+        ' LC_SSHBOX_KEY LC_SSHBOX_HOST_ID LC_SSHBOX_NOTIFY_URL '
+            'LC_SSHBOX_NOTIFY_SECRET',
+        ';',
+        'new-session',
+        '-d',
+        '-s',
+        'mine',
+      ]);
+      const name = 'sshbox-links';
+      final (process, channel) = await _start(name, dir);
+      final tmux = _session(name, channel);
+      expect(await tmux.attached, isTrue);
+      await _until(() => tmux.panes.length == 1);
+      tmux.send(r'echo "<$FORCE_HYPERLINK>"' '\r');
+      await _until(
+        () => _text(tmux.focused!).contains('<1>'),
+        () => _text(tmux.focused!).trimRight(),
+      );
+
+      // A window the user opens in their own session afterwards.
+      final out = File('${dir.path}/mine.env');
+      await _tmux(dir, [
+        'new-window',
+        '-t',
+        '=mine',
+        'env > ${out.path}',
+      ]);
+      await _until(out.existsSync);
+      await _until(() => out.readAsStringSync().contains('PATH='));
+      expect(out.readAsStringSync(), isNot(contains('FORCE_HYPERLINK')));
+
+      final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
+      expect('FORCE_HYPERLINK'.allMatches('${listed.stdout}'), hasLength(1));
 
       tmux.dispose();
       await process.exitCode;
@@ -502,6 +559,7 @@ void main() {
         '/bin/sh',
         '/usr/bin/tail',
         '/usr/bin/grep',
+        '/usr/bin/tr',
         '/usr/bin/touch',
       ]) {
         await Link('${bin.path}/${tool.split('/').last}').create(tool);

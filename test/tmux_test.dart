@@ -69,11 +69,15 @@ void main() {
         command,
         contains(
           'update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
-          'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET"',
+          'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK"',
         ),
       );
       // A server that listed an earlier version's names gets the new ones.
-      expect(command, contains('grep -q LC_SSHBOX_KEY ||'));
+      expect(
+        command,
+        contains('grep -q "LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK" ||'),
+      );
+      expect(command, contains('export FORCE_HYPERLINK=1; exec "\$t"'));
       expect(command, isNot(contains('LC_SSHBOX_TOKEN')));
       // The name is an argument to the script rather than part of it.
       expect(
