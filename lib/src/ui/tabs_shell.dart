@@ -293,6 +293,33 @@ class _TabsShellState extends State<TabsShell> {
     widget.sessions.closeDb(tab);
   }
 
+  /// Opens [name], a tmux session already running on [from]'s host, in a tab
+  /// of its own — over a connection of its own, as every tab has, and over
+  /// the same kind of transport [from] uses, so a local shell's tab does not
+  /// reach for SSH.
+  ///
+  /// A tab of its own rather than this one's: the tab the user was in is
+  /// still theirs, and one tab is one tmux session everywhere else in the
+  /// app.
+  Future<void> _attachTmux(LiveSession from, String name) => openInSheet(
+    context,
+    widget.sessions,
+    from.host,
+    secrets: widget.secrets,
+    transport: from.transport,
+    tmuxName: name,
+    attachTmux: true,
+  );
+
+  /// Lets a tab go and leaves its tmux session running on the host.
+  Future<void> _detachTmux(LiveSession session) async {
+    final name = session.tmuxName;
+    final host = session.host.displayName;
+    await widget.sessions.detach(session.id);
+    if (!mounted) return;
+    showToast(context, 'Detached from $name. It keeps running on $host.');
+  }
+
   /// A database's tab. Its page connects when first built, and lets the
   /// connection go when the tab closes.
   Widget _databasePage(DbTab tab) => !_shown.contains(_dbIdOf(tab))
@@ -443,6 +470,8 @@ class _TabsShellState extends State<TabsShell> {
               // What a tap in the host list does: another shell on the host,
               // added at the end of the strip and shown.
               onDuplicate: widget.onOpenHost,
+              onAttach: _attachTmux,
+              onDetach: _detachTmux,
               groups: _groups,
             ),
             Expanded(
@@ -501,6 +530,8 @@ class TabStrip extends StatefulWidget {
     this.onCloseDatabase,
     required this.onReconnect,
     required this.onDuplicate,
+    this.onAttach,
+    this.onDetach,
     this.showTransfers = false,
     this.onSelectTransfers,
     this.onCloseTransfers,
@@ -528,6 +559,15 @@ class TabStrip extends StatefulWidget {
   final void Function(DbTab tab)? onCloseDatabase;
   final void Function(LiveSession session) onReconnect;
   final void Function(String hostId) onDuplicate;
+
+  /// Opens a tmux session already running on the host in a tab of its own.
+  /// Null leaves Attach out of the menu, which a test that lays out the
+  /// strip alone wants.
+  final Future<void> Function(LiveSession from, String tmuxName)? onAttach;
+
+  /// Closes a tab and leaves its tmux session running. Null leaves Detach
+  /// out of the menu.
+  final Future<void> Function(LiveSession session)? onDetach;
 
   @override
   State<TabStrip> createState() => _TabStripState();
@@ -607,6 +647,12 @@ class _TabStripState extends State<TabStrip> {
     final tmux = session.isConnected ? session.tmux : null;
     return [
       ('Duplicate session', () => widget.onDuplicate(session.host.id)),
+      if (tmux != null && widget.onAttach != null)
+        ('Attach to a session…', () => unawaited(_attachTo(session))),
+      // Only where there is a tmux session to leave behind: a plain shell
+      // detached from is a shell killed.
+      if (tmux != null && widget.onDetach != null)
+        ('Detach', () => unawaited(widget.onDetach!(session))),
       if (session.ended) ('Close tab', () => widget.onClose(tab)),
       if (tmux != null) ...[
         ('Split right', () => _tmux(() => tmux.split(sideBySide: true))),
@@ -616,6 +662,38 @@ class _TabStripState extends State<TabStrip> {
         ('Pane record', () => _openRecord(session, tmux)),
       ],
     ];
+  }
+
+  /// Asks the host which tmux sessions it has and opens the one picked in a
+  /// tab of its own — how somebody comes back to what they detached from.
+  Future<void> _attachTo(LiveSession session) async {
+    final List<TmuxSessionInfo> found;
+    try {
+      found = await session.tmuxSessions();
+    } catch (error) {
+      if (!mounted) return;
+      showToast(context, 'tmux: $error', type: ToastificationType.error);
+      return;
+    }
+    if (!mounted) return;
+    if (found.isEmpty) {
+      showToast(context, 'No tmux sessions on ${session.host.displayName}.');
+      return;
+    }
+    final picked = await showTmuxAttach(
+      context,
+      host: session.host.displayName,
+      sessions: found,
+      // Every tmux session this host already has a tab for, this one
+      // included: two tabs on one session would fight over its size, since
+      // tmux gives a window to whichever client attached last.
+      open: {
+        for (final tab in widget.tabs)
+          if (tab.session.host.id == session.host.id) tab.session.tmuxName,
+      },
+    );
+    if (picked == null || !mounted) return;
+    await widget.onAttach!(session, picked);
   }
 
   /// Opens the focused pane's record, as the host has kept it.
@@ -1116,6 +1194,110 @@ class _TabChip extends StatelessWidget {
         for (final (label, onTap) in menu)
           PopupMenuItem(onTap: onTap, child: Text(label)),
       ],
+    );
+  }
+}
+
+/// Asks which of the tmux sessions running on [host] to attach to, and gives
+/// back its name. Null if the user backed out.
+///
+/// The app's own sessions come first, as the user asked for: they are the
+/// ones a tab made, told by their name, and the rest are whatever somebody
+/// started at a terminal. Within each group the session that wrote something
+/// most recently is at the top, since what brings anybody here is a thing
+/// they left running.
+///
+/// Every name is drawn as plain text. It comes from the host and can hold a
+/// quote, a `$( )` or a backtick; nothing here interprets one, and the only
+/// place a name goes afterwards is `TmuxSession.attachExisting`, which
+/// quotes it as one argument.
+Future<String?> showTmuxAttach(
+  BuildContext context, {
+  required String host,
+  required List<TmuxSessionInfo> sessions,
+  Set<String> open = const {},
+}) {
+  final ours = [
+    for (final session in sessions)
+      if (LiveSession.tmuxNamePattern.hasMatch(session.name)) session,
+  ];
+  final theirs = [
+    for (final session in sessions)
+      if (!LiveSession.tmuxNamePattern.hasMatch(session.name)) session,
+  ];
+  // A heading over one list of one kind says nothing; over two it says which
+  // is which.
+  final headings = ours.isNotEmpty && theirs.isNotEmpty;
+  return showDialog<String>(
+    context: context,
+    builder: (context) {
+      final theme = Theme.of(context);
+      Widget heading(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
+        child: Text(
+          text,
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: theme.colorScheme.primary,
+          ),
+        ),
+      );
+      return SimpleDialog(
+        title: Text('Attach on $host'),
+        children: [
+          if (headings) heading("Jeansh's own"),
+          for (final session in ours) _TmuxRow(session, open: open),
+          if (headings) heading('Started on the host'),
+          for (final session in theirs) _TmuxRow(session, open: open),
+        ],
+      );
+    },
+  );
+}
+
+/// One session in the Attach picker: its name, and the little tmux can say
+/// about it for free.
+class _TmuxRow extends StatelessWidget {
+  const _TmuxRow(this.session, {required this.open});
+
+  final TmuxSessionInfo session;
+
+  /// The names this host already has a tab on, which are shown but not
+  /// offered: see `_TabStripState._attachTo`.
+  final Set<String> open;
+
+  /// How long ago, as the chat's session list says it.
+  static String _ago(DateTime at) {
+    final since = DateTime.now().difference(at);
+    if (since.inMinutes < 1) return 'just now';
+    if (since.inHours < 1) return '${since.inMinutes}m ago';
+    if (since.inDays < 1) return '${since.inHours}h ago';
+    return '${since.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final taken = open.contains(session.name);
+    final windows = session.windows == 1
+        ? '1 window'
+        : '${session.windows} windows';
+    return ListTile(
+      enabled: !taken,
+      title: Text(session.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        [
+          windows,
+          'started ${_ago(session.created)}',
+          // Only when something has happened since: a session nobody has
+          // typed in carries the time it was made as its activity too, and
+          // saying it twice tells nobody anything.
+          if (session.activity.isAfter(session.created))
+            'wrote ${_ago(session.activity)}',
+          if (taken) 'open in a tab here' else if (session.inUse) 'in use',
+        ].join(' · '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      onTap: taken ? null : () => Navigator.pop(context, session.name),
     );
   }
 }
