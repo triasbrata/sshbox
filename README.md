@@ -1151,7 +1151,7 @@ The repository is public, so GitHub Actions costs nothing.
   that change nothing the app is built from, count towards neither; the
   trailer on one of those is ignored. A push short of a release says how
   many have gathered and stops. An urgent fix that cannot wait for ten can
-  carry the same trailer. `tool/test_tag_next.sh` runs the step against
+  carry the same trailer. `tool/test_release_flow.sh` runs the step against
   each of these cases in a throwaway repo.
 
   A release gets the next version: after the highest release tag,
@@ -1219,7 +1219,8 @@ The repository is public, so GitHub Actions costs nothing.
     from. See *Updating a desktop build* below, and
     `lib/src/update/updater.dart`.
   - `notes`, once both succeed, hands the app's commit messages since the
-    previous tag to a model through OpenRouter (`tool/release_notes.py`,
+    last release that has notes to a model through OpenRouter
+    (`tool/release_notes.py`,
     `anthropic/claude-sonnet-5` unless the repository variable
     `RELEASE_NOTES_MODEL` names another). The model writes the notes in
     English and Indonesian, and they are put first in `site/releases.json`
@@ -1227,6 +1228,15 @@ The repository is public, so GitHub Actions costs nothing.
     reads that one file through an R2 binding, so a release shows there
     without a deploy. `tool/test_release_notes.py` checks what it does with
     a reply.
+
+    "Since the last release that has notes", rather than since the last
+    tag, because this job waits on every build: a release with a red build
+    gets no notes, even when Play has already taken it, and its changes are
+    told in the next release's notes rather than never. The list itself
+    says which release that is. A candidate never is one, and a tag released
+    again by hand counts from the release before it.
+    `tool/test_release_flow.sh` runs this step against a stand-in for R2
+    and for the model.
 
 The release reads these secrets from the `release` environment, which only
 `main` can deploy to. So they reach no workflow on any other branch or tag,

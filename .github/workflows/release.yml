@@ -357,14 +357,6 @@ jobs:
           for secret in OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
             [ -n "$(printenv "$secret")" ] || { echo "::error::The secret behind $secret is not set"; exit 1; }
           done
-          # The release before, never a candidate: a failed rc on an earlier
-          # commit would otherwise cut this release's notes short of the
-          # changes gathered before it.
-          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$TAG^" 2>/dev/null || true)
-          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
-            lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
-            > "$RUNNER_TEMP/changes.txt"
-
           r2() { aws --endpoint-url "$R2_ENDPOINT" "$@"; }
           list="$RUNNER_TEMP/releases.json"
           # No list yet starts one. Any other failure to read it stops here,
@@ -377,6 +369,26 @@ jobs:
             echo "::error::could not read the release notes from R2"
             exit 1
           fi
+
+          # From the last release that has notes, not merely the last tag.
+          # This job waits on every build, so a release with a red build gets
+          # no notes, and its changes belong in these rather than nowhere: a
+          # release that went out on Play with no notes would otherwise never
+          # reach the website at all. The list says where that is. Its tag
+          # must lie behind this one, which a tag released again by hand does
+          # not; then, and for a list with no such tag, the release before,
+          # never a candidate, whose failed rc would cut these short.
+          last=$(jq -r --arg v "$NAME" '[.[] | select(.version != $v)][0].version // empty' "$list")
+          if [ -n "$last" ] && git merge-base --is-ancestor "v$last" "$TAG" 2>/dev/null; then
+            prev=v$last
+          else
+            prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$TAG^" 2>/dev/null || true)
+          fi
+          echo "The notes cover ${prev:-everything} to $TAG"
+          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
+            lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
+            > "$RUNNER_TEMP/changes.txt"
+
           python3 tool/release_notes.py --version "$NAME" --build "$BUILD" \
             --changes "$RUNNER_TEMP/changes.txt" "$list"
           r2 s3 cp --only-show-errors --content-type application/json \
