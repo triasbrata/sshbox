@@ -262,4 +262,130 @@ void main() {
       expect(host.asked, hasLength(asked));
     });
   });
+
+  /// A real git, in a folder of its own, run the way a host runs it: every
+  /// command the repo builds goes through sh, so what is proved is what the
+  /// shell does with it and not what its text looks like.
+  group('on a real git, through a real shell', () {
+    late Directory sandbox;
+    late Map<String, String> env;
+
+    /// A folder name holding what a shell reads: a quote, a command
+    /// substitution, a backtick and a semicolon. Anything that reaches sh
+    /// unquoted leaves a file called pwned behind.
+    const nasty = r"it's $(touch>pwned) `touch>pwned2`; x";
+
+    Future<void> git(String dir, List<String> args) async {
+      final result = await Process.run(
+        'git',
+        args,
+        workingDirectory: dir,
+        environment: env,
+      );
+      if (result.exitCode != 0) {
+        fail('git ${args.join(' ')}: ${result.stderr}');
+      }
+    }
+
+    Stream<String> run(String command) async* {
+      final process = await Process.start(
+        'sh',
+        ['-c', command],
+        workingDirectory: sandbox.path,
+        environment: env,
+      );
+      yield* process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter());
+    }
+
+    /// Whatever the shell was tricked into making, anywhere in the sandbox.
+    List<String> planted() => [
+      for (final entity in sandbox.listSync(recursive: true))
+        if (entity.path.split('/').last.startsWith('pwned')) entity.path,
+    ];
+
+    setUp(() async {
+      sandbox = await Directory.systemTemp.createTemp('git-real');
+      // None of this machine's own config: no hooks, no signing.
+      env = {
+        'HOME': sandbox.path,
+        'XDG_CONFIG_HOME': sandbox.path,
+        'GIT_CONFIG_NOSYSTEM': '1',
+        'GIT_AUTHOR_NAME': 'Ada',
+        'GIT_AUTHOR_EMAIL': 'ada@example.com',
+        'GIT_COMMITTER_NAME': 'Ada',
+        'GIT_COMMITTER_EMAIL': 'ada@example.com',
+      };
+    });
+
+    tearDown(() => sandbox.delete(recursive: true));
+
+    /// A repository with one commit on main.
+    Future<String> repository(String path) async {
+      await Directory(path).create(recursive: true);
+      await git(path, ['init', '--quiet', '--initial-branch=main']);
+      await git(path, ['commit', '--quiet', '--allow-empty', '-m', 'first']);
+      return path;
+    }
+
+    test('finds every worktree of a repository, nested deep or outside the '
+        'folder, and leaves out one whose folder is gone', () async {
+      final base = '${sandbox.path}/$nasty';
+      final proj = await repository('$base/proj');
+      // Where Claude Code puts them: .git four levels below the repository,
+      // one deeper than the search looks.
+      await git(proj, [
+        'worktree',
+        'add',
+        '--quiet',
+        '-b',
+        'agent',
+        '.claude/worktrees/agent-x',
+      ]);
+      // Where `git worktree add ../x` puts them: beside the repository, and
+      // outside the folder being browsed altogether.
+      final side = '$base/side $nasty';
+      await git(proj, ['worktree', 'add', '--quiet', '-b', 'side', side]);
+      // A worktree deleted by hand and never pruned: git still lists it, and
+      // picking it could only fail.
+      await git(proj, [
+        'worktree',
+        'add',
+        '--quiet',
+        '-b',
+        'gone',
+        '$base/gone',
+      ]);
+      await Directory('$base/gone').delete(recursive: true);
+
+      final repos = GitRepos(run: run, start: proj);
+      await repos.discover();
+
+      expect(repos.problem, isNull);
+      expect(repos.repos.map((repo) => repo.root), [
+        proj,
+        '$proj/.claude/worktrees/agent-x',
+        side,
+      ]);
+      expect(repos.repos.map((repo) => repo.mainRoot), [null, proj, proj]);
+      expect(repos.selected?.root, proj);
+      // Each one answers as the checkout it is.
+      expect(await repos.repos.last.branch(), 'side');
+      expect(planted(), isEmpty);
+    });
+
+    test('starts on the worktree the session is in, not on its '
+        'repository', () async {
+      final proj = await repository('${sandbox.path}/proj');
+      final agent = '$proj/.claude/worktrees/agent-x';
+      await git(proj, ['worktree', 'add', '--quiet', '-b', 'agent', agent]);
+
+      final repos = GitRepos(run: run, start: agent);
+      await repos.discover();
+
+      expect(repos.repos.map((repo) => repo.root), [proj, agent]);
+      expect(repos.selected?.root, agent);
+    });
+  });
 }

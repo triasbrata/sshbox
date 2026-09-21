@@ -236,8 +236,23 @@ class _GitPageState extends State<GitPage> {
                 for (final option in _repos.repos)
                   DropdownMenuItem(
                     value: option.root,
-                    child: Text(
-                      option.name,
+                    // A worktree's folder is named after whatever made it —
+                    // Claude Code calls them agent-a4c3… — so whose it is has
+                    // to be said beside it.
+                    child: Text.rich(
+                      TextSpan(
+                        text: option.name,
+                        children: [
+                          if (option.mainRoot case final main?)
+                            TextSpan(
+                              text:
+                                  '  worktree of ${RemotePath.basename(main)}',
+                              style: TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                        ],
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
