@@ -1,0 +1,37 @@
+# The session log: every connection this device made, from the history icon on
+# Home, each with its host, its date and times, and a bookmark to keep it.
+#
+# The one passed feature nothing else guarded. logs_page.dart has no widget
+# test, and session_log_test.dart writes and reads entries but never builds the
+# page that lists them -- so the page could stop drawing entirely and every
+# test would stay green. seed_host connects once before this runs, so there is
+# always at least one entry to find.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "(?s).*${HOST_LABEL}.*"
+    timeout: 15000
+
+- tapOn: "Logs"
+
+# "Save" is the bookmark on each entry, and it exists nowhere on Home and not
+# on the empty state -- so seeing it proves the page opened AND listed an entry,
+# where the host's name alone would match the card left behind on Home.
+- extendedWaitUntil:
+    visible: "Save"
+    timeout: 10000
+- assertNotVisible: "No sessions yet"
+- assertVisible: "(?s).*${HOST_LABEL}.*"
+
+# Saving keeps the entry: the same button now offers to take it back. Then it
+# is put back, so a second run on the same device starts where this one did.
+- tapOn: "Save"
+- assertVisible: "Unsave"
+- tapOn: "Unsave"
+- assertVisible: "Save"
