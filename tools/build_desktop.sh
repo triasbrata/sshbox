@@ -131,7 +131,9 @@ version_args+=(--dart-define "JEANSH_VERSION=$label")
 # sentry-native/sentry-native.cmake clones the upstream repository while CMake
 # configures, so a desktop build now wants a network. Its crash backend is
 # fixed at "none" in windows/CMakeLists.txt and linux/CMakeLists.txt, not here,
-# so that CI — which calls flutter directly — builds the same thing.
+# so that every path builds the same thing: CI's Linux build runs this script,
+# but its Windows build calls flutter directly and would never see a setting
+# made here.
 
 out="$out_root/$label"
 mkdir -p "$out"
