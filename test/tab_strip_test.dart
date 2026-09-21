@@ -6,6 +6,7 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
+import 'package:sshbox/src/ui/connect_sheet.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
 /// A connect that fails at once, without leaving this isolate.
@@ -44,7 +45,7 @@ Future<void> _pump(
   void Function(TabRef tab)? onClose,
   void Function(LiveSession session)? onReconnect,
   void Function(String hostId)? onDuplicate,
-  Future<void> Function(LiveSession from, String tmuxName)? onAttach,
+  Future<void> Function(LiveSession from)? onAttach,
   Future<void> Function(LiveSession session)? onDetach,
 }) => tester.pumpWidget(
   MaterialApp(
@@ -262,7 +263,7 @@ void main() {
     await _pump(
       tester,
       [tab],
-      onAttach: (_, _) async {},
+      onAttach: (_) async {},
       onDetach: (_) async {},
     );
     await tester.longPress(find.text('box'));
@@ -274,7 +275,8 @@ void main() {
 
   testWidgets(
     "Attach lists the app's own sessions first, each group most recently "
-    'busy first, a name as plain text, and one already open not offered',
+    'busy first, a name as plain text, and neither one already open here '
+    'nor one tmux reads as an id offered',
     (tester) async {
       DateTime at(int minutes) =>
           DateTime.now().subtract(Duration(minutes: minutes));
@@ -291,30 +293,27 @@ void main() {
         activity: at(wrote),
       );
       const nasty = 'it\'s "x" \$(touch pwned) `id`; y';
-      String? picked = 'unset';
+      final picked = <String>[];
       await tester.pumpWidget(
         MaterialApp(
-          home: Builder(
-            builder: (context) => TextButton(
-              onPressed: () async => picked = await showTmuxAttach(
-                context,
-                host: 'box',
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: TmuxSessionList(
                 // Most recently busy first, as parseList sorts them.
                 sessions: [
                   row(nasty, wrote: 1, attached: 1),
                   row('sshbox-open', wrote: 2),
                   row('build', wrote: 3, windows: 3),
+                  row('\$1', wrote: 4),
                   row('sshbox-away', wrote: 5),
                 ],
-                open: {'sshbox-open'},
+                taken: {'sshbox-open'},
+                onPick: picked.add,
               ),
-              child: const Text('attach'),
             ),
           ),
         ),
       );
-      await tester.tap(find.text('attach'));
-      await tester.pumpAndSettle();
 
       double top(String text) => tester.getTopLeft(find.text(text)).dy;
       final order = [
@@ -324,21 +323,26 @@ void main() {
         'Started on the host',
         nasty,
         'build',
+        '\$1',
       ].map(top).toList();
       expect(order, orderedEquals([...order]..sort()));
-      expect(find.textContaining('in use'), findsOneWidget);
-      expect(find.textContaining('3 windows · started 10h ago · wrote 3m ago'),
-          findsOneWidget);
+      expect(find.textContaining('attached elsewhere'), findsOneWidget);
+      expect(
+        find.textContaining('3 windows · started 10h ago · wrote 3m ago'),
+        findsOneWidget,
+      );
       expect(find.textContaining('open in a tab here'), findsOneWidget);
+      expect(
+        find.textContaining("tmux can't be asked for it by name"),
+        findsOneWidget,
+      );
 
-      // Already a tab: shown, and not offered.
+      // Already a tab here, or a name tmux takes for an id: shown, and not
+      // offered.
       await tester.tap(find.text('sshbox-open'));
-      await tester.pumpAndSettle();
-      expect(find.text('sshbox-away'), findsOneWidget);
-
+      await tester.tap(find.text('\$1'));
       await tester.tap(find.text(nasty));
-      await tester.pumpAndSettle();
-      expect(picked, nasty);
+      expect(picked, [nasty]);
     },
   );
 }
