@@ -306,7 +306,10 @@ void main() {
     ];
 
     setUp(() async {
-      sandbox = await Directory.systemTemp.createTemp('git-real');
+      // Resolved, because git answers with real paths: a Mac's temp folder is
+      // reached through a link, and the paths would never compare equal.
+      final temp = await Directory.systemTemp.createTemp('git-real');
+      sandbox = Directory(await temp.resolveSymbolicLinks());
       // None of this machine's own config: no hooks, no signing.
       env = {
         'HOME': sandbox.path,
