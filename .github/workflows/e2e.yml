@@ -146,6 +146,40 @@ jobs:
           curl -Ls "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
+      # The system image the emulator boots, kept between runs. Without this it
+      # is fetched from Google on every release, and once in the gate's first
+      # eight runs it arrived corrupt -- "Error on ZipFile unknown archive" --
+      # so no emulator started. On an rc, a build that was fine would have
+      # failed the gate, gone unpromoted and had an issue opened against it.
+      - name: Cache the emulator's system image
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk/system-images/android-34/google_apis/x86_64
+          key: sysimg-android-34-google_apis-x86_64-v1
+
+      # A no-op on a cache hit. On a miss the image is fetched here, where a
+      # corrupt download can be fetched again, rather than inside the emulator
+      # step, where it ends the run.
+      - name: Install the system image
+        run: |
+          image="system-images;android-34;google_apis;x86_64"
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          # Not `yes | sdkmanager --install` in the loop: this shell runs with
+          # pipefail, and `yes` dies of SIGPIPE when sdkmanager exits, so even
+          # a good install would read as failed. Accept the licences once,
+          # SIGPIPE expected and ignored, and install without a pipe.
+          yes | "$sdk" --licenses >/dev/null 2>&1 || true
+          for attempt in 1 2 3; do
+            if "$sdk" --install "$image" >/dev/null; then
+              echo "system image ready (attempt $attempt)"
+              exit 0
+            fi
+            echo "::warning::system image download failed (attempt $attempt); fetching again"
+            sleep 15
+          done
+          echo "::error::could not install $image after 3 attempts"
+          exit 1
+
       # Each line of `script` runs in a shell of its own, so the whole of the
       # logic lives in tools/e2e_android.sh: which flows gate, which only
       # report, and seed_host first.

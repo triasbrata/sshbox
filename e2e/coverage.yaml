@@ -320,8 +320,9 @@ known-hosts-opened-from-the-fingerprint-button-on:
   why: "listing and Forget"
 
 logs-a-history-of-past-sessions-date-start:
-  guard: todo
-  why: "session_log_test.dart writes and reads entries; nothing builds the page that lists them"
+  guard: e2e-android
+  by: .maestro/logs.yaml
+  why: "the one passed feature nothing else guarded -- logs_page.dart has no widget test and session_log_test.dart never builds the page. Asserts the Save bookmark, which exists only on a listed entry, so it proves the page opened and found a session. Report-only until it has earned the gate; green from its first run"
 
 server-os-info-read-on-every-connect-os:
   guard: unit
@@ -461,8 +462,8 @@ server-notifications-direct-each-ssh-connection-forwards-a:
   why: "the reverse forward and the HTTP handler, secret checked; the notification appearing is the device's half"
 
 push-token-passed-to-each-host-on-connect:
-  guard: todo
-  why: "LC_SSHBOX_TOKEN and LC_SSHBOX_HOST_ID reaching the shell -- provable against the runner's own sshd by echoing them"
+  guard: manual
+  why: "LC_SSHBOX_KEY and LC_SSHBOX_HOST_ID are sent only when a relay key exists (session_manager.dart), and a relay key needs FCM. The gate's emulator is the google_apis image, with no Google Play Services and so no FCM: those two are never sent there, and a flow would fail for a reason that says nothing about the build, or pass having proved nothing. The channel itself is exercised on every connect, since LC_SSHBOX_HYPERLINKS=1 is sent always through the same mechanism -- just not this feature's own values. Checkable on a device with Play Services by echoing $LC_SSHBOX_HOST_ID in a shell"
 
 notification-icon-every-notification-the-session-keep-alive:
   guard: manual
