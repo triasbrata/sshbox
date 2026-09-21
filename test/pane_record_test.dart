@@ -105,7 +105,19 @@ void main() {
       for (final session in ['sshbox-a', 'sshbox-b']) {
         final pipe = await run(session);
         pipe.stdin.add(utf8.encode('secret\n'));
-        await pipe.stdin.close();
+        try {
+          await pipe.stdin.close();
+        } on SocketException catch (e) {
+          // The pipe finds the link and exits without reading a byte. When it
+          // has done so before this write lands — a runner that holds this
+          // thread for a few milliseconds is enough — nobody is left at the
+          // other end and the write fails with EPIPE (32 on Linux and macOS
+          // alike): the refusal was quick, not wrong. Any other failure is
+          // one. Whether anything reached the link's target is checked below
+          // either way, and a pipe that followed the link would be reading
+          // this, not gone.
+          if (e.osError?.errorCode != 32) rethrow;
+        }
         await pipe.exitCode;
       }
       expect(elsewhere.listSync(), isEmpty);
