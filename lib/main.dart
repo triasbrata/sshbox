@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'src/app.dart';
 import 'src/session/port_forwards.dart';
 import 'src/session/session_log.dart';
+import 'src/telemetry/crash_reporting.dart';
+import 'src/telemetry/telemetry.dart';
 import 'src/ui/settings_page.dart';
 
 Future<void> main() async {
@@ -20,5 +22,9 @@ Future<void> main() async {
   // Before any host is saved: the first time, it takes the port forwards
   // hosts kept themselves, which a host's next save no longer writes.
   await portForwards.load();
-  runApp(const SshboxApp());
+  // Before the app runs, because whether Sentry is started at all depends on
+  // it: turned off, `SentryFlutter.init` is never called and no crash handler
+  // is ever installed. See `runWithCrashReporting`.
+  await telemetryOn.load();
+  await runWithCrashReporting(() => runApp(const SshboxApp()));
 }

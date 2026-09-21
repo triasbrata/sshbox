@@ -255,6 +255,60 @@ void main() {
     expect(await repository.load(), isEmpty);
   });
 
+  testWidgets("a tmux host's card offers Attach, and a plain one does not", (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final secrets = InMemorySecretStore();
+    final repository = HostRepository(secrets);
+    await repository.upsert(
+      const HostProfile(id: 'a', label: 'a-plain', host: 'a', username: 'me'),
+    );
+    await repository.upsert(
+      const HostProfile(
+        id: 'b',
+        label: 'b-tmux',
+        host: 'b',
+        username: 'me',
+        useTmux: true,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostsPage(
+          repository: repository,
+          secrets: secrets,
+          sessions: SessionManager(),
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    Future<bool> offers(String label) async {
+      await tester.tap(
+        find.descendant(
+          of: find.ancestor(
+            of: find.text(label),
+            matching: find.byType(Card),
+          ),
+          matching: find.byType(PopupMenuButton<String>),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final found = find
+          .text('Attach to a tmux session…')
+          .evaluate()
+          .isNotEmpty;
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+      return found;
+    }
+
+    expect(await offers('b-tmux'), isTrue);
+    expect(await offers('a-plain'), isFalse);
+  });
+
   testWidgets('Duplicate copies a host into one of its own, its secrets with '
       'it, and leaves the original as it was', (tester) async {
     SharedPreferences.setMockInitialValues({});

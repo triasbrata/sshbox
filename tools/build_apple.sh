@@ -132,6 +132,14 @@ version_args+=(--dart-define "JEANSH_VERSION=$label")
 [ -z "${JEANSH_UPDATE_HOST:-}" ] ||
   version_args+=(--dart-define "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")
 
+# Baked in for crash reporting (lib/src/telemetry/crash_reporting.dart). No
+# JEANSH_SENTRY_DSN in the environment leaves crash reporting off, and
+# Settings says so. The DSN is not a secret — every web app that uses Sentry
+# has one in its JavaScript — but it stays out of this public repository so
+# nobody fills the quota with junk.
+[ -z "${JEANSH_SENTRY_DSN:-}" ] ||
+  version_args+=(--dart-define "JEANSH_SENTRY_DSN=$JEANSH_SENTRY_DSN")
+
 out="$out_root/$label"
 mkdir -p "$out"
 

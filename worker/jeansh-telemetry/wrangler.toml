@@ -1,0 +1,15 @@
+name = "jeansh-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# The count and the quotas. `database_id` is filled in by
+#   wrangler d1 create jeansh-telemetry
+# which prints it; paste it here before the first deploy.
+[[d1_databases]]
+binding = "DB"
+database_name = "jeansh-telemetry"
+database_id = "PUT-THE-ID-FROM-wrangler-d1-create-HERE"
+
+# GITHUB_TOKEN is a secret, not a var: never in this file, never in the
+# repository.
+#   wrangler secret put GITHUB_TOKEN
