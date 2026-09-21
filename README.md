@@ -1,5 +1,7 @@
 # Jeansh
 
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftriasbrata%2Fsshbox%2Fbadges%2Fcoverage.json)](https://github.com/triasbrata/sshbox/actions/workflows/ci.yml?query=branch%3Amain)
+
 A mobile-first SSH client built with Flutter, targeting Android and iOS.
 
 It was called sshbox; the Dart and Kotlin package names, the `sshbox://`
@@ -1219,6 +1221,15 @@ The repository is public, so GitHub Actions costs nothing.
   refuses a run that breaks either before any job exists, with nothing but
   "a workflow file issue" to show for it, and actionlint does not check the
   first.
+
+  `flutter test` runs with `--coverage`, and the share of `lib/`'s lines
+  the tests reach shows on each run's summary. On `main`, the job `badge`
+  then writes it to `coverage.json` on the `badges` branch — that file and
+  nothing else, replaced by one commit each time — which the badge at the
+  top of this README reads through shields.io. Only the run for `main`'s
+  newest commit writes it. A file no test imports at all is left out of the
+  count rather than counted as 0%, since lcov lists only what the tests
+  load.
 - `.github/workflows/tag.yml` numbers every release and drives it through
   the gate. Releases come in batches, not one per push. Commits that change
   the app (`lib/`, `android/`, `ios/`, `macos/`, `linux/`, `windows/`,

@@ -1,6 +1,7 @@
 # tool/test_release_flow.sh, flutter analyze and flutter test on every pull
 # request and every push to main. `check` is the status the main branch
-# ruleset asks a pull request for.
+# ruleset asks a pull request for. On main, `badge` then publishes the tests'
+# line coverage for the README's badge.
 name: CI
 
 on:
@@ -21,6 +22,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      coverage: ${{ steps.coverage.outputs.pct }}
     steps:
       - uses: actions/checkout@v7
 
@@ -44,4 +47,56 @@ jobs:
       - run: flutter analyze
       # The *_live_test files skip themselves: no SSH server, database or
       # tmux runs here.
-      - run: flutter test
+      - run: flutter test --coverage
+
+      # The share of lib/'s lines the tests run, from the lcov file flutter
+      # test writes: on the run's summary, and on main, the README's badge.
+      # ponytail: lcov lists only the files some test loads, so a file no
+      # test imports at all is left out rather than counted as 0%.
+      - name: Coverage
+        id: coverage
+        run: |
+          pct=$(awk -F: '/^LF:/ { lf += $2 } /^LH:/ { lh += $2 }
+            END { if (lf) printf "%.1f", 100 * lh / lf }' coverage/lcov.info)
+          echo "pct=$pct" >> "$GITHUB_OUTPUT"
+          echo "Line coverage of \`lib/\`: **${pct:-unmeasured}%**" >> "$GITHUB_STEP_SUMMARY"
+
+  # The README's coverage badge. shields.io draws it from coverage.json on the
+  # `badges` branch, which holds nothing else and which this job replaces
+  # with a single commit on every push to main; no ruleset covers it. Only
+  # the run for main's newest commit writes it, so a slower run for an older
+  # commit never puts an older number back.
+  badge:
+    needs: check
+    if: github.event_name == 'push' && needs.check.outputs.coverage != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: coverage-badge
+      cancel-in-progress: true
+    steps:
+      - name: Publish the coverage badge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PCT: ${{ needs.check.outputs.coverage }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main has moved on to $head; its own run publishes the badge"
+            exit 0
+          fi
+          color=$(awk -v p="$PCT" 'BEGIN { print p >= 90 ? "brightgreen" : p >= 80 ? "green" :
+            p >= 70 ? "yellowgreen" : p >= 60 ? "yellow" : p >= 50 ? "orange" : "red" }')
+          mkdir "$RUNNER_TEMP/badge" && cd "$RUNNER_TEMP/badge"
+          git init -q -b badges
+          jq -n --arg m "$PCT%" --arg c "$color" \
+            '{schemaVersion: 1, label: "coverage", message: $m, color: $c}' > coverage.json
+          git add coverage.json
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -qm "Coverage $PCT% at $GITHUB_SHA"
+          gh auth setup-git
+          git push -qf "https://github.com/$GITHUB_REPOSITORY.git" badges
+          echo "coverage $PCT% ($color) for $GITHUB_SHA"
