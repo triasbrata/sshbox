@@ -138,6 +138,9 @@ jobs:
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play.json
           DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+          # Crash reporting's DSN, baked in by tool/release.sh. Unset leaves
+          # crash reporting off, and Settings says so.
+          JEANSH_SENTRY_DSN: ${{ secrets.JEANSH_SENTRY_DSN }}
         run: tool/release.sh --publish $DRY_RUN
 
       - name: Remove the signing files
@@ -193,6 +196,11 @@ jobs:
           # scripts. A repository variable, not a secret: it is a public URL,
           # and `strings` on any build shows it. Unset leaves the updater off.
           JEANSH_UPDATE_HOST: ${{ vars.JEANSH_UPDATE_HOST }}
+          # Crash reporting's DSN, baked in the same way. A secret although it
+          # is not one, so that it stays out of this public run log: nobody
+          # should be handed the means to fill the quota with junk. Unset
+          # leaves crash reporting off.
+          JEANSH_SENTRY_DSN: ${{ secrets.JEANSH_SENTRY_DSN }}
         run: |
           case ${{ matrix.target }} in
             linux) tools/build_desktop.sh --skip-checks linux ;;
@@ -200,10 +208,12 @@ jobs:
             # tools/build_desktop.sh builds Windows from WSL; here is Windows
             # itself, so the same build and the same zip, by hand.
             windows)
-              # The same two defines the build scripts pass, by hand here.
+              # The same defines the build scripts pass, by hand here.
               defines=(--dart-define "JEANSH_VERSION=$LABEL")
               [ -z "${JEANSH_UPDATE_HOST:-}" ] ||
                 defines+=(--dart-define "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")
+              [ -z "${JEANSH_SENTRY_DSN:-}" ] ||
+                defines+=(--dart-define "JEANSH_SENTRY_DSN=$JEANSH_SENTRY_DSN")
               flutter build windows --release "${defines[@]}"
               name="Jeansh-$LABEL"
               cp -r build/windows/x64/runner/Release "$RUNNER_TEMP/$name"

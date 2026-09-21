@@ -1254,6 +1254,7 @@ and a `v*` tag made anywhere else releases nothing:
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | `jeansh-builds` |
 | `OPENROUTER_API_KEY` | an OpenRouter API key, for the release notes |
+| `JEANSH_SENTRY_DSN` | the Sentry DSN crash reporting sends to, baked into every build, Android and desktop. Not truly a secret, but kept as one so it stays out of the public run log. Unset leaves crash reporting off |
 
 And two repository variables, which are not secrets and are visible to
 anyone who can read the settings:
