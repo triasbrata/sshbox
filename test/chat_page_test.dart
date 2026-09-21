@@ -1201,6 +1201,18 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
     }
 
+    /// Presses Copy on the toast a refused link left, and waits it out.
+    Future<void> copyFromToast(WidgetTester tester) async {
+      await showToast(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copy'),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
     testWidgets('opens in a web tab beside the shell on a phone', (
       tester,
     ) async {
@@ -1241,10 +1253,13 @@ void main() {
       );
 
       await tester.tapOnText(find.textRange.ofSubstring('this'));
-      // Waited out, since the toast sits over the reply.
-      await tester.pumpAndSettle();
-      await tester.tapOnText(find.textRange.ofSubstring('that'));
+      // Nothing copied until asked: openUrl refuses a web page's own
+      // navigation the same way, and a page must not fill the clipboard.
       await showToast(tester);
+      expect(copied, isEmpty);
+      await copyFromToast(tester);
+      await tester.tapOnText(find.textRange.ofSubstring('that'));
+      await copyFromToast(tester);
 
       // Neither to a tab nor to the phone, where a scheme is whatever app
       // answers to it — this one's own among them.
@@ -1252,7 +1267,6 @@ void main() {
       expect(launched, isEmpty);
       // Tapped all the same, rather than missed.
       expect(copied, ['javascript:alert(1)', 'sshbox://open']);
-      await tester.pumpAndSettle();
     });
 
     testWidgets('that is not opened has its address copied, which its label '
@@ -1277,9 +1291,8 @@ void main() {
 
       await tester.pumpAndSettle();
       await tester.tapOnText(find.textRange.ofSubstring('here'));
-      await showToast(tester);
+      await copyFromToast(tester);
       expect(copied.last, 'javascript:alert(1)');
-      await tester.pumpAndSettle();
     });
   });
 }

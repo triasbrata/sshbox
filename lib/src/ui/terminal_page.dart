@@ -1176,7 +1176,9 @@ const _opens = {'http', 'https', 'mailto', 'tel'};
 /// preview, a chat, a web tab handing on what it will not show — so this is
 /// the one place that decides what may be opened at all: see [_opens]. What
 /// is refused says so, and its address can still be copied, so a link the
-/// user does mean to follow is one paste away rather than lost.
+/// user does mean to follow is one paste away rather than lost — by the
+/// toast's Copy and never unasked, since a web page gets here with no tap and
+/// must not be able to fill the clipboard.
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
 /// [inTab] puts it there. With no shell to put it beside — the web tab's own
