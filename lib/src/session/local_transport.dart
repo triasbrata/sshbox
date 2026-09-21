@@ -193,6 +193,12 @@ class LocalTransport implements SessionTransport {
         'A local session is a shell; it has nothing else to open.',
       );
     }
+    // This terminal shows an OSC 8 hyperlink and a Ctrl+tap opens it, which
+    // Claude Code, and every program built on `supports-hyperlinks`, learns
+    // from this: without it they write a link as `LABEL (URL)`. Set here
+    // outright, the pty being ours — over SSH it cannot be, sshd refusing a
+    // name `AcceptEnv` does not list (see `LiveSession.connect`).
+    environment = {'FORCE_HYPERLINK': '1', ...environment};
     final String program;
     final List<String> arguments;
     final String? home;

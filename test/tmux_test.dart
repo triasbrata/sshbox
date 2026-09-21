@@ -69,21 +69,33 @@ void main() {
         command,
         contains(
           'update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
-          'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET"',
+          'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK"',
         ),
       );
       // A server that listed an earlier version's names gets the new ones.
-      expect(command, contains('grep -q LC_SSHBOX_KEY ||'));
+      expect(
+        command,
+        contains('grep -q "LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK" ||'),
+      );
+      expect(command, contains('export FORCE_HYPERLINK=1; exec "\$t"'));
       expect(command, isNot(contains('LC_SSHBOX_TOKEN')));
-      expect(command, endsWith("new-session -A -s sshbox-abc 2>&1'"));
+      // The name is an argument to the script rather than part of it.
+      expect(
+        command,
+        endsWith('new-session -A -s "\$n" 2>&1\' sh \'sshbox-abc\''),
+      );
     },
   );
 
   test('tmux is looked for beyond PATH, and every tmux runs from there', () {
     final command = TmuxSession.command('sshbox-abc');
-    // One quoted argument: a quote inside would end it early.
+    // The script is one quoted argument: a quote inside would end it early.
     expect(command, startsWith("sh -c '"));
-    expect(command.substring(7, command.length - 1), isNot(contains("'")));
+    expect(command, endsWith("' sh 'sshbox-abc'"));
+    expect(
+      command.substring(7, command.length - "' sh 'sshbox-abc'".length),
+      isNot(contains("'")),
+    );
 
     // PATH first, then where package managers put it, then the login shell.
     final at = [
@@ -108,6 +120,33 @@ void main() {
     expect(command, contains(r'exec "$t" -u -C "$@" new-session'));
     // None by name, which is what missed Homebrew's.
     expect(command.split(' '), isNot(contains('tmux')));
+  });
+
+  test('list-sessions reads into rows, a name keeping every space and '
+      'quote, and what is not a row dropped', () {
+    // As tmux 3.2a prints the listing, between what a shell might add.
+    final sessions = TmuxSession.parseList([
+      'Last login: today',
+      '0 1 1789000000 1789000100 sshbox-abc',
+      '2 3 1789000000 1789000300  my  "build" \$(x) `y`; z ',
+      'tmux is not installed on this host (looked on PATH, in Homebrew and '
+          'the other usual places)',
+      '1 1 1789000000 1789000200 x',
+      '1 1 notanumber 1789000200 y',
+      '1 1 1789000000 1789000200 ',
+    ]);
+    // The session that wrote most recently first.
+    expect(sessions.map((session) => session.name), [
+      ' my  "build" \$(x) `y`; z ',
+      'x',
+      'sshbox-abc',
+    ]);
+    final [build, x, ours] = sessions;
+    expect((build.attached, build.windows, build.inUse), (2, 3, true));
+    expect((ours.attached, ours.inUse), (0, false));
+    expect(x.windows, 1);
+    expect(ours.created, DateTime.fromMillisecondsSinceEpoch(1789000000000));
+    expect(ours.activity, DateTime.fromMillisecondsSinceEpoch(1789000100000));
   });
 
   test('%output unescapes to the bytes the pane wrote', () {

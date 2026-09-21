@@ -121,6 +121,27 @@ class _Host implements SessionTransport, TerminalSession {
   Future<void> dispose() async => disposed = true;
 }
 
+/// [_Host] with tmux on it: it lists [sessions] as `list-sessions` would,
+/// and keeps what each tmux client it is asked for would have run — then
+/// refuses it, so the tab falls back to a plain shell and is connected all
+/// the same.
+class _TmuxHost extends _Host implements CommandCapable, ChannelCapable {
+  _TmuxHost(this.sessions);
+
+  final List<String> sessions;
+  final opened = <String>[];
+
+  @override
+  Stream<String> run(String command, {bool pty = false}) =>
+      Stream.fromIterable(command.contains('list-sessions') ? sessions : []);
+
+  @override
+  Future<CommandChannel> open(String command) async {
+    opened.add(command);
+    throw const SshSessionException('not in this test');
+  }
+}
+
 const _box = HostProfile(
   id: 'host-1',
   label: 'box',
@@ -371,6 +392,69 @@ void main() {
     await tester.pump();
     expect(host.attempts, 1);
     expect(host.disposed, isTrue);
+  });
+
+  testWidgets("Attach lists the host's tmux sessions in the sheet once "
+      'connected: Cancel gives it up with no tab, and a pick joins that '
+      'session, by its name, in a tab of its own', (tester) async {
+    const tmuxBox = HostProfile(
+      id: 'host-1',
+      label: 'box',
+      host: '10.0.2.2',
+      username: 'me',
+      useTmux: true,
+    );
+    final host = _TmuxHost([
+      '0 1 1789000000 1789000100 sshbox-abc',
+      "1 2 1789000000 1789000200 my build; it's",
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TabsShell(
+          repository: HostRepository(_NoSecrets()),
+          secrets: _NoSecrets(),
+          sessions: manager,
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    Future<LiveSession?> attach() {
+      final opening = openInSheet(
+        tester.element(find.byType(TabsShell)),
+        manager,
+        tmuxBox,
+        secrets: _NoSecrets(),
+        transport: (_, _) => host,
+        pickTmux: true,
+      );
+      return opening;
+    }
+
+    var opening = attach();
+    await tester.pumpAndSettle();
+    expect(find.text('Attach to a tmux session'), findsOneWidget);
+    expect(find.text('sshbox-abc'), findsOneWidget);
+    expect(find.textContaining('attached elsewhere'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(await opening, isNull);
+    expect(manager.sessions, isEmpty);
+    expect(host.opened, isEmpty);
+
+    opening = attach();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text("my build; it's"));
+    await tester.pumpAndSettle();
+    final session = (await opening)!;
+    expect(manager.sessions, [session]);
+    expect(session.tmuxName, "my build; it's");
+    expect(
+      host.opened.single,
+      allOf(
+        contains('attach-session -t "=\$n"'),
+        endsWith("sh 'my build; it'\\''s'"),
+      ),
+    );
   });
 
   testWidgets('a failure says why in the sheet, with Try again and Close; '

@@ -6,6 +6,7 @@ import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../session/session_manager.dart';
+import '../session/tmux.dart';
 import '../platform.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
 
@@ -15,18 +16,32 @@ import 'terminal_page.dart' show ConnectionError, openUrl;
 /// with nothing open. Null when the sheet was closed first: the session is
 /// let go, and never had a tab. [transport] is a test's, as
 /// [SessionManager.create] takes one.
+///
+/// [pickTmux] is Attach: once connected, the sheet lists the tmux sessions
+/// running on the host, and the tab joins the one picked instead of starting
+/// one of its own. What a tab's long press offers, and a host's card, the
+/// way back to a session left running with Detach.
 Future<LiveSession?> openInSheet(
   BuildContext context,
   SessionManager sessions,
   HostProfile host, {
   required SecretStore secrets,
   TransportMaker? transport,
+  bool pickTmux = false,
 }) async {
-  final session = sessions.create(host, transport: transport);
+  final session = sessions.create(
+    host,
+    transport: transport,
+    pickTmux: pickTmux,
+  );
   final kept = await connectInSheet(
     context,
     session,
     secrets: secrets,
+    // Every tmux session this host already has a tab for, shown and not
+    // offered: two tabs on one session would fight over its size, tmux
+    // giving the window to whichever client attached last.
+    taken: {for (final open in sessions.sessionsFor(host.id)) open.tmuxName},
     // A tab of its own first, for its sign-in's to open beside. On a desktop
     // there are no web tabs at all, so the sign-in goes to the machine's own
     // browser — where the user is likely signed in to the identity provider
@@ -63,18 +78,23 @@ Future<LiveSession?> openInSheet(
 /// True once connected, or carrying on at a sign-in. Closed before that —
 /// swiped away, Close, or Cancel on a host key — the connect is given up: see
 /// [LiveSession.abandon].
+///
+/// [taken] are the tmux sessions not to offer, when the session asks which
+/// to join: see [openInSheet].
 Future<bool> connectInSheet(
   BuildContext context,
   LiveSession session, {
   required SecretStore secrets,
   required void Function(Uri url) inTab,
+  Set<String> taken = const {},
 }) async {
   final kept = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
     useSafeArea: true,
-    builder: (_) => _ConnectSheet(session: session, secrets: secrets),
+    builder: (_) =>
+        _ConnectSheet(session: session, secrets: secrets, taken: taken),
   );
   if (kept != true) {
     session.abandon();
@@ -111,10 +131,15 @@ Future<bool> confirmHostKey(BuildContext context, HostKeyCheck check) async {
 const _padding = EdgeInsets.fromLTRB(24, 0, 24, 24);
 
 class _ConnectSheet extends StatefulWidget {
-  const _ConnectSheet({required this.session, required this.secrets});
+  const _ConnectSheet({
+    required this.session,
+    required this.secrets,
+    required this.taken,
+  });
 
   final LiveSession session;
   final SecretStore secrets;
+  final Set<String> taken;
 
   @override
   State<_ConnectSheet> createState() => _ConnectSheetState();
@@ -125,6 +150,11 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   /// time: the transport asks for each hop in turn.
   HostKeyCheck? _check;
   Completer<bool>? _answer;
+
+  /// The tmux sessions being offered, and where the one picked goes: asked
+  /// the way a host key is, in this sheet, part way through the connect.
+  List<TmuxSessionInfo>? _found;
+  Completer<String?>? _picked;
 
   LiveSession get _session => widget.session;
 
@@ -147,6 +177,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
     _session.removeListener(_onSessionChanged);
     // Closed with a question open: that is a no.
     _answer?.complete(false);
+    _picked?.complete(null);
     super.dispose();
   }
 
@@ -154,7 +185,11 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   /// go of, and Try again starts over.
   Future<void> _connect() async {
     if (!mounted) return;
-    await _session.reconnect(secrets: widget.secrets, confirmHostKey: _ask);
+    await _session.reconnect(
+      secrets: widget.secrets,
+      confirmHostKey: _ask,
+      pickTmux: _pick,
+    );
     if (!mounted) return;
     final route = ModalRoute.of(context);
     if (route == null || !route.isActive || !_session.isConnected) return;
@@ -170,6 +205,19 @@ class _ConnectSheetState extends State<_ConnectSheet> {
     final answer = _answer = Completer<bool>();
     setState(() => _check = check);
     return answer.future;
+  }
+
+  Future<String?> _pick(List<TmuxSessionInfo> found) {
+    if (!mounted) return Future.value();
+    final picked = _picked = Completer<String?>();
+    setState(() => _found = found);
+    return picked.future;
+  }
+
+  void _choose(String name) {
+    _picked?.complete(name);
+    _picked = null;
+    setState(() => _found = null);
   }
 
   /// Trust or Replace key carries on; Cancel closes the sheet, which gives
@@ -189,6 +237,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
     final theme = Theme.of(context);
     final host = _session.host;
     final check = _check;
+    final found = _found;
     final error = _session.connecting ? null : _session.error;
     final url = _session.connecting ? _session.authUrl : null;
 
@@ -208,7 +257,20 @@ class _ConnectSheetState extends State<_ConnectSheet> {
           const SizedBox(height: 20),
           if (check != null)
             _HostKeyPrompt(check: check, onAnswer: _rule)
-          else if (error != null)
+          else if (found != null) ...[
+            TmuxSessionList(
+              sessions: found,
+              taken: widget.taken,
+              onPick: _choose,
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+            ),
+          ] else if (error != null)
             ConnectionError(
               message: error,
               // A tab brought back after its tmux session went: trying again
@@ -415,6 +477,125 @@ class AuthCheckPrompt extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The tmux sessions running on a host, for Attach to pick one of: its name,
+/// how many windows, when it started and last wrote, and whether a client is
+/// attached to it already.
+///
+/// The app's own sessions come first, as the user asked for: they are the
+/// ones a tab made, told by their name, and the rest are whatever somebody
+/// started at a terminal. Within each group the session that wrote something
+/// most recently is at the top, as [TmuxSession.parseList] sorts them, since
+/// what brings anybody here is a thing they left running.
+///
+/// Every name is drawn as plain text. It comes from the host and can hold a
+/// quote, a `$( )` or a backtick; nothing here interprets one, and the only
+/// place a name goes afterwards is `TmuxSession.attachExisting`, which
+/// passes it to the host as one quoted argument.
+class TmuxSessionList extends StatelessWidget {
+  const TmuxSessionList({
+    super.key,
+    required this.sessions,
+    required this.onPick,
+    this.taken = const {},
+  });
+
+  final List<TmuxSessionInfo> sessions;
+  final void Function(String name) onPick;
+
+  /// The names this host already has a tab on, shown and not offered.
+  final Set<String> taken;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    bool ours(TmuxSessionInfo session) =>
+        LiveSession.tmuxNamePattern.hasMatch(session.name);
+    final mine = sessions.where(ours).toList();
+    final theirs = sessions.where((session) => !ours(session)).toList();
+    // A heading over one list of one kind says nothing; over two it says
+    // which is which.
+    final headings = mine.isNotEmpty && theirs.isNotEmpty;
+    Widget heading(String text) => Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 4),
+      child: Text(
+        text,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: theme.colorScheme.primary,
+        ),
+      ),
+    );
+    Widget row(TmuxSessionInfo session) =>
+        _TmuxRow(session, taken: taken.contains(session.name), onPick: onPick);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Attach to a tmux session', style: theme.textTheme.titleMedium),
+        if (headings) heading("Jeansh's own"),
+        for (final session in mine) row(session),
+        if (headings) heading('Started on the host'),
+        for (final session in theirs) row(session),
+      ],
+    );
+  }
+}
+
+/// One session in [TmuxSessionList]: its name, and the little tmux can say
+/// about it for free.
+class _TmuxRow extends StatelessWidget {
+  const _TmuxRow(this.session, {required this.taken, required this.onPick});
+
+  final TmuxSessionInfo session;
+
+  /// Open in a tab here already: see [openInSheet].
+  final bool taken;
+  final void Function(String name) onPick;
+
+  /// How long ago, as the chat's session list says it.
+  static String _ago(DateTime at) {
+    final since = DateTime.now().difference(at);
+    if (since.inMinutes < 1) return 'just now';
+    if (since.inHours < 1) return '${since.inMinutes}m ago';
+    if (since.inDays < 1) return '${since.inHours}h ago';
+    return '${since.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // A name tmux reads as an id however it is asked for would join another
+    // session: see [LiveSession.tmuxNameAllowed].
+    final reachable = LiveSession.tmuxNameAllowed(session.name);
+    final windows = session.windows == 1
+        ? '1 window'
+        : '${session.windows} windows';
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      enabled: !taken && reachable,
+      title: Text(session.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        [
+          windows,
+          'started ${_ago(session.created)}',
+          // Only when something has happened since: a session nobody has
+          // typed in carries the time it was made as its activity too, and
+          // saying it twice tells nobody anything.
+          if (session.activity.isAfter(session.created))
+            'wrote ${_ago(session.activity)}',
+          if (taken)
+            'open in a tab here'
+          else if (!reachable)
+            "tmux can't be asked for it by name"
+          else if (session.inUse)
+            'attached elsewhere',
+        ].join(' · '),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      onTap: taken || !reachable ? null : () => onPick(session.name),
     );
   }
 }

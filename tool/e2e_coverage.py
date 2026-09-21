@@ -89,7 +89,20 @@ def helper_only_tests() -> set[str]:
 
 
 def audit(entries: dict[str, dict]) -> list[tuple[str, str]]:
-    """`unit` guards backed only by tests that never build the UI.
+    """`unit` guards whose NAMED tests never build the UI.
+
+    Read the result as a question, not a verdict. It can only see the files an
+    entry names in `by:`, and in this codebase a feature's widget tests usually
+    live in the test file of the page that hosts it -- terminal_page_test,
+    chat_page_test, file_editor_page_test, connect_sheet_test,
+    home_databases_test -- not in a file named after the feature.
+
+    This has already been got wrong once, four times over: Ctrl+tap, Import
+    URI and two host-key prompts were all flagged here and moved to todo on the
+    strength of their eponymous test files alone, and every one had widget
+    tests all along in the page's file. Search the whole of test/,
+    case-insensitively, for the feature's own strings before calling anything
+    untested.
 
     An entry that says `ui: none` is exempt, for a feature that really is only
     logic -- parsing os-release, picking a port, walking a jump chain. That has
@@ -183,10 +196,12 @@ def main() -> int:
 
     if thin:
         print(
-            '\nThin guards -- the named tests never build a widget, so they '
-            'cannot see\nthe feature break the way Ctrl+tap did. Either add a '
-            'widget test, move it\nto todo, or say `ui: none` if the feature '
-            'really is only logic:'
+            '\nThin guards -- the tests NAMED here never build a widget. That '
+            'is a question,\nnot a verdict: first grep the whole of test/ '
+            'case-insensitively for the\nfeature\'s own strings, because its '
+            'widget tests usually live in the test\nfile of the page that '
+            'hosts it. Found some? Add them to `by:`. Found none?\nThen move '
+            'it to todo, or say `ui: none` if it really is only logic:'
         )
         for key, by in thin:
             print('  %-50s %s' % (key[:50], by))

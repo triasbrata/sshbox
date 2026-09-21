@@ -879,9 +879,10 @@ Jeansh passes these with every shell it opens, plain or tmux:
 | `LC_SSHBOX_NOTIFY_SECRET` | this connection's own secret, 32 random bytes in base64url |
 | `LC_SSHBOX_KEY` | this host's relay key: its id, a colon, and its private key |
 | `LC_SSHBOX_HOST_ID` | the id of the saved host; the relay needs only the key, which names its host |
+| `LC_SSHBOX_HYPERLINKS` | `1`: this terminal opens OSC 8 hyperlinks — see [Links in the terminal](#links-in-the-terminal) |
 
-The first two only when the host listens for us, the last two only once the
-host has a relay key.
+The first two only when the host listens for us, the next two only once the
+host has a relay key, and the last always.
 
 **The server has to accept them.** OpenSSH takes only the variables its
 `AcceptEnv` lists. Debian, Ubuntu and macOS ship `AcceptEnv LANG LC_*`, which
@@ -895,12 +896,14 @@ shell's profile instead, from **Copy notification key** on the host's edit
 page. The direct way
 cannot be set by hand: its port and secret are new with each connection.
 
-In tmux mode a tab adds the four names to tmux's `update-environment`, once
-per tmux server, so tmux copies them into the tab's session when it makes it
-and at every reattach. A new pane gets this connection's values even when the
-tmux server was started by something else; a pane already running keeps the
-ones it started with, whose direct URL went with the connection that gave it
-— which is what the relay in `notify` above is for.
+In tmux mode a tab adds the four notification names, and `FORCE_HYPERLINK`
+(see [Links in the terminal](#links-in-the-terminal)), to tmux's
+`update-environment`, once per tmux server, so tmux copies them into the tab's
+session when it makes it and at every reattach. A new pane gets this
+connection's values even when the tmux server was started by something else;
+a pane already running keeps the ones it started with, whose direct URL went
+with the connection that gave it — which is what the relay in `notify` above
+is for.
 
 **A host's key goes to that host only.** It signs notifications to this
 phone and does nothing else, and the relay sends them as that host's, so a
@@ -913,6 +916,40 @@ listen on that port and read what a shell left over from the connection sends
 to it. They get the text of that one message and nothing more: the secret
 stops them sending anything to the phone. It is also why `LC_SSHBOX_KEY`
 never goes to the direct URL — whoever held the port would hold the key.
+
+## Links in the terminal
+
+A program can print a link as a label with its address hidden, an OSC 8
+hyperlink, and Jeansh keeps the address. **Ctrl+tap** opens it — CTRL on the
+key bar, or held on a keyboard — as it opens a URL or a path written out; a
+`file:` link opens that file on the host. Nothing opens one without Ctrl, and
+**long-pressing the label** offers **Copy link address**, which shows where it
+goes before anything opens it. From the terminal, a Markdown preview, a chat
+or a web tab, only `http`, `https`, `mailto` and `tel` links open; any other
+scheme — `intent:`, `javascript:`, a `file:` on the phone, the app's own
+`sshbox:` — is refused, with Copy.
+
+Claude Code writes its links this way only when it believes the terminal can
+show them, and otherwise as `COR-6025 (https://…)`. `FORCE_HYPERLINK=1` tells
+it so:
+
+- **tmux mode** sets it for every pane a tab starts, through
+  `update-environment` as above; a shell already running keeps what it had,
+  so open a new pane or reconnect. A pane in a Jeansh session then writes
+  links for any terminal attached to it, and one attached through tmux older
+  than 3.4 shows the label alone.
+- **The local shell** on a desktop has it.
+- **A plain SSH shell** cannot be sent it: sshd takes only the names
+  `AcceptEnv` lists, and one it refuses would cost Jeansh every variable in
+  the table above. Jeansh sends `LC_SSHBOX_HYPERLINKS=1` instead, for the
+  host's shell profile (`~/.profile`, `~/.bashrc` or `~/.zshrc`) to act on:
+
+```sh
+[ -n "$LC_SSHBOX_HYPERLINKS" ] && export FORCE_HYPERLINK=1
+```
+
+Inside tmux 3.4 or later Claude Code writes hyperlinks already, counting tmux
+as a terminal that shows them.
 
 ## Uploading files
 

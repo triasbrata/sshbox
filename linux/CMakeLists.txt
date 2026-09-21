@@ -2,6 +2,23 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
+# Sentry's native crash backend is "none", and not a thing to override: see the
+# same line in windows/CMakeLists.txt. crashpad would send minidumps, raw copies
+# of the process's memory, which never pass through the scrubber.
+set(ENV{SENTRY_NATIVE_BACKEND} "none")
+
+# And its native transport is "none" too, which on Linux takes libcurl out of
+# the build. sentry-native sends only native events over it, and with the
+# backend above at "none" there are none to send; the app's own crash reports
+# are Dart events, which sentry_flutter sends over Dart's own HTTP — its C
+# binding says supportsCaptureEnvelope is false, so nothing Dart ever reaches
+# this transport. Left at its default, "curl", it made libcurl's headers a
+# build requirement that CI's Ubuntu runner does not have, and the first
+# release with Sentry lost its Linux build to "Could NOT find CURL". FORCE, so
+# it also overrides a "curl" already cached by an earlier build, sentry-native
+# setting its own default without FORCE.
+set(SENTRY_TRANSPORT "none" CACHE STRING "sentry-native's HTTP transport" FORCE)
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "jeansh")

@@ -118,6 +118,23 @@ label="$build_name+$build_number"
 version_args+=(--dart-define "JEANSH_VERSION=$label")
 [ -z "${JEANSH_UPDATE_HOST:-}" ] ||
   version_args+=(--dart-define "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")
+
+# Baked in for crash reporting (lib/src/telemetry/crash_reporting.dart). No
+# JEANSH_SENTRY_DSN in the environment leaves crash reporting off, and
+# Settings says so. The DSN is not a secret — every web app that uses Sentry
+# has one in its JavaScript — but it stays out of this public repository so
+# nobody fills the quota with junk.
+[ -z "${JEANSH_SENTRY_DSN:-}" ] ||
+  version_args+=(--dart-define "JEANSH_SENTRY_DSN=$JEANSH_SENTRY_DSN")
+
+# sentry_flutter builds sentry-native from source on Linux and Windows: its
+# sentry-native/sentry-native.cmake clones the upstream repository while CMake
+# configures, so a desktop build now wants a network. Its crash backend is
+# fixed at "none" in windows/CMakeLists.txt and linux/CMakeLists.txt, not here,
+# so that every path builds the same thing: CI's Linux build runs this script,
+# but its Windows build calls flutter directly and would never see a setting
+# made here.
+
 out="$out_root/$label"
 mkdir -p "$out"
 
@@ -214,12 +231,14 @@ build_windows() {
     --exclude /macos/ --exclude /linux/ \
     "$ROOT/" "$src/"
 
-  # The same two defines as the Linux build, written out here because this
-  # build goes through PowerShell rather than through version_args.
+  # The same defines as the Linux build, written out here because this build
+  # goes through PowerShell rather than through version_args.
   local defines
   defines="--dart-define $(psq "JEANSH_VERSION=$label")"
   [ -z "${JEANSH_UPDATE_HOST:-}" ] ||
     defines="$defines --dart-define $(psq "JEANSH_UPDATE_HOST=$JEANSH_UPDATE_HOST")"
+  [ -z "${JEANSH_SENTRY_DSN:-}" ] ||
+    defines="$defines --dart-define $(psq "JEANSH_SENTRY_DSN=$JEANSH_SENTRY_DSN")"
 
   step "Windows: flutter build windows --$mode (Flutter $flutter_bat, Visual Studio $vs)"
   # Each line Flutter writes to stderr turned back into plain text: redirected,

@@ -117,6 +117,10 @@ const _thirdHost = HostProfile(
   username: 'me',
 );
 
+/// What a shell is sent when no way to notify the device is there: only
+/// that its terminal shows hyperlinks.
+const _hyperlinksOnly = {'LC_SSHBOX_HYPERLINKS': '1'};
+
 void main() {
   group('SessionManager resume rule', () {
     late SessionManager manager;
@@ -519,6 +523,7 @@ void main() {
       final notifyKeys = await withToken(FakeRelay());
       final environment = await sent(SessionManager(notifyKeys: notifyKeys));
       expect(environment, {
+        'LC_SSHBOX_HYPERLINKS': '1',
         'LC_SSHBOX_KEY': await notifyKeys.valueFor('host-1'),
         'LC_SSHBOX_HOST_ID': 'host-1',
       });
@@ -532,18 +537,33 @@ void main() {
       final relay = FakeRelay()..down = true;
       final manager = SessionManager(notifyKeys: await withToken(relay));
 
-      expect(await sent(manager), isEmpty);
+      expect(await sent(manager), _hyperlinksOnly);
       relay.down = false;
       expect((await sent(manager))!.keys, {
+        'LC_SSHBOX_HYPERLINKS',
         'LC_SSHBOX_KEY',
         'LC_SSHBOX_HOST_ID',
       });
     });
 
-    test('nothing without push', () async {
+    test('nothing of it without push', () async {
       final host = _Host();
-      expect(await sent(SessionManager(), host), isEmpty);
+      expect(await sent(SessionManager(), host), _hyperlinksOnly);
       expect(host.listened, isEmpty);
+    });
+
+    // FORCE_HYPERLINK is what Claude Code reads, but sshd takes it only
+    // where AcceptEnv names it, and dartssh2 fails the channel over a name
+    // refused, which would cost every variable here. So the host is told by
+    // an LC_ name, which Debian, Ubuntu and macOS let through, for a
+    // profile to turn FORCE_HYPERLINK on from.
+    test('that its terminal shows hyperlinks, by a name sshd lets through',
+        () async {
+      final environment = await sent(
+        SessionManager(notifyKeys: await withToken(FakeRelay())),
+      );
+      expect(environment, containsPair('LC_SSHBOX_HYPERLINKS', '1'));
+      expect(environment!.keys, everyElement(startsWith('LC_')));
     });
 
     group('straight down the connection', () {
@@ -562,6 +582,7 @@ void main() {
           'us', () async {
         final host = _Host();
         expect(await sent(manager, host), {
+          'LC_SSHBOX_HYPERLINKS': '1',
           'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:34567/v1/send',
           'LC_SSHBOX_NOTIFY_SECRET': hasLength(43),
         });
@@ -571,7 +592,7 @@ void main() {
       test('nothing of it when the host will not listen', () async {
         final host = _Host()
           ..listenRefusal = const SshSessionException('refused');
-        expect(await sent(manager, host), isEmpty);
+        expect(await sent(manager, host), _hyperlinksOnly);
       });
 
       test('beside the relay key when there is one', () async {
@@ -580,6 +601,7 @@ void main() {
           onNotify: manager.onNotify,
         );
         expect((await sent(both))!.keys, {
+          'LC_SSHBOX_HYPERLINKS',
           'LC_SSHBOX_KEY',
           'LC_SSHBOX_HOST_ID',
           'LC_SSHBOX_NOTIFY_URL',

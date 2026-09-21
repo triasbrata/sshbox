@@ -142,8 +142,47 @@ LinkCandidate? linkAt(Buffer buffer, CellOffset cell) {
   return null;
 }
 
-/// Underlines every URL and path on buffer rows [from] to [to], and hands the
-/// underlines back to be disposed when they are no longer wanted.
+/// What a Ctrl+tap on an OSC 8 hyperlink opens, given the address the
+/// program wrote for it: the link a program draws as `COR-6025` or `the docs`
+/// with its address hidden, as Claude Code does once it believes the terminal
+/// can show one.
+///
+/// A `file:` address is a path on the host — `ls --hyperlink`, gcc and Claude
+/// Code all write one for a file they name — and opens there, as the same
+/// path written out would, whatever host the address names: this app can
+/// reach no other. Anything else is a URL, for `openUrl` to allow or refuse,
+/// since the program chose it and the label says nothing about it.
+LinkCandidate hyperlinkTarget(String address) {
+  final url = Uri.tryParse(address);
+  final path = url != null && url.isScheme('file') && url.path.startsWith('/')
+      ? Uri.decodeFull(url.path)
+      : null;
+  return (
+    kind: path != null ? LinkKind.path : LinkKind.url,
+    target: path ?? address,
+    line: null,
+    start: 0,
+    end: 0,
+  );
+}
+
+/// The address of the OSC 8 hyperlink a selection starts or ends on, for the
+/// selection menu's Copy link address: a long press on a link's label
+/// selects a word of it, so that word's first cell carries the link, and a
+/// selection dragged out to a link ends on it.
+///
+/// ponytail: only the two ends are looked at, so a link wholly inside a
+/// longer selection is not offered; a scan of every cell selected would find
+/// it, at the cost of walking the whole scrollback under Select all.
+String? hyperlinkIn(Terminal terminal, BufferRange range) {
+  final ends = range.normalized;
+  return terminal.hyperlinkAt(ends.begin) ??
+      terminal.hyperlinkAt(CellOffset(ends.end.x - 1, ends.end.y));
+}
+
+/// Underlines every URL, path and OSC 8 hyperlink on buffer rows [from] to
+/// [to], and hands the underlines back to be disposed when they are no longer
+/// wanted.
 ///
 /// Drawn by xterm2 itself, from anchors on the lines, so each one sits under
 /// its cells however the view has scrolled.
@@ -171,6 +210,28 @@ List<TerminalUnderline> underlineLinks(
       );
     }
     row = line.cells.isEmpty ? row + 1 : line.cells.last.y + 1;
+  }
+  // A hyperlink is a run of cells carrying one id, on each row it covers:
+  // its label shows nothing of its address, so without the underline it
+  // looks like any other word.
+  for (var y = from; y <= to && y < buffer.lines.length; y++) {
+    final line = buffer.lines[y];
+    var x = 0;
+    while (x < line.length) {
+      final id = line.getHyperlinkId(x);
+      final start = x++;
+      if (id == 0) continue;
+      while (x < line.length && line.getHyperlinkId(x) == id) {
+        x++;
+      }
+      underlines.add(
+        controller.underline(
+          p1: buffer.createAnchor(start, y),
+          p2: buffer.createAnchor(x, y),
+          color: color,
+        ),
+      );
+    }
   }
   return underlines;
 }

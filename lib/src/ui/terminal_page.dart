@@ -433,6 +433,16 @@ class _TerminalPageState extends State<TerminalPage> {
   /// With Ctrl, opens the link under the tap and types nothing; without, asks
   /// for focus — and for the soft keyboard too, unless a hardware keyboard has
   /// typed, in which case reopening it would double the next key.
+  ///
+  /// An OSC 8 hyperlink under the tap comes first: the address its program
+  /// gave it is what it means, where the text of its label is only what it
+  /// shows. It is opened here rather than through xterm2's own
+  /// `onHyperlinkTap`, which asks the hardware keyboard alone whether Ctrl is
+  /// down and so would never hear the key bar's CTRL, the one a tablet with
+  /// no keyboard has. Only ever on a Ctrl+tap: a hyperlink's address is
+  /// hidden and was written by whatever program is running, so nothing opens
+  /// one without being asked — and the selection menu's Copy link address
+  /// shows where it goes first.
   void _onTerminalTap(_PaneViewState view, CellOffset cell) {
     if (!_ctrl) {
       view.requestKeyboard();
@@ -440,7 +450,11 @@ class _TerminalPageState extends State<TerminalPage> {
     }
     // Used up by the tap, link or not, the way a key uses it up.
     if (_keyBar.ctrl) _keyBar.toggleCtrl();
-    final link = linkAt(view.widget.terminal.buffer, cell);
+    final terminal = view.widget.terminal;
+    final hyperlink = terminal.hyperlinkAt(cell);
+    final link = hyperlink != null
+        ? hyperlinkTarget(hyperlink)
+        : linkAt(terminal.buffer, cell);
     if (link != null) unawaited(_openLink(link));
   }
 
@@ -1141,8 +1155,30 @@ class _PaneViewState extends State<_PaneView> {
   }
 }
 
+/// The schemes [openUrl] opens: a web page, and a mail or a call, which the
+/// phone hands to a composer or a dialer that sends nothing until the user
+/// says so there.
+///
+/// Everything else is refused, because nearly every link that reaches here
+/// was written by somebody else: a program's output in the terminal, which
+/// can hide any address behind any label with an OSC 8 hyperlink, a Markdown
+/// file on the host, a reply in a chat that quotes what Claude read, a web
+/// page in a tab, which can navigate with no tap at all. Handed to the phone,
+/// an `intent:` names an activity to start, a `file:` a file on the phone,
+/// and this app's own `sshbox://host/<id>` connects to a saved host — and the
+/// label beside it could have said "open the docs". An allowlist rather than
+/// a list of the bad ones, since any app installed can answer to a scheme of
+/// its own.
+const _opens = {'http', 'https', 'mailto', 'tel'};
+
 /// Opens a link without leaving the app. Every link the app opens goes
-/// through here — a Ctrl+tap, a forwarded port, a sign-in check.
+/// through here — a Ctrl+tap, a forwarded port, a sign-in check, the Markdown
+/// preview, a chat, a web tab handing on what it will not show — so this is
+/// the one place that decides what may be opened at all: see [_opens]. What
+/// is refused says so, and its address can still be copied, so a link the
+/// user does mean to follow is one paste away rather than lost — by the
+/// toast's Copy and never unasked, since a web page gets here with no tap and
+/// must not be able to fill the clipboard.
 ///
 /// A web page opens in a tab of our own beside the shell it came from:
 /// [inTab] puts it there. With no shell to put it beside — the web tab's own
@@ -1161,6 +1197,25 @@ Future<void> openUrl(
   Uri url, {
   void Function(Uri url)? inTab,
 }) async {
+  // Dart keeps a scheme in lower case, so `HTTPS:` and `Tel:` are here too.
+  if (!_opens.contains(url.scheme)) {
+    if (!context.mounted) return;
+    showToast(
+      context,
+      url.hasScheme
+          ? 'Not opened: a ${url.scheme}: link is not a web, mail or phone link'
+          : 'Not opened: $url is not a web, mail or phone link',
+      type: ToastificationType.warning,
+      // Time to read why, and to reach for Copy.
+      duration: const Duration(seconds: 5),
+      action: (
+        label: 'Copy',
+        onPressed: () =>
+            unawaited(Clipboard.setData(ClipboardData(text: '$url'))),
+      ),
+    );
+    return;
+  }
   // A desktop has a browser of its own, with the user's own extensions,
   // sessions and bookmarks; a web tab drawn by the system web view has none of
   // them, and no address bar worth the name. So every link there goes out to

@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -11,6 +11,41 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
+import 'package:sshbox/src/ui/toast.dart';
+import 'package:url_launcher_platform_interface/link.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+
+/// Takes every link it is handed and remembers it: what would have gone to
+/// the phone's browser, or to whatever app answers the link's scheme.
+class _Launcher extends UrlLauncherPlatform {
+  final opened = <String>[];
+
+  @override
+  LinkDelegate? get linkDelegate => null;
+
+  @override
+  Future<bool> launchUrl(String url, LaunchOptions options) async {
+    opened.add(url);
+    return true;
+  }
+}
+
+/// What the app put on the clipboard, in place of the phone's own.
+List<String> _useFakeClipboard() {
+  final copied = <String>[];
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+    if (call.method == 'Clipboard.setData') {
+      copied.add((call.arguments as Map)['text'] as String);
+    }
+    return null;
+  });
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+  );
+  return copied;
+}
 
 class _NoSecrets implements SecretStore {
   @override
@@ -1114,6 +1149,150 @@ void main() {
       await pick(tester, shell, 'first', long('first', 90));
       expect(at().pixels, at().maxScrollExtent);
       expect(find.text('first 89'), findsOneWidget);
+    });
+  });
+
+  group('a link in a reply', () {
+    const ticket = 'https://edot.youtrack.cloud/issue/COR-6025';
+
+    /// A finished session whose answer is [markdown], picked in the chat.
+    /// Returns what went to a web tab beside the shell and what went to the
+    /// phone, to its browser or any other app.
+    Future<({List<Uri> inTab, List<String> launched})> pumpAnswer(
+      WidgetTester tester,
+      String markdown,
+    ) async {
+      final launcher = _Launcher();
+      UrlLauncherPlatform.instance = launcher;
+      final inTab = <Uri>[];
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Ticket triage')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': markdown},
+              ],
+            },
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatPage(session: session, onOpenWeb: inTab.add),
+          ),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Ticket triage');
+      return (inTab: inTab, launched: launcher.opened);
+    }
+
+    /// Lets a tap's toast show without waiting it out, which settling would.
+    Future<void> showToast(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    /// Presses Copy on the toast a refused link left, and waits it out.
+    Future<void> copyFromToast(WidgetTester tester) async {
+      await showToast(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.text('Copy'),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('opens in a web tab beside the shell on a phone', (
+      tester,
+    ) async {
+      final (:inTab, :launched) = await pumpAnswer(
+        tester,
+        'Filed as [COR-6025]($ticket).',
+      );
+
+      await tester.tapOnText(find.textRange.ofSubstring('COR-6025'));
+      await tester.pumpAndSettle();
+
+      expect(inTab, [Uri.parse(ticket)]);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('goes to the machine\'s own browser on a desktop', (
+      tester,
+    ) async {
+      final (:inTab, :launched) = await pumpAnswer(
+        tester,
+        'Filed as [COR-6025]($ticket).',
+      );
+
+      await tester.tapOnText(find.textRange.ofSubstring('COR-6025'));
+      await tester.pumpAndSettle();
+
+      expect(inTab, isEmpty);
+      expect(launched, [ticket]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('that is not a web address is launched nowhere', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      final (:inTab, :launched) = await pumpAnswer(
+        tester,
+        'Try [this](javascript:alert(1)) or [that](sshbox://open).',
+      );
+
+      await tester.tapOnText(find.textRange.ofSubstring('this'));
+      // Nothing copied until asked: openUrl refuses a web page's own
+      // navigation the same way, and a page must not fill the clipboard.
+      await showToast(tester);
+      expect(copied, isEmpty);
+      await copyFromToast(tester);
+      await tester.tapOnText(find.textRange.ofSubstring('that'));
+      await copyFromToast(tester);
+
+      // Neither to a tab nor to the phone, where a scheme is whatever app
+      // answers to it — this one's own among them.
+      expect(inTab, isEmpty);
+      expect(launched, isEmpty);
+      // Tapped all the same, rather than missed.
+      expect(copied, ['javascript:alert(1)', 'sshbox://open']);
+    });
+
+    testWidgets('that is not opened has its address copied, which its label '
+        'hides', (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpAnswer(
+        tester,
+        'Fixed in [the chat page](lib/src/ui/chat_page.dart) and '
+        '[here](javascript:alert(1)).',
+      );
+
+      await tester.tapOnText(find.textRange.ofSubstring('the chat page'));
+      await showToast(tester);
+      expect(copied, ['lib/src/ui/chat_page.dart']);
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.textContaining('lib/src/ui/chat_page.dart'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.pumpAndSettle();
+      await tester.tapOnText(find.textRange.ofSubstring('here'));
+      await copyFromToast(tester);
+      expect(copied.last, 'javascript:alert(1)');
     });
   });
 }

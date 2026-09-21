@@ -26,8 +26,10 @@ class WebPage extends StatefulWidget {
   State<WebPage> createState() => _WebPageState();
 }
 
-/// What the view shows itself. Anything else a page opens — `mailto:`,
-/// `tel:`, `intent:` — is for another app, as it is in a browser.
+/// What the view shows itself. Anything else a page opens goes to [openUrl],
+/// which hands a `mailto:` or a `tel:` to the app for it and refuses the
+/// rest — an `intent:`, or this app's own `sshbox:` — since a page can
+/// navigate with no tap at all.
 const _shownHere = {'http', 'https', 'about', 'data', 'blob'};
 
 class _WebPageState extends State<WebPage> {

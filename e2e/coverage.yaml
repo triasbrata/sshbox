@@ -185,14 +185,14 @@ chat-mode-picks-up-the-claude-code-sessions:
   why: "claude agents --json parsing and the once-per-shell quoting, run through a real sh"
 
 the-host-key-prompt-names-the-machine-that:
-  guard: todo
-  why: "the address rides through correctly in the store's tests, but nothing builds the prompt that names it -- the part the user reads before trusting a key"
+  guard: unit
+  by: test/connect_sheet_test.dart, test/alt_address_test.dart
+  why: "connect_sheet_test.dart asks about a key reached over the alternative address in the sheet itself, so the name the user reads before trusting is built and asserted"
 
 a-host-keeps-a-second-address-so-the:
   guard: unit
-  by: test/alt_address_test.dart
+  by: test/alt_address_test.dart, test/host_edit_page_test.dart, test/connect_sheet_test.dart
   why: "happy eyeballs, the 250 ms delay and the loser's socket destroyed"
-  ui: none
 
 images-linked-from-a-markdown-file-show-as:
   guard: unit
@@ -268,8 +268,9 @@ database-browser-for-postgresql-mongodb-and-redis-saved:
   why: "each driver is exercised against a real server"
 
 database-editor-import-uri-fills-the-type-address:
-  guard: todo
-  why: "db_uri_test.dart parses the URI; nothing fills the form from it, which is the half the user touches"
+  guard: unit
+  by: test/home_databases_test.dart, test/db_uri_test.dart
+  why: "home_databases_test.dart taps Import URI in the editor and checks the form it fills; db_uri_test.dart covers the parsing and refusals"
 
 database-icons-are-each-product-s-own-brand:
   guard: unit
@@ -324,9 +325,8 @@ logs-a-history-of-past-sessions-date-start:
 
 server-os-info-read-on-every-connect-os:
   guard: unit
-  by: test/os_info_test.dart
+  by: test/os_info_test.dart, test/hosts_page_test.dart
   why: "os-release, uname and the macOS and Windows shapes all parsed"
-  ui: none
 
 port-forwarding-on-its-own-screen-from-home:
   guard: unit
@@ -335,9 +335,8 @@ port-forwarding-on-its-own-screen-from-home:
 
 proxy-jump-a-host-can-connect-through-another:
   guard: unit
-  by: test/jump_chain_test.dart
+  by: test/jump_chain_test.dart, test/host_edit_page_test.dart
   why: "the chain is built and walked, jump hosts of their own included"
-  ui: none
 
 theme-in-settings-light-dark-system-mode-and:
   guard: unit
@@ -406,8 +405,9 @@ links-open-as-a-web-tab-beside-their:
   why: "the WebView is faked; the routing is the logic"
 
 ctrl-tap-a-path-or-link-to-open:
-  guard: todo
-  why: "ctrl_click_test.dart has no testWidgets at all: six tests on findLinks(), a string helper. Nothing arms the CTRL latch, underlines a link, taps one or opens one, so that file cannot see this feature break. Reported broken on the tablet once and found working on a recheck -- no regression, and the report is not what makes this thin. Needs a widget test over the wiring, and a flow"
+  guard: unit
+  by: test/terminal_page_test.dart, test/ctrl_click_test.dart
+  why: "group('Ctrl+tap') in terminal_page_test.dart arms CTRL, checks the underline, opens on a Ctrl+tap and not on a plain tap -- there since dd981a7, the commit that brought the feature in. ctrl_click_test.dart is only findLinks(); I read that file alone, called the wiring untested, and was wrong"
 
 magic-key-two-concentric-rings-and-it-fades:
   guard: unit
@@ -434,8 +434,9 @@ tmux-found-outside-a-non-login-path-the:
   why: "each candidate path is searched in order"
 
 security-hardening-a-new-host-key-asks-before:
-  guard: todo
-  why: "known_host_store_test.dart covers the pinning; the prompt itself, and the 0600 uploads, are not built by any test. A security surface with no UI test is the one to fix first"
+  guard: unit
+  by: test/connect_sheet_test.dart, test/known_host_store_test.dart
+  why: "connect_sheet_test.dart builds the new-host-key prompt and Trust and Cancel on it; the store's tests cover the pinning. Release signing and Android backup being off are settings no test can read, and stay the manual half"
 
 tailnet-forwarding-never-forward-debugger-ports-9229-etc:
   guard: unit

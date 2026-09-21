@@ -64,7 +64,18 @@ if [ -z "$keytool" ]; then
 fi
 [ -x "${keytool:-}" ] || die "no keytool: put the JDK's bin on PATH or set JAVA_HOME"
 
-flutter build appbundle --release
+# Baked in for crash reporting (lib/src/telemetry/crash_reporting.dart), the
+# same way tools/build_desktop.sh bakes it. Without it in the environment the
+# bundle reports nothing and Settings says so, so a release built by hand does
+# not quietly start reporting.
+# A plain string rather than an array, this script being /bin/sh: a DSN is a
+# URL with no space in it, so word splitting has nothing to split.
+dsn_define=
+[ -z "${JEANSH_SENTRY_DSN:-}" ] ||
+  dsn_define="--dart-define=JEANSH_SENTRY_DSN=$JEANSH_SENTRY_DSN"
+
+# shellcheck disable=SC2086
+flutter build appbundle --release $dsn_define
 aab=build/app/outputs/bundle/release/app-release.aab
 
 # Also catches a key.properties that Gradle reads as empty, which falls back

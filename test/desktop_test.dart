@@ -427,8 +427,9 @@ void main() {
       expect(started.executable, '/bin/zsh');
       expect(started.arguments, ['-l']);
       expect(started.workingDirectory, '/home/me');
-      // flutter_pty's own copy of the environment is all it needs there.
-      expect(started.environment, isNull);
+      // flutter_pty's own copy of the environment is all it needs there,
+      // and that this terminal opens a hyperlink.
+      expect(started.environment, {'FORCE_HYPERLINK': '1'});
     });
 
     test('PowerShell by its full path on Windows, with the whole '
@@ -468,8 +469,10 @@ void main() {
       expect(started.arguments, ['-d', 'Ubuntu-22.04', '--cd', '~']);
       final env = started.environment!;
       expect(env['TERM'], 'xterm-256color');
-      // TERM reaches inside by name; what the user had there stays.
-      expect(env['WSLENV'], 'USERPROFILE/p:TERM');
+      // TERM reaches inside by name, and so does FORCE_HYPERLINK; what the
+      // user had there stays.
+      expect(env['WSLENV'], 'USERPROFILE/p:TERM:FORCE_HYPERLINK');
+      expect(env['FORCE_HYPERLINK'], '1');
       expect(env['SystemRoot'], r'C:\WINDOWS');
     });
 

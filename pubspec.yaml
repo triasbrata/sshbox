@@ -66,6 +66,22 @@ dependencies:
   # Already here under uuid, pure Dart: SCRAM and MD5 for the database
   # browser's PostgreSQL and MongoDB sign-ins.
   crypto: ^3.0.7
+  # Crash reporting (lib/src/telemetry/crash_reporting.dart), with the DSN
+  # baked in at build time and nothing sent without one. 9 rather than the 8
+  # pub picks by itself: 8.14.2's Android Gradle asks the Kotlin compiler for
+  # language version 1.6, which Flutter 3.47's no longer supports, so it does
+  # not build for Android at all. On Linux and Windows this builds
+  # sentry-native from source at CMake configure time — a clone, so a desktop
+  # build now wants a network — and tools/build_desktop.sh pins its crash
+  # backend to none rather than putting crashpad through MSVC.
+  sentry_flutter: ^9.30.0
+  # The version and build number at runtime, for the daily count and the bug
+  # report: tool/release.sh bakes no JEANSH_VERSION, so the desktop builds'
+  # define is no use on Android. Already here under sentry_flutter.
+  package_info_plus: ^10.2.1
+  # Already here under package_info_plus, pure Dart: the v4 install id, which
+  # is random and carries nothing of the machine.
+  uuid: ^4.6.0
 
 dev_dependencies:
   flutter_test:
@@ -143,13 +159,21 @@ flutter_launcher_icons:
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
-# firebase_core is pub.dev's 4.14.0 without its Windows platform, which
-# links a Firebase C++ SDK this machine's MSVC cannot, for FCM that no desktop
-# build uses: see third_party/firebase_core/JEANSH.md. An override, because
-# firebase_messaging asks for firebase_core from pub.dev too.
+# Two packages vendored for the same reason: each is pulled in for one
+# platform and each ships native code that this machine's MSVC will not
+# build, so Windows is taken out of the copy here. Overrides rather than
+# dependencies, because what asks for them — firebase_messaging for
+# firebase_core, sentry_flutter for jni — asks pub.dev for them by name.
 dependency_overrides:
   firebase_core:
     path: third_party/firebase_core
+  # jni 0.14.2 without its Windows half: its C does not compile under MSVC,
+  # and sentry_flutter 9.30.0 pins jni to that exact version, so it cannot be
+  # overridden upwards either. jni is Java interop and there is no JVM for it
+  # to reach on Windows — see third_party/jni/JEANSH.md. Linux and Android
+  # are untouched.
+  jni:
+    path: third_party/jni
 
 flutter:
 
