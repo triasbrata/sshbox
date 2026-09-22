@@ -136,6 +136,39 @@ chat_version not-installed '' \
   '(?s).*Claude Code is not installed on this host.*'
 stand_in ''
 
+# OSC 52: a program may copy to the clipboard and never read it (b11f5bc). The
+# host sends the query and records what comes back; empty is refused, and ANY
+# bytes are the hole, whatever the clipboard held. Report-only until it has been
+# green a few times, then gating -- it guards a hole in every earlier release.
+osc52_query_refused() {
+  local script=/home/$SSH_USER/osc52-query.sh reply=/tmp/osc52-reply done=/tmp/osc52-done
+  sudo rm -f "$reply" "$done"
+  sudo -u "$SSH_USER" tee "$script" >/dev/null <<'SH'
+#!/bin/sh
+stty -echo raw
+printf '\033]52;c;?\a'
+timeout 2 cat -v > /tmp/osc52-reply
+stty sane
+touch /tmp/osc52-done
+SH
+  flow osc52_query || return 1
+  # No marker means the command never ran, and silence from a command that
+  # never ran must not pass for a refusal.
+  if [ ! -f "$done" ]; then
+    echo "::warning::the query script never finished, so nothing was checked"
+    return 1
+  fi
+  if [ -s "$reply" ]; then
+    # The length only: on a real device these bytes would be the clipboard.
+    echo "::error::the app ANSWERED the clipboard query ($(wc -c < "$reply") bytes) -- the OSC 52 hole is open"
+    return 1
+  fi
+  echo "refused: the clipboard query got nothing back"
+}
+echo "::group::osc52_query (report only)"
+osc52_query_refused || echo "::warning::osc52_query failed -- report only, not gating"
+echo "::endgroup::"
+
 if [ "${#failed[@]}" -gt 0 ]; then
   echo "::error::gating flows failed: ${failed[*]}"
   exit 1

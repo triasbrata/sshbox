@@ -1,0 +1,54 @@
+# A program on the host must never be able to read this device's clipboard.
+#
+# OSC 52 lets a program copy TO the clipboard -- Claude Code's /copy, vim's and
+# tmux's yanks -- and Jeansh allows that. It also has a query, ESC ] 52 ; c ; ?
+# BEL, which asks the terminal to send the clipboard back; xterm2 used to answer
+# it for a focused terminal, so any host could read a password copied a minute
+# before on the phone. Every released build before b11f5bc had that hole.
+#
+# The check runs on the host, which is this runner: tools/e2e_android.sh writes
+# ~/osc52-query.sh, which puts the terminal in raw mode, sends the query, and
+# records for two seconds whatever comes back. This flow only has to run it in a
+# focused terminal. The runner then reads the record: empty is refused, and ANY
+# bytes -- even the reply to an empty clipboard, which is still an escape
+# sequence -- are the hole, whatever the clipboard held.
+#
+# Focus is the part that makes it mean something. xterm2 answered only for a
+# focused terminal, so an unfocused one would stay silent even with the hole
+# open, and the check would pass having proved nothing. A mutation run of the
+# pre-fix terminal is what shows this flow can catch it.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# Focus the terminal and run the query there. pressKey Enter rather than the
+# magic key's button, so focus stays on the terminal as the query arrives.
+- tapOn:
+    point: 50%, 40%
+- inputText: "sh ~/osc52-query.sh"
+- pressKey: Enter
+
+# The script waits two seconds for a reply and then marks itself done. Hold the
+# session open past that: closing it would kill the script and leave an empty
+# record, which would read as refused.
+- extendedWaitUntil:
+    visible: "__hold__"
+    timeout: 7000
+    optional: true
+
+- tapOn: "Close ${HOST_LABEL}.*"
