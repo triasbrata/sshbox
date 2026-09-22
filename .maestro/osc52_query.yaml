@@ -7,11 +7,16 @@
 # before on the phone. Every released build before b11f5bc had that hole.
 #
 # The check runs on the host, which is this runner: tools/e2e_android.sh writes
-# ~/osc52-query.sh, which puts the terminal in raw mode, sends the query, and
+# ~/osc52-query.sh, which first copies a canary to the clipboard through OSC
+# 52's copy half, then puts the terminal in raw mode, sends the query, and
 # records for two seconds whatever comes back. This flow only has to run it in a
-# focused terminal. The runner then reads the record: empty is refused, and ANY
-# bytes -- even the reply to an empty clipboard, which is still an escape
-# sequence -- are the hole, whatever the clipboard held.
+# focused terminal. The runner then reads the record: empty is refused, any
+# bytes are the hole.
+#
+# The canary is what makes it mean anything. A leaking terminal answers from the
+# clipboard, and an empty clipboard gives it nothing, so it sends nothing -- a
+# fresh emulator would let a leaking build pass. The first version assumed an
+# empty clipboard still got a reply, and its mutation run proved otherwise.
 #
 # Focus is the part that makes it mean something. xterm2 answered only for a
 # focused terminal, so an unfocused one would stay silent even with the hole

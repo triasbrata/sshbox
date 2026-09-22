@@ -137,14 +137,25 @@ chat_version not-installed '' \
 stand_in ''
 
 # OSC 52: a program may copy to the clipboard and never read it (b11f5bc). The
-# host sends the query and records what comes back; empty is refused, and ANY
-# bytes are the hole, whatever the clipboard held. Report-only until it has been
-# green a few times, then gating -- it guards a hole in every earlier release.
+# host sends the query and records what comes back; empty is refused, any bytes
+# are the hole. Report-only until it has been green a few times, then gating --
+# it guards a hole in every earlier release.
+#
+# The clipboard is seeded first, and the check means nothing without that. A
+# leaking xterm2 answers from Clipboard.getData, and an EMPTY clipboard gives it
+# null to answer with, which sends no reply at all -- so on a fresh emulator a
+# leaking build and a fixed one both stay silent and both read "refused". The
+# first version of this check assumed the opposite and was caught by its own
+# mutation run: the pre-fix terminal read refused too. So the script copies a
+# canary through OSC 52's copy half -- the half Jeansh allows -- and only then
+# asks for it back.
 osc52_query_refused() {
   local script=/home/$SSH_USER/osc52-query.sh reply=/tmp/osc52-reply done=/tmp/osc52-done
   sudo rm -f "$reply" "$done"
   sudo -u "$SSH_USER" tee "$script" >/dev/null <<'SH'
 #!/bin/sh
+printf '\033]52;c;%s\a' "$(printf 'e2e-canary' | base64)"
+sleep 1
 stty -echo raw
 printf '\033]52;c;?\a'
 timeout 2 cat -v > /tmp/osc52-reply
