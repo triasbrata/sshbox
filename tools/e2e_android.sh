@@ -44,7 +44,7 @@ fi
 
 GATING=(smoke connect_and_keybar)
 REPORT_ONLY=(tabs file_browser logs duplicate_session dotfiles card_tap_reconnect
-  port_forward_no_host)
+  port_forward_no_host terminal_selection)
 
 # No HOST_LABEL here. Maestro 2.10 applies a flow's own `env:` block after the
 # -e values, so every flow's default of "WSL via" would win over anything passed

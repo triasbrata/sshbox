@@ -1,0 +1,53 @@
+# A long press on text in the terminal selects it, with handles and the
+# selection toolbar (Copy, Paste, Select all); a long press on blank space does
+# not — it arms the arrows instead. Two features the user passed, guarded until
+# now by nothing that runs on a device.
+#
+# The screen is filled with text first, so the first press lands on some
+# wherever the keyboard leaves room; then cleared, so the second lands on none.
+# The arrows themselves are drawn as bare icons no flow can read, so the blank
+# half is held to what it must not do: bring up the text toolbar.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn:
+    point: 50%, 40%
+- inputText: "yes 'selectme selectme selectme selectme selectme selectme selectme' | head -80"
+- pressKey: Enter
+
+# On text: selected, with the toolbar.
+- longPressOn:
+    point: 30%, 25%
+- extendedWaitUntil:
+    visible: "Copy"
+    timeout: 5000
+- assertVisible: "Select all"
+- assertVisible: "Paste"
+- takeScreenshot: terminal-selection
+- tapOn: "Copy"
+
+# On blank space: no toolbar.
+- inputText: "clear"
+- pressKey: Enter
+- longPressOn:
+    point: 50%, 30%
+- assertNotVisible: "Copy"
+- assertNotVisible: "Select all"
+
+- tapOn: "Close ${HOST_LABEL}.*"
