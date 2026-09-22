@@ -61,6 +61,7 @@ class TabsShell extends StatefulWidget {
     required this.secrets,
     required this.sessions,
     required this.onOpenHost,
+    this.onDuplicate,
     this.onOpenLocal,
     this.onOpenWsl,
     this.openDatabase,
@@ -69,7 +70,14 @@ class TabsShell extends StatefulWidget {
   final HostRepository repository;
   final SecretStore secrets;
   final SessionManager sessions;
+  /// A tap on a host's card, or on its row in Logs: see `openHost`.
   final Future<void> Function(String hostId) onOpenHost;
+
+  /// Duplicate session, on a shell tab's long press: another shell on the
+  /// host every time, where [onOpenHost] first connects a tab brought back
+  /// from an earlier run — which Duplicate, asked on that very tab, would
+  /// otherwise connect in place of the copy. [onOpenHost] when not given.
+  final Future<void> Function(String hostId)? onDuplicate;
 
   /// Opens a shell on this machine, on the builds that can have one — see
   /// `LocalTransport`. Null elsewhere, and Home draws no card for it.
@@ -481,9 +489,9 @@ class _TabsShellState extends State<TabsShell> {
                 secrets: widget.secrets,
                 inTab: (url) => widget.sessions.openWeb(session.id, url),
               ),
-              // What a tap in the host list does: another shell on the host,
-              // added at the end of the strip and shown.
-              onDuplicate: widget.onOpenHost,
+              // Another shell on the host, added at the end of the strip and
+              // shown.
+              onDuplicate: widget.onDuplicate ?? widget.onOpenHost,
               onAttach: _attachTmux,
               onDetach: _detachTmux,
               groups: _groups,

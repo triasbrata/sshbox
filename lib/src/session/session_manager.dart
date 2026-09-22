@@ -68,6 +68,7 @@ class LiveSession extends ChangeNotifier {
     bool pickTmux = false,
   }) : _tmuxName = tmuxName ?? _newTmuxName(),
        _autoConnect = restored,
+       _restored = restored,
        _pickTmux = pickTmux,
        // A name the app did not make is only ever joined, however the tab
        // came by it — Attach, or a tab brought back that Attach once opened —
@@ -217,6 +218,13 @@ class LiveSession extends ChangeNotifier {
   /// Brought back from an earlier run and not connected since: see
   /// [takeAutoConnect].
   bool _autoConnect;
+
+  /// Brought back from an earlier run and not connected since — shown and
+  /// its sheet closed, or its connect failed, as much as never shown. What a
+  /// tap on its host's card comes back to rather than opening another tab
+  /// beside it: see [SessionManager.restoredTab].
+  bool get restored => _restored;
+  bool _restored;
 
   /// Whether the next connect asks the host if [tmuxName] is still there
   /// before attaching, which would otherwise make a new one: a tab brought
@@ -743,6 +751,7 @@ class LiveSession extends ChangeNotifier {
       // else's, and it can be gone by the next reconnect.
       _checkTmux = _attachTmuxOnly;
       _tmuxGone = false;
+      _restored = false;
       for (final path in _restoredFiles) {
         if (!_openFiles.contains(path)) _openFiles.add(path);
       }
@@ -1623,6 +1632,16 @@ class SessionManager extends ChangeNotifier {
     if (existing != null) select(existing.id);
     return existing;
   }
+
+  /// The tab a tap on [hostId]'s card connects rather than opening another:
+  /// the first on the strip of those brought back from an earlier run and
+  /// not connected since, so a tap after another walks them left to right,
+  /// and once every one has connected, the card opens a new tab again. The
+  /// first rather than the one used last because nothing saved says which
+  /// that was — the saved tabs keep their order and no more — and the strip
+  /// is what the user can see. Null when there is none.
+  LiveSession? restoredTab(String hostId) =>
+      sessionsFor(hostId).where((s) => s.restored).firstOrNull;
 
   /// Closes a tab and leaves its tmux session running on the host: Detach.
   ///
