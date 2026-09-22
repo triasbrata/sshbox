@@ -1,0 +1,56 @@
+# A port forward saved with no host picked is refused, not crashed on
+# (JEANSH-3, from v1.0.79's Play pre-launch reports). The editor was a lazy
+# list: with enough ports added to push the host field off screen, the list
+# disposed it, a disposed field leaves the Form, so Save never checked it and
+# hit a null host in _save instead of saying so.
+#
+# So: a new setting, no host picked, ports added until the host field is far
+# out of sight, Save from the bottom. The editor must stay open — nothing was
+# saved — with no "hit an error" offer, and scrolled back up, the host field
+# must be the one saying "Pick a host". Under the lazy list that field comes
+# back fresh, with no error on it.
+appId: cloud.brata.terminal
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "Port forwarding"
+    timeout: 15000
+- tapOn: "Port forwarding"
+- tapOn: "Add port forward"
+- extendedWaitUntil:
+    visible: "New port forward"
+    timeout: 10000
+
+# The first port comes with the page; four more push the host field well out
+# of a phone's height.
+- repeat:
+    times: 4
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "Add port"
+          direction: DOWN
+      - tapOn: "Add port"
+# No hideKeyboard: nothing here raises one, and with none up Maestro's
+# hideKeyboard presses Back, which left the editor in the first run.
+- scrollUntilVisible:
+    element:
+      text: "Add port"
+    direction: DOWN
+
+- tapOn: "Save"
+- assertNotVisible: "(?s).*hit an error.*"
+- assertVisible: "New port forward"
+- scrollUntilVisible:
+    element:
+      text: "(?s).*Pick a host.*"
+    direction: UP
+- takeScreenshot: port-forward-no-host
+
+# And nothing saved: the list behind the editor is still empty.
+- back
+- assertVisible: "No port forwards yet"
+- back

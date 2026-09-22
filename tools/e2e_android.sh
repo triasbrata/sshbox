@@ -43,7 +43,8 @@ if [ "$SSH_USER" = "$(id -un)" ]; then
 fi
 
 GATING=(smoke connect_and_keybar)
-REPORT_ONLY=(tabs file_browser logs duplicate_session dotfiles card_tap_reconnect)
+REPORT_ONLY=(tabs file_browser logs duplicate_session dotfiles card_tap_reconnect
+  port_forward_no_host)
 
 # No HOST_LABEL here. Maestro 2.10 applies a flow's own `env:` block after the
 # -e values, so every flow's default of "WSL via" would win over anything passed
@@ -265,6 +266,12 @@ for name in chat_scroll chat_tool_rows; do
   echo "::endgroup::"
 done
 stand_in ''
+
+# Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named
+# one in its own results, under takeScreenshot/, which the upload does not
+# reach. Its failure screenshots stay where they are, uploaded apart.
+find "$HOME/.maestro/tests" -path '*/takeScreenshot/*.png' \
+  -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
 
 if [ "${#failed[@]}" -gt 0 ]; then
   echo "::error::gating flows failed: ${failed[*]}"
