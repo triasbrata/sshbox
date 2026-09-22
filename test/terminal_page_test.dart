@@ -161,6 +161,9 @@ class _Shell
 /// of it.
 final _android = TargetPlatformVariant.only(TargetPlatform.android);
 
+/// Where the right-click tests' hyperlink points.
+const _address = 'https://edot.youtrack.cloud/issue/COR-6025';
+
 /// The toast saying [message], if it is one of [type]'s.
 Finder _toast(String message, ToastificationType type) => find.ancestor(
   of: find.text(message),
@@ -862,6 +865,124 @@ void main() {
         expect(launcher.tried, isEmpty);
         await tester.pumpAndSettle();
       });
+    });
+
+    group('a right-click', () {
+      late List<Object?> copied;
+
+      /// The page, with an OSC 8 hyperlink to [_address] labelled COR-6025
+      /// on the second row, and every copy kept in [copied].
+      Future<void> pumpLink(WidgetTester tester) async {
+        copied = [];
+        final platform = tester.binding.defaultBinaryMessenger;
+        platform.setMockMethodCallHandler(SystemChannels.platform, (
+          call,
+        ) async {
+          if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+          if (call.method == 'Clipboard.getData') return {'text': 'pasted'};
+          return null;
+        });
+        addTearDown(
+          () =>
+              platform.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        await pumpPage(tester);
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .write('\r\n\x1b]8;;$_address\x07COR-6025\x1b]8;;\x07 after');
+        await tester.pump();
+      }
+
+      Future<void> rightClick(WidgetTester tester, Offset at) async {
+        await tester.tapAt(
+          at,
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets(
+        'on a desktop opens a menu at the pointer: Copy for a selection, '
+        'Paste, and Copy link address on a hyperlink',
+        (tester) async {
+          await pumpLink(tester);
+
+          // Plain text, nothing selected: no Copy, and no address.
+          final at = cellAt(tester, 18);
+          await rightClick(tester, at);
+          final paste = find.widgetWithText(PopupMenuItem<void>, 'Paste');
+          expect(tester.getTopLeft(paste).dx, moreOrLessEquals(at.dx));
+          expect(find.text('Copy'), findsNothing);
+          expect(find.text('Copy link address'), findsNothing);
+          await tester.tapAt(cellAt(tester, 30, 3));
+          await tester.pumpAndSettle();
+
+          // "https" selected, as a mouse drag would.
+          final buffer = tester
+              .widget<TerminalView>(find.byType(TerminalView))
+              .terminal
+              .buffer;
+          links(
+            tester,
+          ).setSelection(buffer.createAnchor(0, 0), buffer.createAnchor(5, 0));
+          await rightClick(tester, cellAt(tester, 2, 1));
+          await tester.tap(find.text('Copy'));
+          await tester.pumpAndSettle();
+          await rightClick(tester, cellAt(tester, 2, 1));
+          await tester.tap(find.text('Copy link address'));
+          await tester.pumpAndSettle();
+
+          expect(copied, [
+            {'text': 'https'},
+            {'text': _address},
+          ]);
+          // Copied, never opened, and nothing typed into the shell.
+          expect(openedWeb, isEmpty);
+          expect(launcher.tried, isEmpty);
+          expect(shell.sent, isEmpty);
+        },
+        variant: TargetPlatformVariant.desktop(),
+      );
+
+      testWidgets('its Paste pastes, as Ctrl+V does', (tester) async {
+        await pumpLink(tester);
+        await rightClick(tester, cellAt(tester, 18));
+        await tester.tap(find.text('Paste'));
+        await tester.pumpAndSettle();
+
+        expect(shell.sent.join(), contains('pasted'));
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+      testWidgets('goes to a program that reads the mouse, unless Shift is '
+          'held, as in any terminal', (tester) async {
+        await pumpLink(tester);
+        // What vim, less or tmux asks for with its mouse on.
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .write('\x1b[?1000h');
+        await tester.pump();
+
+        await rightClick(tester, cellAt(tester, 2, 1));
+        expect(find.text('Paste'), findsNothing);
+        // The right button's press, in X10's encoding.
+        expect(shell.sent.join(), contains('\x1b[M"'));
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await rightClick(tester, cellAt(tester, 2, 1));
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        expect(find.text('Copy link address'), findsOneWidget);
+      }, variant: TargetPlatformVariant.desktop());
+
+      testWidgets('on Android opens nothing new', (tester) async {
+        await pumpLink(tester);
+        await rightClick(tester, cellAt(tester, 2, 1));
+
+        expect(find.text('Paste'), findsNothing);
+        expect(find.text('Copy link address'), findsNothing);
+      }, variant: _android);
     });
   });
 
