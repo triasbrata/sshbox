@@ -1710,6 +1710,24 @@ void main() {
       await tester.pumpAndSettle();
     });
 
+    testWidgets('its refusal stays long enough to read, where a warning '
+        'would go after a second', (tester) async {
+      await pumpChat(tester, '2.1.100 (Claude Code)');
+
+      await tapChat(tester);
+      await tester.pump(const Duration(milliseconds: 1400));
+
+      expect(
+        _toast(
+          'Claude Code 2.1.100 on this host is too old for chat — it needs '
+          '2.1.259 or newer.',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('on a host whose Claude Code is new enough it opens the chat, '
         'and asks the host once a connection', (tester) async {
       final (:opened, :host) = await pumpChat(tester, '2.1.277 (Claude Code)');

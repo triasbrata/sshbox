@@ -128,7 +128,15 @@ class _TerminalPageState extends State<TerminalPage> {
     if (!mounted) return;
     setState(() => _checkingClaude = false);
     if (why == null) return widget.onOpenChat();
-    showToast(context, why, type: ToastificationType.warning);
+    // Five seconds, as an error has: a refusal asks the user to go and do
+    // something about the host's Claude Code, which a second is too short to
+    // read, let alone act on.
+    showToast(
+      context,
+      why,
+      type: ToastificationType.warning,
+      duration: const Duration(seconds: 5),
+    );
   }
 
   /// Forwards and problems already announced, so each is said once. Held by
