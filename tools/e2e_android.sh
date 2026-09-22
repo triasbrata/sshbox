@@ -217,6 +217,42 @@ for name in "${REPORT_ONLY[@]}"; do
   echo "::endgroup::"
 done
 
+# "Never two live copies of Jeansh", checked with adb rather than Maestro: it
+# is about Android tasks, which no screen shows. A plain `am start` of a running
+# app only brings it forward and passes with or without the guard, so the
+# second launch carries FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_MULTIPLE_TASK,
+# which asks for a fresh instance in a task of its own — what a floating
+# window or a "new window" does. With the guard the copy hands over and
+# finishes, and one MainActivity is left. An earlier try of this read one with
+# the guard taken out too, so it says what it saw: am start's own answer and
+# every task holding Jeansh. Report-only until it has been seen to fail.
+single_instance() {
+  local main=cloud.brata.terminal/dev.triasbrata.sshbox.MainActivity
+  local records
+  adb shell am start -W -n "$main" >/dev/null || return 1
+  sleep 3
+  # Home first. With Jeansh on top, Android hands a singleTop launch to the
+  # running copy whatever the flags ask — "delivered to currently running
+  # top-most instance" — and makes none, which is why the first try read one
+  # copy with the guard taken out too. From Home it is a launch that misses
+  # the running one, as a stale Recents card or a new window is.
+  adb shell input keyevent KEYCODE_HOME
+  sleep 2
+  echo "The second launch, as am start answers it:"
+  adb shell am start -W -n "$main" -f 0x18000000 || return 1
+  sleep 5
+  echo "Tasks and activities holding Jeansh:"
+  adb shell dumpsys activity activities |
+    grep -E "\* Task\{|Hist #|ActivityRecord\{" | grep -E "brata|Task\{" | head -30
+  records=$(adb shell dumpsys activity activities |
+    grep -oE "ActivityRecord\{[0-9a-f]+ u0 $main" | sort -u | wc -l | tr -d ' ')
+  echo "MainActivity records after a forced second launch: $records"
+  [ "$records" -eq 1 ]
+}
+echo "::group::single_instance (report only)"
+single_instance || echo "::warning::single_instance failed -- report only, not gating"
+echo "::endgroup::"
+
 # The chat button's Claude Code check, UAT issue #22: one flow, three hosts, the
 # stand-in swapped between them. Report-only until it has earned the gate. Each
 # expected toast is the app's own wording (ClaudeChat.versionRefusal).
