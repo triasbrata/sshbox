@@ -231,6 +231,13 @@ single_instance() {
   local records
   adb shell am start -W -n "$main" >/dev/null || return 1
   sleep 3
+  # Home first. With Jeansh on top, Android hands a singleTop launch to the
+  # running copy whatever the flags ask — "delivered to currently running
+  # top-most instance" — and makes none, which is why the first try read one
+  # copy with the guard taken out too. From Home it is a launch that misses
+  # the running one, as a stale Recents card or a new window is.
+  adb shell input keyevent KEYCODE_HOME
+  sleep 2
   echo "The second launch, as am start answers it:"
   adb shell am start -W -n "$main" -f 0x18000000 || return 1
   sleep 5
