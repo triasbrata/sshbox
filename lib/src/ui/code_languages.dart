@@ -1,15 +1,19 @@
 import 'dart:ui' show Brightness;
 
+import 'package:flutter/painting.dart' show TextStyle;
 import 'package:re_editor/re_editor.dart';
 import 'package:re_highlight/languages/bash.dart';
+import 'package:re_highlight/languages/cpp.dart';
 import 'package:re_highlight/languages/css.dart';
 import 'package:re_highlight/languages/dart.dart';
 import 'package:re_highlight/languages/diff.dart';
 import 'package:re_highlight/languages/dockerfile.dart';
 import 'package:re_highlight/languages/go.dart';
 import 'package:re_highlight/languages/ini.dart';
+import 'package:re_highlight/languages/java.dart';
 import 'package:re_highlight/languages/javascript.dart';
 import 'package:re_highlight/languages/json.dart';
+import 'package:re_highlight/languages/kotlin.dart';
 import 'package:re_highlight/languages/makefile.dart';
 import 'package:re_highlight/languages/markdown.dart';
 import 'package:re_highlight/languages/nginx.dart';
@@ -17,6 +21,7 @@ import 'package:re_highlight/languages/properties.dart';
 import 'package:re_highlight/languages/python.dart';
 import 'package:re_highlight/languages/rust.dart';
 import 'package:re_highlight/languages/sql.dart';
+import 'package:re_highlight/languages/swift.dart';
 import 'package:re_highlight/languages/typescript.dart';
 import 'package:re_highlight/languages/xml.dart';
 import 'package:re_highlight/languages/yaml.dart';
@@ -36,15 +41,20 @@ CodeHighlightTheme? codeThemeFor(
   String path, [
   Brightness brightness = Brightness.dark,
 ]) {
-  final mode = _modeFor(path);
+  final mode = codeModeFor(path);
   if (mode == null) return null;
   return CodeHighlightTheme(
     languages: {'file': CodeHighlightThemeMode(mode: mode)},
-    theme: brightness == Brightness.dark ? atomOneDarkTheme : atomOneLightTheme,
+    theme: codeColoursFor(brightness),
   );
 }
 
-Mode? _modeFor(String path) {
+/// Atom's colours by scope, for a page of [brightness].
+Map<String, TextStyle> codeColoursFor(Brightness brightness) =>
+    brightness == Brightness.dark ? atomOneDarkTheme : atomOneLightTheme;
+
+/// The language of the file at [path], by its name, or null for none.
+Mode? codeModeFor(String path) {
   final name = RemotePath.basename(path).toLowerCase();
   switch (name) {
     case 'dockerfile' || 'containerfile':
@@ -69,9 +79,19 @@ Mode? _modeFor(String path) {
     'ts' => langTypescript,
     'go' => langGo,
     'rs' => langRust,
+    // The Android and Apple halves of a Flutter app, and its native code.
+    'kt' || 'kts' => langKotlin,
+    'java' => langJava,
+    'swift' => langSwift,
+    'c' || 'h' || 'cc' || 'cpp' || 'cxx' || 'hpp' || 'hh' => langCpp,
     // Close enough for all of them: sections, keys, values and comments.
-    'ini' || 'cfg' || 'conf' || 'toml' || 'env' || 'service' || 'timer' =>
-      langIni,
+    'ini' ||
+    'cfg' ||
+    'conf' ||
+    'toml' ||
+    'env' ||
+    'service' ||
+    'timer' => langIni,
     'properties' => langProperties,
     'md' || 'markdown' => langMarkdown,
     'xml' || 'html' || 'htm' || 'svg' || 'plist' => langXml,

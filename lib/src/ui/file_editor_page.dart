@@ -204,7 +204,9 @@ const _draftLimit = 256 * 1024;
 
 String _draftPrefsKey(String key) => 'editor.draft.$key';
 
-const _prefsFontSize = 'editor.fontSize';
+/// The text size a file tab reads at, which a diff tab reads at too: a size
+/// picked in either is the size in both.
+const editorFontSizeKey = 'editor.fontSize';
 const _prefsWordWrap = 'editor.wordWrap';
 
 class _TextFileTabState extends State<_TextFileTab> {
@@ -414,7 +416,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _fontSize = prefs.getDouble(_prefsFontSize) ?? _fontSize;
+      _fontSize = prefs.getDouble(editorFontSizeKey) ?? _fontSize;
       _wordWrap = prefs.getBool(_prefsWordWrap) ?? _wordWrap;
     });
   }
@@ -425,7 +427,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       if (wordWrap != null) _wordWrap = wordWrap;
     });
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_prefsFontSize, _fontSize);
+    await prefs.setDouble(editorFontSizeKey, _fontSize);
     await prefs.setBool(_prefsWordWrap, _wordWrap);
   }
 

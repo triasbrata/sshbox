@@ -46,7 +46,10 @@ index 1111111111111111111111111111111111111111..22222222222222222222222222222222
     expect(file.expandable, isTrue);
 
     final hunk = file.hunks.single;
-    expect(hunk.header, '@@ -60,7 +60,9 @@ class MainActivity : FlutterActivity() {');
+    expect(
+      hunk.header,
+      '@@ -60,7 +60,9 @@ class MainActivity : FlutterActivity() {',
+    );
     expect(_rows(hunk), [
       '60     // A relaunch | 60     // A relaunch',
       '61     // instance | 61     // instance',
@@ -255,10 +258,12 @@ index 1313131313131313131313131313131313131313..14141414141414141414141414141414
     ]);
   });
 
-  test('blank context lines trimmed off the end of the output are put back', () {
-    // What the runner hands over has its trailing whitespace trimmed, and a
-    // blank context line at the very end is nothing but whitespace.
-    final diff = parseDiff('''
+  test(
+    'blank context lines trimmed off the end of the output are put back',
+    () {
+      // What the runner hands over has its trailing whitespace trimmed, and a
+      // blank context line at the very end is nothing but whitespace.
+      final diff = parseDiff('''
 diff --git a/a.txt b/a.txt
 index 1515151515151515151515151515151515151515..1616161616161616161616161616161616161616 100644
 --- a/a.txt
@@ -267,14 +272,15 @@ index 1515151515151515151515151515151515151515..16161616161616161616161616161616
 -x
 +y''');
 
-    final lines = diff.files.single.hunks.single.lines;
-    expect(lines.map((line) => (line.oldNo, line.newNo)), [
-      (1, null),
-      (null, 1),
-      (2, 2),
-      (3, 3),
-    ]);
-  });
+      final lines = diff.files.single.hunks.single.lines;
+      expect(lines.map((line) => (line.oldNo, line.newNo)), [
+        (1, null),
+        (null, 1),
+        (2, 2),
+        (3, 3),
+      ]);
+    },
+  );
 
   test('a merge\'s combined diff is kept as git printed it', () {
     final diff = parseDiff('''

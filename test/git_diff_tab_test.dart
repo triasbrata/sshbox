@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -9,9 +8,8 @@ import 'package:sshbox/src/git/git_diff.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
-import 'package:sshbox/src/ui/file_editor_page.dart';
+import 'package:sshbox/src/ui/git_diff_page.dart';
 import 'package:sshbox/src/ui/git_page.dart';
-import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
@@ -101,7 +99,7 @@ class _Shell
     }
     if (command.contains("'ls-files'")) return Stream.fromIterable(said([]));
     if (command.contains("'show'")) {
-      return Stream.fromIterable(said(['-gone', '+here']));
+      return Stream.fromIterable(said(_patch(['-gone', '+here'])));
     }
     if (command.contains("'diff'")) {
       if (fail) {
@@ -113,15 +111,28 @@ class _Shell
       }
       return Stream.fromIterable(
         said(
-          command.contains("'--staged'")
-              ? ['-staged was', '+staged is']
-              : unstaged.split('\n'),
+          _patch(
+            command.contains("'--staged'")
+                ? ['-staged was', '+staged is']
+                : unstaged.split('\n'),
+          ),
         ),
       );
     }
     // The page's own probe.
     return Stream.value('sshbox\t42\t0\tbash\t/home/me');
   }
+
+  /// A one-line change to lib/main.dart, as git prints it.
+  static List<String> _patch(List<String> hunk) => [
+    'diff --git a/lib/main.dart b/lib/main.dart',
+    'index 1111111111111111111111111111111111111111..'
+        '2222222222222222222222222222222222222222 100644',
+    '--- a/lib/main.dart',
+    '+++ b/lib/main.dart',
+    '@@ -1 +1 @@',
+    ...hunk,
+  ];
 }
 
 const _box = HostProfile(
@@ -131,12 +142,12 @@ const _box = HostProfile(
   username: 'me',
 );
 
-/// The text in the diff tab's editor.
-String _shown(WidgetTester tester) =>
-    tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!.text;
-
-bool? _readOnly(WidgetTester tester) =>
-    tester.widget<CodeEditor>(find.byType(CodeEditor)).readOnly;
+/// The diff tab shows [was] removed and [now] added, each once.
+void _shows(String was, String now) {
+  expect(find.byType(GitDiffPage), findsOneWidget);
+  expect(find.text(was, findRichText: true), findsOneWidget);
+  expect(find.text(now, findRichText: true), findsOneWidget);
+}
 
 /// Lets the git commands and the diff's own read finish.
 Future<void> _settle(WidgetTester tester) async {
@@ -189,12 +200,12 @@ void main() {
     await _settle(tester);
   }
 
-  testWidgets('a change tapped in the panel opens its diff in a file tab, '
-      'read-only', (tester) async {
+  testWidgets('a change tapped in the panel opens its diff in a tab of its '
+      'own', (tester) async {
     await pumpTabs(tester);
     await openGit(tester);
     expect(find.byType(GitPage), findsOneWidget);
-    expect(find.byType(FileEditorPage), findsNothing);
+    expect(find.byType(GitDiffPage), findsNothing);
 
     await tester.tap(find.text('lib/main.dart').last);
     await _settle(tester);
@@ -207,16 +218,13 @@ void main() {
     expect(manager.activePath, diff.key);
     expect(find.byIcon(Icons.difference_outlined), findsOneWidget);
 
-    // The file tab, showing what git printed and refusing to be typed in.
-    expect(find.byType(FileEditorPage), findsOneWidget);
-    expect(_shown(tester), '-was this\n+is this');
-    expect(_readOnly(tester), isTrue);
+    // The diff page, showing what git printed.
+    _shows('was this', 'is this');
     expect(find.text('main.dart · diff'), findsWidgets);
     expect(find.text('lib/main.dart · dev'), findsOneWidget);
 
-    // Nothing that would write: no save, and no keys to type with.
+    // Nothing that would write.
     expect(find.byTooltip('Save to host'), findsNothing);
-    expect(find.byType(EditorKeyBar), findsNothing);
     // The panel it came from is still open, one tab away — offstage now that
     // the diff is what is showing.
     expect(find.byType(GitPage, skipOffstage: false), findsOneWidget);
@@ -230,7 +238,7 @@ void main() {
     // The one file shows in both lists: staged above, unstaged below.
     await tester.tap(find.text('lib/main.dart').first);
     await _settle(tester);
-    expect(_shown(tester), '-staged was\n+staged is');
+    _shows('staged was', 'staged is');
 
     await tester.tap(find.byIcon(Icons.account_tree_outlined).first);
     await _settle(tester);
@@ -262,7 +270,7 @@ void main() {
     final diff = manager.sessions.single.diffs.single;
     expect(diff.title, 'abc1234 · diff');
     expect(diff.subtitle, 'The first commit');
-    expect(_shown(tester), '-gone\n+here');
+    _shows('gone', 'here');
     expect(shell.ran.any((c) => c.contains("'show'")), isTrue);
   });
 
@@ -273,13 +281,13 @@ void main() {
     await openGit(tester);
     await tester.tap(find.text('lib/main.dart').last);
     await _settle(tester);
-    expect(_shown(tester), '-was this\n+is this');
+    _shows('was this', 'is this');
 
     shell.unstaged = '-was this\n+is something else';
     await tester.tap(find.byTooltip('Reload from host'));
     await _settle(tester);
 
-    expect(_shown(tester), '-was this\n+is something else');
+    _shows('was this', 'is something else');
   });
 
   testWidgets('from the drawer, opening a diff shuts the drawer the tab would '
@@ -296,8 +304,7 @@ void main() {
 
     expect(find.byType(GitPage), findsNothing);
     expect(find.byType(Drawer), findsNothing);
-    expect(find.byType(FileEditorPage), findsOneWidget);
-    expect(_shown(tester), '-was this\n+is this');
+    _shows('was this', 'is this');
   });
 
   testWidgets('closing the diff tab lands on the shell it was opened beside', (
@@ -309,12 +316,12 @@ void main() {
     await _settle(tester);
     expect(manager.activeKind, TabKind.diff);
 
-    await tester.tap(find.byTooltip('Close file'));
+    await tester.tap(find.byTooltip('Close diff'));
     await tester.pumpAndSettle();
 
     expect(manager.sessions.single.diffs, isEmpty);
     expect(manager.activeKind, TabKind.terminal);
-    expect(find.byType(FileEditorPage), findsNothing);
+    expect(find.byType(GitDiffPage), findsNothing);
   });
 
   testWidgets('a diff goes on working after the panel that opened it closes', (
@@ -332,7 +339,7 @@ void main() {
     shell.unstaged = '-was this\n+is newer still';
     await tester.tap(find.byTooltip('Reload from host'));
     await _settle(tester);
-    expect(_shown(tester), '-was this\n+is newer still');
+    _shows('was this', 'is newer still');
   });
 
   testWidgets('a diff git refuses says why, rather than spinning', (
@@ -345,7 +352,7 @@ void main() {
     await tester.tap(find.text('lib/main.dart').last);
     await _settle(tester);
 
-    expect(find.byType(FileEditorPage), findsOneWidget);
+    expect(find.byType(GitDiffPage), findsOneWidget);
     expect(find.textContaining('no such path'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
