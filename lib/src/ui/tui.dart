@@ -2,6 +2,9 @@
 // https://github.com/TUI-Termul/termul at 17107128dfd15089570ea49aa1b10986133d30c7
 // (lib/theme/termul_palette.dart, lib/theme/termul_theme.dart,
 // lib/components/tui_badge.dart, tui_button.dart's TuiKeyHint and tui_tabs.dart),
+// and its Paper, Paper Dark and Phosphor palettes at
+// df2cacf9d140f8c74220f2879bc7ee53b2b6a758 (lib/theme/termul_palette.dart),
+// which are two of the themes in terminal_schemes.dart,
 // adapted: the palette grows from each of Jeansh's own themes, light and dark,
 // instead of Termul's three fixed dark ones, every colour meant for text is
 // pushed to 4.5:1, the font is the bundled JetBrains Mono rather than
@@ -62,6 +65,11 @@ void registerTermulLicense() => LicenseRegistry.addLicense(
 const tuiFontFamily = 'JetBrains Mono';
 const _tuiFallback = ['Noto Sans Symbols 2'];
 
+/// The layers a theme draws itself, where it has them — termul's own
+/// palettes do — instead of the steps between the background and the text
+/// that [TuiPalette.of] makes for the rest.
+typedef TuiLayers = ({Color sidebar, Color panel, Color surface});
+
 /// Termul's tokens, grown from one of Jeansh's themes in one brightness: the
 /// terminal's own background and text, and layers between them, so the
 /// chrome around a shell is the shell's own colour.
@@ -98,8 +106,9 @@ class TuiPalette {
   factory TuiPalette.of(
     TerminalTheme theme,
     Color accent,
-    Brightness brightness,
-  ) {
+    Brightness brightness, [
+    TuiLayers? layers,
+  ]) {
     final bg = theme.background;
     final fg = theme.foreground;
     Color mix(double t) => Color.lerp(bg, fg, t)!;
@@ -113,9 +122,9 @@ class TuiPalette {
     return TuiPalette(
       brightness: brightness,
       bg: bg,
-      sidebar: mix(.035),
-      panel: mix(.06),
-      surface: mix(.09),
+      sidebar: layers?.sidebar ?? mix(.035),
+      panel: layers?.panel ?? mix(.06),
+      surface: layers?.surface ?? mix(.09),
       raised: raised,
       border: mix(.2),
       strongBorder: tuiContrasted(mix(.4), bg, 3),

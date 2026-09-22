@@ -50,6 +50,9 @@ void main() {
       300,
       scrollable: find.byType(Scrollable).first,
     );
+    // Whole, not just its top edge in view: Settings is a long list.
+    await tester.ensureVisible(credit);
+    await tester.pumpAndSettle();
     await tester.tap(credit);
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Iyan Qalbi on GitHub'));
@@ -62,6 +65,8 @@ void main() {
       300,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(licences);
+    await tester.pumpAndSettle();
     await tester.tap(licences);
     await tester.pumpAndSettle();
     expect(find.byType(LicensePage), findsOneWidget);
