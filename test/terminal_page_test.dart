@@ -1614,6 +1614,34 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: _android);
 
+    testWidgets('a program that asked for bracketed paste gets the path as a '
+        'paste, which Claude Code turns into [Image #N]', (tester) async {
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+      image = pictureNamed('Screenshot.png');
+
+      await pressCtrlV(tester);
+
+      expect(shell.sent, contains('\x1b[200~/tmp/Screenshot.png \x1b[201~'));
+      expect(shell.sent, isNot(contains('/tmp/Screenshot.png ')));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('the paperclip\'s picture is pasted the same way', (
+      tester,
+    ) async {
+      useFakePicker().next = [
+        _Picked(File('${temp.path}/shot.png')..writeAsBytesSync([1])),
+      ];
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+
+      await tester.tap(find.byTooltip('Upload a file to /tmp'));
+      await tester.pumpAndSettle();
+
+      expect(shell.sent, contains('\x1b[200~/tmp/shot.png \x1b[201~'));
+    }, variant: _android);
+
     testWidgets('on a Mac the picture goes up too, from Cmd+V', (tester) async {
       await pumpPage(tester);
       image = pictureNamed('Screenshot.png');

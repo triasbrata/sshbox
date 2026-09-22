@@ -629,7 +629,17 @@ class _TerminalPageState extends State<TerminalPage> {
       );
 
       // A trailing space so the path is ready to be followed by arguments.
-      _session.sendRaw('$remotePath ');
+      // As a paste when the program asked for bracketed paste: that is what
+      // a drop in iTerm2 sends, and Claude Code turns a pasted image path
+      // into [Image #N] while typed keys stay text. The space goes inside
+      // the brackets — Claude trims it, a shell keeps it; outside, it lands
+      // before the chip, which Claude inserts after reading the file.
+      final terminal = _session.terminal;
+      if (terminal.bracketedPasteMode) {
+        terminal.paste('$remotePath ');
+      } else {
+        _session.sendRaw('$remotePath ');
+      }
 
       if (mounted) {
         showToast(

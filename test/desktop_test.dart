@@ -966,6 +966,25 @@ void main() {
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    testWidgets('of a picture into a program that asked for bracketed paste '
+        'pastes its path, which Claude Code turns into [Image #N]', (
+      tester,
+    ) async {
+      final session = await pumpLocal(tester);
+      session.terminal.write('\x1b[?2004h');
+      desktopClipboard = _PictureClipboard(
+        File('${temp.path}/source.png')..writeAsBytesSync([1, 2, 3]),
+      );
+      addTearDown(() => desktopClipboard = DesktopClipboard());
+
+      await paste(tester);
+
+      final typed = pty.typed.toString();
+      expect(typed, startsWith('\x1b[200~/'));
+      expect(typed, endsWith('/shot.png \x1b[201~'));
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     test('keeps an earlier picture of the same name, and goes with the '
         'tab', () async {
       final session =
