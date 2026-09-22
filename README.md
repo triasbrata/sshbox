@@ -1227,8 +1227,13 @@ finish that release there once, then `--publish` again.
 The repository is public, so GitHub Actions costs nothing.
 
 - `.github/workflows/ci.yml` runs `tool/test_release_flow.sh`,
-  `flutter analyze` and `flutter test` on every pull request and every push
-  to `main`, as the job `check`. The first checks, among the release flow's
+  `tool/e2e_coverage.py`, `flutter analyze` and `flutter test` on every pull
+  request and every push to `main`, as the job `check`.
+  `tool/e2e_coverage.py` fails `check` when a CLAUDE.md feature reads "UAT
+  passed" and `e2e/coverage.yaml` does not say what guards it, so no feature
+  the user has passed can lose its guard without `check` going red; a row
+  gets its entry in the same commit, `guard: todo` being always allowed.
+  `tool/test_release_flow.sh` checks, among the release flow's
   own steps, that every call of one workflow from another is one GitHub will
   start: a called workflow's jobs may ask for no more permissions than the
   job calling it grants, and a call must pass the inputs it declares. GitHub
