@@ -1306,7 +1306,8 @@ class _PaneViewState extends State<_PaneView> {
 
   /// A desktop's right-click, where a phone would long-press: the menu a
   /// desktop terminal gives it — Copy for a selection, Paste, and Copy link
-  /// address on an OSC 8 hyperlink, the one clicked or the one selected.
+  /// address on an OSC 8 hyperlink, the one clicked or the one selected —
+  /// then the tab's own menu, as its chip's right-click opens it.
   ///
   /// A program reading the mouse gets the click instead, as in any other
   /// terminal: xterm2 offers it to the program first and calls this only
@@ -1318,6 +1319,7 @@ class _PaneViewState extends State<_PaneView> {
     final link =
         terminal.hyperlinkAt(cell) ??
         (range == null ? null : hyperlinkIn(terminal, range));
+    final tabMenu = TabMenu.of(context)?.entries() ?? const [];
     void copy(String text, String said) {
       Clipboard.setData(ClipboardData(text: text));
       showToast(context, said, type: ToastificationType.success);
@@ -1338,6 +1340,8 @@ class _PaneViewState extends State<_PaneView> {
           onTap: () => copy(link, 'Copied $link'),
           child: const Text('Copy link address'),
         ),
+      // The tab's own, as its chip offers them.
+      if (tabMenu.isNotEmpty) ...[const PopupMenuDivider(), ...tabMenu],
     ]);
   }
 

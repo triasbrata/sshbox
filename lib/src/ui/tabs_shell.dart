@@ -218,6 +218,31 @@ class _TabsShellState extends State<TabsShell> {
   /// all load their pages, or open their connections, as the app starts.
   final Set<String> _shown = {};
 
+  final _stripKey = GlobalKey<_TabStripState>();
+  final Map<String, GlobalKey> _menuKeys = {};
+
+  /// [page] with its tab's menu on a desktop right-click: offered to the
+  /// terminal's own menu, and opened here for a right-click nothing in the
+  /// page took — a file-tree row, a grid row or a text field keeps its own,
+  /// being deeper and so first to claim the click.
+  Widget _withTabMenu(String id, Widget page) {
+    final menu = TabMenu(
+      items: () => _stripKey.currentState?.menus[id] ?? const [],
+      child: page,
+    );
+    return GestureDetector(
+      // Keyed as the page is, so the two move together when a tab goes into
+      // a group or out of one.
+      key: _menuKeys.putIfAbsent(id, GlobalKey.new),
+      behavior: HitTestBehavior.translucent,
+      onSecondaryTapUp: rightClick((at) {
+        final entries = menu.entries();
+        if (entries.isNotEmpty) showMenuAt<void>(context, at, entries);
+      }),
+      child: menu,
+    );
+  }
+
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
@@ -370,6 +395,7 @@ class _TabsShellState extends State<TabsShell> {
       if (showTransfers) _transfersId,
     ];
     _pageKeys.removeWhere((id, _) => !ids.contains(id));
+    _menuKeys.removeWhere((id, _) => !ids.contains(id));
     _groups.keepOnly(ids);
     final activeId = widget.sessions.activeId;
     final activeKind = widget.sessions.activeKind;
@@ -431,7 +457,7 @@ class _TabsShellState extends State<TabsShell> {
         _transfersId: TransfersPage(
           key: _pageKeys.putIfAbsent(_transfersId, GlobalKey.new),
         ),
-    };
+    }.map((id, page) => MapEntry(id, _withTabMenu(id, page)));
     // What a tap on each tab's chip does, for a touch on its pane.
     final selects = <String, VoidCallback>{
       for (final tab in tabs)
@@ -452,6 +478,7 @@ class _TabsShellState extends State<TabsShell> {
         child: Column(
           children: [
             TabStrip(
+              key: _stripKey,
               tabs: tabs,
               databases: databases,
               activeIndex: activeIndex,
@@ -614,6 +641,10 @@ String _dbIdOf(DbTab tab) => 'database:${tab.id}';
 const _transfersId = 'transfers';
 
 class _TabStripState extends State<TabStrip> {
+  /// Each tab's menu, by id, as this strip last drew it: a right-click inside
+  /// the tab's page opens the same one (see [TabMenu]).
+  final Map<String, List<(String, VoidCallback)>> menus = {};
+
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
   String? _shown;
@@ -878,6 +909,7 @@ class _TabStripState extends State<TabStrip> {
     final selects = <String, VoidCallback>{};
     List<(String, VoidCallback)> grouping(String id) =>
         _groupMenu(id, slots, names, selects);
+    menus.clear();
 
     for (final tab in tabs) {
       final id = _idOf(tab);
@@ -925,7 +957,7 @@ class _TabStripState extends State<TabStrip> {
         onReconnect: tab.kind == TabKind.terminal && tab.session.ended
             ? () => widget.onReconnect(tab.session)
             : null,
-        menu: [
+        menu: menus[id] = [
           if (tab.kind == TabKind.terminal) ..._menuFor(tab),
           ...grouping(id),
         ],
@@ -944,11 +976,12 @@ class _TabStripState extends State<TabStrip> {
         expand: single,
         onTap: select,
         onClose: () => widget.onCloseDatabase?.call(tab),
-        menu: grouping(id),
+        menu: menus[id] = grouping(id),
       );
     }
     if (widget.showTransfers) {
       names[_transfersId] = 'Transfers';
+      final menu = menus[_transfersId] = grouping(_transfersId);
       final select = selects[_transfersId] = () =>
           widget.onSelectTransfers?.call();
       // Only this chip follows the transfers, lit while one is on its way
@@ -964,7 +997,7 @@ class _TabStripState extends State<TabStrip> {
           expand: single,
           onTap: select,
           onClose: () => widget.onCloseTransfers?.call(),
-          menu: grouping(_transfersId),
+          menu: menu,
         ),
       );
     }
