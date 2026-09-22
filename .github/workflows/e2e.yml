@@ -271,14 +271,16 @@ jobs:
 
       # The Linux build's own dependencies, exactly as release.yml installs
       # them; xvfb and dbus-x11 to run it with no display, gnome-keyring for
-      # the Secret Service a desktop session has, and tmux, which the Local
-      # shell uses where the machine has it.
+      # the Secret Service a desktop session has, tmux, which the Local shell
+      # uses where the machine has it, xclip, which reads a picture off an X11
+      # clipboard for a paste, and dunst, the notification server a desktop
+      # session has.
       - name: Install the Linux build and Xvfb
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq clang cmake ninja-build pkg-config libgtk-3-dev \
             liblzma-dev libstdc++-12-dev libsecret-1-dev xvfb dbus-x11 gnome-keyring \
-            tmux
+            tmux xclip dunst
 
       - uses: subosito/flutter-action@v2
         with:

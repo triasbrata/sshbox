@@ -17,6 +17,7 @@
 // nobody is looking at it. tools/e2e_desktop.sh picks the right one.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -608,6 +609,61 @@ touch '${done.path}'
         () async => (await sessions()).isEmpty,
         "the session to end with its tab's ✕",
       );
+    },
+  );
+
+  // #15 and #19: a picture on the clipboard, pasted into a Local shell with
+  // Ctrl+V, is copied on this machine and its path typed at the prompt, as an
+  // upload's is over SSH — where it used to end in "This session cannot
+  // transfer files" and type nothing. Read off the X11 clipboard by xclip,
+  // as a Linux desktop without Wayland has it; copied into a folder only its
+  // owner can enter, the file only its owner can read.
+  //
+  // Linux only: the picture is put on the clipboard with xclip, and the run's
+  // display is Xvfb's own (tools/e2e_desktop.sh).
+  testWidgets(
+    "a picture pasted into a Local shell is copied and its path typed",
+    skip: !Platform.isLinux,
+    (tester) async {
+      // One transparent pixel: a real PNG, small enough to write out here.
+      final png = base64.decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+        'CB0C8AAAAASUVORK5CYII=',
+      );
+      final picture = File('${_scratch().path}/picture.png')
+        ..writeAsBytesSync(png);
+      // xclip stays behind to hand the picture over, so it is given nothing
+      // of ours to hold open, or this would wait for it.
+      final put = await Process.run('sh', [
+        '-c',
+        r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
+        'sh',
+        picture.path,
+      ]);
+      expect(put.exitCode, 0, reason: 'xclip could not take the picture');
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+      final typed = RegExp(r'(/\S*/pasted-\d{8}-\d{6}\.png)');
+      String? path;
+      await _until(tester, () {
+        for (final line in _text(view)) {
+          path = typed.firstMatch(line)?.group(1) ?? path;
+        }
+        return path != null;
+      }, 'the path of the pasted picture at the prompt');
+
+      final copy = File(path!);
+      expect(copy.readAsBytesSync(), png, reason: 'not the picture pasted');
+      String mode(FileSystemEntity entry) =>
+          (entry.statSync().mode & 0x1ff).toRadixString(8);
+      expect(mode(copy), '600', reason: 'others can read the picture');
+      expect(mode(copy.parent), '700', reason: 'others can enter its folder');
+      await _closeTabs(tester);
     },
   );
 }
