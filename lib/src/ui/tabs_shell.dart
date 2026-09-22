@@ -23,6 +23,7 @@ import 'pane_record_page.dart';
 import 'right_click.dart';
 import 'tab_groups.dart';
 import 'terminal_page.dart';
+import 'title_bar.dart';
 import 'toast.dart';
 import 'transfers_page.dart';
 import 'web_page.dart';
@@ -445,7 +446,7 @@ class _TabsShellState extends State<TabsShell> {
       _transfersId: () => widget.sessions.showTransfers(select: true),
     };
 
-    return Scaffold(
+    final shell = Scaffold(
       body: SafeArea(
         bottom: false,
         child: Column(
@@ -532,6 +533,16 @@ class _TabsShellState extends State<TabsShell> {
         ),
       ),
     );
+    // On a Mac the strip is the title bar, so it goes up into the band every
+    // other page keeps clear of (see TitleBarSpace), and the pages under the
+    // strip are clear of it already.
+    return drawsInTitleBar
+        ? MediaQuery.removePadding(
+            context: context,
+            removeTop: true,
+            child: shell,
+          )
+        : shell;
   }
 }
 
@@ -606,6 +617,21 @@ class _TabStripState extends State<TabStrip> {
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
   String? _shown;
+
+  @override
+  void initState() {
+    super.initState();
+    titleBar.addListener(_onTitleBar);
+  }
+
+  @override
+  void dispose() {
+    titleBar.removeListener(_onTitleBar);
+    super.dispose();
+  }
+
+  /// The Mac's buttons hiding in full screen, or coming back from it.
+  void _onTitleBar() => setState(() {});
 
   @override
   void didUpdateWidget(covariant TabStrip oldWidget) {
@@ -949,10 +975,14 @@ class _TabStripState extends State<TabStrip> {
             : chips[slot]!,
     ];
 
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      color: theme.colorScheme.surfaceContainerHighest,
+    // On a Mac the strip is the window's title bar, its buttons at the left,
+    // and a little shorter than elsewhere: AppKit keeps them in the middle of
+    // its own shorter bar, and this brings the tabs' middle nearer theirs.
+    final inset = drawsInTitleBar ? titleBar.value.inset : 0.0;
+    final bar = Container(
+      height: drawsInTitleBar ? 40 : 44,
+      padding: EdgeInsets.only(left: inset > 0 ? inset : 6, right: 6),
+      color: drawsInTitleBar ? null : theme.colorScheme.surfaceContainerHighest,
       child: LayoutBuilder(
         builder: (context, constraints) {
           // Wide: the button follows the last tab, the way a desktop browser
@@ -978,6 +1008,9 @@ class _TabStripState extends State<TabStrip> {
                     ? strip.single
                     : SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
+                        // What the tabs leave empty passes a press on, to the
+                        // title bar behind the strip on a Mac.
+                        hitTestBehavior: HitTestBehavior.translucent,
                         child: Row(
                           children: [...strip, if (followsTabs) addTab],
                         ),
@@ -988,6 +1021,23 @@ class _TabStripState extends State<TabStrip> {
           );
         },
       ),
+    );
+    if (!drawsInTitleBar) return bar;
+    // Behind the tabs, so it hears only a press they leave: the strip's
+    // empty space, which moves the window as a title bar's does.
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ColoredBox(
+            color: theme.colorScheme.surfaceContainerHighest,
+            child: const Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: dragWindow,
+            ),
+          ),
+        ),
+        bar,
+      ],
     );
   }
 }

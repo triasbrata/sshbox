@@ -6,6 +6,7 @@ import 'src/session/session_log.dart';
 import 'src/telemetry/crash_reporting.dart';
 import 'src/telemetry/telemetry.dart';
 import 'src/ui/settings_page.dart';
+import 'src/ui/title_bar.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +19,8 @@ Future<void> main() async {
   await gitInDrawer.load();
   await showDotfiles.load();
   await copyOnSelect.load();
+  // Likewise, so the first tab is never drawn under the Mac's window buttons.
+  await watchTitleBar();
   // Before any session can connect, so its entry joins the saved log rather
   // than being wiped by it.
   await sessionLog.load();
