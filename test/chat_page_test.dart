@@ -122,6 +122,10 @@ class _Shell
   /// A session that has said nothing, unless a test says otherwise.
   String history = '0\n';
 
+  /// When set, the next history read waits for it, as a slow host makes it
+  /// wait.
+  Future<void>? historyArrives;
+
   /// A whole transcript on the host, where a test gives one: the history
   /// command then gets its size and its end, as a real host hands them over,
   /// and a read of an earlier part the bytes it asks for.
@@ -178,8 +182,13 @@ class _Shell
       );
     }
     if (command.contains('.jsonl')) {
+      final bytes = Uint8List.fromList(utf8.encode(history));
+      final arrives = historyArrives;
+      historyArrives = null;
       return (
-        output: Stream.value(Uint8List.fromList(utf8.encode(history))),
+        output: arrives == null
+            ? Stream.value(bytes)
+            : Stream.fromFuture(arrives.then((_) => bytes)),
         write: (Uint8List data) {},
         close: () {},
       );
@@ -1134,6 +1143,76 @@ void main() {
       await pick(tester, shell, 'first', long('first', 60));
       expect(at().pixels, 400);
       expect(at().maxScrollExtent - at().pixels, greaterThan(240));
+    });
+
+    testWidgets('scrolled up only a little, a session still comes back '
+        'there', (tester) async {
+      final (:shell, :at) = await twoSessions(tester, 'cccc');
+      await pick(tester, shell, 'first', long('first', 60));
+      // A few lines up from the newest, by a finger, as the user did: well
+      // inside the distance at which new output is still followed.
+      await tester.drag(
+        find.byType(CustomScrollView),
+        const Offset(0, 120),
+      );
+      await tester.pumpAndSettle();
+      final place = at().pixels;
+      expect(at().maxScrollExtent - place, inInclusiveRange(60, 200));
+
+      await pick(tester, shell, 'second', long('second', 60));
+      await pick(tester, shell, 'first', long('first', 60));
+      expect(at().pixels, place);
+    });
+
+    testWidgets('a session of long and short turns, read slowly, comes back '
+        'to what was on screen', (tester) async {
+      final (:shell, :at) = await twoSessions(tester, 'eeee');
+      // Short turns first and long ones after: what a list can see of it
+      // from its top says nothing of how long it really is.
+      final mixed = _history([
+        for (var n = 0; n < 60; n++)
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {
+                  'type': 'text',
+                  'text': n < 30
+                      ? 'first $n'
+                      : 'first $n\n\n${'a longer answer, ' * 60}\n\n'
+                            '```\n${'code line\n' * 12}```',
+                },
+              ],
+            },
+          },
+      ]);
+      await pick(tester, shell, 'first', mixed);
+      at().jumpTo(at().maxScrollExtent - 900);
+      await tester.pump();
+      final place = at().pixels;
+      // What the reader was looking at, and where on the screen it was.
+      final seen = [
+        for (var n = 0; n < 60; n++)
+          if (find.text('first $n').evaluate().isNotEmpty) n,
+      ].first;
+      final y = tester.getTopLeft(find.text('first $seen')).dy;
+
+      // One-line turns, laid out where the long ones were.
+      await pick(tester, shell, 'second', long('second', 60));
+      // The host takes its time handing the transcript over.
+      final arrives = Completer<void>();
+      shell
+        ..history = mixed
+        ..historyArrives = arrives.future;
+      await tester.tap(find.text('first'));
+      for (var frame = 0; frame < 5; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      arrives.complete();
+      await _settlePickUp(tester);
+      expect(at().pixels, moreOrLessEquals(place, epsilon: 1));
+      expect(tester.getTopLeft(find.text('first $seen')).dy, y);
     });
 
     testWidgets('one left at its bottom comes back at its bottom', (

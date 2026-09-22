@@ -71,9 +71,15 @@ class _ChatPageState extends State<ChatPage> {
     _agents = _chat.agents(all: true)..ignore();
   }
 
-  /// Nearer the end than this, the reader is at the bottom: new entries
-  /// scroll into view, and a session left here is come back to at its end.
+  /// Nearer the end than this, the reader is following: a new entry scrolls
+  /// into view.
   static const _nearEnd = 240.0;
+
+  /// Nearer the end than this, a session is left at its bottom, and is come
+  /// back to at its end, however much it wrote meanwhile. Anything further up
+  /// is a place somebody scrolled to, kept however small: a few lines up is
+  /// still well inside [_nearEnd], and was once taken for the bottom.
+  static const _atEnd = 2.0;
 
   /// Where each session was left scrolled up, by host and session: kept for
   /// as long as the app runs, so picking one again, or closing the tab and
@@ -130,7 +136,7 @@ class _ChatPageState extends State<ChatPage> {
     final place = _placeOf(_chat.pickedFrom);
     if (_switching || place == null) return;
     final position = _scroll.position;
-    if (position.maxScrollExtent - position.pixels > _nearEnd) {
+    if (position.maxScrollExtent - position.pixels > _atEnd) {
       _leftAt[place] = position.pixels;
     } else {
       _leftAt.remove(place);
@@ -158,24 +164,33 @@ class _ChatPageState extends State<ChatPage> {
 
   /// Puts a session just picked where it was left, [at] — or, left at the
   /// bottom or never seen, at its bottom.
-  void _land(double? at) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (_scroll.hasClients) {
-        final position = _scroll.position;
-        final end = position.maxScrollExtent;
-        _scroll.jumpTo(
-          at == null ? end : at.clamp(position.minScrollExtent, end),
-        );
-      }
-      // A lazy list only knows how long it is once the rows near its end
-      // are built, so the bottom is found again once they are.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+  ///
+  /// A lazy list only knows how long it is once the rows near where it
+  /// stands are built: until then its end is a guess from the rows it has,
+  /// and short turns at the top make it a guess far short of a session of
+  /// long ones. So a jump that the guess held short of [at], or that went to
+  /// a bottom not yet known to be the real one, is made again once those rows
+  /// are built, until it lands or the end stops moving.
+  void _land(double? at, {double? lastEnd, int tries = 20}) {
+    final landing = _chat.pickedFrom;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        // Another session picked meanwhile lands for itself.
+        if (!mounted || _chat.pickedFrom != landing) return;
+        if (_scroll.hasClients) {
+          final position = _scroll.position;
+          final end = position.maxScrollExtent;
+          final to = (at ?? end).clamp(position.minScrollExtent, end);
+          _scroll.jumpTo(to);
+          if (to != at && end != lastEnd && tries > 0) {
+            return _land(at, lastEnd: end, tries: tries - 1);
+          }
+        }
         _switching = false;
-        if (!mounted || at != null || !_scroll.hasClients) return;
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      });
-    });
+      })
+      // The frame to look again after: a jump to where the list already is
+      // asks for none.
+      ..ensureVisualUpdate();
   }
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
@@ -316,6 +331,11 @@ class _ChatPageState extends State<ChatPage> {
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
               : CustomScrollView(
+                  // A list of its own for each session picked. The rows a
+                  // lazy list has built keep where they were laid out, and
+                  // another session's rows, of other heights, drawn into
+                  // them put what a session was left at somewhere else.
+                  key: ValueKey(chat.pickedFrom),
                   controller: _scroll,
                   center: _opened,
                   slivers: [
