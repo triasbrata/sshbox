@@ -404,13 +404,12 @@ class LocalTransport implements SessionTransport {
     ]);
     unawaited(process.stderr.drain<void>());
     final printed = process.stdout.transform(utf8.decoder).join();
+    // A cancel stops the sending and nothing else. Killing wsl.exe need not
+    // reach the `sh` it started in the distro, nor does killing an `sh` reach
+    // the `cat` it is waiting on, so a kill could leave the script going on
+    // after the cleanup below. With its input closed it ends by itself.
     var cancelled = false;
-    unawaited(
-      cancel?.then((_) {
-        cancelled = true;
-        process.kill();
-      }),
-    );
+    unawaited(cancel?.then((_) => cancelled = true));
     final source = File(localPath);
     final total = source.lengthSync();
     var sent = 0;
@@ -430,9 +429,8 @@ class LocalTransport implements SessionTransport {
     final path = await printed;
     final code = await process.exitCode;
     if (cancelled) {
-      // Killed part way, the shell had no chance to take its half file away,
-      // so it goes now — both names ours, and the first removable only if it
-      // is ours.
+      // The script has exited, so nothing can write the half file after it
+      // goes — both names ours, and the first removable only if it is ours.
       final rm = _commandLine('rm -f $tmp/$name $tmp/$fallback')!;
       await (await startProcess(rm.first, rm.sublist(1))).exitCode;
       throw FileBrowserException.cancelled;

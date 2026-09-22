@@ -1072,6 +1072,15 @@ void main() {
 
     test('a cancelled upload leaves nothing half written in the '
         'distro', () async {
+      // wsl.exe as a cancel meets it: a process a kill ends, and behind it
+      // the distro's sh, which the kill never reaches, late to start as a
+      // cold distro is. Its output comes through wsl.exe, so a killed one
+      // hands on nothing, and it leaves `done` behind once it has ended.
+      const wsl =
+          r'exec 3<&0; '
+          r'(sleep 0.5; /bin/sh "$@"; s=$?; : >done; exit $s) <&3 >out & '
+          r'wait $!; s=$?; cat out; exit $s';
+      var distroDone = false;
       final shell = await connected(
         LocalTransport(
           wslDistro: 'Ubuntu',
@@ -1079,11 +1088,20 @@ void main() {
           startPty: noPty,
           windows: true,
           environment: _windowsEnv,
+          tmp: temp.path,
           startProcess: (executable, arguments) {
-            final exec = arguments.indexOf('--exec');
-            final sh = [...arguments.sublist(exec + 1)];
-            if (sh.length > 3) sh[sh.length - 3] = temp.path;
-            return Process.start('/bin/sh', sh.sublist(1));
+            final sh = arguments.sublist(arguments.indexOf('--exec') + 2);
+            // The cleanup, `-c 'rm -f …'`, run at once.
+            if (sh.length == 2) {
+              distroDone = File('${temp.path}/done').existsSync();
+              return Process.start('/bin/sh', sh);
+            }
+            return Process.start('/bin/sh', [
+              '-c',
+              wsl,
+              'wsl',
+              ...sh,
+            ], workingDirectory: temp.path);
           },
         ),
       );
@@ -1101,6 +1119,13 @@ void main() {
             FileBrowserFault.cancelled,
           ),
         ),
+      );
+      expect(
+        distroDone,
+        isTrue,
+        reason:
+            'the half file was taken away while the sh in the distro '
+            'could still write it',
       );
       expect(File('${temp.path}/shot.png').existsSync(), isFalse);
     });
