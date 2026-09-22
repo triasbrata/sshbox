@@ -313,9 +313,13 @@ Future<String> _window() async => (await _xdo([
 ])).split('\n').first;
 
 /// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
-/// the embedder, which is how a menu is shut. The test framework's own
-/// simulated Escape left a popup menu open here even with the menu holding
-/// the focus, so a menu's Escape is not checked with it.
+/// the embedder, which is how a menu is shut.
+///
+/// A menu it shuts is gone only once its closing animation has run, and this
+/// binding draws a frame only when pumped: one pump after the key is the
+/// animation's first tick, the menu still fully drawn. So a check that it
+/// closed waits for it with [_until], as the one after this does — a single
+/// pump read an open menu that had already been popped (run 35782032581).
 Future<void> _escape(WidgetTester tester) async {
   if (Platform.isLinux) {
     await _xdo(['windowfocus', '--sync', await _window()]);
@@ -791,14 +795,12 @@ touch '${done.path}'
       await rightClick(view);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await menuWith('Duplicate session');
-      // Escape shuts it. Found open on the Linux build (run 35782032581):
-      // the menu's route held the focus, the Escape reached the app, and yet
-      // the focus left for the page and the menu stayed.
+      // Escape shuts it, and the focus goes back to the terminal.
       await _escape(tester);
-      expect(
-        find.text('Duplicate session'),
-        findsNothing,
-        reason: 'Escape did not close the terminal\'s menu',
+      await _until(
+        tester,
+        () => find.text('Duplicate session').evaluate().isEmpty,
+        'Escape to close the terminal\'s menu',
       );
 
       stop.createSync();
@@ -832,10 +834,10 @@ touch '${done.path}'
       // The menu keeps the keys, so Escape closes it and the focus goes back
       // to the pane the click moved it to.
       await _escape(tester);
-      expect(
-        find.text('Take out of group'),
-        findsNothing,
-        reason: 'Escape did not close the menu: it did not hold the keys',
+      await _until(
+        tester,
+        () => find.text('Take out of group').evaluate().isEmpty,
+        'Escape to close the menu: it did not hold the keys',
       );
       expect(
         other.focusNode?.hasFocus,
