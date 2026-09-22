@@ -791,28 +791,10 @@ touch '${done.path}'
       await rightClick(view);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await menuWith('Duplicate session');
-      String where() {
-        final node = FocusManager.instance.primaryFocus;
-        final context = node?.context;
-        final route = context == null ? null : ModalRoute.of(context);
-        return '$node in ${route.runtimeType}';
-      }
-
-      final keys = <String>[];
-      bool seen(KeyEvent event) {
-        keys.add('${event.runtimeType} ${event.logicalKey.keyLabel}');
-        return false;
-      }
-
-      HardwareKeyboard.instance.addHandler(seen);
-      debugPrint('Escape diagnosis, menu open, focus: ${where()}');
+      // Escape shuts it. Found open on the Linux build (run 35782032581):
+      // the menu's route held the focus, the Escape reached the app, and yet
+      // the focus left for the page and the menu stayed.
       await _escape(tester);
-      HardwareKeyboard.instance.removeHandler(seen);
-      debugPrint(
-        'Escape diagnosis, after Escape: keys seen ${keys.join(', ')}; '
-        'focus: ${where()}; menu open: '
-        '${find.text('Duplicate session').evaluate().isNotEmpty}',
-      );
       expect(
         find.text('Duplicate session'),
         findsNothing,
