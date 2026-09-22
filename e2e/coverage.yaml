@@ -96,8 +96,8 @@ the-host-list-tab-chip-reads-home-with:
 
 several-sessions-per-host-the-host-list-counts:
   guard: e2e-android
-  by: .maestro/tabs.yaml, .maestro/duplicate_session.yaml
-  why: "opening a host twice and counting the active sessions on the card"
+  by: .maestro/duplicate_session.yaml
+  why: "two live sessions on one host, which is the state this feature is about: duplicate_session opens one and duplicates it. This entry used to name tabs.yaml and say it opened a host twice; it opens one, so it never guarded this"
 
 long-press-a-shell-tab-duplicate-session:
   guard: e2e-android
