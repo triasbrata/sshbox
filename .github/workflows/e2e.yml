@@ -209,8 +209,26 @@ jobs:
       # there; it was a throwaway on a runner already gone, and the artifact
       # was deleted, but the next one would not be. A screenshot shows a
       # password field as dots.
+      # Evidence: screenshots a flow took on purpose, pass or fail, so a feature
+      # can be shown working rather than only reported green -- the chat's
+      # version check, say, which the user has no host to try it on. PNGs
+      # alone, for the same reason as the failure artifact below. Kept longer,
+      # since someone has to look at them.
+      - name: Keep the evidence screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ github.run_id }}
+          path: build/e2e-evidence/*.png
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # always(), not failure(): a report-only flow that fails does not fail the
+      # job, so failure() never uploaded its screenshots, and those failures were
+      # the ones with nothing to look at. Maestro only takes these on a failed
+      # step, so a run where every flow passed still uploads none.
       - name: Keep Maestro's screenshots of a failure
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: maestro-${{ github.run_id }}
