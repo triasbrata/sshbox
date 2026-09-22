@@ -184,6 +184,19 @@ Future<void> _settings(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 600));
 }
 
+/// Back from Settings to Home, and Settings all the way gone. Home's card is
+/// found while Settings is still sliding out over it, and a tap on it then
+/// lands on the page leaving — a Mac run opened no shell that way.
+Future<void> _backHome(WidgetTester tester) async {
+  await tester.pageBack();
+  await _until(
+    tester,
+    () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
+    'Home again',
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
 /// Closes every tab, so the next test's launch brings none back. A Local tab
 /// left open is saved and restored at the next launch, and that restore
 /// lands whenever it lands — before or after the next test taps the card or
@@ -782,12 +795,7 @@ touch '${done.path}'
       // The picker closing still holds a barrier over the page, which takes
       // a tap on Back as its own.
       await tester.pump(const Duration(milliseconds: 600));
-      await tester.pageBack();
-      await _until(
-        tester,
-        () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
-        'Home again',
-      );
+      await _backHome(tester);
       final view = await _localShell(tester);
       expect(
         view.textStyle.fontFamily,
@@ -961,12 +969,7 @@ touch '${done.path}'
         () => find.textContaining('Hold Alt and click').evaluate().isNotEmpty,
         'Settings to say Alt opens links',
       );
-      await tester.pageBack();
-      await _until(
-        tester,
-        () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
-        'Home again',
-      );
+      await _backHome(tester);
 
       // A link as a program prints one, OSC 8: its label, its address hidden.
       final view = await _localShell(tester);
