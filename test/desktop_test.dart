@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_pty/flutter_pty.dart';
@@ -10,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/notifications/notification_gateway.dart';
 import 'package:sshbox/src/session/local_transport.dart';
@@ -20,6 +23,7 @@ import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/magic_key.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:xterm2/xterm.dart' show TerminalView;
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_web_view.dart';
@@ -110,6 +114,14 @@ class _Pty implements Pty {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+/// A pty that keeps what it is sent, for a paste to land in.
+class _TypedPty extends _Pty {
+  final typed = StringBuffer();
+
+  @override
+  void write(Uint8List data) => typed.write(utf8.decode(data));
 }
 
 /// What [LocalTransport] asked a pty to start, one call of it.
@@ -674,6 +686,226 @@ void main() {
       variant: _desktop,
       skip: Platform.isWindows,
     );
+  });
+
+  group('a paste into a local shell', () {
+    late _TypedPty pty;
+    late Directory temp;
+
+    /// What the Mac's clipboard half answers: a copy of the picture, or none.
+    Map<String, String>? image;
+    String? clipboardText;
+    var askedForImage = false;
+
+    const channel = MethodChannel('sshbox/share');
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('local-paste-test');
+      image = null;
+      clipboardText = null;
+      askedForImage = false;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method != 'clipboardImage') return null;
+        askedForImage = true;
+        return image;
+      });
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method != 'Clipboard.getData') return null;
+        return clipboardText == null ? null : {'text': clipboardText};
+      });
+    });
+
+    tearDown(() {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, null);
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+      temp.deleteSync(recursive: true);
+      transfers.clearFinished();
+    });
+
+    /// A terminal page on a real [LocalTransport], its pty ours: this machine,
+    /// or with [wslDistro] a WSL distro on Windows.
+    Future<LiveSession> pumpLocal(
+      WidgetTester tester, {
+      String? wslDistro,
+    }) async {
+      pty = _TypedPty();
+      final session = LiveSession(
+        host: wslDistro == null ? localHost() : wslHost(wslDistro),
+        transport: (_, _) => LocalTransport(
+          wslDistro: wslDistro,
+          windows: wslDistro != null,
+          environment: wslDistro != null
+              ? _windowsEnv
+              : {'SHELL': '/bin/zsh', 'HOME': temp.path},
+          startPty: (
+            executable, {
+            arguments = const [],
+            workingDirectory,
+            environment,
+            rows = 25,
+            columns = 80,
+            ackRead = false,
+          }) => pty,
+        ),
+      );
+      addTearDown(session.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TerminalPage(
+            session: session,
+            secrets: _NoSecrets(),
+            onOpenFile: (_, {line}) {},
+            onOpenWeb: (_) {},
+            onOpenChat: () {},
+            onOpenGit: () {},
+            onOpenDiff: (_) {},
+            onSaveFileRoot: (_) async {},
+          ),
+        ),
+      );
+      await session.connect(secrets: _NoSecrets());
+      await tester.pump();
+      tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .focusNode!
+          .requestFocus();
+      await tester.pump();
+      return session;
+    }
+
+    /// ⌘V on a Mac, Ctrl+V on Linux and Windows — then real time for the
+    /// files a paste writes, which a widget test's fake clock never gives.
+    Future<void> paste(WidgetTester tester) async {
+      final chord = defaultTargetPlatform == TargetPlatform.macOS
+          ? LogicalKeyboardKey.metaLeft
+          : LogicalKeyboardKey.controlLeft;
+      await tester.sendKeyDownEvent(chord);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(chord);
+      for (var i = 0; i < 100 && pty.typed.isEmpty; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+      }
+      // A toast goes in after the frame that asked for it, and is drawn in
+      // the one after that.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+
+    /// Past the five seconds the host's OS is given to answer, for each of
+    /// its two questions: a local shell is asked them by a real `sh`, which a
+    /// test's fake clock does not wait for.
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 4; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump(const Duration(seconds: 6));
+      }
+    }
+
+    testWidgets('of a picture on a Mac keeps a copy only the user can read, '
+        'and types its path', (tester) async {
+      await pumpLocal(tester);
+      final picture = File('${temp.path}/Screenshot 1.png')
+        ..writeAsBytesSync([1, 2, 3]);
+      image = {'path': picture.path, 'name': 'Screenshot 1.png'};
+
+      await paste(tester);
+
+      // A trailing space, as the upload to a host types one. Before, the
+      // paste said "Upload failed: This session cannot transfer files." and
+      // typed nothing.
+      final typed = pty.typed.toString();
+      expect(typed, endsWith('/Screenshot_1.png '));
+      final copy = File(typed.trimRight());
+      // A copy of its own: the clipboard's is emptied at the next paste.
+      expect(copy.path, isNot(picture.path));
+      expect(copy.readAsBytesSync(), [1, 2, 3]);
+      expect(copy.statSync().mode & 0x1ff, 0x180);
+      expect(copy.parent.statSync().mode & 0x1ff, 0x1c0);
+      expect(find.text('Uploaded to ${copy.path}'), findsOneWidget);
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    test('keeps an earlier picture of the same name, and goes with the '
+        'tab', () async {
+      final session =
+          await LocalTransport(
+            windows: false,
+            environment: const {'SHELL': '/bin/zsh'},
+            startPty: (
+              executable, {
+              arguments = const [],
+              workingDirectory,
+              environment,
+              rows = 25,
+              columns = 80,
+              ackRead = false,
+            }) => _TypedPty(),
+          ).connect(
+            host: localHost(),
+            secrets: _NoSecrets(),
+            columns: 80,
+            rows: 25,
+          );
+      final picture = File('${temp.path}/a.png')..writeAsBytesSync([1]);
+      Future<String> send() => (session as FileUploadCapable).uploadToTmp(
+        localPath: picture.path,
+        fileName: 'a.png',
+      );
+
+      final first = await send();
+      final second = await send();
+
+      expect(second, isNot(first));
+      expect(second, endsWith('-a.png'));
+      for (final path in [first, second]) {
+        expect(File(path).statSync().mode & 0x1ff, 0x180);
+      }
+      await session.dispose();
+      expect(File(first).parent.existsSync(), isFalse);
+    });
+
+    testWidgets(
+      'of text reaches the shell',
+      (tester) async {
+        await pumpLocal(tester);
+        clipboardText = 'echo hello world';
+
+        await paste(tester);
+
+        expect(pty.typed.toString(), 'echo hello world');
+        await settle(tester);
+      },
+      variant: TargetPlatformVariant({
+        TargetPlatform.macOS,
+        TargetPlatform.linux,
+      }),
+    );
+
+    testWidgets('of text reaches a WSL shell, which is never asked for a '
+        'picture', (tester) async {
+      final session = await pumpLocal(tester, wslDistro: 'Ubuntu');
+      clipboardText = 'echo hello world';
+
+      await paste(tester);
+
+      expect(pty.typed.toString(), 'echo hello world');
+      // Windows' clipboard has no picture half, and a Windows path would
+      // mean nothing inside the distro anyway.
+      expect(askedForImage, isFalse);
+      expect(session.canUploadFiles, isFalse);
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
   });
 
   test('the local host is this machine, saved nowhere', () {
