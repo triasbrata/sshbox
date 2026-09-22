@@ -1002,8 +1002,9 @@ const _padding = EdgeInsets.all(6);
 /// one resize, the one window change and the one redraw come when the slide
 /// is over. The bottom stays pinned above the key bar, as it will be after
 /// the resize, so the prompt rides up with the keyboard rather than
-/// vanishing under it. Growing — the keyboard going away — shows the
-/// terminal's own background above it until then.
+/// vanishing under it. Growing — the keyboard going away — takes the height
+/// with no keyboard as the slide starts, so the rows are uncovered as the
+/// keyboard leaves rather than a band of background showing until the resize.
 ///
 /// Height only: the keyboard never changes the width, and what does —
 /// turning the tablet, a tab group's divider — keeps resizing as it goes.
@@ -1025,6 +1026,15 @@ class _SettledHeightState extends State<_SettledHeight> {
   double? _height;
   Timer? _settling;
 
+  /// The keyboard's inset when [_height] was taken: above nothing, a
+  /// keyboard was up and growing is it going away.
+  double _heldInset = 0;
+
+  /// The room seen with no keyboard at [_width], where a keyboard going away
+  /// leaves the terminal.
+  double? _open;
+  double? _width;
+
   @override
   void dispose() {
     _settling?.cancel();
@@ -1037,14 +1047,36 @@ class _SettledHeightState extends State<_SettledHeight> {
     child: LayoutBuilder(
       builder: (context, constraints) {
         final room = constraints.maxHeight;
+        final inset = View.of(context).viewInsets.bottom;
+        if (constraints.maxWidth != _width) {
+          _width = constraints.maxWidth;
+          _open = null;
+        }
+        if (inset == 0) _open = room;
         // The first height is taken as it comes: there is nothing to hold.
-        final held = _height ??= room;
+        var held = _height ??= room;
+        // The keyboard going away: take the height it will leave at once,
+        // the room the page had with no keyboard, rather than hold the
+        // smaller one and show a band of background above it for the slide
+        // and the settle. The terminal is laid out and resized once, as the
+        // slide starts, its top cut off until the keyboard has gone, so the
+        // rows are there as they come into view and the host has redrawn by
+        // then. A desktop's window, with no keyboard, still waits to settle.
+        if (room > held && _heldInset > 0 && (_open ?? 0) > held) {
+          held = _height = math.max(_open!, room);
+        }
+        if (held == room) _heldInset = inset;
         _settling?.cancel();
         // Back at the held height before it settled, a keyboard shown and
         // put away again at once, and nothing needs resizing at all.
         if (room != held) {
           _settling = Timer(_SettledHeight.settle, () {
-            if (mounted) setState(() => _height = room);
+            if (mounted) {
+              setState(() {
+                _height = room;
+                _heldInset = inset;
+              });
+            }
           });
         }
         return ClipRect(
