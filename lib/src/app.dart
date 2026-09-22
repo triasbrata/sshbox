@@ -32,7 +32,11 @@ import 'ui/update_dialog.dart';
 import 'update/updater.dart';
 
 class SshboxApp extends StatefulWidget {
-  const SshboxApp({super.key});
+  const SshboxApp({super.key, @visibleForTesting this.transport});
+
+  /// What every host's tabs connect through: SSH's own, unless a test brings
+  /// a stand-in, as [SessionManager.create] takes one.
+  final TransportMaker? transport;
 
   @override
   State<SshboxApp> createState() => _SshboxAppState();
@@ -156,6 +160,7 @@ class _SshboxAppState extends State<SshboxApp> {
   Future<void> _restoreTabs() async => _sessions.restoreTabs(
     hosts: await _repository.load(),
     databases: await loadDatabases(),
+    transport: widget.transport,
   );
 
   Future<void> _startNotifications() async {
@@ -211,10 +216,21 @@ class _SshboxAppState extends State<SshboxApp> {
   /// tap wants. [SessionManager.resume] shows a terminal already open on this
   /// host, and only when there is none does a new one connect, in its sheet.
   ///
-  /// [newSession] is the host list's tap instead: another shell on the host,
+  /// [newSession] is Duplicate session instead: another shell on the host,
   /// however many it already has. Either way the tab strip, a view of the
   /// session registry, shows the session once it is up: nothing else is
   /// pushed on the navigator.
+  ///
+  /// [restoredFirst] is a tap on the host's card, or on its row in Logs:
+  /// another shell too, unless a tab of the host brought back from an earlier
+  /// run has not connected since — see [SessionManager.restoredTab]. Then
+  /// that tab is shown and connected in its sheet instead, because after
+  /// Android killed the app the user most likely wants the work they had,
+  /// and a new tab would leave it beside the new one, unconnected. On a tmux
+  /// host that is the session and whatever runs in it, and a session gone
+  /// since says so in the sheet and offers a new one in the same tab; on a
+  /// plain host the shell died with the app, but the tab still has its files
+  /// to bring back, and is one tab rather than two.
   ///
   /// A tap that opens nothing says why. A host no longer saved is the one
   /// case that can: a notification posted for it before it was deleted, or a
@@ -223,7 +239,11 @@ class _SshboxAppState extends State<SshboxApp> {
   /// build as this state, before any await here resumes — and there would be
   /// nothing to say it on. A sheet closed before it connected was closed by
   /// the user, who watched it go.
-  Future<void> openHost(String hostId, {bool newSession = false}) async {
+  Future<void> openHost(
+    String hostId, {
+    bool newSession = false,
+    bool restoredFirst = false,
+  }) async {
     final hosts = await _repository.load();
     HostProfile? host;
     for (final candidate in hosts) {
@@ -248,7 +268,32 @@ class _SshboxAppState extends State<SshboxApp> {
     if (session == null) {
       final context = _navigator.currentContext;
       if (context == null || !context.mounted) return;
-      session = await openInSheet(context, _sessions, host, secrets: _secrets);
+      final restored = restoredFirst ? _sessions.restoredTab(host.id) : null;
+      if (restored != null) {
+        // Taken, so its tab showing opens no sheet of its own over this one.
+        restored.takeAutoConnect();
+        _sessions.select(restored.id);
+        // One still connecting is at its sign-in, in the web tab beside it:
+        // shown, and left to finish.
+        if (!restored.connecting &&
+            !await connectInSheet(
+              context,
+              restored,
+              secrets: _secrets,
+              inTab: (url) => _sessions.openWeb(restored.id, url),
+            )) {
+          return;
+        }
+        session = restored;
+      } else {
+        session = await openInSheet(
+          context,
+          _sessions,
+          host,
+          secrets: _secrets,
+          transport: widget.transport,
+        );
+      }
       // Closed before it connected: the files wait for the next host opened.
       if (session == null) return;
     }
@@ -394,7 +439,9 @@ class _SshboxAppState extends State<SshboxApp> {
               repository: _repository,
               secrets: _secrets,
               sessions: _sessions,
-              onOpenHost: (hostId) => openHost(hostId, newSession: true),
+              onOpenHost: (hostId) =>
+                  openHost(hostId, newSession: true, restoredFirst: true),
+              onDuplicate: (hostId) => openHost(hostId, newSession: true),
               onOpenLocal: openLocal,
               onOpenWsl: Platform.isWindows ? openWsl : null,
             ),
