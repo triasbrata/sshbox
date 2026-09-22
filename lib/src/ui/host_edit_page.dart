@@ -9,6 +9,7 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../models/host_profile.dart';
 import '../notifications/notify_key.dart';
+import '../platform.dart';
 import 'toast.dart';
 
 /// The most a key file may hold. A private key is a few KB, so a larger file
@@ -488,11 +489,12 @@ class _HostEditPageState extends State<HostEditPage> {
               value: _useTmux,
               onChanged: (value) => setState(() => _useTmux = value),
               title: const Text('Use tmux'),
-              subtitle: const Text(
+              subtitle: Text(
                 'Each tab is a tmux session you can split into panes from '
-                'its long-press menu. A dropped connection comes back to the '
-                'same panes with their programs still running; closing the '
-                'tab ends them. Needs tmux on the host.',
+                'its ${isDesktop ? 'right-click' : 'long-press'} menu. A '
+                'dropped connection comes back to the same panes with their '
+                'programs still running; closing the tab ends them. Needs '
+                'tmux on the host.',
               ),
             ),
             if (_useTmux)
@@ -501,11 +503,12 @@ class _HostEditPageState extends State<HostEditPage> {
                 value: _recordPanes,
                 onChanged: (value) => setState(() => _recordPanes = value),
                 title: const Text('Keep a record of each pane'),
-                subtitle: const Text(
+                subtitle: Text(
                   'The host writes all a pane prints to a file under '
                   '~/.local/state/jeansh, even with the app closed, so what '
                   'clear or a full screen wiped can be read from the tab\'s '
-                  'long-press menu. Up to 16 MB a pane, the newest kept.',
+                  '${isDesktop ? 'right-click' : 'long-press'} menu. Up to '
+                  '16 MB a pane, the newest kept.',
                 ),
               ),
             if (_isEditing && widget.notifyKeys != null)

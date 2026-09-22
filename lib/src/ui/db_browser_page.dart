@@ -7,7 +7,9 @@ import 'package:flutter/services.dart';
 
 import '../data/known_host_store.dart' show HostKeyCheck;
 import '../db/db_session.dart';
+import '../platform.dart';
 import 'connect_sheet.dart';
+import 'right_click.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
 import 'toast.dart';
 
@@ -890,7 +892,11 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   Expanded(
                     child: Text(
                       changes.isEmpty
-                          ? 'Tap a cell to edit it, hold a row to delete it'
+                          ? isDesktop
+                                ? 'Click a cell to edit it, right-click a '
+                                      'row to delete it'
+                                : 'Tap a cell to edit it, hold a row to '
+                                      'delete it'
                           : '${_count(changes.count)} not saved',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
@@ -1687,6 +1693,9 @@ class _ResultGrid extends StatelessWidget {
         onLongPressStart: update == null
             ? null
             : (details) => _rowMenu(context, d, details.globalPosition),
+        onSecondaryTapUp: rightClick(
+          update == null ? null : (at) => _rowMenu(context, d, at),
+        ),
         child: Row(
           children: [
             for (var c = 0; c < columns.length; c++)

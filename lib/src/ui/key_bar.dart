@@ -7,7 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
-import 'ctrl_click.dart' show hyperlinkIn;
+import '../platform.dart';
+import 'ctrl_click.dart' show hyperlinkIn, selectedText;
 import 'toast.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -1223,7 +1224,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     final range = widget.controller.selection;
     if (range != null) {
       Clipboard.setData(
-        ClipboardData(text: widget.terminal.buffer.getText(range, true)),
+        ClipboardData(text: selectedText(widget.terminal.buffer, range)),
       );
       showToast(context, 'Copied', type: ToastificationType.success);
     }
@@ -1463,12 +1464,25 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
               // Detect the second tap from a plain Listener instead if that
               // lag ever grates — at the cost of xterm2 also selecting a word
               // under the double tap.
+              //
+              // A finger's alone on a desktop, where a mouse's double click
+              // selects a word as in every desktop terminal — which copy on
+              // select then copies — rather than sending Tab. A phone keeps
+              // it for anything that taps, as it always has.
               if (!_selecting)
                 DoubleTapGestureRecognizer:
                     GestureRecognizerFactoryWithHandlers<
                       DoubleTapGestureRecognizer
                     >(
-                      () => DoubleTapGestureRecognizer(debugOwner: this),
+                      () => DoubleTapGestureRecognizer(
+                        debugOwner: this,
+                        supportedDevices: isDesktop
+                            ? const {
+                                PointerDeviceKind.touch,
+                                PointerDeviceKind.stylus,
+                              }
+                            : null,
+                      ),
                       (instance) =>
                           instance.onDoubleTap = () => widget.onEmit('\t'),
                     ),
