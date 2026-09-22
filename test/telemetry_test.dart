@@ -273,6 +273,30 @@ void main() {
       telemetryOn.value = false;
       expect(scrubEvent(eventWith(), Hint()), isNull);
     });
+
+    // A native crash never reaches scrubEvent. On Android, Kotlin starts the
+    // native SDK with a beforeSend of its own (NativeCrashes.kt), which only
+    // holds if sentry_flutter does not start it first and put its own there.
+    test("leaves Android's native SDK to Kotlin, and no other platform's", () {
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      for (final (platform, sentryFlutterStartsIt) in [
+        (TargetPlatform.android, false),
+        (TargetPlatform.iOS, true),
+        (TargetPlatform.macOS, true),
+        (TargetPlatform.linux, true),
+        (TargetPlatform.windows, true),
+      ]) {
+        debugDefaultTargetPlatformOverride = platform;
+        final options = SentryFlutterOptions();
+        configureCrashReporting(options);
+        expect(
+          options.autoInitializeNativeSdk,
+          sentryFlutterStartsIt,
+          reason: '$platform',
+        );
+        expect(options.beforeSend, scrubEvent);
+      }
+    });
   });
 
   group('the count', () {

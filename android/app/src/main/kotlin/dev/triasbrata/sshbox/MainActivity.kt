@@ -117,6 +117,12 @@ class MainActivity : FlutterActivity() {
                     clipboardImage((call.arguments as Number).toLong(), result)
                 } else if (call.method == "open") {
                     result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
+                } else if (call.method == "startCrashReporting") {
+                    NativeCrashes.start(applicationContext, call.argument("dsn")!!, call.argument("environment")!!)
+                    result.success(null)
+                } else if (call.method == "stopCrashReporting") {
+                    NativeCrashes.stop()
+                    result.success(null)
                 } else {
                     result.notImplemented()
                 }
