@@ -17,12 +17,11 @@ import 'tui.dart';
 /// Opens [db], asking about a host key through [confirmHostKey] and
 /// telling of a sign-in to finish through [onSignIn]: [DbSession.open], or
 /// a test's.
-typedef DbOpener =
-    Future<DbSession> Function(
-      DbConnection db, {
-      required Future<bool> Function(HostKeyCheck check) confirmHostKey,
-      required void Function(Uri url) onSignIn,
-    });
+typedef DbOpener = Future<DbSession> Function(
+  DbConnection db, {
+  required Future<bool> Function(HostKeyCheck check) confirmHostKey,
+  required void Function(Uri url) onSignIn,
+});
 
 /// How each kind of database's side list reads: the SQL view's tables by
 /// schema, the NoSQL view's collections by database, and the KV view's keys,
@@ -395,27 +394,16 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   Future<bool> mayDrop() async {
     final changes = _changes;
     if (changes == null || changes.isEmpty || !mounted) return true;
-    final drop = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Discard ${_count(changes.count)}?'),
-        content: const Text(
+    return showTuiConfirmDialog(
+      context,
+      title: 'unsaved',
+      message: 'Discard ${_count(changes.count)}?',
+      detail:
           'They were never saved to the database, and there is no way back '
           'to them.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Keep editing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep editing',
     );
-    return drop ?? false;
   }
 
   /// Runs [query] and shows what it gives back, dropping whatever was
@@ -511,7 +499,9 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     });
     showToast(
       context,
-      missed == null ? 'Saved ${_count(changes.count)}' : 'Not all saved\n$missed',
+      missed == null
+          ? 'Saved ${_count(changes.count)}'
+          : 'Not all saved\n$missed',
       type: missed == null
           ? ToastificationType.success
           : ToastificationType.warning,
@@ -548,7 +538,11 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(
+                  widget.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 Text(
                   '${widget.db.kind.label} · ${widget.db.summary}',
                   maxLines: 1,
@@ -637,7 +631,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     // A header row per group that has a name, then its names, unless it is
     // folded.
     final entries = <(String, DbObject?)>[
-      for (final MapEntry(key: group, value: names) in (objects ?? {}).entries) ...[
+      for (final MapEntry(key: group, value: names)
+          in (objects ?? {}).entries) ...[
         if (group.isNotEmpty) (group, null),
         if (group.isEmpty || filtering || !_collapsed.contains(group))
           for (final name in names) (group, name),
@@ -791,7 +786,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                               object.type,
                               style: theme.textTheme.labelSmall?.copyWith(
                                 color: mark,
-                                fontFamily: tuiFontFamily,
+                                fontFamily: TermulFonts.mono,
                               ),
                             ),
                       onTap: () => _open(group, object.name),
@@ -810,7 +805,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     // What is changed is edited in the grid, and saved from over it.
     final edit = _asJson ? null : result?.edit;
     final changes = edit == null ? null : _changes;
-    const mono = TextStyle(fontFamily: tuiFontFamily, fontSize: 13);
+    final mono = TextStyle(fontFamily: TermulFonts.mono, fontSize: 13);
     final note = theme.textTheme.bodySmall?.copyWith(
       color: theme.colorScheme.onSurfaceVariant,
     );
@@ -1264,7 +1259,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                 ),
                 IconButton(
                   tooltip: 'Remove stage ${index + 1}',
-                  onPressed: () => setState(() => _mStages.removeAt(index).dispose()),
+                  onPressed: () =>
+                      setState(() => _mStages.removeAt(index).dispose()),
                   icon: const Icon(Icons.remove_circle_outline),
                 ),
               ],
@@ -1293,7 +1289,11 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               padding: EdgeInsets.symmetric(vertical: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
-                children: [Icon(Icons.add), SizedBox(width: 4), Text('Add stage')],
+                children: [
+                  Icon(Icons.add),
+                  SizedBox(width: 4),
+                  Text('Add stage'),
+                ],
               ),
             ),
           ),
@@ -1510,7 +1510,7 @@ class _ResultGrid extends StatelessWidget {
   /// runs, so nothing changes under it.
   final void Function(VoidCallback change)? update;
 
-  static const _mono = TextStyle(fontFamily: tuiFontFamily, fontSize: 13);
+  static final _mono = TextStyle(fontFamily: TermulFonts.mono, fontSize: 13);
 
   void _showRow(BuildContext context, int index) {
     final details = result.details;
@@ -1523,24 +1523,28 @@ class _ResultGrid extends StatelessWidget {
     unawaited(
       showDialog<void>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Row ${index + 1}'),
-          content: SingleChildScrollView(
-            child: SelectableText(text, style: _mono),
-          ),
+        builder: (context) => TuiDialog(
+          title: 'Row ${index + 1}',
+          maxWidth: 520,
           actions: [
-            TextButton(
+            TuiButton(
+              label: 'Copy',
+              variant: TuiButtonVariant.ghost,
               onPressed: () {
                 unawaited(Clipboard.setData(ClipboardData(text: text)));
                 showToast(context, 'Copied');
               },
-              child: const Text('Copy'),
             ),
-            FilledButton(
+            TuiButton(
+              label: 'Close',
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Close'),
             ),
           ],
+          child: Flexible(
+            child: SingleChildScrollView(
+              child: SelectableText(text, style: _mono),
+            ),
+          ),
         ),
       ),
     );
@@ -1637,7 +1641,9 @@ class _ResultGrid extends StatelessWidget {
       for (var c = 0; c < columns.length; c++)
         (rows
                         .take(100)
-                        .map((row) => (row[c] ?? 'NULL').split('\n').first.length)
+                        .map(
+                          (row) => (row[c] ?? 'NULL').split('\n').first.length,
+                        )
                         .fold(columns[c].length, math.max) *
                     8.0 +
                 24)
@@ -1802,31 +1808,34 @@ class _CellEditorState extends State<_CellEditor> {
     // One line, where Enter is OK, unless the value has more: a one-line
     // box takes line breaks out of what is edited in it.
     final lines = widget.value?.contains('\n') ?? false;
-    return AlertDialog(
-      title: Text(widget.column),
-      content: TextField(
+    return TuiDialog(
+      title: 'edit cell',
+      maxWidth: 420,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        if (widget.nulls)
+          TuiButton(
+            label: 'Set NULL',
+            variant: TuiButtonVariant.ghost,
+            onPressed: () => Navigator.of(context).pop((null,)),
+          ),
+        TuiButton(label: 'OK', onPressed: _ok),
+      ],
+      child: TuiField(
+        label: widget.column,
         controller: _text,
         autofocus: true,
-        style: _ResultGrid._mono,
         minLines: 1,
         maxLines: lines ? 8 : 1,
         autocorrect: false,
         enableSuggestions: false,
         onSubmitted: lines ? null : (_) => _ok(),
-        decoration: InputDecoration(hintText: widget.hint),
+        hint: widget.hint,
       ),
-      actions: [
-        if (widget.nulls)
-          TextButton(
-            onPressed: () => Navigator.of(context).pop((null,)),
-            child: const Text('Set NULL'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _ok, child: const Text('OK')),
-      ],
     );
   }
 }

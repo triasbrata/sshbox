@@ -4,7 +4,6 @@ import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import 'file_download.dart';
 import 'toast.dart';
-import 'tui.dart';
 
 /// Every download and upload since the app started, newest first, like a
 /// browser's downloads page: one tab for the whole app. A running one can be
@@ -35,12 +34,23 @@ class TransfersPage extends StatelessWidget {
           ],
         ),
         body: items.isEmpty
-            ? const TuiEmptyState(
-                icon: Icons.swap_vert,
-                title: 'No transfers yet',
-                body:
-                    'Files you download or upload show up here, with their '
-                    'progress.',
+            // TODO(termul): empty state, until termul has one.
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('No transfers yet'),
+                      SizedBox(height: 8),
+                      Text(
+                        'Files you download or upload show up here, with '
+                        'their progress.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
               )
             : ListView.separated(
                 itemCount: items.length,
@@ -67,11 +77,7 @@ class _TransferRow extends StatelessWidget {
             ? Icons.download
             : Icons.upload,
       ),
-      title: Text(
-        transfer.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
+      title: Text(transfer.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -131,7 +137,6 @@ String status(Transfer transfer) {
           '${formatBytes(total > 0 ? total : transfer.done)} · $speed',
     TransferState.failed =>
       '${down ? 'Download' : 'Upload'}$host failed: ${transfer.error}',
-    TransferState.cancelled =>
-      '${down ? 'Download' : 'Upload'}$host cancelled',
+    TransferState.cancelled => '${down ? 'Download' : 'Upload'}$host cancelled',
   };
 }

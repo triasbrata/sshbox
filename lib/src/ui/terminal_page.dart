@@ -33,6 +33,7 @@ import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
+import 'tui.dart' show TuiButton, TuiButtonVariant;
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -694,9 +695,7 @@ class _TerminalPageState extends State<TerminalPage> {
             IconButton(
               tooltip: 'Chat with Claude',
               onPressed:
-                  (_session.isConnected &&
-                      _session.canChat &&
-                      !_checkingClaude)
+                  (_session.isConnected && _session.canChat && !_checkingClaude)
                   ? _openChat
                   : null,
               icon: const Icon(Icons.forum_outlined),
@@ -1531,13 +1530,17 @@ class ConnectionError extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (onClose != null) ...[
-                  TextButton(onPressed: onClose, child: const Text('Close')),
+                  TuiButton(
+                    label: 'Close',
+                    variant: TuiButtonVariant.ghost,
+                    onPressed: onClose,
+                  ),
                   const SizedBox(width: 8),
                 ],
-                FilledButton.icon(
+                TuiButton(
+                  label: retryLabel ?? 'Try again',
+                  prefix: '↻',
                   onPressed: onRetry,
-                  icon: const Icon(Icons.refresh),
-                  label: Text(retryLabel ?? 'Try again'),
                 ),
               ],
             ),

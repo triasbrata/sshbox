@@ -129,7 +129,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final cards = find.byType(Card);
+      final cards = find.byType(HomeRow);
       expect(cards, findsNWidgets(4));
       final corners = [
         for (var i = 0; i < 4; i++) tester.getTopLeft(cards.at(i)),
@@ -170,7 +170,7 @@ void main() {
       // name: the badge already shows it.
       final badge = tester.getRect(
         find.descendant(
-          of: find.widgetWithText(Card, '22.04.5 LTS'),
+          of: find.widgetWithText(HomeRow, '22.04.5 LTS'),
           matching: find.byType(OsBadge),
         ),
       );
@@ -188,7 +188,7 @@ void main() {
       for (final arch in ['x86_64', 'aarch64', '·']) {
         expect(find.textContaining(arch), findsNothing);
       }
-      expect(find.text('2 active sessions'), findsOneWidget);
+      expect(find.text('2 ACTIVE SESSIONS'), findsOneWidget);
       expect(find.text('OS not detected yet'), findsNothing);
       // The user and the OS are on the card once each, not again in an
       // `ssh, me, ubuntu` line.
@@ -229,7 +229,12 @@ void main() {
     final secrets = InMemorySecretStore();
     final repository = HostRepository(secrets);
     await repository.upsert(
-      const HostProfile(id: 'box', label: 'box', host: '10.0.0.5', username: 'me'),
+      const HostProfile(
+        id: 'box',
+        label: 'box',
+        host: '10.0.0.5',
+        username: 'me',
+      ),
     );
     final relay = FakeRelay();
     final notifyKeys = NotifyKeys(secrets, relay: relay);
@@ -251,10 +256,10 @@ void main() {
 
     await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Delete'));
+    await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
     expect(find.textContaining('notification key is revoked'), findsOneWidget);
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
 
     expect(relay.revoked, [key!.split(':').first]);
@@ -297,7 +302,7 @@ void main() {
         find.descendant(
           of: find.ancestor(
             of: find.text(label),
-            matching: find.byType(Card),
+            matching: find.byType(HomeRow),
           ),
           matching: find.byType(PopupMenuButton<String>),
         ),

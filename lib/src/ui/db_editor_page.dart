@@ -9,6 +9,7 @@ import '../models/host_profile.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart' show pageGutters;
 import 'settings_page.dart' show nerdFontFamily;
+import 'tui.dart';
 
 /// A database's own brand mark — PostgreSQL's elephant, MongoDB's leaf,
 /// Redis's stack — as a devicon glyph of the bundled Nerd Font, the same font
@@ -131,27 +132,14 @@ Future<void> _forget(DbConnection db, SecretStore secrets) async {
   await secrets.write(DbConnection.passwordKey(db.id), null);
 }
 
-Future<bool> _confirmDelete(BuildContext context) async =>
-    await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete this database?'),
-        content: const Text(
-          'Its saved password goes too. Nothing changes on the server.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    ) ==
-    true;
+Future<bool> _confirmDelete(BuildContext context) => showTuiConfirmDialog(
+  context,
+  title: 'delete database',
+  message: 'Delete this database?',
+  detail: 'Its saved password goes too. Nothing changes on the server.',
+  confirmLabel: 'Delete',
+  cancelLabel: 'Cancel',
+);
 
 class _DbEditor extends StatefulWidget {
   const _DbEditor({required this.hosts, required this.secrets, this.existing});
@@ -186,9 +174,7 @@ class _DbEditorState extends State<_DbEditor> {
   );
   late final _user = TextEditingController(text: widget.existing?.user);
   final _password = TextEditingController();
-  late final _database = TextEditingController(
-    text: widget.existing?.database,
-  );
+  late final _database = TextEditingController(text: widget.existing?.database);
   var _showPassword = false;
 
   @override
@@ -200,7 +186,9 @@ class _DbEditorState extends State<_DbEditor> {
         widget.secrets.read(DbConnection.passwordKey(existing.id)).then((
           password,
         ) {
-          if (mounted && _password.text.isEmpty) _password.text = password ?? '';
+          if (mounted && _password.text.isEmpty) {
+            _password.text = password ?? '';
+          }
         }),
       );
     }
@@ -249,7 +237,7 @@ class _DbEditorState extends State<_DbEditor> {
   /// cannot read says why under it, and changes nothing. A URI with no
   /// password leaves the one typed here.
   Future<void> _importUri() async {
-    var typed = '';
+    final uri = TextEditingController();
     String? error;
     final parsed = await showDialog<DbUri>(
       context: context,
@@ -257,44 +245,44 @@ class _DbEditorState extends State<_DbEditor> {
         builder: (context, setDialogState) {
           void submit() {
             try {
-              Navigator.of(context).pop(parseDbUri(typed));
+              Navigator.of(context).pop(parseDbUri(uri.text));
             } on FormatException catch (refused) {
               setDialogState(() => error = refused.message);
             }
           }
 
-          return AlertDialog(
-            title: const Text('Import URI'),
-            content: TextField(
+          return TuiDialog(
+            title: 'Import URI',
+            maxWidth: 420,
+            actions: [
+              TuiButton(
+                label: 'Cancel',
+                variant: TuiButtonVariant.ghost,
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              TuiButton(label: 'Import', onPressed: submit),
+            ],
+            child: TuiField(
+              label: 'URI',
+              controller: uri,
               autofocus: true,
               autocorrect: false,
               enableSuggestions: false,
               // It may hold a password.
               enableIMEPersonalizedLearning: false,
               keyboardType: TextInputType.url,
-              decoration: InputDecoration(
-                hintText: 'postgresql://user:password@localhost:5432/app',
-                helperText:
-                    'A postgresql://, mongodb:// or redis:// URI fills in '
-                    'this database\'s fields.',
-                helperMaxLines: 2,
-                errorText: error,
-                errorMaxLines: 3,
-              ),
-              onChanged: (value) => typed = value,
+              hint: 'postgresql://user:password@localhost:5432/app',
+              helper:
+                  'A postgresql://, mongodb:// or redis:// URI fills in '
+                  'this database\'s fields.',
+              errorText: error,
               onSubmitted: (_) => submit(),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(onPressed: submit, child: const Text('Import')),
-            ],
           );
         },
       ),
     );
+    // Not disposed here: the dialog is still animating out with it.
     if (parsed == null || !mounted) return;
     setState(() {
       _kind = parsed.kind;
@@ -319,9 +307,7 @@ class _DbEditorState extends State<_DbEditor> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          widget.existing == null ? 'New database' : 'Edit database',
-        ),
+        title: Text(widget.existing == null ? 'New database' : 'Edit database'),
         actions: [
           if (widget.existing != null)
             IconButton(

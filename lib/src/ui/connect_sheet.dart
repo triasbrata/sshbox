@@ -282,9 +282,10 @@ class _ConnectSheetState extends State<_ConnectSheet> {
             ),
             Align(
               alignment: Alignment.centerRight,
-              child: TextButton(
+              child: TuiButton(
+                label: 'Cancel',
+                variant: TuiButtonVariant.ghost,
                 onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
               ),
             ),
           ] else if (error != null)
@@ -348,7 +349,7 @@ class _HostKeyPrompt extends StatelessWidget {
     final pinned = check.pinned;
     final other = check.otherAddress;
     final error = theme.colorScheme.error;
-    const mono = TextStyle(fontFamily: tuiFontFamily, fontSize: 13);
+    final mono = TextStyle(fontFamily: TermulFonts.mono, fontSize: 13);
     Widget boxed(String fingerprint) => Container(
       width: double.infinity,
       margin: const EdgeInsets.only(top: 4),
@@ -422,21 +423,19 @@ class _HostKeyPrompt extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            TextButton(
+            TuiButton(
+              label: 'Cancel',
+              variant: TuiButtonVariant.ghost,
               onPressed: () => onAnswer(false),
-              child: const Text('Cancel'),
             ),
             const SizedBox(width: 8),
-            pinned == null
-                ? FilledButton(
-                    onPressed: () => onAnswer(true),
-                    child: const Text('Trust'),
-                  )
-                : TextButton(
-                    style: TextButton.styleFrom(foregroundColor: error),
-                    onPressed: () => onAnswer(true),
-                    child: const Text('Replace key'),
-                  ),
+            TuiButton(
+              label: pinned == null ? 'Trust' : 'Replace key',
+              variant: pinned == null
+                  ? TuiButtonVariant.primary
+                  : TuiButtonVariant.danger,
+              onPressed: () => onAnswer(true),
+            ),
           ],
         ),
       ],
@@ -490,11 +489,7 @@ class AuthCheckPrompt extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
-        FilledButton.icon(
-          onPressed: onOpen,
-          icon: const Icon(Icons.open_in_new),
-          label: const Text('Open link'),
-        ),
+        TuiButton(label: 'Open link', prefix: '↗', onPressed: onOpen),
         const SizedBox(height: 12),
         SelectableText(
           url.toString(),

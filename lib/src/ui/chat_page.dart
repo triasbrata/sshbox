@@ -310,7 +310,9 @@ class _ChatPageState extends State<ChatPage> {
               SizedBox(width: 300, child: sessions),
               const VerticalDivider(width: 1),
             ],
-            Expanded(child: _conversation(wide: wide, sidebar: sidebar)),
+            Expanded(
+              child: _conversation(wide: wide, sidebar: sidebar),
+            ),
           ],
         ),
       );
@@ -1136,7 +1138,6 @@ class _Notice extends StatelessWidget {
   }
 }
 
-
 /// The sessions `claude agents` can see on the host, to pick one up in this
 /// chat: the sidebar on a wide screen, the drawer on a narrow one. Pinned
 /// ones first, then the ones running, then the finished ones, each under a
@@ -1222,7 +1223,10 @@ class _SessionList extends StatelessWidget {
         const Divider(height: 1),
         Expanded(
           child: agents == null
-              ? _say(context, 'Connect this session to see its Claude sessions.')
+              ? _say(
+                  context,
+                  'Connect this session to see its Claude sessions.',
+                )
               : FutureBuilder<List<ClaudeAgent>>(
                   future: agents,
                   builder: (context, snapshot) {
@@ -1273,8 +1277,10 @@ class _SessionList extends StatelessWidget {
     );
   }
 
-  Widget _heading(BuildContext context, String text) =>
-      TuiHeading(text, padding: const EdgeInsets.fromLTRB(16, 12, 16, 4));
+  Widget _heading(BuildContext context, String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+    child: TuiSectionLabel(text),
+  );
 
   Widget _say(BuildContext context, String text, {bool failed = false}) {
     final theme = Theme.of(context);
@@ -1316,7 +1322,9 @@ class _SessionList extends StatelessWidget {
           : Icon(
               // Somebody is typing into an interactive one; a background one
               // is a job that was sent off.
-              agent.interactive ? Icons.keyboard_outlined : Icons.forum_outlined,
+              agent.interactive
+                  ? Icons.keyboard_outlined
+                  : Icons.forum_outlined,
               color: theme.colorScheme.primary,
             ),
       title: Text(agent.name, maxLines: 1, overflow: TextOverflow.ellipsis),

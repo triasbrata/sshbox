@@ -44,7 +44,9 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
     await tester.pumpAndSettle();
 
-    final credit = find.text('Design based on termul by Iyan Qalbi');
+    final credit = find.bySemanticsLabel(
+      'Design based on termul by Iyan Qalbi',
+    );
     await tester.scrollUntilVisible(
       credit,
       300,
@@ -55,11 +57,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(credit);
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Iyan Qalbi on GitHub'));
+    final author = find.bySemanticsLabel('Iyan Qalbi on GitHub');
+    await tester.ensureVisible(author);
+    await tester.pumpAndSettle();
+    await tester.tap(author);
     await tester.pumpAndSettle();
     expect(launcher.opened, [termulUrl, termulAuthorUrl]);
 
-    final licences = find.text('Open-source licences');
+    final licences = find.bySemanticsLabel('Open-source licences');
     await tester.scrollUntilVisible(
       licences,
       300,

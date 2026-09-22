@@ -12,9 +12,12 @@ import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:sshbox/src/ui/toast.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_relay.dart';
+
+import 'tui_finders.dart';
 
 /// The terminal's key bar as it has always been: the divider after files and
 /// upload, then every key in its place.
@@ -75,14 +78,26 @@ Future<void> _pumpBar(
 
 /// Opens Add key and picks [choice] from it.
 Future<void> _addFromSheet(WidgetTester tester, String choice) async {
-  await tester.tap(find.text('Add key'));
+  await tester.tap(find.bySemanticsLabel('Add key'));
   await tester.pumpAndSettle();
   await tester.tap(
-    find.descendant(of: find.byType(BottomSheet), matching: find.text(choice)),
+    find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.bySemanticsLabel(choice),
+    ),
   );
   // Settled, which also sits out the toast that says where it went.
   await tester.pumpAndSettle();
 }
+
+/// The key bar page's row for the key that reads [label].
+Finder _keyRow(String label) => find.ancestor(
+  of: find.descendant(
+    of: find.byType(ReorderableListView),
+    matching: find.text(label),
+  ),
+  matching: find.byType(InkWell),
+);
 
 /// The picker's cap that reads [label].
 Finder _cap(String label) => find.descendant(
@@ -94,16 +109,17 @@ Finder _cap(String label) => find.descendant(
 Finder _shown(String text) =>
     find.descendant(of: find.byType(Dialog), matching: find.text(text));
 
-final _labelField = find.widgetWithText(TextField, 'Label');
+final _labelField = find.descendant(
+  of: find.byType(TuiField),
+  matching: find.byType(TextField),
+);
 
 String _labelText(WidgetTester tester) =>
     tester.widget<TextField>(_labelField).controller!.text;
 
 /// Whether the picker's Add or Save can be pressed.
 bool _canSave(WidgetTester tester, String button) =>
-    tester.widget<FilledButton>(find.widgetWithText(FilledButton, button))
-        .onPressed !=
-    null;
+    tester.widget<TuiButton>(findTuiButton(button)).onPressed != null;
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -120,23 +136,23 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
     expect(appTheme.value, AppTheme.defaults);
 
-    // A card for every theme, the one in use ticked.
+    // A button for every theme, the one in use picked.
     for (final scheme in terminalSchemes) {
-      expect(find.text(scheme.name), findsOneWidget);
+      expect(find.bySemanticsLabel(scheme.name), findsOneWidget);
     }
-    Finder tickOn(String name) => find.descendant(
-      of: find.widgetWithText(Card, name),
-      matching: find.byIcon(Icons.check_circle),
-    );
-    expect(tickOn('Jeansh'), findsOneWidget);
+    TerminalScheme picked() => tester
+        .widget<TuiSelect<TerminalScheme>>(
+          find.byType(TuiSelect<TerminalScheme>),
+        )
+        .value;
+    expect(picked().name, 'Jeansh');
 
-    await tester.tap(find.text('Light'));
-    await tester.tap(find.text('Dracula'));
+    await tester.tap(find.bySemanticsLabel('Light'));
+    await tester.tap(find.bySemanticsLabel('Dracula'));
     await tester.pump();
     final dracula = terminalSchemes.firstWhere((s) => s.name == 'Dracula');
     expect(appTheme.value, (mode: ThemeMode.light, scheme: dracula));
-    expect(tickOn('Dracula'), findsOneWidget);
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    expect(picked(), dracula);
 
     appTheme.value = AppTheme.defaults;
     await appTheme.load();
@@ -153,16 +169,16 @@ void main() {
     for (final font in terminalFonts) {
       final row = find.ancestor(
         of: find.textContaining(font.label, findRichText: true),
-        matching: find.byType(ListTile),
+        matching: find.byType(InkWell),
       );
       expect(row, findsOneWidget, reason: font.label);
       // The sample under the name is drawn in that font.
       final sample = tester.widget<Text>(
-        find.descendant(of: row, matching: find.byType(Text)).last,
+        find.descendant(of: row, matching: find.byType(Text)).at(1),
       );
       expect(sample.style?.fontFamily, font.family);
     }
-    expect(find.widgetWithText(ListTile, 'Font size'), findsOneWidget);
+    expect(find.bySemanticsLabel('Font size'), findsOneWidget);
     // The preview is a terminal of its own, in the chosen style.
     expect(
       tester.widget<TerminalView>(find.byType(TerminalView)).textStyle,
@@ -177,8 +193,10 @@ void main() {
       terminalStyleOf('JetBrains Mono', 13),
     );
 
-    // All the way right is the largest size.
-    await tester.drag(find.byType(Slider), const Offset(1000, 0));
+    // The last size offered is the largest.
+    final largest = find.bySemanticsLabel('${maxFontSize.round()}px');
+    await tester.ensureVisible(largest);
+    await tester.tap(largest);
     await tester.pump();
     expect(terminalSettings.value.fontSize, maxFontSize);
 
@@ -243,7 +261,7 @@ void main() {
     });
 
     Finder inPicker(Finder finder) =>
-        find.descendant(of: find.byType(AlertDialog), matching: finder);
+        find.descendant(of: find.byType(TuiDialog), matching: finder);
     const warning =
         'DejaVu Sans is proportional, so the terminal\'s columns will not '
         'line up.';
@@ -257,9 +275,14 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
       await tester.pump();
 
-      expect(find.text('Installed on this computer…'), findsOneWidget);
+      expect(
+        find.text('Installed on this computer…', findRichText: true),
+        findsOneWidget,
+      );
       expect(find.text('3 families, monospaced first'), findsOneWidget);
-      await tester.tap(find.text('Installed on this computer…'));
+      await tester.tap(
+        find.text('Installed on this computer…', findRichText: true),
+      );
       await tester.pumpAndSettle();
 
       final mono = tester.getTopLeft(inPicker(find.text('Liberation Mono')));
@@ -277,7 +300,7 @@ void main() {
 
       await tester.tap(inPicker(find.text('DejaVu Sans')));
       await tester.pumpAndSettle();
-      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.byType(TuiDialog), findsNothing);
       // By its name, with the bundled glyph fonts still behind it.
       expect(terminalSettings.value, terminalStyleOf('DejaVu Sans', 13));
       expect(terminalSettings.value.fontFamilyFallback.take(2), [
@@ -312,11 +335,13 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
       await tester.pump();
 
-      await tester.tap(find.text('Installed on this computer…'));
+      await tester.tap(
+        find.text('Installed on this computer…', findRichText: true),
+      );
       await tester.pumpAndSettle();
       await tester.enterText(inPicker(find.byType(TextField)), ' Hack ');
       await tester.pump();
-      await tester.tap(inPicker(find.widgetWithText(FilledButton, 'Use')));
+      await tester.tap(inPicker(find.bySemanticsLabel('Use')));
       await tester.pumpAndSettle();
       expect(terminalSettings.value.fontFamily, 'Hack');
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
@@ -387,7 +412,10 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
       await tester.pump();
-      expect(find.text('Installed on this computer…'), findsNothing);
+      expect(
+        find.text('Installed on this computer…', findRichText: true),
+        findsNothing,
+      );
 
       SharedPreferences.setMockInitialValues({
         'sshbox.terminal.fontFamily': 'DejaVu Sans Mono',
@@ -416,7 +444,7 @@ void main() {
       );
       // A host's own key is copied from its page, not from here.
       expect(find.text('Copy notification key'), findsNothing);
-      final reset = find.text('Reset notification keys');
+      final reset = find.bySemanticsLabel('Reset notification keys');
       await tester.scrollUntilVisible(
         reset,
         300,
@@ -433,7 +461,7 @@ void main() {
 
     /// Resets in the dialog, and waits for the toast that says how it went.
     Future<void> confirm(WidgetTester tester) async {
-      await tester.tap(find.widgetWithText(FilledButton, 'Reset'));
+      await tester.tap(find.bySemanticsLabel('Reset'));
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -451,7 +479,7 @@ void main() {
         findsOneWidget,
       );
 
-      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await tester.tap(find.bySemanticsLabel('Cancel'));
       await tester.pumpAndSettle();
       expect(relay.revoked, isEmpty);
       expect(await notifyKeys.valueFor('host-1'), isNotNull);
@@ -505,84 +533,96 @@ void main() {
       expect(_barOrder(tester), ['divider', 'esc', 'divider', 'tab']);
     });
 
-    test('a saved bar drops ids it does not know, and gains keys added since',
-        () async {
-      SharedPreferences.setMockInitialValues({
-        'sshbox.keyBar.v1': jsonEncode([
-          {'id': 'tab', 'shown': false},
-          {'id': 'f13', 'shown': true},
-          {'id': 'divider', 'shown': true},
-          {'id': 'esc', 'shown': true},
-          {'id': 'tab', 'shown': true},
-          {'id': 'custom:a', 'shown': true, 'label': 'LS', 'send': r'ls\n'},
-          // A custom key with nothing to type is no key.
-          {'id': 'custom:b', 'shown': true, 'label': 'X'},
-          {
-            'id': 'custom:c',
-            'shown': true,
-            'label': '^R',
-            'send': '\x12',
-            'combo': 'Ctrl+R',
-          },
-          // A key a later version has: its text is what it types here.
-          {
-            'id': 'custom:d',
-            'shown': true,
-            'label': 'F13',
-            'send': r'\e[1;2P',
-            'combo': 'F13',
-          },
-          // One picked on the macOS layout.
-          {
-            'id': 'custom:e',
-            'shown': true,
-            'label': '⌘←',
-            'send': '\x01',
-            'combo': 'Super+←',
-            'layout': 'mac',
-          },
-        ]),
-      });
-      await keyBarSettings.load();
-      expect(keyBarSettings.value, [
-        (id: 'divider', custom: null),
-        (id: 'esc', custom: null),
-        (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
-        (
-          id: 'custom:c',
-          custom: (
-            label: '^R',
-            send: '\x12',
-            combo: (key: 'R', ctrl: true, alt: false, shift: false, superKey: false, mac: false),
-          ),
-        ),
-        (id: 'custom:d', custom: (label: 'F13', send: r'\e[1;2P', combo: null)),
-        (
-          id: 'custom:e',
-          custom: (
-            label: '⌘←',
-            send: '\x01',
-            combo: (
-              key: '←',
-              ctrl: false,
-              alt: false,
-              shift: false,
-              superKey: true,
-              mac: true,
+    test(
+      'a saved bar drops ids it does not know, and gains keys added since',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'sshbox.keyBar.v1': jsonEncode([
+            {'id': 'tab', 'shown': false},
+            {'id': 'f13', 'shown': true},
+            {'id': 'divider', 'shown': true},
+            {'id': 'esc', 'shown': true},
+            {'id': 'tab', 'shown': true},
+            {'id': 'custom:a', 'shown': true, 'label': 'LS', 'send': r'ls\n'},
+            // A custom key with nothing to type is no key.
+            {'id': 'custom:b', 'shown': true, 'label': 'X'},
+            {
+              'id': 'custom:c',
+              'shown': true,
+              'label': '^R',
+              'send': '\x12',
+              'combo': 'Ctrl+R',
+            },
+            // A key a later version has: its text is what it types here.
+            {
+              'id': 'custom:d',
+              'shown': true,
+              'label': 'F13',
+              'send': r'\e[1;2P',
+              'combo': 'F13',
+            },
+            // One picked on the macOS layout.
+            {
+              'id': 'custom:e',
+              'shown': true,
+              'label': '⌘←',
+              'send': '\x01',
+              'combo': 'Super+←',
+              'layout': 'mac',
+            },
+          ]),
+        });
+        await keyBarSettings.load();
+        expect(keyBarSettings.value, [
+          (id: 'divider', custom: null),
+          (id: 'esc', custom: null),
+          (id: 'custom:a', custom: (label: 'LS', send: r'ls\n', combo: null)),
+          (
+            id: 'custom:c',
+            custom: (
+              label: '^R',
+              send: '\x12',
+              combo: (
+                key: 'R',
+                ctrl: true,
+                alt: false,
+                shift: false,
+                superKey: false,
+                mac: false,
+              ),
             ),
           ),
-        ),
-        // TAB stays off, as its first entry has it; the rest are new to it.
-        for (final id in terminalKeyBarDefault)
-          if (!const {'tab', 'divider', 'esc'}.contains(id))
-            (id: id, custom: null),
-      ]);
+          (
+            id: 'custom:d',
+            custom: (label: 'F13', send: r'\e[1;2P', combo: null),
+          ),
+          (
+            id: 'custom:e',
+            custom: (
+              label: '⌘←',
+              send: '\x01',
+              combo: (
+                key: '←',
+                ctrl: false,
+                alt: false,
+                shift: false,
+                superKey: true,
+                mac: true,
+              ),
+            ),
+          ),
+          // TAB stays off, as its first entry has it; the rest are new to it.
+          for (final id in terminalKeyBarDefault)
+            if (!const {'tab', 'divider', 'esc'}.contains(id))
+              (id: id, custom: null),
+        ]);
 
-      // One this build cannot read at all is the bar as it ships.
-      SharedPreferences.setMockInitialValues({'sshbox.keyBar.v1': '[{oops'});
-      await keyBarSettings.load();
-      expect(keyBarSettings.value, KeyBarSettings.defaults);
-    });
+        // One this build cannot read at all is the bar as it ships.
+        SharedPreferences.setMockInitialValues({'sshbox.keyBar.v1': '[{oops'});
+        await keyBarSettings.load();
+        expect(keyBarSettings.value, KeyBarSettings.defaults);
+      },
+    );
 
     test('a key hidden by the switch before is off the bar now', () async {
       // v1's list as the switches left it: ESC, and the divider after ALT,
@@ -606,7 +646,7 @@ void main() {
     ) async {
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-      final row = find.text('Key bar');
+      final row = find.bySemanticsLabel('Key bar');
       await tester.scrollUntilVisible(
         row,
         300,
@@ -617,7 +657,7 @@ void main() {
 
       expect(find.byType(KeyBarSettingsPage), findsOneWidget);
       expect(_barOrder(tester), _today);
-      final esc = find.widgetWithText(ListTile, 'ESC');
+      final esc = _keyRow('ESC');
       expect(
         find.descendant(of: esc, matching: find.byIcon(Icons.drag_handle)),
         findsOneWidget,
@@ -628,16 +668,18 @@ void main() {
       );
       // Taken off rather than hidden: no switch is left.
       expect(find.byType(Switch), findsNothing);
-      expect(find.text('Add key'), findsOneWidget);
+      expect(find.bySemanticsLabel('Add key'), findsOneWidget);
     });
 
     testWidgets('a key removed leaves the bar and stays off, and Add key puts '
         'it back on the end', (tester) async {
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
-      final esc = find.widgetWithText(ListTile, 'ESC');
+      final esc = _keyRow('ESC');
 
-      await tester.tap(find.descendant(of: esc, matching: find.byTooltip('Remove')));
+      await tester.tap(
+        find.descendant(of: esc, matching: find.byTooltip('Remove')),
+      );
       await tester.pump();
 
       expect(_barOrder(tester), [..._today]..remove('esc'));
@@ -649,7 +691,7 @@ void main() {
       await keyBarSettings.load();
       expect(keyBarSettings.keys, isNot(contains('esc')));
 
-      await tester.tap(find.text('Add key'));
+      await tester.tap(find.bySemanticsLabel('Add key'));
       await tester.pumpAndSettle();
       // Offered as the bar draws it, and alone: the rest are on the bar.
       final offered = find.descendant(
@@ -665,7 +707,12 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(keyBarSettings.keys.last, 'esc');
-      expect(_barOrder(tester), [..._today]..remove('esc')..add('esc'));
+      expect(
+        _barOrder(tester),
+        [..._today]
+          ..remove('esc')
+          ..add('esc'),
+      );
     });
 
     testWidgets('a divider goes on as many times as you like', (tester) async {
@@ -703,12 +750,19 @@ void main() {
       await tester.pump();
       expect(_shown('Ctrl+Alt+R'), findsOneWidget);
       expect(_labelText(tester), 'M-^R');
-      await tester.tap(find.text('Add'));
+      await tester.tap(find.bySemanticsLabel('Add'));
       await tester.pumpAndSettle();
 
       final id = keyBarSettings.keys.last;
       expect(id, startsWith('custom:'));
-      const combo = (key: 'R', ctrl: true, alt: true, shift: false, superKey: false, mac: false);
+      const combo = (
+        key: 'R',
+        ctrl: true,
+        alt: true,
+        shift: false,
+        superKey: false,
+        mac: false,
+      );
       expect(keyBarSettings.customKeys, {
         id: (label: 'M-^R', send: '\x1b\x12', combo: combo),
       });
@@ -753,7 +807,10 @@ void main() {
       expect(_cap('2'), findsNothing);
 
       final keys = find
-          .descendant(of: find.byType(Dialog), matching: find.byType(Scrollable))
+          .descendant(
+            of: find.byType(Dialog),
+            matching: find.byType(Scrollable),
+          )
           .first;
       await tester.scrollUntilVisible(_cap('F12'), 100, scrollable: keys);
       await tester.tap(_cap('F12'));
@@ -768,11 +825,18 @@ void main() {
       expect(_shown(r'Alt+\'), findsOneWidget);
       expect(_labelText(tester), 'BS');
 
-      await tester.tap(find.text('Add'));
+      await tester.tap(find.bySemanticsLabel('Add'));
       await tester.pumpAndSettle();
       final key = keyBarSettings.customKeys.values.single;
       expect(key.label, 'BS');
-      expect(key.combo, (key: r'\', ctrl: false, alt: true, shift: false, superKey: false, mac: false));
+      expect(key.combo, (
+        key: r'\',
+        ctrl: false,
+        alt: true,
+        shift: false,
+        superKey: false,
+        mac: false,
+      ));
       // Escaped, for an earlier version to read back as ESC and a backslash.
       expect(decodeKeyText(key.send), '\x1b\\');
     });
@@ -785,7 +849,14 @@ void main() {
           custom: (
             label: 'C-→',
             send: '\x1b[1;5C',
-            combo: (key: '→', ctrl: true, alt: false, shift: false, superKey: false, mac: false),
+            combo: (
+              key: '→',
+              ctrl: true,
+              alt: false,
+              shift: false,
+              superKey: false,
+              mac: false,
+            ),
           ),
         ),
         ...KeyBarSettings.defaults,
@@ -794,8 +865,8 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
 
       // Its combination, under its label.
-      expect(find.widgetWithText(ListTile, 'Ctrl+→'), findsOneWidget);
-      await tester.tap(find.widgetWithText(ListTile, 'C-→'));
+      expect(_keyRow('Ctrl+→'), findsOneWidget);
+      await tester.tap(_keyRow('C-→'));
       await tester.pumpAndSettle();
       expect(find.text('Change custom key'), findsOneWidget);
       expect(_shown('Ctrl+→'), findsOneWidget);
@@ -806,7 +877,7 @@ void main() {
       await tester.pump();
       expect(_shown('Alt+→'), findsOneWidget);
       expect(_labelText(tester), 'M-→');
-      await tester.tap(find.text('Save'));
+      await tester.tap(find.bySemanticsLabel('Save'));
       await tester.pumpAndSettle();
 
       expect(keyBarSettings.value.first, (
@@ -814,7 +885,14 @@ void main() {
         custom: (
           label: 'M-→',
           send: '\x1b[1;3C',
-          combo: (key: '→', ctrl: false, alt: true, shift: false, superKey: false, mac: false),
+          combo: (
+            key: '→',
+            ctrl: false,
+            alt: true,
+            shift: false,
+            superKey: false,
+            mac: false,
+          ),
         ),
       ));
     });
@@ -840,8 +918,8 @@ void main() {
 
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
       // Its text, as written, under its label.
-      expect(find.widgetWithText(ListTile, r'ls\n'), findsOneWidget);
-      await tester.tap(find.widgetWithText(ListTile, 'LS'));
+      expect(_keyRow(r'ls\n'), findsOneWidget);
+      await tester.tap(_keyRow('LS'));
       await tester.pumpAndSettle();
       expect(find.text('Change custom key'), findsOneWidget);
       expect(
@@ -855,7 +933,7 @@ void main() {
       await tester.tap(_cap('l'));
       await tester.pump();
       expect(_labelText(tester), 'LS');
-      await tester.tap(find.text('Save'));
+      await tester.tap(find.bySemanticsLabel('Save'));
       await tester.pumpAndSettle();
 
       expect(keyBarSettings.value.first, (
@@ -863,7 +941,14 @@ void main() {
         custom: (
           label: 'LS',
           send: '\x0c',
-          combo: (key: 'L', ctrl: true, alt: false, shift: false, superKey: false, mac: false),
+          combo: (
+            key: 'L',
+            ctrl: true,
+            alt: false,
+            shift: false,
+            superKey: false,
+            mac: false,
+          ),
         ),
       ));
     });
@@ -885,16 +970,16 @@ void main() {
       await tester.enterText(_labelField, 'MINE');
       expect(_canSave(tester, 'Add'), isTrue);
 
-      await tester.tap(find.text('Clear'));
+      await tester.tap(find.bySemanticsLabel('Clear'));
       await tester.pump();
       expect(
         _shown('Pick a key, with Ctrl, Alt, Shift or Super if you like'),
         findsOneWidget,
       );
       expect(
-        tester.widgetList<FilterChip>(find.byType(FilterChip)).map(
-          (chip) => chip.selected,
-        ),
+        tester
+            .widgetList<FilterChip>(find.byType(FilterChip))
+            .map((chip) => chip.selected),
         everyElement(isFalse),
       );
       expect(
@@ -930,7 +1015,7 @@ void main() {
       await tester.pump();
       expect(_labelText(tester), 'M-b');
 
-      await tester.tap(find.text('macOS'));
+      await tester.tap(find.bySemanticsLabel('macOS'));
       await tester.pump();
       expect(find.widgetWithText(FilterChip, 'Alt'), findsNothing);
       expect(
@@ -953,7 +1038,7 @@ void main() {
       await tester.pump();
       expect(_labelText(tester), '⌘⌫');
       expect(find.textContaining('extended keys'), findsNothing);
-      await tester.tap(find.text('Add'));
+      await tester.tap(find.bySemanticsLabel('Add'));
       await tester.pumpAndSettle();
 
       final id = keyBarSettings.keys.last;
@@ -996,7 +1081,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(ListTile, '⌘⌫').first);
+      await tester.ensureVisible(_keyRow('⌘⌫').first);
+      await tester.pumpAndSettle();
+      await tester.tap(_keyRow('⌘⌫').first);
       await tester.pumpAndSettle();
       expect(find.text('Change custom key'), findsOneWidget);
       expect(
@@ -1006,13 +1093,13 @@ void main() {
         isTrue,
       );
       expect(tester.widget<KeyButton>(_cap('⌫')).active, isTrue);
-      await tester.tap(find.text('Cancel'));
+      await tester.tap(find.bySemanticsLabel('Cancel'));
       await tester.pumpAndSettle();
 
       // A new key opens on the layout last picked, and PC is kept too.
       await _addFromSheet(tester, 'Custom key…');
       expect(find.widgetWithText(FilterChip, '⌃ Control'), findsOneWidget);
-      await tester.tap(find.text('PC'));
+      await tester.tap(find.bySemanticsLabel('PC'));
       await tester.pump();
       expect(find.widgetWithText(FilterChip, 'Ctrl'), findsOneWidget);
       expect(prefs.getString('sshbox.keyBar.layout'), 'pc');
@@ -1030,10 +1117,7 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
 
       await tester.tap(
-        find.descendant(
-          of: find.widgetWithText(ListTile, 'LS'),
-          matching: find.byTooltip('Remove'),
-        ),
+        find.descendant(of: _keyRow('LS'), matching: find.byTooltip('Remove')),
       );
       // A frame for the toast's overlay, one to start its slide, and the slide.
       await tester.pump();
@@ -1052,7 +1136,7 @@ void main() {
     ) async {
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
-      final esc = find.widgetWithText(ListTile, 'ESC');
+      final esc = _keyRow('ESC');
       final height = tester.getSize(esc).height;
 
       // Down into the lower half of TAB, the row below: that is when the list
@@ -1085,14 +1169,14 @@ void main() {
 
       await tester.tap(find.byTooltip('Reset to default'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Cancel'));
+      await tester.tap(find.bySemanticsLabel('Cancel'));
       await tester.pumpAndSettle();
       expect(keyBarSettings.keys, isNot(contains('esc')));
       expect(keyBarSettings.customKeys, isNotEmpty);
 
       await tester.tap(find.byTooltip('Reset to default'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Reset'));
+      await tester.tap(find.bySemanticsLabel('Reset'));
       await tester.pumpAndSettle();
 
       expect(keyBarSettings.value, KeyBarSettings.defaults);
@@ -1103,26 +1187,29 @@ void main() {
     });
   });
 
-    group('open links with', () {
+  group('open links with', () {
     tearDown(() => linkModifier.value = null);
 
     testWidgets('on a Mac offers ⌘ and Ctrl, ⌘ first; the pick is saved and '
         'the next start reads it back', (tester) async {
       await _wide(tester);
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-      await tester.ensureVisible(find.text('Open links with'));
+      await tester.scrollUntilVisible(
+        find.bySemanticsLabel('Open links with'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
 
-      final button = find.byType(SegmentedButton<LinkModifier>);
-      expect(tester.widget<SegmentedButton<LinkModifier>>(button).selected, {
+      final button = find.byType(TuiSelect<LinkModifier>);
+      expect(
+        tester.widget<TuiSelect<LinkModifier>>(button).value,
         LinkModifier.command,
-      });
-      expect(find.text('Alt'), findsNothing);
+      );
+      expect(find.bySemanticsLabel('Alt'), findsNothing);
       expect(find.textContaining('Hold ⌘ Cmd and click'), findsOneWidget);
 
-      await tester.tap(
-        find.descendant(of: button, matching: find.text('Ctrl')),
-      );
+      await tester.tap(find.bySemanticsLabel('Ctrl'));
       await tester.pumpAndSettle();
       expect(linkModifier.chosen, LinkModifier.control);
       expect(find.textContaining('Hold Ctrl and click'), findsOneWidget);
@@ -1140,18 +1227,20 @@ void main() {
       (tester) async {
         await _wide(tester);
         await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-        await tester.ensureVisible(find.text('Open links with'));
+        await tester.scrollUntilVisible(
+          find.bySemanticsLabel('Open links with'),
+          300,
+          scrollable: find.byType(Scrollable).first,
+        );
         await tester.pumpAndSettle();
 
-        final button = find.byType(SegmentedButton<LinkModifier>);
-        expect(tester.widget<SegmentedButton<LinkModifier>>(button).selected, {
-          LinkModifier.control,
-        });
+        final button = find.byType(TuiSelect<LinkModifier>);
         expect(
-          find.descendant(of: button, matching: find.text('Alt')),
-          findsOneWidget,
+          tester.widget<TuiSelect<LinkModifier>>(button).value,
+          LinkModifier.control,
         );
-        expect(find.text('⌘ Cmd'), findsNothing);
+        expect(find.bySemanticsLabel('Alt'), findsOneWidget);
+        expect(find.bySemanticsLabel('⌘ Cmd'), findsNothing);
       },
       variant: TargetPlatformVariant({
         TargetPlatform.linux,

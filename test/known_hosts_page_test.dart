@@ -8,6 +8,7 @@ import 'package:sshbox/src/data/known_host_store.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/known_hosts_page.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 void main() {
   final store = KnownHostStore();
@@ -88,8 +89,8 @@ void main() {
       );
       await tester.tap(
         find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.text(answer),
+          of: find.byType(TuiDialog),
+          matching: find.bySemanticsLabel(answer),
         ),
       );
       await tester.pumpAndSettle();

@@ -8,6 +8,8 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/port_forwards.dart';
 import 'package:sshbox/src/ui/port_forwarding_page.dart';
 
+import 'tui_finders.dart';
+
 void main() {
   late HostRepository repository;
   late PortForwards forwards;
@@ -124,7 +126,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Delete'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.tap(find.bySemanticsLabel('Delete'));
       await tester.pumpAndSettle();
       expect(find.text('No port forwards yet'), findsOneWidget);
       expect(forwards.runs, isEmpty);
@@ -317,15 +319,9 @@ void main() {
     await tester.tap(find.text('New host…').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('New host'), findsOneWidget);
-    await tester.enterText(
-      find.widgetWithText(TextFormField, 'Host'),
-      'pg.example',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextFormField, 'Username'),
-      'me',
-    );
+    expect(find.bySemanticsLabel('New host'), findsOneWidget);
+    await tester.enterText(findTuiField('Host'), 'pg.example');
+    await tester.enterText(findTuiField('Username'), 'me');
     await tester.tap(find.byTooltip('Save'));
     await tester.pumpAndSettle();
 

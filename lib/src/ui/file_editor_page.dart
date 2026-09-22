@@ -352,9 +352,9 @@ class _TextFileTabState extends State<_TextFileTab> {
   String? _sudoPassword;
 
   SudoCapable? get _sudo => switch (widget.browser) {
-        final SudoCapable sudo => sudo,
-        _ => null,
-      };
+    final SudoCapable sudo => sudo,
+    _ => null,
+  };
 
   String? _error;
   FileBrowserFault? _fault;
@@ -623,10 +623,11 @@ class _TextFileTabState extends State<_TextFileTab> {
         _lineBreak = read.text.contains('\r\n')
             ? '\r\n'
             : read.text.contains('\r')
-                ? '\r'
-                : '\n';
+            ? '\r'
+            : '\n';
         final name = RemotePath.basename(widget.path).toLowerCase();
-        _useTabs = RegExp(r'^\t', multiLine: true).hasMatch(text) ||
+        _useTabs =
+            RegExp(r'^\t', multiLine: true).hasMatch(text) ||
             name == 'makefile' ||
             name == 'gnumakefile' ||
             name.endsWith('.mk');
@@ -769,7 +770,8 @@ class _TextFileTabState extends State<_TextFileTab> {
       } else {
         // Readable but not writable, like /etc/hosts: saving as root is the
         // one way left to get the edit onto the host.
-        final offerSudo = error.fault == FileBrowserFault.permissionDenied &&
+        final offerSudo =
+            error.fault == FileBrowserFault.permissionDenied &&
             !asRoot &&
             _sudo != null;
         showToast(
@@ -796,25 +798,28 @@ class _TextFileTabState extends State<_TextFileTab> {
   Future<void> _resolveConflict({required bool root}) async {
     final choice = await showDialog<_Conflict>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Changed on the host'),
-        content: Text(
-          '${RemotePath.basename(widget.path)} was saved on the host after you '
-          'opened it. Overwrite that version with yours, or reload it and drop '
-          'your edits?',
-        ),
+      builder: (context) => TuiDialog(
+        title: 'save',
+        message: 'Changed on the host',
+        detail:
+            '${RemotePath.basename(widget.path)} was saved on the host after '
+            'you opened it. Overwrite that version with yours, or reload it '
+            'and drop your edits?',
         actions: [
-          TextButton(
+          TuiButton(
+            label: 'Cancel',
+            variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
           ),
-          TextButton(
+          TuiButton(
+            label: 'Reload',
+            variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(_Conflict.reload),
-            child: const Text('Reload'),
           ),
-          FilledButton(
+          TuiButton(
+            label: 'Overwrite',
+            variant: TuiButtonVariant.danger,
             onPressed: () => Navigator.of(context).pop(_Conflict.overwrite),
-            child: const Text('Overwrite'),
           ),
         ],
       ),
@@ -831,27 +836,17 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   Future<bool> _confirmDiscard() async {
-    final discard = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Discard changes?'),
-        content: Text(
+    final discard = await showTuiConfirmDialog(
+      context,
+      title: 'unsaved',
+      message: 'Discard changes?',
+      detail:
           'Your edits to ${RemotePath.basename(widget.path)} have not been '
           'saved to the host.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Keep editing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep editing',
     );
-    return discard == true && mounted;
+    return discard && mounted;
   }
 
   Future<void> _leaveIfConfirmed() async {
@@ -868,26 +863,17 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// asks first.
   Future<void> _download() async {
     if (_dirty) {
-      final go = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          content: const Text(
-            "The download is the version on the server; your unsaved edits "
-            "aren't in it.",
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Download'),
-            ),
-          ],
-        ),
+      final go = await showTuiConfirmDialog(
+        context,
+        title: 'download',
+        message:
+            "The download is the version on the server; your unsaved "
+            "edits aren't in it.",
+        confirmLabel: 'Download',
+        cancelLabel: 'Cancel',
+        confirmVariant: TuiButtonVariant.primary,
       );
-      if (go != true) return;
+      if (!go) return;
     }
     if (!mounted) return;
     await downloadFile(
@@ -898,7 +884,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       // Opened through sudo, while a download reads as the login.
       denied: _asRoot
           ? 'Could not download ${RemotePath.basename(widget.path)}: your '
-              'login may not read it, and a download does not go through sudo.'
+                'login may not read it, and a download does not go through sudo.'
           : null,
       onTransfer: (transfer) {
         if (mounted) setState(() => _transfer = transfer);
@@ -1121,14 +1107,14 @@ class _TextFileTabState extends State<_TextFileTab> {
                       // Files are code and config far more often than prose,
                       // and both are unreadable in a proportional face once
                       // alignment matters.
-                      fontFamily: tuiFontFamily,
+                      fontFamily: TermulFonts.mono,
                       codeTheme: _codeThemes[Theme.of(context).brightness],
                     ),
                     indicatorBuilder: (context, editing, chunks, notifier) =>
                         DefaultCodeLineNumber(
-                      controller: editing,
-                      notifier: notifier,
-                    ),
+                          controller: editing,
+                          notifier: notifier,
+                        ),
                   ),
                 ),
               ),
@@ -1679,7 +1665,8 @@ class _PreviewImages {
           if (total > _imageLimit) {
             refused = '${formatBytes(total)} is too large to show here';
           } else if (_spent + total > _budget) {
-            refused = 'the preview has already fetched '
+            refused =
+                'the preview has already fetched '
                 '${formatBytes(_budget)} of pictures';
           }
           if (refused.isNotEmpty) stop.complete();
@@ -2108,26 +2095,26 @@ class _FindBar extends StatelessWidget implements PreferredSizeWidget {
     final count = value.searching || value.option.pattern.isEmpty
         ? ''
         : found
-            ? '${result.index + 1}/${result.matches.length}'
-            : 'No results';
+        ? '${result.index + 1}/${result.matches.length}'
+        : 'No results';
 
     Widget row(Widget field, List<Widget> trailing) => SizedBox(
-          height: _rowHeight,
-          child: Row(
-            children: [
-              const SizedBox(width: 12),
-              Expanded(child: field),
-              ...trailing,
-            ],
-          ),
-        );
+      height: _rowHeight,
+      child: Row(
+        children: [
+          const SizedBox(width: 12),
+          Expanded(child: field),
+          ...trailing,
+        ],
+      ),
+    );
     Widget field(TextEditingController text, FocusNode focus, String hint) =>
         TextField(
           controller: text,
           focusNode: focus,
           autocorrect: false,
           enableSuggestions: false,
-          style: const TextStyle(fontFamily: tuiFontFamily, fontSize: 14),
+          style: TextStyle(fontFamily: TermulFonts.mono, fontSize: 14),
           decoration: InputDecoration(
             hintText: hint,
             border: InputBorder.none,
@@ -2235,28 +2222,27 @@ class _TextPromptState extends State<_TextPrompt> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.title),
-      content: TextField(
+    return TuiDialog(
+      title: widget.title,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        TuiButton(label: widget.action, onPressed: _submit),
+      ],
+      child: TuiField(
+        label: widget.label,
         controller: _controller,
         autofocus: true,
-        obscureText: widget.obscure,
+        obscure: widget.obscure,
         autocorrect: false,
         enableSuggestions: false,
         keyboardType: widget.number ? TextInputType.number : null,
-        decoration: InputDecoration(
-          labelText: widget.label,
-          helperText: widget.helper,
-        ),
+        helper: widget.helper,
         onSubmitted: (_) => _submit(),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: Text(widget.action)),
-      ],
     );
   }
 }

@@ -18,6 +18,8 @@ import 'package:sshbox/src/ui/toast.dart';
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 
+import 'tui_finders.dart';
+
 /// The pages, driven by a filesystem that is not SFTP.
 ///
 /// That is the claim `FileBrowser` exists to make, so proving it here is not
@@ -181,7 +183,7 @@ void main() {
     await tester.tap(find.byTooltip('New folder'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField), 'src');
-    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.tap(find.bySemanticsLabel('Create'));
     await tester.pumpAndSettle();
 
     expect(browser.madeDirectories, ['/home/me/src']);
@@ -327,7 +329,7 @@ void main() {
 
     await _rowAction(tester, 'dev', 'New folder…');
     await tester.enterText(find.byType(TextFormField), 'lib');
-    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.tap(find.bySemanticsLabel('Create'));
     await tester.pumpAndSettle();
 
     expect(browser.madeDirectories, ['/home/me/dev/lib']);
@@ -403,7 +405,7 @@ void main() {
       find.text('Could not list /root: permission denied.'),
       findsOneWidget,
     );
-    expect(find.text('Try again'), findsOneWidget);
+    expect(find.bySemanticsLabel('Try again'), findsOneWidget);
   });
 
   testWidgets('deleting asks first, then goes through', (tester) async {
@@ -415,7 +417,7 @@ void main() {
     expect(find.text('Delete notes.txt?'), findsOneWidget);
     expect(browser.deleted, isEmpty, reason: 'not until it is confirmed');
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
 
     expect(browser.deleted, ['/home/me/notes.txt']);
@@ -427,7 +429,7 @@ void main() {
     await _pumpBrowser(tester, browser);
 
     await _rowAction(tester, 'dev', 'Delete');
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
 
     expect(browser.recursiveDeletes, ['/home/me/dev']);
@@ -440,7 +442,7 @@ void main() {
     await _rowAction(tester, 'notes.txt', 'Rename…');
 
     await tester.enterText(find.byType(TextFormField), 'renamed.txt');
-    await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+    await tester.tap(findTuiButton('Rename'));
     await tester.pumpAndSettle();
 
     expect(browser.renames, [('/home/me/notes.txt', '/home/me/renamed.txt')]);
@@ -453,7 +455,7 @@ void main() {
     await _rowAction(tester, 'notes.txt', 'Rename…');
 
     await tester.enterText(find.byType(TextFormField), 'sub/dir.txt');
-    await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+    await tester.tap(findTuiButton('Rename'));
     await tester.pumpAndSettle();
 
     // A slash here would quietly move the file somewhere else, which is never
@@ -718,12 +720,12 @@ void main() {
     // question has to leave the config alone.
     await pickSave();
     expect(find.text('Update SSH config?'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     expect(saved, isEmpty);
 
     await pickSave();
-    await tester.tap(find.widgetWithText(FilledButton, 'Update'));
+    await tester.tap(find.bySemanticsLabel('Update'));
     await tester.pumpAndSettle();
     expect(saved, ['/home/me/dev']);
   });
@@ -743,13 +745,13 @@ void main() {
     await tester.longPress(_row('dev'));
     await tester.pumpAndSettle();
     expect(find.text('Upload here…'), findsOneWidget);
-    expect(find.text('Download'), findsNothing);
+    expect(find.bySemanticsLabel('Download'), findsNothing);
     await tester.tapAt(Offset.zero);
     await tester.pumpAndSettle();
 
     await tester.longPress(_row('notes.txt'));
     await tester.pumpAndSettle();
-    expect(find.text('Download'), findsOneWidget);
+    expect(find.bySemanticsLabel('Download'), findsOneWidget);
     expect(find.text('Upload here…'), findsNothing);
   });
 
@@ -782,7 +784,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('notes.txt is already there'), findsOneWidget);
-      await tester.tap(find.text(answer));
+      await tester.tap(find.bySemanticsLabel(answer));
       await tester.pumpAndSettle();
     }
 
@@ -864,7 +866,7 @@ void main() {
     );
     await tester.longPress(_row('notes.txt'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Download'));
+    await tester.tap(find.bySemanticsLabel('Download'));
     await tester.pump();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
@@ -931,7 +933,7 @@ void main() {
       await tester.longPress(_row('photo.png'));
       await tester.pumpAndSettle();
       expect(find.text('Copy content'), findsNothing);
-      expect(find.text('Download'), findsOneWidget);
+      expect(find.bySemanticsLabel('Download'), findsOneWidget);
       await tester.tapAt(Offset.zero);
       await tester.pumpAndSettle();
     });

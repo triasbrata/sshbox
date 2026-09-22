@@ -24,24 +24,18 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show
-        AlertDialog,
-        Card,
-        DropdownButton,
-        InkWell,
-        ListTile,
-        SegmentedButton,
-        TextField,
-        Tooltip;
+    show DropdownButton, InkWell, TextField, Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:sshbox/src/update/updater.dart'
     show downloadsFolder, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/hosts_page.dart' show HomeRow;
 import 'package:sshbox/src/ui/settings_page.dart'
     show LinkModifier, localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
@@ -53,6 +47,17 @@ import 'package:xterm2/xterm.dart';
 /// widget tree pumped in memory.
 Future<void> _launch(WidgetTester tester) async {
   await app.main();
+  // A fresh data folder is a fresh install, which opens on the slides. They
+  // animate, so nothing settles until they are skipped.
+  final skip = find.bySemanticsLabel('Skip');
+  await _until(
+    tester,
+    () =>
+        skip.evaluate().isNotEmpty ||
+        find.byTooltip('Settings').evaluate().isNotEmpty,
+    'Home, or the first-run slides',
+  );
+  if (skip.evaluate().isNotEmpty) await tester.tap(skip);
   await tester.pumpAndSettle(const Duration(seconds: 5));
 }
 
@@ -78,7 +83,9 @@ Future<void> _until(
           .whereType<String>()
           .take(60)
           .join(' | ');
-      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
+      debugPrint(
+        'On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}',
+      );
       debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
       fail('Gave up waiting for $what');
     }
@@ -103,7 +110,7 @@ Future<TerminalView> _localShell(
   // its tabs, goes first, so one failure does not become the next test's.
   await _closeTabs(tester);
   // The card, not a tab of the same name brought back from a run before.
-  await tester.tap(find.widgetWithText(Card, 'Local shell'));
+  await tester.tap(find.widgetWithText(HomeRow, 'Local shell'));
   // Ready once a terminal holds focus and its shell has drawn a prompt: typed
   // before that, a command can reach a terminal with no shell behind it yet.
   // The focused one, where a tab shows several panes; looked up afresh each
@@ -121,9 +128,8 @@ Future<TerminalView> _localShell(
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
-    for (final element in find
-        .byType(TerminalView, skipOffstage: false)
-        .evaluate()) {
+    for (final element
+        in find.byType(TerminalView, skipOffstage: false).evaluate()) {
       final each = element.widget as TerminalView;
       final onstage = find.byWidget(each).evaluate().isNotEmpty;
       debugPrint(
@@ -188,10 +194,11 @@ Future<void> _settings(WidgetTester tester) async {
 /// found while Settings is still sliding out over it, and a tap on it then
 /// lands on the page leaving — a Mac run opened no shell that way.
 Future<void> _backHome(WidgetTester tester) async {
-  await tester.pageBack();
+  // termul's ← BACK, named Back.
+  await tester.tap(find.bySemanticsLabel('Back'));
   await _until(
     tester,
-    () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
+    () => find.widgetWithText(HomeRow, 'Local shell').evaluate().isNotEmpty,
     'Home again',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -224,11 +231,7 @@ void main() {
     // claims to be.
     expect(
       defaultTargetPlatform,
-      anyOf(
-        TargetPlatform.linux,
-        TargetPlatform.windows,
-        TargetPlatform.macOS,
-      ),
+      anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
     );
     expect(isDesktop, isTrue);
   });
@@ -284,7 +287,7 @@ void main() {
 
     // Desktop only: Android updates through Play, so this section is not built
     // there at all.
-    expect(find.text('Updates'), findsOneWidget);
+    expect(find.bySemanticsLabel('Updates'), findsOneWidget);
     expect(find.text('Check for updates'), findsOneWidget);
 
     // With no JEANSH_UPDATE_HOST baked in — which is every build until the
@@ -511,9 +514,8 @@ touch '${done.path}'
     (tester) async {
       // Where a Local shell's Git panel looks: the login home, a folder or
       // two down. Made for this test and gone after it.
-      final repo = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('jeansh-e2e-repo-');
+      final repo = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-repo-');
       addTearDown(() => repo.deleteSync(recursive: true));
       Future<void> git(List<String> args) async {
         final done = await Process.run('git', ['-C', repo.path, ...args]);
@@ -580,17 +582,32 @@ touch '${done.path}'
       // says which to expect, and both are held to it.
       final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
       if (wide) {
-        expect(find.byTooltip('Unified view'), findsOneWidget,
-            reason: 'a wide page did not open split');
-        expect(old.dy, closeTo(now.dy, 1),
-            reason: 'the changed line is not level with what replaced it');
-        expect(old.dx, lessThan(now.dx),
-            reason: 'the old line is not on the left');
+        expect(
+          find.byTooltip('Unified view'),
+          findsOneWidget,
+          reason: 'a wide page did not open split',
+        );
+        expect(
+          old.dy,
+          closeTo(now.dy, 1),
+          reason: 'the changed line is not level with what replaced it',
+        );
+        expect(
+          old.dx,
+          lessThan(now.dx),
+          reason: 'the old line is not on the left',
+        );
       } else {
-        expect(find.byTooltip('Split view'), findsOneWidget,
-            reason: 'a narrow page did not open unified');
-        expect(old.dy, lessThan(now.dy),
-            reason: 'the old line is not above the new');
+        expect(
+          find.byTooltip('Split view'),
+          findsOneWidget,
+          reason: 'a narrow page did not open unified',
+        );
+        expect(
+          old.dy,
+          lessThan(now.dy),
+          reason: 'the old line is not above the new',
+        );
       }
       await _closeTabs(tester);
     },
@@ -732,7 +749,10 @@ touch '${done.path}'
       if (Platform.isMacOS) {
         family = 'Menlo';
       } else {
-        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
+        final listed = await Process.run('fc-list', [
+          ':spacing=mono',
+          'family',
+        ]);
         final mono =
             LineSplitter.split('${listed.stdout}')
                 .map((line) => line.split(',').first.trim())
@@ -757,7 +777,10 @@ touch '${done.path}'
       );
       await _until(
         tester,
-        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
+        () => find
+            .textContaining('families, monospaced first')
+            .evaluate()
+            .isNotEmpty,
         "this computer's fonts to be listed",
       );
       // Built is not on screen: a list builds a little past its edge.
@@ -766,11 +789,11 @@ touch '${done.path}'
       await tester.tap(row);
       await _until(
         tester,
-        () => find.text('Installed fonts').evaluate().isNotEmpty,
+        () => find.bySemanticsLabel('Installed fonts').evaluate().isNotEmpty,
         'the font picker',
       );
       // Settings' own fields are behind the dialog.
-      final picker = find.byType(AlertDialog);
+      final picker = find.byType(TuiDialog);
       await tester.enterText(
         find.descendant(of: picker, matching: find.byType(TextField)),
         family,
@@ -778,7 +801,7 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 300));
       final entry = find.descendant(
         of: picker,
-        matching: find.widgetWithText(ListTile, family),
+        matching: find.widgetWithText(InkWell, family),
       );
       expect(
         find.descendant(of: entry, matching: find.text('monospaced')),
@@ -891,7 +914,7 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () => find.text('Restart to update').evaluate().isNotEmpty,
+        () => find.bySemanticsLabel('Restart to update').evaluate().isNotEmpty,
         'the download to be checked and offered to install',
       );
       expect(find.text('Jeansh 9.9.9 is ready'), findsOneWidget);
@@ -906,13 +929,13 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () =>
-            find.textContaining('is not the file the release describes')
-                .evaluate()
-                .isNotEmpty,
+        () => find
+            .textContaining('is not the file the release describes')
+            .evaluate()
+            .isNotEmpty,
         'a download of the wrong file to be refused',
       );
-      expect(find.text('Restart to update'), findsNothing);
+      expect(find.bySemanticsLabel('Restart to update'), findsNothing);
       expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
       expect(File('${kept.path}.part').existsSync(), isFalse);
     },
@@ -953,7 +976,7 @@ touch '${done.path}'
 
       await _launch(tester);
       await _settings(tester);
-      final choice = find.byType(SegmentedButton<LinkModifier>);
+      final choice = find.byType(TuiSelect<LinkModifier>);
       await tester.scrollUntilVisible(
         choice,
         300,
@@ -962,7 +985,7 @@ touch '${done.path}'
       await tester.ensureVisible(choice);
       await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(
-        find.descendant(of: choice, matching: find.text('Alt')),
+        find.descendant(of: choice, matching: find.bySemanticsLabel('Alt')),
       );
       await _until(
         tester,

@@ -10,7 +10,7 @@ import 'package:xterm2/xterm.dart';
 import '../platform.dart';
 import 'ctrl_click.dart' show hyperlinkIn, selectedText;
 import 'toast.dart';
-import 'tui.dart' show tuiFontFamily;
+import 'tui.dart' show TermulFonts, TermulThemeData;
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
 /// form; sending CSI there produces stray characters instead of movement.
@@ -552,7 +552,6 @@ class TerminalKeyBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     // A divider only ever between two keys: a group hidden whole leaves no
     // double line, and none trails at the end. The first is [leading]'s own.
     final shown = <String>[];
@@ -564,9 +563,10 @@ class TerminalKeyBar extends StatelessWidget {
     }
     if (shown.lastOrNull == keyBarDivider) shown.removeLast();
 
+    final p = TermulThemeData.of(context).palette;
     return Material(
-      color: theme.colorScheme.surfaceContainerLow,
-      shape: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
+      color: p.sidebar,
+      shape: Border(top: BorderSide(color: p.border)),
       child: SafeArea(
         top: false,
         child: SizedBox(
@@ -630,15 +630,15 @@ class EditorKeyBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     Widget arrow(String label, String key) => KeyButton(
       label: label,
       onTap: () => controller.moveCursor(_arrows[key]!),
     );
 
+    final p = TermulThemeData.of(context).palette;
     return Material(
-      color: theme.colorScheme.surfaceContainerLow,
-      shape: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
+      color: p.sidebar,
+      shape: Border(top: BorderSide(color: p.border)),
       child: SafeArea(
         top: false,
         child: SizedBox(
@@ -725,24 +725,21 @@ class KeyButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final foreground = active
-        ? theme.colorScheme.onPrimary
-        : theme.colorScheme.onSurface;
+    // termul's key cap: the panel's colour in a hairline, its name in the
+    // mono face, smaller when it is a word; an armed key tinted in the
+    // accent, and Enter filled with it.
+    final p = TermulThemeData.of(context).palette;
+    final enter = label == '⏎' || label == 'ENTER' || label == '↵';
+    final bg = enter
+        ? p.accent
+        : (active ? p.accent.withValues(alpha: 0.2) : p.panel);
+    final fg = enter ? p.bg : (active ? p.accent : p.text);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
-      // Termul's key cap: square, edged, a layer up from the bar; lit in the
-      // accent while armed.
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
       child: Material(
-        color: active
-            ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceContainerHighest,
-        shape: Border.all(
-          color: active
-              ? theme.colorScheme.primary
-              : theme.colorScheme.outlineVariant,
-        ),
+        color: bg,
+        shape: Border.all(color: p.border),
         child: InkWell(
           onTap: onTap,
           child: Container(
@@ -752,10 +749,11 @@ class KeyButton extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                fontFamily: tuiFontFamily,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: foreground,
+                fontFamily: TermulFonts.mono,
+                fontSize: label.characters.length > 2 ? 10 : 13,
+                fontWeight: FontWeight.w500,
+                color: fg,
+                height: 1,
               ),
             ),
           ),
@@ -833,26 +831,27 @@ class _IconKey extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    // termul's terminal header buttons: an accent icon in a hairline square.
+    final p = TermulThemeData.of(context).palette;
 
     return Padding(
+      // Level with the keys: the bar's height less the keys' 5 above and
+      // below.
       padding: EdgeInsets.symmetric(
-        vertical: compact ? 4 : 6,
-        horizontal: compact ? 2 : 3,
+        vertical: compact ? 4 : 5,
+        horizontal: compact ? 2 : 2,
       ),
       child: IconButtonTheme(
         data: IconButtonThemeData(
           style: IconButton.styleFrom(
-            foregroundColor: colors.onSurface,
-            backgroundColor: colors.surfaceContainerHighest,
+            foregroundColor: p.accent,
+            backgroundColor: Colors.transparent,
             // Greyed out rather than gone: still a key, just not one to press.
-            disabledBackgroundColor: colors.surfaceContainerHighest,
-            iconSize: compact ? 15 : 20,
-            minimumSize: compact ? const Size(30, 24) : const Size(44, 36),
+            disabledForegroundColor: p.dim,
+            iconSize: compact ? 15 : 16,
+            minimumSize: compact ? const Size(30, 24) : const Size(38, 38),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            shape: RoundedRectangleBorder(
-              side: BorderSide(color: colors.outlineVariant),
-            ),
+            shape: RoundedRectangleBorder(side: BorderSide(color: p.border)),
           ),
         ),
         child: child,
@@ -871,7 +870,7 @@ class _KeyDivider extends StatelessWidget {
       child: VerticalDivider(
         width: 1,
         thickness: 1,
-        color: Theme.of(context).colorScheme.outlineVariant,
+        color: TermulThemeData.of(context).palette.border,
       ),
     );
   }

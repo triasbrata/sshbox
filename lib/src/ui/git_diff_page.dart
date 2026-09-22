@@ -820,7 +820,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
                 focusNode: _queryFocus,
                 autocorrect: false,
                 enableSuggestions: false,
-                style: const TextStyle(fontFamily: tuiFontFamily, fontSize: 14),
+                style: TextStyle(fontFamily: TermulFonts.mono, fontSize: 14),
                 decoration: const InputDecoration(
                   hintText: 'Find',
                   border: InputBorder.none,

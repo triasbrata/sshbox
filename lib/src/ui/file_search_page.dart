@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../files/file_browser.dart';
-import 'tui.dart';
+import 'tui.dart' show TermulFonts;
 
 /// Finds text inside files under one directory.
 ///
@@ -184,7 +184,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
             hit.preview,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontFamily: tuiFontFamily, fontSize: 12),
+            style: TextStyle(fontFamily: TermulFonts.mono, fontSize: 12),
           ),
           onTap: () => Navigator.of(context).pop(hit),
         );

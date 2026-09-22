@@ -12,6 +12,7 @@ import 'file_search_page.dart';
 import 'settings_page.dart' show showDotfiles;
 import 'terminal_link.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// One visible line of the tree: an entry, and how many open folders deep it
 /// sits below the root.
@@ -27,7 +28,7 @@ String _keepBothName(String name, Set<String> taken) {
   final dot = name.lastIndexOf('.');
   final stem = dot > 0 ? name.substring(0, dot) : name;
   final extension = dot > 0 ? name.substring(dot) : '';
-  for (var n = 1;; n++) {
+  for (var n = 1; ; n++) {
     final candidate = '$stem ($n)$extension';
     if (!taken.contains(candidate)) return candidate;
   }
@@ -208,8 +209,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       final wanted = (widget.initialRoot ?? '').trim();
       // Home costs a round trip, so it is only asked for when the root is
       // written relative to it.
-      final home =
-          wanted.startsWith('/') ? '/' : await widget.browser.resolveHome();
+      final home = wanted.startsWith('/')
+          ? '/'
+          : await widget.browser.resolveHome();
       final root = RemotePath.resolve(wanted, home);
       await _setRoot(root, push: false);
 
@@ -502,28 +504,19 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     final save = widget.onSaveRoot;
     if (root == null || save == null) return;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Update SSH config?'),
-        content: Text(
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'file tree root',
+      message: 'Update SSH config?',
+      detail:
           'The file tree for ${widget.title} will open at\n\n$root\n\n'
           'every time you connect. This changes the saved host, not just '
           'this session.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Update'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Update',
+      cancelLabel: 'Cancel',
+      confirmVariant: TuiButtonVariant.primary,
     );
-    if (confirmed != true || !mounted) return;
+    if (!confirmed || !mounted) return;
 
     try {
       await save(root);
@@ -602,29 +595,18 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   Future<void> _confirmDelete(RemoteEntry entry) async {
     final isDirectory = entry.kind == RemoteEntryKind.directory;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete ${entry.name}?'),
-        content: Text(
-          isDirectory
-              ? 'The folder and everything inside it is removed from the host. '
-                  'This cannot be undone.'
-              : 'The file is removed from the host. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: isDirectory ? 'delete folder' : 'delete file',
+      message: 'Delete ${entry.name}?',
+      detail: isDirectory
+          ? 'The folder and everything inside it is removed from the host. '
+                'This cannot be undone.'
+          : 'The file is removed from the host. This cannot be undone.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
 
     await _mutate(
       'Deleted ${entry.name}',
@@ -639,11 +621,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }) {
     return showDialog<String>(
       context: context,
-      builder: (_) => _NamePrompt(
-        title: title,
-        action: action,
-        initial: initial,
-      ),
+      builder: (_) =>
+          _NamePrompt(title: title, action: action, initial: initial),
     );
   }
 
@@ -687,8 +666,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         // Only the last part of the picker's name: a slash in it would land
         // the file somewhere other than [folder].
         final base = file.name.split('/').last;
-        var name =
-            base.isEmpty || base == '.' || base == '..' ? 'upload' : base;
+        var name = base.isEmpty || base == '.' || base == '..'
+            ? 'upload'
+            : base;
         var replace = false;
         if (taken.contains(name)) {
           // Never over a file without asking, and with the page gone there is
@@ -766,31 +746,33 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   /// Replace, keep both or skip, for an upload whose [name] is taken; null
   /// when the question is dismissed, which skips it too.
-  Future<_Clash?> _askClash(String name, String bothName) =>
-      showDialog<_Clash>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('$name is already there'),
-          content: Text(
-            'Replace it with the file from the phone, keep both with the new '
-            'one as "$bothName", or skip it.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(_Clash.skip),
-              child: const Text('Skip'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(_Clash.keepBoth),
-              child: const Text('Keep both'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(_Clash.replace),
-              child: const Text('Replace'),
-            ),
-          ],
+  Future<_Clash?> _askClash(String name, String bothName) => showDialog<_Clash>(
+    context: context,
+    builder: (context) => TuiDialog(
+      title: 'upload',
+      message: '$name is already there',
+      detail:
+          'Replace it with the file from the phone, keep both with the '
+          'new one as "$bothName", or skip it.',
+      actions: [
+        TuiButton(
+          label: 'Skip',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(_Clash.skip),
         ),
-      );
+        TuiButton(
+          label: 'Keep both',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(_Clash.keepBoth),
+        ),
+        TuiButton(
+          label: 'Replace',
+          variant: TuiButtonVariant.danger,
+          onPressed: () => Navigator.of(context).pop(_Clash.replace),
+        ),
+      ],
+    ),
+  );
 
   /// Brings [entry] down to the phone through [downloadFile], as a file tab
   /// does.
@@ -869,7 +851,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     final terminal = widget.terminal;
     final isFolder = entry.isTraversable;
     // A file, or a link to one. A folder is not one thing to save or to copy.
-    final isFile = entry.kind == RemoteEntryKind.file ||
+    final isFile =
+        entry.kind == RemoteEntryKind.file ||
         (entry.kind == RemoteEntryKind.symlink &&
             entry.targetIsDirectory == false);
 
@@ -1153,8 +1136,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         message: filtered
             ? 'Nothing here matches that.'
             : hiddenOnly
-                ? 'Only dotfiles here. Show them from the menu.'
-                : 'This folder is empty.',
+            ? 'Only dotfiles here. Show them from the menu.'
+            : 'This folder is empty.',
       );
     }
 
@@ -1220,7 +1203,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 thickness: 1,
                 color: theme.colorScheme.outlineVariant,
               ),
-            SizedBox(width: _indent, child: Center(child: lead)),
+            SizedBox(
+              width: _indent,
+              child: Center(child: lead),
+            ),
             const SizedBox(width: 6),
             Expanded(
               child: Text(
@@ -1282,15 +1268,23 @@ class _NamePromptState extends State<_NamePrompt> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.title),
-      content: Form(
+    return TuiDialog(
+      title: widget.title,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        TuiButton(label: widget.action, onPressed: _submit),
+      ],
+      child: Form(
         key: _formKey,
-        child: TextFormField(
+        child: TuiField(
+          label: 'Name',
           controller: _controller,
           autofocus: true,
           autocorrect: false,
-          decoration: const InputDecoration(labelText: 'Name'),
           validator: (value) {
             final name = value?.trim() ?? '';
             if (name.isEmpty) return 'Enter a name';
@@ -1300,16 +1294,9 @@ class _NamePromptState extends State<_NamePrompt> {
             if (name == '.' || name == '..') return 'Pick another name';
             return null;
           },
-          onFieldSubmitted: (_) => _submit(),
+          onSubmitted: (_) => _submit(),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: Text(widget.action)),
-      ],
     );
   }
 }
@@ -1364,8 +1351,8 @@ final Map<String, (IconData, Color)> _fileIcons = {
 /// default, for types the table does not know. A link to a file gets its
 /// target's icon — the row marks it as a link on its other end.
 (IconData, Color?) _fileIcon(RemoteEntry entry) {
-  final broken = entry.kind == RemoteEntryKind.symlink &&
-      entry.targetIsDirectory == null;
+  final broken =
+      entry.kind == RemoteEntryKind.symlink && entry.targetIsDirectory == null;
   if (broken) return (Icons.link_off, null);
   if (entry.kind == RemoteEntryKind.other) return (Icons.help_outline, null);
   final dot = entry.name.lastIndexOf('.');

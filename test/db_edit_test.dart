@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:toastification/toastification.dart';
 
 /// A database whose every run reads the same [rows] back, saved through
@@ -88,8 +89,7 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
   await tester.pumpAndSettle();
   await tester.enterText(
     find.byWidgetPredicate(
-      (widget) =>
-          widget is TextField && widget.decoration?.hintText == 'query',
+      (widget) => widget is TextField && widget.decoration?.hintText == 'query',
     ),
     _query,
   );
@@ -98,8 +98,16 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
 }
 
 /// The button saying [label] on the dialog, not the one behind it.
-Finder _inDialog(String label) =>
-    find.descendant(of: find.byType(AlertDialog), matching: find.text(label));
+/// What reads [label] in the dialog: a termul button by its label as
+/// written, or a line of text.
+Finder _inDialog(String label) => find.descendant(
+  of: find.byType(TuiDialog),
+  matching: find.byWidgetPredicate(
+    (widget) =>
+        (widget is TuiButton && widget.label == label) ||
+        (widget is Text && widget.data == label),
+  ),
+);
 
 /// Taps [cell] and types [text] as its value.
 Future<void> _type(WidgetTester tester, Finder cell, String text) async {
@@ -107,12 +115,12 @@ Future<void> _type(WidgetTester tester, Finder cell, String text) async {
   await tester.pumpAndSettle();
   await tester.enterText(
     find.descendant(
-      of: find.byType(AlertDialog),
+      of: find.byType(TuiDialog),
       matching: find.byType(TextField),
     ),
     text,
   );
-  await tester.tap(find.text('OK'));
+  await tester.tap(find.bySemanticsLabel('OK'));
   await tester.pumpAndSettle();
 }
 
@@ -141,7 +149,7 @@ void main() {
     await _type(tester, find.text('DEFAULT').last, 'bob');
     expect(find.text('3 changes not saved'), findsOneWidget);
 
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.bySemanticsLabel('Save'));
     await tester.pumpAndSettle();
     expect(saved, [
       [
@@ -177,7 +185,7 @@ void main() {
 
     expect(find.text('1 change not saved'), findsOneWidget);
     // Not a click as well: the cell's editor never opened.
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(TuiDialog), findsNothing);
   }, variant: TargetPlatformVariant.desktop());
 
   testWidgets('running the query again drops what was not saved', (
@@ -189,7 +197,7 @@ void main() {
 
     await tester.tap(find.text('ann'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Set NULL'));
+    await tester.tap(find.bySemanticsLabel('Set NULL'));
     await tester.pumpAndSettle();
     expect(find.text('ann'), findsNothing);
     expect(find.text('1 change not saved'), findsOneWidget);
@@ -258,17 +266,17 @@ void main() {
 
     await tester.tap(find.text('1'));
     await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(TuiDialog), findsNothing);
 
     await tester.tap(find.text('x'));
     await tester.pumpAndSettle();
-    expect(find.text('Set NULL'), findsNothing);
-    await tester.tap(find.text('Cancel'));
+    expect(find.bySemanticsLabel('Set NULL'), findsNothing);
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     await _type(tester, find.text('x'), 'y');
     expect(find.text('1 change not saved'), findsOneWidget);
 
-    await tester.tap(find.text('Save'));
+    await tester.tap(find.bySemanticsLabel('Save'));
     // A frame for the toasts' overlay, one to start the slide, and the slide.
     await tester.pump();
     await tester.pump();

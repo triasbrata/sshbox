@@ -11,8 +11,8 @@ import '../models/port_snippets.dart';
 import '../session/port_forwards.dart';
 import 'host_edit_page.dart';
 import 'os_icon.dart';
-import 'tui.dart';
 import 'terminal_page.dart' show openUrl;
+import 'tui.dart' show showTuiConfirmDialog;
 
 /// Side padding that keeps a page's column readable on a tablet: 16 dp on a
 /// phone, and a 720 dp column in the middle of anything wider.
@@ -185,17 +185,41 @@ class _ForwardCard extends StatelessWidget {
   }
 }
 
+// TODO(termul): empty state, until termul has one.
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
 
   @override
-  Widget build(BuildContext context) => const TuiEmptyState(
-    icon: Icons.swap_horiz,
-    title: 'No port forwards yet',
-    body:
-        'Reach a server\'s port from this device, like a database on '
-        '127.0.0.1:5432, or let the server reach a port here.',
-  );
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.swap_horiz,
+              size: 48,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            Text('No port forwards yet', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(
+              'Reach a server\'s port from this device, like a database on '
+              '127.0.0.1:5432, or let the server reach a port here.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 enum _Direction { tabletToRemote, remoteToTablet }
@@ -417,24 +441,15 @@ class _ForwardEditorState extends State<_ForwardEditor> {
   }
 
   Future<void> _delete() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete this port forward?'),
-        content: const Text('If it is on, its ports close now.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'delete port forward',
+      message: 'Delete this port forward?',
+      detail: 'If it is on, its ports close now.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     await widget.forwards.delete(widget.existing!.id);
     if (mounted) Navigator.of(context).pop();
   }

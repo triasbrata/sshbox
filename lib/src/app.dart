@@ -25,6 +25,7 @@ import 'telemetry/crash_reporting.dart';
 import 'telemetry/telemetry.dart';
 import 'ui/bug_report.dart';
 import 'ui/connect_sheet.dart';
+import 'ui/onboarding_page.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
 import 'ui/title_bar.dart';
@@ -513,12 +514,15 @@ class _SshboxAppState extends State<SshboxApp> {
       config: toastConfig,
       // The mode and theme picked in Settings. A change rebuilds the app's
       // theme only: every page keeps its state.
-      child: ValueListenableBuilder(
-        valueListenable: appTheme,
-        builder: (context, look, _) {
-          // Termul's look in the theme's own colours: see `tuiTheme`.
+      // Rebuilt for the font too: termul's components are drawn in the one
+      // picked in Settings.
+      child: ListenableBuilder(
+        listenable: Listenable.merge([appTheme, terminalSettings]),
+        builder: (context, _) {
+          final look = appTheme.value;
+          // termul's look in the theme's own colours: see `jeanshTheme`.
           ThemeData themeOf(Brightness brightness) =>
-              tuiTheme(look.scheme.palette(brightness));
+              jeanshTheme(look.scheme.palette(brightness));
 
           return MaterialApp(
             title: 'Jeansh',
@@ -545,23 +549,37 @@ class _SshboxAppState extends State<SshboxApp> {
                 child: ToastLayer(child: child!),
               ),
             ),
-            home: TabsShell(
-              repository: _repository,
-              secrets: _secrets,
-              sessions: _sessions,
-              onOpenHost: (hostId) =>
-                  openHost(hostId, newSession: true, restoredFirst: true),
-              onDuplicate: (hostId) => openHost(hostId, newSession: true),
-              // Home draws the Local card on a desktop alone.
-              onOpenLocal: () =>
-                  openHost(localHostId, newSession: true, restoredFirst: true),
-              onOpenWsl: Platform.isWindows
-                  ? (distro) => openHost(
-                      wslHost(distro).id,
-                      newSession: true,
-                      restoredFirst: true,
-                    )
-                  : null,
+            // termul's onboarding before Home, on a fresh install alone: see
+            // OnboardingDone.
+            home: ValueListenableBuilder(
+              valueListenable: onboardingDone,
+              builder: (context, done, _) => !done
+                  ? OnboardingPage(onDone: onboardingDone.complete)
+                  : TabsShell(
+                      repository: _repository,
+                      secrets: _secrets,
+                      sessions: _sessions,
+                      onOpenHost: (hostId) => openHost(
+                        hostId,
+                        newSession: true,
+                        restoredFirst: true,
+                      ),
+                      onDuplicate: (hostId) =>
+                          openHost(hostId, newSession: true),
+                      // Home draws the Local card on a desktop alone.
+                      onOpenLocal: () => openHost(
+                        localHostId,
+                        newSession: true,
+                        restoredFirst: true,
+                      ),
+                      onOpenWsl: Platform.isWindows
+                          ? (distro) => openHost(
+                              wslHost(distro).id,
+                              newSession: true,
+                              restoredFirst: true,
+                            )
+                          : null,
+                    ),
             ),
           );
         },

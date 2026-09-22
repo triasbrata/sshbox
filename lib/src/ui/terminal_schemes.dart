@@ -12,8 +12,6 @@ class TerminalScheme {
     this.accent, {
     required String dark,
     required String light,
-    this.darkLayers,
-    this.lightLayers,
   }) : dark = _colors(dark),
        light = _colors(light);
 
@@ -26,28 +24,18 @@ class TerminalScheme {
   final TerminalTheme dark;
   final TerminalTheme light;
 
-  /// The app's bars, cards and menus, for a theme that has its own: see
-  /// [TuiLayers]. Null has them made from the terminal's colours.
-  final TuiLayers? darkLayers;
-  final TuiLayers? lightLayers;
-
   /// Each built once, so a page that rebuilds hands xterm2 the same theme,
   /// and it re-shapes the glyphs on screen only when the colours change.
   TerminalTheme terminal(Brightness brightness) =>
       brightness == Brightness.dark ? dark : light;
 
-  /// The app's colours, light or dark: the terminal's own background and
-  /// text, and the accent, each made readable on them — see [TuiPalette].
-  TuiPalette palette(Brightness brightness) => TuiPalette.of(
-    terminal(brightness),
-    accent,
-    brightness,
-    brightness == Brightness.dark ? darkLayers : lightLayers,
-  );
+  /// termul's palette for this theme, light or dark: see [termulPaletteOf].
+  TermulPalette palette(Brightness brightness) =>
+      termulPaletteOf(this, brightness);
 
   /// [palette]'s colours in Material's roles.
   ColorScheme colorScheme(Brightness brightness) =>
-      palette(brightness).colorScheme;
+      termulColorScheme(palette(brightness));
 }
 
 /// Twenty colours in hex, in the order a terminal's settings list them:
@@ -271,9 +259,10 @@ final terminalSchemes = [
   ),
   // termul's own, from TUI-Termul/termul at df2cacf (lib/theme/
   // termul_palette.dart), where Jeansh's look comes from: Paper, bone and
-  // ink with an indigo accent, and Paper Dark, its night. Its bars, cards
-  // and menus are termul's too. termul gives six colours; black, white and
-  // the bright ones here are its ink, dim and paper, the bright ones the
+  // ink with an indigo accent, and Paper Dark, its night. The app's colours
+  // are termul's palettes themselves: see termulPaletteOf. termul gives six
+  // colours; black, white and the bright ones here are its ink, dim and
+  // paper, the bright ones the
   // same as the rest. It is indigo throughout on purpose: red, yellow and
   // magenta are one deep indigo on Paper, so a diff reads by shade rather
   // than by hue. The selection on Paper Dark is its accent at 30%, not
@@ -290,21 +279,11 @@ final terminalSchemes = [
         'e8e6e0 000000 1925aa 1a1925aa '
         '2a2a2a 0d1355 1925aa 0d1355 1925aa 0d1355 4a54b8 6b6b6b '
         '6b6b6b 0d1355 1925aa 0d1355 1925aa 0d1355 4a54b8 2a2a2a',
-    darkLayers: (
-      sidebar: Color(0xFF0B0E24),
-      panel: Color(0xFF121636),
-      surface: Color(0xFF1A1F45),
-    ),
-    lightLayers: (
-      sidebar: Color(0xFFE8E6E0),
-      panel: Color(0xFFFFFFFF),
-      surface: Color(0xFFFFFFFF),
-    ),
   ),
-  // termul's green-on-black CRT, from the same file; its bars and cards are
-  // termul's too. termul has no bright colours, so they are the same as the
-  // rest, and no light one: Phosphor's light is unofficial, a pale green
-  // paper with its colours darkened to read on it.
+  // termul's green-on-black CRT, from the same file. termul has no bright
+  // colours, so they are the same as the rest, and no light one: Phosphor's light is unofficial, a pale green
+  // paper with its colours darkened to read on it. Dark, the app's colours
+  // are termul's Phosphor palette itself.
   TerminalScheme(
     'phosphor',
     'Phosphor',
@@ -317,10 +296,5 @@ final terminalSchemes = [
         'f0f5ec 0a2a0a 1a8a0a 4d1a8a0a '
         '0a0f0a b3261e 1a7a0a 6b6b00 0b5c8a 8a2bb3 0a6b70 4a704a '
         '4a704a b3261e 1a7a0a 6b6b00 0b5c8a 8a2bb3 0a6b70 2a4a2a',
-    darkLayers: (
-      sidebar: Color(0xFF0C140C),
-      panel: Color(0xFF0F1A0F),
-      surface: Color(0xFF1A2A1A),
-    ),
   ),
 ];

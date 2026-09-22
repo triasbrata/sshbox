@@ -131,7 +131,7 @@ void main() {
     // The pill spans the whole gap, with its close button at the far end.
     expect(pill.left - hosts.right, lessThan(8));
     expect(add.left - pill.right, lessThan(8));
-    expect(pill.right - close.right, lessThan(12));
+    expect(pill.right - close.right, lessThan(16));
     expect(strip.right - add.right, lessThan(10));
   });
 

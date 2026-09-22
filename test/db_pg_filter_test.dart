@@ -331,7 +331,7 @@ void main() {
       "SELECT * FROM public.people WHERE id = E'3' LIMIT 100;",
     );
 
-    await tester.tap(find.text('Clear'));
+    await tester.tap(find.bySemanticsLabel('Clear'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Apply'));
     await tester.pumpAndSettle();
@@ -381,7 +381,7 @@ void main() {
     await tester.tap(find.text('ann'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).last, 'bob');
-    await tester.tap(find.text('OK'));
+    await tester.tap(find.bySemanticsLabel('OK'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('SQL'));
@@ -389,7 +389,7 @@ void main() {
     expect(find.text('Discard 1 change?'), findsOneWidget);
 
     // Kept: the tab does not change behind the question.
-    await tester.tap(find.widgetWithText(TextButton, 'Keep editing'));
+    await tester.tap(find.bySemanticsLabel('Keep editing'));
     await tester.pumpAndSettle();
     expect(find.text('Add condition'), findsOneWidget);
     expect(db.runs, hasLength(1));

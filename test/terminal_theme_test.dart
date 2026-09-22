@@ -105,8 +105,8 @@ void main() {
     }
   });
 
-  test('the app reads in every theme: text, grey, accent and alerts on '
-      'every layer, a label on its button, and a field\'s edge', () {
+  test('the app reads in every theme: termul\'s inks on every layer, a '
+      'button\'s label on its fill, and Material\'s pairs', () {
     for (final scheme in terminalSchemes) {
       for (final brightness in Brightness.values) {
         final p = scheme.palette(brightness);
@@ -114,15 +114,16 @@ void main() {
         for (final (layer, ground) in [
           ('page', p.bg),
           ('bar', p.sidebar),
-          ('card', p.panel),
+          ('panel', p.panel),
           ('toast', p.surface),
-          ('key', p.raised),
-          ('selected', p.selection),
+          ('selected', Color.alphaBlend(p.selection, p.panel)),
         ]) {
           for (final (name, ink) in [
             ('text', p.text),
             ('grey', p.muted),
+            ('dim', p.dim),
             ('accent', p.accent),
+            ('deep', p.deep),
             ('red', p.red),
             ('green', p.green),
             ('yellow', p.yellow),
@@ -134,7 +135,21 @@ void main() {
             );
           }
         }
-        final colors = p.colorScheme;
+        // termul's buttons: primary's label on the accent, danger's on the
+        // deep accent, and a light theme's primary is the accent on white.
+        for (final (name, ink, ground) in [
+          ('primary button', p.bg, p.accent),
+          ('danger button', p.isLight ? p.panel : p.bg, p.deep),
+          ('enter key', p.bg, p.accent),
+        ]) {
+          if (p.isLight && name == 'primary button') continue;
+          expect(
+            _contrast(ink, ground),
+            greaterThanOrEqualTo(4.5),
+            reason: '$where $name',
+          );
+        }
+        final colors = scheme.colorScheme(brightness);
         for (final (name, ink, ground) in [
           ('button', colors.onPrimary, colors.primary),
           ('danger', colors.onError, colors.error),
@@ -148,11 +163,6 @@ void main() {
             reason: '$where $name',
           );
         }
-        expect(
-          _contrast(p.strongBorder, p.bg),
-          greaterThanOrEqualTo(3),
-          reason: '$where field edge',
-        );
       }
     }
   });

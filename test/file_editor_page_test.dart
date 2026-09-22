@@ -18,6 +18,7 @@ import 'package:webview_flutter_platform_interface/webview_flutter_platform_inte
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 import 'fake_web_view.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 Future<void> _pumpEditor(
   WidgetTester tester,
@@ -216,7 +217,7 @@ void main() {
     expect(find.text('Changed on the host'), findsOneWidget);
     expect(browser.contents['/home/me/notes.txt'], 'theirs\n');
 
-    await tester.tap(find.text('Overwrite'));
+    await tester.tap(find.bySemanticsLabel('Overwrite'));
     await tester.pumpAndSettle();
     expect(browser.contents['/home/me/notes.txt'], 'mine\n');
     expect(_canSave(tester), isFalse);
@@ -232,7 +233,7 @@ void main() {
 
     await tester.tap(find.widgetWithIcon(IconButton, Icons.save_outlined));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Reload'));
+    await tester.tap(find.bySemanticsLabel('Reload'));
     await tester.pumpAndSettle();
 
     expect(
@@ -254,13 +255,13 @@ void main() {
     await tester.tap(find.byIcon(Icons.refresh));
     await tester.pumpAndSettle();
     expect(find.text('Discard changes?'), findsOneWidget);
-    await tester.tap(find.text('Keep editing'));
+    await tester.tap(find.bySemanticsLabel('Keep editing'));
     await tester.pumpAndSettle();
     expect(text(), 'half typed');
 
     await tester.tap(find.byIcon(Icons.refresh));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Discard'));
+    await tester.tap(find.bySemanticsLabel('Discard'));
     await tester.pumpAndSettle();
     expect(text(), 'first line\nsecond line\n');
   });
@@ -327,12 +328,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(
       find.descendant(
-        of: find.byType(AlertDialog),
+        of: find.byType(TuiDialog),
         matching: find.byType(TextField),
       ),
       '2',
     );
-    await tester.tap(find.text('Go'));
+    await tester.tap(find.bySemanticsLabel('Go'));
     await tester.pumpAndSettle();
 
     expect(_editor(tester).selection.extentIndex, 1);
@@ -536,7 +537,7 @@ void main() {
       fault: FileBrowserFault.permissionDenied,
     );
     final passwordField = find.descendant(
-      of: find.byType(AlertDialog),
+      of: find.byType(TuiDialog),
       matching: find.byType(TextField),
     );
     String text(WidgetTester tester) =>
@@ -555,9 +556,9 @@ void main() {
 
       await tester.tap(find.text('Open with sudo'));
       await untilPrompted(tester);
-      expect(find.text('sudo password'), findsOneWidget);
+      expect(find.bySemanticsLabel('sudo password'), findsOneWidget);
       await tester.enterText(passwordField, 'hunter2');
-      await tester.tap(find.text('Continue'));
+      await tester.tap(find.bySemanticsLabel('Continue'));
       await tester.pumpAndSettle();
 
       expect(text(tester), 'first line\nsecond line\n');
@@ -583,7 +584,7 @@ void main() {
       await tester.tap(find.text('Open with sudo'));
       await tester.pumpAndSettle();
 
-      expect(find.text('sudo password'), findsNothing);
+      expect(find.bySemanticsLabel('sudo password'), findsNothing);
       expect(text(tester), 'first line\nsecond line\n');
     });
 
@@ -595,14 +596,14 @@ void main() {
       await tester.tap(find.text('Open with sudo'));
       await untilPrompted(tester);
       await tester.enterText(passwordField, 'wrong');
-      await tester.tap(find.text('Continue'));
+      await tester.tap(find.bySemanticsLabel('Continue'));
       await tester.pumpAndSettle();
       expect(find.text('sudo did not accept that password.'), findsOneWidget);
 
       await tester.tap(find.text('Open with sudo'));
       await untilPrompted(tester);
       await tester.enterText(passwordField, 'hunter2');
-      await tester.tap(find.text('Continue'));
+      await tester.tap(find.bySemanticsLabel('Continue'));
       await tester.pumpAndSettle();
       expect(text(tester), 'first line\nsecond line\n');
     });
@@ -633,7 +634,7 @@ void main() {
       );
       await untilPrompted(tester);
       await tester.enterText(passwordField, 'hunter2');
-      await tester.tap(find.text('Continue'));
+      await tester.tap(find.bySemanticsLabel('Continue'));
       await tester.pumpAndSettle();
 
       expect(browser.contents['/home/me/notes.txt'], 'edited\n');
@@ -708,7 +709,7 @@ void main() {
     // There is no undo on the far end, so leaving has to be deliberate.
     expect(find.text('Discard changes?'), findsOneWidget);
 
-    await tester.tap(find.text('Keep editing'));
+    await tester.tap(find.bySemanticsLabel('Keep editing'));
     await tester.pumpAndSettle();
     expect(find.byType(CodeEditor), findsOneWidget);
   });
@@ -806,7 +807,7 @@ void main() {
 
       expect(find.text('Copy content'), findsNothing);
       // Download still is: it only ever needed the path.
-      expect(find.text('Download'), findsOneWidget);
+      expect(find.bySemanticsLabel('Download'), findsOneWidget);
     });
   });
 
@@ -849,7 +850,7 @@ void main() {
     expect(find.text('Discard changes?'), findsOneWidget);
     expect(closed, isFalse);
 
-    await tester.tap(find.text('Discard'));
+    await tester.tap(find.bySemanticsLabel('Discard'));
     await tester.pumpAndSettle();
     expect(closed, isTrue);
   });
@@ -863,7 +864,7 @@ void main() {
       Future<void> expectOnMenu() async {
         await tester.tap(find.byTooltip('More'));
         await tester.pumpAndSettle();
-        expect(find.text('Download'), findsOneWidget);
+        expect(find.bySemanticsLabel('Download'), findsOneWidget);
         await tester.tapAt(Offset.zero);
         await tester.pumpAndSettle();
       }
@@ -907,12 +908,12 @@ void main() {
 
       await _download(tester);
       expect(find.text(_unsavedWarning), findsOneWidget);
-      await tester.tap(find.text('Cancel'));
+      await tester.tap(find.bySemanticsLabel('Cancel'));
       await tester.pumpAndSettle();
       expect(picker.saved, isNull);
 
       await _download(tester);
-      await tester.tap(find.widgetWithText(FilledButton, 'Download'));
+      await tester.tap(find.bySemanticsLabel('Download'));
       await tester.pumpAndSettle();
       expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
       // The edit stays, still unsaved.
@@ -1405,7 +1406,7 @@ After it.
       // Download is still the way to get at it.
       await tester.tap(find.byTooltip('More'));
       await tester.pumpAndSettle();
-      expect(find.text('Download'), findsOneWidget);
+      expect(find.bySemanticsLabel('Download'), findsOneWidget);
       // Nothing was decoded, so there is nothing to put on the clipboard.
       expect(find.text('Copy image'), findsNothing);
     });

@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../telemetry/scrub.dart';
 import '../telemetry/telemetry.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// Where a named report goes: the user's own browser, their own GitHub
 /// account, their own finger on Submit. Jeansh holds no token for this and
@@ -179,82 +180,79 @@ class _BugReportDialogState extends State<_BugReportDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final p = TermulThemeData.of(context).palette;
     final ready = _what.text.trim().isNotEmpty && !_sending;
-    return AlertDialog(
-      title: const Text('Report a bug'),
-      content: SizedBox(
-        width: 420,
+    return TuiDialog(
+      title: 'Report a bug',
+      maxWidth: 460,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: _sending ? null : () => Navigator.of(context).pop(),
+        ),
+        TuiButton(
+          label: 'Under my name',
+          variant: TuiButtonVariant.ghost,
+          onPressed: ready ? _openGitHub : null,
+        ),
+        TuiButton(
+          label: _sending ? 'Sending…' : 'Anonymously',
+          prefix: '▸',
+          onPressed: ready ? _sendAnonymously : null,
+        ),
+      ],
+      child: Flexible(
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextField(
+              TuiField(
+                label: 'What went wrong?',
                 controller: _what,
                 autofocus: true,
                 minLines: 3,
                 maxLines: 6,
-                decoration: const InputDecoration(
-                  labelText: 'What went wrong?',
-                  hintText: 'What you did, and what happened instead',
-                  border: OutlineInputBorder(),
-                ),
+                hint: 'What you did, and what happened instead',
               ),
               const SizedBox(height: 16),
-              Text(
+              const TuiText(
                 'This is everything that will be sent:',
-                style: theme.textTheme.bodySmall,
+                tone: TuiTextTone.muted,
+                size: 11,
               ),
               const SizedBox(height: 6),
               Container(
                 constraints: const BoxConstraints(maxHeight: 180),
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  border: Border.all(color: theme.colorScheme.outlineVariant),
+                  color: p.bg,
+                  border: Border.all(color: p.border),
                 ),
                 child: SingleChildScrollView(
                   child: SelectableText(
                     _body,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontFamily: 'Cascadia Mono',
+                    style: TextStyle(
+                      fontFamily: TermulFonts.mono,
+                      fontSize: 11,
+                      color: p.text,
+                      height: 1.4,
                     ),
                   ),
                 ),
               ),
               const SizedBox(height: 8),
-              Text(
+              const TuiText(
                 'Hostnames, logins, paths and commands are taken out before '
                 'this is shown. Read it over — nothing else goes.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                tone: TuiTextTone.dim,
+                size: 11,
               ),
             ],
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: _sending ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: ready ? _openGitHub : null,
-          child: const Text('Under my name'),
-        ),
-        FilledButton(
-          onPressed: ready ? _sendAnonymously : null,
-          child: _sending
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Anonymously'),
-        ),
-      ],
     );
   }
 }

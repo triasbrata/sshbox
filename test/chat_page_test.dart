@@ -1136,10 +1136,11 @@ void main() {
           matching: find.byType(Text),
         ),
       ))
+        // The headings are termul's section labels, drawn in capitals.
         if (const {
-          'Pinned',
-          'Running',
-          'Finished (2)',
+          'PINNED',
+          'RUNNING',
+          'FINISHED (2)',
           'pinned and finished',
           'running',
           'finished lately',
@@ -1148,11 +1149,11 @@ void main() {
           text.data,
     ];
     expect(order, [
-      'Pinned',
+      'PINNED',
       'pinned and finished',
-      'Running',
+      'RUNNING',
       'running',
-      'Finished (2)',
+      'FINISHED (2)',
       'finished lately',
       'finished long ago',
     ]);

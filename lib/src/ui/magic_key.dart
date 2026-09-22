@@ -726,11 +726,7 @@ class _MagicKeyState extends State<MagicKey> {
 }
 
 class _Button extends StatelessWidget {
-  const _Button({
-    required this.picking,
-    required this.moving,
-    this.tuckedLeft,
-  });
+  const _Button({required this.picking, required this.moving, this.tuckedLeft});
 
   final bool picking;
   final bool moving;
@@ -801,7 +797,7 @@ class _Petal extends StatelessWidget {
         child: Text(
           label,
           style: TextStyle(
-            fontFamily: tuiFontFamily,
+            fontFamily: TermulFonts.mono,
             fontSize: 12,
             fontWeight: FontWeight.w600,
             color: aimed

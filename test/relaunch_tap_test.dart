@@ -379,7 +379,7 @@ void main() {
     await tester.tap(
       find.descendant(
         of: find.byType(BottomSheet),
-        matching: find.text('Start a new session'),
+        matching: find.bySemanticsLabel('Start a new session'),
       ),
     );
     await _settle(tester);

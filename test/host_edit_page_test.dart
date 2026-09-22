@@ -10,11 +10,15 @@ import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/ui/host_edit_page.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:toastification/toastification.dart';
 
 import 'fake_relay.dart';
 
-const _openSshKey = '-----BEGIN OPENSSH PRIVATE KEY-----\n'
+import 'tui_finders.dart';
+
+const _openSshKey =
+    '-----BEGIN OPENSSH PRIVATE KEY-----\n'
     'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n'
     '-----END OPENSSH PRIVATE KEY-----\n';
 
@@ -103,7 +107,7 @@ Future<void> _openKeyHost(WidgetTester tester) async {
 }
 
 TextField _field(WidgetTester tester, String label) =>
-    tester.widget<TextField>(find.widgetWithText(TextField, label));
+    tester.widget<TextField>(findTuiField(label));
 
 void main() {
   testWidgets('a new host reads Host, Port, Username, one under the other, '
@@ -123,21 +127,21 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    Rect field(String label) =>
-        tester.getRect(find.widgetWithText(TextFormField, label));
+    // Each field whole, its caption with it.
+    Rect field(String label) => tester.getRect(
+      find.byWidgetPredicate((w) => w is TuiField && w.label == label),
+    );
     final host = field('Host');
     final port = field('Port');
     final username = field('Username');
     // Only the gap the form puts between two fields.
-    expect(port.top - host.bottom, lessThanOrEqualTo(12));
-    expect(username.top - port.bottom, lessThanOrEqualTo(12));
+    expect(port.top - host.bottom, lessThanOrEqualTo(20));
+    expect(username.top - port.bottom, lessThanOrEqualTo(20));
     expect(field('Alternative address').top, greaterThan(username.bottom));
   });
 
   testWidgets('picks a saved host to jump through, and saves it with the '
-      'alternative address', (
-    tester,
-  ) async {
+      'alternative address', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final secrets = InMemorySecretStore();
     final repository = HostRepository(secrets);
@@ -181,6 +185,8 @@ void main() {
 
     // A jump host deleted since is no jump host, and the host itself is not
     // offered.
+    await tester.ensureVisible(find.text('None, connect directly'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('None, connect directly'));
     await tester.pumpAndSettle();
     expect(find.text('box'), findsOneWidget);
@@ -189,7 +195,7 @@ void main() {
 
     // The LAN address of the same machine, for when the tailnet is down.
     await tester.enterText(
-      find.widgetWithText(TextField, 'Alternative address'),
+      findTuiField('Alternative address'),
       ' 192.168.1.20 ',
     );
 
@@ -235,13 +241,13 @@ void main() {
         _field(tester, 'Private key (OpenSSH or PEM)').controller!.text;
 
     picker.next = _PickedFile('id_ed25519', _openSshKey);
-    await tester.tap(find.text('Choose file'));
+    await tester.tap(find.bySemanticsLabel('Choose file'));
     await tester.pumpAndSettle();
     expect(key(), _openSshKey);
     expect(picker.cleared, 1);
 
     picker.next = _PickedFile('id_ed25519.pub', _publicKey);
-    await tester.tap(find.text('Choose file'));
+    await tester.tap(find.bySemanticsLabel('Choose file'));
     // A toast is on screen a couple of frames and its slide-in later.
     await tester.pump();
     await tester.pump();
@@ -300,7 +306,7 @@ void main() {
 
     /// Copies, and waits for the toast that says how it went.
     Future<void> copy() async {
-      await tester.tap(find.text('Copy notification key'));
+      await tester.tap(find.bySemanticsLabel('Copy notification key'));
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -323,7 +329,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await open(null);
-    expect(find.text('Copy notification key'), findsNothing);
+    expect(find.bySemanticsLabel('Copy notification key'), findsNothing);
   });
 
   test('a key file is read if it holds an OpenSSH or PEM private key, and '
@@ -348,7 +354,8 @@ void main() {
 
     expect(() => read(_publicKey), refused('public half'));
     expect(
-      () => read('-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----\n'),
+      () =>
+          read('-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----\n'),
       refused('public half'),
     );
     expect(
@@ -400,12 +407,16 @@ void main() {
 
     const record = 'Keep a record of each pane';
     expect(find.text(record), findsNothing);
-    await tester.tap(find.text('Use tmux'));
+    await tester.ensureVisible(findTuiSwitchTrack('Use tmux'));
     await tester.pumpAndSettle();
-    final toggle = find.widgetWithText(SwitchListTile, record);
-    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    await tester.tap(findTuiSwitchTrack('Use tmux'));
+    await tester.pumpAndSettle();
+    final toggle = findTuiSwitch(record);
+    expect(tester.widget<TuiSwitch>(toggle).value, isTrue);
 
-    await tester.tap(toggle);
+    await tester.ensureVisible(findTuiSwitchTrack(record));
+    await tester.pumpAndSettle();
+    await tester.tap(findTuiSwitchTrack(record));
     await tester.tap(find.byTooltip('Save'));
     await tester.pumpAndSettle();
     final saved = (await repository.load()).single;

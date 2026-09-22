@@ -562,7 +562,9 @@ class LinkModifierSetting extends ValueNotifier<LinkModifier?> {
 /// The app's one; `main` reads the saved choice into it.
 final linkModifier = LinkModifierSetting();
 
-/// Jeansh's settings: a list of sections, each a header and its rows.
+/// Jeansh's settings, as termul's settings screen draws them: a back word
+/// and the settings mark along the top, the page's name large, and each
+/// section under a hairline and a label in capitals.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.notifyKeys});
 
@@ -572,64 +574,180 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final text = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        padding: tuiFormPadding(
-          MediaQuery.sizeOf(context).width,
-          top: 0,
-          bottom: 24,
-          least: 0,
-        ),
-        children: [
-          const _ThemeSection(),
-          const _TerminalSection(),
-          const _SectionHeader('Keyboard'),
-          ListTile(
-            leading: const Icon(Icons.keyboard_outlined),
-            title: const Text('Key bar'),
-            subtitle: const Text(
-              'The keys above the keyboard in a terminal: which ones, and in '
-              'what order',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const KeyBarSettingsPage(),
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+              child: Row(
+                children: [
+                  TermulTextAction.back(context),
+                  const Spacer(),
+                  Icon(Icons.settings_outlined, size: 18, color: p.accent),
+                ],
               ),
             ),
-          ),
-          if (LinkModifierSetting.offered.length > 1) const _LinkModifierTile(),
-          const _GitSection(),
-          // Desktop alone: only a desktop has a shell of its own to run.
-          if (isDesktop) const _LocalShellSection(),
-          _NotificationsSection(notifyKeys),
-          const _PrivacySection(),
-          // Desktop alone: Android updates through Play, and there is no
-          // desktop build to offer anywhere else.
-          if (isDesktop) ...[
-            const _SectionHeader('Updates'),
-            const UpdateTile(),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 40),
+                children: [
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      'Settings',
+                      style: text.displayMedium!.copyWith(
+                        color: p.accent,
+                        fontSize: 36,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'LOOK · TERMINAL · KEYBOARD · PRIVACY',
+                    style: text.labelSmall!.copyWith(
+                      color: p.dim,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                  const _ThemeSection(),
+                  const _TerminalSection(),
+                  const _SectionHeader('Keyboard'),
+                  _Action(
+                    label: 'Key bar',
+                    prefix: '→',
+                    note:
+                        'The keys above the keyboard in a terminal: which '
+                        'ones, and in what order.',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const KeyBarSettingsPage(),
+                      ),
+                    ),
+                  ),
+                  if (LinkModifierSetting.offered.length > 1)
+                    const _LinkModifierTile(),
+                  const _GitSection(),
+                  // Desktop alone: only a desktop has a shell of its own to
+                  // run.
+                  if (isDesktop) const _LocalShellSection(),
+                  _NotificationsSection(notifyKeys),
+                  const _PrivacySection(),
+                  // Desktop alone: Android updates through Play, and there is
+                  // no desktop build to offer anywhere else.
+                  if (isDesktop) ...[
+                    const _SectionHeader('Updates'),
+                    // TODO(termul): an action row with a spinner and a
+                    // result line, until termul has one.
+                    const UpdateTile(),
+                  ],
+                  const _AboutSection(),
+                ],
+              ),
+            ),
           ],
-          const _AboutSection(),
-        ],
+        ),
       ),
     );
   }
 }
 
-/// Termul's `# Theme`: see [TuiHeading].
+/// termul's break between two settings: a hairline, and the section's name
+/// in capitals under it.
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader(this.title);
 
   final String title;
 
   @override
-  Widget build(BuildContext context) => TuiHeading(title);
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const SizedBox(height: 28),
+      const TuiDivider(),
+      const SizedBox(height: 28),
+      TuiSectionLabel(title),
+      const SizedBox(height: 12),
+    ],
+  );
 }
 
-/// Light, dark or the system's, over a card for each theme, with a tick on
-/// the one in use.
+/// A label for one setting inside a section, as termul's `terminal font`.
+class _Label extends StatelessWidget {
+  const _Label(this.title);
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 28, bottom: 12),
+    child: TuiSectionLabel(title),
+  );
+}
+
+/// termul's line of small print under a setting.
+class _Note extends StatelessWidget {
+  const _Note(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 12),
+    child: Text(
+      text,
+      style: Theme.of(context).textTheme.labelSmall!.copyWith(
+        color: TermulThemeData.of(context).palette.muted,
+        height: 1.4,
+      ),
+    ),
+  );
+}
+
+/// A setting that is something to do rather than a choice, as termul's
+/// `report a bug`: a button with its small print under it.
+class _Action extends StatelessWidget {
+  const _Action({
+    required this.label,
+    required this.note,
+    required this.onTap,
+    this.prefix,
+    this.variant = TuiButtonVariant.ghost,
+  });
+
+  final String label;
+  final String note;
+  final VoidCallback? onTap;
+  final String? prefix;
+  final TuiButtonVariant variant;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TuiButton(
+            label: label,
+            prefix: prefix,
+            variant: variant,
+            onPressed: onTap,
+          ),
+        ),
+        _Note(note),
+      ],
+    ),
+  );
+}
+
+/// Light, dark or the system's, and the theme, over a few lines of a shell
+/// in the chosen theme's colours: termul's `system theme` and `terminal
+/// theme`.
 class _ThemeSection extends StatelessWidget {
   const _ThemeSection();
 
@@ -641,137 +759,167 @@ class _ThemeSection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const _SectionHeader('Theme'),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: SegmentedButton(
-              segments: const [
-                ButtonSegment(value: ThemeMode.system, label: Text('System')),
-                ButtonSegment(value: ThemeMode.light, label: Text('Light')),
-                ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
-              ],
-              selected: {look.mode},
-              onSelectionChanged: (modes) =>
-                  appTheme.choose(mode: modes.single),
-            ),
+          TuiSelect<ThemeMode>(
+            options: const [
+              (ThemeMode.system, 'System'),
+              (ThemeMode.light, 'Light'),
+              (ThemeMode.dark, 'Dark'),
+            ],
+            value: look.mode,
+            onChanged: (mode) => appTheme.choose(mode: mode),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            // Two to a row on a phone and four on a tablet, at the host
-            // list's breakpoint.
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final columns = constraints.maxWidth < 600 ? 2 : 4;
-                final width =
-                    ((constraints.maxWidth - 8 * (columns - 1)) / columns)
-                        .floorToDouble();
-                return Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final scheme in terminalSchemes)
-                      SizedBox(
-                        width: width,
-                        child: _SchemeCard(
-                          scheme,
-                          chosen: scheme == look.scheme,
-                        ),
-                      ),
-                  ],
-                );
-              },
-            ),
+          const _Label('Colours'),
+          TuiSelect<TerminalScheme>(
+            options: [
+              for (final scheme in terminalSchemes) (scheme, scheme.name),
+            ],
+            value: look.scheme,
+            onChanged: (scheme) => appTheme.choose(scheme: scheme),
           ),
+          const SizedBox(height: 12),
+          _SchemePreview(look.scheme),
         ],
       ),
     );
   }
 }
 
-/// A theme's name over a few lines of a shell in its colours, as the
-/// terminal would draw them in the brightness in use: a prompt, a listing and
-/// a commit, in green, cyan, magenta, blue, red and yellow.
-class _SchemeCard extends StatelessWidget {
-  const _SchemeCard(this.scheme, {required this.chosen});
+/// termul's theme preview: a few lines of a shell in [scheme]'s colours, as
+/// the terminal would draw them in the brightness in use — a prompt, a
+/// listing and a commit, in green, cyan, magenta, blue, red and yellow.
+class _SchemePreview extends StatelessWidget {
+  const _SchemePreview(this.scheme);
 
   final TerminalScheme scheme;
-  final bool chosen;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = scheme.terminal(theme.brightness);
+    final colors = scheme.terminal(Theme.of(context).brightness);
     TextSpan token(String text, Color color) => TextSpan(
       text: text,
       style: TextStyle(color: color),
     );
 
-    return Semantics(
-      selected: chosen,
-      child: Card.outlined(
-        margin: EdgeInsets.zero,
-        clipBehavior: Clip.antiAlias,
-        shape: RoundedRectangleBorder(
-          side: chosen
-              ? BorderSide(color: theme.colorScheme.primary, width: 2)
-              : BorderSide(color: theme.colorScheme.outlineVariant),
+    return Container(
+      padding: const EdgeInsets.all(14),
+      color: colors.background,
+      child: Text.rich(
+        TextSpan(
+          style: TextStyle(
+            color: colors.foreground,
+            fontFamily: TermulFonts.mono,
+            fontSize: 13,
+            height: 1.45,
+          ),
+          children: [
+            token('➜ ', colors.green),
+            token('~/src ', colors.cyan),
+            token('main\n', colors.magenta),
+            token('lib ', colors.blue),
+            token('.env ', colors.red),
+            const TextSpan(text: 'README.md\n'),
+            token('a1b2c3d ', colors.yellow),
+            const TextSpan(text: 'fix the key bar'),
+          ],
         ),
-        child: InkWell(
-          onTap: () => appTheme.choose(scheme: scheme),
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
+        maxLines: 3,
+        softWrap: false,
+        overflow: TextOverflow.clip,
+      ),
+    );
+  }
+}
+
+/// termul's font row: the name in the font itself, USE or SELECTED at its
+/// right, and under the name a line in the terminal's own style, so what the
+/// row shows is what a shell gets: no ligatures, and the Nerd Font behind it.
+class _FontOption extends StatelessWidget {
+  const _FontOption({
+    required this.title,
+    required this.family,
+    required this.sample,
+    required this.selected,
+    required this.onTap,
+    this.note,
+    this.action,
+  });
+
+  final String title;
+  final String family;
+  final String? sample;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  /// A word after the name, dim, as `on this computer`.
+  final String? note;
+
+  /// In place of USE and SELECTED.
+  final String? action;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final small = Theme.of(context).textTheme.labelSmall!;
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        scheme.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleSmall,
-                      ),
-                    ),
-                    if (chosen)
-                      Icon(
-                        Icons.check_circle,
-                        size: 18,
-                        color: theme.colorScheme.primary,
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                DecoratedBox(
-                  decoration: BoxDecoration(color: colors.background),
-                  child: Padding(
-                    padding: const EdgeInsets.all(6),
-                    child: Text.rich(
+                    Text.rich(
                       TextSpan(
-                        style: TextStyle(
-                          color: colors.foreground,
-                          fontFamily: tuiFontFamily,
-                          fontSize: 11,
-                          height: 1.3,
-                        ),
                         children: [
-                          token('➜ ', colors.green),
-                          token('~/src ', colors.cyan),
-                          token('main\n', colors.magenta),
-                          token('lib ', colors.blue),
-                          token('.env ', colors.red),
-                          const TextSpan(text: 'a.md\n'),
-                          token('a1b2c3d ', colors.yellow),
-                          const TextSpan(text: 'fix'),
+                          TextSpan(
+                            text: title,
+                            style: TextStyle(
+                              fontFamily: family,
+                              fontSize: 16,
+                              color: selected ? p.accent : p.text,
+                              fontWeight: selected
+                                  ? FontWeight.w500
+                                  : FontWeight.w400,
+                            ),
+                          ),
+                          if (note != null)
+                            TextSpan(
+                              text: '  $note',
+                              style: small.copyWith(color: p.dim),
+                            ),
                         ],
                       ),
-                      maxLines: 3,
-                      softWrap: false,
-                      overflow: TextOverflow.clip,
                     ),
-                  ),
+                    if (sample case final sample?) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        sample,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.fade,
+                        style: terminalStyleOf(
+                          family,
+                          14,
+                        ).toTextStyle().copyWith(color: p.muted),
+                      ),
+                    ],
+                  ],
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                action ?? (selected ? 'SELECTED' : 'USE'),
+                style: small.copyWith(
+                  color: selected ? p.accent : p.dim,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -818,10 +966,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
     TerminalStyle style,
     AsyncSnapshot<List<SystemFont>?> fonts,
   ) {
-    final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
+    final p = TermulThemeData.of(context).palette;
     final family = style.fontFamily;
     final chosen = !terminalFonts.any((font) => font.family == family);
     final listed = fonts.data;
@@ -833,36 +978,19 @@ class _TerminalSectionState extends State<_TerminalSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ListTile(
-          selected: chosen,
-          title: Text.rich(
-            TextSpan(
-              children: [
-                if (chosen) ...[
-                  TextSpan(
-                    text: family,
-                    style: TextStyle(fontFamily: family),
-                  ),
-                  TextSpan(text: '  on this computer', style: muted),
-                ] else
-                  const TextSpan(text: 'Installed on this computer…'),
-              ],
-            ),
-          ),
-          subtitle: chosen
-              ? Text(
-                  _sample,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.fade,
-                  style: terminalStyleOf(family, 14).toTextStyle(),
-                )
-              : Text(switch (listed) {
+        _FontOption(
+          title: chosen ? family : 'Installed on this computer…',
+          family: chosen ? family : TermulFonts.mono,
+          note: chosen ? 'on this computer' : null,
+          sample: chosen
+              ? _sample
+              : switch (listed) {
                   _ when !done => 'Reading this computer\'s fonts…',
                   null => 'Its fonts could not be listed: type a name',
                   final listed => '${listed.length} families, monospaced first',
-                }),
-          trailing: Icon(chosen ? Icons.check : Icons.chevron_right),
+                },
+          selected: chosen,
+          action: chosen ? 'CHANGE' : 'PICK',
           onTap: done
               ? () async {
                   final picked = await showDialog<String>(
@@ -881,33 +1009,29 @@ class _TerminalSectionState extends State<_TerminalSection> {
         ),
         if (proportional)
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.only(bottom: 8),
             child: Row(
               children: [
-                Icon(
-                  Icons.warning_amber_rounded,
-                  size: 16,
-                  color: theme.colorScheme.error,
-                ),
+                Icon(Icons.warning_amber_rounded, size: 16, color: p.deep),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
+                  child: TuiText(
                     '$family is proportional, so the terminal\'s columns '
                     'will not line up.',
-                    style: muted,
+                    tone: TuiTextTone.muted,
+                    size: 11,
                   ),
                 ),
               ],
             ),
           ),
+        const TuiDivider(),
       ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
       builder: (context, style, _) {
@@ -916,107 +1040,74 @@ class _TerminalSectionState extends State<_TerminalSection> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _SectionHeader('Terminal'),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: ClipRRect(
-                borderRadius: BorderRadius.zero,
-                child: SizedBox(
-                  height: _previewRows * cell.height + _previewPadding.vertical,
-                  // Only to look at: a tap would take focus for a terminal
-                  // that has nothing behind it.
-                  child: IgnorePointer(
-                    child: TerminalView(
-                      _preview,
-                      textStyle: style,
-                      theme: terminalThemeOf(context),
-                      padding: _previewPadding,
-                      readOnly: true,
-                    ),
-                  ),
+            SizedBox(
+              height: _previewRows * cell.height + _previewPadding.vertical,
+              // Only to look at: a tap would take focus for a terminal that
+              // has nothing behind it.
+              child: IgnorePointer(
+                child: TerminalView(
+                  _preview,
+                  textStyle: style,
+                  theme: terminalThemeOf(context),
+                  padding: _previewPadding,
+                  readOnly: true,
                 ),
               ),
             ),
-            ListTile(
-              title: const Text('Font size'),
-              trailing: Text(
-                '${style.fontSize.round()}',
-                style: theme.textTheme.titleMedium,
-              ),
-              subtitle: Slider(
-                value: style.fontSize,
-                min: minFontSize,
-                max: maxFontSize,
-                divisions: (maxFontSize - minFontSize).round(),
-                label: '${style.fontSize.round()}',
-                onChanged: (size) => terminalSettings.choose(size: size),
-              ),
+            const _Label('Font size'),
+            TuiSelect<double>(
+              options: [
+                for (
+                  var size = minFontSize.round();
+                  size <= maxFontSize.round();
+                  size++
+                )
+                  (size.toDouble(), '${size}px'),
+              ],
+              value: style.fontSize.roundToDouble(),
+              onChanged: (size) => terminalSettings.choose(size: size),
             ),
-            for (final font in terminalFonts)
-              ListTile(
+            const _Label('Font'),
+            for (final font in terminalFonts) ...[
+              _FontOption(
+                title: font.label,
+                family: font.family,
+                note: font.note,
+                sample: _sample,
                 selected: font.family == style.fontFamily,
-                title: Text.rich(
-                  TextSpan(
-                    children: [
-                      TextSpan(
-                        text: font.label,
-                        style: TextStyle(fontFamily: font.family),
-                      ),
-                      if (font.note != null)
-                        TextSpan(
-                          text: '  ${font.note}',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                // In the terminal's own style, so what the row shows is what
-                // a shell gets: no ligatures, and the Nerd Font behind it.
-                subtitle: Text(
-                  _sample,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.fade,
-                  style: terminalStyleOf(font.family, 14).toTextStyle(),
-                ),
-                trailing: font.family == style.fontFamily
-                    ? const Icon(Icons.check)
-                    : null,
                 onTap: () => terminalSettings.choose(family: font.family),
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Text(
-                'These fonts ship inside Jeansh, so they work offline. A glyph '
-                'a font lacks comes from $nerdFontFamily — a prompt\'s '
-                'powerline arrows — or from $symbolFontFamily, for symbols '
-                'like ⏵⏵ that no code font draws.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-            // Below what is said of the bundled fonts, which is not true of it.
+              const TuiDivider(),
+            ],
+            // Below the bundled fonts, since what the note says of them is
+            // not true of it.
             if (_installed case final installed?)
               FutureBuilder(
                 future: installed,
                 builder: (context, fonts) =>
                     _installedFont(context, style, fonts),
               ),
-            if (isDesktop)
+            const _Note(
+              'The fonts listed first ship inside Jeansh, so they work '
+              'offline. A glyph a font lacks comes from $nerdFontFamily (a '
+              'prompt\'s powerline arrows) or from $symbolFontFamily, for '
+              'symbols like ⏵⏵ that no code font draws.',
+            ),
+            if (isDesktop) ...[
+              const SizedBox(height: 28),
               ValueListenableBuilder(
                 valueListenable: copyOnSelect,
-                builder: (context, on, _) => SwitchListTile(
-                  title: const Text('Copy on select'),
-                  subtitle: const Text(
-                    'Text selected with the mouse goes to the clipboard as '
-                    'the button comes up',
-                  ),
+                builder: (context, on, _) => TuiSwitch(
+                  label: 'Copy on select',
                   value: on,
                   onChanged: copyOnSelect.choose,
                 ),
               ),
+              const _Note(
+                'Text selected with the mouse goes to the clipboard as the '
+                'button comes up.',
+              ),
+            ],
           ],
         );
       },
@@ -1043,7 +1134,10 @@ class _InstalledFontPicker extends StatefulWidget {
 }
 
 class _InstalledFontPickerState extends State<_InstalledFontPicker> {
-  final _field = TextEditingController();
+  // Heard here rather than through the field, which has no onChanged: the
+  // list narrows as the filter is typed.
+  late final _field = TextEditingController()
+    ..addListener(() => setState(() {}));
 
   @override
   void dispose() {
@@ -1053,7 +1147,6 @@ class _InstalledFontPickerState extends State<_InstalledFontPicker> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final fonts = widget.fonts;
     final typed = _field.text.trim();
     final shown = [
@@ -1062,60 +1155,107 @@ class _InstalledFontPickerState extends State<_InstalledFontPicker> {
     ];
     void pick(String family) => Navigator.of(context).pop(family);
 
-    return AlertDialog(
-      title: const Text('Installed fonts'),
-      content: SizedBox(
-        width: 480,
+    final p = TermulThemeData.of(context).palette;
+    return TuiDialog(
+      title: 'Installed fonts',
+      maxWidth: 520,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        if (fonts == null)
+          TuiButton(
+            label: 'Use',
+            onPressed: typed.isEmpty ? null : () => pick(typed),
+          ),
+      ],
+      child: SizedBox(
         height: fonts == null ? null : 420,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            TuiInput(
               controller: _field,
               autofocus: true,
-              decoration: InputDecoration(
-                prefixIcon: fonts == null ? null : const Icon(Icons.search),
-                hintText: fonts == null ? 'Family name' : 'Filter',
-              ),
-              onChanged: (_) => setState(() {}),
+              prompt: fonts == null ? '❯' : '/',
+              hint: fonts == null ? 'Family name' : 'Filter',
+              textInputAction: TextInputAction.done,
               onSubmitted: fonts == null && typed.isNotEmpty
                   ? (_) => pick(typed)
                   : null,
             ),
             const SizedBox(height: 8),
             if (fonts == null)
-              Text(
+              TuiText(
                 'This computer\'s fonts could not be listed. Type the family '
                 'name of one installed here.',
-                style: theme.textTheme.bodySmall,
+                tone: TuiTextTone.muted,
+                size: 11,
               )
             else if (shown.isEmpty)
               const Expanded(
-                child: Center(child: Text('No installed font matches.')),
+                child: Center(
+                  child: TuiText(
+                    'No installed font matches.',
+                    tone: TuiTextTone.muted,
+                  ),
+                ),
               )
             else
               Expanded(
-                child: ListView.builder(
+                child: ListView.separated(
                   itemCount: shown.length,
+                  separatorBuilder: (_, _) => const TuiDivider(),
                   itemBuilder: (context, index) {
                     final font = shown[index];
-                    return ListTile(
-                      selected: font.family == widget.chosen,
-                      title: Text(font.family),
-                      // In the font itself, as the terminal would draw it: a
-                      // symbols font's name alone could not be read in it.
-                      subtitle: Text(
-                        widget.sample,
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.fade,
-                        style: terminalStyleOf(font.family, 14).toTextStyle(),
-                      ),
-                      trailing: font.mono
-                          ? Text('monospaced', style: theme.textTheme.bodySmall)
-                          : null,
+                    final chosen = font.family == widget.chosen;
+                    return InkWell(
                       onTap: () => pick(font.family),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    font.family,
+                                    style: TextStyle(
+                                      fontFamily: TermulFonts.mono,
+                                      fontSize: 14,
+                                      color: chosen ? p.accent : p.text,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  // In the font itself, as the terminal would
+                                  // draw it: a symbols font's name alone could
+                                  // not be read in it.
+                                  Text(
+                                    widget.sample,
+                                    maxLines: 1,
+                                    softWrap: false,
+                                    overflow: TextOverflow.fade,
+                                    style: terminalStyleOf(
+                                      font.family,
+                                      14,
+                                    ).toTextStyle().copyWith(color: p.muted),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (font.mono)
+                              const TuiText(
+                                'monospaced',
+                                tone: TuiTextTone.dim,
+                                size: 10,
+                              ),
+                          ],
+                        ),
+                      ),
                     );
                   },
                 ),
@@ -1123,17 +1263,6 @@ class _InstalledFontPickerState extends State<_InstalledFontPicker> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        if (fonts == null)
-          FilledButton(
-            onPressed: typed.isEmpty ? null : () => pick(typed),
-            child: const Text('Use'),
-          ),
-      ],
     );
   }
 }
@@ -1162,28 +1291,18 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
   }
 
   Future<void> _reset() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Reset the key bar?'),
-        content: const Text(
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'key bar',
+      message: 'Reset the key bar?',
+      detail:
           'The keys it came with go back in their first places, and custom '
           'keys are deleted.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Reset'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Reset',
+      cancelLabel: 'Cancel',
     );
 
-    if (confirmed == true) await keyBarSettings.reset();
+    if (confirmed) await keyBarSettings.reset();
   }
 
   static String _label(KeyBarItem item) =>
@@ -1252,19 +1371,35 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                     ],
                   ),
                 ),
-              ListTile(
-                leading: const Icon(Icons.more_vert),
-                title: const Text('Divider'),
-                onTap: () => pick(keyBarDivider),
-              ),
-              ListTile(
-                leading: const Icon(Icons.add),
-                title: const Text('Custom key…'),
-                subtitle: const Text(
-                  'Any key, with Ctrl, Alt, Shift or Super, on a PC or '
-                  'macOS layout',
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    TuiButton(
+                      label: 'Divider',
+                      prefix: '│',
+                      variant: TuiButtonVariant.ghost,
+                      onPressed: () => pick(keyBarDivider),
+                    ),
+                    TuiButton(
+                      label: 'Custom key…',
+                      prefix: '+',
+                      onPressed: () => pick(customKeyPrefix),
+                    ),
+                  ],
                 ),
-                onTap: () => pick(customKeyPrefix),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: TuiText(
+                  'A custom key is any key, with Ctrl, Alt, Shift or Super, '
+                  'on a PC or macOS layout.',
+                  tone: TuiTextTone.muted,
+                  size: 11,
+                ),
               ),
             ],
           ),
@@ -1298,120 +1433,173 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final p = TermulThemeData.of(context).palette;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Key bar'),
-        actions: [
-          IconButton(
-            tooltip: 'Reset to default',
-            onPressed: _reset,
-            icon: const Icon(Icons.restart_alt),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _add,
-        icon: const Icon(Icons.add),
-        label: const Text('Add key'),
-      ),
-      body: ValueListenableBuilder(
-        valueListenable: keyBarSettings,
-        builder: (context, items, _) => Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // At the top of the page rather than the foot of the screen, so
-            // the system's inset down there is not the bar's to pad.
-            MediaQuery.removePadding(
-              context: context,
-              removeBottom: true,
-              child: TerminalKeyBar(
-                controller: _previewKeys,
-                terminal: _previewTerminal,
-                onEmit: (_) {},
-                keys: keyBarSettings.keys,
-                customKeys: keyBarSettings.customKeys,
-                // Files and upload, as a terminal has them: the page's own,
-                // so always first and not the bar's to move.
-                leading: const [
-                  IconButton(
-                    onPressed: null,
-                    icon: Icon(Icons.folder_outlined),
+      body: SafeArea(
+        child: ValueListenableBuilder(
+          valueListenable: keyBarSettings,
+          builder: (context, items, _) => Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                child: Row(
+                  children: [
+                    TermulTextAction.back(context),
+                    const Spacer(),
+                    TermulTextAction(
+                      label: 'Reset to default',
+                      text: 'RESET',
+                      color: p.dim,
+                      onTap: _reset,
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Semantics(
+                        header: true,
+                        child: Text(
+                          'Key bar',
+                          style: Theme.of(context).textTheme.displayMedium!
+                              .copyWith(color: p.accent, fontSize: 36),
+                        ),
+                      ),
+                    ),
+                    TuiButton(label: 'Add key', prefix: '+', onPressed: _add),
+                  ],
+                ),
+              ),
+              // At the top of the page rather than the foot of the screen, so
+              // the system's inset down there is not the bar's to pad.
+              MediaQuery.removePadding(
+                context: context,
+                removeBottom: true,
+                child: TerminalKeyBar(
+                  controller: _previewKeys,
+                  terminal: _previewTerminal,
+                  onEmit: (_) {},
+                  keys: keyBarSettings.keys,
+                  customKeys: keyBarSettings.customKeys,
+                  // Files and upload, as a terminal has them: the page's own,
+                  // so always first and not the bar's to move.
+                  leading: const [
+                    IconButton(
+                      onPressed: null,
+                      icon: Icon(Icons.folder_outlined),
+                    ),
+                    IconButton(onPressed: null, icon: Icon(Icons.attach_file)),
+                  ],
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 12, 24, 8),
+                child: TuiText(
+                  'Files and upload always come first. Drag a key by its handle '
+                  'to move it, and tap a key of your own to change it.',
+                  tone: TuiTextTone.muted,
+                  size: 11,
+                ),
+              ),
+              Expanded(
+                child: ReorderableListView.builder(
+                  buildDefaultDragHandles: false,
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                  itemCount: items.length,
+                  onReorderItem: (from, to) => keyBarSettings.choose(
+                    [...items]
+                      ..removeAt(from)
+                      ..insert(to, items[from]),
                   ),
-                  IconButton(onPressed: null, icon: Icon(Icons.attach_file)),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-              child: Text(
-                'Files and upload always come first. Drag a key by its handle '
-                'to move it, and tap a key of your own to change it.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-            Expanded(
-              child: ReorderableListView.builder(
-                buildDefaultDragHandles: false,
-                // Clear of Add key, so the last row's button is not under it.
-                padding: const EdgeInsets.only(bottom: 88),
-                itemCount: items.length,
-                onReorderItem: (from, to) => keyBarSettings.choose(
-                  [...items]
-                    ..removeAt(from)
-                    ..insert(to, items[from]),
-                ),
-                itemBuilder: (context, index) {
-                  final item = items[index];
-                  final custom = item.custom;
-                  return ListTile(
-                    // Dividers repeat, so each is known by how many came
-                    // before it.
-                    key: ValueKey((
-                      item.id,
-                      items.take(index).where((i) => i.id == item.id).length,
-                    )),
-                    leading: ReorderableDragStartListener(
-                      index: index,
-                      child: const Icon(Icons.drag_handle),
-                    ),
-                    title: Text(
-                      _label(item),
-                      style: item.id == keyBarDivider
-                          ? null
-                          : const TextStyle(
-                              fontFamily: tuiFontFamily,
-                              fontWeight: FontWeight.w600,
-                            ),
-                    ),
-                    // What a key of the user's own stands for, `Ctrl+Alt+R`
-                    // or `⌥⌫`, or for one made before the picker, its text as
-                    // written.
-                    subtitle: custom == null
-                        ? null
-                        : Text(
-                            switch (custom.combo) {
-                              final combo? => keyComboText(combo),
-                              null => custom.send,
-                            },
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontFamily: tuiFontFamily),
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    final custom = item.custom;
+                    return Container(
+                      // Dividers repeat, so each is known by how many came
+                      // before it.
+                      key: ValueKey((
+                        item.id,
+                        items.take(index).where((i) => i.id == item.id).length,
+                      )),
+                      decoration: BoxDecoration(
+                        border: Border(bottom: BorderSide(color: p.border)),
+                      ),
+                      child: InkWell(
+                        onTap: custom == null ? null : () => _edit(item),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Row(
+                            children: [
+                              ReorderableDragStartListener(
+                                index: index,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 12),
+                                  child: Icon(
+                                    Icons.drag_handle,
+                                    size: 18,
+                                    color: p.dim,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _label(item),
+                                      style: TextStyle(
+                                        fontFamily: TermulFonts.mono,
+                                        fontSize: 14,
+                                        fontWeight: item.id == keyBarDivider
+                                            ? FontWeight.w400
+                                            : FontWeight.w500,
+                                        color: item.id == keyBarDivider
+                                            ? p.muted
+                                            : p.text,
+                                      ),
+                                    ),
+                                    // What a key of the user's own stands for,
+                                    // `Ctrl+Alt+R` or `⌥⌫`, or for one made
+                                    // before the picker, its text as written.
+                                    if (custom != null)
+                                      TuiText(
+                                        switch (custom.combo) {
+                                          final combo? => keyComboText(combo),
+                                          null => custom.send,
+                                        },
+                                        tone: TuiTextTone.dim,
+                                        size: 11,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Remove',
+                                onPressed: () => _remove(index),
+                                icon: Icon(
+                                  Icons.remove_circle_outline,
+                                  size: 18,
+                                  color: p.dim,
+                                ),
+                              ),
+                            ],
                           ),
-                    onTap: custom == null ? null : () => _edit(item),
-                    trailing: IconButton(
-                      tooltip: 'Remove',
-                      onPressed: () => _remove(index),
-                      icon: const Icon(Icons.remove_circle_outline),
-                    ),
-                  );
-                },
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1525,10 +1713,13 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
     final extended =
         _super && !(_mac && macTextEditing.containsKey(keyComboName(_shown)));
 
+    final p = TermulThemeData.of(context).palette;
     return Dialog(
       // Close to the edges on a phone, where a keyboard needs the width; a
       // card of its own on a tablet.
       insetPadding: const EdgeInsets.all(16),
+      backgroundColor: p.panel,
+      shape: const RoundedRectangleBorder(),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
         child: Padding(
@@ -1537,20 +1728,24 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                isNew ? 'New custom key' : 'Change custom key',
-                style: theme.textTheme.headlineSmall,
+              // termul's dialog head: a label in capitals, then the question.
+              Semantics(
+                header: true,
+                child: Text(
+                  isNew ? 'New custom key' : 'Change custom key',
+                  style: theme.textTheme.headlineMedium!.copyWith(
+                    color: p.text,
+                    fontSize: 22,
+                  ),
+                ),
               ),
               const SizedBox(height: 12),
               Center(
-                child: SegmentedButton(
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('PC')),
-                    ButtonSegment(value: true, label: Text('macOS')),
-                  ],
-                  selected: {_mac},
-                  onSelectionChanged: (picked) {
-                    _change(() => _mac = picked.single);
+                child: TuiSelect<bool>(
+                  options: const [(false, 'PC'), (true, 'macOS')],
+                  value: _mac,
+                  onChanged: (mac) {
+                    _change(() => _mac = mac);
                     keyBarSettings.chooseLayout(mac: _mac);
                   },
                 ),
@@ -1569,7 +1764,7 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                         color: theme.colorScheme.onSurfaceVariant,
                       )
                     : theme.textTheme.titleLarge?.copyWith(
-                        fontFamily: tuiFontFamily,
+                        fontFamily: TermulFonts.mono,
                       ),
               ),
               const SizedBox(height: 8),
@@ -1627,28 +1822,38 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                   ),
                 ),
               ),
-              TextField(
+              const SizedBox(height: 12),
+              TuiField(
+                label: 'Label',
                 controller: _label,
-                maxLength: customKeyLabelMax,
-                decoration: const InputDecoration(
-                  labelText: 'Label',
-                  helperText: 'What the key shows',
-                ),
-              ),
-              Row(
-                children: [
-                  TextButton(onPressed: _clear, child: const Text('Clear')),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _key == null ? null : _save,
-                    child: Text(isNew ? 'Add' : 'Save'),
-                  ),
+                inputFormatters: [
+                  LengthLimitingTextInputFormatter(customKeyLabelMax),
                 ],
+                helper: 'What the key shows',
+              ),
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    TuiButton(
+                      label: 'Clear',
+                      variant: TuiButtonVariant.ghost,
+                      onPressed: _clear,
+                    ),
+                    const Spacer(),
+                    TuiButton(
+                      label: 'Cancel',
+                      variant: TuiButtonVariant.ghost,
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                    const SizedBox(width: 8),
+                    TuiButton(
+                      label: isNew ? 'Add' : 'Save',
+                      onPressed: _key == null ? null : _save,
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -1665,8 +1870,6 @@ class _LinkModifierTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return ValueListenableBuilder(
       valueListenable: linkModifier,
       builder: (context, _, _) {
@@ -1674,36 +1877,18 @@ class _LinkModifierTile extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            ListTile(
-              leading: const Icon(Icons.link),
-              title: const Text('Open links with'),
-              subtitle: Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: SegmentedButton<LinkModifier>(
-                    segments: [
-                      for (final key in LinkModifierSetting.offered)
-                        ButtonSegment(value: key, label: Text(key.label)),
-                    ],
-                    selected: {chosen},
-                    showSelectedIcon: false,
-                    onSelectionChanged: (picked) =>
-                        linkModifier.choose(picked.first),
-                  ),
-                ),
-              ),
+            const _Label('Open links with'),
+            TuiSelect<LinkModifier>(
+              options: [
+                for (final key in LinkModifierSetting.offered) (key, key.label),
+              ],
+              value: chosen,
+              onChanged: linkModifier.choose,
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(
-                'Hold ${chosen.label} and click a URL, a path or a link a '
-                'program printed in the terminal to open it. A click without '
-                'it focuses and selects as it always has.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
+            _Note(
+              'Hold ${chosen.label} and click a URL, a path or a link a '
+              'program printed in the terminal to open it. A click without '
+              'it focuses and selects as it always has.',
             ),
           ],
         );
@@ -1719,53 +1904,23 @@ class _GitSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionHeader('Git'),
+        const _Label('Open the git panel as'),
         ValueListenableBuilder(
           valueListenable: gitInDrawer,
-          builder: (context, drawer, _) => ListTile(
-            leading: const Icon(Icons.account_tree_outlined),
-            title: const Text('Open the git panel as'),
-            subtitle: Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(
-                      value: false,
-                      label: Text('Tab'),
-                      icon: Icon(Icons.tab_outlined),
-                    ),
-                    ButtonSegment(
-                      value: true,
-                      label: Text('Drawer'),
-                      icon: Icon(Icons.vertical_split_outlined),
-                    ),
-                  ],
-                  selected: {drawer},
-                  showSelectedIcon: false,
-                  onSelectionChanged: (picked) =>
-                      gitInDrawer.choose(picked.first),
-                ),
-              ),
-            ),
+          builder: (context, drawer, _) => TuiSelect<bool>(
+            options: const [(false, 'Tab'), (true, 'Drawer')],
+            value: drawer,
+            onChanged: gitInDrawer.choose,
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-          child: Text(
-            'A tab sits beside the shell and stays until you close it; a '
-            'drawer slides over the terminal and goes when you tap away. A '
-            'git tab already open stays a tab.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
+        const _Note(
+          'A tab sits beside the shell and stays until you close it; a '
+          'drawer slides over the terminal and goes when you tap away. A '
+          'git tab already open stays a tab.',
         ),
       ],
     );
@@ -1821,44 +1976,37 @@ class _LocalShellSectionState extends State<_LocalShellSection> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const _SectionHeader('Local shell'),
-          SwitchListTile(
-            secondary: const Icon(Icons.view_quilt_outlined),
-            title: Text(
-              windows
-                  ? 'Use tmux in WSL shells'
-                  : 'Use tmux in the Local shell',
-            ),
-            subtitle: const Text(
-              'Where tmux is found: panes split, and sessions outlive the '
-              'app. Where it is not, a plain login shell. Applies to the next '
-              'shell opened.',
-            ),
+          TuiSwitch(
+            label: windows
+                ? 'Use tmux in WSL shells'
+                : 'Use tmux in the Local shell',
             value: setting.on,
             onChanged: (on) => localTmux.choose(on: on),
           ),
-          if (!windows)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: TextField(
-                controller: _path,
-                focusNode: _focus,
-                enabled: setting.on,
-                autocorrect: false,
-                decoration: InputDecoration(
-                  labelText: 'tmux binary',
-                  hintText: 'Found by itself',
-                  helperText:
-                      'Empty looks on PATH, in Homebrew and the other usual '
-                      'places. A path is used instead.',
-                  errorText: _problem,
-                  border: const OutlineInputBorder(),
-                ),
-                onChanged: (_) {
-                  if (_problem != null) setState(() => _problem = null);
-                },
-                onSubmitted: (_) => _apply(),
-              ),
+          const _Note(
+            'Where tmux is found: panes split, and sessions outlive the '
+            'app. Where it is not, a plain login shell. Applies to the next '
+            'shell opened.',
+          ),
+          if (!windows) ...[
+            const SizedBox(height: 20),
+            TuiField(
+              label: 'tmux binary',
+              controller: _path,
+              focusNode: _focus,
+              enabled: setting.on,
+              autocorrect: false,
+              hint: 'Found by itself',
+              helper:
+                  'Empty looks on PATH, in Homebrew and the other usual '
+                  'places. A path is used instead.',
+              errorText: _problem,
+              onChanged: (_) {
+                if (_problem != null) setState(() => _problem = null);
+              },
+              onSubmitted: (_) => _apply(),
             ),
+          ],
         ],
       ),
     );
@@ -1909,29 +2057,32 @@ class _PrivacySection extends StatelessWidget {
       const _SectionHeader('Privacy'),
       ValueListenableBuilder<bool>(
         valueListenable: telemetryOn,
-        builder: (context, on, _) => SwitchListTile(
-          secondary: const Icon(Icons.insights_outlined),
-          title: const Text('Telemetry'),
-          subtitle: Text(
-            on
-                ? (crashReportingConfigured
-                      ? _what
-                      : '$_what\n\nThis build has no crash reporting built '
-                            'in, so only the count is sent.')
-                : _off,
-          ),
-          isThreeLine: true,
-          value: on,
-          onChanged: (want) => _choose(context, want),
+        builder: (context, on, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TuiSwitch(
+              label: 'Telemetry',
+              value: on,
+              onChanged: (want) => _choose(context, want),
+            ),
+            _Note(
+              on
+                  ? (crashReportingConfigured
+                        ? _what
+                        : '$_what\n\nThis build has no crash reporting built '
+                              'in, so only the count is sent.')
+                  : _off,
+            ),
+          ],
         ),
       ),
-      ListTile(
-        leading: const Icon(Icons.bug_report_outlined),
-        title: const Text('Report a bug'),
-        subtitle: const Text(
-          'Opens an issue on GitHub under your own name, or sends it '
-          'anonymously through Jeansh. You read what goes before it goes.',
-        ),
+      const SizedBox(height: 20),
+      _Action(
+        label: 'Report a bug',
+        prefix: '!',
+        note:
+            'Opens an issue on GitHub under your own name, or sends it '
+            'anonymously through Jeansh. You read what goes before it goes.',
         onTap: () => showBugReport(context),
       ),
     ],
@@ -1949,27 +2100,24 @@ class _AboutSection extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       const _SectionHeader('About'),
-      ListTile(
-        leading: const Icon(Icons.palette_outlined),
-        title: const Text('Design based on termul by Iyan Qalbi'),
-        subtitle: const Text(
-          'A Flutter kit for terminal-style apps, MIT licensed. Opens its '
-          'GitHub page.',
-        ),
+      _Action(
+        label: 'Design based on termul by Iyan Qalbi',
+        prefix: '→',
+        note:
+            'A Flutter kit for terminal-style apps, MIT licensed. Opens its '
+            'GitHub page.',
         onTap: () => openUrl(context, Uri.parse(termulUrl)),
-        trailing: IconButton(
-          tooltip: 'Iyan Qalbi on GitHub',
-          icon: const Icon(Icons.person_outline),
-          onPressed: () => openUrl(context, Uri.parse(termulAuthorUrl)),
-        ),
       ),
-      ListTile(
-        leading: const Icon(Icons.description_outlined),
-        title: const Text('Open-source licences'),
-        subtitle: const Text(
-          'The licence of every package and font Jeansh ships.',
-        ),
-        trailing: const Icon(Icons.chevron_right),
+      _Action(
+        label: 'Iyan Qalbi on GitHub',
+        prefix: '→',
+        note: 'The author of termul.',
+        onTap: () => openUrl(context, Uri.parse(termulAuthorUrl)),
+      ),
+      _Action(
+        label: 'Open-source licences',
+        prefix: '→',
+        note: 'The licence of every package and font Jeansh ships.',
         onTap: () =>
             showLicensePage(context: context, applicationName: 'Jeansh'),
       ),
@@ -1986,28 +2134,18 @@ class _NotificationsSection extends StatelessWidget {
   final NotifyKeys? notifyKeys;
 
   Future<void> _reset(BuildContext context, NotifyKeys notifyKeys) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Reset notification keys?'),
-        content: const Text(
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'reset keys',
+      message: 'Reset notification keys?',
+      detail:
           "Every host's key is revoked. Servers holding an old key stop "
           'notifying this device until their host reconnects and gets a new '
           'one.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Reset'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Reset',
+      cancelLabel: 'Cancel',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
 
     try {
       await notifyKeys.reset();
@@ -2041,14 +2179,13 @@ class _NotificationsSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionHeader('Notifications'),
-        ListTile(
-          leading: const Icon(Icons.restart_alt),
-          title: const Text('Reset notification keys'),
-          subtitle: const Text(
-            "Revoke every host's key, for when one has got out. A host's own "
-            'is copied from its edit page.',
-          ),
-          enabled: notifyKeys != null,
+        _Action(
+          label: 'Reset notification keys',
+          prefix: '↺',
+          variant: TuiButtonVariant.danger,
+          note:
+              "Revoke every host's key, for when one has got out. A host's "
+              'own is copied from its edit page.',
           onTap: notifyKeys == null ? null : () => _reset(context, notifyKeys),
         ),
       ],

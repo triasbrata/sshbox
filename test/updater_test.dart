@@ -118,7 +118,7 @@ _Net _goodBuild() {
 Future<void> checkAndDownload(WidgetTester tester) async {
   await tester.tap(find.text('Check for updates'));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('Download'));
+  await tester.tap(find.bySemanticsLabel('Download'));
   for (var i = 0; i < 10; i++) {
     await tester.pump();
     await tester.runAsync(
@@ -432,7 +432,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(net.asked, [_feed]);
     expect(find.text('Jeansh 1.0.63 is out'), findsOneWidget);
-    expect(find.text('Download'), findsOneWidget);
+    expect(find.bySemanticsLabel('Download'), findsOneWidget);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   testWidgets('a check that fails for any other reason leaves the row '
@@ -471,7 +471,7 @@ void main() {
     expect(find.text('Jeansh 1.0.63 is ready'), findsOneWidget);
     expect(find.textContaining('in your Downloads'), findsNothing);
 
-    await tester.tap(find.text('Restart to update'));
+    await tester.tap(find.bySemanticsLabel('Restart to update'));
     await tester.pump();
     expect(updater.installed, [
       '${downloads.path}${Platform.pathSeparator}'
@@ -497,7 +497,7 @@ void main() {
 
     await checkAndDownload(tester);
     expect(find.text('Jeansh 1.0.63 is in your Downloads'), findsOneWidget);
-    expect(find.text('Restart to update'), findsNothing);
+    expect(find.bySemanticsLabel('Restart to update'), findsNothing);
     expect(find.textContaining('cannot replace itself'), findsOneWidget);
     await tester.pumpAndSettle();
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
@@ -514,7 +514,7 @@ void main() {
     await pumpTile(tester, updater);
 
     await checkAndDownload(tester);
-    await tester.tap(find.text('Restart to update'));
+    await tester.tap(find.bySemanticsLabel('Restart to update'));
     await showToasts(tester);
 
     expect(find.text('Jeansh 1.0.63 is in your Downloads'), findsOneWidget);
@@ -539,14 +539,14 @@ void main() {
 
     await tester.tap(find.text('Check for updates'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Download'));
+    await tester.tap(find.bySemanticsLabel('Download'));
     await tester.pump();
     body.add([1, 2, 3]);
     await tester.pump();
 
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pump();
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pump();
     expect(tester.takeException(), isNull);
 
@@ -562,7 +562,7 @@ void main() {
       );
     }
     await tester.pumpAndSettle();
-    expect(find.text('Cancel'), findsNothing);
+    expect(find.bySemanticsLabel('Cancel'), findsNothing);
     expect(downloads.listSync(), isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 }
