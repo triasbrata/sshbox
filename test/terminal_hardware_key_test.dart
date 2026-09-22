@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -195,6 +197,75 @@ void main() {
     input.updateEditingValue(_inserted('t'));
 
     expect(sent, ['a', '\x14']);
+  });
+
+  /// A key the soft keyboard sends as an event rather than an edit, the way
+  /// Android delivers it: the key data first, then the raw message carrying
+  /// what only Android knows — Gboard's KEYCODE_DEL through
+  /// `InputConnection.sendKeyEvent` has FLAG_SOFT_KEYBOARD and
+  /// FLAG_KEEP_TOUCH_MODE set and comes from the virtual keyboard, device -1.
+  /// With [soft] false it is the same key from a real keyboard instead.
+  Future<void> androidKey(LogicalKeyboardKey key, {bool soft = true}) async {
+    for (final down in [true, false]) {
+      // ignore: deprecated_member_use
+      ServicesBinding.instance.keyEventManager.handleKeyData(ui.KeyData(
+        type: down ? ui.KeyEventType.down : ui.KeyEventType.up,
+        physical: PhysicalKeyboardKey.backspace.usbHidUsage,
+        logical: key.keyId,
+        timeStamp: Duration.zero,
+        character: null,
+        synthesized: false,
+      ));
+      final raw = KeyEventSimulator.getKeyData(key,
+          platform: 'android', isDown: down)
+        ..['flags'] = soft ? 0x6 : 0x8
+        ..['deviceId'] = soft ? -1 : 3;
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(SystemChannels.keyEvent.name,
+              SystemChannels.keyEvent.codec.encodeMessage(raw), (_) {});
+    }
+  }
+
+  testWidgets('a Backspace the soft keyboard sends as a key keeps it open',
+      (tester) async {
+    await pumpPane(tester);
+
+    // Gboard, with nothing it believes it can delete before the caret, sends
+    // Backspace as a key. Counted as a hardware keyboard, it shut the soft
+    // keyboard mid-sentence.
+    await androidKey(LogicalKeyboardKey.backspace);
+    await androidKey(LogicalKeyboardKey.backspace);
+
+    expect(input.hasInputConnection, isTrue);
+    expect(sent, ['\x7f', '\x7f']);
+  });
+
+  testWidgets('the same Backspace from a real Android keyboard still shuts it',
+      (tester) async {
+    await pumpPane(tester);
+
+    // FLAG_FROM_SYSTEM, from a keyboard device of its own.
+    await androidKey(LogicalKeyboardKey.backspace, soft: false);
+
+    expect(input.hasInputConnection, isFalse);
+    expect(sent, ['\x7f']);
+  });
+
+  testWidgets('after a soft Backspace, one tap raises the keyboard',
+      (tester) async {
+    await pumpPane(tester);
+    await androidKey(LogicalKeyboardKey.backspace);
+
+    // The user dismisses the keyboard, then taps the terminal to type again.
+    tester.testTextInput.hide();
+    tester.testTextInput.log.clear();
+    input.requestKeyboard();
+    await tester.pump();
+
+    expect(
+      tester.testTextInput.log.map((call) => call.method),
+      contains('TextInput.show'),
+    );
   });
 
   testWidgets('under the kitty protocol a key goes once, its release only '

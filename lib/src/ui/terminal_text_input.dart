@@ -121,12 +121,16 @@ class TerminalTextInputState extends State<TerminalTextInput>
   void initState() {
     super.initState();
     widget.focusNode.addListener(_onFocusChange);
+    // ignore: deprecated_member_use
+    RawKeyboard.instance.addListener(_onRawKey);
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
   }
 
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    // ignore: deprecated_member_use
+    RawKeyboard.instance.removeListener(_onRawKey);
     widget.focusNode.removeListener(_onFocusChange);
     _closeConnection();
     super.dispose();
@@ -198,10 +202,43 @@ class TerminalTextInputState extends State<TerminalTextInput>
   /// which inserts it as text. All three need a live connection.
   ///
   /// Only watches: the key still goes wherever it was going.
+  ///
+  /// Not every key event is a hardware keyboard, though. The soft keyboard
+  /// itself sends some keys as events rather than edits — Gboard sends
+  /// Backspace as KEYCODE_DEL through `InputConnection.sendKeyEvent` whenever
+  /// it thinks there is nothing before the caret to delete, and other IMEs do
+  /// the same with Enter — and Flutter feeds those into [HardwareKeyboard] like any other key.
+  /// Counted as hardware, one Backspace shut the soft keyboard mid-sentence,
+  /// and every tap after it gave focus and no keyboard. See [_onRawKey].
   bool _onHardwareKey(KeyEvent event) {
+    if (_softKey) return false;
     _hardwareKeyboard = true;
     _closeConnection();
     return false;
+  }
+
+  /// Whether the key being dispatched came from the soft keyboard. Only
+  /// Android says, and only on the raw event: [KeyEvent] drops the flags and
+  /// the device. `KeyEventManager` hands each press to `RawKeyboard`'s
+  /// listeners before [HardwareKeyboard]'s handlers, so this is always the
+  /// press [_onHardwareKey] is looking at.
+  var _softKey = false;
+
+  /// Android's `KeyEvent.FLAG_SOFT_KEYBOARD`, which an IME sets on a key it
+  /// sends, and `KeyCharacterMap.VIRTUAL_KEYBOARD`, the device such a key
+  /// comes from. A hardware key an IME only passes on keeps its own device and
+  /// flags, and still counts.
+  static const _flagSoftKeyboard = 0x2;
+  static const _virtualKeyboard = -1;
+
+  // ignore: deprecated_member_use
+  void _onRawKey(RawKeyEvent event) {
+    final data = event.data;
+    _softKey =
+        // ignore: deprecated_member_use
+        data is RawKeyEventDataAndroid &&
+        (data.flags & _flagSoftKeyboard != 0 ||
+            data.deviceId == _virtualKeyboard);
   }
 
   void _openConnection() {
