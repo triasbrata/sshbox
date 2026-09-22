@@ -17,13 +17,27 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # What NativeCrashes.scrub keeps, and so NativeCrashes.kt: anything else in a
 # native event is a leak.
 KEEP_EVENT = {"event_id", "timestamp", "level", "platform", "release", "dist",
-              "environment", "sdk", "fingerprint", "exception", "contexts"}
+              "environment", "sdk", "fingerprint", "exception", "contexts",
+              "debug_meta"}
 KEEP_OS = {"name", "version"}
 KEEP_DEVICE = {"family", "model", "manufacturer", "brand", "archs", "arch", "simulator"}
 KEEP_EXCEPTION = {"type", "value", "module", "thread_id", "mechanism", "stacktrace"}
 KEEP_MECHANISM = {"type", "handled", "synthetic"}
 KEEP_FRAME = {"function", "module", "filename", "package", "lineno", "colno",
-              "in_app", "platform"}
+              "in_app", "platform", "instruction_addr"}
+KEEP_IMAGE = {"type", "uuid", "debug_id", "image_addr", "image_size", "code_file"}
+
+
+def paths(value, where=""):
+    """Every string in an event that is a path rather than a bare name."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from paths(v, f"{where}.{k}")
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield from paths(v, f"{where}[{i}]")
+    elif isinstance(value, str) and "/" in value:
+        yield f"{where}: {value!r}"
 
 
 def serve(port, out):
@@ -78,6 +92,30 @@ def outside_allowlist(event):
             bad.append(f"exception value: {e['value']!r}")
         for f in e.get("stacktrace", {}).get("frames", []):
             bad += extra_keys("frame", f, KEEP_FRAME)
+    meta = event.get("debug_meta", {})
+    bad += extra_keys("debug_meta", meta, {"images"})
+    for image in meta.get("images", []):
+        bad += extra_keys("image", image, KEEP_IMAGE)
+    bad += [f"a path at {p}" for p in paths(event)]
+    return bad
+
+
+def symbolicable(event):
+    """The crash keeps what symbolication needs: addresses and images."""
+    bad = []
+    frames = [f for e in event.get("exception", {}).get("values", [])
+              for f in e.get("stacktrace", {}).get("frames", [])]
+    if not frames or not all(f.get("instruction_addr") for f in frames):
+        bad.append("a frame without its instruction_addr")
+    images = event.get("debug_meta", {}).get("images", [])
+    if not images:
+        bad.append("no debug_meta images")
+    for image in images:
+        for key in ("type", "image_addr", "image_size", "code_file"):
+            if not image.get(key):
+                bad.append(f"an image without {key}: {image}")
+        if not (image.get("uuid") or image.get("debug_id")):
+            bad.append(f"an image without an id: {image}")
     return bad
 
 
@@ -116,6 +154,8 @@ def check(out, mode):
         for raw, event in native:
             what = f"{event.get('level')} {event.get('event_id')}"
             failures += [f"{what}: {b}" for b in outside_allowlist(event)]
+        if crash:
+            failures += [f"crash: {b}" for b in symbolicable(crash[0])]
             text = raw.decode("utf-8", "replace")
             failures += [f"{what}: {leak!r} in the envelope" for leak in leaks if leak in text]
         print("--- the NSError, as sent ---")

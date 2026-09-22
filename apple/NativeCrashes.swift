@@ -89,17 +89,23 @@ enum NativeCrashes {
   /// filling in is dropped without anyone having to notice it.
   ///
   /// Gone by construction: the user (the install's Sentry id), the request,
-  /// the server name, the message, tags, extras, breadcrumbs, modules, every
-  /// thread and the debug images (on a Mac an image's path holds the user's
-  /// name, on iOS a folder made per install); every context but os and
-  /// device, so the app's start time, install hash and in-foreground flag,
-  /// the trace, the culture and the runtime; the OS's build, kernel version
-  /// (xnu's uname, root:xnu-… and all) and rooted flag; the device's name,
-  /// model_id, memory, free and total storage, boot time, locale, timezone,
-  /// battery and screen. Swift has no scrubber, so an exception's value goes
-  /// too: SentryCrash fills it with an NSException's reason, a Swift runtime
-  /// message, or strings read from the crashed thread's registers. And so do
-  /// every frame's addresses, which with the images gone name nothing.
+  /// the server name, the message, tags, extras, breadcrumbs, modules and
+  /// every thread; every context but os and device, so the app's start time,
+  /// install hash and in-foreground flag, the trace, the culture and the
+  /// runtime; the OS's build, kernel version (xnu's uname, root:xnu-… and
+  /// all) and rooted flag; the device's name, model_id, memory, free and
+  /// total storage, boot time, locale, timezone, battery and screen. Swift
+  /// has no scrubber, so an exception's value goes too: SentryCrash fills it
+  /// with an NSException's reason, a Swift runtime message, or strings read
+  /// from the crashed thread's registers.
+  ///
+  /// What symbolication needs is kept, reduced: each frame's instruction
+  /// address, and each debug image by its format, ids, load address and size,
+  /// its file cut to a bare name — on a Mac an image's path holds the user's
+  /// name, on iOS a folder made per install. A load address is where this one
+  /// process happened to put the image, chosen afresh each run, and an
+  /// image's ids name the build it came from, the same for everyone running
+  /// it; neither says whose machine it was.
   static func scrub(_ event: Event) -> Event? {
     // A transaction reaches beforeSend too, and rebuilt it would go out as an
     // error. Tracing is off, so there are none; one that turns up goes.
@@ -115,6 +121,7 @@ enum NativeCrashes {
     out.sdk = event.sdk
     out.fingerprint = event.fingerprint
     out.exceptions = event.exceptions?.map(exception)
+    out.debugMeta = event.debugMeta?.map(image)
 
     var context: [String: [String: Any]] = [:]
     if let os = event.context?["os"] {
@@ -153,9 +160,11 @@ enum NativeCrashes {
     return out
   }
 
-  /// A frame by name only. An image's path is cut to its file name.
+  /// A frame by name and instruction address. An image's path is cut to its
+  /// file name.
   private static func frame(_ f: Frame) -> Frame {
     let out = Frame()
+    out.instructionAddress = f.instructionAddress
     out.function = f.function
     out.module = f.module
     out.fileName = f.fileName.map(lastComponent)
@@ -164,6 +173,19 @@ enum NativeCrashes {
     out.columnNumber = f.columnNumber
     out.inApp = f.inApp
     out.platform = f.platform
+    return out
+  }
+
+  /// An image as symbolication needs it. `type` says whether the ids are a
+  /// Mach-O's or something else's, without which Sentry reads none of it.
+  private static func image(_ i: DebugMeta) -> DebugMeta {
+    let out = DebugMeta()
+    out.type = i.type
+    out.uuid = i.uuid
+    out.debugID = i.debugID
+    out.imageAddress = i.imageAddress
+    out.imageSize = i.imageSize
+    out.codeFile = i.codeFile.map(lastComponent)
     return out
   }
 

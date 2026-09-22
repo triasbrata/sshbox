@@ -6,6 +6,8 @@ import io.sentry.Sentry
 import io.sentry.SentryEvent
 import io.sentry.SentryOptions
 import io.sentry.android.core.SentryAndroid
+import io.sentry.protocol.DebugImage
+import io.sentry.protocol.DebugMeta
 import io.sentry.protocol.Device
 import io.sentry.protocol.Mechanism
 import io.sentry.protocol.OperatingSystem
@@ -65,11 +67,18 @@ object NativeCrashes {
      * memory, storage and connection; the OS's build, kernel version, raw
      * description and rooted flag; the app context and its install hash; tags,
      * which carry the installer store and whether it was side-loaded; extras,
-     * breadcrumbs, the trace context and its thread name, threads, debug meta,
-     * the message, the transaction and the server name. What is kept is what
-     * Dart keeps, less what Dart can scrub and Kotlin cannot: an exception's
-     * value — its message, which for a Java exception can be a path or a URI —
-     * goes, and so do every frame's addresses, registers and variables.
+     * breadcrumbs, the trace context and its thread name, threads, the
+     * message, the transaction and the server name. What is kept is what Dart
+     * keeps, less what Dart can scrub and Kotlin cannot: an exception's value —
+     * its message, which for a Java exception can be a path or a URI — goes,
+     * and so do every frame's registers and variables.
+     *
+     * What symbolication needs is kept, reduced: each frame's instruction
+     * address, and each debug image by its format, ids, load address and size,
+     * its file cut to a bare name. A load address is where this one process
+     * happened to put the library, chosen afresh each run, and an image's ids
+     * name the build it came from, the same for everyone running it; neither
+     * says whose device it was. The rest of an image and of debug meta goes.
      */
     fun scrub(event: SentryEvent, hint: Hint): SentryEvent {
         // Screenshots, view hierarchies, ANR thread dumps, raw tombstones and
@@ -90,6 +99,9 @@ object NativeCrashes {
             sdk = event.sdk
             fingerprints = event.fingerprints
             exceptions = event.exceptions?.map(::exception)
+            debugMeta = event.debugMeta?.images?.let { images ->
+                DebugMeta().apply { this.images = images.map(::image) }
+            }
             event.contexts.operatingSystem?.let { os ->
                 contexts.setOperatingSystem(
                     OperatingSystem().apply {
@@ -130,7 +142,7 @@ object NativeCrashes {
     }
 
     /**
-     * A frame by name only. A library's path is cut to its file name, since
+     * A frame by name and instruction address. A library's path is cut to its file name, since
      * an app's own libraries sit under /data/app/~~<random>==/, a folder made
      * per install.
      */
@@ -139,10 +151,25 @@ object NativeCrashes {
         module = f.module
         filename = f.filename?.substringAfterLast('/')
         `package` = f.`package`?.substringAfterLast('/')
+        instructionAddr = f.instructionAddr
         lineno = f.lineno
         colno = f.colno
         isInApp = f.isInApp
         isNative = f.isNative
         platform = f.platform
+    }
+
+    /**
+     * An image as symbolication needs it. `type` says whether the ids are an
+     * ELF's, a Mach-O's or a ProGuard mapping's, without which Sentry reads
+     * none of it.
+     */
+    private fun image(i: DebugImage) = DebugImage().apply {
+        type = i.type
+        uuid = i.uuid
+        debugId = i.debugId
+        imageAddr = i.imageAddr
+        imageSize = i.imageSize
+        codeFile = i.codeFile?.substringAfterLast('/')
     }
 }

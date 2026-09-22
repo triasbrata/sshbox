@@ -6,6 +6,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+// Come with flutter_local_notifications, and are needed only to make the
+// Linux plugin without loading libc. The plugin is named from its own file
+// because the package's export picks a stub without it for the analyzer.
+// ignore: depend_on_referenced_packages, implementation_imports
+import 'package:flutter_local_notifications_linux/src/flutter_local_notifications.dart'
+    as linux;
+// ignore: depend_on_referenced_packages, implementation_imports
+import 'package:flutter_local_notifications_linux/src/notifications_manager.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -106,7 +114,11 @@ class _BareNotifications extends FlutterLocalNotificationsPlatform {}
 
 /// A Linux desktop with no notification server, as a bare window manager or
 /// a headless session has: D-Bus refuses every post to a name nobody owns.
-class _NoNotificationServer extends LinuxFlutterLocalNotificationsPlugin {
+class _NoNotificationServer extends linux.LinuxFlutterLocalNotificationsPlugin {
+  // The plugin's own manager opens libc.so.6 as it is made, which only a
+  // Linux machine has, and this one's show and cancel never reach it.
+  _NoNotificationServer() : super.private(_NoManager());
+
   @override
   Future<void> show({
     required int id,
@@ -119,6 +131,12 @@ class _NoNotificationServer extends LinuxFlutterLocalNotificationsPlugin {
   @override
   Future<void> cancel({required int id}) =>
       Future.error(const _ServiceUnknown());
+}
+
+/// Stands in for the manager, so the test runs on a Mac too.
+class _NoManager implements LinuxNotificationManager {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 /// Stands in for dbus's DBusServiceUnknownException, the package being no
@@ -929,9 +947,8 @@ void main() {
         'types its path, and throws nothing', (tester) async {
       FlutterLocalNotificationsPlatform.instance = _NoNotificationServer();
       // As the app does: every upload goes through [transfers].
-      await NotificationGateway(
-        onOpenLink: (_) async {},
-      ).followTransfers(transfers);
+      await NotificationGateway(onOpenLink: (_) async {})
+          .followTransfers(transfers);
       await pumpLocal(tester);
       desktopClipboard = _PictureClipboard(
         File('${temp.path}/source.png')..writeAsBytesSync([1, 2, 3]),

@@ -14,6 +14,7 @@ import io.sentry.protocol.Device
 import io.sentry.protocol.Mechanism
 import io.sentry.protocol.Message
 import io.sentry.protocol.OperatingSystem
+import io.sentry.protocol.SdkInfo
 import io.sentry.protocol.SentryException
 import io.sentry.protocol.SentryStackFrame
 import io.sentry.protocol.SentryStackTrace
@@ -46,7 +47,19 @@ class NativeCrashesTest {
         addBreadcrumb(Breadcrumb("breadcrumb-leak"))
         threads = listOf(SentryThread().apply { name = "thread-leak" })
         debugMeta = DebugMeta().apply {
-            images = listOf(DebugImage().apply { codeFile = "/data/app/~~rand-leak==/libflutter.so" })
+            images = listOf(
+                DebugImage().apply {
+                    type = "elf"
+                    debugId = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+                    codeId = "codeid-leak"
+                    codeFile = "/data/app/~~rand-leak==/lib/arm64/libflutter.so"
+                    debugFile = "/data/app/~~rand-leak==/libflutter.so.debug"
+                    imageAddr = "0x7b4c000000"
+                    imageSize = 12648448L
+                    arch = "arch-leak"
+                },
+            )
+            sdkInfo = SdkInfo().apply { sdkName = "sdkinfo-leak" }
         }
         contexts.setOperatingSystem(
             OperatingSystem().apply {
@@ -91,7 +104,9 @@ class NativeCrashesTest {
                         SentryStackFrame().apply {
                             function = "art::JniMethodStart"
                             `package` = "/data/app/~~rand-leak==/cloud.brata.terminal-rand-leak==/lib/arm64/libflutter.so"
-                            instructionAddr = "0xaddr-leak"
+                            instructionAddr = "0x7b4c123456"
+                            symbolAddr = "0xsymbol-leak"
+                            imageAddr = "0ximage-addr-leak"
                             vars = mapOf("local" to "var-leak")
                         },
                     ),
@@ -101,7 +116,7 @@ class NativeCrashesTest {
     }
 
     @Test
-    fun keepsWhatDartKeepsAndNothingElse() {
+    fun keepsWhatDartKeepsAndWhatSymbolicationNeeds() {
         val crash = crash()
         val hint = Hint().apply {
             addAttachment(Attachment(byteArrayOf(1), "scope.txt"))
@@ -122,6 +137,12 @@ class NativeCrashesTest {
             "SIGSEGV", "signalhandler", "art::JniMethodStart", "\"libflutter.so\"",
             "\"Android\"", "\"16\"", "25091RP04C", "Xiaomi", "Redmi", "arm64-v8a",
             "cloud.brata.terminal@1.0.79+83", "\"release\"", "\"native\"",
+            // Symbolication: the frame's address, and the image by its ids,
+            // load address, size and bare file name.
+            "\"instruction_addr\":\"0x7b4c123456\"", "\"type\":\"elf\"",
+            "\"debug_id\":\"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0\"",
+            "\"image_addr\":\"0x7b4c000000\"", "\"image_size\":12648448",
+            "\"code_file\":\"libflutter.so\"",
         )) {
             assertTrue("$kept not in $json", json.contains(kept))
         }
