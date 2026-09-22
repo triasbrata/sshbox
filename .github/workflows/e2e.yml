@@ -46,9 +46,9 @@ on:
         type: string
         default: ''
       only:
-        description: Run every job, or the Linux desktop job alone
+        description: Run every job, the Linux desktop job alone, or the Android one alone
         type: choice
-        options: [all, linux-desktop]
+        options: [all, linux-desktop, android]
         default: all
       block:
         description: One Android block to run alone after seed_host, or empty for every flow
@@ -272,6 +272,7 @@ jobs:
   # releases the moment it landed. It reports until it has been green a while,
   # as every new check here does, and joins the gate only by choice.
   desktop:
+    if: inputs.only != 'android'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     continue-on-error: true
@@ -331,7 +332,7 @@ jobs:
   # would only hold a release back for a result nothing gates on. tag.yml runs
   # on a push, so its call never sees this job; a workflow_dispatch does.
   desktop-macos:
-    if: github.event_name == 'workflow_dispatch' && inputs.only != 'linux-desktop'
+    if: github.event_name == 'workflow_dispatch' && inputs.only == 'all'
     runs-on: macos-latest
     timeout-minutes: 40
     continue-on-error: true
