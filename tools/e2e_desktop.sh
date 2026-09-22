@@ -50,14 +50,17 @@ case "$target" in
     # times out, and what fails reads as an app bug rather than a runner
     # missing its keyring. Unlocked with an empty password.
     #
-    # Both in a data folder of the run's own, gone after it: the keyring's
-    # files, and the app's own preferences and saved tabs. A run starts from a
-    # clean app, as on CI, and never opens this machine's keyring or leaves a
-    # restored tab behind for a Jeansh someone uses here.
+    # All in a data folder of the run's own, gone after it: the keyring's
+    # files, the app's own preferences and saved tabs, and the tmux server a
+    # Local shell starts, killed as the run ends. A run starts from a clean
+    # app, as on CI, and never opens this machine's keyring, leaves a restored
+    # tab behind for a Jeansh someone uses here, or touches their tmux.
     exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
       dbus-run-session -- sh -c '
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
-        trap "rm -rf \"$XDG_DATA_HOME\"" EXIT
+        TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR
+        unset TMUX TMUX_PANE
+        trap "tmux kill-server 2>/dev/null; rm -rf \"$XDG_DATA_HOME\"" EXIT
         printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
         tests=$1 && shift
         flutter test "$tests" -d linux "$@"' sh "$tests" "$@"

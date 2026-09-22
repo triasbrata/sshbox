@@ -75,15 +75,16 @@ Future<void> _until(
 
 /// A Local shell opened from its card, holding focus, ready to be typed into.
 ///
-/// A plain login shell rather than tmux: tmux between a program and Jeansh
-/// answers or drops some sequences itself, which would make these tests of
-/// tmux. Saved, not only set, so the Local tabs an earlier test left come back
-/// plain at the next launch too — held in memory alone, the next launch read
-/// tmux on again and brought them back as tmux tabs whose session never was.
-/// The run's data folder is its own (tools/e2e_desktop.sh), so nothing of this
-/// machine's is changed.
-Future<TerminalView> _localShell(WidgetTester tester) async {
-  await localTmux.choose(on: false);
+/// A plain login shell unless [tmux]: tmux between a program and Jeansh
+/// answers or drops some sequences itself, which would make the other tests
+/// ones of tmux. Saved, not only set, so a later launch reads the same — held
+/// in memory alone, the next launch read tmux on again. The run's data folder
+/// is its own (tools/e2e_desktop.sh), so nothing of this machine's is changed.
+Future<TerminalView> _localShell(
+  WidgetTester tester, {
+  bool tmux = false,
+}) async {
+  await localTmux.choose(on: tmux);
   // The card, not a tab of the same name brought back from a run before.
   await tester.tap(find.widgetWithText(Card, 'Local shell'));
   // Ready once it holds focus and its shell has drawn a prompt: typed before
@@ -137,6 +138,21 @@ Directory _scratch() {
   final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
   addTearDown(() => dir.deleteSync(recursive: true));
   return dir;
+}
+
+/// Picks [item] from a menu once it has finished opening. A menu grows open,
+/// and its items are built before they can be hit: tapped as soon as one is
+/// built, the tap can land on the barrier beside a clipped item, which shuts
+/// the menu and does nothing — a test that passed or failed on the machine's
+/// speed.
+Future<void> _pick(WidgetTester tester, String item) async {
+  await _until(
+    tester,
+    () => find.text(item).evaluate().isNotEmpty,
+    'the menu to offer $item',
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  await tester.tap(find.text(item));
 }
 
 /// Closes every tab, so the next test's launch brings none back. A Local tab
@@ -384,12 +400,7 @@ touch '${done.path}'
         kind: PointerDeviceKind.mouse,
         buttons: kSecondaryMouseButton,
       );
-      await _until(
-        tester,
-        () => find.text('Copy').evaluate().isNotEmpty,
-        'the right-click menu to offer Copy',
-      );
-      await tester.tap(find.text('Copy'));
+      await _pick(tester, 'Copy');
       expect(
         await copied(),
         'git push origin',
@@ -437,12 +448,7 @@ touch '${done.path}'
         kind: PointerDeviceKind.mouse,
         buttons: kSecondaryMouseButton,
       );
-      await _until(
-        tester,
-        () => find.text('Duplicate session').evaluate().isNotEmpty,
-        "the tab's right-click menu",
-      );
-      await tester.tap(find.text('Duplicate session'));
+      await _pick(tester, 'Duplicate session');
       await _until(
         tester,
         () => tabs.evaluate().length == before + 1,
@@ -534,6 +540,74 @@ touch '${done.path}'
       expect(old.dx, lessThan(now.dx),
           reason: 'the old line is not on the left');
       await _closeTabs(tester);
+    },
+  );
+
+  // #18: where the machine has tmux, the Local shell runs in it, as a tmux
+  // host's tabs do — an sshbox- session on the machine's own tmux server, a
+  // tab that splits into panes, and the session ended by the tab's ✕.
+  //
+  // Linux only: tools/e2e_desktop.sh gives the run a tmux server of its own
+  // there, through TMUX_TMPDIR, and elsewhere this would open sessions on the
+  // server of whoever runs it.
+  testWidgets(
+    'a Local shell runs in tmux where the machine has it',
+    skip: !Platform.isLinux,
+    (tester) async {
+      Future<List<String>> sessions() async {
+        final listed = await Process.run('tmux', [
+          'list-sessions',
+          '-F',
+          '#{session_name}',
+        ]);
+        return '${listed.stdout}'
+            .split('\n')
+            .where((name) => name.startsWith('sshbox-'))
+            .toList();
+      }
+
+      expect(await sessions(), isEmpty, reason: 'the run began with a session');
+      await _launch(tester);
+      await _localShell(tester, tmux: true);
+      await _until(
+        tester,
+        () async => (await sessions()).length == 1,
+        'an sshbox- session on the tmux server',
+      );
+
+      // A tmux tab's menu, which a plain shell's lacks, splits it.
+      final close = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+      );
+      await tester.tapAt(
+        tester.getCenter(
+          find.ancestor(of: close.first, matching: find.byType(InkWell)).first,
+        ),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _pick(tester, 'Split right');
+      await _until(tester, () async {
+        final listed = await Process.run('tmux', [
+          'list-panes',
+          '-a',
+          '-F',
+          '#{pane_id}',
+        ]);
+        return '${listed.stdout}'.trim().split('\n').length == 2;
+      }, 'tmux to split the session in two');
+      await _until(
+        tester,
+        () => find.byType(TerminalView).evaluate().length == 2,
+        'two panes side by side',
+      );
+
+      await _closeTabs(tester);
+      await _until(
+        tester,
+        () async => (await sessions()).isEmpty,
+        "the session to end with its tab's ✕",
+      );
     },
   );
 }
