@@ -18,6 +18,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -37,6 +38,7 @@ import 'package:sshbox/src/ui/terminal_paste.dart' show desktopClipboard;
 import 'package:xterm2/xterm.dart' show TerminalView;
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
+import 'fake_drop.dart';
 import 'fake_web_view.dart';
 
 import 'package:url_launcher_platform_interface/link.dart';
@@ -965,6 +967,56 @@ void main() {
       expect(find.text('Uploaded to ${typed.trimRight()}'), findsOneWidget);
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('of a picture into a program that asked for bracketed paste '
+        'pastes its path, which Claude Code turns into [Image #N]', (
+      tester,
+    ) async {
+      final session = await pumpLocal(tester);
+      session.terminal.write('\x1b[?2004h');
+      desktopClipboard = _PictureClipboard(
+        File('${temp.path}/source.png')..writeAsBytesSync([1, 2, 3]),
+      );
+      addTearDown(() => desktopClipboard = DesktopClipboard());
+
+      await paste(tester);
+
+      final typed = pty.typed.toString();
+      expect(typed, startsWith('\x1b[200~/'));
+      expect(typed, endsWith('/shot.png \x1b[201~'));
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    // Escaped as iTerm2 escapes a drop, which Claude Code still takes as an
+    // image and a shell reads as one word, bracketed or not.
+    const escaped = r"it\'s\ a\ shot\ \(1\).png";
+
+    testWidgets('a file dropped on a Local shell pastes its own path, '
+        'escaped for the shell, nothing copied', (tester) async {
+      await pumpLocal(tester);
+      final file = File("${temp.path}/it's a shot (1).png")
+        ..writeAsStringSync('x');
+
+      await dropOnTerminal(tester, [file.path]);
+      await tester.pump();
+
+      expect(pty.typed.toString(), '${temp.path}/$escaped ');
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('and bracketed, still escaped, when the program asked for '
+        'it: bash 5.1 does, and would split the raw name', (tester) async {
+      final session = await pumpLocal(tester);
+      session.terminal.write('\x1b[?2004h');
+      final file = File("${temp.path}/it's a shot (1).png")
+        ..writeAsStringSync('x');
+
+      await dropOnTerminal(tester, [file.path]);
+      await tester.pump();
+
+      expect(pty.typed.toString(), '\x1b[200~${temp.path}/$escaped \x1b[201~');
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     test('keeps an earlier picture of the same name, and goes with the '
         'tab', () async {
