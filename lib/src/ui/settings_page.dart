@@ -334,6 +334,31 @@ class GitPanelSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True is the drawer.
 final gitInDrawer = GitPanelSetting();
 
+/// Whether the files tree lists dotfiles. One choice for the whole app, as
+/// VS Code's is, and kept: the drawer builds its tree anew each time it opens,
+/// so a choice held by the tree itself went back to hidden every time it shut.
+class DotfilesSetting extends ValueNotifier<bool> {
+  DotfilesSetting() : super(false);
+
+  static const _key = 'sshbox.files.dotfiles';
+
+  /// Reads the saved choice. Nothing saved is hidden, as the tree always was.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? false;
+  }
+
+  /// Shows or hides them at once, and is saved for the next start.
+  Future<void> choose(bool show) async {
+    value = show;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, show);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it. True shows them.
+final showDotfiles = DotfilesSetting();
+
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.notifyKeys});

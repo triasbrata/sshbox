@@ -374,16 +374,30 @@ and was matched by the "Hosts" section header, which is itself only drawn when
 the list has hosts and a heading. A green assertion on the wrong widget is
 worse than a red one. Assert on something that can only be the thing you mean.
 
-**Selectors need regex, open at both ends.** Flutter merges a card's texts into
-a single accessibility node, and Maestro regex-matches the whole string, so
-plain text will not match; selectors use `"(?s).*WSL via.*"`. The wildcard in
-front is not optional. A host that has never connected reads
-`"WSL via tailnet\n…"`, but the first connection saves its OS and from then on
-the card leads with the badge — `"24.04.5 LTS\nWSL via tailnet\n…"` — so a
-selector anchored at the name passes on a fresh host and fails on a used one.
-That is how the release gate's second run failed, with the row plainly on
-screen. This is correct screen-reader behaviour, so the selector adapts rather
-than the app.
+**A host selector must match the card and nothing else.** Flutter merges a
+card's texts into one accessibility node and Maestro regex-matches the whole
+string, so plain text will not match. Two ways to get it wrong, both made here:
+
+- *Anchored at the name* — `"(?s)WSL via.*"` — matches a host that has never
+  connected, but the first connection saves its OS and from then on the card
+  leads with the badge (`"24.04.5 LTS\nWSL via tailnet\n…"`), so it stops
+  matching the moment the host is used.
+- *Open at the front* — `"(?s).*WSL via.*"` — also matches
+  `"Close WSL via tailnet"`, the close button of a tab restored from a session
+  the app was killed in. Maestro takes the first, deepest match, which is that
+  button, so "tap the host" closed the tab instead. It looked like a dead tap in
+  the app and was blamed on it; it was this selector.
+
+What only the card has is several lines — label, user@host, auth — where a
+tab's name and its close button are one each. So flows use
+`'(?s).*${HOST_LABEL}.*\n.*'`, single-quoted so YAML leaves the `\n` to the
+regex. Aiming at a tab's name instead, as `duplicate_session` does to long-press
+it, use the anchored form, which a close button starting "Close" cannot match.
+
+**Every flow closes what it opens.** A session left live survives the app being
+stopped and comes back as a restored tab, which a later flow then trips over. A
+gating flow's clean-up is optional, since a gate must never fail on its own
+housekeeping; everywhere else it is required.
 
 **`-e` does not override a flow's `env:`.** In Maestro 2.10 a flow's own `env:`
 block is applied after the command line's, so `maestro test -e HOST_LABEL=…` is

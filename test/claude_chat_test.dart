@@ -194,6 +194,17 @@ const _live = ClaudeAgent(
   pid: 1241689,
 );
 
+/// [_live], had somebody typed `claude` into a terminal instead: no short id
+/// to attach to, and no state.
+final _interactive = ClaudeAgent(
+  sessionId: _live.sessionId,
+  name: _live.name,
+  cwd: _live.cwd,
+  kind: 'interactive',
+  status: 'idle',
+  pid: _live.pid,
+);
+
 /// [_live], once its process has gone: continued in place, not watched.
 final _finished = ClaudeAgent(
   sessionId: _live.sessionId,
@@ -214,9 +225,26 @@ CommandChannel _noHistory() => (
 /// the follow command a channel this test writes into as the session goes
 /// on, and Claude itself — if anything starts it — a channel of its own.
 class _LiveHost {
-  _LiveHost(this.history, {this.state = 'done', this.status, this.waitingFor});
+  _LiveHost(
+    this.history, {
+    this.state = 'done',
+    this.status,
+    this.waitingFor,
+    this.interactive = false,
+  });
 
   final String history;
+
+  /// Whether the watched session is one somebody started at a terminal:
+  /// listed with no short id and no state, as the CLI lists one.
+  final bool interactive;
+
+  /// What finding its tmux pane answers, and what typing into it answers.
+  String pane = 'sshbox:pane %3\n';
+  String typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+
+  /// Every command that typed into a pane, and what went to it on stdin.
+  final paneTyping = <({String command, List<String> stdin})>[];
 
   /// What `claude agents` says the watched session is doing right now.
   String? state;
@@ -265,6 +293,21 @@ class _LiveHost {
 
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('list-panes')) {
+      final stdin = <String>[];
+      if (command.contains('load-buffer')) {
+        paneTyping.add((command: command, stdin: stdin));
+      }
+      return (
+        output: Stream.value(
+          Uint8List.fromList(
+            utf8.encode(command.contains('load-buffer') ? typedAnswer : pane),
+          ),
+        ),
+        write: (Uint8List data) => stdin.add(utf8.decode(data)),
+        close: () {},
+      );
+    }
     final started = listed;
     if (command.contains('agents --json') && started != null) {
       return (
@@ -279,13 +322,13 @@ class _LiveHost {
       final listed = jsonEncode([
         {
           'pid': _live.pid,
-          'id': _live.id,
+          if (!interactive) 'id': _live.id,
           'cwd': _live.cwd,
-          'kind': 'background',
+          'kind': interactive ? 'interactive' : 'background',
           'sessionId': _live.sessionId,
           'name': _live.name,
           'status': status ?? (state == 'working' ? 'busy' : 'idle'),
-          'state': ?state,
+          if (!interactive) 'state': ?state,
           'waitingFor': ?waitingFor,
         },
       ]);
@@ -1575,6 +1618,424 @@ void main() {
         Delivery.failed,
       );
     });
+
+    group('somebody started at a terminal', () {
+      test('in a tmux pane, it is typed into there — no attach — and shows '
+          'as sent only once the session has recorded it', () async {
+        final host = _LiveHost('0\n', interactive: true);
+        final chat = watcher(host);
+        await chat.continueFrom(_interactive);
+
+        // Found by the pane its terminal is, and said so; nothing read-only.
+        final find = host.commands.singleWhere((c) => c.contains('list-panes'));
+        expect(find, contains('p=${_live.pid};'));
+        expect(chat.readOnly, isNull);
+        expect(
+          chat.entries.whereType<ChatNotice>().last.text,
+          contains('in tmux pane %3, and what you send is typed into that '
+              'pane'),
+        );
+
+        chat.send('!is the build green?');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        // Its keystrokes on stdin, as for the attach: a space before the !,
+        // and the host told exactly how many bytes to take.
+        final typing = host.paneTyping.single;
+        expect(typing.stdin, [' !is the build green?']);
+        expect(typing.command, contains('head -c 21 '));
+        expect(host.terminals, isEmpty);
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.sending);
+
+        host.adds({
+          'type': 'user',
+          'message': {'role': 'user', 'content': ' !is the build green?'},
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        final mine = chat.entries.whereType<ChatSaid>().single;
+        expect(mine.text, '!is the build green?');
+        expect(mine.delivery, isNull);
+      });
+
+      // Mid-turn a permission prompt can come up at any moment, and a digit
+      // alone answers one, measured; at one, it is already up.
+      for (final (status, waitingFor) in [
+        ('busy', null),
+        ('waiting', 'permission prompt'),
+      ]) {
+        test('${waitingFor ?? status}, it is not typed into', () async {
+          final host = _LiveHost(
+            '0\n',
+            interactive: true,
+            status: status,
+            waitingFor: waitingFor,
+          );
+          final chat = watcher(host);
+          await chat.continueFrom(_interactive);
+
+          chat.send('1 more thing');
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+
+          expect(host.paneTyping, isEmpty);
+          final said = chat.entries.whereType<ChatSaid>().single;
+          expect(said.delivery, Delivery.failed);
+          expect(said.why, contains(waitingFor ?? 'middle of a turn'));
+        });
+      }
+
+      test('in no tmux pane, it is read-only, and says why rather than that '
+          'somebody is typing', () async {
+        final host = _LiveHost('0\n', interactive: true)
+          ..pane = 'sshbox:no pane\n';
+        final chat = watcher(host);
+        await chat.continueFrom(_interactive);
+
+        expect(chat.readOnly, contains('outside tmux'));
+        final notice = chat.entries.whereType<ChatNotice>().last.text;
+        expect(notice, contains('live, read-only: it runs in a terminal '
+            'outside tmux'));
+        expect(notice, isNot(contains('somebody is typing')));
+
+        chat.send('anything');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(host.paneTyping, isEmpty);
+        expect(
+          chat.entries.whereType<ChatSaid>().single.delivery,
+          Delivery.failed,
+        );
+      });
+
+      test('what the host refuses at the last moment is said, and a message '
+          'typed but not sent says where it is', () async {
+        final host = _LiveHost('0\n', interactive: true)
+          ..typedAnswer = 'sshbox:no draft\n';
+        final chat = watcher(host);
+        await chat.continueFrom(_interactive);
+
+        chat.send('first');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        host.typedAnswer = 'sshbox:pasted\nsshbox:no dialog\n';
+        chat.send('second');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        final [first, second] = chat.entries.whereType<ChatSaid>().toList();
+        expect(first.delivery, Delivery.failed);
+        expect(first.why, startsWith('Not typed: Something is typed into'));
+        expect(second.delivery, Delivery.failed);
+        expect(second.why, startsWith('Typed into “nginx look” but not sent'));
+        expect(second.why, contains('in its input line'));
+      });
+    });
+  });
+
+  group('typing into a tmux pane, through a real shell and a real tmux', () {
+    final hasTmux =
+        Process.runSync('sh', ['-c', 'command -v tmux']).exitCode == 0;
+    late Directory dir;
+
+    /// What a host's exec channel runs under: no tty, no locale, and a tmux
+    /// server of this test's own under [dir], so the machine's own sessions
+    /// are never touched. HOME is [dir] too, so the state file the host reads
+    /// is the one the test wrote.
+    Map<String, String> env() => {
+      'HOME': dir.path,
+      'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+      'SHELL': '/bin/sh',
+      'TMUX_TMPDIR': dir.path,
+    };
+
+    /// tmux against this test's own server only — never the parent's
+    /// environment, whose `$TMUX` would point it at the one the tests run in.
+    Future<String> tmux(List<String> args) async {
+      final result = await Process.run(
+        'tmux',
+        args,
+        environment: {...env(), 'LANG': 'C.UTF-8'},
+        includeParentEnvironment: false,
+      );
+      return (result.stdout as String).trim();
+    }
+
+    /// Runs [command] as the host would, [stdin] written to it as the chat
+    /// writes it, and hands back what it printed.
+    Future<String> host(String command, [String stdin = '']) async {
+      final process = await Process.start(
+        '/bin/sh',
+        ['-c', command],
+        environment: env(),
+        includeParentEnvironment: false,
+      );
+      unawaited(process.stdin.done.catchError((Object _) {}));
+      process.stdin.add(utf8.encode(stdin));
+      final out = process.stdout.transform(utf8.decoder).join();
+      await process.exitCode.timeout(const Duration(seconds: 20));
+      return out;
+    }
+
+    setUp(() async {
+      dir = await Directory.systemTemp.createTemp('sshbox-chat-pane');
+    });
+    tearDown(() async {
+      if (hasTmux) await tmux(['kill-server']);
+      await dir.delete(recursive: true);
+    });
+
+    /// A stand-in for Claude Code in a pane: its terminal raw, so nothing it
+    /// is sent is a signal, an echo or a translated key; Claude Code's input
+    /// line drawn, `❯` and a no-break space with the cursor after them — or
+    /// [screen] instead; and every byte it reads kept in [file].
+    String recorder(String file, {String screen = r'\342\235\257\302\240'}) =>
+        "stty raw -echo; printf '\\n$screen'; exec cat > '${dir.path}/$file'";
+
+    /// The pane [target]'s program, once it has drawn: the process whose pid
+    /// `claude agents` would give, with its state file written as Claude
+    /// Code writes it.
+    Future<int> started(String target, {String status = 'idle'}) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while ((await tmux(['capture-pane', '-p', '-t', target])).isEmpty) {
+        if (DateTime.now().isAfter(deadline)) fail('the pane never drew');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      final pid = int.parse(
+        await tmux(['display', '-p', '-t', target, '#{pane_pid}']),
+      );
+      File('${dir.path}/.claude/sessions/$pid.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          jsonEncode({
+            'pid': pid,
+            'sessionId': _live.sessionId,
+            'kind': 'interactive',
+            'status': status,
+          }),
+        );
+      return pid;
+    }
+
+    String got(String file) {
+      final kept = File('${dir.path}/$file');
+      return kept.existsSync() ? kept.readAsStringSync() : '';
+    }
+
+    test(
+      'a message full of what a shell or tmux would act on reaches the pane '
+      'as its own text, runs nothing, and reaches no pane beside it',
+      () async {
+        await tmux([
+          'new-session', '-d', '-s', 'sshbox-chat-live', '-x', '80', '-y',
+          '20', recorder('claude'),
+        ]);
+        await tmux([
+          'split-window', '-t', 'sshbox-chat-live', recorder('beside'),
+        ]);
+        // What would make send-keys type into every pane of the window.
+        await tmux([
+          'set-window-option', '-t', 'sshbox-chat-live',
+          'synchronize-panes', 'on',
+        ]);
+        final [pane, beside] = (await tmux([
+          'list-panes', '-t', 'sshbox-chat-live', '-F', '#{pane_id}',
+        ])).split('\n');
+        final pid = await started(pane);
+        await started(beside);
+
+        final follow = StreamController<Uint8List>();
+        final chat = ClaudeChat(
+          open: (command) async {
+            if (command.contains('agents --json')) {
+              return (
+                output: Stream.value(
+                  Uint8List.fromList(
+                    utf8.encode(
+                      jsonEncode([
+                        {
+                          'pid': pid,
+                          'cwd': _live.cwd,
+                          'kind': 'interactive',
+                          'sessionId': _live.sessionId,
+                          'name': _live.name,
+                          'status': 'idle',
+                        },
+                      ]),
+                    ),
+                  ),
+                ),
+                write: (Uint8List data) {},
+                close: () {},
+              );
+            }
+            // Finding the pane and typing into it: run for real. First, as
+            // tmux's finder has a ` -f ` of its own.
+            if (!command.contains('list-panes')) {
+              if (command.contains(' -f ')) {
+                return (
+                  output: follow.stream,
+                  write: (Uint8List data) {},
+                  close: () {},
+                );
+              }
+              return _noHistory();
+            }
+            final process = await Process.start(
+              '/bin/sh',
+              ['-c', command],
+              environment: env(),
+              includeParentEnvironment: false,
+            );
+            unawaited(process.stdin.done.catchError((Object _) {}));
+            return (
+              output: process.stdout.map(Uint8List.fromList),
+              write: process.stdin.add,
+              close: process.kill,
+            );
+          },
+        );
+        addTearDown(chat.dispose);
+        await chat.continueFrom(
+          ClaudeAgent(
+            sessionId: _live.sessionId,
+            name: _live.name,
+            cwd: _live.cwd,
+            kind: 'interactive',
+            status: 'idle',
+            pid: pid,
+          ),
+        );
+        expect(chat.readOnly, isNull);
+        expect(
+          chat.entries.whereType<ChatNotice>().last.text,
+          contains('in tmux pane $pane'),
+        );
+
+        final pwned = '${dir.path}/pwned';
+        final message =
+            "!touch $pwned-bang; it's \$(touch $pwned-sub) and "
+            '`touch $pwned-tick` "q" \x1b[201~\x03 end';
+        chat.send(message);
+        final deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (!got('claude').endsWith('\r')) {
+          final said = chat.entries.whereType<ChatSaid>().single;
+          if (said.delivery == Delivery.failed ||
+              DateTime.now().isAfter(deadline)) {
+            fail('never typed: ${said.why}');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+
+        // Its own text, then Enter: a space before the !, and no escape and
+        // no Ctrl+C, so the paste cannot be ended and nothing interrupted.
+        final typed =
+            " !touch $pwned-bang; it's \$(touch $pwned-sub) and "
+            '`touch $pwned-tick` "q" [201~ end';
+        expect(got('claude'), '$typed\r');
+        // The pane beside it, synchronised, was sent nothing at all.
+        expect(got('beside'), isEmpty);
+        // Nothing on the way ran any of it.
+        expect(
+          dir
+              .listSync()
+              .map((entry) => entry.path)
+              .where((path) => path.startsWith(pwned)),
+          isEmpty,
+        );
+        // And tmux keeps no copy of it.
+        expect(await tmux(['list-buffers']), isEmpty);
+
+        // Sent once the session records it, as for the attach.
+        final recorded = jsonEncode({
+          'type': 'user',
+          'message': {'role': 'user', 'content': typed},
+        });
+        follow.add(Uint8List.fromList(utf8.encode('$recorded\n')));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(chat.entries.whereType<ChatSaid>().single.delivery, isNull);
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+
+    test(
+      'nothing is typed where a keystroke could land anywhere but an empty '
+      'input line, nor into anything on no pane',
+      () async {
+        // Each: what its pane shows, what its state file says, and why it is
+        // refused.
+        final cases = [
+          // A dialog: measured, every one says one of these. The input line
+          // may still be drawn below it, with the cursor on it.
+          (
+            screen:
+                r'Enter to confirm \302\267 Esc to cancel\r\n'
+                r'\342\235\257\302\240',
+            status: 'idle',
+            refused: 'dialog',
+          ),
+          // A picker or a prompt hides the cursor, measured.
+          (
+            screen: r'\033[?25l\342\235\257\302\240',
+            status: 'idle',
+            refused: 'dialog',
+          ),
+          // Somebody's draft, which Enter would send with the message.
+          (
+            screen: r'\342\235\257\302\240half typed',
+            status: 'idle',
+            refused: 'draft',
+          ),
+          // Mid-turn, by the state file the host reads at the last moment.
+          (screen: r'\342\235\257\302\240', status: 'busy', refused: 'busy'),
+        ];
+        for (final (index, setup) in cases.indexed) {
+          final session = 'sshbox-chat-no$index';
+          await tmux([
+            'new-session', '-d', '-s', session, '-x', '80', '-y', '20',
+            recorder('got$index', screen: setup.screen),
+          ]);
+          final pid = await started(session, status: setup.status);
+          final answer = await host(
+            ClaudeChat.paneCommand(_live.sessionId, pid: pid, typing: 2),
+            '1\r',
+          );
+          expect(
+            answer.trim(),
+            'sshbox:no ${setup.refused}',
+            reason: setup.screen,
+          );
+          expect(got('got$index'), isEmpty, reason: setup.screen);
+        }
+
+        // A shell in front of it — Claude suspended, say: the process is on
+        // the pane's terminal, and not what reads it.
+        await tmux([
+          'new-session', '-d', '-s', 'sshbox-chat-behind', '-x', '80', '-y',
+          '20',
+          "set -m; sleep 300 & echo \$! > '${dir.path}/behind'; "
+              '${recorder('front')}',
+        ]);
+        await started('sshbox-chat-behind');
+        final behind = int.parse(
+          File('${dir.path}/behind').readAsStringSync().trim(),
+        );
+        File('${dir.path}/.claude/sessions/$behind.json').writeAsStringSync(
+          jsonEncode({'sessionId': _live.sessionId, 'status': 'idle'}),
+        );
+        final answer = await host(
+          ClaudeChat.paneCommand(_live.sessionId, pid: behind, typing: 2),
+          '1\r',
+        );
+        expect(answer.trim(), 'sshbox:no foreground');
+        expect(got('front'), isEmpty);
+
+        // On no terminal at all: no pane, so read-only.
+        final loose = await Process.start('sleep', ['60']);
+        addTearDown(loose.kill);
+        final probe = await host(
+          ClaudeChat.paneCommand(_live.sessionId, pid: loose.pid),
+        );
+        expect(probe.trim(), 'sshbox:no terminal');
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
   });
 
   group('a new chat', () {

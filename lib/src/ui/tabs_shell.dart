@@ -6,7 +6,6 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../files/transfers.dart';
-import '../git/git_diff.dart';
 import '../session/isolate_transport.dart';
 import '../session/pane_record.dart';
 import '../session/port_forwards.dart';
@@ -17,6 +16,7 @@ import 'connect_sheet.dart';
 import 'db_browser_page.dart';
 import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
+import 'git_diff_page.dart';
 import 'git_page.dart';
 import 'hosts_page.dart';
 import 'pane_record_page.dart';
@@ -263,9 +263,9 @@ class _TabsShellState extends State<TabsShell> {
       session: tab.session,
       onOpenDiff: (diff) => widget.sessions.openDiff(tab.session.id, diff),
     ),
-    // The file tab, read-only over what git printed rather than over SFTP:
-    // see [GitDiffBrowser]. It is built as soon as the tab is, because the
-    // command is the session's own and costs one round trip.
+    // What git printed, drawn side by side: see [GitDiffPage]. It is built as
+    // soon as the tab is, because the command is the session's own and costs
+    // one round trip.
     TabKind.diff => _diffPage(tab),
     TabKind.web when !_shown.contains(_idOf(tab)) => const SizedBox.shrink(),
     TabKind.web => WebPage(
@@ -276,21 +276,16 @@ class _TabsShellState extends State<TabsShell> {
     ),
   };
 
-  /// A diff's page: the same [FileEditorPage] a file opens in, read-only and
-  /// reading what git printed. The diff is looked up by the key its tab
-  /// carries, so the page and the strip cannot disagree about which it is.
+  /// A diff's page. The diff is looked up by the key its tab carries, so the
+  /// page and the strip cannot disagree about which it is.
   Widget _diffPage(TabRef tab) {
     final diff = tab.session.diffs
         .where((open) => open.key == tab.path)
         .firstOrNull;
     if (diff == null) return const SizedBox.shrink();
-    return FileEditorPage(
+    return GitDiffPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
-      browser: GitDiffBrowser(diff),
-      path: diff.path,
-      readOnly: true,
-      title: diff.title,
-      subtitle: diff.subtitle,
+      diff: diff,
       onClose: () => widget.sessions.closeDiff(tab.session.id, diff.key),
     );
   }

@@ -190,26 +190,33 @@ class _GitPageState extends State<GitPage> {
     });
   }
 
-  /// The diff of a path, or of a commit, handed to a file tab of its own: a
-  /// diff is wide and long, and the file tab already reads that well — its
-  /// font, find, copy, word wrap and the place it was scrolled to — while
-  /// this panel keeps the lists, which are what the user comes back to.
+  /// The diff of a path, or of a commit, handed to a tab of its own: a diff
+  /// is wide and long, and wants the whole width to be set side by side,
+  /// while this panel keeps the lists, which are what the user comes back to.
   ///
   /// The command, not its answer, is what the tab is given, so its Reload runs
-  /// git again; and it is bound to this [GitRepo] rather than to the panel, so
-  /// a diff goes on working after the panel is closed or another repository is
-  /// picked in it.
-  void _show({
+  /// git again; and it is bound to [repo] rather than to the panel, so a diff
+  /// goes on working after the panel is closed or another repository is
+  /// picked in it — the lines around a hunk it reads from [repo] too.
+  void _show(
+    GitRepo repo, {
     required String key,
     required String title,
     required String subtitle,
     required Future<String> Function() read,
   }) => widget.onOpenDiff?.call(
-    GitDiff(key: key, title: title, subtitle: subtitle, read: read),
+    GitDiff(
+      key: key,
+      title: title,
+      subtitle: subtitle,
+      read: read,
+      blob: repo.blob,
+    ),
   );
 
   /// The diff of one changed path, staged or not.
   void _showFile(GitRepo repo, String path, {required bool staged}) => _show(
+    repo,
     key: '${repo.root}:$path${staged ? ':staged' : ''}',
     title: '${RemotePath.basename(path)} · ${staged ? 'staged diff' : 'diff'}',
     subtitle: '$path · ${RemotePath.basename(repo.root)}',
@@ -451,6 +458,7 @@ class _GitPageState extends State<GitPage> {
             title: Text('Changes on ${viewing.name}'),
             subtitle: Text('since it parted from $_branch'),
             onTap: () => _show(
+              repo,
               key: '${repo.root}:HEAD...${viewing.ref}',
               title: '${viewing.name} · diff',
               subtitle: 'since it parted from $_branch',
@@ -475,6 +483,7 @@ class _GitPageState extends State<GitPage> {
                         '${commit.author} · ${commit.when} · ${commit.sha}',
                       ),
                       onTap: () => _show(
+                        repo,
                         key: '${repo.root}:${commit.sha}',
                         title: '${commit.sha} · diff',
                         subtitle: commit.subject,
