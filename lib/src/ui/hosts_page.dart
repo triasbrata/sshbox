@@ -297,11 +297,9 @@ class _HostsPageState extends State<HostsPage> {
           ),
           IconButton(
             tooltip: 'Settings',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) =>
-                    SettingsPage(notifyKeys: widget.sessions.notifyKeys),
-              ),
+            onPressed: () => openSettings(
+              Navigator.of(context),
+              notifyKeys: widget.sessions.notifyKeys,
             ),
             icon: const Icon(Icons.settings_outlined),
           ),
