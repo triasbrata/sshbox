@@ -95,8 +95,8 @@ class NotificationGateway {
     required String hostId,
     required String title,
     required String body,
-  }) async {
-    await _plugin.show(
+  }) => _quietly(
+    () => _plugin.show(
       // Stable per host, so a second notice for the same host replaces the
       // first instead of stacking up.
       id: hostId.hashCode & 0x7fffffff,
@@ -112,7 +112,25 @@ class NotificationGateway {
         ),
       ),
       payload: 'sshbox://host/$hostId',
-    );
+    ),
+  );
+
+  static bool _saidUnavailable = false;
+
+  /// Runs [post], a notification's show or cancel, and lets it fail quietly.
+  /// A notification is a courtesy beside what it is about: a Linux desktop
+  /// with no notification server — a bare window manager, a headless
+  /// session — answers every post with a DBusServiceUnknownException for
+  /// org.freedesktop.Notifications, which from a transfer's progress reached
+  /// the zone uncaught. Said once a run, never thrown.
+  Future<void> _quietly(Future<void> Function() post) async {
+    try {
+      await post();
+    } catch (error) {
+      if (_saidUnavailable) return;
+      _saidUnavailable = true;
+      debugPrint('Notifications cannot be posted here: $error');
+    }
   }
 
   static const _transfersChannelId = 'sshbox.transfers';
@@ -166,7 +184,7 @@ class NotificationGateway {
         continue;
       }
       _posted[transfer.id] = (state: state, at: now);
-      unawaited(_showTransfer(transfer, state));
+      unawaited(_quietly(() => _showTransfer(transfer, state)));
     }
   }
 
