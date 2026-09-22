@@ -39,8 +39,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
-    show downloadsFolder, updateHost, updatePlatform;
+    show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/settings_page.dart'
     show LinkModifier, localTmux, terminalFonts;
@@ -925,6 +926,125 @@ touch '${done.path}'
       expect(find.text('Restart to update'), findsNothing);
       expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
       expect(File('${kept.path}.part').existsSync(), isFalse);
+    },
+  );
+
+  // #65: a newer release is said where the user will see it — the daily
+  // check offers it, and once put off it stays marked on Home and in
+  // Settings — and the window's own Help menu checks on demand, answering up
+  // to date when it is, which clears the mark.
+  //
+  // The menu is GTK's, outside Flutter, so it is clicked as a person would:
+  // xdotool on the window's menu bar under Xvfb. F10 and Alt+H are left to
+  // the terminal on purpose, so the mouse is the way in.
+  testWidgets(
+    'Help checks for updates, and a newer release stays marked until a '
+    'check finds none',
+    skip: updateHost.isEmpty || !Platform.isLinux,
+    (tester) async {
+      // The build's own version, 1.0.0+1 in e2e.yml, is current; 9.9.8 is out.
+      var latest = (version: '9.9.8', build: 998);
+      final server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        Uri.parse(updateHost).port,
+      );
+      addTearDown(() => server.close(force: true));
+      server.listen((request) {
+        final response = request.response;
+        if (request.uri.path == '/latest.json') {
+          response.write(
+            jsonEncode({
+              'version': latest.version,
+              'build': latest.build,
+              'platforms': {
+                updatePlatform: {
+                  'path': 'desktop/$updatePlatform/jeansh.tar.gz',
+                  'size': 1,
+                  'sha256': '0' * 64,
+                },
+              },
+            }),
+          );
+        } else {
+          response.statusCode = HttpStatus.notFound;
+        }
+        unawaited(response.close());
+      });
+
+      // Today's check is due again, and nothing is marked yet: an earlier
+      // test's check leaves both behind in this one process.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(Updater.checkedKey);
+      updateAvailable.value = null;
+
+      await _launch(tester);
+      await _until(
+        tester,
+        () => find.text('Jeansh 9.9.8 is out').evaluate().isNotEmpty,
+        'the daily check to offer the newer release',
+      );
+      await _pick(tester, 'Not now');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Update 9.9.8'),
+        findsOneWidget,
+        reason: 'Home does not mark a release that was put off',
+      );
+
+      await _settings(tester);
+      final available = find.text('Jeansh 9.9.8 is available');
+      await tester.scrollUntilVisible(
+        available,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(available, findsOneWidget);
+      await _backHome(tester);
+
+      // The menu bar's Help, then its one item.
+      Future<void> helpCheck() async {
+        Future<String> xdo(List<String> args) async {
+          final result = await Process.run('xdotool', args);
+          expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
+          return '${result.stdout}'.trim();
+        }
+
+        final window = (await xdo([
+          'search',
+          '--onlyvisible',
+          '--name',
+          r'^Jeansh$',
+        ])).split('\n').first;
+        await xdo(['mousemove', '--window', window, '20', '10']);
+        await xdo(['click', '1']);
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        await xdo(['key', 'Down', 'Return']);
+      }
+
+      await helpCheck();
+      await _until(
+        tester,
+        () => find.text('Jeansh 9.9.8 is out').evaluate().isNotEmpty,
+        'Help › Check for updates… to offer the newer release',
+      );
+      await _pick(tester, 'Not now');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.text('Update 9.9.8'), findsOneWidget);
+
+      // Nothing newer any more: the menu says so, and the mark goes.
+      latest = (version: '1.0.0', build: 1);
+      await helpCheck();
+      await _until(
+        tester,
+        () => find.text('Jeansh is up to date').evaluate().isNotEmpty,
+        'Help › Check for updates… to say Jeansh is up to date',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Update 9.9.8'),
+        findsNothing,
+        reason: 'the mark outlived a check that found nothing newer',
+      );
     },
   );
 
