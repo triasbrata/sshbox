@@ -175,13 +175,58 @@ class GitRepo {
     if (!staged) {
       final tracked = await _tracked(path);
       if (!tracked) {
-        return _git(['diff', '--no-index', '--', '/dev/null', path]).catchError(
+        return _git([
+          'diff',
+          ..._patch,
+          '--no-index',
+          '--',
+          '/dev/null',
+          path,
+        ]).catchError(
           // `--no-index` exits 1 whenever the two differ, which is always here.
           (Object error) => error is GitException ? error.message : '',
         );
       }
     }
-    return _git(['diff', if (staged) '--staged', '--', path]);
+    return _git(['diff', ..._patch, if (staged) '--staged', '--', path]);
+  }
+
+  /// What every diff is asked for with, whatever the host's own config says,
+  /// because the tab reads it line by line rather than showing it as text:
+  /// no colour codes, no external diff tool and no textconv in place of
+  /// git's own format, and `a/` and `b/` before the names even where
+  /// `diff.noprefix` or `diff.mnemonicPrefix` would say otherwise. Full blob
+  /// ids, so [blob] can be handed one straight from the `index` line.
+  static const _patch = [
+    '--no-color',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--full-index',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+  ];
+
+  /// ponytail: 1 MiB, what the file tab reads at most. A diff shows the lines
+  /// around a hunk from this; past it, only what git printed.
+  static const blobLimit = 1024 * 1024;
+
+  /// The text of one blob, by the id a diff's `index` line gives it: the old
+  /// side of a diff, which the tab shows the lines around a hunk from.
+  ///
+  /// The id comes off the host, so it is held to what an id looks like before
+  /// it goes anywhere near a command line, and its size is asked first so a
+  /// tap never pulls a database dump over SSH.
+  Future<String> blob(String id) async {
+    if (!RegExp(r'^[0-9a-f]{4,64}$').hasMatch(id)) {
+      throw GitException('Not a git object id: $id');
+    }
+    final size = int.tryParse((await _git(['cat-file', '-s', id])).trim());
+    if (size == null || size > blobLimit) {
+      throw const GitException(
+        'This file is too large to show more of it here.',
+      );
+    }
+    return _git(['cat-file', 'blob', id]);
   }
 
   Future<bool> _tracked(String path) async {
@@ -253,14 +298,20 @@ class GitRepo {
   }
 
   /// What one commit changed, as its own diff.
-  Future<String> show(String sha) =>
-      _git(['show', '--stat', '--patch', '--format=%s%n%n%an, %ar%n', sha]);
+  Future<String> show(String sha) => _git([
+    'show',
+    ..._patch,
+    '--stat',
+    '--patch',
+    '--format=%s%n%n%an, %ar%n',
+    sha,
+  ]);
 
   /// What [ref] has that the checkout does not: everything it changed since
   /// the two parted, which is what a branch is looked at to find out. Three
   /// dots, so what the checkout did since is left out of it.
   Future<String> compare(String ref) =>
-      _git(['diff', '--stat', '--patch', 'HEAD...$ref', '--']);
+      _git(['diff', ..._patch, '--stat', '--patch', 'HEAD...$ref', '--']);
 
   Future<void> stage(String path) => _git(['add', '--', path]);
 
