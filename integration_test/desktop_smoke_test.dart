@@ -228,6 +228,139 @@ Future<void> _closeTabs(WidgetTester tester) async {
 Future<String?> _clipboard() async =>
     (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
+/// A program in [view]'s shell that asks for bracketed paste, or turns it
+/// off, and keeps every byte it reads until it is asked what it got: what a
+/// paste or a drop really sends, which the prompt's own drawing of it hides.
+Future<_Recording> _record(
+  WidgetTester tester,
+  TerminalView view, {
+  required bool bracketed,
+}) async {
+  final dir = _scratch();
+  final got = File('${dir.path}/got');
+  final ready = File('${dir.path}/ready');
+  final stop = File('${dir.path}/stop');
+  final done = 'recorded-${dir.path.hashCode}';
+  final script = File('${dir.path}/record.sh')
+    ..writeAsStringSync(
+      "printf '\\033[?2004${bracketed ? 'h' : 'l'}'\n"
+      'stty raw -echo\n'
+      'touch ${ready.path}\n'
+      // From the terminal by name: a background job of a non-interactive sh
+      // reads /dev/null otherwise.
+      'dd bs=1 of=${got.path} </dev/tty 2>/dev/null &\n'
+      'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
+      'kill \$! 2>/dev/null\n'
+      'stty sane\n'
+      "printf '\\033[?2004l'\n"
+      'echo $done\n',
+    );
+  _run(view, 'sh ${script.path}');
+  await _until(tester, ready.existsSync, 'the program to start reading');
+  await tester.pump(const Duration(milliseconds: 300));
+  return _Recording(tester, view, got, stop, done);
+}
+
+class _Recording {
+  _Recording(this._tester, this._view, this._got, this._stop, this._done);
+
+  final WidgetTester _tester;
+  final TerminalView _view;
+  final File _got;
+  final File _stop;
+  final String _done;
+
+  /// What the program read, once [length] bytes are in — or, not knowing
+  /// how many to expect, once they have stopped coming for a second — and
+  /// the program ended.
+  Future<String> bytes(String what, {int? length}) async {
+    var last = -1;
+    var still = DateTime.now();
+    await _until(_tester, () {
+      final now = _got.existsSync() ? _got.lengthSync() : 0;
+      if (length != null) return now >= length;
+      if (now != last) {
+        last = now;
+        still = DateTime.now();
+        return false;
+      }
+      return now > 0 &&
+          DateTime.now().difference(still) > const Duration(seconds: 1);
+    }, what);
+    _stop.createSync();
+    await _until(
+      _tester,
+      () => _text(_view).any((line) => line.contains(_done)),
+      'the recording program to end',
+    );
+    return utf8.decode(_got.readAsBytesSync(), allowMalformed: true);
+  }
+}
+
+/// A GTK window offering files for a drag, as a file manager does, put
+/// below Jeansh's window, which fills the top 720 rows of the 1280x900
+/// display tools/e2e_desktop.sh gives the run.
+const _dragSource = r'''
+import sys
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gdk, Gio, Gtk
+
+uris = [Gio.File.new_for_path(p).get_uri() for p in sys.argv[1:]]
+window = Gtk.Window(title='e2e drag source')
+window.set_default_size(200, 100)
+window.move(0, 760)
+button = Gtk.Button(label='drag')
+button.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [], Gdk.DragAction.COPY)
+button.drag_source_add_uri_targets()
+button.connect('drag-data-get', lambda w, c, data, i, t: data.set_uris(uris))
+window.add(button)
+window.connect('destroy', Gtk.main_quit)
+window.show_all()
+Gtk.main()
+''';
+
+/// Drags [path] from [_dragSource] onto the middle of Jeansh's window — the
+/// terminal of the tab showing — with the X pointer, as a hand would.
+Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
+  final source = File('${dir.path}/drag_source.py')
+    ..writeAsStringSync(_dragSource);
+  final process = await Process.start('python3', [source.path, path]);
+  try {
+    Future<void> xdo(List<String> args) async {
+      final result = await Process.run('xdotool', args);
+      expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
+    }
+
+    await xdo([
+      'search',
+      '--sync',
+      '--onlyvisible',
+      '--name',
+      r'^e2e drag source$',
+    ]);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await xdo(['mousemove', '100', '810']);
+    await xdo(['mousedown', '1']);
+    for (final (x, y) in [
+      (110, 805),
+      (130, 790),
+      (300, 650),
+      (500, 500),
+      (640, 400),
+      (645, 405),
+    ]) {
+      await xdo(['mousemove', '$x', '$y']);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await tester.pump();
+    }
+    await xdo(['mouseup', '1']);
+    await tester.pump(const Duration(milliseconds: 500));
+  } finally {
+    process.kill();
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -880,6 +1013,93 @@ touch '${done.path}'
           (entry.statSync().mode & 0x1ff).toRadixString(8);
       expect(mode(copy), '600', reason: 'others can read the picture');
       expect(mode(copy.parent), '700', reason: 'others can enter its folder');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #67: a pasted picture's path goes in as a paste where the program asked
+  // for bracketed paste, which is what Claude Code turns into [Image #N],
+  // and typed where it did not: ESC[200~<path> ESC[201~, one space inside,
+  // or <path> and a space.
+  testWidgets(
+    'a pasted picture\'s path is bracketed when the program asks for it',
+    skip: !Platform.isLinux,
+    (tester) async {
+      final png = base64.decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+        'CB0C8AAAAASUVORK5CYII=',
+      );
+      final picture = File('${_scratch().path}/picture.png')
+        ..writeAsBytesSync(png);
+      final put = await Process.run('sh', [
+        '-c',
+        r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
+        'sh',
+        picture.path,
+      ]);
+      expect(put.exitCode, 0, reason: 'xclip could not take the picture');
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final pasted = RegExp(r'/\S*/pasted-\d{8}-\d{6}[^ \x1b]*\.png');
+      for (final bracketed in [true, false]) {
+        final got = await _record(tester, view, bracketed: bracketed);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        final bytes = await got.bytes('the pasted picture\'s path');
+        final path = pasted.firstMatch(bytes)?.group(0);
+        expect(path, isNotNull, reason: 'no picture path in ${jsonEncode(bytes)}');
+        expect(
+          bytes,
+          bracketed ? '\x1b[200~$path \x1b[201~' : '$path ',
+          reason: bracketed ? 'not sent as a paste' : 'not typed as it was',
+        );
+        expect(File(path!).readAsBytesSync(), png);
+      }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #67: a file dragged from the desktop onto a Local shell pastes its own
+  // path, escaped as iTerm2 escapes one — a backslash before every character
+  // a shell reads — bracketed where the program asked for it, typed with a
+  // space where it did not. A folder, here on this machine, is pasted the
+  // same way; only a shell elsewhere refuses one, being unable to upload it.
+  //
+  // The drag is a real X drag-and-drop: a small GTK window offers the file,
+  // and xdotool presses on it, moves onto Jeansh's terminal and lets go.
+  testWidgets(
+    'a file or folder dropped on a Local shell pastes its escaped path',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true',
+    (tester) async {
+      final dir = _scratch();
+      final file = File("${dir.path}/it's a shot (1).png")
+        ..writeAsStringSync('png');
+      final folder = Directory('${dir.path}/a folder')..createSync();
+      String escaped(String path) => path.replaceAllMapped(
+        RegExp(r'[^A-Za-z0-9._/-]'),
+        (m) => '\\${m[0]}',
+      );
+      // Written out literally rather than through [escaped], so a change to
+      // the rule the app and this test share cannot pass unnoticed.
+      expect(escaped(file.path), endsWith(r"/it\'s\ a\ shot\ \(1\).png"));
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      for (final (dropped, bracketed) in [
+        (file.path, true),
+        (folder.path, false),
+      ]) {
+        final got = await _record(tester, view, bracketed: bracketed);
+        await _drag(tester, dropped, dir);
+        final want = escaped(dropped);
+        expect(
+          await got.bytes('the dropped path', length: bracketed ? want.length + 13 : want.length + 1),
+          bracketed ? '\x1b[200~$want \x1b[201~' : '$want ',
+        );
+      }
+      expect(find.textContaining('cannot be uploaded'), findsNothing);
       await _closeTabs(tester);
     },
   );

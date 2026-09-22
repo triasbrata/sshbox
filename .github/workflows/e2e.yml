@@ -284,14 +284,15 @@ jobs:
       # the Secret Service a desktop session has, tmux, which the Local shell
       # uses where the machine has it, xclip, which reads a picture off an X11
       # clipboard for a paste, dunst, the notification server a desktop
-      # session has, and xdotool, which clicks the window's own GTK menu bar
-      # and drags files onto it as a person would.
+      # session has, xdotool, which clicks the window's own GTK menu bar and
+      # drags files onto it as a person would, and Python's GTK, for the small
+      # window the files are dragged from.
       - name: Install the Linux build and Xvfb
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq clang cmake ninja-build pkg-config libgtk-3-dev \
             liblzma-dev libstdc++-12-dev libsecret-1-dev xvfb dbus-x11 gnome-keyring \
-            tmux xclip dunst xdotool
+            tmux xclip dunst xdotool python3-gi gir1.2-gtk-3.0
 
       - uses: subosito/flutter-action@v2
         with:
