@@ -2,8 +2,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+// sentry itself comes with sentry_flutter; its MockPlatform is how
+// sentry_flutter's own tests pose as iOS and macOS.
+// ignore: depend_on_referenced_packages, implementation_imports
+import 'package:sentry/src/platform/mock_platform.dart';
+// ignore: depend_on_referenced_packages, implementation_imports
+import 'package:sentry/src/platform/platform.dart' show OperatingSystem;
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/telemetry/crash_reporting.dart';
@@ -353,15 +360,16 @@ void main() {
       expect(scrubEvent(eventWith(), Hint()), isNull);
     });
 
-    // A native crash never reaches scrubEvent. On Android, Kotlin starts the
-    // native SDK with a beforeSend of its own (NativeCrashes.kt), which only
-    // holds if sentry_flutter does not start it first and put its own there.
-    test("leaves Android's native SDK to Kotlin, and no other platform's", () {
+    // A native crash never reaches scrubEvent. On Android, iOS and macOS the
+    // app starts the native SDK with a beforeSend of its own (NativeCrashes.kt,
+    // apple/NativeCrashes.swift), which only holds if sentry_flutter does not
+    // start it first and put its own there.
+    test("leaves Android's, iOS's and macOS's native SDK to the app", () {
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
       for (final (platform, sentryFlutterStartsIt) in [
         (TargetPlatform.android, false),
-        (TargetPlatform.iOS, true),
-        (TargetPlatform.macOS, true),
+        (TargetPlatform.iOS, false),
+        (TargetPlatform.macOS, false),
         (TargetPlatform.linux, true),
         (TargetPlatform.windows, true),
       ]) {
@@ -376,6 +384,53 @@ void main() {
         expect(options.beforeSend, scrubEvent);
       }
     });
+
+    // With sentry_flutter no longer starting sentry-cocoa, Dart's events must
+    // still be handed to it: the app's own start (apple/NativeCrashes.swift)
+    // is what they then reach. sentry_flutter as it is on iOS and macOS, only
+    // its channel answered here.
+    for (final os in [OperatingSystem.ios, OperatingSystem.macos]) {
+      test('hands a Dart event to sentry-cocoa on ${os.name}', () async {
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        debugDefaultTargetPlatformOverride = os == OperatingSystem.ios
+            ? TargetPlatform.iOS
+            : TargetPlatform.macOS;
+        final calls = <String>[];
+        final envelopes = <String>[];
+        const channel = MethodChannel('sentry_flutter');
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(channel, (call) async {
+          calls.add(call.method);
+          if (call.method == 'captureEnvelope') {
+            final bytes = (call.arguments as List).first as Uint8List;
+            envelopes.add(utf8.decode(bytes, allowMalformed: true));
+          }
+          return call.method == 'loadContexts' ? <String, Object?>{} : null;
+        });
+        addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+        await SentryFlutter.init(
+          (o) {
+            configureCrashReporting(o);
+            o.dsn = 'https://public@sentry.invalid/1';
+          },
+          // The platform, which sentry_flutter otherwise reads from the
+          // machine running the test.
+          // ignore: invalid_use_of_internal_member
+          options: SentryFlutterOptions(
+            platform: MockPlatform(operatingSystem: os),
+          ),
+        );
+        addTearDown(Sentry.close);
+        await Sentry.captureException(StateError('in Dart'));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(calls, isNot(contains('initNativeSdk')));
+        expect(envelopes, hasLength(1));
+        expect(envelopes.single, contains('StateError'));
+      });
+    }
   });
 
   group('the count', () {

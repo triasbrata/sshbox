@@ -35,15 +35,15 @@ Future<void> runWithCrashReporting(FutureOr<void> Function() runTheApp) async {
     _watchForFaults();
     return;
   }
-  if (_kotlinStartsNative) {
+  if (_appStartsNative) {
     try {
-      await _android.invokeMethod('startCrashReporting', {
+      await _native.invokeMethod('startCrashReporting', {
         'dsn': sentryDsn,
         'environment': _environment,
       });
     } catch (_) {
-      // The app runs whatever happens here. A sentry-android that did not
-      // start sends nothing native, and none of Dart's events either, as when
+      // The app runs whatever happens here. A native SDK that did not start
+      // sends nothing native, and none of Dart's events either, as when
       // sentry_flutter's own start of it failed.
     }
   }
@@ -52,17 +52,25 @@ Future<void> runWithCrashReporting(FutureOr<void> Function() runTheApp) async {
   _watchForFaults();
 }
 
-/// MainActivity's channel, through which Android's native SDK is started and
-/// stopped: see NativeCrashes.kt.
-const _android = MethodChannel('sshbox/share');
+/// The channel the native SDK is started and stopped through: MainActivity's
+/// on Android (NativeCrashes.kt), the Runner's on iOS and macOS
+/// (apple/NativeCrashes.swift).
+MethodChannel get _native => defaultTargetPlatform == TargetPlatform.android
+    ? const MethodChannel('sshbox/share')
+    : const MethodChannel('sshbox/crashes');
 
-/// Android's native SDK is started by Kotlin, with a `beforeSend` of its own
-/// that rebuilds a native crash the way [scrubEvent] rebuilds a Dart one.
-/// sentry_flutter's own start of it would set a `beforeSend` that sends the
-/// device's ids, kernel build and state untouched, and it offers no way to
-/// set another. iOS and macOS keep sentry_flutter's start: Dart's events go
-/// out through the native SDK there too, and it has to be running.
-bool get _kotlinStartsNative => defaultTargetPlatform == TargetPlatform.android;
+/// Android's, iOS's and macOS's native SDKs are started by the app, each with
+/// a `beforeSend` of its own that rebuilds a native crash the way
+/// [scrubEvent] rebuilds a Dart one. sentry_flutter's own start of them would
+/// set a `beforeSend` that sends the device's ids, kernel build and state
+/// untouched, and it offers no way to set another. Dart's events still go out
+/// through the native SDK on all three, as finished envelopes that skip its
+/// `beforeSend`, so it is started rather than left off. The desktops' native
+/// SDK has no crash backend and is sentry_flutter's.
+bool get _appStartsNative => switch (defaultTargetPlatform) {
+  TargetPlatform.android || TargetPlatform.iOS || TargetPlatform.macOS => true,
+  _ => false,
+};
 
 const _environment = kReleaseMode ? 'release' : 'debug';
 
@@ -70,7 +78,7 @@ const _environment = kReleaseMode ? 'release' : 'debug';
 void configureCrashReporting(SentryFlutterOptions options) {
   options.dsn = sentryDsn;
   options.environment = _environment;
-  options.autoInitializeNativeSdk = !_kotlinStartsNative;
+  options.autoInitializeNativeSdk = !_appStartsNative;
 
   // Nothing about the person. `sendDefaultPii` is what would otherwise
   // attach the device's IP address, its name and the logged-in user.
@@ -123,7 +131,7 @@ Future<void> stopCrashReporting() async {
   if (!crashReportingConfigured) return;
   await Sentry.close();
   // sentry_flutter closes only a native SDK it started itself.
-  if (_kotlinStartsNative) await _android.invokeMethod('stopCrashReporting');
+  if (_appStartsNative) await _native.invokeMethod('stopCrashReporting');
 }
 
 Breadcrumb? _noBreadcrumbs(Breadcrumb? crumb, Hint hint) => null;

@@ -12,5 +12,9 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    // Where Dart starts sentry-cocoa, before it starts sentry_flutter.
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "NativeCrashes") {
+      NativeCrashesChannel.register(with: registrar)
+    }
   }
 }

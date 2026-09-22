@@ -13,6 +13,9 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    // Where Dart starts sentry-cocoa, before it starts sentry_flutter.
+    NativeCrashesChannel.register(
+      with: flutterViewController.registrar(forPlugin: "NativeCrashes"))
 
     titleBar = TitleBar(window: self, controller: flutterViewController)
 
