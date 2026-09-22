@@ -18,6 +18,7 @@ import 'logs_page.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart';
 import 'settings_page.dart';
+import 'update_dialog.dart';
 
 class HostsPage extends StatefulWidget {
   const HostsPage({
@@ -295,6 +296,7 @@ class _HostsPageState extends State<HostsPage> {
             ),
             icon: const Icon(Icons.fingerprint),
           ),
+          const UpdateChip(),
           IconButton(
             tooltip: 'Settings',
             onPressed: () => openSettings(

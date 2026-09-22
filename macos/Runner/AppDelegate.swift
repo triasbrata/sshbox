@@ -15,10 +15,16 @@ class AppDelegate: FlutterAppDelegate {
   /// here and is handed to Dart, which opens the page. The key itself is
   /// taken in Dart before the menu is asked, so it reaches here only when
   /// nothing in the window has focus.
-  @IBAction func openSettings(_ sender: Any?) {
+  @IBAction func openSettings(_ sender: Any?) { menu("openSettings") }
+
+  /// The app menu's Check for Updates…, under About: Dart runs the check
+  /// Settings runs, and answers.
+  @IBAction func checkForUpdates(_ sender: Any?) { menu("checkForUpdates") }
+
+  private func menu(_ method: String) {
     guard let flutter = mainFlutterWindow?.contentViewController as? FlutterViewController
     else { return }
     FlutterMethodChannel(name: "sshbox/menu", binaryMessenger: flutter.engine.binaryMessenger)
-      .invokeMethod("openSettings", arguments: nil)
+      .invokeMethod(method, arguments: nil)
   }
 }
