@@ -23,6 +23,7 @@ import 'file_browser_page.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'right_click.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
 import 'terminal_paste.dart';
@@ -1117,6 +1118,43 @@ class _PaneViewState extends State<_PaneView> {
     return KeyEventResult.handled;
   }
 
+  /// A desktop's right-click, where a phone would long-press: the menu a
+  /// desktop terminal gives it — Copy for a selection, Paste, and Copy link
+  /// address on an OSC 8 hyperlink, the one clicked or the one selected.
+  ///
+  /// A program reading the mouse gets the click instead, as in any other
+  /// terminal: xterm2 offers it to the program first and calls this only
+  /// when nothing took it. Shift keeps it from the program, unless the
+  /// program asked for Shift too, as xterm's does.
+  void _contextMenu(TapUpDetails details, CellOffset cell) {
+    final terminal = widget.terminal;
+    final range = selection.selection;
+    final link =
+        terminal.hyperlinkAt(cell) ??
+        (range == null ? null : hyperlinkIn(terminal, range));
+    void copy(String text, String said) {
+      Clipboard.setData(ClipboardData(text: text));
+      showToast(context, said, type: ToastificationType.success);
+    }
+
+    showMenuAt<void>(context, details.globalPosition, [
+      if (range != null)
+        PopupMenuItem(
+          onTap: () => copy(terminal.buffer.getText(range, true), 'Copied'),
+          child: const Text('Copy'),
+        ),
+      PopupMenuItem(
+        onTap: () => unawaited(_paste()),
+        child: const Text('Paste'),
+      ),
+      if (link != null)
+        PopupMenuItem(
+          onTap: () => copy(link, 'Copied $link'),
+          child: const Text('Copy link address'),
+        ),
+    ]);
+  }
+
   /// Whether the tabs were showing this pane when it last looked; null until
   /// its first look.
   bool? _shown;
@@ -1241,6 +1279,7 @@ class _PaneViewState extends State<_PaneView> {
           // Tapping a terminal that already has focus is how you ask for the
           // keyboard back, and focus alone will not raise it.
           onTapUp: (_, cell) => widget.onTap(this, cell),
+          onSecondaryTapUp: isDesktop ? _contextMenu : null,
           padding: widget.padding,
           textStyle: widget.textStyle,
           // The theme picked in Settings: a new pick repaints the shell at
