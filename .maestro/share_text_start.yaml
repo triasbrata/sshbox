@@ -1,0 +1,27 @@
+# The first half of tools/e2e_android.sh's share_text: a live session running
+# cat into a file on the host, so text shared into Jeansh next lands where the
+# host can read it back. The share itself is an intent the runner sends with
+# adb, which no flow can.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn:
+    point: 50%, 40%
+- inputText: "cat > /tmp/e2e-shared.txt"
+- pressKey: Enter

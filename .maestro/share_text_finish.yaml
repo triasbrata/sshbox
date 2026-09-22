@@ -1,0 +1,16 @@
+# The second half of tools/e2e_android.sh's share_text. The text shared into
+# the running Jeansh was pasted into cat's line, never with an Enter — a
+# shared text is untrusted — so the Enter is pressed here, and cat hands it to
+# the file the runner then reads. No relaunch: the share has to have gone to
+# the Jeansh already running, with its session.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 15000
+- tapOn:
+    point: 50%, 40%
+- pressKey: Enter
+- tapOn: "Close ${HOST_LABEL}.*"

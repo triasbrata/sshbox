@@ -253,6 +253,34 @@ echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
 echo "::endgroup::"
 
+# Text shared into the running Jeansh from another app goes to its session,
+# pasted and never run, and makes no second copy. Two UAT-passed features: a
+# SEND with EXTRA_TEXT used to arrive as nothing, and a share used to start a
+# second Jeansh. The paste is drawn, not text a flow can read, so the host
+# reads it instead: the terminal runs cat into a file, the text is shared in
+# with adb, and once Enter hands cat the line the file must hold it — with one
+# MainActivity still.
+share_text() {
+  local text='shared from another app' out=/tmp/e2e-shared.txt got records
+  local main=cloud.brata.terminal/dev.triasbrata.sshbox.MainActivity
+  sudo rm -f "$out"
+  flow share_text_start || return 1
+  adb shell "am start -W -a android.intent.action.SEND -t text/plain \
+    --es android.intent.extra.TEXT '$text' \
+    -n cloud.brata.terminal/dev.triasbrata.sshbox.ShareActivity" >/dev/null || return 1
+  sleep 3
+  records=$(adb shell dumpsys activity activities |
+    grep -oE "ActivityRecord\{[0-9a-f]+ u0 $main" | sort -u | wc -l | tr -d ' ')
+  flow share_text_finish || return 1
+  sleep 1
+  got=$(cat "$out" 2>/dev/null)
+  echo "the host's file after the share: '$got'; MainActivity records: $records"
+  [ "$got" = "$text" ] && [ "$records" -eq 1 ]
+}
+echo "::group::share_text (report only)"
+share_text || echo "::warning::share_text failed -- report only, not gating"
+echo "::endgroup::"
+
 # The chat button's Claude Code check, UAT issue #22: one flow, three hosts, the
 # stand-in swapped between them. Report-only until it has earned the gate. Each
 # expected toast is the app's own wording (ClaudeChat.versionRefusal).
