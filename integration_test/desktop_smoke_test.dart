@@ -23,14 +23,22 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show Card, DropdownButton, InkWell, Tooltip;
+    show
+        AlertDialog,
+        Card,
+        DropdownButton,
+        InkWell,
+        ListTile,
+        TextField,
+        Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
-import 'package:sshbox/src/ui/settings_page.dart' show localTmux;
+import 'package:sshbox/src/ui/settings_page.dart'
+    show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
@@ -663,6 +671,98 @@ touch '${done.path}'
           (entry.statSync().mode & 0x1ff).toRadixString(8);
       expect(mode(copy), '600', reason: 'others can read the picture');
       expect(mode(copy.parent), '700', reason: 'others can enter its folder');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #14: a desktop's terminal can use a font the machine has, not only the
+  // five the app bundles — listed from the machine itself, monospaced ones
+  // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
+  // first monospaced family fontconfig lists that the app does not bundle.
+  testWidgets(
+    "the terminal takes a font installed on the machine",
+    skip: Platform.isWindows,
+    (tester) async {
+      final bundled = terminalFonts.map((font) => font.family).toSet();
+      final String family;
+      if (Platform.isMacOS) {
+        family = 'Menlo';
+      } else {
+        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
+        final mono =
+            LineSplitter.split('${listed.stdout}')
+                .map((line) => line.split(',').first.trim())
+                .where((name) => name.isNotEmpty && !bundled.contains(name))
+                .toList()
+              ..sort();
+        // DejaVu Sans Mono where it is there, which on Ubuntu it is.
+        family = mono.contains('DejaVu Sans Mono')
+            ? 'DejaVu Sans Mono'
+            : mono.first;
+      }
+
+      await _launch(tester);
+      await tester.tap(find.byTooltip('Settings'));
+      // Not findRichText: that would match the Text.rich and the RichText it
+      // draws with, twice over.
+      final row = find.textContaining('Installed on this computer');
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await _until(
+        tester,
+        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
+        "this computer's fonts to be listed",
+      );
+      // Built is not on screen: a list builds a little past its edge.
+      await tester.ensureVisible(row);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(row);
+      await _until(
+        tester,
+        () => find.text('Installed fonts').evaluate().isNotEmpty,
+        'the font picker',
+      );
+      // Settings' own fields are behind the dialog.
+      final picker = find.byType(AlertDialog);
+      await tester.enterText(
+        find.descendant(of: picker, matching: find.byType(TextField)),
+        family,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      final entry = find.descendant(
+        of: picker,
+        matching: find.widgetWithText(ListTile, family),
+      );
+      expect(
+        find.descendant(of: entry, matching: find.text('monospaced')),
+        findsOneWidget,
+        reason: '$family is not marked monospaced',
+      );
+      await tester.tap(entry);
+      await _until(
+        tester,
+        () => find.textContaining('on this computer').evaluate().isNotEmpty,
+        'Settings to show the font chosen',
+      );
+
+      // The picker closing still holds a barrier over the page, which takes
+      // a tap on Back as its own.
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pageBack();
+      await _until(
+        tester,
+        () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
+        'Home again',
+      );
+      final view = await _localShell(tester);
+      expect(
+        view.textStyle.fontFamily,
+        family,
+        reason: 'the terminal does not draw in the font chosen',
+      );
       await _closeTabs(tester);
     },
   );
