@@ -40,6 +40,7 @@ import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
 import 'package:sshbox/src/update/updater.dart'
     show downloadsFolder, updateHost, updatePlatform;
+import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/settings_page.dart'
     show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
@@ -97,18 +98,25 @@ Future<TerminalView> _localShell(
   bool tmux = false,
 }) async {
   await localTmux.choose(on: tmux);
+  // Whatever a test before this one left open, had it failed before closing
+  // its tabs, goes first, so one failure does not become the next test's.
+  await _closeTabs(tester);
   // The card, not a tab of the same name brought back from a run before.
   await tester.tap(find.widgetWithText(Card, 'Local shell'));
-  // Ready once it holds focus and its shell has drawn a prompt: typed before
-  // that, a command can reach a terminal with no shell behind it yet. Looked
-  // up afresh each time, since a restored tab gets a new terminal as it
-  // reconnects.
-  TerminalView view() => tester.widget<TerminalView>(find.byType(TerminalView));
+  // Ready once a terminal holds focus and its shell has drawn a prompt: typed
+  // before that, a command can reach a terminal with no shell behind it yet.
+  // The focused one, where a tab shows several panes; looked up afresh each
+  // time, since a restored tab gets a new terminal as it reconnects.
+  TerminalView? view() => find
+      .byType(TerminalView)
+      .evaluate()
+      .map((element) => element.widget as TerminalView)
+      .where((each) => each.focusNode?.hasFocus ?? false)
+      .firstOrNull;
   try {
     await _until(tester, () {
-      if (find.byType(TerminalView).evaluate().isEmpty) return false;
       final shown = view();
-      return (shown.focusNode?.hasFocus ?? false) && _text(shown).isNotEmpty;
+      return shown != null && _text(shown).isNotEmpty;
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
@@ -125,7 +133,7 @@ Future<TerminalView> _localShell(
     }
     rethrow;
   }
-  return view();
+  return view()!;
 }
 
 /// The lines [view] shows that hold anything.
@@ -165,6 +173,14 @@ Future<void> _pick(WidgetTester tester, String item) async {
   );
   await tester.pump(const Duration(milliseconds: 600));
   await tester.tap(find.text(item));
+}
+
+/// Settings, opened from Home and slid all the way in. Scrolled sooner, a
+/// drag lands on what Home still shows beneath it — its tab strip is a list
+/// too, and first in the tree.
+Future<void> _settings(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('Settings'));
+  await tester.pump(const Duration(milliseconds: 600));
 }
 
 /// Closes every tab, so the next test's launch brings none back. A Local tab
@@ -543,14 +559,25 @@ touch '${done.path}'
         () => before.evaluate().isNotEmpty && after.evaluate().isNotEmpty,
         'the diff',
       );
-      expect(find.byTooltip('Unified view'), findsOneWidget,
-          reason: 'a wide page did not open split');
       final old = tester.getCenter(before.first);
       final now = tester.getCenter(after.first);
-      expect(old.dy, closeTo(now.dy, 1),
-          reason: 'the changed line is not level with what replaced it');
-      expect(old.dx, lessThan(now.dx),
-          reason: 'the old line is not on the left');
+      // Split from 900 dp of page. This Linux window is past it; a Mac's
+      // starts narrower, where unified is right, so the page's own width
+      // says which to expect, and both are held to it.
+      final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
+      if (wide) {
+        expect(find.byTooltip('Unified view'), findsOneWidget,
+            reason: 'a wide page did not open split');
+        expect(old.dy, closeTo(now.dy, 1),
+            reason: 'the changed line is not level with what replaced it');
+        expect(old.dx, lessThan(now.dx),
+            reason: 'the old line is not on the left');
+      } else {
+        expect(find.byTooltip('Split view'), findsOneWidget,
+            reason: 'a narrow page did not open unified');
+        expect(old.dy, lessThan(now.dy),
+            reason: 'the old line is not above the new');
+      }
       await _closeTabs(tester);
     },
   );
@@ -705,7 +732,7 @@ touch '${done.path}'
       }
 
       await _launch(tester);
-      await tester.tap(find.byTooltip('Settings'));
+      await _settings(tester);
       // Not findRichText: that would match the Text.rich and the RichText it
       // draws with, twice over.
       final row = find.textContaining('Installed on this computer');
@@ -829,9 +856,7 @@ touch '${done.path}'
       final check = find.text('Check for updates');
       Future<void> askSettings() async {
         if (check.evaluate().isEmpty) {
-          await tester.tap(find.byTooltip('Settings'));
-          // Scrolled once it has slid in, or the drag lands on Home.
-          await tester.pump(const Duration(milliseconds: 600));
+          await _settings(tester);
           await tester.scrollUntilVisible(
             check,
             300,
