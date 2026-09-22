@@ -8,34 +8,53 @@
 // google_fonts, and the Material widgets the app already uses are themed to
 // match rather than replaced.
 //
-// MIT License
-//
-// Copyright (c) 2026 TUI-Termul
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to
-// deal in the Software without restriction, including without limitation the
-// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
-// sell copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-// IN THE SOFTWARE.
+// Its MIT notice is [termulLicense] below: kept with the code, and shipped in
+// every build on the licences page by [registerTermulLicense].
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'terminal_schemes.dart';
+
+/// Where Jeansh's look comes from, and who made it: what Settings › About
+/// credits.
+const termulUrl = 'https://github.com/TUI-Termul/termul';
+const termulAuthorUrl = 'https://github.com/iyanqalbi';
+
+/// termul's licence, as its repository states it.
+const termulLicense = '''
+MIT License
+
+Copyright (c) 2026 TUI-Termul
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''';
+
+/// Puts [termulLicense] on the licences page beside every package's: the
+/// licence asks for its notice in every copy, and a build is one. termul is
+/// no package of the build, so nothing else would. Called once, by `main`.
+void registerTermulLicense() => LicenseRegistry.addLicense(
+  () =>
+      Stream.value(const LicenseEntryWithLineBreaks(['termul'], termulLicense)),
+);
 
 /// The app's font: monospaced everywhere, as a terminal's own chrome is.
 /// Bundled, so every platform draws the same. The symbols it lacks come from

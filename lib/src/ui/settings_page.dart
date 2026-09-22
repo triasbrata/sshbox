@@ -14,6 +14,7 @@ import '../telemetry/crash_reporting.dart';
 import '../telemetry/telemetry.dart';
 import 'bug_report.dart';
 import 'key_bar.dart';
+import 'terminal_page.dart' show openUrl;
 import 'update_dialog.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
@@ -610,6 +611,7 @@ class SettingsPage extends StatelessWidget {
             const _SectionHeader('Updates'),
             const UpdateTile(),
           ],
+          const _AboutSection(),
         ],
       ),
     );
@@ -1931,6 +1933,45 @@ class _PrivacySection extends StatelessWidget {
           'anonymously through Jeansh. You read what goes before it goes.',
         ),
         onTap: () => showBugReport(context),
+      ),
+    ],
+  );
+}
+
+/// Who made what Jeansh is built from: the credit its look owes termul and
+/// the kit's author, and every package's licence, on Flutter's own page,
+/// termul's among them.
+class _AboutSection extends StatelessWidget {
+  const _AboutSection();
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const _SectionHeader('About'),
+      ListTile(
+        leading: const Icon(Icons.palette_outlined),
+        title: const Text('Design based on termul by Iyan Qalbi'),
+        subtitle: const Text(
+          'A Flutter kit for terminal-style apps, MIT licensed. Opens its '
+          'GitHub page.',
+        ),
+        onTap: () => openUrl(context, Uri.parse(termulUrl)),
+        trailing: IconButton(
+          tooltip: 'Iyan Qalbi on GitHub',
+          icon: const Icon(Icons.person_outline),
+          onPressed: () => openUrl(context, Uri.parse(termulAuthorUrl)),
+        ),
+      ),
+      ListTile(
+        leading: const Icon(Icons.description_outlined),
+        title: const Text('Open-source licences'),
+        subtitle: const Text(
+          'The licence of every package and font Jeansh ships.',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () =>
+            showLicensePage(context: context, applicationName: 'Jeansh'),
       ),
     ],
   );
