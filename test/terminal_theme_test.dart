@@ -105,6 +105,58 @@ void main() {
     }
   });
 
+  test('the app reads in every theme: text, grey, accent and alerts on '
+      'every layer, a label on its button, and a field\'s edge', () {
+    for (final scheme in terminalSchemes) {
+      for (final brightness in Brightness.values) {
+        final p = scheme.palette(brightness);
+        final where = '${scheme.name} ${brightness.name}';
+        for (final (layer, ground) in [
+          ('page', p.bg),
+          ('bar', p.sidebar),
+          ('card', p.panel),
+          ('toast', p.surface),
+          ('key', p.raised),
+          ('selected', p.selection),
+        ]) {
+          for (final (name, ink) in [
+            ('text', p.text),
+            ('grey', p.muted),
+            ('accent', p.accent),
+            ('red', p.red),
+            ('green', p.green),
+            ('yellow', p.yellow),
+          ]) {
+            expect(
+              _contrast(ink, ground),
+              greaterThanOrEqualTo(4.5),
+              reason: '$where $name on $layer',
+            );
+          }
+        }
+        final colors = p.colorScheme;
+        for (final (name, ink, ground) in [
+          ('button', colors.onPrimary, colors.primary),
+          ('danger', colors.onError, colors.error),
+          ('tinted', colors.onPrimaryContainer, colors.primaryContainer),
+          ('error box', colors.onErrorContainer, colors.errorContainer),
+          ('chip', colors.onSecondaryContainer, colors.secondaryContainer),
+        ]) {
+          expect(
+            _contrast(ink, ground),
+            greaterThanOrEqualTo(4.5),
+            reason: '$where $name',
+          );
+        }
+        expect(
+          _contrast(p.strongBorder, p.bg),
+          greaterThanOrEqualTo(3),
+          reason: '$where field edge',
+        );
+      }
+    }
+  });
+
   test('every theme has its own red, green and blue, and its own accent', () {
     for (final brightness in Brightness.values) {
       for (final (i, a) in terminalSchemes.indexed) {

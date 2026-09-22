@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'tui.dart';
+
 /// A named theme, as Settings offers it: the accent the app's colours grow
 /// from, and the terminal's own colours for a dark app and for a light one.
 class TerminalScheme {
@@ -27,15 +29,14 @@ class TerminalScheme {
   TerminalTheme terminal(Brightness brightness) =>
       brightness == Brightness.dark ? dark : light;
 
-  /// The app's colours, light or dark. The accent itself is the primary
-  /// container, the rest keep close to it, and every pair Material makes
-  /// (text on its surface, a label on its button) is at its medium contrast.
-  ColorScheme colorScheme(Brightness brightness) => ColorScheme.fromSeed(
-    seedColor: accent,
-    brightness: brightness,
-    dynamicSchemeVariant: DynamicSchemeVariant.content,
-    contrastLevel: 0.5,
-  );
+  /// The app's colours, light or dark: the terminal's own background and
+  /// text, and the accent, each made readable on them — see [TuiPalette].
+  TuiPalette palette(Brightness brightness) =>
+      TuiPalette.of(terminal(brightness), accent, brightness);
+
+  /// [palette]'s colours in Material's roles.
+  ColorScheme colorScheme(Brightness brightness) =>
+      palette(brightness).colorScheme;
 }
 
 /// Twenty colours in hex, in the order a terminal's settings list them:

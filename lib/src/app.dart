@@ -28,6 +28,7 @@ import 'ui/connect_sheet.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
 import 'ui/title_bar.dart';
+import 'ui/tui.dart';
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
@@ -514,10 +515,9 @@ class _SshboxAppState extends State<SshboxApp> {
       child: ValueListenableBuilder(
         valueListenable: appTheme,
         builder: (context, look, _) {
-          ThemeData themeOf(Brightness brightness) => ThemeData(
-            useMaterial3: true,
-            colorScheme: look.scheme.colorScheme(brightness),
-          );
+          // Termul's look in the theme's own colours: see `tuiTheme`.
+          ThemeData themeOf(Brightness brightness) =>
+              tuiTheme(look.scheme.palette(brightness));
 
           return MaterialApp(
             title: 'Jeansh',
