@@ -679,8 +679,11 @@ class LiveSession extends ChangeNotifier {
       // next connect, and this one goes without. `LC_` because sshd takes
       // only the names its AcceptEnv lists, and Debian, Ubuntu and macOS ship
       // `AcceptEnv LANG LC_*`: how iTerm2's `LC_TERMINAL` gets through. The
-      // direct way's two join them from [_openNotifyPort].
-      final key = _notifyKeys?.forConnect(host.id);
+      // direct way's two join them from [_openNotifyPort]. A shell on this
+      // machine has no host to send from, so no key.
+      final key = isLocalHostId(host.id)
+          ? null
+          : _notifyKeys?.forConnect(host.id);
       Future<Map<String, String>> environment(ForwardCapable connection) async {
         final value = await key?.timeout(
           const Duration(seconds: 3),

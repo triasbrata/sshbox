@@ -397,9 +397,14 @@ class NotifyKeys {
   }
 
   Future<void> _load() async {
-    // The one device-wide bearer key an earlier version kept, which the
-    // relay takes no more.
-    await _secrets.write('sshbox.notify.key', null);
+    try {
+      // The one device-wide bearer key an earlier version kept, which the
+      // relay takes no more.
+      await _secrets.write('sshbox.notify.key', null);
+    } catch (_) {
+      // A keyring that fails, as a Linux desktop with no Secret Service
+      // does: tried again at the next launch.
+    }
     try {
       final waiting =
           jsonDecode(await _secrets.read(pendingKey) ?? '{}') as Map;
