@@ -61,6 +61,9 @@ class _Box
   final attached = <String>[];
   final checked = <String>[];
 
+  /// The hosts connected to, by id, in the order asked.
+  final connected = <String>[];
+
   /// The quoted name a tmux command for one tab ends with.
   static final _name = RegExp(r"sh '(sshbox-[0-9a-z]+)'$");
 
@@ -73,7 +76,10 @@ class _Box
     bool shell = true,
     Map<String, String> environment = const {},
     Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
-  }) async => this;
+  }) async {
+    connected.add(host.id);
+    return this;
+  }
 
   @override
   Stream<String> run(String command, {bool pty = false}) {
@@ -373,6 +379,47 @@ void main() {
     expect(await _savedTmux(), ['sshbox-abc']);
     await tester.pump(const Duration(seconds: 10));
   });
+
+  // This machine's own shells are saved nowhere, and are not missing.
+  testWidgets('Duplicate session on a local shell opens another, and says '
+      'nothing of a host no longer saved', (tester) async {
+    SharedPreferences.setMockInitialValues(_killedLive(tabs: []));
+    _quietPlatform(tester);
+    final box = _Box();
+    await _start(tester, over: box);
+
+    await tester.tap(find.text('Local shell'));
+    await _settle(tester);
+    await tester.longPress(_onStrip(find.text('Local shell')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate session'));
+    await _settle(tester);
+
+    expect(find.text('That host is no longer saved'), findsNothing);
+    expect(_onStrip(find.text('Local shell')), findsNWidgets(2));
+    expect(box.connected, ['local', 'local']);
+    await tester.pump(const Duration(seconds: 10));
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+  testWidgets('a link to a WSL shell opens one, and Duplicate session on it '
+      'another in the same distro, saying nothing of a host no longer '
+      'saved', (tester) async {
+    SharedPreferences.setMockInitialValues(_killedLive(tabs: []));
+    _quietPlatform(tester, launchedBy: 'sshbox://host/wsl:Ubuntu');
+    final box = _Box();
+    await _start(tester, over: box);
+    expect(_onStrip(find.text('Ubuntu')), findsOneWidget);
+
+    await tester.longPress(_onStrip(find.text('Ubuntu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate session'));
+    await _settle(tester);
+
+    expect(find.text('That host is no longer saved'), findsNothing);
+    expect(_onStrip(find.text('Ubuntu')), findsNWidgets(2));
+    expect(box.connected, ['wsl:Ubuntu', 'wsl:Ubuntu']);
+    await tester.pump(const Duration(seconds: 10));
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 
   testWidgets('a notification for a host deleted since says so, rather than '
       'opening nothing without a word', (tester) async {

@@ -34,8 +34,9 @@ import 'update/updater.dart';
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key, @visibleForTesting this.transport});
 
-  /// What every host's tabs connect through: SSH's own, unless a test brings
-  /// a stand-in, as [SessionManager.create] takes one.
+  /// What every host's tabs connect through: SSH's own, or this machine's
+  /// for a local or WSL shell, unless a test brings a stand-in, as
+  /// [SessionManager.create] takes one.
   final TransportMaker? transport;
 
   @override
@@ -244,6 +245,19 @@ class _SshboxAppState extends State<SshboxApp> {
     bool newSession = false,
     bool restoredFirst = false,
   }) async {
+    // This machine's own shells are saved nowhere, so the repository has no
+    // host to find for them — and none has gone missing either. They open
+    // as their cards open them, going back to one already open unless
+    // another was asked for, as a saved host's do. None is ever brought back
+    // from an earlier run, so there is no restored tab to connect first.
+    final distro = wslDistroOf(hostId);
+    if (hostId == localHostId || distro != null) {
+      if (newSession || _sessions.resume(hostId) == null) {
+        await (distro == null ? openLocal() : openWsl(distro));
+      }
+      return;
+    }
+
     final hosts = await _repository.load();
     HostProfile? host;
     for (final candidate in hosts) {
@@ -315,7 +329,7 @@ class _SshboxAppState extends State<SshboxApp> {
     if (!isDesktop) return;
     final session = _sessions.create(
       localHost(),
-      transport: (_, _) => LocalTransport(),
+      transport: widget.transport ?? (_, _) => LocalTransport(),
     );
     _sessions.add(session);
     await session.connect(secrets: _secrets);
@@ -323,11 +337,16 @@ class _SshboxAppState extends State<SshboxApp> {
 
   /// A shell in the WSL distro [distro], on the Windows build alone — see
   /// [wslDistros] — opened as [openLocal] opens one.
+  ///
+  /// Asked of [defaultTargetPlatform], as [isDesktop] is, so a test can be
+  /// Windows: off Windows a [LocalTransport] opens the login shell instead,
+  /// which would be the wrong shell under the distro's name.
   Future<void> openWsl(String distro) async {
-    if (!Platform.isWindows) return;
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
     final session = _sessions.create(
       wslHost(distro),
-      transport: (_, _) => LocalTransport(wslDistro: distro),
+      transport:
+          widget.transport ?? (_, _) => LocalTransport(wslDistro: distro),
     );
     _sessions.add(session);
     await session.connect(secrets: _secrets);
