@@ -7,7 +7,9 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/app.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
 /// The e2e gate's host, named as the flows name it. Its address refuses at
@@ -21,18 +23,93 @@ const _host = HostProfile(
 );
 
 /// What the app finds saved after a live session was killed with it: the
-/// host, and that session's tab.
-Map<String, Object> _killedLive() => {
-  'sshbox.hosts.v1': jsonEncode([_host.toJson()]),
+/// host, and that session's tab — or the tabs named by the tmux sessions in
+/// [tabs].
+Map<String, Object> _killedLive({
+  HostProfile host = _host,
+  List<String> tabs = const ['sshbox-abc'],
+}) => {
+  'sshbox.hosts.v1': jsonEncode([host.toJson()]),
   // Past the first run's word about telemetry, which would lie over Home.
   'sshbox.telemetry.notice': true,
   'sshbox.tabs.v1': jsonEncode({
     'sessions': [
-      {'hostId': 'h1', 'tmux': 'sshbox-abc', 'files': [], 'web': []},
+      for (final tmux in tabs)
+        {'hostId': host.id, 'tmux': tmux, 'files': [], 'web': []},
     ],
     'databases': [],
   }),
 };
+
+/// The same host with tmux on, which is what a killed session's tab is
+/// worth coming back to for.
+final _tmuxHost = _host.copyWith(useTmux: true);
+
+/// A host that is up the moment it is asked for, and answers whether a tmux
+/// session is there with [tmuxThere]. It cannot start tmux itself, so a tab
+/// falls back to a plain shell, but what it was asked to attach is in
+/// [attached], by name, in the order asked.
+class _Box
+    implements
+        SessionTransport,
+        TerminalSession,
+        CommandCapable,
+        ChannelCapable {
+  _Box({this.tmuxThere = true});
+
+  bool tmuxThere;
+  final attached = <String>[];
+  final checked = <String>[];
+
+  /// The quoted name a tmux command for one tab ends with.
+  static final _name = RegExp(r"sh '(sshbox-[0-9a-z]+)'$");
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async => this;
+
+  @override
+  Stream<String> run(String command, {bool pty = false}) {
+    final name = _name.firstMatch(command)?.group(1);
+    if (command.contains('has-session') && name != null) {
+      checked.add(name);
+      return Stream.value(tmuxThere ? 'yes' : 'no');
+    }
+    return const Stream.empty();
+  }
+
+  @override
+  Future<CommandChannel> open(String command) async {
+    final name = _name.firstMatch(command)?.group(1);
+    if (name != null) attached.add(name);
+    throw const SshSessionException('tmux will not start here');
+  }
+
+  @override
+  final status = ValueNotifier(SessionStatus.connected);
+
+  @override
+  Stream<String> get output => const Stream.empty();
+
+  @override
+  String? get failure => null;
+
+  @override
+  void send(String data) {}
+
+  @override
+  void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
+
+  @override
+  Future<void> dispose() async {}
+}
 
 /// The platform's half of what the app asks as it starts, answered as a
 /// device with nothing to say: nothing shared, no notification up, and no
@@ -65,12 +142,36 @@ void _quietPlatform(WidgetTester tester, {String? launchedBy}) {
 /// Starts the app as Android does after its process died, over whatever
 /// was saved when it went. A new key is a new app: the one before is let go
 /// as a killed one would be, saving nothing on its way out.
-Future<void> _start(WidgetTester tester) async {
-  await tester.pumpWidget(SshboxApp(key: UniqueKey()));
+Future<void> _start(WidgetTester tester, {_Box? over}) async {
+  await tester.pumpWidget(
+    SshboxApp(
+      key: UniqueKey(),
+      transport: over == null ? null : (_, _) => over,
+    ),
+  );
+  await _settle(tester);
+}
+
+Future<void> _settle(WidgetTester tester) async {
   for (var i = 0; i < 10; i++) {
     await tester.pump(const Duration(milliseconds: 100));
   }
 }
+
+/// Back to Home, a tap on the host's card, and the connect it starts, to
+/// its end.
+Future<void> _tapCard(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('Home'));
+  await tester.pump();
+  await tester.tap(find.text('e2e@127.0.0.1:1'));
+  await _settle(tester);
+}
+
+/// The tmux sessions of the tabs on the strip, in its order, as saved.
+Future<List<Object?>> _savedTmux() async => [
+  for (final tab in ((await _savedTabs())! as Map)['sessions'] as List)
+    (tab as Map)['tmux'],
+];
 
 /// The tab strip's own copy of a name, rather than the host card's.
 Finder _onStrip(Finder finder) =>
@@ -169,6 +270,107 @@ void main() {
     expect(_onStrip(find.text('WSL via tailnet')), findsNothing);
 
     semantics.dispose();
+    await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('a tap on the card connects the tabs a killed app left, first '
+      'on the strip first, and opens a new tab once none is left', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(
+      _killedLive(host: _tmuxHost, tabs: ['sshbox-one', 'sshbox-two']),
+    );
+    _quietPlatform(tester);
+    final box = _Box();
+    await _start(tester, over: box);
+    expect(box.attached, isEmpty);
+
+    // Each tab asks first whether its session is still there, and joins it:
+    // no new tab, no new session.
+    await _tapCard(tester);
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(box.checked, ['sshbox-one']);
+    expect(box.attached, ['sshbox-one']);
+    expect(await _savedTmux(), ['sshbox-one', 'sshbox-two']);
+
+    await _tapCard(tester);
+    expect(box.attached, ['sshbox-one', 'sshbox-two']);
+    expect(await _savedTmux(), ['sshbox-one', 'sshbox-two']);
+
+    // Only connected tabs now: another session, as a tap always opened.
+    await _tapCard(tester);
+    expect(box.checked, ['sshbox-one', 'sshbox-two']);
+    expect(box.attached, hasLength(3));
+    expect(box.attached.last, isNot(anyOf('sshbox-one', 'sshbox-two')));
+    expect(await _savedTmux(), ['sshbox-one', 'sshbox-two', box.attached.last]);
+    await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('with no tab for the host, a tap on the card opens one, and '
+      'another tap another', (tester) async {
+    SharedPreferences.setMockInitialValues(
+      _killedLive(host: _tmuxHost, tabs: []),
+    );
+    _quietPlatform(tester);
+    final box = _Box();
+    await _start(tester, over: box);
+
+    await _tapCard(tester);
+    expect(box.attached, hasLength(1));
+    expect(await _savedTmux(), box.attached);
+
+    await _tapCard(tester);
+    expect(box.attached, hasLength(2));
+    expect(box.attached.toSet(), hasLength(2));
+    expect(await _savedTmux(), box.attached);
+    // Neither was brought back, so neither was asked about first.
+    expect(box.checked, isEmpty);
+    await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('Duplicate session on a tab brought back opens a copy, and '
+      'leaves that tab for the card', (tester) async {
+    SharedPreferences.setMockInitialValues(_killedLive(host: _tmuxHost));
+    _quietPlatform(tester);
+    final box = _Box();
+    await _start(tester, over: box);
+
+    await tester.longPress(_onStrip(find.text('WSL via tailnet')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate session'));
+    await _settle(tester);
+    expect(box.attached, hasLength(1));
+    expect(box.attached.single, isNot('sshbox-abc'));
+    expect(await _savedTmux(), ['sshbox-abc', box.attached.single]);
+
+    await _tapCard(tester);
+    expect(box.attached.last, 'sshbox-abc');
+    expect(await _savedTmux(), hasLength(2));
+    await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('a tab brought back whose tmux session has gone, reached from '
+      'the card, says so and starts a new one in the same tab', (tester) async {
+    SharedPreferences.setMockInitialValues(_killedLive(host: _tmuxHost));
+    _quietPlatform(tester);
+    final box = _Box(tmuxThere: false);
+    await _start(tester, over: box);
+
+    await _tapCard(tester);
+    expect(find.byType(BottomSheet), findsOneWidget);
+    expect(find.textContaining('sshbox-abc is no longer on'), findsWidgets);
+    expect(box.attached, isEmpty);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.text('Start a new session'),
+      ),
+    );
+    await _settle(tester);
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(box.attached, ['sshbox-abc']);
+    expect(await _savedTmux(), ['sshbox-abc']);
     await tester.pump(const Duration(seconds: 10));
   });
 

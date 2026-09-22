@@ -70,6 +70,7 @@ class TabsShell extends StatefulWidget {
   final HostRepository repository;
   final SecretStore secrets;
   final SessionManager sessions;
+
   /// A tap on a host's card, or on its row in Logs: see `openHost`.
   final Future<void> Function(String hostId) onOpenHost;
 
