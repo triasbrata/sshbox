@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/app.dart';
+import 'package:sshbox/src/telemetry/telemetry.dart' show telemetryOn;
 import 'package:sshbox/src/ui/onboarding_page.dart';
 
 /// The app's own gate, as `SshboxApp` has it: the slides until they are
@@ -77,4 +80,40 @@ void main() {
       expect(prefs.getBool(OnboardingDone.key), isTrue);
     },
   );
+
+  testWidgets('the first run\'s word about telemetry waits until the slides '
+      'are done, rather than lying over them', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final messenger = tester.binding.defaultBinaryMessenger;
+    for (final name in [
+      'sshbox/share',
+      'dexterous.com/flutter/local_notifications',
+      'com.llfbandit.app_links/messages',
+    ]) {
+      messenger.setMockMethodCallHandler(MethodChannel(name), (_) async => null);
+    }
+    messenger.setMockStreamHandler(
+      const EventChannel('com.llfbandit.app_links/events'),
+      MockStreamHandler.inline(onListen: (_, _) {}),
+    );
+    telemetryOn.value = true;
+    onboardingDone.value = false;
+    addTearDown(() => onboardingDone.value = true);
+
+    await tester.pumpWidget(SshboxApp());
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.bySemanticsLabel('Skip'), findsOneWidget);
+    expect(find.textContaining('Jeansh reports crashes'), findsNothing);
+
+    await tester.tap(find.bySemanticsLabel('Skip'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.textContaining('Jeansh reports crashes'), findsOneWidget);
+    // Let the toast go before the test ends.
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pump(const Duration(seconds: 1));
+  });
 }

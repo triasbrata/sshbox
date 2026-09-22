@@ -161,9 +161,27 @@ class _SshboxAppState extends State<SshboxApp> {
   /// switch is on to begin with and a count goes before the user has said
   /// anything. A toast rather than a dialog: it is a thing to know, not a
   /// thing to answer.
+  ///
+  /// A fresh install opens on the first-run slides, and the word waits until
+  /// they are done rather than covering them.
   Future<void> _countThisInstall() async {
     unawaited(telemetry.pingDaily());
+    if (!onboardingDone.value) {
+      void once() {
+        if (!onboardingDone.value) return;
+        onboardingDone.removeListener(once);
+        unawaited(_sayTelemetryOn());
+      }
+
+      onboardingDone.addListener(once);
+      return;
+    }
+    await _sayTelemetryOn();
+  }
+
+  Future<void> _sayTelemetryOn() async {
     if (!telemetryOn.value) return;
+    await WidgetsBinding.instance.endOfFrame;
     if (!await telemetry.claimFirstRunNotice()) return;
     final context = _navigator.currentContext;
     if (context == null || !context.mounted) return;
