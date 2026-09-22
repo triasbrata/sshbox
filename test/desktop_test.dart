@@ -18,6 +18,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -37,6 +38,7 @@ import 'package:sshbox/src/ui/terminal_paste.dart' show desktopClipboard;
 import 'package:xterm2/xterm.dart' show TerminalView;
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
+import 'fake_drop.dart';
 import 'fake_web_view.dart';
 
 import 'package:url_launcher_platform_interface/link.dart';
@@ -984,6 +986,35 @@ void main() {
       expect(typed, endsWith('/shot.png \x1b[201~'));
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a file dropped on a Local shell pastes its own path, '
+        'quoted for a plain shell, nothing copied', (tester) async {
+      await pumpLocal(tester);
+      final file = File("${temp.path}/it's a file.txt")..writeAsStringSync('x');
+
+      await dropOnTerminal(tester, [file.path]);
+      await tester.pump();
+
+      expect(pty.typed.toString(), "'${temp.path}/it'\\''s a file.txt' ");
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('and bracketed, unquoted, when the program asked for it', (
+      tester,
+    ) async {
+      final session = await pumpLocal(tester);
+      session.terminal.write('\x1b[?2004h');
+      final file = File("${temp.path}/it's a file.png")..writeAsStringSync('x');
+
+      await dropOnTerminal(tester, [file.path]);
+      await tester.pump();
+
+      expect(
+        pty.typed.toString(),
+        "\x1b[200~${temp.path}/it's a file.png \x1b[201~",
+      );
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     test('keeps an earlier picture of the same name, and goes with the '
         'tab', () async {
