@@ -55,17 +55,32 @@ File tarGz(Directory dir, List<List<int>> entries, {String name = 'b'}) =>
 
 /// A folder packed the way tools/build_desktop.sh packs the Linux build: GNU
 /// tar, the one folder at the top.
+///
+/// A Mac's tar is bsdtar, which writes pax headers — a name not ASCII, and
+/// the Mac's own extended attributes, which it adds to everything — that CI's
+/// GNU tar never writes and the updater never meets: the feed's Linux build
+/// is packed on Linux, and the Mac's is a zip. So bsdtar is asked for GNU's
+/// format and none of the Mac's metadata, to pack what CI packs.
 File packed(Directory from, String top, File into) {
-  final result = Process.runSync('tar', [
-    '-C',
-    from.path,
-    '-czf',
-    into.path,
-    top,
-  ]);
+  final result = Process.runSync(
+    'tar',
+    [
+      if (_bsdtar) ...['--format=gnutar', '--no-mac-metadata'],
+      '-C',
+      from.path,
+      '-czf',
+      into.path,
+      top,
+    ],
+    environment: {'COPYFILE_DISABLE': '1'},
+  );
   expect(result.exitCode, 0, reason: '${result.stderr}');
   return into;
 }
+
+/// Whether this machine's tar is bsdtar, as a Mac's is, rather than GNU's.
+final _bsdtar = (Process.runSync('tar', ['--version']).stdout as String)
+    .contains('bsdtar');
 
 /// A stand-in for the jeansh program: a script that, started, writes which
 /// build it is into `ran` beside the install, with where it was started from.
