@@ -257,7 +257,7 @@ final terminalSchemes = [
         'ffffff db3021 40813f 986801 2c6af1 a626a4 017bb0 383a42 '
         '909198 db3021 40813f 986801 2c6af1 a626a4 017bb0 000000',
   ),
-  // termul's own, from TUI-Termul/termul at df2cacf (lib/theme/
+  // termul's own, from TUI-Termul/termul at 27d94c6 (lib/theme/
   // termul_palette.dart), where Jeansh's look comes from: Paper, bone and
   // ink with an indigo accent, and Paper Dark, its night. The app's colours
   // are termul's palettes themselves: see termulPaletteOf. termul gives six

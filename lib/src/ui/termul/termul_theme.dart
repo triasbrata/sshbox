@@ -1,4 +1,4 @@
-// Ported from TUI-Termul/termul at df2cacf9d140f8c74220f2879bc7ee53b2b6a758,
+// Ported from TUI-Termul/termul at 27d94c6fc16502efd103ba217f9e0b52bb164dc5,
 // lib/theme/termul_theme.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
@@ -98,6 +98,28 @@ class TermulTheme {
         thumbColor: WidgetStateProperty.all(palette.dim),
         thickness: WidgetStateProperty.all(6),
         radius: Radius.zero,
+      ),
+      tooltipTheme: TooltipThemeData(
+        waitDuration: const Duration(milliseconds: 450),
+        showDuration: const Duration(seconds: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        margin: const EdgeInsets.symmetric(horizontal: 8),
+        verticalOffset: 12,
+        triggerMode: TooltipTriggerMode.longPress,
+        decoration: BoxDecoration(
+          color: palette.isLight ? palette.deep : palette.surface,
+          border: Border.all(
+            color: palette.isLight ? palette.deep : palette.border,
+          ),
+        ),
+        textStyle: TextStyle(
+          fontFamily: TermulFonts.mono,
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+          letterSpacing: 0.2,
+          height: 1.25,
+          color: palette.isLight ? palette.panel : palette.text,
+        ),
       ),
       extensions: [TermulThemeData(palette: palette)],
     );
