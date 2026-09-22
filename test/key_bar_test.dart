@@ -510,6 +510,43 @@ void main() {
       await tester.pumpAndSettle();
     });
 
+    testWidgets(
+        'Copy keeps the spaces of a line a program drew with cursor moves',
+        (tester) async {
+      final copied = <Object?>[];
+      final platform = tester.binding.defaultBinaryMessenger;
+      platform.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+        return null;
+      });
+      addTearDown(
+        () => platform.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await pumpPad(tester);
+      // Redraws the selected row the way Claude Code's renderer draws a line:
+      // up to it, erased, each word followed by a step of the cursor rather
+      // than a space, and back down.
+      terminal.write('\x1b[5A\r\x1b[2Kgit\x1b[1Cpush\x1b[1Corigin'
+          '\x1b[1C--delete\x1b[1Csome-branch\x1b[5B');
+      await tester.pump();
+      await selectWord(tester);
+      expect(selected(), 'git');
+
+      await tester.tap(find.text('Select all'));
+      await tester.pump();
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      final text = (copied.single as Map)['text'] as String;
+      expect(
+        text,
+        contains('\nline 193\ngit push origin --delete some-branch\nline 195'),
+      );
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('a plain drag scrolls and sends nothing', (tester) async {
       final centre = await pumpPad(tester);
       final before = scroll.offset;
