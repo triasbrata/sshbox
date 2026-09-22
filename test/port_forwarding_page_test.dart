@@ -12,22 +12,30 @@ void main() {
   late HostRepository repository;
   late PortForwards forwards;
 
-  /// The page at [width] dp, with one saved host and no settings.
-  Future<void> open(WidgetTester tester, double width) async {
-    tester.view.physicalSize = Size(width, 900);
+  /// The page at [width] by [height] dp, with one saved host unless
+  /// [withHost] is false, and no settings.
+  Future<void> open(
+    WidgetTester tester,
+    double width, {
+    double height = 900,
+    bool withHost = true,
+  }) async {
+    tester.view.physicalSize = Size(width, height);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     SharedPreferences.setMockInitialValues({});
     final secrets = InMemorySecretStore();
     repository = HostRepository(secrets);
-    await repository.upsert(
-      const HostProfile(
-        id: 'db',
-        label: 'db box',
-        host: 'db.example',
-        username: 'me',
-      ),
-    );
+    if (withHost) {
+      await repository.upsert(
+        const HostProfile(
+          id: 'db',
+          label: 'db box',
+          host: 'db.example',
+          username: 'me',
+        ),
+      );
+    }
     forwards = PortForwards(secrets: secrets);
     await forwards.load();
     await tester.pumpWidget(
@@ -166,7 +174,11 @@ void main() {
       await tester.tap(find.byTooltip('Save'));
       await tester.pumpAndSettle();
       expect(forwards.runs.single.setting.mappings, const [
-        RemoteForward(remoteHost: '0.0.0.0', remotePort: 8000, tabletPort: 9000),
+        RemoteForward(
+          remoteHost: '0.0.0.0',
+          remotePort: 8000,
+          tabletPort: 9000,
+        ),
       ]);
       expect(find.text('Remote 0.0.0.0:8000 → Tablet 9000'), findsOneWidget);
 
@@ -182,6 +194,41 @@ void main() {
       expect(textOf(tester, tabletPort), '9000');
     });
   }
+
+  testWidgets('Save with no host and a blank port, both scrolled far off, '
+      'says so rather than throwing (JEANSH-3)', (tester) async {
+    // A fresh install: no host to pick. A short screen, so a few ports are
+    // enough to carry the host field and the first port past the list's
+    // cache extent.
+    await open(tester, 400, height: 480, withHost: false);
+    await tester.tap(find.byTooltip('Add port forward'));
+    await tester.pumpAndSettle();
+    final page = find.byType(Scrollable).first;
+    // The ports after the first get a number; the first stays blank.
+    for (var i = 1; i < 5; i++) {
+      await tester.scrollUntilVisible(
+        find.text('Add port'),
+        200,
+        scrollable: page,
+      );
+      await tester.tap(find.text('Add port'));
+      await tester.pumpAndSettle();
+      await tester.enterText(tabletPort.last, '${15000 + i}');
+    }
+    await tester.drag(page, const Offset(0, -5000));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Pick a host'), findsOneWidget);
+    expect(find.text('Port must be between 1 and 65535'), findsOneWidget);
+    // Brought into view, the user having scrolled past it.
+    expect(tester.getTopLeft(find.text('Pick a host')).dy, lessThan(480));
+    expect(find.text('New port forward'), findsOneWidget);
+    expect(forwards.runs, isEmpty);
+  });
 
   testWidgets('Advanced holds real values: a chip fills both ports, Port '
       'carries the far port until that is edited, and a direction brings its '
@@ -275,7 +322,10 @@ void main() {
       find.widgetWithText(TextFormField, 'Host'),
       'pg.example',
     );
-    await tester.enterText(find.widgetWithText(TextFormField, 'Username'), 'me');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Username'),
+      'me',
+    );
     await tester.tap(find.byTooltip('Save'));
     await tester.pumpAndSettle();
 

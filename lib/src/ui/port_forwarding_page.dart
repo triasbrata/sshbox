@@ -54,7 +54,10 @@ class _PortForwardingPageState extends State<PortForwardingPage> {
     if (mounted) setState(() => _hosts = hosts);
   }
 
-  Future<void> _edit(List<HostProfile> hosts, [ForwardSetting? existing]) async {
+  Future<void> _edit(
+    List<HostProfile> hosts, [
+    ForwardSetting? existing,
+  ]) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => _ForwardEditor(
@@ -411,11 +414,22 @@ class _ForwardEditorState extends State<_ForwardEditor> {
   }
 
   Future<void> _save() async {
-    if (!_form.currentState!.validate()) return;
+    // Every field is built, scrolled off or not, so none escapes this; the
+    // first that failed is brought into view, the user being perhaps
+    // scrolled past it.
+    final invalid = _form.currentState!.validateGranularly();
+    if (invalid.isNotEmpty) {
+      await Scrollable.ensureVisible(
+        invalid.first.context,
+        duration: const Duration(milliseconds: 200),
+      );
+      return;
+    }
     final name = _name.text.trim();
     await widget.forwards.save(
       ForwardSetting(
-        id: widget.existing?.id ??
+        id:
+            widget.existing?.id ??
             DateTime.now().microsecondsSinceEpoch.toString(),
         hostId: _hostId!,
         name: name.isEmpty ? _defaultName : name,
@@ -545,7 +559,11 @@ class _ForwardEditorState extends State<_ForwardEditor> {
                   Expanded(child: portField),
                 ],
               )
-            else ...[direction, const SizedBox(height: 8), portField],
+            else ...[
+              direction,
+              const SizedBox(height: 8),
+              portField,
+            ],
             const SizedBox(height: 8),
             chips,
             const SizedBox(height: 12),
@@ -663,7 +681,9 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         ),
       ),
       const SizedBox(height: 8),
-      withPort(host(mapping.tabletHost, decoration('Tablet host', '127.0.0.1'))),
+      withPort(
+        host(mapping.tabletHost, decoration('Tablet host', '127.0.0.1')),
+      ),
     ];
   }
 
@@ -691,93 +711,100 @@ class _ForwardEditorState extends State<_ForwardEditor> {
           ),
         ],
       ),
+      // Not a ListView: a lazy list disposes a field scrolled far enough off,
+      // and a disposed field leaves the Form, so Save never validated the
+      // host or a blank port and crashed on them (JEANSH-3).
       body: Form(
         key: _form,
         child: LayoutBuilder(
-          builder: (context, constraints) => ListView(
+          builder: (context, constraints) => SingleChildScrollView(
             padding: pageGutters(constraints.maxWidth),
-            children: [
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                key: _hostField,
-                initialValue: _hostId,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Host',
-                  helperText: 'Reached as a terminal session reaches it, '
-                      'through its jump host too.',
-                  helperMaxLines: 2,
-                ),
-                items: [
-                  for (final host in _hosts)
-                    DropdownMenuItem(
-                      value: host.id,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  key: _hostField,
+                  initialValue: _hostId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Host',
+                    helperText:
+                        'Reached as a terminal session reaches it, '
+                        'through its jump host too.',
+                    helperMaxLines: 2,
+                  ),
+                  items: [
+                    for (final host in _hosts)
+                      DropdownMenuItem(
+                        value: host.id,
+                        child: Row(
+                          children: [
+                            OsBadge(host.os, size: 24),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              child: Text(
+                                host.displayName,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    const DropdownMenuItem(
+                      value: _newHost,
                       child: Row(
                         children: [
-                          OsBadge(host.os, size: 24),
-                          const SizedBox(width: 12),
-                          Flexible(
-                            child: Text(
-                              host.displayName,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
+                          Icon(Icons.add),
+                          SizedBox(width: 12),
+                          Text('New host…'),
                         ],
                       ),
                     ),
-                  const DropdownMenuItem(
-                    value: _newHost,
-                    child: Row(
-                      children: [
-                        Icon(Icons.add),
-                        SizedBox(width: 12),
-                        Text('New host…'),
-                      ],
-                    ),
+                  ],
+                  validator: (value) =>
+                      value == null || value == _newHost ? 'Pick a host' : null,
+                  onChanged: (id) {
+                    if (id == _newHost) {
+                      unawaited(_addHost());
+                    } else {
+                      setState(() => _hostId = id);
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _name,
+                  decoration: InputDecoration(
+                    labelText: 'Name',
+                    helperText:
+                        'Optional. Defaults to '
+                        '${defaultName.isEmpty ? 'the host\'s name' : defaultName}.',
                   ),
-                ],
-                validator: (value) =>
-                    value == null || value == _newHost ? 'Pick a host' : null,
-                onChanged: (id) {
-                  if (id == _newHost) {
-                    unawaited(_addHost());
-                  } else {
-                    setState(() => _hostId = id);
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _name,
-                decoration: InputDecoration(
-                  labelText: 'Name',
-                  helperText:
-                      'Optional. Defaults to '
-                      '${defaultName.isEmpty ? 'the host\'s name' : defaultName}.',
+                  textInputAction: TextInputAction.next,
                 ),
-                textInputAction: TextInputAction.next,
-              ),
-              const SizedBox(height: 24),
-              Text('Ports', style: theme.textTheme.titleSmall),
-              const SizedBox(height: 4),
-              Text(
-                'Pick which way each port goes, then the port.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+                const SizedBox(height: 24),
+                Text('Ports', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 4),
+                Text(
+                  'Pick which way each port goes, then the port.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              for (final mapping in _mappings)
-                _mappingBlock(mapping, wide: constraints.maxWidth >= 600),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: TextButton.icon(
-                  onPressed: () => setState(() => _mappings.add(_Mapping())),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add port'),
+                const SizedBox(height: 12),
+                for (final mapping in _mappings)
+                  _mappingBlock(mapping, wide: constraints.maxWidth >= 600),
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: TextButton.icon(
+                    onPressed: () => setState(() => _mappings.add(_Mapping())),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add port'),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
