@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart' show CodeLineEditingController;
 import 'package:xterm2/xterm.dart';
 
-import 'ctrl_click.dart' show hyperlinkIn;
+import 'ctrl_click.dart' show hyperlinkIn, selectedText;
 import 'toast.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
@@ -1223,7 +1223,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     final range = widget.controller.selection;
     if (range != null) {
       Clipboard.setData(
-        ClipboardData(text: widget.terminal.buffer.getText(range, true)),
+        ClipboardData(text: selectedText(widget.terminal.buffer, range)),
       );
       showToast(context, 'Copied', type: ToastificationType.success);
     }

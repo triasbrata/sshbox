@@ -1117,6 +1117,40 @@ class _PaneViewState extends State<_PaneView> {
     return KeyEventResult.handled;
   }
 
+  /// Ctrl+Shift+C — ⌘C on an Apple platform — before xterm2's own copy
+  /// shortcut, which reads the selection through `Buffer.getText` and so
+  /// glues together words a program spaced with cursor moves: see
+  /// [selectedText]. The same combination xterm2's activator takes, and like
+  /// it, claimed with nothing selected too.
+  KeyEventResult _onCopyChord(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent || event.logicalKey != LogicalKeyboardKey.keyC) {
+      return _onPasteChord(node, event);
+    }
+    final keys = HardwareKeyboard.instance;
+    final chord = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS =>
+        keys.isMetaPressed &&
+            !keys.isControlPressed &&
+            !keys.isShiftPressed &&
+            !keys.isAltPressed,
+      _ =>
+        keys.isControlPressed &&
+            keys.isShiftPressed &&
+            !keys.isAltPressed &&
+            !keys.isMetaPressed,
+    };
+    if (!chord) return KeyEventResult.ignored;
+    final range = selection.selection;
+    if (event is KeyDownEvent && range != null) {
+      unawaited(
+        Clipboard.setData(
+          ClipboardData(text: selectedText(widget.terminal.buffer, range)),
+        ),
+      );
+    }
+    return KeyEventResult.handled;
+  }
+
   /// Whether the tabs were showing this pane when it last looked; null until
   /// its first look.
   bool? _shown;
@@ -1236,8 +1270,9 @@ class _PaneViewState extends State<_PaneView> {
           // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
           // hardware keys, shortcuts and mouse selection.
           hardwareKeyboardOnly: true,
-          // Asked before xterm2's own shortcuts, and it claims Ctrl+V alone.
-          onKeyEvent: _onPasteChord,
+          // Asked before xterm2's own shortcuts, and it claims the copy and
+          // paste chords alone.
+          onKeyEvent: _onCopyChord,
           // Tapping a terminal that already has focus is how you ask for the
           // keyboard back, and focus alone will not raise it.
           onTapUp: (_, cell) => widget.onTap(this, cell),

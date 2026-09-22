@@ -212,6 +212,19 @@ void main() {
       expect(sent, ['ls -la']);
     });
 
+    testWidgets('a desktop IME committing a whole command sends its spaces',
+        (tester) async {
+      await pumpInput(tester);
+      const command = 'git push origin --delete some-branch';
+
+      input.updateEditingValue(_value(
+        '${' ' * _padding}$command${' ' * _padding}',
+        _padding + command.length,
+      ));
+
+      expect(sent, [command]);
+    }, variant: TargetPlatformVariant.desktop());
+
     testWidgets('sends a space, which looks like padding but is not',
         (tester) async {
       await pumpInput(tester);

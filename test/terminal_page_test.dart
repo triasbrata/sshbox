@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1413,6 +1414,90 @@ void main() {
       expect(shell.sent.join(), contains('plain'));
       await tester.pumpAndSettle();
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    /// Where the user saw `git push origin` come out as `gitpushorigin`.
+    final desktops = TargetPlatformVariant({
+      TargetPlatform.linux,
+      TargetPlatform.windows,
+      TargetPlatform.macOS,
+    });
+
+    /// The key a copy or a paste chord is made with here: ⌘ on a Mac, Ctrl
+    /// everywhere else.
+    LogicalKeyboardKey chordKey() => defaultTargetPlatform == TargetPlatform.macOS
+        ? LogicalKeyboardKey.metaLeft
+        : LogicalKeyboardKey.controlLeft;
+
+    testWidgets('on a desktop a paste sends every space, from the keyboard '
+        'and from the menu', (tester) async {
+      final session = await pumpPage(tester);
+      const command = 'git push origin --delete some-branch';
+      clipboardText = command;
+
+      await tester.sendKeyDownEvent(chordKey());
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(chordKey());
+      await tester.pump();
+      await tester.pump();
+      expect(shell.sent, [command]);
+
+      // The selection menu's Paste, from a hold on a word.
+      shell.sent.clear();
+      session.terminal.write('hello');
+      await tester.pump();
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      final hold = await tester.startGesture(
+        render.localToGlobal(
+          render.getOffset(
+                CellOffset(1, session.terminal.buffer.absoluteCursorY),
+              ) +
+              render.cellSize.center(Offset.zero),
+        ),
+      );
+      await tester.pump(kLongPressTimeout);
+      await hold.up();
+      await tester.pump();
+      await tester.tap(find.text('Paste'));
+      await tester.pump();
+      await tester.pump();
+      expect(shell.sent, [command]);
+      await tester.pumpAndSettle();
+    }, variant: desktops);
+
+    testWidgets('on a desktop the keyboard copy keeps the spaces of a line a '
+        'program drew with cursor moves', (tester) async {
+      final session = await pumpPage(tester);
+      final terminal = session.terminal;
+      final row = terminal.buffer.absoluteCursorY;
+      terminal.write(
+        '\rgit\x1b[1Cpush\x1b[1Corigin\x1b[1C--delete\x1b[1Csome-branch',
+      );
+      tester
+          .widget<TerminalView>(find.byType(TerminalView))
+          .controller!
+          .setSelection(
+            terminal.buffer.createAnchor(0, row),
+            terminal.buffer.createAnchor(terminal.viewWidth, row),
+          );
+      await tester.pump();
+
+      // Ctrl+Shift+C, or ⌘C: the chord xterm2's own copy shortcut takes.
+      final apple = defaultTargetPlatform == TargetPlatform.macOS;
+      await tester.sendKeyDownEvent(chordKey());
+      if (!apple) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyC);
+      if (!apple) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(chordKey());
+      await tester.pump();
+
+      expect(copied, 'git push origin --delete some-branch');
+      // Nothing of the chord reached the shell.
+      expect(shell.sent, isEmpty);
+    }, variant: desktops);
 
     testWidgets('the upload button takes several files, and types every '
         'path in the order they were picked', (tester) async {
