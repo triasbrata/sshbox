@@ -54,6 +54,16 @@ import 'package:xterm2/xterm.dart';
 Future<void> _launch(WidgetTester tester) async {
   await app.main();
   await tester.pumpAndSettle(const Duration(seconds: 5));
+  // A fresh install shows the onboarding pager once before Home, where the
+  // redesign has one; its Skip renders in capitals, so match any case. With
+  // no pager, as on main before the redesign, this finds nothing.
+  final skip = find.byWidgetPredicate(
+    (w) => w is Text && w.data?.toLowerCase() == 'skip',
+  );
+  if (skip.evaluate().isNotEmpty) {
+    await tester.tap(skip.first);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+  }
 }
 
 /// Pumps until [done] says so, failing with [what] after [timeout]. A live
