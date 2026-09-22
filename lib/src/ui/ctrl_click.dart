@@ -131,7 +131,8 @@ LinkCandidate? _candidate(String word, int at) {
 }
 
 /// The text a selection covers, as every copy out of a terminal takes it:
-/// the selection menu's Copy and the keyboard's copy shortcut.
+/// the selection menu's Copy, the keyboard's copy shortcut and a desktop's
+/// copy on select.
 ///
 /// xterm2's own `Buffer.getText` leaves out every cell nothing was written
 /// to, and a program drawing a screen — Claude Code's renderer, most TUIs —

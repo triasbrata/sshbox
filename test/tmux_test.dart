@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
 import 'package:sshbox/src/ui/tmux_panes.dart';
@@ -276,6 +277,53 @@ void main() {
       r'~ $',
     );
   });
+
+  test(
+    "Claude Code's copy in a pane reaches the clipboard once, whole",
+    () async {
+      final fake = _FakeTmux('b25d,80x24,0,0,1');
+      final copied = <String>[];
+      final tmux = TmuxSession(
+        name: 'sshbox-test',
+        channel: fake.channel,
+        newTerminal: () =>
+            ClipboardTerminal()..onClipboardStore = ((_, t) => copied.add(t)),
+        transform: (data) => data,
+        onChanged: () {},
+        onEnded: () {},
+      );
+      addTearDown(tmux.dispose);
+      fake.say('%session-changed \$1 sshbox-test');
+      await pumpEventQueue();
+
+      // What Claude Code 2.1.278 writes inside tmux: the OSC 52, then the same
+      // again in tmux's passthrough. tmux 3.2a's control mode hands both on as
+      // the pane wrote them, whatever set-clipboard says — measured — in
+      // pieces, as it reads them, with its octal escapes.
+      final reply = List.filled(1000, 'a long reply, past 8 KB\n').join();
+      final plain = '\x1b]52;c;${base64.encode(utf8.encode(reply))}\x07';
+      final written = utf8.encode(
+        '$plain\x1bPtmux;${plain.replaceAll('\x1b', '\x1b\x1b')}\x1b\\done',
+      );
+      String escaped(List<int> bytes) => [
+        for (final byte in bytes)
+          byte < 0x20 || byte == 0x5c
+              ? '\\${byte.toRadixString(8).padLeft(3, '0')}'
+              : String.fromCharCode(byte),
+      ].join();
+      for (var i = 0; i < written.length; i += 1000) {
+        final end = (i + 1000).clamp(0, written.length);
+        fake.say('%output %1 ${escaped(written.sublist(i, end))}');
+      }
+      await pumpEventQueue();
+
+      expect(copied, [reply]);
+      expect(
+        tmux.panes.single.terminal.buffer.lines[0].getText().trimRight(),
+        'done',
+      );
+    },
+  );
 
   test('what a pane writes as its history is read is drawn after it', () async {
     final fake = _FakeTmux(
