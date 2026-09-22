@@ -25,6 +25,23 @@ APK="${APK:-build/app/outputs/flutter-apk/app-debug.apk}"
 : "${SSH_USER:?SSH_USER must be set}"
 : "${SSH_PASSWORD:?SSH_PASSWORD must be set}"
 
+# This writes into $SSH_USER's home — a stand-in claude on its PATH, chat
+# transcripts under its ~/.claude — and takes them away again. That is safe
+# only for a user made for the run and gone with it, as e2e.yml's e2e is. On a
+# machine someone uses, ~/.local/bin/claude is their real Claude Code, the
+# native installer's symlink into its versions, and a write through it would
+# replace the binary every session there runs on. So: a CI runner, and never
+# as the user running it.
+if [ "${GITHUB_ACTIONS:-}" != true ]; then
+  echo "tools/e2e_android.sh writes into \$SSH_USER's home, so it runs on a CI" \
+       "runner only (GITHUB_ACTIONS=true), for a user made for the run." >&2
+  exit 2
+fi
+if [ "$SSH_USER" = "$(id -un)" ]; then
+  echo "SSH_USER is the user running this; it must be a throwaway one." >&2
+  exit 2
+fi
+
 GATING=(smoke connect_and_keybar)
 REPORT_ONLY=(tabs file_browser logs duplicate_session dotfiles card_tap_reconnect)
 
@@ -56,15 +73,112 @@ mkdir -p "$EVIDENCE"
 # to, where the chat finder looks second: ~/.local/bin. With an argument it
 # answers `claude --version` with exactly that; with none it is removed, and the
 # runner, which ships no Claude Code, then has none anywhere.
-stand_in() {
-  local bin=/home/$SSH_USER/.local/bin/claude
-  if [ -z "${1:-}" ]; then
-    sudo rm -f "$bin"
+STAND_IN=/home/$SSH_USER/.local/bin/claude
+
+# The line every stand-in carries, so nothing else is ever written over or
+# removed: not a symlink, which a write would follow into what it points at,
+# and not a claude this script did not make.
+STAND_IN_MARK='# the e2e stand-in for Claude Code, made by tools/e2e_android.sh'
+
+ours() {
+  if sudo test -L "$STAND_IN"; then return 1; fi
+  if ! sudo test -e "$STAND_IN"; then return 0; fi
+  sudo grep -qxF "$STAND_IN_MARK" "$STAND_IN"
+}
+
+# Puts a stand-in in place, its text on stdin, or removes it given "remove";
+# refuses, ending the run, where the claude there is not one of ours.
+put_stand_in() {
+  if ! ours; then
+    echo "::error::$STAND_IN is not this script's stand-in; leaving it alone" >&2
+    exit 1
+  fi
+  if [ "${1:-}" = remove ]; then
+    sudo rm -f "$STAND_IN"
     return 0
   fi
-  sudo -u "$SSH_USER" mkdir -p "$(dirname "$bin")"
-  printf '#!/bin/sh\necho %s\n' "'$1'" | sudo -u "$SSH_USER" tee "$bin" >/dev/null
-  sudo chmod 755 "$bin"
+  sudo -u "$SSH_USER" mkdir -p "$(dirname "$STAND_IN")"
+  { printf '#!/bin/sh\n%s\n' "$STAND_IN_MARK"; cat; } |
+    sudo -u "$SSH_USER" tee "$STAND_IN" >/dev/null
+  sudo chmod 755 "$STAND_IN"
+}
+
+stand_in() {
+  if [ -z "${1:-}" ]; then
+    put_stand_in remove
+    return 0
+  fi
+  printf 'echo %s\n' "'$1'" | put_stand_in
+}
+
+# Chat mode's host: three finished Claude Code sessions with transcripts where
+# the CLI keeps them, and a claude that lists them, answers a version chat
+# takes, and, run as a resumed session, waits quietly on stdin as one with
+# nothing new to say. The flows read what chat makes of the transcripts —
+# where a conversation comes back to, and how a tool's row reads.
+chat_stand_in() {
+  local home=/home/$SSH_USER
+  local projects=$home/.claude/projects/-home-$SSH_USER
+  # Never beside sessions of someone's own: the transcripts go only where
+  # there are none but these.
+  if sudo find "$projects" -name '*.jsonl' ! -name 'e2e0000*' 2>/dev/null |
+    grep -q .; then
+    echo "::error::$projects holds sessions of its own; not writing there" >&2
+    exit 1
+  fi
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
+import json, os
+home = os.environ['HOME']
+projects = os.path.join(home, '.claude', 'projects', '-home-' + os.path.basename(home))
+os.makedirs(projects, exist_ok=True)
+
+def user(text):
+    return {'type': 'user', 'message': {'role': 'user', 'content': text}}
+
+def said(text):
+    return {'type': 'assistant',
+            'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}}
+
+def tool(id, name, input, result):
+    return [
+        {'type': 'assistant', 'message': {'role': 'assistant', 'content': [
+            {'type': 'tool_use', 'id': id, 'name': name, 'input': input}]}},
+        {'type': 'user', 'message': {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': id, 'content': result}]}},
+    ]
+
+# Short answers, one line each, so a small scroll moves several of them.
+sessions = {
+    'E2E long session': [e for n in range(1, 61)
+                         for e in (user(f'Question {n}'), said(f'Answer {n} of the long session'))],
+    'E2E short session': [user('Short question'), said('Short answer of the short session')],
+    'E2E tool rows': [user('run it'),
+                      *tool('toolu_e2e1', 'Bash',
+                            {'command': 'ls -la /tmp/e2e-tool-rows',
+                             'description': 'List the e2e folder'}, 'total 0'),
+                      *tool('toolu_e2e2', 'Write',
+                            {'file_path': '/tmp/e2e-tool-rows/notes.txt',
+                             'content': 'first line\nsecond line'}, 'ok'),
+                      said('Tools done')],
+}
+rows = []
+for n, (name, events) in enumerate(sessions.items(), start=1):
+    sid = f'e2e0000{n}-0000-4000-8000-00000000000{n}'
+    with open(os.path.join(projects, sid + '.jsonl'), 'w') as f:
+        f.write('\n'.join(json.dumps(e) for e in events) + '\n')
+    rows.append({'id': f'e2e{n}', 'cwd': home, 'kind': 'background',
+                 'startedAt': 1790000000000 + n, 'sessionId': sid,
+                 'name': name, 'state': 'done'})
+with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
+    json.dump(rows, f)
+PY
 }
 
 # On a slow runner the emulator's own apps stall, and Android puts up "<app>
@@ -134,6 +248,22 @@ chat_version not-a-version 'claude: something went wrong' \
   '(?s).*Could not tell which Claude Code this host has.*2\.1\.259.*'
 chat_version not-installed '' \
   '(?s).*Claude Code is not installed on this host.*'
+
+# Chat mode against sessions the stand-in keeps (chat_stand_in): where a
+# conversation comes back to, and how a tool's row reads. Report-only until
+# they have earned the gate.
+chat_stand_in
+for name in chat_scroll chat_tool_rows; do
+  echo "::group::$name (report only)"
+  flow "$name" || echo "::warning::$name failed -- report only, not gating"
+  # Their screenshots are evidence, wherever Maestro put them: see chat_version.
+  # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
+  for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png'
+                   find "$HOME/.maestro" -name 'chat-tool-rows-*.png'; } 2>/dev/null); do
+    mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
+  done
+  echo "::endgroup::"
+done
 stand_in ''
 
 if [ "${#failed[@]}" -gt 0 ]; then
