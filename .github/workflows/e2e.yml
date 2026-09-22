@@ -301,3 +301,39 @@ jobs:
             --dart-define=JEANSH_UPDATE_HOST=$feed \
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
+
+  # macOS: the Cocoa embedder in the runner's own login session -- a window
+  # nobody looks at, which is as headless as a Mac gets. Report-only, as the
+  # Linux job is.
+  #
+  # Hand runs only. tag.yml waits on every job here before it promotes, and a
+  # macOS runner is slow to come and slow to build, so in the release gate it
+  # would only hold a release back for a result nothing gates on. tag.yml runs
+  # on a push, so its call never sees this job; a workflow_dispatch does.
+  desktop-macos:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2 # .fvmrc
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Drive the desktop build
+        run: tools/e2e_desktop.sh macos

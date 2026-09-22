@@ -104,6 +104,46 @@ final _noWebView = TargetPlatformVariant({
 
 class _BareNotifications extends FlutterLocalNotificationsPlatform {}
 
+/// A Linux desktop with no notification server, as a bare window manager or
+/// a headless session has: D-Bus refuses every post to a name nobody owns.
+class _NoNotificationServer extends LinuxFlutterLocalNotificationsPlugin {
+  @override
+  Future<void> show({
+    required int id,
+    String? title,
+    String? body,
+    LinuxNotificationDetails? notificationDetails,
+    String? payload,
+  }) => Future.error(const _ServiceUnknown());
+
+  @override
+  Future<void> cancel({required int id}) =>
+      Future.error(const _ServiceUnknown());
+}
+
+/// Stands in for dbus's DBusServiceUnknownException, the package being no
+/// dependency of the app's own.
+class _ServiceUnknown implements Exception {
+  const _ServiceUnknown();
+
+  @override
+  String toString() =>
+      'DBusServiceUnknownException: org.freedesktop.DBus.Error.ServiceUnknown: '
+      'The name org.freedesktop.Notifications was not provided by any '
+      '.service files';
+}
+
+/// A Linux clipboard holding [picture], without wl-paste or xclip.
+class _PictureClipboard extends DesktopClipboard {
+  _PictureClipboard(this.picture);
+
+  final File picture;
+
+  @override
+  Future<SharedFile?> image(int limit, {required bool windows}) async =>
+      (path: picture.path, name: 'shot.png');
+}
+
 /// A pty that is up and never says a word, for [LocalTransport] to start.
 class _Pty implements Pty {
   @override
@@ -884,6 +924,30 @@ void main() {
       expect(find.text('Uploaded to ${copy.path}'), findsOneWidget);
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('of a picture on Linux with no notification server still '
+        'types its path, and throws nothing', (tester) async {
+      FlutterLocalNotificationsPlatform.instance = _NoNotificationServer();
+      // As the app does: every upload goes through [transfers].
+      await NotificationGateway(
+        onOpenLink: (_) async {},
+      ).followTransfers(transfers);
+      await pumpLocal(tester);
+      desktopClipboard = _PictureClipboard(
+        File('${temp.path}/source.png')..writeAsBytesSync([1, 2, 3]),
+      );
+      addTearDown(() => desktopClipboard = DesktopClipboard());
+
+      await paste(tester);
+
+      // Before, each progress notification's refusal reached the zone
+      // uncaught, which fails the test.
+      final typed = pty.typed.toString();
+      expect(typed, endsWith('/shot.png '));
+      expect(File(typed.trimRight()).readAsBytesSync(), [1, 2, 3]);
+      expect(find.text('Uploaded to ${typed.trimRight()}'), findsOneWidget);
+      await settle(tester);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     test('keeps an earlier picture of the same name, and goes with the '
         'tab', () async {
