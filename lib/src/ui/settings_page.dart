@@ -1,11 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../notifications/notify_key.dart';
 import '../platform.dart';
+import '../system_fonts.dart';
 import '../telemetry/crash_reporting.dart';
 import '../telemetry/telemetry.dart';
 import 'bug_report.dart';
@@ -88,17 +91,54 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
   static const _familyKey = 'sshbox.terminal.fontFamily';
   static const _sizeKey = 'sshbox.terminal.fontSize';
 
-  /// Reads the saved choice. A family no longer bundled, or a size out of
-  /// range, gives way to the default rather than to a font that is not there.
+  /// The font the saved choice named that this computer no longer has,
+  /// until [sayIfMissing] has said so.
+  String? missing;
+
+  /// Reads the saved choice. A family no longer bundled — or on a desktop no
+  /// longer installed — or a size out of range, gives way to the default
+  /// rather than to a font that is not there.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     final family = prefs.getString(_familyKey);
     final size = prefs.getDouble(_sizeKey);
     value = terminalStyleOf(
-      terminalFonts.any((font) => font.family == family)
-          ? family!
-          : defaultStyle.fontFamily,
+      await _usable(family) ? family! : defaultStyle.fontFamily,
       (size ?? defaultStyle.fontSize).clamp(minFontSize, maxFontSize),
+    );
+  }
+
+  /// Whether [family] can be drawn: one bundled, or on a desktop one it has
+  /// installed. Only a system font costs a look at the computer's fonts, and
+  /// one whose list cannot be read is trusted, as it was when it was picked.
+  Future<bool> _usable(String? family) async {
+    if (family == null) return false;
+    if (terminalFonts.any((font) => font.family == family)) return true;
+    if (!isDesktop) return false;
+    final installed = await systemFonts();
+    if (installed == null || installed.any((font) => font.family == family)) {
+      return true;
+    }
+    missing = family;
+    return false;
+  }
+
+  /// Says, once, that the saved font has gone and what the terminal draws in
+  /// instead, rather than leaving a fallback to draw it without a word. The
+  /// choice stays saved, so the font coming back brings it back.
+  void sayIfMissing(BuildContext context) {
+    final family = missing;
+    if (family == null) return;
+    missing = null;
+    final instead = terminalFonts
+        .firstWhere((font) => font.family == defaultStyle.fontFamily)
+        .label;
+    showToast(
+      context,
+      '$family is not installed\nThe terminal draws in $instead until it is '
+      'back, or until Settings picks another font.',
+      type: ToastificationType.warning,
+      duration: const Duration(seconds: 8),
     );
   }
 
@@ -334,6 +374,60 @@ class GitPanelSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True is the drawer.
 final gitInDrawer = GitPanelSetting();
 
+/// Whether this machine's own shells run in tmux, and which tmux. The Local
+/// shell is saved nowhere, so its choice cannot live on a host, as a saved
+/// host's `useTmux` does.
+///
+/// On to begin with: a shell where no tmux is found is a plain login shell,
+/// as it always was. An empty [path] finds tmux the way an SSH host's is
+/// found; anything else is that binary and no other.
+///
+/// Read when a shell opens, so a change reaches the next one and leaves what
+/// is open alone.
+class LocalTmuxSetting extends ValueNotifier<({bool on, String path})> {
+  LocalTmuxSetting() : super((on: true, path: ''));
+
+  static const _onKey = 'sshbox.local.tmux';
+  static const _pathKey = 'sshbox.local.tmuxPath';
+
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = (
+      on: prefs.getBool(_onKey) ?? true,
+      path: prefs.getString(_pathKey) ?? '',
+    );
+  }
+
+  /// Applies to the next shell opened, and is saved for the next start. A
+  /// [path] [tmuxPathProblem] turns down is not taken, and what it said is
+  /// handed back.
+  Future<String?> choose({bool? on, String? path}) async {
+    final problem = path == null ? null : tmuxPathProblem(path);
+    if (problem != null) return problem;
+    value = (on: on ?? value.on, path: path ?? value.path);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_onKey, value.on);
+    await prefs.setString(_pathKey, value.path);
+    return null;
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final localTmux = LocalTmuxSetting();
+
+/// Why [path] cannot be the Local shell's tmux, or null when it can: empty,
+/// which finds one, or an absolute path to a file that can be run, links
+/// followed, as Homebrew's is one.
+String? tmuxPathProblem(String path) {
+  if (path.isEmpty) return null;
+  if (!path.startsWith('/')) return 'Give the whole path, from /.';
+  final stat = FileStat.statSync(path);
+  if (stat.type != FileSystemEntityType.file) return 'No file is at $path.';
+  // Any of the three execute bits: whose they are, the shell asks at use.
+  if (stat.mode & 0x49 == 0) return '$path is not executable.';
+  return null;
+}
+
 /// Whether the files tree lists dotfiles. One choice for the whole app, as
 /// VS Code's is, and kept: the drawer builds its tree anew each time it opens,
 /// so a choice held by the tree itself went back to hidden every time it shut.
@@ -358,6 +452,46 @@ class DotfilesSetting extends ValueNotifier<bool> {
 
 /// The app's one; `main` reads the saved choice into it. True shows them.
 final showDotfiles = DotfilesSetting();
+
+/// Whether a desktop terminal copies what the mouse selects the moment the
+/// button comes up, as iTerm2 and Claude Code's own fullscreen view do.
+/// Desktop alone: a phone's selection has its handles and its Copy.
+class CopyOnSelectSetting extends ValueNotifier<bool> {
+  CopyOnSelectSetting() : super(true);
+
+  static const _key = 'sshbox.terminal.copyOnSelect';
+
+  /// Reads the saved choice. Nothing saved is on.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? true;
+  }
+
+  /// Applies to the next selection, and is saved for the next start.
+  Future<void> choose(bool on) async {
+    value = on;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, on);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final copyOnSelect = CopyOnSelectSetting();
+
+/// The Settings route open on each navigator, for [openSettings] to find.
+final _openSettings = Expando<Route<void>>();
+
+/// Settings, pushed on [navigator] — unless it is open there already, when
+/// asking again does nothing rather than stack a second copy. Home's ⚙, the
+/// first run's toast and a Mac's ⌘, all come here, so each finds the others'.
+void openSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
+  if (_openSettings[navigator]?.isActive ?? false) return;
+  final route = MaterialPageRoute<void>(
+    builder: (_) => SettingsPage(notifyKeys: notifyKeys),
+  );
+  _openSettings[navigator] = route;
+  navigator.push(route);
+}
 
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
@@ -392,6 +526,8 @@ class SettingsPage extends StatelessWidget {
             ),
           ),
           const _GitSection(),
+          // Desktop alone: only a desktop has a shell of its own to run.
+          if (isDesktop) const _LocalShellSection(),
           _NotificationsSection(notifyKeys),
           const _PrivacySection(),
           // Desktop alone: Android updates through Play, and there is no
@@ -606,6 +742,104 @@ class _TerminalSectionState extends State<_TerminalSection> {
 
   final _preview = Terminal()..write(_previewText);
 
+  /// This computer's own fonts, on a desktop: read once, when the section is
+  /// first shown.
+  late final _installed = isDesktop ? systemFonts() : null;
+
+  /// A desktop's way to a font installed on the computer: the one in use, if
+  /// it is not bundled, with a word when it is proportional, and a tap for the
+  /// computer's list.
+  Widget _installedFont(
+    BuildContext context,
+    TerminalStyle style,
+    AsyncSnapshot<List<SystemFont>?> fonts,
+  ) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    final family = style.fontFamily;
+    final chosen = !terminalFonts.any((font) => font.family == family);
+    final listed = fonts.data;
+    final done = fonts.connectionState == ConnectionState.done;
+    final proportional =
+        chosen &&
+        (listed?.any((font) => font.family == family && !font.mono) ?? false);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ListTile(
+          selected: chosen,
+          title: Text.rich(
+            TextSpan(
+              children: [
+                if (chosen) ...[
+                  TextSpan(
+                    text: family,
+                    style: TextStyle(fontFamily: family),
+                  ),
+                  TextSpan(text: '  on this computer', style: muted),
+                ] else
+                  const TextSpan(text: 'Installed on this computer…'),
+              ],
+            ),
+          ),
+          subtitle: chosen
+              ? Text(
+                  _sample,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.fade,
+                  style: terminalStyleOf(family, 14).toTextStyle(),
+                )
+              : Text(switch (listed) {
+                  _ when !done => 'Reading this computer\'s fonts…',
+                  null => 'Its fonts could not be listed: type a name',
+                  final listed => '${listed.length} families, monospaced first',
+                }),
+          trailing: Icon(chosen ? Icons.check : Icons.chevron_right),
+          onTap: done
+              ? () async {
+                  final picked = await showDialog<String>(
+                    context: context,
+                    builder: (_) => _InstalledFontPicker(
+                      listed,
+                      chosen: family,
+                      sample: _sample,
+                    ),
+                  );
+                  if (picked != null) {
+                    await terminalSettings.choose(family: picked);
+                  }
+                }
+              : null,
+        ),
+        if (proportional)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 16,
+                  color: theme.colorScheme.error,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '$family is proportional, so the terminal\'s columns '
+                    'will not line up.',
+                    style: muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -699,9 +933,143 @@ class _TerminalSectionState extends State<_TerminalSection> {
                 ),
               ),
             ),
+            // Below what is said of the bundled fonts, which is not true of it.
+            if (_installed case final installed?)
+              FutureBuilder(
+                future: installed,
+                builder: (context, fonts) =>
+                    _installedFont(context, style, fonts),
+              ),
+            if (isDesktop)
+              ValueListenableBuilder(
+                valueListenable: copyOnSelect,
+                builder: (context, on, _) => SwitchListTile(
+                  title: const Text('Copy on select'),
+                  subtitle: const Text(
+                    'Text selected with the mouse goes to the clipboard as '
+                    'the button comes up',
+                  ),
+                  value: on,
+                  onChanged: copyOnSelect.choose,
+                ),
+              ),
           ],
         );
       },
+    );
+  }
+}
+
+/// The computer's fonts to pick one from, monospaced first and marked, with a
+/// filter over them. Where they could not be listed, the field takes the name
+/// of one instead, as it is.
+class _InstalledFontPicker extends StatefulWidget {
+  const _InstalledFontPicker(
+    this.fonts, {
+    required this.chosen,
+    required this.sample,
+  });
+
+  final List<SystemFont>? fonts;
+  final String chosen;
+  final String sample;
+
+  @override
+  State<_InstalledFontPicker> createState() => _InstalledFontPickerState();
+}
+
+class _InstalledFontPickerState extends State<_InstalledFontPicker> {
+  final _field = TextEditingController();
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final fonts = widget.fonts;
+    final typed = _field.text.trim();
+    final shown = [
+      for (final font in fonts ?? const <SystemFont>[])
+        if (font.family.toLowerCase().contains(typed.toLowerCase())) font,
+    ];
+    void pick(String family) => Navigator.of(context).pop(family);
+
+    return AlertDialog(
+      title: const Text('Installed fonts'),
+      content: SizedBox(
+        width: 480,
+        height: fonts == null ? null : 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _field,
+              autofocus: true,
+              decoration: InputDecoration(
+                prefixIcon: fonts == null ? null : const Icon(Icons.search),
+                hintText: fonts == null ? 'Family name' : 'Filter',
+              ),
+              onChanged: (_) => setState(() {}),
+              onSubmitted: fonts == null && typed.isNotEmpty
+                  ? (_) => pick(typed)
+                  : null,
+            ),
+            const SizedBox(height: 8),
+            if (fonts == null)
+              Text(
+                'This computer\'s fonts could not be listed. Type the family '
+                'name of one installed here.',
+                style: theme.textTheme.bodySmall,
+              )
+            else if (shown.isEmpty)
+              const Expanded(
+                child: Center(child: Text('No installed font matches.')),
+              )
+            else
+              Expanded(
+                child: ListView.builder(
+                  itemCount: shown.length,
+                  itemBuilder: (context, index) {
+                    final font = shown[index];
+                    return ListTile(
+                      selected: font.family == widget.chosen,
+                      title: Text(font.family),
+                      // In the font itself, as the terminal would draw it: a
+                      // symbols font's name alone could not be read in it.
+                      subtitle: Text(
+                        widget.sample,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.fade,
+                        style: terminalStyleOf(font.family, 14).toTextStyle(),
+                      ),
+                      trailing: font.mono
+                          ? Text('monospaced', style: theme.textTheme.bodySmall)
+                          : null,
+                      onTap: () => pick(font.family),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        if (fonts == null)
+          FilledButton(
+            onPressed: typed.isEmpty ? null : () => pick(typed),
+            child: const Text('Use'),
+          ),
+      ],
     );
   }
 }
@@ -1282,6 +1650,99 @@ class _GitSection extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// This machine's own shells in tmux: see [localTmux]. On Windows the Local
+/// shell is PowerShell, which has no tmux, so the switch is for the WSL
+/// shells there, and each distro finds its own tmux, so there is no path to
+/// give.
+class _LocalShellSection extends StatefulWidget {
+  const _LocalShellSection();
+
+  @override
+  State<_LocalShellSection> createState() => _LocalShellSectionState();
+}
+
+class _LocalShellSectionState extends State<_LocalShellSection> {
+  late final _path = TextEditingController(text: localTmux.value.path);
+  final _focus = FocusNode();
+
+  /// Why the path typed was not taken, until it is typed again.
+  String? _problem;
+
+  @override
+  void initState() {
+    super.initState();
+    // Taken when the field is left as well as on Enter: a path typed and
+    // clicked away from is a path meant.
+    _focus.addListener(() {
+      if (!_focus.hasFocus) _apply();
+    });
+  }
+
+  @override
+  void dispose() {
+    _path.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _apply() async {
+    final problem = await localTmux.choose(path: _path.text.trim());
+    if (mounted) setState(() => _problem = problem);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final windows = defaultTargetPlatform == TargetPlatform.windows;
+    return ValueListenableBuilder(
+      valueListenable: localTmux,
+      builder: (context, setting, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _SectionHeader('Local shell'),
+          SwitchListTile(
+            secondary: const Icon(Icons.view_quilt_outlined),
+            title: Text(
+              windows
+                  ? 'Use tmux in WSL shells'
+                  : 'Use tmux in the Local shell',
+            ),
+            subtitle: const Text(
+              'Where tmux is found: panes split, and sessions outlive the '
+              'app. Where it is not, a plain login shell. Applies to the next '
+              'shell opened.',
+            ),
+            value: setting.on,
+            onChanged: (on) => localTmux.choose(on: on),
+          ),
+          if (!windows)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: TextField(
+                controller: _path,
+                focusNode: _focus,
+                enabled: setting.on,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  labelText: 'tmux binary',
+                  hintText: 'Found by itself',
+                  helperText:
+                      'Empty looks on PATH, in Homebrew and the other usual '
+                      'places. A path is used instead.',
+                  errorText: _problem,
+                  border: const OutlineInputBorder(),
+                ),
+                onChanged: (_) {
+                  if (_problem != null) setState(() => _problem = null);
+                },
+                onSubmitted: (_) => _apply(),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

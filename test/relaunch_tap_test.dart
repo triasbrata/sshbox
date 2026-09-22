@@ -10,6 +10,7 @@ import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
 /// The e2e gate's host, named as the flows name it. Its address refuses at
@@ -156,6 +157,14 @@ Future<void> _start(WidgetTester tester, {_Box? over}) async {
     ),
   );
   await _settle(tester);
+}
+
+/// This machine's own shells as they were before they ran in tmux, for a
+/// test about something else: [_Box] cannot start tmux, and a shell that
+/// asked for it would say so over the tab strip.
+void _plainLocalShells() {
+  localTmux.value = (on: false, path: '');
+  addTearDown(() => localTmux.value = (on: true, path: ''));
 }
 
 Future<void> _settle(WidgetTester tester) async {
@@ -385,6 +394,7 @@ void main() {
       'nothing of a host no longer saved', (tester) async {
     SharedPreferences.setMockInitialValues(_killedLive(tabs: []));
     _quietPlatform(tester);
+    _plainLocalShells();
     final box = _Box();
     await _start(tester, over: box);
 
@@ -406,6 +416,7 @@ void main() {
       'saved', (tester) async {
     SharedPreferences.setMockInitialValues(_killedLive(tabs: []));
     _quietPlatform(tester, launchedBy: 'sshbox://host/wsl:Ubuntu');
+    _plainLocalShells();
     final box = _Box();
     await _start(tester, over: box);
     expect(_onStrip(find.text('Ubuntu')), findsOneWidget);

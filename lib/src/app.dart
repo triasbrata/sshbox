@@ -27,6 +27,7 @@ import 'ui/bug_report.dart';
 import 'ui/connect_sheet.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
+import 'ui/title_bar.dart';
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
@@ -86,7 +87,68 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_listenForShares());
     unawaited(_checkForUpdate());
     unawaited(_countThisInstall());
+    unawaited(_sayIfFontMissing());
     lastFault.addListener(_offerToReport);
+    localTmux.addListener(_noTmux.clear);
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
+      _menuChannel.setMethodCallHandler((call) async {
+        if (call.method == 'openSettings') _openSettings();
+      });
+    }
+  }
+
+  /// The Mac's app menu: its Settings… item, clicked, arrives here — see
+  /// `AppDelegate.openSettings`.
+  static const _menuChannel = MethodChannel('sshbox/menu');
+
+  void _openSettings() {
+    final navigator = _navigator.currentState;
+    if (navigator != null) openSettings(navigator, notifyKeys: _notifyKeys);
+  }
+
+  /// Whether this ⌘, went down here, so its key-up is taken too.
+  bool _settingsKeyDown = false;
+
+  /// ⌘, on a Mac opens Settings, as it does in every Mac app, wherever the
+  /// focus is.
+  ///
+  /// An early handler rather than a shortcut at the root: the focus chain
+  /// runs from the focused widget up, so a terminal holding the focus would
+  /// see the key first, and xterm2 sends ⌘ keys on to a program that asked
+  /// for the kitty keyboard protocol, as Claude Code does. Taken here, the
+  /// key reaches no widget, and not the menu either, which Flutter asks only
+  /// with what it leaves unhandled — so Settings opens once.
+  KeyEventResult _onSettingsKey(KeyEvent event) {
+    if (event.logicalKey != LogicalKeyboardKey.comma) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyUpEvent) {
+      if (!_settingsKeyDown) return KeyEventResult.ignored;
+      _settingsKeyDown = false;
+      return KeyEventResult.handled;
+    }
+    final keys = HardwareKeyboard.instance;
+    if (!keys.isMetaPressed ||
+        keys.isControlPressed ||
+        keys.isAltPressed ||
+        keys.isShiftPressed) {
+      return KeyEventResult.ignored;
+    }
+    _settingsKeyDown = true;
+    if (event is KeyDownEvent) _openSettings();
+    return KeyEventResult.handled;
+  }
+
+  /// The font the saved choice named, when this computer no longer has it:
+  /// said once the app is on screen — see [TerminalSettings.sayIfMissing].
+  Future<void> _sayIfFontMissing() async {
+    if (terminalSettings.missing == null) return;
+    await WidgetsBinding.instance.endOfFrame;
+    final context = _navigator.currentContext;
+    if (context != null && context.mounted) {
+      terminalSettings.sayIfMissing(context);
+    }
   }
 
   /// Once a day, and only while telemetry is on: the install id, the version,
@@ -108,14 +170,7 @@ class _SshboxAppState extends State<SshboxApp> {
       'Jeansh counts installs\nIt sends a daily count and any crashes, never '
       'a hostname, a login, a path or a command. Settings turns it off.',
       duration: const Duration(seconds: 8),
-      action: (
-        label: 'Settings',
-        onPressed: () => _navigator.currentState?.push(
-          MaterialPageRoute<void>(
-            builder: (_) => SettingsPage(notifyKeys: _notifyKeys),
-          ),
-        ),
-      ),
+      action: (label: 'Settings', onPressed: _openSettings),
     );
   }
 
@@ -143,6 +198,20 @@ class _SshboxAppState extends State<SshboxApp> {
   /// reach, a release with no build for this platform — says nothing here.
   /// Settings' Check for updates is where an answer is always given.
   Future<void> _checkForUpdate() async {
+    // What the last update left beside this copy — the copy it replaced, or
+    // a build it never swapped in — goes first, and the second is said.
+    if (updater.enabled && (updater.install?.cleanUp() ?? false)) {
+      await WidgetsBinding.instance.endOfFrame;
+      final context = _navigator.currentContext;
+      if (context != null && context.mounted) {
+        showToast(
+          context,
+          'The last update did not go in, so this is still Jeansh '
+          '${updater.version}.',
+          type: ToastificationType.warning,
+        );
+      }
+    }
     final Update? update;
     try {
       update = await updater.checkDaily();
@@ -162,7 +231,30 @@ class _SshboxAppState extends State<SshboxApp> {
     hosts: await _repository.load(),
     databases: await loadDatabases(),
     transport: widget.transport,
+    localShell: _localShell,
   );
+
+  /// This machine's own shells: [localShellFor], as Settings has it now, over
+  /// a test's transport when it brings one.
+  ///
+  /// A machine or distro whose tmux could not be used earlier in this run is
+  /// not asked again until the setting changes: the page has said so once,
+  /// and each shell after it is a plain one straight away, rather than one
+  /// more toast and one more search.
+  LocalShell? _localShell(String hostId) {
+    final shell = localShellFor(
+      hostId,
+      tmux: localTmux.value,
+      tmuxMissing: _noTmux.contains(hostId),
+    );
+    final transport = widget.transport;
+    if (shell == null || transport == null) return shell;
+    return (host: shell.host, transport: transport);
+  }
+
+  /// The machines and distros whose tmux could not be used since the setting
+  /// last changed: see [_localShell].
+  final _noTmux = <String>{};
 
   Future<void> _startNotifications() async {
     // Local notifications first: FCM only delivers messages, the display and
@@ -246,14 +338,17 @@ class _SshboxAppState extends State<SshboxApp> {
     bool restoredFirst = false,
   }) async {
     // This machine's own shells are saved nowhere, so the repository has no
-    // host to find for them — and none has gone missing either. They open
-    // as their cards open them, going back to one already open unless
-    // another was asked for, as a saved host's do. None is ever brought back
-    // from an earlier run, so there is no restored tab to connect first.
-    final distro = wslDistroOf(hostId);
-    if (hostId == localHostId || distro != null) {
-      if (newSession || _sessions.resume(hostId) == null) {
-        await (distro == null ? openLocal() : openWsl(distro));
+    // host to find for them — and none has gone missing either. Otherwise
+    // they go as a saved host's do: back to one already open unless another
+    // was asked for, and a card's tap connects a tab of theirs brought back
+    // from an earlier run before it opens another.
+    final local = _localShell(hostId);
+    if (local != null) {
+      final restored = restoredFirst ? _sessions.restoredTab(hostId) : null;
+      if (restored != null) {
+        await _connectRestored(restored);
+      } else if (newSession || _sessions.resume(hostId) == null) {
+        await _openLocal(local);
       }
       return;
     }
@@ -284,20 +379,7 @@ class _SshboxAppState extends State<SshboxApp> {
       if (context == null || !context.mounted) return;
       final restored = restoredFirst ? _sessions.restoredTab(host.id) : null;
       if (restored != null) {
-        // Taken, so its tab showing opens no sheet of its own over this one.
-        restored.takeAutoConnect();
-        _sessions.select(restored.id);
-        // One still connecting is at its sign-in, in the web tab beside it:
-        // shown, and left to finish.
-        if (!restored.connecting &&
-            !await connectInSheet(
-              context,
-              restored,
-              secrets: _secrets,
-              inTab: (url) => _sessions.openWeb(restored.id, url),
-            )) {
-          return;
-        }
+        if (!await _connectRestored(restored)) return;
         session = restored;
       } else {
         session = await openInSheet(
@@ -318,38 +400,40 @@ class _SshboxAppState extends State<SshboxApp> {
     _pendingShares.clear();
   }
 
-  /// A shell on this machine, on the desktop builds that can have one — see
-  /// [LocalTransport].
+  /// Shows [restored], a tab brought back from an earlier run, and connects
+  /// it in its sheet. False when the sheet was closed before it connected.
+  Future<bool> _connectRestored(LiveSession restored) async {
+    final context = _navigator.currentContext;
+    if (context == null || !context.mounted) return false;
+    // Taken, so its tab showing opens no sheet of its own over this one.
+    restored.takeAutoConnect();
+    _sessions.select(restored.id);
+    // One still connecting is at its sign-in, in the web tab beside it:
+    // shown, and left to finish.
+    return restored.connecting ||
+        await connectInSheet(
+          context,
+          restored,
+          secrets: _secrets,
+          inTab: (url) => _sessions.openWeb(restored.id, url),
+        );
+  }
+
+  /// A shell on this machine: the login shell, PowerShell or a WSL distro's
+  /// — see [LocalTransport] and [_localShell].
   ///
   /// No connect sheet: there is no address to reach, no host key to rule on
   /// and no sign-in to finish, so the tab opens straight away and whatever the
   /// shell has to say about itself it says in the terminal. A tap when one is
   /// already open adds another, as a tap on a host's card does.
-  Future<void> openLocal() async {
-    if (!isDesktop) return;
-    final session = _sessions.create(
-      localHost(),
-      transport: widget.transport ?? (_, _) => LocalTransport(),
-    );
+  Future<void> _openLocal(LocalShell shell) async {
+    final session = _sessions.create(shell.host, transport: shell.transport);
     _sessions.add(session);
     await session.connect(secrets: _secrets);
-  }
-
-  /// A shell in the WSL distro [distro], on the Windows build alone — see
-  /// [wslDistros] — opened as [openLocal] opens one.
-  ///
-  /// Asked of [defaultTargetPlatform], as [isDesktop] is, so a test can be
-  /// Windows: off Windows a [LocalTransport] opens the login shell instead,
-  /// which would be the wrong shell under the distro's name.
-  Future<void> openWsl(String distro) async {
-    if (defaultTargetPlatform != TargetPlatform.windows) return;
-    final session = _sessions.create(
-      wslHost(distro),
-      transport:
-          widget.transport ?? (_, _) => LocalTransport(wslDistro: distro),
-    );
-    _sessions.add(session);
-    await session.connect(secrets: _secrets);
+    // tmux asked for and not had, which the page says: see [_localShell].
+    if (session.host.useTmux && session.isConnected && session.tmux == null) {
+      _noTmux.add(session.host.id);
+    }
   }
 
   /// Files and texts shared into the app before there was anywhere to put
@@ -409,6 +493,8 @@ class _SshboxAppState extends State<SshboxApp> {
   @override
   void dispose() {
     lastFault.removeListener(_offerToReport);
+    localTmux.removeListener(_noTmux.clear);
+    FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
     unawaited(_linkSubscription?.cancel());
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());
@@ -450,9 +536,13 @@ class _SshboxAppState extends State<SshboxApp> {
                     ? Brightness.light
                     : Brightness.dark,
               ),
-              // Toasts over every page, taking only the touches that land on
-              // one.
-              child: ToastLayer(child: child!),
+              // On a Mac, every page and toast clear of the window's buttons.
+              child: TitleBarSpace(
+                covered: () => _navigator.currentState?.canPop() ?? false,
+                // Toasts over every page, taking only the touches that land
+                // on one.
+                child: ToastLayer(child: child!),
+              ),
             ),
             home: TabsShell(
               repository: _repository,
@@ -461,12 +551,59 @@ class _SshboxAppState extends State<SshboxApp> {
               onOpenHost: (hostId) =>
                   openHost(hostId, newSession: true, restoredFirst: true),
               onDuplicate: (hostId) => openHost(hostId, newSession: true),
-              onOpenLocal: openLocal,
-              onOpenWsl: Platform.isWindows ? openWsl : null,
+              // Home draws the Local card on a desktop alone.
+              onOpenLocal: () =>
+                  openHost(localHostId, newSession: true, restoredFirst: true),
+              onOpenWsl: Platform.isWindows
+                  ? (distro) => openHost(
+                      wslHost(distro).id,
+                      newSession: true,
+                      restoredFirst: true,
+                    )
+                  : null,
             ),
           );
         },
       ),
     );
   }
+}
+
+/// This machine's own shells, saved nowhere: the host a tab of [hostId] runs
+/// on and what it connects through, or null for a saved host's id. What a
+/// Local or WSL card opens, and what a tab of one saved by an earlier run
+/// comes back on.
+///
+/// In tmux as [tmux] says — see [localTmux] — where there is a tmux to run:
+/// never PowerShell, and not where [tmuxMissing]. The binary given goes to
+/// this machine's own shell alone, a distro finding its own. No pane record:
+/// one is read through a file browser, which these shells have none of.
+///
+/// Where this build can have no such shell — a tab of one brought back on a
+/// phone, or a WSL one off Windows — it still comes back, and its connect
+/// says why it cannot open.
+@visibleForTesting
+LocalShell? localShellFor(
+  String hostId, {
+  required ({bool on, String path}) tmux,
+  bool tmuxMissing = false,
+}) {
+  final distro = wslDistroOf(hostId);
+  if (!isLocalHostId(hostId)) return null;
+  final windows = defaultTargetPlatform == TargetPlatform.windows;
+  final refused = !isDesktop
+      ? 'A shell on this machine needs a desktop build of Jeansh.'
+      : distro != null && !windows
+      ? 'A WSL shell needs the Windows build of Jeansh.'
+      : null;
+  final binary = distro == null && tmux.path.isNotEmpty ? tmux.path : null;
+  return (
+    host: (distro == null ? localHost() : wslHost(distro)).copyWith(
+      useTmux: tmux.on && (distro != null || !windows) && !tmuxMissing,
+      recordPanes: false,
+    ),
+    transport: (_, _) => refused != null
+        ? RefusedTransport(refused)
+        : LocalTransport(wslDistro: distro, tmux: binary),
+  );
 }

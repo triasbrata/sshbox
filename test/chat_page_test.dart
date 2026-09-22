@@ -11,6 +11,7 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
+import 'package:sshbox/src/ui/code_languages.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
@@ -129,6 +130,10 @@ class _Shell
   /// A session that has said nothing, unless a test says otherwise.
   String history = '0\n';
 
+  /// When set, the next history read waits for it, as a slow host makes it
+  /// wait.
+  Future<void>? historyArrives;
+
   /// A whole transcript on the host, where a test gives one: the history
   /// command then gets its size and its end, as a real host hands them over,
   /// and a read of an earlier part the bytes it asks for.
@@ -200,8 +205,13 @@ class _Shell
       );
     }
     if (command.contains('.jsonl')) {
+      final bytes = Uint8List.fromList(utf8.encode(history));
+      final arrives = historyArrives;
+      historyArrives = null;
       return (
-        output: Stream.value(Uint8List.fromList(utf8.encode(history))),
+        output: arrives == null
+            ? Stream.value(bytes)
+            : Stream.fromFuture(arrives.then((_) => bytes)),
         write: (Uint8List data) {},
         close: () {},
       );
@@ -834,9 +844,254 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(tester.takeException(), isNull);
-    expect(find.textContaining('"command": "tail -n 50 error.log"'),
-        findsOneWidget);
+    expect(
+      find.widgetWithText(SelectableText, 'tail -n 50 error.log'),
+      findsOneWidget,
+    );
     expect(find.text('3 upstream timeouts'), findsOneWidget);
+  });
+
+  group('an opened tool row', () {
+    /// Picks a finished session up, has Claude call [name] with [input] and
+    /// get [result] back, and opens the row.
+    Future<void> opened(
+      WidgetTester tester,
+      String name,
+      Map<String, Object?> input, {
+      Object result = 'done',
+    }) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.enterText(find.byType(TextField), 'go on');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.pump();
+      shell.event({
+        'type': 'assistant',
+        'message': {
+          'content': [
+            {'type': 'tool_use', 'id': 'toolu_1', 'name': name, 'input': input},
+          ],
+        },
+      });
+      shell.event({
+        'type': 'user',
+        'message': {
+          'content': [
+            {
+              'type': 'tool_result',
+              'tool_use_id': 'toolu_1',
+              'content': result,
+            },
+          ],
+        },
+      });
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.text(name));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+    }
+
+    /// The text of the selectable block that reads exactly [text].
+    TextSpan spanOf(WidgetTester tester, String text) => tester
+        .widgetList<SelectableText>(find.byType(SelectableText))
+        .map((widget) => widget.textSpan)
+        .whereType<TextSpan>()
+        .firstWhere((span) => span.toPlainText() == text);
+
+    /// What the opened row shows, as against the one line beside the
+    /// tool's name.
+    Finder shown(String text) => find.widgetWithText(SelectableText, text);
+
+    Finder shownContaining(String text) => find.descendant(
+      of: find.byType(SelectableText),
+      matching: find.textContaining(text),
+    );
+
+    /// Nothing in the opened row drawn as the JSON it came in.
+    void noJson(WidgetTester tester) {
+      for (final field in tester.widgetList<EditableText>(
+        find.descendant(
+          of: find.byType(SelectableText),
+          matching: find.byType(EditableText),
+        ),
+      )) {
+        expect(field.controller.text, isNot(contains('": "')));
+        expect(field.controller.text, isNot(contains(r'\n')));
+      }
+    }
+
+    testWidgets('Bash: the command as a command, what it is for above it', (
+      tester,
+    ) async {
+      await opened(tester, 'Bash', {
+        'command': "grep -n 'error' app.log\ntail -n 5 app.log",
+        'description': 'Look for errors in the log',
+        'timeout': 60000,
+      });
+      noJson(tester);
+      expect(
+        shown("grep -n 'error' app.log\ntail -n 5 app.log"),
+        findsOneWidget,
+      );
+      expect(shown('Look for errors in the log'), findsOneWidget);
+      // What the drawing does not take is still there.
+      expect(shown('timeout: 60000'), findsOneWidget);
+    });
+
+    testWidgets('Write: the path, then the file with its own newlines, '
+        'coloured as the editor colours it', (tester) async {
+      const content = 'import os\n\n\ndef main():\n    print("hi")\n';
+      await opened(tester, 'Write', {
+        'file_path': '/srv/app/tool.py',
+        'content': content,
+      });
+      noJson(tester);
+      expect(shown('/srv/app/tool.py'), findsOneWidget);
+      final span = spanOf(tester, content);
+      final colours = <Color?>{};
+      span.visitChildren((child) {
+        colours.add(child.style?.color);
+        return true;
+      });
+      expect(colours.length, greaterThan(1));
+    });
+
+    testWidgets('Edit and MultiEdit: what went out in red and what came in '
+        'in green, the editor\'s colours for a diff', (tester) async {
+      await opened(tester, 'MultiEdit', {
+        'file_path': '/srv/app/nginx.conf',
+        'edits': [
+          {'old_string': 'listen 80;', 'new_string': 'listen 8080;'},
+          {
+            'old_string': 'gzip off;',
+            'new_string': 'gzip on;\ngzip_types text/css;',
+          },
+        ],
+      });
+      noJson(tester);
+      expect(shown('/srv/app/nginx.conf'), findsOneWidget);
+      const diff =
+          '- listen 80;\n+ listen 8080;\n\n'
+          '- gzip off;\n+ gzip on;\n+ gzip_types text/css;\n';
+      final colourOf = <String, Color?>{};
+      spanOf(tester, diff).visitChildren((child) {
+        if (child case TextSpan(:final text?)) {
+          colourOf[text] = child.style?.color;
+        }
+        return true;
+      });
+      final styles = codeColoursFor(Brightness.light);
+      expect(colourOf['- listen 80;\n'], styles['deletion']!.color);
+      expect(colourOf['+ listen 8080;\n'], styles['addition']!.color);
+      expect(colourOf['+ gzip_types text/css;\n'], styles['addition']!.color);
+    });
+
+    testWidgets('Edit: one edit, and what else it said', (tester) async {
+      await opened(tester, 'Edit', {
+        'file_path': '/srv/app/a.txt',
+        'old_string': 'one',
+        'new_string': 'two',
+        'replace_all': true,
+      });
+      noJson(tester);
+      expect(shown('- one\n+ two\n'), findsOneWidget);
+      expect(shown('replace_all: true'), findsOneWidget);
+    });
+
+    testWidgets('Read: the path, and the lines read', (tester) async {
+      await opened(tester, 'Read', {
+        'file_path': '/srv/app/main.go',
+        'offset': 10,
+        'limit': 50,
+      });
+      expect(shown('/srv/app/main.go · lines 10–59'), findsOneWidget);
+      expect(find.textContaining('offset'), findsNothing);
+    });
+
+    testWidgets('Grep and Glob: the pattern on its own, where it looked '
+        'after it', (tester) async {
+      await opened(tester, 'Grep', {
+        'pattern': r'TODO\(\w+\)',
+        'path': '/srv/app',
+        'glob': '*.dart',
+      });
+      noJson(tester);
+      expect(shown(r'TODO\(\w+\)'), findsOneWidget);
+      expect(shown('path: /srv/app\nglob: *.dart'), findsOneWidget);
+    });
+
+    testWidgets('TodoWrite: a checklist', (tester) async {
+      await opened(tester, 'TodoWrite', {
+        'todos': [
+          {'content': 'Read the log', 'status': 'completed'},
+          {'content': 'Fix the config', 'status': 'in_progress'},
+          {'content': 'Reload nginx', 'status': 'pending'},
+        ],
+      });
+      noJson(tester);
+      expect(shown('Read the log'), findsOneWidget);
+      expect(shown('Reload nginx'), findsOneWidget);
+      expect(find.byIcon(Icons.check_box), findsOneWidget);
+      expect(find.byIcon(Icons.indeterminate_check_box_outlined),
+          findsOneWidget);
+      expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
+    });
+
+    testWidgets('a tool it does not know: each field a line, text as it '
+        'reads', (tester) async {
+      await opened(tester, 'mcp__tracker__file_issue', {
+        'title': 'Nightly is red',
+        'body': 'Lint fails.\nSee the log.',
+        'labels': ['ci'],
+      });
+      noJson(tester);
+      expect(
+        shown(
+          'title: Nightly is red\n'
+          'body:\nLint fails.\nSee the log.\n'
+          'labels: [\n  "ci"\n]',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a known tool of a shape it did not expect still shows '
+        'everything, and throws nothing', (tester) async {
+      await opened(tester, 'MultiEdit', {
+        'file_path': 42,
+        'edits': [
+          {'old_string': 'a', 'new_string': 'b'},
+          'not an edit',
+        ],
+      });
+      expect(shownContaining('file_path: 42'), findsOneWidget);
+      expect(shownContaining('"not an edit"'), findsOneWidget);
+      expect(shownContaining('- a'), findsNothing);
+    });
+
+    testWidgets('a result that came back as a JSON string reads as its text', (
+      tester,
+    ) async {
+      await opened(
+        tester,
+        'Bash',
+        {'command': 'cat notes'},
+        result: jsonEncode('first line\nsecond line'),
+      );
+      expect(shown('first line\nsecond line'), findsOneWidget);
+    });
   });
 
   testWidgets('the list has the finished sessions too, under their own '
@@ -1216,6 +1471,110 @@ void main() {
       await pick(tester, shell, 'first', long('first', 60));
       expect(at().pixels, 400);
       expect(at().maxScrollExtent - at().pixels, greaterThan(240));
+    });
+
+    testWidgets('scrolled up only a little, a session still comes back '
+        'there', (tester) async {
+      final (:shell, :at) = await twoSessions(tester, 'cccc');
+      await pick(tester, shell, 'first', long('first', 60));
+      // A few lines up from the newest, by a finger, as the user did: well
+      // inside the distance at which new output is still followed.
+      await tester.drag(
+        find.byType(CustomScrollView),
+        const Offset(0, 120),
+      );
+      await tester.pumpAndSettle();
+      final place = at().pixels;
+      expect(at().maxScrollExtent - place, inInclusiveRange(60, 200));
+
+      await pick(tester, shell, 'second', long('second', 60));
+      await pick(tester, shell, 'first', long('first', 60));
+      expect(at().pixels, place);
+    });
+
+    testWidgets('a session of long and short turns, read slowly, comes back '
+        'to what was on screen', (tester) async {
+      final (:shell, :at) = await twoSessions(tester, 'eeee');
+      // Short turns first and long ones after: what a list can see of it
+      // from its top says nothing of how long it really is.
+      final mixed = _history([
+        for (var n = 0; n < 60; n++)
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {
+                  'type': 'text',
+                  'text': n < 30
+                      ? 'first $n'
+                      : 'first $n\n\n${'a longer answer, ' * 60}\n\n'
+                            '```\n${'code line\n' * 12}```',
+                },
+              ],
+            },
+          },
+      ]);
+      await pick(tester, shell, 'first', mixed);
+      at().jumpTo(at().maxScrollExtent - 900);
+      await tester.pump();
+      final place = at().pixels;
+      // What the reader was looking at, and where on the screen it was.
+      final seen = [
+        for (var n = 0; n < 60; n++)
+          if (find.text('first $n').evaluate().isNotEmpty) n,
+      ].first;
+      final y = tester.getTopLeft(find.text('first $seen')).dy;
+
+      // One-line turns, laid out where the long ones were.
+      await pick(tester, shell, 'second', long('second', 60));
+      // The host takes its time handing the transcript over.
+      final arrives = Completer<void>();
+      shell
+        ..history = mixed
+        ..historyArrives = arrives.future;
+      await tester.tap(find.text('first'));
+      for (var frame = 0; frame < 5; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      arrives.complete();
+      await _settlePickUp(tester);
+      expect(at().pixels, moreOrLessEquals(place, epsilon: 1));
+      expect(tester.getTopLeft(find.text('first $seen')).dy, y);
+    });
+
+    testWidgets('closed and opened again, the tab comes back to where a '
+        'session was left', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('ffff0001', 'first')])
+        ..history = long('first', 60);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      Future<void> openTab() async {
+        await tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        );
+        await _settlePickUp(tester);
+        await tester.tap(find.text('first'));
+        await _settlePickUp(tester);
+      }
+
+      await openTab();
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, 120));
+      await tester.pumpAndSettle();
+      final place = _conversationAt(tester).pixels;
+      expect(_conversationAt(tester).maxScrollExtent - place, greaterThan(2));
+
+      // The tab's ✕: the page goes, and the session lets its chat go.
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      session.closeChat();
+      await openTab();
+      expect(_conversationAt(tester).pixels, place);
     });
 
     testWidgets('one left at its bottom comes back at its bottom', (

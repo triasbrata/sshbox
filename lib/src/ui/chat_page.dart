@@ -8,6 +8,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
+import 'code_languages.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
@@ -71,9 +72,15 @@ class _ChatPageState extends State<ChatPage> {
     _agents = _chat.agents(all: true)..ignore();
   }
 
-  /// Nearer the end than this, the reader is at the bottom: new entries
-  /// scroll into view, and a session left here is come back to at its end.
+  /// Nearer the end than this, the reader is following: a new entry scrolls
+  /// into view.
   static const _nearEnd = 240.0;
+
+  /// Nearer the end than this, a session is left at its bottom, and is come
+  /// back to at its end, however much it wrote meanwhile. Anything further up
+  /// is a place somebody scrolled to, kept however small: a few lines up is
+  /// still well inside [_nearEnd], and was once taken for the bottom.
+  static const _atEnd = 2.0;
 
   /// Where each session was left scrolled up, by host and session: kept for
   /// as long as the app runs, so picking one again, or closing the tab and
@@ -130,7 +137,7 @@ class _ChatPageState extends State<ChatPage> {
     final place = _placeOf(_chat.pickedFrom);
     if (_switching || place == null) return;
     final position = _scroll.position;
-    if (position.maxScrollExtent - position.pixels > _nearEnd) {
+    if (position.maxScrollExtent - position.pixels > _atEnd) {
       _leftAt[place] = position.pixels;
     } else {
       _leftAt.remove(place);
@@ -158,24 +165,33 @@ class _ChatPageState extends State<ChatPage> {
 
   /// Puts a session just picked where it was left, [at] — or, left at the
   /// bottom or never seen, at its bottom.
-  void _land(double? at) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (_scroll.hasClients) {
-        final position = _scroll.position;
-        final end = position.maxScrollExtent;
-        _scroll.jumpTo(
-          at == null ? end : at.clamp(position.minScrollExtent, end),
-        );
-      }
-      // A lazy list only knows how long it is once the rows near its end
-      // are built, so the bottom is found again once they are.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+  ///
+  /// A lazy list only knows how long it is once the rows near where it
+  /// stands are built: until then its end is a guess from the rows it has,
+  /// and short turns at the top make it a guess far short of a session of
+  /// long ones. So a jump that the guess held short of [at], or that went to
+  /// a bottom not yet known to be the real one, is made again once those rows
+  /// are built, until it lands or the end stops moving.
+  void _land(double? at, {double? lastEnd, int tries = 20}) {
+    final landing = _chat.pickedFrom;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        // Another session picked meanwhile lands for itself.
+        if (!mounted || _chat.pickedFrom != landing) return;
+        if (_scroll.hasClients) {
+          final position = _scroll.position;
+          final end = position.maxScrollExtent;
+          final to = (at ?? end).clamp(position.minScrollExtent, end);
+          _scroll.jumpTo(to);
+          if (to != at && end != lastEnd && tries > 0) {
+            return _land(at, lastEnd: end, tries: tries - 1);
+          }
+        }
         _switching = false;
-        if (!mounted || at != null || !_scroll.hasClients) return;
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      });
-    });
+      })
+      // The frame to look again after: a jump to where the list already is
+      // asks for none.
+      ..ensureVisualUpdate();
   }
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
@@ -316,6 +332,11 @@ class _ChatPageState extends State<ChatPage> {
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
               : CustomScrollView(
+                  // A list of its own for each session picked. The rows a
+                  // lazy list has built keep where they were laid out, and
+                  // another session's rows, of other heights, drawn into
+                  // them put what a session was left at somewhere else.
+                  key: ValueKey(chat.pickedFrom),
                   controller: _scroll,
                   center: _opened,
                   slivers: [
@@ -752,13 +773,29 @@ class _ToolRow extends StatelessWidget {
   static IconData _iconFor(String name) => switch (name) {
     'Bash' || 'BashOutput' || 'KillShell' => Icons.terminal,
     'Read' || 'NotebookEdit' => Icons.description_outlined,
-    'Edit' || 'Write' => Icons.edit_outlined,
+    'Edit' || 'MultiEdit' || 'Write' => Icons.edit_outlined,
     'Grep' || 'Glob' => Icons.search,
     'WebFetch' || 'WebSearch' => Icons.public,
     'Task' => Icons.group_outlined,
     'TodoWrite' => Icons.checklist,
     _ => Icons.build_outlined,
   };
+
+  /// A result that came back as a JSON string, quotes and escapes and all,
+  /// as the text it holds; anything else as it came.
+  static String _unquoted(String result) {
+    final text = result.trim();
+    if (text.length < 2 || !text.startsWith('"') || !text.endsWith('"')) {
+      return result;
+    }
+    try {
+      final value = jsonDecode(text);
+      if (value is String) return value;
+    } catch (_) {
+      // Only looked like one.
+    }
+    return result;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -783,6 +820,7 @@ class _ToolRow extends StatelessWidget {
               dense: true,
               tilePadding: const EdgeInsets.symmetric(horizontal: 12),
               childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
               leading: run.done
                   ? Icon(
                       _iconFor(run.name),
@@ -809,19 +847,26 @@ class _ToolRow extends StatelessWidget {
                 ],
               ),
               children: [
+                // Built only once the row is opened: colouring code is work.
+                // Under a storage key of its own, as every block is: a
+                // SelectableText scrolls, and without one it would read the
+                // tile's bool as its offset.
                 if (run.input.isNotEmpty)
-                  _block(
-                    context,
-                    'input',
-                    const JsonEncoder.withIndent('  ').convert(run.input),
-                    mono,
+                  _ToolInput(
+                    key: const PageStorageKey('input'),
+                    run: run,
+                    mono: mono,
                   ),
                 if (result != null && result.isNotEmpty)
                   _block(
                     context,
                     'result',
-                    result,
-                    mono.copyWith(color: run.failed ? scheme.error : null),
+                    SelectableText(
+                      _unquoted(result),
+                      style: mono.copyWith(
+                        color: run.failed ? scheme.error : null,
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -830,35 +875,239 @@ class _ToolRow extends StatelessWidget {
       },
     );
   }
+}
 
-  /// A slab of text that never grows past a screenful — a tool's answer can
-  /// be hundreds of lines, and the transcript has to stay readable.
+/// A slab of text that never grows past a screenful — a tool's answer, or a
+/// file it wrote, can be hundreds of lines, and the transcript has to stay
+/// readable.
+///
+/// [slot] names the block's own place in page storage, and has to differ
+/// from every other block in its row. Without it the scroll view's offset
+/// was stored under the tile's PageStorageKey, where the ExpansionTile keeps
+/// its open-or-shut bool, so an opened row read a bool as a double and threw
+/// — which a release build draws as nothing, the "expanded and empty" the
+/// user saw.
+Widget _block(BuildContext context, String slot, Widget text) => Container(
+  width: double.infinity,
+  margin: const EdgeInsets.only(top: 8),
+  padding: const EdgeInsets.all(8),
+  constraints: const BoxConstraints(maxHeight: 240),
+  decoration: BoxDecoration(
+    color: Theme.of(context).colorScheme.surface,
+    borderRadius: BorderRadius.circular(6),
+  ),
+  child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
+);
+
+/// What a tool was given, drawn the way the VS Code plugin draws it rather
+/// than as the JSON it came in: a command as a command, a file written as
+/// the file, an edit as the lines it took out and put in. Whatever a tool's
+/// drawing does not take — a field it does not know, or one of a shape it
+/// did not expect — is listed after it as `name: value`, strings as they
+/// read, so nothing Claude passed is ever left out.
+///
+/// Every value came from the host, through Claude, so it is drawn and never
+/// run or opened.
+class _ToolInput extends StatelessWidget {
+  const _ToolInput({super.key, required this.run, required this.mono});
+
+  final ChatToolRun run;
+  final TextStyle mono;
+
+  /// Colouring past this much is left undone: a file this big is read in
+  /// the editor, not in a 240-pixel box.
   ///
-  /// [slot] names the block's own place in page storage. Without it the
-  /// scroll view's offset was stored under the tile's PageStorageKey, where
-  /// the ExpansionTile keeps its open-or-shut bool, so an opened row read a
-  /// bool as a double and threw — which a release build draws as nothing,
-  /// the "expanded and empty" the user saw.
-  Widget _block(
-    BuildContext context,
-    String slot,
-    String text,
-    TextStyle style,
-  ) =>
-      Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(top: 8),
-        padding: const EdgeInsets.all(8),
-        constraints: const BoxConstraints(maxHeight: 240),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(6),
+  /// ponytail: coloured on every build of an opened row. Keep the span in a
+  /// State if a busy session with a big Write open ever stutters.
+  static const _colourLimit = 16 * 1024;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final brightness = theme.brightness;
+    final rest = Map<String, dynamic>.of(run.input);
+
+    /// The field [key] when it is text worth drawing, taken from what is
+    /// left to list.
+    String? take(String key) {
+      final value = rest[key];
+      if (value is! String || value.isEmpty) return null;
+      rest.remove(key);
+      return value;
+    }
+
+    Widget caption(String text, {bool path = false}) => Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: SelectableText(
+        text,
+        style: (path ? mono : theme.textTheme.bodySmall!).copyWith(
+          color: scheme.onSurfaceVariant,
         ),
-        child: SingleChildScrollView(
-          key: PageStorageKey(slot),
-          child: SelectableText(text, style: style),
-        ),
-      );
+      ),
+    );
+
+    Widget code(String slot, String text, {String path = ''}) => _block(
+      context,
+      slot,
+      SelectableText.rich(
+        (text.length <= _colourLimit
+                ? highlightCode(path, text, mono, brightness)
+                : null) ??
+            TextSpan(text: text, style: mono),
+      ),
+    );
+
+    final parts = <Widget>[];
+    switch (run.name) {
+      case 'Bash':
+        if (take('description') case final description?) {
+          parts.add(caption(description));
+        }
+        if (take('command') case final command?) {
+          parts.add(code('command', command, path: 'command.sh'));
+        }
+      case 'Write':
+        final path = take('file_path');
+        if (path != null) parts.add(caption(path, path: true));
+        if (take('content') case final content?) {
+          parts.add(code('content', content, path: path ?? ''));
+        }
+      case 'Edit' || 'MultiEdit':
+        if (take('file_path') case final path?) {
+          parts.add(caption(path, path: true));
+        }
+        final edits = run.name == 'Edit' ? [rest] : rest['edits'];
+        final pairs = [
+          if (edits is List)
+            for (final edit in edits)
+              if (edit case {
+                'old_string': final String old,
+                'new_string': final String put,
+              })
+                (old, put),
+        ];
+        if (edits is List && pairs.isNotEmpty && pairs.length == edits.length) {
+          rest
+            ..remove('old_string')
+            ..remove('new_string');
+          if (run.name == 'MultiEdit') rest.remove('edits');
+          parts.add(_block(context, 'diff', _diff(pairs, brightness)));
+        }
+      case 'Read':
+        final path = take('file_path');
+        final offset = rest['offset'];
+        final limit = rest['limit'];
+        final from = offset is int ? offset : 1;
+        final range = limit is int
+            ? 'lines $from–${from + limit - 1}'
+            : offset is int
+            ? 'from line $from'
+            : null;
+        if (range != null) {
+          rest
+            ..remove('offset')
+            ..remove('limit');
+        }
+        if (path != null || range != null) {
+          parts.add(caption([?path, ?range].join(' · '), path: true));
+        }
+      case 'Grep' || 'Glob':
+        if (take('pattern') case final pattern?) {
+          parts.add(code('pattern', pattern));
+        }
+      case 'TodoWrite':
+        final todos = rest['todos'];
+        final items = [
+          if (todos is List)
+            for (final todo in todos)
+              if (todo case {'content': final String content})
+                (content, todo['status']),
+        ];
+        if (todos is List && items.isNotEmpty && items.length == todos.length) {
+          rest.remove('todos');
+          parts.add(_checklist(context, items));
+        }
+    }
+    if (rest.isNotEmpty) parts.add(code('fields', _fields(rest)));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: parts,
+    );
+  }
+
+  /// Each edit as the lines it took out, in the editor's red for a diff, and
+  /// the lines it put in, in its green.
+  Widget _diff(List<(String, String)> pairs, Brightness brightness) {
+    final styles = codeColoursFor(brightness);
+    final out = mono.copyWith(color: styles['deletion']?.color);
+    final put = mono.copyWith(color: styles['addition']?.color);
+    final spans = <TextSpan>[];
+    for (final (index, (old, now)) in pairs.indexed) {
+      if (index > 0) spans.add(TextSpan(text: '\n', style: mono));
+      for (final line in const LineSplitter().convert(old)) {
+        spans.add(TextSpan(text: '- $line\n', style: out));
+      }
+      for (final line in const LineSplitter().convert(now)) {
+        spans.add(TextSpan(text: '+ $line\n', style: put));
+      }
+    }
+    return SelectableText.rich(TextSpan(children: spans, style: mono));
+  }
+
+  /// A to-do list as a checklist: done, under way, or still to do.
+  Widget _checklist(BuildContext context, List<(String, Object?)> items) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final (content, status) in items)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    switch (status) {
+                      'completed' => Icons.check_box,
+                      'in_progress' => Icons.indeterminate_check_box_outlined,
+                      _ => Icons.check_box_outline_blank,
+                    },
+                    size: 16,
+                    color: scheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: SelectableText(
+                      content,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        decoration: status == 'completed'
+                            ? TextDecoration.lineThrough
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// `name: value` a line, text as it reads — its newlines real, not `\n` —
+  /// and anything else as JSON.
+  static String _fields(Map<String, dynamic> fields) => [
+    for (final MapEntry(:key, :value) in fields.entries)
+      switch (value) {
+        final String text when text.contains('\n') => '$key:\n$text',
+        final String text => '$key: $text',
+        _ => '$key: ${const JsonEncoder.withIndent('  ').convert(value)}',
+      },
+  ].join('\n');
 }
 
 /// The run's own asides: it ended, it was refused, the host had nothing to

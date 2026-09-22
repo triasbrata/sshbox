@@ -1,6 +1,6 @@
 import 'dart:ui' show Brightness;
 
-import 'package:flutter/painting.dart' show TextStyle;
+import 'package:flutter/painting.dart' show TextSpan, TextStyle;
 import 'package:re_editor/re_editor.dart';
 import 'package:re_highlight/languages/bash.dart';
 import 'package:re_highlight/languages/cpp.dart';
@@ -52,6 +52,30 @@ CodeHighlightTheme? codeThemeFor(
 /// Atom's colours by scope, for a page of [brightness].
 Map<String, TextStyle> codeColoursFor(Brightness brightness) =>
     brightness == Brightness.dark ? atomOneDarkTheme : atomOneLightTheme;
+
+/// [code] coloured as the editor colours the file at [path], over [base], or
+/// null where the editor would leave it plain.
+TextSpan? highlightCode(
+  String path,
+  String code,
+  TextStyle base,
+  Brightness brightness,
+) {
+  final mode = codeModeFor(path);
+  if (mode == null) return null;
+  try {
+    final result = (Highlight()..registerLanguage('file', mode)).highlight(
+      code: code,
+      language: 'file',
+    );
+    final renderer = TextSpanRenderer(base, codeColoursFor(brightness));
+    result.render(renderer);
+    return renderer.span;
+  } catch (_) {
+    // Plain beats nothing: a language that trips on the code still shows it.
+    return null;
+  }
+}
 
 /// The language of the file at [path], by its name, or null for none.
 Mode? codeModeFor(String path) {

@@ -85,8 +85,10 @@ class _UpdateTileState extends State<UpdateTile> {
   }
 }
 
-/// What a newer release is, and a Download that brings it down, checks it and
-/// says where it went. Nothing is installed or run: the file is handed over.
+/// What a newer release is, and a Download that brings it down and checks it,
+/// then offers Restart to update, which puts it in place of this copy and
+/// starts it. Where this copy cannot replace itself, the file is handed over
+/// in the Downloads instead, saying why.
 Future<void> showUpdate(
   BuildContext context,
   Update update, {
@@ -115,6 +117,23 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   /// Where it landed, once it is in and its SHA-256 matches.
   File? _file;
 
+  /// Why this copy cannot put the update in its own place, or null if it can;
+  /// asked once, as the dialog opens.
+  late final String? _refusal = widget.updater.installRefusal;
+
+  /// The file handed over in the Downloads rather than installed: this copy
+  /// cannot replace itself, or putting it in place failed before anything
+  /// was changed.
+  bool _handOver = false;
+
+  /// Restart to update pressed, and the update being put in place.
+  bool _installing = false;
+
+  static const _installs =
+      'Jeansh then offers to put it in place of this copy and restart.';
+  static const _handsOver =
+      'It goes to your Downloads — Jeansh cannot install it here.';
+
   Future<void> _download() async {
     final cancel = Completer<void>();
     setState(() {
@@ -136,7 +155,14 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         Navigator.of(context).pop();
         return;
       }
-      setState(() => _file = file);
+      setState(() {
+        _file = file;
+        _handOver = _refusal != null;
+      });
+      final refusal = _refusal;
+      if (refusal != null) {
+        showToast(context, refusal, type: ToastificationType.warning);
+      }
     } catch (error) {
       // As above: anything at all, or the dialog is stuck on its bar.
       if (!mounted) return;
@@ -147,6 +173,27 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     }
   }
 
+  /// Puts the update in place and quits, for the helper to start it; see
+  /// [Updater.restartInto]. Anything that stops it first hands the file over
+  /// instead, with this copy as it was.
+  Future<void> _restart(File file) async {
+    setState(() => _installing = true);
+    try {
+      await widget.updater.restartInto(widget.update, file);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _installing = false;
+        _handOver = true;
+      });
+      showToast(
+        context,
+        '${_said(error)} It is in your Downloads instead.',
+        type: ToastificationType.error,
+      );
+    }
+  }
+
   /// Stops the download, and does nothing if it is already stopping.
   void _cancelNow() {
     final cancel = _cancel;
@@ -154,7 +201,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   }
 
   /// What to do with the file, which differs per platform because each ships
-  /// differently. Jeansh does not replace itself yet.
+  /// differently: for when Jeansh cannot put it in place itself.
   String get _howToInstall => switch (defaultTargetPlatform) {
     TargetPlatform.windows =>
       'Unzip it, and run Jeansh.exe from the folder it makes. Close this '
@@ -171,6 +218,42 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   Widget build(BuildContext context) {
     final update = widget.update;
     final file = _file;
+    if (_installing) {
+      return AlertDialog(
+        title: Text('Installing Jeansh ${update.version}'),
+        content: const Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 16),
+            Expanded(child: Text('Jeansh restarts when it is in place.')),
+          ],
+        ),
+      );
+    }
+    if (file != null && !_handOver) {
+      return AlertDialog(
+        title: Text('Jeansh ${update.version} is ready'),
+        content: Text(
+          'It was checked against the release. Restart to update closes '
+          'this Jeansh — open sessions end, and a tmux session goes on '
+          'running on its host — and starts ${update.version} in its place.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Later'),
+          ),
+          FilledButton(
+            onPressed: () => unawaited(_restart(file)),
+            child: const Text('Restart to update'),
+          ),
+        ],
+      );
+    }
     if (file != null) {
       return AlertDialog(
         title: Text('Jeansh ${update.version} is in your Downloads'),
@@ -223,7 +306,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         'You have ${widget.updater.version}. The download is '
         '${formatBytes(update.size)}, and it is checked against the '
         "release's SHA-256 before Jeansh keeps it.\n\n"
-        'It goes to your Downloads — Jeansh does not install it for you.',
+        '${_refusal == null ? _installs : _handsOver}',
       ),
       actions: [
         TextButton(

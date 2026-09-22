@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,6 +17,7 @@ import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import '../git/git_diff.dart';
 import '../platform.dart';
+import '../session/clipboard_terminal.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -23,6 +26,7 @@ import 'file_browser_page.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'right_click.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
 import 'terminal_paste.dart';
@@ -128,7 +132,15 @@ class _TerminalPageState extends State<TerminalPage> {
     if (!mounted) return;
     setState(() => _checkingClaude = false);
     if (why == null) return widget.onOpenChat();
-    showToast(context, why, type: ToastificationType.warning);
+    // Five seconds, as an error has: a refusal asks the user to go and do
+    // something about the host's Claude Code, which a second is too short to
+    // read, let alone act on.
+    showToast(
+      context,
+      why,
+      type: ToastificationType.warning,
+      duration: const Duration(seconds: 5),
+    );
   }
 
   /// Forwards and problems already announced, so each is said once. Held by
@@ -993,16 +1005,24 @@ class _PaneViewState extends State<_PaneView> {
     // from the pane that had it, which autofocus alone would leave alone.
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    // Before the view's own, which it would otherwise put there itself: see
+    // [_programCopied].
+    widget.terminal.onClipboardStore = _programCopied;
   }
 
   @override
   void didUpdateWidget(_PaneView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.terminal != widget.terminal) {
+      _letGoOfClipboard(oldWidget.terminal);
+      widget.terminal.onClipboardStore = _programCopied;
+    }
     if (!oldWidget.focused) _followFocus();
   }
 
   @override
   void dispose() {
+    _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1080,6 +1100,67 @@ class _PaneViewState extends State<_PaneView> {
     showToast(context, message, type: ToastificationType.warning);
   }
 
+  void _letGoOfClipboard(Terminal terminal) {
+    if (terminal.onClipboardStore == _programCopied) {
+      terminal.onClipboardStore = null;
+    }
+  }
+
+  /// A program on the host copying — Claude Code's `/copy`, a yank in vim or
+  /// tmux — with OSC 52 or the iTerm2 and kitty ways of saying it: see
+  /// [ClipboardTerminal]. Only the terminal being typed into may, as xterm2's
+  /// own rule has it, so a program in a tab out of sight cannot fill the
+  /// clipboard, and it never happens without a word.
+  void _programCopied(String _, String text) {
+    if (!mounted || !_focusNode.hasFocus || text.isEmpty) return;
+    // iTerm2's CopyToClipboard takes whatever is printed until its EndCopy,
+    // which [ClipboardTerminal] never sees.
+    if (utf8.encode(text).length > maxClipboardBytes) return;
+    unawaited(Clipboard.setData(ClipboardData(text: text)));
+    showToast(
+      context,
+      'Copied from the terminal',
+      type: ToastificationType.success,
+    );
+  }
+
+  /// The selection as the mouse button went down, to tell one the mouse has
+  /// just made from one that was there already: see [_mouseUp].
+  BufferRange? _selectionAtDown;
+
+  void _mouseDown(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.mouse) {
+      _selectionAtDown = selection.selection;
+    }
+  }
+
+  /// On a desktop, what the mouse has just selected — a drag, a double
+  /// click's word, a triple click's line — goes to the clipboard as the
+  /// button comes up: iTerm2's habit, and what Claude Code does in its own
+  /// fullscreen view, which never sees the drag here, xterm2 keeping drags
+  /// for its own selection.
+  ///
+  /// Only a selection the mouse made, never one already there or one the
+  /// app made. Looked at once the up has been dealt with, since xterm2
+  /// selects a double click's word in the same up, after this has heard it.
+  /// The text is what every other copy takes: see [selectedText].
+  void _mouseUp(PointerUpEvent event) {
+    if (!isDesktop ||
+        event.kind != PointerDeviceKind.mouse ||
+        !copyOnSelect.value) {
+      return;
+    }
+    final before = _selectionAtDown;
+    scheduleMicrotask(() {
+      final range = selection.selection;
+      if (!mounted || range == null || range == before) return;
+      final text = selectedText(widget.terminal.buffer, range);
+      if (text.trim().isEmpty) return;
+      unawaited(Clipboard.setData(ClipboardData(text: text)));
+      showToast(context, 'Copied', type: ToastificationType.success);
+    });
+  }
+
   /// Ctrl+V — ⌘V on an Apple platform — before xterm2's own paste shortcut
   /// sees it, that one reading text and nothing else. Every other key is left
   /// exactly as it was.
@@ -1106,6 +1187,77 @@ class _PaneViewState extends State<_PaneView> {
     };
     if (!chord) return KeyEventResult.ignored;
     if (event is KeyDownEvent) unawaited(_paste());
+    return KeyEventResult.handled;
+  }
+
+  /// A desktop's right-click, where a phone would long-press: the menu a
+  /// desktop terminal gives it — Copy for a selection, Paste, and Copy link
+  /// address on an OSC 8 hyperlink, the one clicked or the one selected.
+  ///
+  /// A program reading the mouse gets the click instead, as in any other
+  /// terminal: xterm2 offers it to the program first and calls this only
+  /// when nothing took it. Shift keeps it from the program, unless the
+  /// program asked for Shift too, as xterm's does.
+  void _contextMenu(TapUpDetails details, CellOffset cell) {
+    final terminal = widget.terminal;
+    final range = selection.selection;
+    final link =
+        terminal.hyperlinkAt(cell) ??
+        (range == null ? null : hyperlinkIn(terminal, range));
+    void copy(String text, String said) {
+      Clipboard.setData(ClipboardData(text: text));
+      showToast(context, said, type: ToastificationType.success);
+    }
+
+    showMenuAt<void>(context, details.globalPosition, [
+      if (range != null)
+        PopupMenuItem(
+          onTap: () => copy(selectedText(terminal.buffer, range), 'Copied'),
+          child: const Text('Copy'),
+        ),
+      PopupMenuItem(
+        onTap: () => unawaited(_paste()),
+        child: const Text('Paste'),
+      ),
+      if (link != null)
+        PopupMenuItem(
+          onTap: () => copy(link, 'Copied $link'),
+          child: const Text('Copy link address'),
+        ),
+    ]);
+  }
+
+  /// Ctrl+Shift+C — ⌘C on an Apple platform — before xterm2's own copy
+  /// shortcut, which reads the selection through `Buffer.getText` and so
+  /// glues together words a program spaced with cursor moves: see
+  /// [selectedText]. The same combination xterm2's activator takes, and like
+  /// it, claimed with nothing selected too.
+  KeyEventResult _onCopyChord(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent || event.logicalKey != LogicalKeyboardKey.keyC) {
+      return _onPasteChord(node, event);
+    }
+    final keys = HardwareKeyboard.instance;
+    final chord = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS =>
+        keys.isMetaPressed &&
+            !keys.isControlPressed &&
+            !keys.isShiftPressed &&
+            !keys.isAltPressed,
+      _ =>
+        keys.isControlPressed &&
+            keys.isShiftPressed &&
+            !keys.isAltPressed &&
+            !keys.isMetaPressed,
+    };
+    if (!chord) return KeyEventResult.ignored;
+    final range = selection.selection;
+    if (event is KeyDownEvent && range != null) {
+      unawaited(
+        Clipboard.setData(
+          ClipboardData(text: selectedText(widget.terminal.buffer, range)),
+        ),
+      );
+    }
     return KeyEventResult.handled;
   }
 
@@ -1217,27 +1369,33 @@ class _PaneViewState extends State<_PaneView> {
         controller: selection,
         onEmit: widget.onEmit,
         onPaste: _paste,
-        child: TerminalView(
-          widget.terminal,
-          key: _viewKey,
-          controller: selection,
-          focusNode: _focusNode,
-          scrollController: _scrollController,
-          autofocus: widget.focused,
-          autoResize: widget.autoResize,
-          // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
-          // hardware keys, shortcuts and mouse selection.
-          hardwareKeyboardOnly: true,
-          // Asked before xterm2's own shortcuts, and it claims Ctrl+V alone.
-          onKeyEvent: _onPasteChord,
-          // Tapping a terminal that already has focus is how you ask for the
-          // keyboard back, and focus alone will not raise it.
-          onTapUp: (_, cell) => widget.onTap(this, cell),
-          padding: widget.padding,
-          textStyle: widget.textStyle,
-          // The theme picked in Settings: a new pick repaints the shell at
-          // once, with no reconnect.
-          theme: terminalThemeOf(context),
+        child: Listener(
+          onPointerDown: _mouseDown,
+          onPointerUp: _mouseUp,
+          child: TerminalView(
+            widget.terminal,
+            key: _viewKey,
+            controller: selection,
+            focusNode: _focusNode,
+            scrollController: _scrollController,
+            autofocus: widget.focused,
+            autoResize: widget.autoResize,
+            // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+            // hardware keys, shortcuts and mouse selection.
+            hardwareKeyboardOnly: true,
+            // Asked before xterm2's own shortcuts, and it claims the copy and
+            // paste chords alone.
+            onKeyEvent: _onCopyChord,
+            // Tapping a terminal that already has focus is how you ask for the
+            // keyboard back, and focus alone will not raise it.
+            onTapUp: (_, cell) => widget.onTap(this, cell),
+            onSecondaryTapUp: isDesktop ? _contextMenu : null,
+            padding: widget.padding,
+            textStyle: widget.textStyle,
+            // The theme picked in Settings: a new pick repaints the shell at
+            // once, with no reconnect.
+            theme: terminalThemeOf(context),
+          ),
         ),
       ),
     );

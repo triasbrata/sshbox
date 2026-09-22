@@ -130,6 +130,62 @@ LinkCandidate? _candidate(String word, int at) {
   return (text: text.toString(), cells: cells);
 }
 
+/// The text a selection covers, as every copy out of a terminal takes it:
+/// the selection menu's Copy, the keyboard's copy shortcut and a desktop's
+/// copy on select.
+///
+/// xterm2's own `Buffer.getText` leaves out every cell nothing was written
+/// to, and a program drawing a screen — Claude Code's renderer, most TUIs —
+/// moves the cursor over a gap (`CSI n C`) instead of writing spaces
+/// into it, so `git push origin` drawn that way copied as `gitpushorigin`.
+/// Here a blank cell before the last written one on a line is a space, as in
+/// any other terminal; blanks after it are left out rather than padded, so a
+/// wide character wrapped past a line's last column does not gain a space.
+/// Otherwise it is `getText(range, true)` exactly: rows joined with a
+/// newline unless one wrapped onto the next, a block selection's always, and
+/// the spaces and tabs ending each line trimmed.
+String selectedText(Buffer buffer, BufferRange range) {
+  range = range.normalized;
+  final lines = <StringBuffer>[];
+  for (final segment in range.toSegments()) {
+    if (segment.line < 0 || segment.line >= buffer.height) continue;
+    final line = buffer.lines[segment.line];
+    final joined = range is! BufferRangeBlock && line.isWrapped;
+    if (lines.isEmpty ||
+        !(segment.line == range.begin.y || segment.line == 0 || joined)) {
+      lines.add(StringBuffer());
+    }
+
+    // The right half of a wide character is blank too, but its left half
+    // wrote it, so it counts as written.
+    bool written(int x) =>
+        line.getCodePoint(x) != 0 || (x > 0 && line.getWidth(x - 1) == 2);
+    final from = (segment.start ?? 0).clamp(0, line.length);
+    var last = (segment.end ?? line.length).clamp(0, line.length) - 1;
+    while (last >= from && !written(last)) {
+      last--;
+    }
+    // Runs of written cells through getText, which keeps combining marks and
+    // a wide character cut by either end, and a space for each gap cell —
+    // but for the gap a tab leaves, which xterm2 marks with the tab itself in
+    // its first cell and which copies as that one tab, as it always has.
+    var run = from;
+    var tab = false;
+    for (var x = from; x <= last; x++) {
+      if (written(x)) {
+        tab = line.getCodePoint(x) == 0x09;
+        continue;
+      }
+      lines.last.write(line.getText(run, x));
+      if (!tab) lines.last.write(' ');
+      run = x + 1;
+    }
+    if (run <= last) lines.last.write(line.getText(run, last + 1));
+  }
+  final trailing = RegExp(r'[ \t]+$');
+  return lines.map((line) => '$line'.replaceFirst(trailing, '')).join('\n');
+}
+
 /// The link covering [cell], if any.
 LinkCandidate? linkAt(Buffer buffer, CellOffset cell) {
   final line = logicalLine(buffer, cell.y);

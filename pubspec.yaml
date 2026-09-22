@@ -66,6 +66,9 @@ dependencies:
   # Already here under uuid, pure Dart: SCRAM and MD5 for the database
   # browser's PostgreSQL and MongoDB sign-ins.
   crypto: ^3.0.7
+  # Already here under image, pure Dart: reads the entries of a desktop
+  # update's archive so each is checked before anything unpacks it.
+  archive: ^4.2.0
   # Crash reporting (lib/src/telemetry/crash_reporting.dart), with the DSN
   # baked in at build time and nothing sent without one. 9 rather than the 8
   # pub picks by itself: 8.14.2's Android Gradle asks the Kotlin compiler for
@@ -82,6 +85,9 @@ dependencies:
   # Already here under package_info_plus, pure Dart: the v4 install id, which
   # is random and carries nothing of the machine.
   uuid: ^4.6.0
+  # Already here under package_info_plus, pure Dart: GDI's font families on
+  # Windows, for the terminal font picker (lib/src/system_fonts.dart).
+  win32: ^6.4.0
 
 dev_dependencies:
   flutter_test:

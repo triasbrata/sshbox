@@ -619,17 +619,10 @@ class _Dartssh2Session
     );
   }
 
-  /// Everything lands in `/tmp`, named after the file the user picked.
-  ///
-  /// The name is scrubbed down to a safe character set: it arrives from
-  /// Android's picker and would otherwise be free to contain path separators
-  /// or shell metacharacters, both of which end badly when the result is
-  /// pasted into a command line.
-  static String _remotePathFor(String fileName) {
-    final base = fileName.split('/').last.split(r'\').last;
-    final safe = base.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-    return '/tmp/${safe.isEmpty ? 'upload' : safe}';
-  }
+  /// Everything lands in `/tmp`, named after the file the user picked,
+  /// scrubbed by [uploadName].
+  static String _remotePathFor(String fileName) =>
+      '/tmp/${uploadName(fileName)}';
 
   @override
   Future<String> uploadToTmp({

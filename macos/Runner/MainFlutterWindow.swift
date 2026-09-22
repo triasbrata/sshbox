@@ -3,6 +3,9 @@ import FlutterMacOS
 import UniformTypeIdentifiers
 
 class MainFlutterWindow: NSWindow {
+  /// Kept for as long as the window: it answers the tab strip's channel.
+  private var titleBar: TitleBar?
+
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
@@ -10,6 +13,8 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+
+    titleBar = TitleBar(window: self, controller: flutterViewController)
 
     // The same channel and method Android's MainActivity answers, so the Dart
     // side has one path: the copy is taken here and only its path crosses.
@@ -31,7 +36,160 @@ class MainFlutterWindow: NSWindow {
         result: result)
     }
 
+    // The terminal font picker's list of what is installed. A family is
+    // monospaced when any member of it is among the fixed-pitch fonts
+    // NSFontManager names — the trait a font's own tables declare.
+    let fonts = FlutterMethodChannel(
+      name: "sshbox/fonts",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    fonts.setMethodCallHandler { call, result in
+      guard call.method == "families" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let manager = NSFontManager.shared
+      let fixed = Set(manager.availableFontNames(with: .fixedPitchFontMask) ?? [])
+      result(
+        manager.availableFontFamilies.map { family -> [String: Any] in
+          // Each member is its PostScript name, style name, weight and traits.
+          let names = manager.availableMembers(ofFontFamily: family)?
+            .compactMap { $0.first as? String } ?? []
+          return ["family": family, "mono": names.contains { fixed.contains($0) }]
+        })
+    }
+
     super.awakeFromNib()
+  }
+}
+
+/// The window's title bar, which the Flutter view runs up under so the tab
+/// strip is drawn into it, as Chrome and VS Code draw theirs: one row, the
+/// window's buttons at the left of the tabs. The buttons stay AppKit's, and
+/// the title stays set, so Mission Control and the Window menu still read
+/// Jeansh; it is only not drawn.
+///
+/// Nothing in the Flutter view moves the window by itself — FlutterView is
+/// opaque, and a mouse-down on an opaque view never moves its window — so the
+/// strip's empty space asks for it here, through `drag`. Not
+/// isMovableByWindowBackground, which would move the window for a drag
+/// anywhere in it, a selection in a terminal included.
+final class TitleBar {
+  private let window: NSWindow
+  private weak var controller: FlutterViewController?
+  private let channel: FlutterMethodChannel
+
+  /// What the Dart side is told while full screen hides the buttons.
+  private static let hidden: [String: Double] = ["inset": 0, "height": 0]
+
+  /// The last measure taken outside full screen, sent again on the way out
+  /// of it, before the buttons are back to be measured. AppKit's usual
+  /// numbers until then, for a window that opens in full screen.
+  private var measured: [String: Double] = ["inset": 78, "height": 28]
+
+  init(window: NSWindow, controller: FlutterViewController) {
+    self.window = window
+    self.controller = controller
+    channel = FlutterMethodChannel(
+      name: "sshbox/window", binaryMessenger: controller.engine.binaryMessenger)
+
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.titlebarSeparatorStyle = .none
+    window.styleMask.insert(.fullSizeContentView)
+
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else { return result(nil) }
+      switch call.method {
+      case "titleBar":
+        result(self.window.styleMask.contains(.fullScreen) ? Self.hidden : self.measure())
+      case "drag":
+        self.drag()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
+    // Full screen hides the buttons with the title bar and gives their room
+    // back: once it is there, and before it leaves, so on neither way does a
+    // button stand over a tab.
+    let center = NotificationCenter.default
+    _ = center.addObserver(
+      forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main
+    ) { [weak self] _ in
+      self?.channel.invokeMethod("titleBar", arguments: Self.hidden)
+    }
+    _ = center.addObserver(
+      forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      self.channel.invokeMethod("titleBar", arguments: self.measured)
+    }
+  }
+
+  /// Where the tabs may start, and how tall the band is that a page other
+  /// than the tabs keeps clear of. The tabs start past the zoom button by as
+  /// much again as the close button stands off the window's edge, so the
+  /// three buttons have the same margin either side.
+  private func measure() -> [String: Double] {
+    window.layoutIfNeeded()
+    guard
+      let close = window.standardWindowButton(.closeButton),
+      let zoom = window.standardWindowButton(.zoomButton)
+    else { return Self.hidden }
+    measured = [
+      "inset": Double(zoom.frame.maxX + close.frame.minX),
+      "height": Double(window.frame.height - window.contentLayoutRect.height),
+    ]
+    return measured
+  }
+
+  /// A press on the strip's empty space: the window follows the mouse, as it
+  /// does from a title bar, or for the second press of a double-click it does
+  /// what System Settings says a double-click on a title bar does.
+  private func drag() {
+    // The press the strip heard is AppKit's current event only while the
+    // button is still held. A click already over has nothing to drag, and
+    // starting a drag for one could leave the window following the mouse.
+    guard
+      let event = window.currentEvent,
+      event.type == .leftMouseDown || event.type == .leftMouseDragged,
+      NSEvent.pressedMouseButtons & 1 != 0
+    else { return }
+    if event.type == .leftMouseDown && event.clickCount == 2 {
+      doubleClick()
+    } else {
+      window.performDrag(with: event)
+    }
+    releaseInFlutter()
+  }
+
+  /// Zoom, minimise or nothing, as Desktop & Dock's "Double-click a window's
+  /// title bar to" is set: zoom when it was never set, as macOS does, and for
+  /// Fill, which has no public call of its own.
+  private func doubleClick() {
+    switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+    case "Minimize": window.miniaturize(nil)
+    case "None": break
+    default: window.zoom(nil)
+    }
+  }
+
+  /// The mouse-up for a press that moved or minimised the window can go to
+  /// the window server rather than the view, and Flutter, never hearing it,
+  /// would take the button for still held and the next click on a tab for a
+  /// drag. So it is told the press is over; should the real mouse-up arrive
+  /// after all, Flutter reads it as the mouse moving.
+  private func releaseInFlutter() {
+    guard
+      let controller,
+      let up = NSEvent.mouseEvent(
+        with: .leftMouseUp, location: window.mouseLocationOutsideOfEventStream,
+        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+        clickCount: 1, pressure: 0)
+    else { return }
+    controller.mouseUp(with: up)
   }
 }
 
