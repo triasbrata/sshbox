@@ -1,0 +1,53 @@
+# The chat button checks the host's Claude Code before it opens a chat.
+#
+# Tapped where the host's `claude --version` is older than 2.1.259 -- the oldest
+# with everything chat mode relies on -- it shows a toast naming the host's
+# version and the minimum, and opens no chat. An answer that is not a version,
+# or no claude at all, keeps chat shut too and says why. (UAT issue #22.)
+#
+# The user has no host with an old Claude Code, so this proves it for them and
+# keeps it proven. tools/e2e_android.sh runs it three times against a stand-in
+# claude it writes on the runner -- which is the SSH host -- between runs: one
+# that answers 2.1.100, one that answers something that is no version, and none
+# at all. No real Claude Code is needed, since the chat finder looks in
+# ~/.local/bin, where the stand-in goes.
+#
+# EXPECT (the toast, as a regex) and SHOT (where the evidence screenshot goes)
+# come from -e alone and are deliberately NOT in `env:` below: in Maestro 2.10 a
+# flow's env block is applied after the command line's and would override them.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# The key bar's chat button. The check runs a round trip to the host each time
+# -- a refusal is never cached -- so every run of this flow asks afresh.
+- tapOn: "Chat with Claude"
+
+# The refusal is a warning toast, and those close after one second, so this
+# waits for it and takes the evidence at once, before it goes.
+- extendedWaitUntil:
+    visible: "${EXPECT}"
+    timeout: 20000
+- takeScreenshot: "${SHOT}"
+
+# And no chat opened: a chat tab would read "<host> · Claude" on the strip.
+- assertNotVisible: "(?s).*· Claude.*"
+
+# Close the session, as every flow does, so the next one relaunches into no
+# restored tab.
+- tapOn: "Close ${HOST_LABEL}.*"
