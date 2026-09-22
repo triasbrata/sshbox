@@ -18,6 +18,7 @@ Future<void> main() async {
   await appTheme.load();
   await gitInDrawer.load();
   await showDotfiles.load();
+  await copyOnSelect.load();
   // Likewise, so the first tab is never drawn under the Mac's window buttons.
   await watchTitleBar();
   // Before any session can connect, so its entry joins the saved log rather

@@ -18,6 +18,7 @@ import '../notifications/direct_notify.dart';
 import '../notifications/notify_key.dart';
 import '../git/git_diff.dart';
 import '../git/git_repo.dart';
+import 'clipboard_terminal.dart';
 import 'isolate_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
@@ -145,7 +146,10 @@ class LiveSession extends ChangeNotifier {
   /// kitty handler goes first so a program that has switched that protocol on
   /// still gets the protocol's own encoding, and a key's release goes only to
   /// a program that asked for it: see [_ReleaseOnlyIfAsked].
-  static Terminal _newTerminal() => Terminal(
+  ///
+  /// And a program may copy to the clipboard but never read it: see
+  /// [ClipboardTerminal].
+  static Terminal _newTerminal() => ClipboardTerminal(
     maxLines: 10000,
     inputHandler: const _ReleaseOnlyIfAsked(
       CascadeInputHandler([
