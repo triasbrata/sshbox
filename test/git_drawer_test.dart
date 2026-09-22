@@ -149,7 +149,10 @@ Future<void> _tapBar(WidgetTester tester, String tooltip) async {
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
-  tearDown(() => gitInDrawer.value = false);
+  tearDown(() {
+    gitInDrawer.value = false;
+    showDotfiles.value = false;
+  });
 
   testWidgets('Tab, the default: the git button opens a tab and no drawer', (
     tester,
@@ -254,5 +257,46 @@ void main() {
 
     expect(opened, isEmpty);
     expect(find.byType(GitPage), findsOneWidget);
+  });
+
+  /// A row of the files tree, rather than any text of that name.
+  Finder treeRow(String name) => find.descendant(
+    of: find.byType(FileBrowserPage),
+    matching: find.text(name),
+  );
+
+  testWidgets('Show dotfiles stays chosen when the drawer shuts and opens '
+      'again', (tester) async {
+    await _phone(tester);
+    await _pumpTerminal(tester);
+
+    await _tapBar(tester, 'Browse files');
+    expect(treeRow('.bashrc'), findsNothing);
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Show dotfiles'));
+    await tester.pumpAndSettle();
+    expect(treeRow('.bashrc'), findsOneWidget);
+
+    // Shut through the scrim, which throws the tree away, then opened again.
+    await tester.tapAt(const Offset(10, 300));
+    await tester.pumpAndSettle();
+    expect(find.byType(FileBrowserPage), findsNothing);
+    await _tapBar(tester, 'Browse files');
+
+    expect(treeRow('.bashrc'), findsOneWidget);
+    expect(showDotfiles.value, isTrue);
+  });
+
+  testWidgets('a tree built after a restart shows dotfiles when that was the '
+      'saved choice', (tester) async {
+    await _phone(tester);
+    SharedPreferences.setMockInitialValues({'sshbox.files.dotfiles': true});
+    await showDotfiles.load();
+
+    await _pumpTerminal(tester);
+    await _tapBar(tester, 'Browse files');
+
+    expect(treeRow('.bashrc'), findsOneWidget);
   });
 }
