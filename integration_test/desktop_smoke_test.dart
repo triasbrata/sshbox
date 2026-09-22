@@ -16,10 +16,13 @@
 // display at all. On Windows and macOS there is a window; it is simply that
 // nobody is looking at it. tools/e2e_desktop.sh picks the right one.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' show Card;
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart'
+    show Card, DropdownButton, InkWell, Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,17 +47,131 @@ Future<void> _launch(WidgetTester tester) async {
 /// on one.
 Future<void> _until(
   WidgetTester tester,
-  bool Function() done,
+  FutureOr<bool> Function() done,
   String what, {
   Duration timeout = const Duration(seconds: 20),
 }) async {
   final end = DateTime.now().add(timeout);
-  while (!done()) {
-    if (DateTime.now().isAfter(end)) fail('Gave up waiting for $what');
+  while (!await done()) {
+    if (DateTime.now().isAfter(end)) {
+      // What the screen showed instead: its labels and its buttons' tooltips,
+      // the app's own words. A terminal's text is painted, not a widget, so
+      // none of it is here.
+      String words<T extends Widget>(String? Function(T) of) => find
+          .byType(T)
+          .evaluate()
+          .map((e) => of(e.widget as T))
+          .whereType<String>()
+          .take(60)
+          .join(' | ');
+      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
+      debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
+      fail('Gave up waiting for $what');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 100));
     await tester.pump();
   }
 }
+
+/// A Local shell opened from its card, holding focus, ready to be typed into.
+///
+/// A plain login shell unless [tmux]: tmux between a program and Jeansh
+/// answers or drops some sequences itself, which would make the other tests
+/// ones of tmux. Saved, not only set, so a later launch reads the same — held
+/// in memory alone, the next launch read tmux on again. The run's data folder
+/// is its own (tools/e2e_desktop.sh), so nothing of this machine's is changed.
+Future<TerminalView> _localShell(
+  WidgetTester tester, {
+  bool tmux = false,
+}) async {
+  await localTmux.choose(on: tmux);
+  // The card, not a tab of the same name brought back from a run before.
+  await tester.tap(find.widgetWithText(Card, 'Local shell'));
+  // Ready once it holds focus and its shell has drawn a prompt: typed before
+  // that, a command can reach a terminal with no shell behind it yet. Looked
+  // up afresh each time, since a restored tab gets a new terminal as it
+  // reconnects.
+  TerminalView view() => tester.widget<TerminalView>(find.byType(TerminalView));
+  try {
+    await _until(tester, () {
+      if (find.byType(TerminalView).evaluate().isEmpty) return false;
+      final shown = view();
+      return (shown.focusNode?.hasFocus ?? false) && _text(shown).isNotEmpty;
+    }, 'the Local shell to open, take focus and draw its prompt');
+  } on TestFailure {
+    // What there is instead: which terminals, where, and what is on screen.
+    for (final element in find
+        .byType(TerminalView, skipOffstage: false)
+        .evaluate()) {
+      final each = element.widget as TerminalView;
+      final onstage = find.byWidget(each).evaluate().isNotEmpty;
+      debugPrint(
+        'terminal ${onstage ? 'on screen' : 'offstage'}, '
+        'focused ${each.focusNode?.hasFocus}, '
+        'lines with text ${_text(each).length}',
+      );
+    }
+    rethrow;
+  }
+  return view();
+}
+
+/// The lines [view] shows that hold anything.
+List<String> _text(TerminalView view) {
+  final lines = view.terminal.buffer.lines;
+  return [
+    for (var i = 0; i < lines.length; i++)
+      if (lines[i].getText().trim().isNotEmpty) lines[i].getText(),
+  ];
+}
+
+/// Runs [command] in [view]'s shell: what a key press ends in, typed where
+/// the keyboard would type it.
+void _run(TerminalView view, String command) {
+  view.terminal.textInput(command);
+  view.terminal.keyInput(TerminalKey.enter);
+}
+
+/// A folder of the test's own, gone after it. The Local shell runs on this
+/// machine, so a test reads what a program left there straight off the disk.
+Directory _scratch() {
+  final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+  addTearDown(() => dir.deleteSync(recursive: true));
+  return dir;
+}
+
+/// Picks [item] from a menu once it has finished opening. A menu grows open,
+/// and its items are built before they can be hit: tapped as soon as one is
+/// built, the tap can land on the barrier beside a clipped item, which shuts
+/// the menu and does nothing — a test that passed or failed on the machine's
+/// speed.
+Future<void> _pick(WidgetTester tester, String item) async {
+  await _until(
+    tester,
+    () => find.text(item).evaluate().isNotEmpty,
+    'the menu to offer $item',
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  await tester.tap(find.text(item));
+}
+
+/// Closes every tab, so the next test's launch brings none back. A Local tab
+/// left open is saved and restored at the next launch, and that restore
+/// lands whenever it lands — before or after the next test taps the card or
+/// counts its tabs — which made a test pass or fail by timing alone.
+Future<void> _closeTabs(WidgetTester tester) async {
+  final close = find.byWidgetPredicate(
+    (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+  );
+  // Capped, so a "Close …" that closes nothing cannot hold the run.
+  for (var i = 0; i < 20 && close.evaluate().isNotEmpty; i++) {
+    await tester.tap(close.first);
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+}
+
+Future<String?> _clipboard() async =>
+    (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -160,15 +277,9 @@ void main() {
     skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
     (tester) async {
       await _launch(tester);
-      // A plain login shell. tmux between the program and Jeansh answers or
-      // drops the query itself, which would make this a test of tmux. In memory
-      // only: the saved choice is left alone.
-      localTmux.value = (on: false, path: '');
+      final view = await _localShell(tester);
 
-      // The Local shell runs on this machine, so the test reads what the
-      // program recorded straight off the disk.
-      final dir = Directory.systemTemp.createTempSync('jeansh-osc52-');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      final dir = _scratch();
       final reply = File('${dir.path}/reply');
       final done = File('${dir.path}/done');
       // Plain sh, and no `timeout`, which a Mac does not have. The reader is
@@ -186,28 +297,11 @@ stty sane
 touch '${done.path}'
 ''');
 
-      // The card, not a tab of the same name brought back from a run before.
-      await tester.tap(find.widgetWithText(Card, 'Local shell'));
-      await _until(
-        tester,
-        () => find.byType(TerminalView).evaluate().isNotEmpty,
-        'the Local shell to open',
-      );
-      final view = tester.widget<TerminalView>(find.byType(TerminalView));
-      await _until(
-        tester,
-        () => view.focusNode?.hasFocus ?? false,
-        'the terminal to take focus, without which xterm2 would stay silent '
-        'even on a leaking build',
-      );
-
-      // What a key press ends in, typed where the keyboard would type it.
-      view.terminal.textInput('sh ${script.path}');
-      view.terminal.keyInput(TerminalKey.enter);
+      _run(view, 'sh ${script.path}');
       await _until(tester, done.existsSync, 'the query script to finish');
 
       expect(
-        (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+        await _clipboard(),
         'e2e-canary',
         reason:
             'the program\'s copy never reached the clipboard, so an empty reply '
@@ -224,8 +318,296 @@ touch '${done.path}'
         reason: 'the terminal answered a clipboard query: a host can read it',
       );
 
-      view.terminal.textInput('exit');
-      view.terminal.keyInput(TerminalKey.enter);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #12, #10 and the terminal half of #11: what a mouse selects in a desktop
+  // terminal is copied as it reads, gaps and all. Claude Code draws a gap by
+  // moving the cursor over it rather than printing a space, and xterm2's own
+  // getText leaves out every cell nothing was written to, so a line drawn
+  // `git ESC[1C push ESC[1C origin` copied as gitpushorigin until every copy
+  // went through selectedText. Drawn here the same way, selected with a real
+  // mouse drag, which copy on select — on by default on a desktop — puts on
+  // the clipboard, and copied again from the right-click menu.
+  testWidgets(
+    'a mouse selection copies what the line reads, a drawn gap as a space',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final script = File('${_scratch().path}/draw.sh')
+        ..writeAsStringSync("printf 'git\\033[1Cpush\\033[1Corigin\\n'\n");
+      _run(view, 'sh ${script.path}');
+
+      // Found by what xterm2 itself makes of the line, gaps or none.
+      final lines = view.terminal.buffer.lines;
+      final drawn = RegExp(r'^git ?push ?origin');
+      var row = -1;
+      try {
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (drawn.hasMatch(lines[i].getText())) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be drawn');
+      } on TestFailure {
+        // What the terminal holds instead: this test's own shell and nothing
+        // else, so it says whether the command ran at all.
+        final shown = _text(view);
+        final tail = shown.sublist(shown.length > 12 ? shown.length - 12 : 0);
+        debugPrint('The terminal holds:\n${tail.join('\n')}');
+        rethrow;
+      }
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      Future<String?> copied() async {
+        String? now;
+        await _until(
+          tester,
+          () async => (now = await _clipboard()) != 'untouched',
+          'something to be copied',
+        );
+        return now;
+      }
+
+      // Across the fifteen cells of the line, a cell at a time.
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      final mouse = await tester.startGesture(
+        cell(0),
+        kind: PointerDeviceKind.mouse,
+      );
+      for (var col = 1; col < 15; col++) {
+        await mouse.moveTo(cell(col));
+        await tester.pump();
+      }
+      await mouse.up();
+      expect(
+        await copied(),
+        'git push origin',
+        reason: 'copy on select copied the selection without its drawn gaps',
+      );
+
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await tester.tapAt(
+        cell(5),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _pick(tester, 'Copy');
+      expect(
+        await copied(),
+        'git push origin',
+        reason: 'the right-click menu copied the selection without its gaps',
+      );
+
+      await _closeTabs(tester);
+    },
+  );
+
+  // #9 and the tab half of #11. Duplicate session on a Local shell's tab
+  // opened nothing and said "That host is no longer saved": openHost looked
+  // every id up among the saved hosts, and `local` never is one. A mouse has
+  // no long press, so on a desktop the tab's menu is a right-click away.
+  testWidgets(
+    'a right-click on a Local shell tab duplicates it',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      await _launch(tester);
+      await _localShell(tester);
+      // Counted rather than assumed one: the tests before this left Local
+      // tabs, which come back with each launch.
+      // A tab reads whatever title its shell gives itself, so tabs are found
+      // by their close button, "Close <title>" — "Reconnect" once its shell
+      // has ended. Counted on the strip rather than by terminals, which a
+      // restored tab builds and swaps as it reconnects.
+      final close = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+      );
+      final tabs = find.byWidgetPredicate(
+        (w) =>
+            w is Tooltip &&
+            ((w.message ?? '').startsWith('Close ') ||
+                w.message == 'Reconnect'),
+      );
+      final before = tabs.evaluate().length;
+
+      // Right-clicked on the chip that holds a close button. Any Local tab
+      // duplicates the same way.
+      final chip = find
+          .ancestor(of: close.first, matching: find.byType(InkWell))
+          .first;
+      await tester.tapAt(
+        tester.getCenter(chip),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _pick(tester, 'Duplicate session');
+      await _until(
+        tester,
+        () => tabs.evaluate().length == before + 1,
+        'a second Local shell',
+      );
+      expect(find.textContaining('no longer saved'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #3: a diff opens split on a wide page, as GitHub's does — old on the
+  // left, new on the right, a changed line level with the line that replaced
+  // it; a narrow one stacks them. This window is past the 900 dp where split
+  // begins, so the check is that the two sit on one row, side by side.
+  testWidgets(
+    'a diff on a wide page opens split, the old line beside the new',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      // Where a Local shell's Git panel looks: the login home, a folder or
+      // two down. Made for this test and gone after it.
+      final repo = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('jeansh-e2e-repo-');
+      addTearDown(() => repo.deleteSync(recursive: true));
+      Future<void> git(List<String> args) async {
+        final done = await Process.run('git', ['-C', repo.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+      }
+
+      final file = File('${repo.path}/e2e.txt');
+      await git(['init', '-q']);
+      file.writeAsStringSync('first\nbefore-e2e\nlast\n');
+      await git(['add', 'e2e.txt']);
+      await git([
+        '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+        'commit', '-q', '-m', 'e2e',
+      ]);
+      file.writeAsStringSync('first\nafter-e2e\nlast\n');
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Git'));
+
+      // On a runner the home holds this repository alone and it is picked
+      // already; on a machine with others it is picked from the list.
+      final name = repo.path.split('/').last;
+      bool ours(String? root) => root != null && root.endsWith('/$name');
+      final picker = find.byType(DropdownButton<String>);
+      DropdownButton<String> shown() => tester.widget(picker);
+      await _until(
+        tester,
+        () =>
+            picker.evaluate().isNotEmpty &&
+            shown().items!.any((item) => ours(item.value)),
+        "the Git panel to find this test's repository",
+      );
+      if (!ours(shown().value)) {
+        // Picked through the picker's own onChanged, which is what choosing
+        // it from the list calls: this test is of the diff, and a long list
+        // in a small menu is its own fight.
+        final root = shown().items!.map((item) => item.value).firstWhere(ours);
+        shown().onChanged!(root);
+        await _until(
+          tester,
+          () => ours(shown().value),
+          "this test's repository to be picked",
+        );
+      }
+      await _until(
+        tester,
+        () => find.textContaining('e2e.txt').evaluate().isNotEmpty,
+        'the changed file under Changes',
+      );
+      await tester.tap(find.textContaining('e2e.txt').first);
+
+      final before = find.textContaining('before-e2e', findRichText: true);
+      final after = find.textContaining('after-e2e', findRichText: true);
+      await _until(
+        tester,
+        () => before.evaluate().isNotEmpty && after.evaluate().isNotEmpty,
+        'the diff',
+      );
+      expect(find.byTooltip('Unified view'), findsOneWidget,
+          reason: 'a wide page did not open split');
+      final old = tester.getCenter(before.first);
+      final now = tester.getCenter(after.first);
+      expect(old.dy, closeTo(now.dy, 1),
+          reason: 'the changed line is not level with what replaced it');
+      expect(old.dx, lessThan(now.dx),
+          reason: 'the old line is not on the left');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #18: where the machine has tmux, the Local shell runs in it, as a tmux
+  // host's tabs do — an sshbox- session on the machine's own tmux server, a
+  // tab that splits into panes, and the session ended by the tab's ✕.
+  //
+  // Linux only: tools/e2e_desktop.sh gives the run a tmux server of its own
+  // there, through TMUX_TMPDIR, and elsewhere this would open sessions on the
+  // server of whoever runs it.
+  testWidgets(
+    'a Local shell runs in tmux where the machine has it',
+    skip: !Platform.isLinux,
+    (tester) async {
+      Future<List<String>> sessions() async {
+        final listed = await Process.run('tmux', [
+          'list-sessions',
+          '-F',
+          '#{session_name}',
+        ]);
+        return '${listed.stdout}'
+            .split('\n')
+            .where((name) => name.startsWith('sshbox-'))
+            .toList();
+      }
+
+      expect(await sessions(), isEmpty, reason: 'the run began with a session');
+      await _launch(tester);
+      await _localShell(tester, tmux: true);
+      await _until(
+        tester,
+        () async => (await sessions()).length == 1,
+        'an sshbox- session on the tmux server',
+      );
+
+      // A tmux tab's menu, which a plain shell's lacks, splits it.
+      final close = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+      );
+      await tester.tapAt(
+        tester.getCenter(
+          find.ancestor(of: close.first, matching: find.byType(InkWell)).first,
+        ),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _pick(tester, 'Split right');
+      await _until(tester, () async {
+        final listed = await Process.run('tmux', [
+          'list-panes',
+          '-a',
+          '-F',
+          '#{pane_id}',
+        ]);
+        return '${listed.stdout}'.trim().split('\n').length == 2;
+      }, 'tmux to split the session in two');
+      await _until(
+        tester,
+        () => find.byType(TerminalView).evaluate().length == 2,
+        'two panes side by side',
+      );
+
+      await _closeTabs(tester);
+      await _until(
+        tester,
+        () async => (await sessions()).isEmpty,
+        "the session to end with its tab's ✕",
+      );
     },
   );
 }

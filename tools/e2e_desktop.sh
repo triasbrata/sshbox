@@ -12,6 +12,8 @@
 #
 #   tools/e2e_desktop.sh            # this machine's platform
 #   tools/e2e_desktop.sh linux      # or windows, macos
+#   tools/e2e_desktop.sh linux --plain-name 'a diff'   # the rest goes to
+#                                   # flutter test, here to run one test
 #
 # Exits non-zero if any test fails, which is what a release gate reads.
 set -euo pipefail
@@ -29,6 +31,7 @@ if [ -z "$target" ]; then
        exit 2 ;;
   esac
 fi
+shift $(($# > 0 ? 1 : 0))
 
 tests=integration_test
 
@@ -47,22 +50,33 @@ case "$target" in
     # times out, and what fails reads as an app bug rather than a runner
     # missing its keyring. Unlocked with an empty password.
     #
-    # Both in a data folder of the run's own, gone after it: the keyring's
-    # files, and the app's own preferences and saved tabs. A run starts from a
-    # clean app, as on CI, and never opens this machine's keyring or leaves a
-    # restored tab behind for a Jeansh someone uses here.
+    # All in a data folder of the run's own, gone after it: the keyring's
+    # files, the app's own preferences and saved tabs, and the tmux server a
+    # Local shell starts, killed as the run ends. A run starts from a clean
+    # app, as on CI, and never opens this machine's keyring, leaves a restored
+    # tab behind for a Jeansh someone uses here, or touches their tmux.
+    #
+    # And only the virtual display. xvfb-run sets DISPLAY but leaves
+    # WAYLAND_DISPLAY, and GTK tries Wayland first: on a machine with a
+    # Wayland session — WSLg has one — the app drew on the real desktop and
+    # copied to the real clipboard, which WSLg shares with Windows, over
+    # whatever the user had copied.
     exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
       dbus-run-session -- sh -c '
+        unset WAYLAND_DISPLAY && export GDK_BACKEND=x11
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
-        trap "rm -rf \"$XDG_DATA_HOME\"" EXIT
+        TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR
+        unset TMUX TMUX_PANE
+        trap "tmux kill-server 2>/dev/null; rm -rf \"$XDG_DATA_HOME\"" EXIT
         printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
-        flutter test "$1" -d linux' sh "$tests"
+        tests=$1 && shift
+        flutter test "$tests" -d linux "$@"' sh "$tests" "$@"
     ;;
   windows)
-    exec flutter test "$tests" -d windows
+    exec flutter test "$tests" -d windows "$@"
     ;;
   macos)
-    exec flutter test "$tests" -d macos
+    exec flutter test "$tests" -d macos "$@"
     ;;
   *)
     echo "Unknown target '$target'; expected linux, windows or macos" >&2
