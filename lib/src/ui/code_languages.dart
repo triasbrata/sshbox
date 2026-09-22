@@ -1,5 +1,6 @@
 import 'dart:ui' show Brightness;
 
+import 'package:flutter/painting.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:re_highlight/languages/bash.dart';
 import 'package:re_highlight/languages/css.dart';
@@ -40,8 +41,32 @@ CodeHighlightTheme? codeThemeFor(
   if (mode == null) return null;
   return CodeHighlightTheme(
     languages: {'file': CodeHighlightThemeMode(mode: mode)},
-    theme: brightness == Brightness.dark ? atomOneDarkTheme : atomOneLightTheme,
+    theme: codeStyles(brightness),
   );
+}
+
+/// The editor's colours, by highlight scope, for a page of [brightness]:
+/// among them `addition` and `deletion`, what a diff's lines are drawn in.
+Map<String, TextStyle> codeStyles(Brightness brightness) =>
+    brightness == Brightness.dark ? atomOneDarkTheme : atomOneLightTheme;
+
+/// [code] coloured as the editor colours the file at [path], over [base], or
+/// null where the editor would leave it plain.
+TextSpan? highlightCode(
+  String path,
+  String code,
+  TextStyle base,
+  Brightness brightness,
+) {
+  final mode = _modeFor(path);
+  if (mode == null) return null;
+  final result = (Highlight()..registerLanguage('file', mode)).highlight(
+    code: code,
+    language: 'file',
+  );
+  final renderer = TextSpanRenderer(base, codeStyles(brightness));
+  result.render(renderer);
+  return renderer.span;
 }
 
 Mode? _modeFor(String path) {
