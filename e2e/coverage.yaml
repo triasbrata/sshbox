@@ -544,3 +544,49 @@ git-panel-the-key-bar-s-new-git:
   guard: unit
   by: test/git_page_test.dart, test/git_diff_tab_test.dart, test/git_drawer_test.dart, test/git_repo_test.dart
   why: "git_repo_test runs a real git, which is where History once broke on a missing trailing newline; the page, diff tab and drawer tests build the panel around it"
+
+# --------------------------------- passed through the GitHub UAT issues, round 1
+# Eight features the user passed on the tablet through issues #12-#23. Each was
+# found in test/ by its test NAMES, not a keyword: a probe for "link" missed the
+# chat link tests, which sit in a group whose name carries the word and whose
+# own names do not -- the Ctrl+tap mistake in another shape.
+
+the-git-panel-reaches-every-worktree-and-shows:
+  guard: unit
+  by: test/git_page_test.dart, test/git_repo_test.dart
+  why: "git_repo_test runs a real git over worktrees and another branch's history; git_page_test builds the panel that lists them"
+
+links-in-chat-mode-open-when-tapped-claude:
+  guard: unit
+  by: test/chat_page_test.dart
+  why: "a link in a reply opens in a web tab beside the shell on a phone, goes to the machine's own browser on a desktop, and one not opened has its address copied"
+
+the-sql-view-asks-by-field-as-well:
+  guard: unit
+  by: test/db_pg_filter_test.dart, test/db_session_live_test.dart
+  why: "the Filters tab builds its conditions and quoting in db_pg_filter_test, and a filtered result reads back from a real PostgreSQL in db_session_live_test"
+
+a-chat-tab-reads-hostname-claude-as-a:
+  guard: unit
+  by: test/tab_strip_test.dart
+  why: "a chat tab reads host · Claude, as a file tab does, the host giving way first when the strip is short"
+
+the-chat-sidebar-keeps-its-sessions-when-it:
+  guard: unit
+  by: test/chat_page_test.dart
+  why: "the sessions sit in a sidebar on a tablet, held by the page, so hiding and showing it keeps them"
+
+chat-mode-s-tool-rows-open-to-what:
+  guard: unit
+  by: test/chat_page_test.dart
+  why: "a tool row opens to its input and its result, a tool it does not know shows each field a line, and a known tool of an unexpected shape still shows"
+
+typing-into-a-running-session-works-on-claude:
+  guard: unit
+  by: test/chat_page_test.dart, test/claude_chat_test.dart
+  why: "what is typed into a watched session shows as sending; claude_chat_test holds the keystroke-versus-paste rule and the filter every control but tab and newline goes through"
+
+chat-mode-shows-a-session-as-pinned-when:
+  guard: unit
+  by: test/chat_page_test.dart, test/claude_chat_test.dart
+  why: "a session pinned in claude agents is pinned in the sidebar, read from jobs/pins.json beside the listing"

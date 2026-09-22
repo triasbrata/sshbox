@@ -1,5 +1,5 @@
-# tool/test_release_flow.sh, flutter analyze and flutter test on every pull
-# request and every push to main. `check` is the status the main branch
+# tool/test_release_flow.sh, tool/e2e_coverage.py, flutter analyze and
+# flutter test on every pull request and every push to main. `check` is the status the main branch
 # ruleset asks a pull request for. On main, `badge` then publishes the tests'
 # line coverage for the README's badge.
 name: CI
@@ -36,6 +36,15 @@ jobs:
           python3 -c 'import yaml' 2> /dev/null ||
             { sudo apt-get update -q && sudo apt-get install -yq python3-yaml; } > /dev/null
           tool/test_release_flow.sh
+
+      # Every feature the user has passed in CLAUDE.md must say what guards it
+      # in e2e/coverage.yaml, so none can quietly lose its guard. Red here
+      # means a row reads "UAT passed" with no entry: add one in the same
+      # commit -- `guard: todo` is always legal -- and the e2e session refines
+      # it. A THIN entry (unit tests that never build a widget) is reported
+      # and does not fail: it is a prompt to look, not a verdict. Stdlib only.
+      - name: Every passed feature has a guard
+        run: python3 tool/e2e_coverage.py
 
       - uses: subosito/flutter-action@v2
         with:
