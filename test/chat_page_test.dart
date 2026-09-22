@@ -1543,6 +1543,40 @@ void main() {
       expect(tester.getTopLeft(find.text('first $seen')).dy, y);
     });
 
+    testWidgets('closed and opened again, the tab comes back to where a '
+        'session was left', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('ffff0001', 'first')])
+        ..history = long('first', 60);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      Future<void> openTab() async {
+        await tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        );
+        await _settlePickUp(tester);
+        await tester.tap(find.text('first'));
+        await _settlePickUp(tester);
+      }
+
+      await openTab();
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, 120));
+      await tester.pumpAndSettle();
+      final place = _conversationAt(tester).pixels;
+      expect(_conversationAt(tester).maxScrollExtent - place, greaterThan(2));
+
+      // The tab's ✕: the page goes, and the session lets its chat go.
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      session.closeChat();
+      await openTab();
+      expect(_conversationAt(tester).pixels, place);
+    });
+
     testWidgets('one left at its bottom comes back at its bottom', (
       tester,
     ) async {
