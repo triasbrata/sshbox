@@ -746,7 +746,9 @@ class _Button extends StatelessWidget {
     return Material(
       // Lifted while it is loose, so it reads as picked up rather than stuck.
       elevation: moving ? 12 : 6,
-      shape: const CircleBorder(),
+      // Round, since it is the middle of a ring, and edged in the accent as
+      // Termul edges a thing to press.
+      shape: CircleBorder(side: BorderSide(color: theme.colorScheme.primary)),
       color: moving
           ? theme.colorScheme.tertiaryContainer
           : theme.colorScheme.primaryContainer,
@@ -787,7 +789,13 @@ class _Petal extends StatelessWidget {
 
     return Material(
       elevation: aimed ? 8 : 3,
-      shape: const CircleBorder(),
+      shape: CircleBorder(
+        side: BorderSide(
+          color: aimed
+              ? theme.colorScheme.primary
+              : theme.colorScheme.outlineVariant,
+        ),
+      ),
       color: aimed ? theme.colorScheme.primary : theme.colorScheme.surface,
       child: Center(
         child: Text(
