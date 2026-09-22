@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,6 +17,7 @@ import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import '../git/git_diff.dart';
 import '../platform.dart';
+import '../session/clipboard_terminal.dart';
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -1001,16 +1004,24 @@ class _PaneViewState extends State<_PaneView> {
     // from the pane that had it, which autofocus alone would leave alone.
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    // Before the view's own, which it would otherwise put there itself: see
+    // [_programCopied].
+    widget.terminal.onClipboardStore = _programCopied;
   }
 
   @override
   void didUpdateWidget(_PaneView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.terminal != widget.terminal) {
+      _letGoOfClipboard(oldWidget.terminal);
+      widget.terminal.onClipboardStore = _programCopied;
+    }
     if (!oldWidget.focused) _followFocus();
   }
 
   @override
   void dispose() {
+    _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1086,6 +1097,67 @@ class _PaneViewState extends State<_PaneView> {
   void _say(String message) {
     if (!mounted) return;
     showToast(context, message, type: ToastificationType.warning);
+  }
+
+  void _letGoOfClipboard(Terminal terminal) {
+    if (terminal.onClipboardStore == _programCopied) {
+      terminal.onClipboardStore = null;
+    }
+  }
+
+  /// A program on the host copying — Claude Code's `/copy`, a yank in vim or
+  /// tmux — with OSC 52 or the iTerm2 and kitty ways of saying it: see
+  /// [ClipboardTerminal]. Only the terminal being typed into may, as xterm2's
+  /// own rule has it, so a program in a tab out of sight cannot fill the
+  /// clipboard, and it never happens without a word.
+  void _programCopied(String _, String text) {
+    if (!mounted || !_focusNode.hasFocus || text.isEmpty) return;
+    // iTerm2's CopyToClipboard takes whatever is printed until its EndCopy,
+    // which [ClipboardTerminal] never sees.
+    if (utf8.encode(text).length > maxClipboardBytes) return;
+    unawaited(Clipboard.setData(ClipboardData(text: text)));
+    showToast(
+      context,
+      'Copied from the terminal',
+      type: ToastificationType.success,
+    );
+  }
+
+  /// The selection as the mouse button went down, to tell one the mouse has
+  /// just made from one that was there already: see [_mouseUp].
+  BufferRange? _selectionAtDown;
+
+  void _mouseDown(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.mouse) {
+      _selectionAtDown = selection.selection;
+    }
+  }
+
+  /// On a desktop, what the mouse has just selected — a drag, a double
+  /// click's word, a triple click's line — goes to the clipboard as the
+  /// button comes up: iTerm2's habit, and what Claude Code does in its own
+  /// fullscreen view, which never sees the drag here, xterm2 keeping drags
+  /// for its own selection.
+  ///
+  /// Only a selection the mouse made, never one already there or one the
+  /// app made. Looked at once the up has been dealt with, since xterm2
+  /// selects a double click's word in the same up, after this has heard it.
+  /// The text is the one the selection's Copy takes, trimmed the same way.
+  void _mouseUp(PointerUpEvent event) {
+    if (!isDesktop ||
+        event.kind != PointerDeviceKind.mouse ||
+        !copyOnSelect.value) {
+      return;
+    }
+    final before = _selectionAtDown;
+    scheduleMicrotask(() {
+      final range = selection.selection;
+      if (!mounted || range == null || range == before) return;
+      final text = widget.terminal.buffer.getText(range, true);
+      if (text.trim().isEmpty) return;
+      unawaited(Clipboard.setData(ClipboardData(text: text)));
+      showToast(context, 'Copied', type: ToastificationType.success);
+    });
   }
 
   /// Ctrl+V — ⌘V on an Apple platform — before xterm2's own paste shortcut
@@ -1225,27 +1297,31 @@ class _PaneViewState extends State<_PaneView> {
         controller: selection,
         onEmit: widget.onEmit,
         onPaste: _paste,
-        child: TerminalView(
-          widget.terminal,
-          key: _viewKey,
-          controller: selection,
-          focusNode: _focusNode,
-          scrollController: _scrollController,
-          autofocus: widget.focused,
-          autoResize: widget.autoResize,
-          // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
-          // hardware keys, shortcuts and mouse selection.
-          hardwareKeyboardOnly: true,
-          // Asked before xterm2's own shortcuts, and it claims Ctrl+V alone.
-          onKeyEvent: _onPasteChord,
-          // Tapping a terminal that already has focus is how you ask for the
-          // keyboard back, and focus alone will not raise it.
-          onTapUp: (_, cell) => widget.onTap(this, cell),
-          padding: widget.padding,
-          textStyle: widget.textStyle,
-          // The theme picked in Settings: a new pick repaints the shell at
-          // once, with no reconnect.
-          theme: terminalThemeOf(context),
+        child: Listener(
+          onPointerDown: _mouseDown,
+          onPointerUp: _mouseUp,
+          child: TerminalView(
+            widget.terminal,
+            key: _viewKey,
+            controller: selection,
+            focusNode: _focusNode,
+            scrollController: _scrollController,
+            autofocus: widget.focused,
+            autoResize: widget.autoResize,
+            // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+            // hardware keys, shortcuts and mouse selection.
+            hardwareKeyboardOnly: true,
+            // Asked before xterm2's own shortcuts, and it claims Ctrl+V alone.
+            onKeyEvent: _onPasteChord,
+            // Tapping a terminal that already has focus is how you ask for the
+            // keyboard back, and focus alone will not raise it.
+            onTapUp: (_, cell) => widget.onTap(this, cell),
+            padding: widget.padding,
+            textStyle: widget.textStyle,
+            // The theme picked in Settings: a new pick repaints the shell at
+            // once, with no reconnect.
+            theme: terminalThemeOf(context),
+          ),
         ),
       ),
     );

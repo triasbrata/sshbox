@@ -359,6 +359,31 @@ class DotfilesSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True shows them.
 final showDotfiles = DotfilesSetting();
 
+/// Whether a desktop terminal copies what the mouse selects the moment the
+/// button comes up, as iTerm2 and Claude Code's own fullscreen view do.
+/// Desktop alone: a phone's selection has its handles and its Copy.
+class CopyOnSelectSetting extends ValueNotifier<bool> {
+  CopyOnSelectSetting() : super(true);
+
+  static const _key = 'sshbox.terminal.copyOnSelect';
+
+  /// Reads the saved choice. Nothing saved is on.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? true;
+  }
+
+  /// Applies to the next selection, and is saved for the next start.
+  Future<void> choose(bool on) async {
+    value = on;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, on);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final copyOnSelect = CopyOnSelectSetting();
+
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.notifyKeys});
@@ -699,6 +724,19 @@ class _TerminalSectionState extends State<_TerminalSection> {
                 ),
               ),
             ),
+            if (isDesktop)
+              ValueListenableBuilder(
+                valueListenable: copyOnSelect,
+                builder: (context, on, _) => SwitchListTile(
+                  title: const Text('Copy on select'),
+                  subtitle: const Text(
+                    'Text selected with the mouse goes to the clipboard as '
+                    'the button comes up',
+                  ),
+                  value: on,
+                  onChanged: copyOnSelect.choose,
+                ),
+              ),
           ],
         );
       },
