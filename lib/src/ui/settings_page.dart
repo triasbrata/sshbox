@@ -6,6 +6,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../notifications/notify_key.dart';
 import '../platform.dart';
+import '../system_fonts.dart';
 import '../telemetry/crash_reporting.dart';
 import '../telemetry/telemetry.dart';
 import 'bug_report.dart';
@@ -88,17 +89,54 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
   static const _familyKey = 'sshbox.terminal.fontFamily';
   static const _sizeKey = 'sshbox.terminal.fontSize';
 
-  /// Reads the saved choice. A family no longer bundled, or a size out of
-  /// range, gives way to the default rather than to a font that is not there.
+  /// The font the saved choice named that this computer no longer has,
+  /// until [sayIfMissing] has said so.
+  String? missing;
+
+  /// Reads the saved choice. A family no longer bundled — or on a desktop no
+  /// longer installed — or a size out of range, gives way to the default
+  /// rather than to a font that is not there.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     final family = prefs.getString(_familyKey);
     final size = prefs.getDouble(_sizeKey);
     value = terminalStyleOf(
-      terminalFonts.any((font) => font.family == family)
-          ? family!
-          : defaultStyle.fontFamily,
+      await _usable(family) ? family! : defaultStyle.fontFamily,
       (size ?? defaultStyle.fontSize).clamp(minFontSize, maxFontSize),
+    );
+  }
+
+  /// Whether [family] can be drawn: one bundled, or on a desktop one it has
+  /// installed. Only a system font costs a look at the computer's fonts, and
+  /// one whose list cannot be read is trusted, as it was when it was picked.
+  Future<bool> _usable(String? family) async {
+    if (family == null) return false;
+    if (terminalFonts.any((font) => font.family == family)) return true;
+    if (!isDesktop) return false;
+    final installed = await systemFonts();
+    if (installed == null || installed.any((font) => font.family == family)) {
+      return true;
+    }
+    missing = family;
+    return false;
+  }
+
+  /// Says, once, that the saved font has gone and what the terminal draws in
+  /// instead, rather than leaving a fallback to draw it without a word. The
+  /// choice stays saved, so the font coming back brings it back.
+  void sayIfMissing(BuildContext context) {
+    final family = missing;
+    if (family == null) return;
+    missing = null;
+    final instead = terminalFonts
+        .firstWhere((font) => font.family == defaultStyle.fontFamily)
+        .label;
+    showToast(
+      context,
+      '$family is not installed\nThe terminal draws in $instead until it is '
+      'back, or until Settings picks another font.',
+      type: ToastificationType.warning,
+      duration: const Duration(seconds: 8),
     );
   }
 
@@ -606,6 +644,104 @@ class _TerminalSectionState extends State<_TerminalSection> {
 
   final _preview = Terminal()..write(_previewText);
 
+  /// This computer's own fonts, on a desktop: read once, when the section is
+  /// first shown.
+  late final _installed = isDesktop ? systemFonts() : null;
+
+  /// A desktop's way to a font installed on the computer: the one in use, if
+  /// it is not bundled, with a word when it is proportional, and a tap for the
+  /// computer's list.
+  Widget _installedFont(
+    BuildContext context,
+    TerminalStyle style,
+    AsyncSnapshot<List<SystemFont>?> fonts,
+  ) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    final family = style.fontFamily;
+    final chosen = !terminalFonts.any((font) => font.family == family);
+    final listed = fonts.data;
+    final done = fonts.connectionState == ConnectionState.done;
+    final proportional =
+        chosen &&
+        (listed?.any((font) => font.family == family && !font.mono) ?? false);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ListTile(
+          selected: chosen,
+          title: Text.rich(
+            TextSpan(
+              children: [
+                if (chosen) ...[
+                  TextSpan(
+                    text: family,
+                    style: TextStyle(fontFamily: family),
+                  ),
+                  TextSpan(text: '  on this computer', style: muted),
+                ] else
+                  const TextSpan(text: 'Installed on this computer…'),
+              ],
+            ),
+          ),
+          subtitle: chosen
+              ? Text(
+                  _sample,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.fade,
+                  style: terminalStyleOf(family, 14).toTextStyle(),
+                )
+              : Text(switch (listed) {
+                  _ when !done => 'Reading this computer\'s fonts…',
+                  null => 'Its fonts could not be listed: type a name',
+                  final listed => '${listed.length} families, monospaced first',
+                }),
+          trailing: Icon(chosen ? Icons.check : Icons.chevron_right),
+          onTap: done
+              ? () async {
+                  final picked = await showDialog<String>(
+                    context: context,
+                    builder: (_) => _InstalledFontPicker(
+                      listed,
+                      chosen: family,
+                      sample: _sample,
+                    ),
+                  );
+                  if (picked != null) {
+                    await terminalSettings.choose(family: picked);
+                  }
+                }
+              : null,
+        ),
+        if (proportional)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 16,
+                  color: theme.colorScheme.error,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '$family is proportional, so the terminal\'s columns '
+                    'will not line up.',
+                    style: muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -699,9 +835,130 @@ class _TerminalSectionState extends State<_TerminalSection> {
                 ),
               ),
             ),
+            // Below what is said of the bundled fonts, which is not true of it.
+            if (_installed case final installed?)
+              FutureBuilder(
+                future: installed,
+                builder: (context, fonts) =>
+                    _installedFont(context, style, fonts),
+              ),
           ],
         );
       },
+    );
+  }
+}
+
+/// The computer's fonts to pick one from, monospaced first and marked, with a
+/// filter over them. Where they could not be listed, the field takes the name
+/// of one instead, as it is.
+class _InstalledFontPicker extends StatefulWidget {
+  const _InstalledFontPicker(
+    this.fonts, {
+    required this.chosen,
+    required this.sample,
+  });
+
+  final List<SystemFont>? fonts;
+  final String chosen;
+  final String sample;
+
+  @override
+  State<_InstalledFontPicker> createState() => _InstalledFontPickerState();
+}
+
+class _InstalledFontPickerState extends State<_InstalledFontPicker> {
+  final _field = TextEditingController();
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final fonts = widget.fonts;
+    final typed = _field.text.trim();
+    final shown = [
+      for (final font in fonts ?? const <SystemFont>[])
+        if (font.family.toLowerCase().contains(typed.toLowerCase())) font,
+    ];
+    void pick(String family) => Navigator.of(context).pop(family);
+
+    return AlertDialog(
+      title: const Text('Installed fonts'),
+      content: SizedBox(
+        width: 480,
+        height: fonts == null ? null : 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _field,
+              autofocus: true,
+              decoration: InputDecoration(
+                prefixIcon: fonts == null ? null : const Icon(Icons.search),
+                hintText: fonts == null ? 'Family name' : 'Filter',
+              ),
+              onChanged: (_) => setState(() {}),
+              onSubmitted: fonts == null && typed.isNotEmpty
+                  ? (_) => pick(typed)
+                  : null,
+            ),
+            const SizedBox(height: 8),
+            if (fonts == null)
+              Text(
+                'This computer\'s fonts could not be listed. Type the family '
+                'name of one installed here.',
+                style: theme.textTheme.bodySmall,
+              )
+            else if (shown.isEmpty)
+              const Expanded(
+                child: Center(child: Text('No installed font matches.')),
+              )
+            else
+              Expanded(
+                child: ListView.builder(
+                  itemCount: shown.length,
+                  itemBuilder: (context, index) {
+                    final font = shown[index];
+                    return ListTile(
+                      selected: font.family == widget.chosen,
+                      title: Text(font.family),
+                      // In the font itself, as the terminal would draw it: a
+                      // symbols font's name alone could not be read in it.
+                      subtitle: Text(
+                        widget.sample,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.fade,
+                        style: terminalStyleOf(font.family, 14).toTextStyle(),
+                      ),
+                      trailing: font.mono
+                          ? Text('monospaced', style: theme.textTheme.bodySmall)
+                          : null,
+                      onTap: () => pick(font.family),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        if (fonts == null)
+          FilledButton(
+            onPressed: typed.isEmpty ? null : () => pick(typed),
+            child: const Text('Use'),
+          ),
+      ],
     );
   }
 }

@@ -86,7 +86,19 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_listenForShares());
     unawaited(_checkForUpdate());
     unawaited(_countThisInstall());
+    unawaited(_sayIfFontMissing());
     lastFault.addListener(_offerToReport);
+  }
+
+  /// The font the saved choice named, when this computer no longer has it:
+  /// said once the app is on screen — see [TerminalSettings.sayIfMissing].
+  Future<void> _sayIfFontMissing() async {
+    if (terminalSettings.missing == null) return;
+    await WidgetsBinding.instance.endOfFrame;
+    final context = _navigator.currentContext;
+    if (context != null && context.mounted) {
+      terminalSettings.sayIfMissing(context);
+    }
   }
 
   /// Once a day, and only while telemetry is on: the install id, the version,

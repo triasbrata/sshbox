@@ -31,6 +31,28 @@ class MainFlutterWindow: NSWindow {
         result: result)
     }
 
+    // The terminal font picker's list of what is installed. A family is
+    // monospaced when any member of it is among the fixed-pitch fonts
+    // NSFontManager names — the trait a font's own tables declare.
+    let fonts = FlutterMethodChannel(
+      name: "sshbox/fonts",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    fonts.setMethodCallHandler { call, result in
+      guard call.method == "families" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let manager = NSFontManager.shared
+      let fixed = Set(manager.availableFontNames(with: .fixedPitchFontMask) ?? [])
+      result(
+        manager.availableFontFamilies.map { family -> [String: Any] in
+          // Each member is its PostScript name, style name, weight and traits.
+          let names = manager.availableMembers(ofFontFamily: family)?
+            .compactMap { $0.first as? String } ?? []
+          return ["family": family, "mono": names.contains { fixed.contains($0) }]
+        })
+    }
+
     super.awakeFromNib()
   }
 }

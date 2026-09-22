@@ -1,14 +1,17 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/notifications/notify_key.dart';
+import 'package:sshbox/src/system_fonts.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
+import 'package:sshbox/src/ui/toast.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_relay.dart';
@@ -217,6 +220,183 @@ void main() {
     for (final font in terminalFonts.where((f) => f.family != 'monospace')) {
       expect(declared, contains(font.family));
     }
+  });
+
+  group('fonts installed on a desktop', () {
+    const installed = <SystemFont>[
+      (family: 'DejaVu Sans Mono', mono: true),
+      (family: 'Liberation Mono', mono: true),
+      (family: 'DejaVu Sans', mono: false),
+    ];
+    final real = systemFonts;
+    var asked = 0;
+    setUp(() {
+      asked = 0;
+      systemFonts = () async {
+        asked++;
+        return installed;
+      };
+    });
+    tearDown(() {
+      systemFonts = real;
+      terminalSettings.missing = null;
+    });
+
+    Finder inPicker(Finder finder) =>
+        find.descendant(of: find.byType(AlertDialog), matching: finder);
+    const warning =
+        'DejaVu Sans is proportional, so the terminal\'s columns will not '
+        'line up.';
+
+    testWidgets('are listed beside the bundled ones, monospaced first and '
+        'marked, and a proportional one picked is warned about', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(800, 2000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pump();
+
+      expect(find.text('Installed on this computer…'), findsOneWidget);
+      expect(find.text('3 families, monospaced first'), findsOneWidget);
+      await tester.tap(find.text('Installed on this computer…'));
+      await tester.pumpAndSettle();
+
+      final mono = tester.getTopLeft(inPicker(find.text('Liberation Mono')));
+      final proportional = tester.getTopLeft(
+        inPicker(find.text('DejaVu Sans')),
+      );
+      expect(mono.dy, lessThan(proportional.dy));
+      expect(inPicker(find.text('monospaced')), findsNWidgets(2));
+      await tester.enterText(inPicker(find.byType(TextField)), 'liber');
+      await tester.pump();
+      expect(inPicker(find.text('DejaVu Sans Mono')), findsNothing);
+      expect(inPicker(find.text('Liberation Mono')), findsOneWidget);
+      await tester.enterText(inPicker(find.byType(TextField)), '');
+      await tester.pump();
+
+      await tester.tap(inPicker(find.text('DejaVu Sans')));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      // By its name, with the bundled glyph fonts still behind it.
+      expect(terminalSettings.value, terminalStyleOf('DejaVu Sans', 13));
+      expect(terminalSettings.value.fontFamilyFallback.take(2), [
+        nerdFontFamily,
+        symbolFontFamily,
+      ]);
+      expect(
+        tester.widget<TerminalView>(find.byType(TerminalView)).textStyle,
+        terminalStyleOf('DejaVu Sans', 13),
+      );
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('sshbox.terminal.fontFamily'), 'DejaVu Sans');
+      expect(find.text(warning), findsOneWidget);
+
+      // A monospaced one says nothing.
+      await tester.tap(
+        find.textContaining('on this computer', findRichText: true),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(inPicker(find.text('DejaVu Sans Mono')));
+      await tester.pumpAndSettle();
+      expect(terminalSettings.value.fontFamily, 'DejaVu Sans Mono');
+      expect(find.text(warning), findsNothing);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('where they cannot be listed, a name is typed instead', (
+      tester,
+    ) async {
+      systemFonts = () async => null;
+      await tester.binding.setSurfaceSize(const Size(800, 2000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pump();
+
+      await tester.tap(find.text('Installed on this computer…'));
+      await tester.pumpAndSettle();
+      await tester.enterText(inPicker(find.byType(TextField)), ' Hack ');
+      await tester.pump();
+      await tester.tap(inPicker(find.widgetWithText(FilledButton, 'Use')));
+      await tester.pumpAndSettle();
+      expect(terminalSettings.value.fontFamily, 'Hack');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    test('the one picked is what the next start draws in, and one the list '
+        'cannot say about is trusted', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      SharedPreferences.setMockInitialValues({
+        'sshbox.terminal.fontFamily': 'Liberation Mono',
+        'sshbox.terminal.fontSize': 15.0,
+      });
+      await terminalSettings.load();
+      expect(terminalSettings.value, terminalStyleOf('Liberation Mono', 15));
+      expect(terminalSettings.missing, isNull);
+
+      systemFonts = () async => null;
+      SharedPreferences.setMockInitialValues({
+        'sshbox.terminal.fontFamily': 'Hack',
+      });
+      await terminalSettings.load();
+      expect(terminalSettings.value.fontFamily, 'Hack');
+    });
+
+    testWidgets('one no longer installed gives way to the default, and a '
+        'toast says so once', (tester) async {
+      SharedPreferences.setMockInitialValues({
+        'sshbox.terminal.fontFamily': 'Comic Mono',
+        'sshbox.terminal.fontSize': 15.0,
+      });
+      await terminalSettings.load();
+      expect(terminalSettings.value, terminalStyleOf('monospace', 15));
+      expect(terminalSettings.missing, 'Comic Mono');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => terminalSettings.sayIfMissing(context),
+              child: const Text('start'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('start'));
+      // Not settled, which would wait out the toast: its overlay, the toast,
+      // and its slide in.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.descendant(
+          of: find.byType(ToastCard),
+          matching: find.textContaining('Comic Mono is not installed'),
+        ),
+        findsOneWidget,
+      );
+      expect(terminalSettings.missing, isNull);
+      // Kept, so the font coming back brings it back.
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('sshbox.terminal.fontFamily'), 'Comic Mono');
+      await tester.pumpAndSettle(const Duration(seconds: 10));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('on a phone the picker is as it was, and nothing is asked of '
+        'the device', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 2000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pump();
+      expect(find.text('Installed on this computer…'), findsNothing);
+
+      SharedPreferences.setMockInitialValues({
+        'sshbox.terminal.fontFamily': 'DejaVu Sans Mono',
+      });
+      await terminalSettings.load();
+      expect(terminalSettings.value, TerminalSettings.defaultStyle);
+      expect(terminalSettings.missing, isNull);
+      expect(asked, 0);
+    });
   });
 
   group('reset notification keys', () {
