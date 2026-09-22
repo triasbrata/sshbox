@@ -86,8 +86,68 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_listenForShares());
     unawaited(_checkForUpdate());
     unawaited(_countThisInstall());
+    unawaited(_sayIfFontMissing());
     lastFault.addListener(_offerToReport);
     localTmux.addListener(_noTmux.clear);
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
+      _menuChannel.setMethodCallHandler((call) async {
+        if (call.method == 'openSettings') _openSettings();
+      });
+    }
+  }
+
+  /// The Mac's app menu: its Settings… item, clicked, arrives here — see
+  /// `AppDelegate.openSettings`.
+  static const _menuChannel = MethodChannel('sshbox/menu');
+
+  void _openSettings() {
+    final navigator = _navigator.currentState;
+    if (navigator != null) openSettings(navigator, notifyKeys: _notifyKeys);
+  }
+
+  /// Whether this ⌘, went down here, so its key-up is taken too.
+  bool _settingsKeyDown = false;
+
+  /// ⌘, on a Mac opens Settings, as it does in every Mac app, wherever the
+  /// focus is.
+  ///
+  /// An early handler rather than a shortcut at the root: the focus chain
+  /// runs from the focused widget up, so a terminal holding the focus would
+  /// see the key first, and xterm2 sends ⌘ keys on to a program that asked
+  /// for the kitty keyboard protocol, as Claude Code does. Taken here, the
+  /// key reaches no widget, and not the menu either, which Flutter asks only
+  /// with what it leaves unhandled — so Settings opens once.
+  KeyEventResult _onSettingsKey(KeyEvent event) {
+    if (event.logicalKey != LogicalKeyboardKey.comma) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyUpEvent) {
+      if (!_settingsKeyDown) return KeyEventResult.ignored;
+      _settingsKeyDown = false;
+      return KeyEventResult.handled;
+    }
+    final keys = HardwareKeyboard.instance;
+    if (!keys.isMetaPressed ||
+        keys.isControlPressed ||
+        keys.isAltPressed ||
+        keys.isShiftPressed) {
+      return KeyEventResult.ignored;
+    }
+    _settingsKeyDown = true;
+    if (event is KeyDownEvent) _openSettings();
+    return KeyEventResult.handled;
+  }
+
+  /// The font the saved choice named, when this computer no longer has it:
+  /// said once the app is on screen — see [TerminalSettings.sayIfMissing].
+  Future<void> _sayIfFontMissing() async {
+    if (terminalSettings.missing == null) return;
+    await WidgetsBinding.instance.endOfFrame;
+    final context = _navigator.currentContext;
+    if (context != null && context.mounted) {
+      terminalSettings.sayIfMissing(context);
+    }
   }
 
   /// Once a day, and only while telemetry is on: the install id, the version,
@@ -109,14 +169,7 @@ class _SshboxAppState extends State<SshboxApp> {
       'Jeansh counts installs\nIt sends a daily count and any crashes, never '
       'a hostname, a login, a path or a command. Settings turns it off.',
       duration: const Duration(seconds: 8),
-      action: (
-        label: 'Settings',
-        onPressed: () => _navigator.currentState?.push(
-          MaterialPageRoute<void>(
-            builder: (_) => SettingsPage(notifyKeys: _notifyKeys),
-          ),
-        ),
-      ),
+      action: (label: 'Settings', onPressed: _openSettings),
     );
   }
 
@@ -440,6 +493,7 @@ class _SshboxAppState extends State<SshboxApp> {
   void dispose() {
     lastFault.removeListener(_offerToReport);
     localTmux.removeListener(_noTmux.clear);
+    FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
     unawaited(_linkSubscription?.cancel());
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());

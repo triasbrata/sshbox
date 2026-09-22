@@ -14,6 +14,7 @@ import 'package:sshbox/src/session/local_transport.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
+import 'package:sshbox/src/system_fonts.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
@@ -234,6 +235,10 @@ Future<void> _pumpSettings(WidgetTester tester) async {
   tester.view.physicalSize = const Size(900, 4000);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
+  // The computer's own fonts are another row's business, asked of a process.
+  final fonts = systemFonts;
+  systemFonts = () async => null;
+  addTearDown(() => systemFonts = fonts);
   await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
 }
 

@@ -85,6 +85,9 @@ dependencies:
   # Already here under package_info_plus, pure Dart: the v4 install id, which
   # is random and carries nothing of the machine.
   uuid: ^4.6.0
+  # Already here under package_info_plus, pure Dart: GDI's font families on
+  # Windows, for the terminal font picker (lib/src/system_fonts.dart).
+  win32: ^6.4.0
 
 dev_dependencies:
   flutter_test:

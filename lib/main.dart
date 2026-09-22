@@ -18,6 +18,7 @@ Future<void> main() async {
   await gitInDrawer.load();
   await localTmux.load();
   await showDotfiles.load();
+  await copyOnSelect.load();
   // Before any session can connect, so its entry joins the saved log rather
   // than being wiped by it.
   await sessionLog.load();

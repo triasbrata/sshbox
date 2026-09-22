@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 
 import '../data/secret_store.dart';
+import '../files/file_browser.dart';
+import '../files/sftp_file_browser.dart' show SftpFileBrowser;
 import '../models/host_profile.dart';
 import 'terminal_session.dart';
 
@@ -168,8 +170,9 @@ String wslEnv(String? current, Iterable<String> names) {
 /// important as what it does: no [FileBrowseCapable] or [ForwardCapable], so
 /// the files drawer and the tailnet forwarding switch themselves off for it
 /// rather than failing at a use. [CommandCapable] it does have, which is what
-/// the git tab runs through, and [ChannelCapable], which is what tmux's
-/// control mode runs through: see [connect]'s `shell`.
+/// the git tab runs through, [ChannelCapable], which is what tmux's control
+/// mode runs through — see [connect]'s `shell` — and on a Mac or Linux
+/// [FileUploadCapable], which is what a pasted picture goes through.
 class LocalTransport implements SessionTransport {
   /// [windows] and [environment] stand in for [Platform.isWindows] and
   /// [Platform.environment], for tests, and [distros] for [wslDistros].
@@ -238,7 +241,7 @@ class LocalTransport implements SessionTransport {
     }
     // No shell: a session for tmux, whose panes come over [_LocalSession.open]
     // and which is up for as long as it is not disposed, as a connection is.
-    if (!shell) return _LocalSession(null, _process);
+    if (!shell) return _session(null);
     // This terminal shows an OSC 8 hyperlink and a Ctrl+tap opens it, which
     // Claude Code, and every program built on `supports-hyperlinks`, learns
     // from this: without it they write a link as `LABEL (URL)`. Set here
@@ -289,11 +292,18 @@ class LocalTransport implements SessionTransport {
         rows: rows,
         columns: columns,
       );
-      return _LocalSession(pty, _process);
+      return _session(pty);
     } catch (error) {
       throw SshSessionException('Cannot start $program: $error');
     }
   }
+
+  /// A session over [pty], or with none one for tmux: on a Mac or Linux one
+  /// that takes a pasted picture too, tmux's included, whose panes are
+  /// pasted into as the shell is.
+  _LocalSession _session(Pty? pty) => _windows
+      ? _LocalSession(pty, _process)
+      : _UnixLocalSession(pty, _process);
 
   /// Starts [command] beside the shell, as [_commandLine] runs it.
   ///
@@ -486,5 +496,95 @@ class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
     await _output.close();
     _status.value = SessionStatus.closed;
     _status.dispose();
+  }
+}
+
+/// A local shell on a Mac or Linux, which can be handed a file as well: a
+/// picture pasted at its prompt is kept where the shell can read it and its
+/// path typed, as one pasted into a host's shell is uploaded to its `/tmp`.
+///
+/// Not on Windows, PowerShell or WSL: Windows' clipboard has no picture half
+/// to paste from, and a Windows path would mean nothing inside a distro.
+class _UnixLocalSession extends _LocalSession implements FileUploadCapable {
+  _UnixLocalSession(super._pty, super._process);
+
+  /// Where the files go: a folder made new under a name nobody had, and 0700
+  /// before anything goes in, so nobody else can reach into it or plant a
+  /// link there — under `$TMPDIR`, which a Mac keeps per user already, or
+  /// `/tmp` on Linux, which is shared but cannot then be entered. Made at the
+  /// first paste, and gone with the tab.
+  Directory? _dir;
+
+  /// The upload's own rules, on this machine: the name scrubbed by
+  /// [uploadName], the file made exclusively and 0600 before a byte of it
+  /// goes in, and an earlier one under the name left alone — its path may
+  /// still be at the prompt — for a name nobody can guess.
+  @override
+  Future<String> uploadToTmp({
+    required String localPath,
+    required String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    if (_disposed) throw const SshSessionException('This shell has ended.');
+    var dir = _dir;
+    // Made again when something swept it away: a Mac clears out of `$TMPDIR`
+    // what has gone unused for three days, and a tab can stay open longer.
+    if (dir == null || !dir.existsSync()) {
+      dir = _dir = _private(
+        Directory.systemTemp.createTempSync('jeansh-'),
+        '700',
+      );
+    }
+    final name = uploadName(fileName);
+    var file = File('${dir.path}/$name');
+    try {
+      file.createSync(exclusive: true);
+    } on FileSystemException {
+      file = File('${dir.path}/${SftpFileBrowser.randomName()}-$name')
+        ..createSync(exclusive: true);
+    }
+    try {
+      _private(file, '600');
+      final source = File(localPath);
+      final total = await source.length();
+      var sent = 0;
+      var stopped = false;
+      unawaited(cancel?.then((_) => stopped = true));
+      await source
+          .openRead()
+          .takeWhile((_) => !stopped)
+          .map((chunk) {
+            onProgress?.call(sent += chunk.length, total);
+            return chunk;
+          })
+          .pipe(file.openWrite());
+      if (stopped) throw FileBrowserException.cancelled;
+    } catch (_) {
+      await file.delete().catchError((Object _) => file);
+      rethrow;
+    }
+    return file.path;
+  }
+
+  /// [entry], made just now, closed to everyone else: Dart makes a folder
+  /// 0755 and a file 0644, and has no chmod of its own. Synchronous, as the
+  /// updater's is, a spawn of a few milliseconds.
+  static T _private<T extends FileSystemEntity>(T entry, String mode) {
+    if (Process.runSync('chmod', [mode, entry.path]).exitCode != 0) {
+      entry.deleteSync();
+      throw SshSessionException('Could not make ${entry.path} private.');
+    }
+    return entry;
+  }
+
+  @override
+  Future<void> dispose() async {
+    await super.dispose();
+    try {
+      await _dir?.delete(recursive: true);
+    } on FileSystemException {
+      // Already gone.
+    }
   }
 }
