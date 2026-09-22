@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'scrub.dart';
@@ -34,48 +35,78 @@ Future<void> runWithCrashReporting(FutureOr<void> Function() runTheApp) async {
     _watchForFaults();
     return;
   }
-  await SentryFlutter.init((options) {
-    options.dsn = sentryDsn;
-    options.environment = kReleaseMode ? 'release' : 'debug';
-
-    // Nothing about the person. `sendDefaultPii` is what would otherwise
-    // attach the device's IP address, its name and the logged-in user.
-    options.sendDefaultPii = false;
-
-    // Breadcrumbs in an SSH client are the trail of what somebody was doing:
-    // which host they opened, which file they touched, which URL was fetched.
-    // They are dropped one by one in [_noBreadcrumbs] and there is room for
-    // none anyway, and the three sources that would fill them are off.
-    options.maxBreadcrumbs = 0;
-    options.beforeBreadcrumb = _noBreadcrumbs;
-    // `print` and `debugPrint` become breadcrumbs by default, and this app
-    // prints error text.
-    options.enablePrintBreadcrumbs = false;
-    options.enableUserInteractionBreadcrumbs = false;
-    options.enableAutoNativeBreadcrumbs = false;
-
-    // A failed HTTP request would be reported with its URL. The app talks to
-    // the user's own machines.
-    options.captureFailedRequests = false;
-
-    // A screenshot of Jeansh is a screenshot of somebody's terminal. It is off
-    // by Sentry's own default; it is written out because the day that default
-    // changes is the day this file has to notice. `attachViewHierarchy`, which
-    // would send the widget tree, is off by default too and is left unwritten
-    // only because it is marked experimental and naming it fails analysis.
-    options.attachScreenshot = false;
-
-    // Performance tracing names routes and spans and buys nothing here.
-    options.enableAutoPerformanceTracing = false;
-    options.tracesSampleRate = null;
-    // Release health sends a session per launch. Jeansh counts its own
-    // installs, on its own Worker, and one count is enough.
-    options.enableAutoSessionTracking = false;
-
-    options.beforeSend = scrubEvent;
-  }, appRunner: runTheApp);
+  if (_kotlinStartsNative) {
+    try {
+      await _android.invokeMethod('startCrashReporting', {
+        'dsn': sentryDsn,
+        'environment': _environment,
+      });
+    } catch (_) {
+      // The app runs whatever happens here. A sentry-android that did not
+      // start sends nothing native, and none of Dart's events either, as when
+      // sentry_flutter's own start of it failed.
+    }
+  }
+  await SentryFlutter.init(configureCrashReporting, appRunner: runTheApp);
   _started = true;
   _watchForFaults();
+}
+
+/// MainActivity's channel, through which Android's native SDK is started and
+/// stopped: see NativeCrashes.kt.
+const _android = MethodChannel('sshbox/share');
+
+/// Android's native SDK is started by Kotlin, with a `beforeSend` of its own
+/// that rebuilds a native crash the way [scrubEvent] rebuilds a Dart one.
+/// sentry_flutter's own start of it would set a `beforeSend` that sends the
+/// device's ids, kernel build and state untouched, and it offers no way to
+/// set another. iOS and macOS keep sentry_flutter's start: Dart's events go
+/// out through the native SDK there too, and it has to be running.
+bool get _kotlinStartsNative => defaultTargetPlatform == TargetPlatform.android;
+
+const _environment = kReleaseMode ? 'release' : 'debug';
+
+/// Everything Sentry is told, in one place, so a test can read it.
+void configureCrashReporting(SentryFlutterOptions options) {
+  options.dsn = sentryDsn;
+  options.environment = _environment;
+  options.autoInitializeNativeSdk = !_kotlinStartsNative;
+
+  // Nothing about the person. `sendDefaultPii` is what would otherwise
+  // attach the device's IP address, its name and the logged-in user.
+  options.sendDefaultPii = false;
+
+  // Breadcrumbs in an SSH client are the trail of what somebody was doing:
+  // which host they opened, which file they touched, which URL was fetched.
+  // They are dropped one by one in [_noBreadcrumbs] and there is room for
+  // none anyway, and the three sources that would fill them are off.
+  options.maxBreadcrumbs = 0;
+  options.beforeBreadcrumb = _noBreadcrumbs;
+  // `print` and `debugPrint` become breadcrumbs by default, and this app
+  // prints error text.
+  options.enablePrintBreadcrumbs = false;
+  options.enableUserInteractionBreadcrumbs = false;
+  options.enableAutoNativeBreadcrumbs = false;
+
+  // A failed HTTP request would be reported with its URL. The app talks to
+  // the user's own machines.
+  options.captureFailedRequests = false;
+
+  // A screenshot of Jeansh is a screenshot of somebody's terminal. It is off
+  // by Sentry's own default; it is written out because the day that default
+  // changes is the day this file has to notice. `attachViewHierarchy`, which
+  // would send the widget tree, is off by default too and is left unwritten
+  // only because it is marked experimental and naming it fails analysis.
+  options.attachScreenshot = false;
+
+  // Performance tracing names routes and spans and buys nothing here.
+  options.enableAutoPerformanceTracing = false;
+  options.tracesSampleRate = null;
+  // Release health sends a session per launch. Jeansh counts its own
+  // installs, on its own Worker, and one count is enough.
+  options.enableAutoSessionTracking = false;
+
+  options.beforeSend = scrubEvent;
 }
 
 /// Stops everything Dart sends, for the switch being turned off while the app
@@ -91,6 +122,8 @@ Future<void> runWithCrashReporting(FutureOr<void> Function() runTheApp) async {
 Future<void> stopCrashReporting() async {
   if (!crashReportingConfigured) return;
   await Sentry.close();
+  // sentry_flutter closes only a native SDK it started itself.
+  if (_kotlinStartsNative) await _android.invokeMethod('stopCrashReporting');
 }
 
 Breadcrumb? _noBreadcrumbs(Breadcrumb? crumb, Hint hint) => null;
