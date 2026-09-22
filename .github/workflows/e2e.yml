@@ -290,5 +290,14 @@ jobs:
 
       - run: flutter pub get
 
+      # Built to take updates from a feed the updater test serves on this
+      # runner's loopback, as an older version, so there is something newer
+      # to offer. The feed override is read by debug builds alone, never a
+      # release.
       - name: Drive the desktop build
-        run: tools/e2e_desktop.sh linux
+        run: |
+          feed=http://127.0.0.1:47719
+          tools/e2e_desktop.sh linux \
+            --dart-define=JEANSH_UPDATE_HOST=$feed \
+            --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
+            --dart-define=JEANSH_VERSION=1.0.0+1

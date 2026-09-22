@@ -20,6 +20,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
@@ -37,6 +38,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
+import 'package:sshbox/src/update/updater.dart'
+    show downloadsFolder, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/settings_page.dart'
     show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
@@ -764,6 +767,120 @@ touch '${done.path}'
         reason: 'the terminal does not draw in the font chosen',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // #8, the desktop updater, as far as it goes before anything is replaced: a
+  // newer release is offered, downloaded, and kept only when its SHA-256 is
+  // the feed's — Restart to update is offered then — while a download whose
+  // hash is not is refused and deleted. Restart itself would swap the running
+  // bundle, so it is not pressed.
+  //
+  // Only in a build made for it: the host, the version and a feed on this
+  // machine are baked in with --dart-define, which e2e.yml's Linux job
+  // passes, and a download lands in the user's Downloads — a runner's, then,
+  // not a machine someone uses.
+  testWidgets(
+    'an update is kept only when its hash is the release\'s',
+    skip: updateHost.isEmpty,
+    (tester) async {
+      final build = utf8.encode('not a real build, only bytes to be checked');
+      const name = 'jeansh-e2e-update.tar.gz';
+      // Where the app puts it: Downloads, or the home where there is none.
+      final kept = File('${downloadsFolder().path}/$name');
+      addTearDown(() {
+        if (kept.existsSync()) kept.deleteSync();
+      });
+      var digest = '${sha256.convert(build)}';
+      // Launched first: the app looks for an update itself as it starts,
+      // and that one should find nothing to offer over this test.
+      await _launch(tester);
+      final server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        Uri.parse(updateHost).port,
+      );
+      addTearDown(() => server.close(force: true));
+      server.listen((request) {
+        final response = request.response;
+        switch (request.uri.path) {
+          case '/latest.json':
+            response.write(
+              jsonEncode({
+                'version': '9.9.9',
+                'build': 999,
+                'platforms': {
+                  updatePlatform: {
+                    'path': 'desktop/$updatePlatform/$name',
+                    'size': build.length,
+                    'sha256': digest,
+                  },
+                },
+              }),
+            );
+          case final path when path.endsWith('/$name'):
+            response.add(build);
+          default:
+            response.statusCode = HttpStatus.notFound;
+        }
+        unawaited(response.close());
+      });
+
+      // Asked from Settings, opening it first when it is not open.
+      final check = find.text('Check for updates');
+      Future<void> askSettings() async {
+        if (check.evaluate().isEmpty) {
+          await tester.tap(find.byTooltip('Settings'));
+          // Scrolled once it has slid in, or the drag lands on Home.
+          await tester.pump(const Duration(milliseconds: 600));
+          await tester.scrollUntilVisible(
+            check,
+            300,
+            scrollable: find.byType(Scrollable).first,
+          );
+        }
+        await tester.ensureVisible(check);
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(check);
+      }
+
+      // The app's own look at startup can reach this feed too, if it asked
+      // after the feed came up, and offer the release by itself: that offer is
+      // as good as the one Settings gives, so a moment is given for it and it
+      // is taken if it comes.
+      final offer = find.text('Jeansh 9.9.9 is out');
+      final end = DateTime.now().add(const Duration(seconds: 3));
+      while (offer.evaluate().isEmpty && DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+      }
+      if (offer.evaluate().isEmpty) await askSettings();
+      await _pick(tester, 'Download');
+      await _until(
+        tester,
+        () => find.text('Restart to update').evaluate().isNotEmpty,
+        'the download to be checked and offered to install',
+      );
+      expect(find.text('Jeansh 9.9.9 is ready'), findsOneWidget);
+      expect(kept.readAsBytesSync(), build);
+      await _pick(tester, 'Later');
+      kept.deleteSync();
+
+      // A build whose hash is not the release's: refused, and nothing kept.
+      digest = '0' * 64;
+      await tester.pump(const Duration(milliseconds: 600));
+      await askSettings();
+      await _pick(tester, 'Download');
+      await _until(
+        tester,
+        () =>
+            find.textContaining('is not the file the release describes')
+                .evaluate()
+                .isNotEmpty,
+        'a download of the wrong file to be refused',
+      );
+      expect(find.text('Restart to update'), findsNothing);
+      expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
+      expect(File('${kept.path}.part').existsSync(), isFalse);
     },
   );
 }
