@@ -143,6 +143,20 @@ class _SshboxAppState extends State<SshboxApp> {
   /// reach, a release with no build for this platform — says nothing here.
   /// Settings' Check for updates is where an answer is always given.
   Future<void> _checkForUpdate() async {
+    // What the last update left beside this copy — the copy it replaced, or
+    // a build it never swapped in — goes first, and the second is said.
+    if (updater.enabled && (updater.install?.cleanUp() ?? false)) {
+      await WidgetsBinding.instance.endOfFrame;
+      final context = _navigator.currentContext;
+      if (context != null && context.mounted) {
+        showToast(
+          context,
+          'The last update did not go in, so this is still Jeansh '
+          '${updater.version}.',
+          type: ToastificationType.warning,
+        );
+      }
+    }
     final Update? update;
     try {
       update = await updater.checkDaily();

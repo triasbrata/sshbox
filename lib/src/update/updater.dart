@@ -7,6 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../files/file_browser.dart' show formatBytes;
+import 'install.dart';
+
+export 'install.dart' show UpdateException;
 
 /// Where the desktop builds are served from, baked in at build time with
 /// `--dart-define JEANSH_UPDATE_HOST=https://…` (see tools/build_desktop.sh
@@ -25,7 +28,15 @@ const buildVersion = String.fromEnvironment('JEANSH_VERSION');
 
 /// The feed: the newest GitHub release's `latest.json`, which this URL
 /// redirects to. Metadata only — no build is ever downloaded from GitHub.
-const updateFeed =
+///
+/// A profile or debug build can be pointed at another with
+/// `--dart-define JEANSH_UPDATE_FEED=…`, which is how an update is tried end
+/// to end against a feed served on this machine. A release build never
+/// reads it.
+const updateFeed = kReleaseMode
+    ? _releaseFeed
+    : String.fromEnvironment('JEANSH_UPDATE_FEED', defaultValue: _releaseFeed);
+const _releaseFeed =
     'https://github.com/triasbrata/sshbox/releases/latest/download/latest.json';
 
 /// The largest a build in the feed may say it is. The desktop builds run to
@@ -42,16 +53,6 @@ String get updatePlatform => switch (defaultTargetPlatform) {
   TargetPlatform.macOS => 'macos',
   _ => '',
 };
-
-/// Anything the updater has to say for itself, in a line fit to show.
-class UpdateException implements Exception {
-  const UpdateException(this.message);
-
-  final String message;
-
-  @override
-  String toString() => message;
-}
 
 /// One platform's build, as the feed describes it.
 class Update {
@@ -95,8 +96,8 @@ class Update {
 typedef Fetch = Future<Stream<List<int>>> Function(Uri url);
 
 /// The desktop's updater: reads the feed, says whether what it names is newer
-/// than this build, and brings the file down and checks it. It installs
-/// nothing — see `showUpdate`, which hands the file over.
+/// than this build, brings the file down and checks it, and puts it in place
+/// of this copy — see [restartInto].
 class Updater {
   Updater({
     Fetch? fetch,
@@ -104,7 +105,12 @@ class Updater {
     this.version = buildVersion,
     this.feed = updateFeed,
     this.downloads,
-  }) : _fetch = fetch ?? _get;
+    Install? install,
+    void Function()? quit,
+  }) : _fetch = fetch ?? _get,
+       install =
+           install ?? Install.of(Platform.resolvedExecutable, updatePlatform),
+       _quit = quit ?? (() => exit(0));
 
   final Fetch _fetch;
   final String host;
@@ -114,6 +120,50 @@ class Updater {
   /// Where a download lands, for a test that must not write to the user's own
   /// Downloads. Null is [downloadsFolder].
   final Directory? downloads;
+
+  /// Where this copy is installed, which an update replaces; null where it is
+  /// not laid out the way a release unpacks.
+  final Install? install;
+
+  /// Quits this copy, for the helper that swaps the update in to do so.
+  final void Function() _quit;
+
+  /// Why this copy cannot put an update in its own place, or null if it can.
+  /// Where it cannot, the download is handed over in the Downloads instead.
+  String? get installRefusal => install == null
+      ? 'This copy of Jeansh is not laid out the way a release unpacks, so '
+            'it cannot replace itself.'
+      : install!.refusal;
+
+  /// Puts [archive], [update]'s build as [download] brought it down, in place
+  /// of this copy and quits, for the helper to swap it in and start it.
+  /// Throws [UpdateException] with this copy untouched: the swap is the
+  /// helper's, and last.
+  ///
+  /// The file is held to the feed's SHA-256 again here, where it is
+  /// installed, so nothing but a build the feed describes is ever unpacked,
+  /// whoever hands it over.
+  Future<void> restartInto(Update update, File archive) async {
+    final install = this.install;
+    if (install == null) throw UpdateException(installRefusal!);
+    final Digest digest;
+    try {
+      digest = await sha256.bind(archive.openRead()).first;
+    } on FileSystemException catch (error) {
+      throw UpdateException('Could not read ${update.name}: ${error.message}');
+    }
+    if (digest.toString() != update.sha256.toLowerCase()) {
+      throw UpdateException(
+        '${update.name} is not the file the release describes, so it was not '
+        'installed.',
+      );
+    }
+    final staged = await install.stage(archive);
+    await install.handOff(staged);
+    // Unpacked and on its way in: the archive has done its work.
+    _remove(archive);
+    _quit();
+  }
 
   /// Whether this build takes updates at all: a host and a version baked in,
   /// on a platform that has desktop builds.
@@ -149,7 +199,8 @@ class Updater {
   /// that does not match is deleted, and the error names it; null is
   /// [cancelled] having completed first, which leaves nothing behind either.
   ///
-  /// Nothing is ever run: what comes back is a file for the user to open.
+  /// Nothing is run: what comes back is a file, for [restartInto] or for the
+  /// user to open.
   Future<File?> download(
     Update update, {
     Directory? into,

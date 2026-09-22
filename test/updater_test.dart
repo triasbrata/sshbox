@@ -69,6 +69,73 @@ Updater _updater(
   downloads: downloads,
 );
 
+/// An updater whose copy can put an update in place, but which only records
+/// that it was asked to, or fails with [fails]: the real one quits the app.
+class _Installing extends Updater {
+  _Installing(_Net net, Directory downloads, {this.fails})
+    : super(
+        fetch: net.fetch,
+        host: _host,
+        version: '1.0.62+66',
+        feed: _feed,
+        downloads: downloads,
+      );
+
+  final UpdateException? fails;
+  final installed = <String>[];
+
+  @override
+  String? get installRefusal => null;
+
+  @override
+  Future<void> restartInto(Update update, File archive) async {
+    installed.add(archive.path);
+    if (fails != null) throw fails!;
+  }
+}
+
+/// A feed and a build that matches it, for a download that goes through.
+_Net _goodBuild() {
+  final bytes = utf8.encode('a build, near enough' * 100);
+  return _Net({
+    _feed: utf8.encode(
+      feedJson(
+        platforms: {
+          'linux': {
+            'path': 'desktop/linux/Jeansh-1.0.63+67-linux-x64.tar.gz',
+            'size': bytes.length,
+            'sha256': sha256.convert(bytes).toString(),
+          },
+        },
+      ),
+    ),
+    _build: bytes,
+  });
+}
+
+/// Check for updates, then Download, and the download let through: writing
+/// the file is real I/O, which runs only outside the test's own clock.
+Future<void> checkAndDownload(WidgetTester tester) async {
+  await tester.tap(find.text('Check for updates'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Download'));
+  for (var i = 0; i < 10; i++) {
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+  }
+  await showToasts(tester);
+}
+
+/// A toast's overlay and its slide in, as the page tests pump one:
+/// pumpAndSettle alone never shows it.
+Future<void> showToasts(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
 /// Where the linux build in [feedJson] is fetched from.
 const _build = '$_host/desktop/linux/Jeansh-1.0.63+67-linux-x64.tar.gz';
 
@@ -390,6 +457,74 @@ void main() {
       reason: 'the row can be tapped again',
     );
     expect(find.textContaining('no answer in 60s'), findsOneWidget);
+    await tester.pumpAndSettle();
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+  testWidgets('a checked download offers Restart to update, which puts it in '
+      'place', (tester) async {
+    final downloads = Directory.systemTemp.createTempSync('update_widget');
+    addTearDown(() => downloads.deleteSync(recursive: true));
+    final updater = _Installing(_goodBuild(), downloads);
+    await pumpTile(tester, updater);
+
+    await checkAndDownload(tester);
+    expect(find.text('Jeansh 1.0.63 is ready'), findsOneWidget);
+    expect(find.textContaining('in your Downloads'), findsNothing);
+
+    await tester.tap(find.text('Restart to update'));
+    await tester.pump();
+    expect(updater.installed, [
+      '${downloads.path}${Platform.pathSeparator}'
+          'Jeansh-1.0.63+67-linux-x64.tar.gz',
+    ]);
+    expect(find.text('Installing Jeansh 1.0.63'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+  testWidgets('a copy that cannot replace itself hands the file over and '
+      'says why', (tester) async {
+    final downloads = Directory.systemTemp.createTempSync('update_widget');
+    addTearDown(() => downloads.deleteSync(recursive: true));
+    // This test runner is no release's layout, so nothing may replace it.
+    final updater = Updater(
+      fetch: _goodBuild().fetch,
+      host: _host,
+      version: '1.0.62+66',
+      feed: _feed,
+      downloads: downloads,
+    );
+    expect(updater.install, isNull);
+    await pumpTile(tester, updater);
+
+    await checkAndDownload(tester);
+    expect(find.text('Jeansh 1.0.63 is in your Downloads'), findsOneWidget);
+    expect(find.text('Restart to update'), findsNothing);
+    expect(find.textContaining('cannot replace itself'), findsOneWidget);
+    await tester.pumpAndSettle();
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+  testWidgets('an update that cannot be put in place hands the file over and '
+      'says why', (tester) async {
+    final downloads = Directory.systemTemp.createTempSync('update_widget');
+    addTearDown(() => downloads.deleteSync(recursive: true));
+    final updater = _Installing(
+      _goodBuild(),
+      downloads,
+      fails: const UpdateException('Could not unpack the update: no room.'),
+    );
+    await pumpTile(tester, updater);
+
+    await checkAndDownload(tester);
+    await tester.tap(find.text('Restart to update'));
+    await showToasts(tester);
+
+    expect(find.text('Jeansh 1.0.63 is in your Downloads'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Could not unpack the update: no room. It is in your Downloads '
+        'instead.',
+      ),
+      findsOneWidget,
+    );
     await tester.pumpAndSettle();
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
