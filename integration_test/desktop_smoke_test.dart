@@ -30,6 +30,7 @@ import 'package:flutter/material.dart'
         DropdownButton,
         InkWell,
         ListTile,
+        SegmentedButton,
         TextField,
         Tooltip;
 import 'package:flutter/services.dart';
@@ -42,7 +43,7 @@ import 'package:sshbox/src/update/updater.dart'
     show downloadsFolder, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/settings_page.dart'
-    show localTmux, terminalFonts;
+    show LinkModifier, localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
@@ -180,6 +181,19 @@ Future<void> _pick(WidgetTester tester, String item) async {
 /// too, and first in the tree.
 Future<void> _settings(WidgetTester tester) async {
   await tester.tap(find.byTooltip('Settings'));
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
+/// Back from Settings to Home, and Settings all the way gone. Home's card is
+/// found while Settings is still sliding out over it, and a tap on it then
+/// lands on the page leaving — a Mac run opened no shell that way.
+Future<void> _backHome(WidgetTester tester) async {
+  await tester.pageBack();
+  await _until(
+    tester,
+    () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
+    'Home again',
+  );
   await tester.pump(const Duration(milliseconds: 600));
 }
 
@@ -781,12 +795,7 @@ touch '${done.path}'
       // The picker closing still holds a barrier over the page, which takes
       // a tap on Back as its own.
       await tester.pump(const Duration(milliseconds: 600));
-      await tester.pageBack();
-      await _until(
-        tester,
-        () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
-        'Home again',
-      );
+      await _backHome(tester);
       final view = await _localShell(tester);
       expect(
         view.textStyle.fontFamily,
@@ -906,6 +915,103 @@ touch '${done.path}'
       expect(find.text('Restart to update'), findsNothing);
       expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
       expect(File('${kept.path}.part').existsSync(), isFalse);
+    },
+  );
+
+  // #20: Settings' Open links with picks the key a click holds to open a link
+  // in the terminal — Ctrl or Alt on Linux — and only that key opens one.
+  // Picked Alt here: an Alt+click on a link a program printed hands it to the
+  // machine's browser, and a Ctrl+click opens nothing.
+  //
+  // The browser is this desktop's own stand-in: a handler for http and https,
+  // put in the run's data folder, that notes each address it is given. On CI
+  // alone — on a machine someone uses, their own browser choice, which the
+  // desktop reads first, would open a real window instead.
+  testWidgets(
+    'a link opens with the key Settings names, and not the other',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true',
+    (tester) async {
+      final data = Platform.environment['XDG_DATA_HOME']!;
+      final opened = File('$data/e2e-opened-links');
+      final browser = File('$data/e2e-browser')
+        ..writeAsStringSync(
+          '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${opened.path}\'\n',
+        );
+      Process.runSync('chmod', ['755', browser.path]);
+      Directory('$data/applications').createSync(recursive: true);
+      File('$data/applications/e2e-browser.desktop').writeAsStringSync(
+        '[Desktop Entry]\nType=Application\nName=e2e browser\nNoDisplay=true\n'
+        'Exec=${browser.path} %u\n'
+        'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n',
+      );
+      File('$data/applications/mimeapps.list').writeAsStringSync(
+        '[Default Applications]\n'
+        'x-scheme-handler/http=e2e-browser.desktop\n'
+        'x-scheme-handler/https=e2e-browser.desktop\n',
+      );
+      const url = 'https://example.invalid/e2e-link';
+
+      await _launch(tester);
+      await _settings(tester);
+      final choice = find.byType(SegmentedButton<LinkModifier>);
+      await tester.scrollUntilVisible(
+        choice,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(choice);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(
+        find.descendant(of: choice, matching: find.text('Alt')),
+      );
+      await _until(
+        tester,
+        () => find.textContaining('Hold Alt and click').evaluate().isNotEmpty,
+        'Settings to say Alt opens links',
+      );
+      await _backHome(tester);
+
+      // A link as a program prints one, OSC 8: its label, its address hidden.
+      final view = await _localShell(tester);
+      final script = File('${_scratch().path}/link.sh')
+        ..writeAsStringSync(
+          "printf '\\033]8;;$url\\033\\\\open me\\033]8;;\\033\\\\\\n'\n",
+        );
+      _run(view, 'sh ${script.path}');
+      final lines = view.terminal.buffer.lines;
+      var row = -1;
+      await _until(tester, () {
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].getText().startsWith('open me')) row = i;
+        }
+        return row >= 0;
+      }, 'the link to be printed');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      final label = render.localToGlobal(
+        render.getOffset(CellOffset(2, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      Future<void> clickWith(LogicalKeyboardKey key) async {
+        await tester.sendKeyDownEvent(key);
+        await tester.tapAt(label, kind: PointerDeviceKind.mouse);
+        await tester.sendKeyUpEvent(key);
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      // Not the key that was not picked.
+      await clickWith(LogicalKeyboardKey.controlLeft);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(opened.existsSync(), isFalse, reason: 'Ctrl+click opened it');
+
+      await clickWith(LogicalKeyboardKey.altLeft);
+      await _until(
+        tester,
+        () => opened.existsSync() && opened.readAsStringSync().contains(url),
+        'Alt+click to hand the link to the browser',
+      );
+      await _closeTabs(tester);
     },
   );
 }
