@@ -12,6 +12,8 @@
 #
 #   tools/e2e_desktop.sh            # this machine's platform
 #   tools/e2e_desktop.sh linux      # or windows, macos
+#   tools/e2e_desktop.sh linux --plain-name 'a diff'   # the rest goes to
+#                                   # flutter test, here to run one test
 #
 # Exits non-zero if any test fails, which is what a release gate reads.
 set -euo pipefail
@@ -29,6 +31,7 @@ if [ -z "$target" ]; then
        exit 2 ;;
   esac
 fi
+shift $(($# > 0 ? 1 : 0))
 
 tests=integration_test
 
@@ -56,13 +59,14 @@ case "$target" in
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
         trap "rm -rf \"$XDG_DATA_HOME\"" EXIT
         printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
-        flutter test "$1" -d linux' sh "$tests"
+        tests=$1 && shift
+        flutter test "$tests" -d linux "$@"' sh "$tests" "$@"
     ;;
   windows)
-    exec flutter test "$tests" -d windows
+    exec flutter test "$tests" -d windows "$@"
     ;;
   macos)
-    exec flutter test "$tests" -d macos
+    exec flutter test "$tests" -d macos "$@"
     ;;
   *)
     echo "Unknown target '$target'; expected linux, windows or macos" >&2

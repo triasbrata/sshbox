@@ -21,7 +21,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart' show Card, InkWell, Tooltip;
+import 'package:flutter/material.dart'
+    show Card, DropdownButton, InkWell, Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,7 +53,21 @@ Future<void> _until(
 }) async {
   final end = DateTime.now().add(timeout);
   while (!await done()) {
-    if (DateTime.now().isAfter(end)) fail('Gave up waiting for $what');
+    if (DateTime.now().isAfter(end)) {
+      // What the screen showed instead: its labels and its buttons' tooltips,
+      // the app's own words. A terminal's text is painted, not a widget, so
+      // none of it is here.
+      String words<T extends Widget>(String? Function(T) of) => find
+          .byType(T)
+          .evaluate()
+          .map((e) => of(e.widget as T))
+          .whereType<String>()
+          .take(60)
+          .join(' | ');
+      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
+      debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
+      fail('Gave up waiting for $what');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 100));
     await tester.pump();
   }
@@ -95,12 +110,6 @@ Future<TerminalView> _localShell(WidgetTester tester) async {
         'lines with text ${_text(each).length}',
       );
     }
-    final labels = find
-        .byType(Text)
-        .evaluate()
-        .map((e) => (e.widget as Text).data)
-        .whereType<String>();
-    debugPrint('On screen: ${labels.take(40).join(' | ')}');
     rethrow;
   }
   return view();
@@ -128,6 +137,21 @@ Directory _scratch() {
   final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
   addTearDown(() => dir.deleteSync(recursive: true));
   return dir;
+}
+
+/// Closes every tab, so the next test's launch brings none back. A Local tab
+/// left open is saved and restored at the next launch, and that restore
+/// lands whenever it lands — before or after the next test taps the card or
+/// counts its tabs — which made a test pass or fail by timing alone.
+Future<void> _closeTabs(WidgetTester tester) async {
+  final close = find.byWidgetPredicate(
+    (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+  );
+  // Capped, so a "Close …" that closes nothing cannot hold the run.
+  for (var i = 0; i < 20 && close.evaluate().isNotEmpty; i++) {
+    await tester.tap(close.first);
+    await tester.pump(const Duration(milliseconds: 300));
+  }
 }
 
 Future<String?> _clipboard() async =>
@@ -278,7 +302,7 @@ touch '${done.path}'
         reason: 'the terminal answered a clipboard query: a host can read it',
       );
 
-      _run(view, 'exit');
+      await _closeTabs(tester);
     },
   );
 
@@ -372,7 +396,7 @@ touch '${done.path}'
         reason: 'the right-click menu copied the selection without its gaps',
       );
 
-      _run(view, 'exit');
+      await _closeTabs(tester);
     },
   );
 
@@ -388,15 +412,23 @@ touch '${done.path}'
       await _localShell(tester);
       // Counted rather than assumed one: the tests before this left Local
       // tabs, which come back with each launch.
-      final shells = find.byType(TerminalView, skipOffstage: false);
-      final before = shells.evaluate().length;
-
-      // A tab reads whatever title its shell gives itself, so it is found by
-      // its close button, "Close <title>", and right-clicked on the chip that
-      // holds it. Any Local tab duplicates the same way.
+      // A tab reads whatever title its shell gives itself, so tabs are found
+      // by their close button, "Close <title>" — "Reconnect" once its shell
+      // has ended. Counted on the strip rather than by terminals, which a
+      // restored tab builds and swaps as it reconnects.
       final close = find.byWidgetPredicate(
         (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
       );
+      final tabs = find.byWidgetPredicate(
+        (w) =>
+            w is Tooltip &&
+            ((w.message ?? '').startsWith('Close ') ||
+                w.message == 'Reconnect'),
+      );
+      final before = tabs.evaluate().length;
+
+      // Right-clicked on the chip that holds a close button. Any Local tab
+      // duplicates the same way.
       final chip = find
           .ancestor(of: close.first, matching: find.byType(InkWell))
           .first;
@@ -413,10 +445,95 @@ touch '${done.path}'
       await tester.tap(find.text('Duplicate session'));
       await _until(
         tester,
-        () => shells.evaluate().length == before + 1,
+        () => tabs.evaluate().length == before + 1,
         'a second Local shell',
       );
       expect(find.textContaining('no longer saved'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #3: a diff opens split on a wide page, as GitHub's does — old on the
+  // left, new on the right, a changed line level with the line that replaced
+  // it; a narrow one stacks them. This window is past the 900 dp where split
+  // begins, so the check is that the two sit on one row, side by side.
+  testWidgets(
+    'a diff on a wide page opens split, the old line beside the new',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      // Where a Local shell's Git panel looks: the login home, a folder or
+      // two down. Made for this test and gone after it.
+      final repo = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('jeansh-e2e-repo-');
+      addTearDown(() => repo.deleteSync(recursive: true));
+      Future<void> git(List<String> args) async {
+        final done = await Process.run('git', ['-C', repo.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+      }
+
+      final file = File('${repo.path}/e2e.txt');
+      await git(['init', '-q']);
+      file.writeAsStringSync('first\nbefore-e2e\nlast\n');
+      await git(['add', 'e2e.txt']);
+      await git([
+        '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+        'commit', '-q', '-m', 'e2e',
+      ]);
+      file.writeAsStringSync('first\nafter-e2e\nlast\n');
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Git'));
+
+      // On a runner the home holds this repository alone and it is picked
+      // already; on a machine with others it is picked from the list.
+      final name = repo.path.split('/').last;
+      bool ours(String? root) => root != null && root.endsWith('/$name');
+      final picker = find.byType(DropdownButton<String>);
+      DropdownButton<String> shown() => tester.widget(picker);
+      await _until(
+        tester,
+        () =>
+            picker.evaluate().isNotEmpty &&
+            shown().items!.any((item) => ours(item.value)),
+        "the Git panel to find this test's repository",
+      );
+      if (!ours(shown().value)) {
+        // Picked through the picker's own onChanged, which is what choosing
+        // it from the list calls: this test is of the diff, and a long list
+        // in a small menu is its own fight.
+        final root = shown().items!.map((item) => item.value).firstWhere(ours);
+        shown().onChanged!(root);
+        await _until(
+          tester,
+          () => ours(shown().value),
+          "this test's repository to be picked",
+        );
+      }
+      await _until(
+        tester,
+        () => find.textContaining('e2e.txt').evaluate().isNotEmpty,
+        'the changed file under Changes',
+      );
+      await tester.tap(find.textContaining('e2e.txt').first);
+
+      final before = find.textContaining('before-e2e', findRichText: true);
+      final after = find.textContaining('after-e2e', findRichText: true);
+      await _until(
+        tester,
+        () => before.evaluate().isNotEmpty && after.evaluate().isNotEmpty,
+        'the diff',
+      );
+      expect(find.byTooltip('Unified view'), findsOneWidget,
+          reason: 'a wide page did not open split');
+      final old = tester.getCenter(before.first);
+      final now = tester.getCenter(after.first);
+      expect(old.dy, closeTo(now.dy, 1),
+          reason: 'the changed line is not level with what replaced it');
+      expect(old.dx, lessThan(now.dx),
+          reason: 'the old line is not on the left');
+      await _closeTabs(tester);
     },
   );
 }
