@@ -182,6 +182,40 @@ with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
 PY
 }
 
+# #94: Gboard sends Backspace as a raw KEYCODE_DEL key event, from the
+# virtual keyboard's device (-1) and flagged as soft, whenever it sees nothing
+# before the caret. Jeansh took it for a hardware keyboard: the soft keyboard
+# closed, and no tap on the terminal raised it again. adb's `input keyevent`
+# injects from that same device -1, though without the soft flag, so it takes
+# the path the fix changed -- Gboard's own key, flag and all, it does not
+# send. Whether the keyboard is up is read off Android itself.
+ime_shown() { adb shell dumpsys input_method | grep -q 'mInputShown=true'; }
+soft_backspace() {
+  local size w h
+  flow soft_backspace_start || return 1
+  sleep 1
+  echo "Input method: $(adb shell settings get secure default_input_method)"
+  adb shell dumpsys input_method | grep -E 'mInputShown|mShowRequested' | head -4
+  ime_shown || { echo "the keyboard never came up"; return 1; }
+  for _ in 1 2 3; do
+    adb shell input keyevent KEYCODE_DEL
+    sleep 0.3
+  done
+  sleep 1
+  ime_shown || { echo "Backspace with nothing to delete closed the keyboard"; return 1; }
+  # Away, as a user puts it away; the keyboard takes Back itself.
+  adb shell input keyevent KEYCODE_BACK
+  sleep 1
+  if ime_shown; then echo "the keyboard did not go away"; return 1; fi
+  size=$(adb shell wm size | grep -oE '[0-9]+x[0-9]+' | tail -1)
+  w=${size%x*}
+  h=${size#*x}
+  adb shell input tap $((w / 2)) $((h * 35 / 100))
+  sleep 1.5
+  ime_shown || { echo "a tap on the terminal did not bring the keyboard back"; return 1; }
+  echo "the keyboard stayed up through Backspace, and a tap brought it back"
+}
+
 # On a slow runner the emulator's own apps stall, and Android puts up "<app>
 # isn't responding". The first time, it was Pixel Launcher, over Jeansh, just as
 # seed_host looked for Add: the dialog is modal, so it hid the app from Maestro
@@ -203,6 +237,17 @@ if ! flow seed_host; then
   exit 1
 fi
 echo "::endgroup::"
+
+# A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
+# which is minutes rather than the half hour of every flow.
+if [ -n "${E2E_ONLY:-}" ]; then
+  echo "::group::$E2E_ONLY (asked for alone)"
+  "$E2E_ONLY"
+  status=$?
+  echo "::endgroup::"
+  [ "$status" -eq 0 ] || echo "::error::$E2E_ONLY failed"
+  exit "$status"
+fi
 
 failed=()
 for name in "${GATING[@]}"; do
@@ -400,6 +445,10 @@ kill "$terminal_side" 2>/dev/null
 sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::soft_backspace (report only)"
+soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
+echo "::endgroup::"
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named
 # one in its own results, under takeScreenshot/, which the upload does not

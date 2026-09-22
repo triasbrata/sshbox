@@ -1,0 +1,27 @@
+# #94, the first half: a live terminal with the soft keyboard raised by a tap,
+# for tools/e2e_android.sh's soft_backspace to send Backspace into. The rest
+# is adb, since whether the keyboard is showing is Android's to say, not a
+# screen Maestro reads.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "ESC"
+    timeout: 30000
+
+# A tap on the terminal is how a user asks for the keyboard.
+- tapOn:
+    point: 50%,35%
+- waitForAnimationToEnd

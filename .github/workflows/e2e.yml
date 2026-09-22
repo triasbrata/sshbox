@@ -50,6 +50,10 @@ on:
         type: choice
         options: [all, linux-desktop]
         default: all
+      block:
+        description: One Android block to run alone after seed_host, or empty for every flow
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -201,6 +205,10 @@ jobs:
       # report, and seed_host first.
       - name: The flows
         uses: reactivecircus/android-emulator-runner@v2
+        # Empty unless a hand run names one block (tools/e2e_android.sh);
+        # tag.yml's call has no such input, so the gate runs every flow.
+        env:
+          E2E_ONLY: ${{ inputs.block }}
         with:
           api-level: 34
           arch: x86_64
