@@ -32,3 +32,28 @@ Future<T?> showMenuAt<T>(
     items: items,
   );
 }
+
+/// A tab's own menu — what a right-click on its chip opens — handed down to
+/// its page, so a right-click inside the page opens it too. [items] is asked
+/// at the click, so it is the menu as the strip last drew it.
+///
+/// The shell opens it for a right-click that nothing in the page took; a
+/// page with a context menu of its own, the terminal's, puts it below its
+/// own items.
+class TabMenu extends InheritedWidget {
+  const TabMenu({super.key, required this.items, required super.child});
+
+  final List<(String, VoidCallback)> Function() items;
+
+  static TabMenu? of(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<TabMenu>();
+
+  /// The menu's entries, as the chip shows them.
+  List<PopupMenuEntry<void>> entries() => [
+    for (final (label, onTap) in items())
+      PopupMenuItem<void>(onTap: onTap, child: Text(label)),
+  ];
+
+  @override
+  bool updateShouldNotify(TabMenu oldWidget) => false;
+}
