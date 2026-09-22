@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../platform.dart';
 
@@ -17,11 +18,21 @@ GestureTapUpCallback? rightClick(void Function(Offset at)? open) =>
 
 /// Opens a menu with its corner at [at], a global position — the pointer's,
 /// as a context menu opens, or the finger's.
+///
+/// After a frame already asked for: the click that opens it may have moved
+/// focus — a group's pane takes it on the pointer going down — and that
+/// frame's rebuild would otherwise take the focus from the menu it had just
+/// been given, so Escape reached nothing and the menu stayed open under the
+/// next click.
 Future<T?> showMenuAt<T>(
   BuildContext context,
   Offset at,
   List<PopupMenuEntry<T>> items,
-) {
+) async {
+  if (SchedulerBinding.instance.hasScheduledFrame) {
+    await SchedulerBinding.instance.endOfFrame;
+    if (!context.mounted) return null;
+  }
   final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
   return showMenu<T>(
     context: context,
