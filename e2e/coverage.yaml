@@ -32,12 +32,14 @@ the-desktop-build-loses-what-stands-in-for:
 # ---------------------------------------------------- real platform: e2e ----
 
 sharing-text-to-jeansh-pastes-it-into-the:
-  guard: todo
-  why: "an ACTION_SEND intent with EXTRA_TEXT and no stream -- needs a real Android intent, planned .maestro/share_text.yaml"
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/share_text_start.yaml, .maestro/share_text_finish.yaml
+  why: "share_text: text shared in with an adb SEND lands in cat's line in the live session, and the host's file holds it once Enter is pressed -- empty with EXTRA_TEXT read as nothing (report-only)"
 
 share-with-jeansh-goes-to-the-session-of:
-  guard: todo
-  why: "ShareActivity routing into the running task rather than a second copy -- an Activity/task question a widget test cannot pose"
+  guard: e2e-android
+  by: tools/e2e_android.sh
+  why: "share_text: a SEND through ShareActivity into the running Jeansh reaches its open session, with one MainActivity by dumpsys after it; single_instance holds the second-copy guard itself (report-only)"
 
 never-two-live-copies-of-jeansh-whatever-starts:
   guard: e2e-android
@@ -45,20 +47,21 @@ never-two-live-copies-of-jeansh-whatever-starts:
   why: "single_instance, with adb rather than a flow: a second MainActivity forced from Home into a task of its own must hand over and finish -- one live copy by dumpsys with the guard, two with it taken out (report-only)"
 
 tabs-survive-an-app-restart-like-a-browser:
-  guard: todo
-  why: "a real process death and relaunch; saved_tabs_test.dart covers the encoding, not the restart"
+  guard: e2e-android
+  by: .maestro/card_tap_reconnect.yaml, test/saved_tabs_test.dart
+  why: "card_tap_reconnect kills the app with a terminal tab open and asserts it is back on the strip at the relaunch, then reconnects it; file, web and database tabs rest on saved_tabs_test's encoding (report-only)"
 
 pasting-an-image-into-a-terminal-uploads-it:
-  guard: todo
-  why: "the Android clipboard and a content:// provider, read by native Kotlin no widget test loads"
+  guard: manual
+  why: "needs a picture on the emulator's clipboard from a content:// provider, which adb cannot put there; the Linux half of picture paste is e2e-desktop (desktop_smoke_test)"
 
 pasting-into-a-terminal-keeps-its-spaces-the:
-  guard: todo
-  why: "Gboard commits a paste a word at a time; only a real IME reproduces the chunking that ate the spaces"
+  guard: manual
+  why: "the fault was Gboard committing a paste a word at a time; the CI image has no Gboard, only AOSP's keyboard, which does not chunk -- a flow there would pass on the broken build"
 
 keyboard-input-never-goes-dead-after-the-first:
-  guard: todo
-  why: "the platform input connection being torn down in key dispatch -- the cause was never reproducible off a device"
+  guard: manual
+  why: "the trigger was never found or reproduced, on a device or off it; the net it added is unit-tested (a parked focus is taken back on the next hardware key), and no flow can reach a fault nobody can make happen"
 
 no-hardware-key-arrives-twice-whatever-the-combination:
   guard: unit
@@ -71,17 +74,19 @@ native-tmux-split-panes-use-tmux-per-host:
   why: "tmux_live_test drives a real tmux server, which is the part that breaks; the panes themselves are widget-tested"
 
 terminal-selection-with-the-platform-s-start-end:
-  guard: todo
-  why: "platform selection handles and the system toolbar are drawn by Android, not by Flutter widgets a test can find"
+  guard: e2e-android
+  by: .maestro/terminal_selection.yaml
+  why: "a long press on terminal text selects a word with both handles and the toolbar -- Copy, Paste, Select all -- and Copy is tapped; with the hold made never to select, no toolbar came up (report-only)"
 
 long-press-on-text-selects-it-on-blank:
-  guard: todo
-  why: "same platform selection surface as the row above; one flow should cover both"
+  guard: e2e-android
+  by: .maestro/terminal_selection.yaml
+  why: "on text a long press brings up the selection toolbar; on blank space it does not -- the arrows it arms there are bare icons no flow can read, so that half is held to the toolbar staying away (report-only)"
 
 terminal-arrows-only-after-a-long-press-a:
-  guard: e2e-android
-  by: .maestro/swipe_cursor.yaml
-  why: "a long press then a drag -- a real gesture stream"
+  guard: unit
+  by: test/key_bar_test.dart
+  why: "a plain drag scrolls and sends nothing, a held drag's direction maps to its arrow, and the arrows' hint sits opposite the hand; the arrow a hold then a drag sends is not asserted end to end. This entry named .maestro/swipe_cursor.yaml, which no runner runs and which waits on terminal text Maestro cannot read -- it never guarded this"
 
 shift-enter-on-a-hardware-keyboard-starts-a:
   guard: unit
@@ -135,9 +140,9 @@ files-drawer-upload-here-on-a-folder-several:
   why: "a real SFTP upload with the name-clash prompt, against the runner's own sshd"
 
 code-editor-line-numbers-syntax-colour-whole-file:
-  guard: e2e-android
-  by: .maestro/file_editor.yaml
-  why: "opening, editing and saving a real file over SFTP, CRLF kept"
+  guard: unit
+  by: test/file_editor_page_test.dart
+  why: "CRLF kept, no save until something changed, no save over someone else's, drafts offered back, the stray-back guard and a refused save going through sudo, against a faked file browser; a real SFTP round trip is not. This entry named .maestro/file_editor.yaml, which no runner runs and which needs a file the runner never makes -- it never guarded this"
 
 code-editor-find-and-replace-go-to-line:
   guard: unit
