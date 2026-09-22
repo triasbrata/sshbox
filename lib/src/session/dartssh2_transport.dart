@@ -170,6 +170,40 @@ Future<({String address, SSHSocket socket})> firstToAnswer(
   return answered.future;
 }
 
+/// [socket] with a `close` that cannot fail.
+///
+/// dart:io's `close` hands back the socket's `done`, and a write that failed
+/// fails that. A host that takes the connection and hangs up before the
+/// handshake — sshd over its MaxStartups, a load balancer with nothing behind
+/// it, a port-knock gate — fails dartssh2's first writes with a broken pipe.
+/// dartssh2 hears it through `done`, which it listens to, and the connect
+/// fails with it; but it also closes its transport from a callback that drops
+/// the future `close` returns, so the same error went on uncaught, to the
+/// zone's handler and so to Sentry. Only that second copy is dropped here.
+class _QuietCloseSocket implements SSHSocket {
+  _QuietCloseSocket(this.socket);
+
+  final SSHSocket socket;
+
+  @override
+  Stream<Uint8List> get stream => socket.stream;
+
+  @override
+  StreamSink<List<int>> get sink => socket.sink;
+
+  @override
+  Future<void> get done => socket.done;
+
+  @override
+  Future<void> close() => socket.close().catchError((Object _) {});
+
+  @override
+  void destroy() => socket.destroy();
+
+  @override
+  Future<void> flush() => socket.flush();
+}
+
 class _Dartssh2Session
     implements
         TerminalSession,
@@ -356,7 +390,7 @@ class _Dartssh2Session
 
     final answered = await dial();
     return SSHClient(
-      answered.socket,
+      _QuietCloseSocket(answered.socket),
       username: host.username,
       identities: identities,
       // Offer nothing for Tailscale SSH. dartssh2 always appends `none` as
