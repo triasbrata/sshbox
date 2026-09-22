@@ -96,12 +96,13 @@ the-host-list-tab-chip-reads-home-with:
 
 several-sessions-per-host-the-host-list-counts:
   guard: e2e-android
-  by: .maestro/tabs.yaml
+  by: .maestro/tabs.yaml, .maestro/duplicate_session.yaml
   why: "opening a host twice and counting the active sessions on the card"
 
 long-press-a-shell-tab-duplicate-session:
-  guard: todo
-  why: "a long press on the tab strip then Duplicate session; tabs.yaml is the natural home once seeding lands"
+  guard: e2e-android
+  by: .maestro/duplicate_session.yaml
+  why: "a long press on the shell's own tab, Duplicate session, and a second live session -- index 1 of the close buttons exists only if there are two. Failed on every run until the host selector matched the card alone: it had been tapping a restored tab's close button. Report-only until it has earned the gate"
 
 files-drawer-is-a-vs-code-style-tree:
   guard: e2e-android
