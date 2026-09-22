@@ -368,7 +368,7 @@ class _HostEditPageState extends State<HostEditPage> {
       body: Form(
         key: _formKey,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          padding: tuiFormPadding(MediaQuery.sizeOf(context).width),
           children: [
             const TuiHeading('Connection', padding: _headingFirst),
             TextFormField(
@@ -382,10 +382,7 @@ class _HostEditPageState extends State<HostEditPage> {
             const SizedBox(height: 12),
             TextFormField(
               controller: _host,
-              decoration: const InputDecoration(
-                labelText: 'Host',
-                hintText: 'example.com or 192.168.1.10',
-              ),
+              decoration: const InputDecoration(labelText: 'Host'),
               autocorrect: false,
               keyboardType: TextInputType.url,
               textInputAction: TextInputAction.next,

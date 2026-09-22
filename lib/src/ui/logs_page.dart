@@ -5,6 +5,7 @@ import '../models/host_profile.dart';
 import '../models/os_info.dart';
 import '../session/session_log.dart';
 import 'os_icon.dart';
+import 'tui.dart';
 
 /// When a session ran, on a 24-hour clock: "05:56 – 10:38", "16:12 – 11:14
 /// (+1d)" once it ran past midnight, or its start alone when the app was
@@ -78,19 +79,12 @@ class _LogsPageState extends State<LogsPage> {
         builder: (context, _) {
           final entries = sessionLog.entries;
           if (entries.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.history,
-                    size: 48,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(height: 16),
-                  Text('No sessions yet', style: theme.textTheme.titleMedium),
-                ],
-              ),
+            return const TuiEmptyState(
+              icon: Icons.history,
+              title: 'No sessions yet',
+              body:
+                  'Every session you open is listed here with its host and '
+                  'when it ran.',
             );
           }
           return LayoutBuilder(

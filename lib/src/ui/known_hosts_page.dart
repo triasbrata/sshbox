@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../models/host_profile.dart';
+import 'tui.dart';
 
 /// The host keys the user has trusted, each with the saved hosts that use it,
 /// and a way to forget one.
@@ -71,36 +72,16 @@ class _KnownHostsPageState extends State<KnownHostsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Scaffold(
       appBar: AppBar(title: const Text('Known hosts')),
       body: switch (_pins) {
         null => const Center(child: CircularProgressIndicator()),
-        [] => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.fingerprint,
-                  size: 48,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(height: 16),
-                Text('Nothing trusted yet', style: theme.textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Text(
-                  'A key is added when you trust it while connecting.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
+        [] => const TuiEmptyState(
+          icon: Icons.fingerprint,
+          title: 'Nothing trusted yet',
+          body:
+              'When you trust a server\'s fingerprint on first connect, it\'s '
+              'kept here. Jeansh warns you if that key ever changes.',
         ),
         final pins => ListView.separated(
           padding: const EdgeInsets.only(bottom: 24),

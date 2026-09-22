@@ -223,10 +223,25 @@ class ToastCard extends StatelessWidget {
                                   color: ink.withValues(alpha: .8),
                                 ),
                               ),
+                            // Under what it is about, when that runs to more
+                            // than a heading: beside it, it would leave the
+                            // words a narrow column on a phone.
+                            if (action != null && rest.isNotEmpty)
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  foregroundColor: ink,
+                                  padding: EdgeInsets.zero,
+                                ),
+                                onPressed: () {
+                                  close();
+                                  action.onPressed();
+                                },
+                                child: Text(action.label),
+                              ),
                           ],
                         ),
                       ),
-                      if (action != null)
+                      if (action != null && rest.isEmpty)
                         TextButton(
                           style: TextButton.styleFrom(foregroundColor: ink),
                           onPressed: () {

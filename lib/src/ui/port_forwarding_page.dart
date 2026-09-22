@@ -11,6 +11,7 @@ import '../models/port_snippets.dart';
 import '../session/port_forwards.dart';
 import 'host_edit_page.dart';
 import 'os_icon.dart';
+import 'tui.dart';
 import 'terminal_page.dart' show openUrl;
 
 /// Side padding that keeps a page's column readable on a tablet: 16 dp on a
@@ -188,37 +189,13 @@ class _EmptyState extends StatelessWidget {
   const _EmptyState();
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.swap_horiz,
-              size: 48,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: 16),
-            Text('No port forwards yet', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              'Add one to reach a host\'s port from this tablet, like a '
-              'database app on 127.0.0.1, or to let the host reach a port on '
-              'this tablet.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => const TuiEmptyState(
+    icon: Icons.swap_horiz,
+    title: 'No port forwards yet',
+    body:
+        'Reach a server\'s port from this device, like a database on '
+        '127.0.0.1:5432, or let the server reach a port here.',
+  );
 }
 
 enum _Direction { tabletToRemote, remoteToTablet }

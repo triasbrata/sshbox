@@ -574,7 +574,12 @@ class SettingsPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: tuiFormPadding(
+          MediaQuery.sizeOf(context).width,
+          top: 0,
+          bottom: 24,
+          least: 0,
+        ),
         children: [
           const _ThemeSection(),
           const _TerminalSection(),

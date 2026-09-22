@@ -12,6 +12,7 @@ import 'code_languages.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
+import 'tui.dart';
 
 /// A conversation with Claude Code running on the host, beside that host's
 /// shell — what the VS Code plugin shows in its side panel: what was asked,
@@ -1272,18 +1273,8 @@ class _SessionList extends StatelessWidget {
     );
   }
 
-  Widget _heading(BuildContext context, String text) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Text(
-        text,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: theme.colorScheme.primary,
-        ),
-      ),
-    );
-  }
+  Widget _heading(BuildContext context, String text) =>
+      TuiHeading(text, padding: const EdgeInsets.fromLTRB(16, 12, 16, 4));
 
   Widget _say(BuildContext context, String text, {bool failed = false}) {
     final theme = Theme.of(context);

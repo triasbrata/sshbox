@@ -347,7 +347,7 @@ void main() {
 
       await tester.tap(find.text('Clear finished'));
       await tester.pump();
-      expect(find.text('Downloads and uploads show here.'), findsOneWidget);
+      expect(find.text('No transfers yet'), findsOneWidget);
     });
 
     test('joins the strip, shows, and closes onto its neighbour', () async {
@@ -464,7 +464,7 @@ void main() {
       await tester.tap(find.byTooltip('Transfers'));
       await tester.pumpAndSettle();
       expect((sessions.transfersTab, sessions.transfersActive), (true, true));
-      expect(find.text('Downloads and uploads show here.'), findsOneWidget);
+      expect(find.text('No transfers yet'), findsOneWidget);
       expect(find.byTooltip('Close Transfers'), findsOneWidget);
 
       // Asked for again from Home: the same tab, not a second one.

@@ -111,7 +111,7 @@ void main() {
     await open(tester);
     expect(find.text('Nothing trusted yet'), findsOneWidget);
     expect(
-      find.text('A key is added when you trust it while connecting.'),
+      find.textContaining('Jeansh warns you if that key ever changes.'),
       findsOneWidget,
     );
   });

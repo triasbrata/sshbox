@@ -9,6 +9,7 @@ import '../session/session_manager.dart';
 import '../session/tmux.dart';
 import '../platform.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
+import 'tui.dart';
 
 /// Another terminal on [host], connected in a sheet and given its tab by
 /// [sessions] once it is up, or once its sign-in has gone to a web tab beside
@@ -248,11 +249,27 @@ class _ConnectSheetState extends State<_ConnectSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(host.displayName, style: theme.textTheme.titleLarge),
-          Text(
-            '${host.username}@${host.host}:${host.port}',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+          // A prompt's chevron before where it goes, as Termul draws a
+          // command line.
+          Row(
+            children: [
+              ExcludeSemantics(
+                child: Text(
+                  '❯ ',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+              ),
+              Flexible(
+                child: Text(
+                  '${host.username}@${host.host}:${host.port}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 20),
           if (check != null)
@@ -331,7 +348,17 @@ class _HostKeyPrompt extends StatelessWidget {
     final pinned = check.pinned;
     final other = check.otherAddress;
     final error = theme.colorScheme.error;
-    const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    const mono = TextStyle(fontFamily: tuiFontFamily, fontSize: 13);
+    Widget boxed(String fingerprint) => Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: SelectableText(fingerprint, style: mono),
+    );
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -381,16 +408,16 @@ class _HostKeyPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text('Pinned for ${other.address}'),
-          SelectableText(other.fingerprint, style: mono),
+          boxed(other.fingerprint),
         ],
         if (pinned != null) ...[
           const SizedBox(height: 12),
           const Text('Pinned'),
-          SelectableText(pinned, style: mono),
+          boxed(pinned),
         ],
         const SizedBox(height: 12),
         Text(pinned == null ? 'Fingerprint' : 'Now'),
-        SelectableText(check.fingerprint, style: mono),
+        boxed(check.fingerprint),
         const SizedBox(height: 16),
         Row(
           mainAxisAlignment: MainAxisAlignment.end,

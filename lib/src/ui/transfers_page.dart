@@ -4,6 +4,7 @@ import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import 'file_download.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// Every download and upload since the app started, newest first, like a
 /// browser's downloads page: one tab for the whole app. A running one can be
@@ -34,7 +35,13 @@ class TransfersPage extends StatelessWidget {
           ],
         ),
         body: items.isEmpty
-            ? const Center(child: Text('Downloads and uploads show here.'))
+            ? const TuiEmptyState(
+                icon: Icons.swap_vert,
+                title: 'No transfers yet',
+                body:
+                    'Files you download or upload show up here, with their '
+                    'progress.',
+              )
             : ListView.separated(
                 itemCount: items.length,
                 separatorBuilder: (_, _) => const Divider(height: 1),

@@ -239,6 +239,19 @@ class Tui extends ThemeExtension<Tui> {
   Tui lerp(Tui? other, double t) => t < .5 || other == null ? this : other;
 }
 
+/// A form's or a settings list's padding in a page [width] wide: 16 either
+/// side on a phone, and on anything wider a column no more than 720 across in
+/// the middle, so a line of help text stays short enough to read.
+EdgeInsets tuiFormPadding(
+  double width, {
+  double top = 16,
+  double bottom = 32,
+  double least = 16,
+}) {
+  final side = math.max(least, (width - 720) / 2);
+  return EdgeInsets.fromLTRB(side, top, side, bottom);
+}
+
 /// Square, one line wide: every edge in the app.
 OutlinedBorder tuiShape([Color? side]) => RoundedRectangleBorder(
   side: side == null ? BorderSide.none : BorderSide(color: side),
