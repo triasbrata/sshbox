@@ -40,8 +40,9 @@ share-with-jeansh-goes-to-the-session-of:
   why: "ShareActivity routing into the running task rather than a second copy -- an Activity/task question a widget test cannot pose"
 
 never-two-live-copies-of-jeansh-whatever-starts:
-  guard: todo
-  why: "a second MainActivity finishing itself before it runs Dart -- Android task behaviour, planned .maestro/single_instance.yaml"
+  guard: e2e-android
+  by: tools/e2e_android.sh
+  why: "single_instance, with adb rather than a flow: a second MainActivity forced from Home into a task of its own must hand over and finish -- one live copy by dumpsys with the guard, two with it taken out (report-only)"
 
 tabs-survive-an-app-restart-like-a-browser:
   guard: todo
