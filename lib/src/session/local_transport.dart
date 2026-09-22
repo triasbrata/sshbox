@@ -28,11 +28,17 @@ const localHostId = 'local';
 /// counts and resumes its own shells, as a saved host does. Saved nowhere,
 /// like [localHost].
 HostProfile wslHost(String distro) => HostProfile(
-  id: 'wsl:$distro',
+  id: '$_wslPrefix$distro',
   label: distro,
   host: 'localhost',
   username: _userName(),
 );
+
+const _wslPrefix = 'wsl:';
+
+/// The distro a [wslHost] id names, and null for any other host's.
+String? wslDistroOf(String hostId) =>
+    hostId.startsWith(_wslPrefix) ? hostId.substring(_wslPrefix.length) : null;
 
 /// `USER` on a Mac or Linux, `USERNAME` on Windows.
 String _userName() =>
