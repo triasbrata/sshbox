@@ -37,18 +37,19 @@ tests=integration_test
 
 case "$target" in
   linux)
-    for tool in xvfb-run dbus-run-session gnome-keyring-daemon; do
+    for tool in xvfb-run dbus-run-session gnome-keyring-daemon dunst; do
       command -v "$tool" >/dev/null || {
         echo "$tool is missing. On Debian/Ubuntu:" >&2
-        echo "  sudo apt-get install -y xvfb dbus-x11 gnome-keyring" >&2
+        echo "  sudo apt-get install -y xvfb dbus-x11 gnome-keyring dunst" >&2
         exit 2
       }
     done
     # Its own D-Bus, because the app asks for notifications and for
-    # org.freedesktop.secrets, where saved passwords live. And on that bus a
-    # Secret Service, as every desktop session has: without one, libsecret
-    # times out, and what fails reads as an app bug rather than a runner
-    # missing its keyring. Unlocked with an empty password.
+    # org.freedesktop.secrets, where saved passwords live. And on that bus
+    # what every desktop session has: a Secret Service, unlocked with an empty
+    # password, and a notification server, dunst. Without them libsecret times
+    # out and a transfer's notification fails, and either reads as an app bug
+    # rather than a runner missing half a desktop.
     #
     # All in a data folder of the run's own, gone after it: the keyring's
     # files, the app's own preferences and saved tabs, and the tmux server a
@@ -67,8 +68,9 @@ case "$target" in
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
         TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR
         unset TMUX TMUX_PANE
-        trap "tmux kill-server 2>/dev/null; rm -rf \"$XDG_DATA_HOME\"" EXIT
+        trap "kill \$notifier 2>/dev/null; tmux kill-server 2>/dev/null; rm -rf \"$XDG_DATA_HOME\"" EXIT
         printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+        dunst >/dev/null 2>&1 & notifier=$!
         tests=$1 && shift
         flutter test "$tests" -d linux "$@"' sh "$tests" "$@"
     ;;

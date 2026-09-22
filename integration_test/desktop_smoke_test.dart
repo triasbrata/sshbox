@@ -17,19 +17,32 @@
 // nobody is looking at it. tools/e2e_desktop.sh picks the right one.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show Card, DropdownButton, InkWell, Tooltip;
+    show
+        AlertDialog,
+        Card,
+        DropdownButton,
+        InkWell,
+        ListTile,
+        TextField,
+        Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
-import 'package:sshbox/src/ui/settings_page.dart' show localTmux;
+import 'package:sshbox/src/update/updater.dart'
+    show downloadsFolder, updateHost, updatePlatform;
+import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/settings_page.dart'
+    show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
@@ -85,18 +98,25 @@ Future<TerminalView> _localShell(
   bool tmux = false,
 }) async {
   await localTmux.choose(on: tmux);
+  // Whatever a test before this one left open, had it failed before closing
+  // its tabs, goes first, so one failure does not become the next test's.
+  await _closeTabs(tester);
   // The card, not a tab of the same name brought back from a run before.
   await tester.tap(find.widgetWithText(Card, 'Local shell'));
-  // Ready once it holds focus and its shell has drawn a prompt: typed before
-  // that, a command can reach a terminal with no shell behind it yet. Looked
-  // up afresh each time, since a restored tab gets a new terminal as it
-  // reconnects.
-  TerminalView view() => tester.widget<TerminalView>(find.byType(TerminalView));
+  // Ready once a terminal holds focus and its shell has drawn a prompt: typed
+  // before that, a command can reach a terminal with no shell behind it yet.
+  // The focused one, where a tab shows several panes; looked up afresh each
+  // time, since a restored tab gets a new terminal as it reconnects.
+  TerminalView? view() => find
+      .byType(TerminalView)
+      .evaluate()
+      .map((element) => element.widget as TerminalView)
+      .where((each) => each.focusNode?.hasFocus ?? false)
+      .firstOrNull;
   try {
     await _until(tester, () {
-      if (find.byType(TerminalView).evaluate().isEmpty) return false;
       final shown = view();
-      return (shown.focusNode?.hasFocus ?? false) && _text(shown).isNotEmpty;
+      return shown != null && _text(shown).isNotEmpty;
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
@@ -113,7 +133,7 @@ Future<TerminalView> _localShell(
     }
     rethrow;
   }
-  return view();
+  return view()!;
 }
 
 /// The lines [view] shows that hold anything.
@@ -153,6 +173,14 @@ Future<void> _pick(WidgetTester tester, String item) async {
   );
   await tester.pump(const Duration(milliseconds: 600));
   await tester.tap(find.text(item));
+}
+
+/// Settings, opened from Home and slid all the way in. Scrolled sooner, a
+/// drag lands on what Home still shows beneath it — its tab strip is a list
+/// too, and first in the tree.
+Future<void> _settings(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('Settings'));
+  await tester.pump(const Duration(milliseconds: 600));
 }
 
 /// Closes every tab, so the next test's launch brings none back. A Local tab
@@ -531,14 +559,25 @@ touch '${done.path}'
         () => before.evaluate().isNotEmpty && after.evaluate().isNotEmpty,
         'the diff',
       );
-      expect(find.byTooltip('Unified view'), findsOneWidget,
-          reason: 'a wide page did not open split');
       final old = tester.getCenter(before.first);
       final now = tester.getCenter(after.first);
-      expect(old.dy, closeTo(now.dy, 1),
-          reason: 'the changed line is not level with what replaced it');
-      expect(old.dx, lessThan(now.dx),
-          reason: 'the old line is not on the left');
+      // Split from 900 dp of page. This Linux window is past it; a Mac's
+      // starts narrower, where unified is right, so the page's own width
+      // says which to expect, and both are held to it.
+      final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
+      if (wide) {
+        expect(find.byTooltip('Unified view'), findsOneWidget,
+            reason: 'a wide page did not open split');
+        expect(old.dy, closeTo(now.dy, 1),
+            reason: 'the changed line is not level with what replaced it');
+        expect(old.dx, lessThan(now.dx),
+            reason: 'the old line is not on the left');
+      } else {
+        expect(find.byTooltip('Split view'), findsOneWidget,
+            reason: 'a narrow page did not open unified');
+        expect(old.dy, lessThan(now.dy),
+            reason: 'the old line is not above the new');
+      }
       await _closeTabs(tester);
     },
   );
@@ -608,6 +647,265 @@ touch '${done.path}'
         () async => (await sessions()).isEmpty,
         "the session to end with its tab's ✕",
       );
+    },
+  );
+
+  // #15 and #19: a picture on the clipboard, pasted into a Local shell with
+  // Ctrl+V, is copied on this machine and its path typed at the prompt, as an
+  // upload's is over SSH — where it used to end in "This session cannot
+  // transfer files" and type nothing. Read off the X11 clipboard by xclip,
+  // as a Linux desktop without Wayland has it; copied into a folder only its
+  // owner can enter, the file only its owner can read.
+  //
+  // Linux only: the picture is put on the clipboard with xclip, and the run's
+  // display is Xvfb's own (tools/e2e_desktop.sh).
+  testWidgets(
+    "a picture pasted into a Local shell is copied and its path typed",
+    skip: !Platform.isLinux,
+    (tester) async {
+      // One transparent pixel: a real PNG, small enough to write out here.
+      final png = base64.decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+        'CB0C8AAAAASUVORK5CYII=',
+      );
+      final picture = File('${_scratch().path}/picture.png')
+        ..writeAsBytesSync(png);
+      // xclip stays behind to hand the picture over, so it is given nothing
+      // of ours to hold open, or this would wait for it.
+      final put = await Process.run('sh', [
+        '-c',
+        r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
+        'sh',
+        picture.path,
+      ]);
+      expect(put.exitCode, 0, reason: 'xclip could not take the picture');
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+      final typed = RegExp(r'(/\S*/pasted-\d{8}-\d{6}\.png)');
+      String? path;
+      await _until(tester, () {
+        for (final line in _text(view)) {
+          path = typed.firstMatch(line)?.group(1) ?? path;
+        }
+        return path != null;
+      }, 'the path of the pasted picture at the prompt');
+
+      final copy = File(path!);
+      expect(copy.readAsBytesSync(), png, reason: 'not the picture pasted');
+      String mode(FileSystemEntity entry) =>
+          (entry.statSync().mode & 0x1ff).toRadixString(8);
+      expect(mode(copy), '600', reason: 'others can read the picture');
+      expect(mode(copy.parent), '700', reason: 'others can enter its folder');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #14: a desktop's terminal can use a font the machine has, not only the
+  // five the app bundles — listed from the machine itself, monospaced ones
+  // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
+  // first monospaced family fontconfig lists that the app does not bundle.
+  testWidgets(
+    "the terminal takes a font installed on the machine",
+    skip: Platform.isWindows,
+    (tester) async {
+      final bundled = terminalFonts.map((font) => font.family).toSet();
+      final String family;
+      if (Platform.isMacOS) {
+        family = 'Menlo';
+      } else {
+        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
+        final mono =
+            LineSplitter.split('${listed.stdout}')
+                .map((line) => line.split(',').first.trim())
+                .where((name) => name.isNotEmpty && !bundled.contains(name))
+                .toList()
+              ..sort();
+        // DejaVu Sans Mono where it is there, which on Ubuntu it is.
+        family = mono.contains('DejaVu Sans Mono')
+            ? 'DejaVu Sans Mono'
+            : mono.first;
+      }
+
+      await _launch(tester);
+      await _settings(tester);
+      // Not findRichText: that would match the Text.rich and the RichText it
+      // draws with, twice over.
+      final row = find.textContaining('Installed on this computer');
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await _until(
+        tester,
+        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
+        "this computer's fonts to be listed",
+      );
+      // Built is not on screen: a list builds a little past its edge.
+      await tester.ensureVisible(row);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(row);
+      await _until(
+        tester,
+        () => find.text('Installed fonts').evaluate().isNotEmpty,
+        'the font picker',
+      );
+      // Settings' own fields are behind the dialog.
+      final picker = find.byType(AlertDialog);
+      await tester.enterText(
+        find.descendant(of: picker, matching: find.byType(TextField)),
+        family,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      final entry = find.descendant(
+        of: picker,
+        matching: find.widgetWithText(ListTile, family),
+      );
+      expect(
+        find.descendant(of: entry, matching: find.text('monospaced')),
+        findsOneWidget,
+        reason: '$family is not marked monospaced',
+      );
+      await tester.tap(entry);
+      await _until(
+        tester,
+        () => find.textContaining('on this computer').evaluate().isNotEmpty,
+        'Settings to show the font chosen',
+      );
+
+      // The picker closing still holds a barrier over the page, which takes
+      // a tap on Back as its own.
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pageBack();
+      await _until(
+        tester,
+        () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
+        'Home again',
+      );
+      final view = await _localShell(tester);
+      expect(
+        view.textStyle.fontFamily,
+        family,
+        reason: 'the terminal does not draw in the font chosen',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #8, the desktop updater, as far as it goes before anything is replaced: a
+  // newer release is offered, downloaded, and kept only when its SHA-256 is
+  // the feed's — Restart to update is offered then — while a download whose
+  // hash is not is refused and deleted. Restart itself would swap the running
+  // bundle, so it is not pressed.
+  //
+  // Only in a build made for it: the host, the version and a feed on this
+  // machine are baked in with --dart-define, which e2e.yml's Linux job
+  // passes, and a download lands in the user's Downloads — a runner's, then,
+  // not a machine someone uses.
+  testWidgets(
+    'an update is kept only when its hash is the release\'s',
+    skip: updateHost.isEmpty,
+    (tester) async {
+      final build = utf8.encode('not a real build, only bytes to be checked');
+      const name = 'jeansh-e2e-update.tar.gz';
+      // Where the app puts it: Downloads, or the home where there is none.
+      final kept = File('${downloadsFolder().path}/$name');
+      addTearDown(() {
+        if (kept.existsSync()) kept.deleteSync();
+      });
+      var digest = '${sha256.convert(build)}';
+      // Launched first: the app looks for an update itself as it starts,
+      // and that one should find nothing to offer over this test.
+      await _launch(tester);
+      final server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        Uri.parse(updateHost).port,
+      );
+      addTearDown(() => server.close(force: true));
+      server.listen((request) {
+        final response = request.response;
+        switch (request.uri.path) {
+          case '/latest.json':
+            response.write(
+              jsonEncode({
+                'version': '9.9.9',
+                'build': 999,
+                'platforms': {
+                  updatePlatform: {
+                    'path': 'desktop/$updatePlatform/$name',
+                    'size': build.length,
+                    'sha256': digest,
+                  },
+                },
+              }),
+            );
+          case final path when path.endsWith('/$name'):
+            response.add(build);
+          default:
+            response.statusCode = HttpStatus.notFound;
+        }
+        unawaited(response.close());
+      });
+
+      // Asked from Settings, opening it first when it is not open.
+      final check = find.text('Check for updates');
+      Future<void> askSettings() async {
+        if (check.evaluate().isEmpty) {
+          await _settings(tester);
+          await tester.scrollUntilVisible(
+            check,
+            300,
+            scrollable: find.byType(Scrollable).first,
+          );
+        }
+        await tester.ensureVisible(check);
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(check);
+      }
+
+      // The app's own look at startup can reach this feed too, if it asked
+      // after the feed came up, and offer the release by itself: that offer is
+      // as good as the one Settings gives, so a moment is given for it and it
+      // is taken if it comes.
+      final offer = find.text('Jeansh 9.9.9 is out');
+      final end = DateTime.now().add(const Duration(seconds: 3));
+      while (offer.evaluate().isEmpty && DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+      }
+      if (offer.evaluate().isEmpty) await askSettings();
+      await _pick(tester, 'Download');
+      await _until(
+        tester,
+        () => find.text('Restart to update').evaluate().isNotEmpty,
+        'the download to be checked and offered to install',
+      );
+      expect(find.text('Jeansh 9.9.9 is ready'), findsOneWidget);
+      expect(kept.readAsBytesSync(), build);
+      await _pick(tester, 'Later');
+      kept.deleteSync();
+
+      // A build whose hash is not the release's: refused, and nothing kept.
+      digest = '0' * 64;
+      await tester.pump(const Duration(milliseconds: 600));
+      await askSettings();
+      await _pick(tester, 'Download');
+      await _until(
+        tester,
+        () =>
+            find.textContaining('is not the file the release describes')
+                .evaluate()
+                .isNotEmpty,
+        'a download of the wrong file to be refused',
+      );
+      expect(find.text('Restart to update'), findsNothing);
+      expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
+      expect(File('${kept.path}.part').existsSync(), isFalse);
     },
   );
 }
