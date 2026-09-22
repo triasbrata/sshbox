@@ -34,19 +34,29 @@ tests=integration_test
 
 case "$target" in
   linux)
-    for tool in xvfb-run dbus-run-session; do
+    for tool in xvfb-run dbus-run-session gnome-keyring-daemon; do
       command -v "$tool" >/dev/null || {
         echo "$tool is missing. On Debian/Ubuntu:" >&2
-        echo "  sudo apt-get install -y xvfb dbus-x11" >&2
+        echo "  sudo apt-get install -y xvfb dbus-x11 gnome-keyring" >&2
         exit 2
       }
     done
-    # Its own D-Bus, because the app asks for org.freedesktop.secrets (saved
-    # passwords) and for notifications. Without a bus those calls fail in ways
-    # that read as app bugs rather than as a runner with no session.
+    # Its own D-Bus, because the app asks for notifications and for
+    # org.freedesktop.secrets, where saved passwords live. And on that bus a
+    # Secret Service, as every desktop session has: without one, libsecret
+    # times out, and what fails reads as an app bug rather than a runner
+    # missing its keyring. Unlocked with an empty password.
+    #
+    # Both in a data folder of the run's own, gone after it: the keyring's
+    # files, and the app's own preferences and saved tabs. A run starts from a
+    # clean app, as on CI, and never opens this machine's keyring or leaves a
+    # restored tab behind for a Jeansh someone uses here.
     exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
-      dbus-run-session -- \
-      flutter test "$tests" -d linux
+      dbus-run-session -- sh -c '
+        XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
+        trap "rm -rf \"$XDG_DATA_HOME\"" EXIT
+        printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+        flutter test "$1" -d linux' sh "$tests"
     ;;
   windows)
     exec flutter test "$tests" -d windows

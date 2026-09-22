@@ -16,12 +16,18 @@
 // display at all. On Windows and macOS there is a window; it is simply that
 // nobody is looking at it. tools/e2e_desktop.sh picks the right one.
 
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show Card;
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
+import 'package:sshbox/src/ui/settings_page.dart' show localTmux;
+import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
 ///
@@ -31,6 +37,23 @@ import 'package:sshbox/src/platform.dart';
 Future<void> _launch(WidgetTester tester) async {
   await app.main();
   await tester.pumpAndSettle(const Duration(seconds: 5));
+}
+
+/// Pumps until [done] says so, failing with [what] after [timeout]. A live
+/// terminal never settles — its cursor blinks — so pumpAndSettle cannot wait
+/// on one.
+Future<void> _until(
+  WidgetTester tester,
+  bool Function() done,
+  String what, {
+  Duration timeout = const Duration(seconds: 20),
+}) async {
+  final end = DateTime.now().add(timeout);
+  while (!done()) {
+    if (DateTime.now().isAfter(end)) fail('Gave up waiting for $what');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await tester.pump();
+  }
 }
 
 void main() {
@@ -115,4 +138,94 @@ void main() {
       findsOneWidget,
     );
   });
+
+  // UAT issue #13. OSC 52 lets a program copy to the clipboard, which Jeansh
+  // allows, and also ask for it back, `ESC ] 52 ; c ; ? BEL`, which it must
+  // never answer: the answer goes to the host, password and all. xterm2's own
+  // view answers it for a focused terminal, and every build before b11f5bc
+  // let it. ClipboardTerminal is what refuses.
+  //
+  // Here rather than on Android: xterm2 answers only while its view holds
+  // focus, and a Maestro flow typing through the soft keyboard never gives it
+  // focus, so a leaking build read as refused there — twice, in mutation runs.
+  // A desktop terminal holds focus the way a hardware keyboard gives it.
+  //
+  // Three things make the silence mean something, and each is asserted: the
+  // view has focus; the program's copy of a canary landed on the clipboard,
+  // which _programCopied only lets a focused terminal do, so there is
+  // something to leak; and the reply is read where the program read it. A
+  // mutation run of the pre-fix terminal must fail this test.
+  testWidgets(
+    'a program in the shell cannot read the clipboard back',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      await _launch(tester);
+      // A plain login shell. tmux between the program and Jeansh answers or
+      // drops the query itself, which would make this a test of tmux. In memory
+      // only: the saved choice is left alone.
+      localTmux.value = (on: false, path: '');
+
+      // The Local shell runs on this machine, so the test reads what the
+      // program recorded straight off the disk.
+      final dir = Directory.systemTemp.createTempSync('jeansh-osc52-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final reply = File('${dir.path}/reply');
+      final done = File('${dir.path}/done');
+      // Plain sh, and no `timeout`, which a Mac does not have. The reader is
+      // given the terminal outright: sh hands a background job /dev/null.
+      final script = File('${dir.path}/query.sh')
+        ..writeAsStringSync('''
+printf '\\033]52;c;%s\\a' "\$(printf e2e-canary | base64)"
+sleep 1
+stty -echo raw
+printf '\\033]52;c;?\\a'
+cat -v < /dev/tty > '${reply.path}' & reader=\$!
+sleep 2
+kill \$reader
+stty sane
+touch '${done.path}'
+''');
+
+      // The card, not a tab of the same name brought back from a run before.
+      await tester.tap(find.widgetWithText(Card, 'Local shell'));
+      await _until(
+        tester,
+        () => find.byType(TerminalView).evaluate().isNotEmpty,
+        'the Local shell to open',
+      );
+      final view = tester.widget<TerminalView>(find.byType(TerminalView));
+      await _until(
+        tester,
+        () => view.focusNode?.hasFocus ?? false,
+        'the terminal to take focus, without which xterm2 would stay silent '
+        'even on a leaking build',
+      );
+
+      // What a key press ends in, typed where the keyboard would type it.
+      view.terminal.textInput('sh ${script.path}');
+      view.terminal.keyInput(TerminalKey.enter);
+      await _until(tester, done.existsSync, 'the query script to finish');
+
+      expect(
+        (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+        'e2e-canary',
+        reason:
+            'the program\'s copy never reached the clipboard, so an empty reply '
+            'would prove nothing: a leaking terminal answers from the clipboard, '
+            'and an empty one gives it nothing to send',
+      );
+      final answer = reply.readAsStringSync();
+      // The length is what is logged. A failure shows the bytes too, which
+      // can only be the canary above: the clipboard is this run's own display's.
+      debugPrint('OSC 52 query reply: ${answer.length} bytes');
+      expect(
+        answer,
+        isEmpty,
+        reason: 'the terminal answered a clipboard query: a host can read it',
+      );
+
+      view.terminal.textInput('exit');
+      view.terminal.keyInput(TerminalKey.enter);
+    },
+  );
 }
