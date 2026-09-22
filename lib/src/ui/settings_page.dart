@@ -747,7 +747,7 @@ class _SchemeCard extends StatelessWidget {
                       TextSpan(
                         style: TextStyle(
                           color: colors.foreground,
-                          fontFamily: 'monospace',
+                          fontFamily: tuiFontFamily,
                           fontSize: 11,
                           height: 1.3,
                         ),
@@ -917,7 +917,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.zero,
                 child: SizedBox(
                   height: _previewRows * cell.height + _previewPadding.vertical,
                   // Only to look at: a tap would take focus for a terminal
@@ -1381,7 +1381,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                       style: item.id == keyBarDivider
                           ? null
                           : const TextStyle(
-                              fontFamily: 'monospace',
+                              fontFamily: tuiFontFamily,
                               fontWeight: FontWeight.w600,
                             ),
                     ),
@@ -1397,7 +1397,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                             },
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontFamily: 'monospace'),
+                            style: const TextStyle(fontFamily: tuiFontFamily),
                           ),
                     onTap: custom == null ? null : () => _edit(item),
                     trailing: IconButton(
@@ -1567,7 +1567,7 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                         color: theme.colorScheme.onSurfaceVariant,
                       )
                     : theme.textTheme.titleLarge?.copyWith(
-                        fontFamily: 'monospace',
+                        fontFamily: tuiFontFamily,
                       ),
               ),
               const SizedBox(height: 8),

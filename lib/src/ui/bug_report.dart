@@ -212,7 +212,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: theme.colorScheme.outlineVariant),
                 ),
                 child: SingleChildScrollView(
                   child: SelectableText(

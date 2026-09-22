@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'key_bar.dart';
+import 'tui.dart';
 
 /// One slot on the magic key's ring. [send] is resolved at emit time because
 /// what a cursor key has to send depends on the mode the remote application
@@ -792,7 +793,7 @@ class _Petal extends StatelessWidget {
         child: Text(
           label,
           style: TextStyle(
-            fontFamily: 'monospace',
+            fontFamily: tuiFontFamily,
             fontSize: 12,
             fontWeight: FontWeight.w600,
             color: aimed

@@ -259,7 +259,7 @@ class _WebPageState extends State<WebPage> {
                         vertical: 8,
                       ),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.zero,
                         borderSide: BorderSide.none,
                       ),
                     ),

@@ -106,7 +106,7 @@ class _KnownHostsPageState extends State<KnownHostsPage> {
                   SelectableText(
                     pin.fingerprint,
                     style: const TextStyle(
-                      fontFamily: 'monospace',
+                      fontFamily: tuiFontFamily,
                       fontSize: 13,
                     ),
                   ),

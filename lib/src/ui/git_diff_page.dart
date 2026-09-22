@@ -14,6 +14,7 @@ import 'file_editor_page.dart'
     show copyAndSay, copyLimit, editorFontSizeKey, tooLargeToCopy;
 import 'settings_page.dart' show terminalSettings;
 import 'toast.dart';
+import 'tui.dart';
 
 /// A diff drawn the way GitHub draws one, in a tab of its own: each file under
 /// a header of its own, the old version beside the new with a line number on
@@ -819,7 +820,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
                 focusNode: _queryFocus,
                 autocorrect: false,
                 enableSuggestions: false,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                style: const TextStyle(fontFamily: tuiFontFamily, fontSize: 14),
                 decoration: const InputDecoration(
                   hintText: 'Find',
                   border: InputBorder.none,

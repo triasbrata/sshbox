@@ -20,6 +20,7 @@ import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
+import 'tui.dart';
 
 /// One remote file in a tab: an image in a viewer, anything else in the
 /// editor.
@@ -1120,7 +1121,7 @@ class _TextFileTabState extends State<_TextFileTab> {
                       // Files are code and config far more often than prose,
                       // and both are unreadable in a proportional face once
                       // alignment matters.
-                      fontFamily: 'monospace',
+                      fontFamily: tuiFontFamily,
                       codeTheme: _codeThemes[Theme.of(context).brightness],
                     ),
                     indicatorBuilder: (context, editing, chunks, notifier) =>
@@ -1959,7 +1960,7 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
                   ),
                   codeblockDecoration: BoxDecoration(
                     color: scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: scheme.outlineVariant),
                   ),
                   checkbox: body.copyWith(color: scheme.primary),
                   // Sized to what they hold, so a wide one scrolls sideways
@@ -2126,7 +2127,7 @@ class _FindBar extends StatelessWidget implements PreferredSizeWidget {
           focusNode: focus,
           autocorrect: false,
           enableSuggestions: false,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+          style: const TextStyle(fontFamily: tuiFontFamily, fontSize: 14),
           decoration: InputDecoration(
             hintText: hint,
             border: InputBorder.none,

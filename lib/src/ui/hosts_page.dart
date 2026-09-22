@@ -230,6 +230,17 @@ class _HostsPageState extends State<HostsPage> {
     final hosts = _hosts;
     final databases = _databases;
     final theme = Theme.of(context);
+    // Where the tagline and the five buttons no longer fit on one line: see
+    // the app bar's bottom.
+    final narrow = MediaQuery.sizeOf(context).width < 520;
+    final tagline = Text(
+      _tagline,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -251,16 +262,24 @@ class _HostsPageState extends State<HostsPage> {
                 ),
               ],
             ),
-            Text(
-              _tagline,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
+            if (!narrow) tagline,
           ],
         ),
+        // On a phone the five buttons leave the name too little room for the
+        // tagline beside them, so it gets a line of its own under them, the
+        // whole width, rather than being cut off.
+        bottom: narrow
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(24),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: tagline,
+                  ),
+                ),
+              )
+            : null,
         actions: [
           // The way in when nothing is on its way: the tab joins the strip by
           // itself only as a transfer starts, so without this the history of

@@ -682,7 +682,7 @@ class _Bubble extends StatelessWidget {
                   color: failed
                       ? scheme.errorContainer
                       : scheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: scheme.outlineVariant),
                 ),
                 child: SelectableText(
                   said.text,
@@ -754,7 +754,7 @@ class _Answer extends StatelessWidget {
               ),
               codeblockDecoration: BoxDecoration(
                 color: scheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: scheme.outlineVariant),
               ),
             ),
           ),
@@ -895,7 +895,7 @@ Widget _block(BuildContext context, String slot, Widget text) => Container(
   constraints: const BoxConstraints(maxHeight: 240),
   decoration: BoxDecoration(
     color: Theme.of(context).colorScheme.surface,
-    borderRadius: BorderRadius.circular(6),
+    border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
   ),
   child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
 );

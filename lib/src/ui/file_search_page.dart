@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../files/file_browser.dart';
+import 'tui.dart';
 
 /// Finds text inside files under one directory.
 ///
@@ -183,7 +184,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
             hit.preview,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            style: const TextStyle(fontFamily: tuiFontFamily, fontSize: 12),
           ),
           onTap: () => Navigator.of(context).pop(hit),
         );

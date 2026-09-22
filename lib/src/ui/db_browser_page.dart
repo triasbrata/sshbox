@@ -12,6 +12,7 @@ import 'connect_sheet.dart';
 import 'right_click.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
 import 'toast.dart';
+import 'tui.dart';
 
 /// Opens [db], asking about a host key through [confirmHostKey] and
 /// telling of a sign-in to finish through [onSignIn]: [DbSession.open], or
@@ -790,7 +791,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                               object.type,
                               style: theme.textTheme.labelSmall?.copyWith(
                                 color: mark,
-                                fontFamily: 'monospace',
+                                fontFamily: tuiFontFamily,
                               ),
                             ),
                       onTap: () => _open(group, object.name),
@@ -809,7 +810,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     // What is changed is edited in the grid, and saved from over it.
     final edit = _asJson ? null : result?.edit;
     final changes = edit == null ? null : _changes;
-    const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    const mono = TextStyle(fontFamily: tuiFontFamily, fontSize: 13);
     final note = theme.textTheme.bodySmall?.copyWith(
       color: theme.colorScheme.onSurfaceVariant,
     );
@@ -1509,7 +1510,7 @@ class _ResultGrid extends StatelessWidget {
   /// runs, so nothing changes under it.
   final void Function(VoidCallback change)? update;
 
-  static const _mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+  static const _mono = TextStyle(fontFamily: tuiFontFamily, fontSize: 13);
 
   void _showRow(BuildContext context, int index) {
     final details = result.details;

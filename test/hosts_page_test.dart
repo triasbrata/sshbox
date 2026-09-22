@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
@@ -192,6 +193,12 @@ void main() {
       // The user and the OS are on the card once each, not again in an
       // `ssh, me, ubuntu` line.
       expect(find.textContaining('ssh,'), findsNothing);
+      // The tagline whole at either width: on a phone, beside five buttons,
+      // it was cut short.
+      final tagline = tester.renderObject<RenderParagraph>(
+        find.text('Terminal buddy in your pocket'),
+      );
+      expect(tagline.didExceedMaxLines, isFalse);
       expect(tester.takeException(), isNull);
     });
   }
