@@ -140,8 +140,9 @@ void main() {
   ) async {
     await pumpTabs(tester);
     await openFile(tester);
-    final editor = tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!
-      ..selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
+    final editor =
+        tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!
+          ..selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
     await tester.pump();
 
     // A letter the shell would have sent on, and an arrow only the editor
@@ -182,10 +183,7 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.description_outlined));
     await tester.pumpAndSettle();
-    expect(
-      FocusManager.instance.primaryFocus?.debugLabel,
-      'file editor text',
-    );
+    expect(FocusManager.instance.primaryFocus?.debugLabel, 'file editor text');
 
     expect(
       tester.testTextInput.log.map((call) => call.method),
