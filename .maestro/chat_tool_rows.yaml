@@ -1,0 +1,60 @@
+# Chat mode's tool rows show a tool's input the way the tool reads (UAT issue
+# #20's follow-up), not the JSON the transcript holds: an opened Write row
+# showed "file_path": …, "content": "…" with every newline as \n, and a Bash
+# row its command inside a JSON object.
+#
+# The session is a stand-in's, from tools/e2e_android.sh's chat_stand_in:
+# "E2E tool rows" ran a Bash and a Write. Collapsed, a row already reads its
+# command or path, so what is checked is what only the opened row shows —
+# Bash's description as a caption of its own, Write's content with a real
+# line break — and that no JSON key is on screen. In JSON form the caption
+# would sit inside a larger text and the break would be a backslash and an n.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)E2E tool rows.*"
+    timeout: 20000
+- tapOn: "(?s)E2E tool rows.*"
+- extendedWaitUntil:
+    visible: "Tools done"
+    timeout: 20000
+
+- tapOn: "(?s)Bash.*"
+- extendedWaitUntil:
+    visible: "List the e2e folder"
+    timeout: 5000
+- assertNotVisible: '(?s).*"command".*'
+- takeScreenshot: chat-tool-rows-bash
+
+- tapOn: "(?s)Write.*"
+- extendedWaitUntil:
+    visible: '(?s)first line\nsecond line'
+    timeout: 5000
+- assertNotVisible: '(?s).*"content".*'
+- assertNotVisible: '(?s).*first line\\nsecond line.*'
+- takeScreenshot: chat-tool-rows-write
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
