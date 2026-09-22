@@ -223,8 +223,12 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+      # always(), not failure(): a report-only flow that fails does not fail the
+      # job, so failure() never uploaded its screenshots, and those failures were
+      # the ones with nothing to look at. Maestro only takes these on a failed
+      # step, so a run where every flow passed still uploads none.
       - name: Keep Maestro's screenshots of a failure
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: maestro-${{ github.run_id }}

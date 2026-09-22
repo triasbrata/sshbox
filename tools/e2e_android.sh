@@ -97,11 +97,26 @@ done
 # stand-in swapped between them. Report-only until it has earned the gate. Each
 # expected toast is the app's own wording (ClaudeChat.versionRefusal).
 chat_version() {
-  local label=$1 answer=$2 expect=$3
+  local label=$1 answer=$2 expect=$3 shot=chat-version-$1 found
   echo "::group::chat_version: $label (report only)"
   stand_in "$answer"
-  flow chat_version -e "EXPECT=$expect" -e "SHOT=$EVIDENCE/chat-version-$label" ||
+  # Said here, from the host, so a run that finds no toast shows whether the
+  # stand-in was in place or the toast simply came and went unseen.
+  echo "the host's claude --version now answers: $(sudo -u "$SSH_USER" sh -lc \
+    'c=$HOME/.local/bin/claude; [ -x "$c" ] && "$c" --version || echo "(no claude)"')"
+  # A bare name: Maestro 2.10 refuses a screenshot path that resolves outside its
+  # own directory, and this one gets moved into the evidence folder after.
+  flow chat_version -e "EXPECT=$expect" -e "SHOT=$shot" ||
     echo "::warning::chat_version ($label) failed -- report only, not gating"
+  # Where Maestro puts a bare-named screenshot is not documented to be one place:
+  # the working directory, the flow's own, or its own results folder. Look in all.
+  found=$(find "$ROOT" -maxdepth 2 -name "$shot.png" -print -quit 2>/dev/null)
+  [ -n "$found" ] || found=$(find "$HOME/.maestro" -name "$shot.png" -print -quit 2>/dev/null)
+  if [ -n "$found" ]; then
+    mv -f "$found" "$EVIDENCE/" && echo "evidence: $shot.png (was at $found)"
+  else
+    echo "::warning::no evidence screenshot $shot.png was written"
+  fi
   echo "::endgroup::"
 }
 chat_version too-old '2.1.100 (Claude Code)' \
