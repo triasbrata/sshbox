@@ -762,8 +762,16 @@ touch '${done.path}'
       await rightClick(view);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await menuWith('Duplicate session');
+      debugPrint(
+        'Focus with the single shell\'s menu open: '
+        '${FocusManager.instance.primaryFocus}',
+      );
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump(const Duration(milliseconds: 600));
+      debugPrint(
+        'After Escape on the single shell, menu still open: '
+        '${find.text('Duplicate session').evaluate().isNotEmpty}',
+      );
 
       stop.createSync();
       await _until(
@@ -793,12 +801,21 @@ touch '${done.path}'
       );
       await rightClick(other);
       await menuWith('Take out of group');
+      debugPrint(
+        'Focus with the grouped pane\'s menu open: '
+        '${FocusManager.instance.primaryFocus}',
+      );
       // The menu keeps the keys, so Escape closes it and the focus goes back
       // to the pane the click moved it to. It once lost them to the rebuild
       // of the frame that moved the focus: Escape reached the terminal and
       // the menu stayed open (#87's group bug).
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump(const Duration(milliseconds: 600));
+      debugPrint(
+        'Focus after Escape: ${FocusManager.instance.primaryFocus}, '
+        'menu still open: '
+        '${find.text('Take out of group').evaluate().isNotEmpty}',
+      );
       expect(
         find.text('Take out of group'),
         findsNothing,
