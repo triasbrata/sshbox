@@ -282,6 +282,7 @@ void main() {
         post: net.post,
         host: 'https://t.test',
         enabled: () => true,
+        debugBuild: false,
       );
       await counter.pingDaily();
       expect(net.sent, hasLength(1));
@@ -322,9 +323,30 @@ void main() {
     test('sends nothing at all with the switch off', () async {
       final net = _Net();
       telemetryOn.value = false;
-      await Telemetry(post: net.post, host: 'https://t.test').pingDaily();
+      await Telemetry(
+        post: net.post,
+        host: 'https://t.test',
+        debugBuild: false,
+      ).pingDaily();
       expect(net.sent, isEmpty);
       // And it has not even made an install id to send later.
+      expect(
+        (await SharedPreferences.getInstance()).getString(Telemetry.installKey),
+        isNull,
+      );
+    });
+
+    // Every e2e run and every UAT APK is a debug build from clean data, so
+    // each would count as a new install.
+    test('sends nothing from a debug build', () async {
+      final net = _Net();
+      await Telemetry(
+        post: net.post,
+        host: 'https://t.test',
+        enabled: () => true,
+        debugBuild: true,
+      ).pingDaily();
+      expect(net.sent, isEmpty);
       expect(
         (await SharedPreferences.getInstance()).getString(Telemetry.installKey),
         isNull,
@@ -336,6 +358,7 @@ void main() {
         post: (_, _) => throw const SocketException('nothing there'),
         host: 'https://t.test',
         enabled: () => true,
+        debugBuild: false,
       );
       await expectLater(counter.pingDaily(), completes);
     });

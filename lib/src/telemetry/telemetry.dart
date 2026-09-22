@@ -84,11 +84,20 @@ final telemetryOn = TelemetrySetting();
 /// of people running Jeansh does not need one and a number that follows a
 /// person around is not worth having.
 class Telemetry {
-  Telemetry({Post? post, this.host = telemetryHost, this.enabled})
-    : _post = post ?? _send;
+  Telemetry({
+    Post? post,
+    this.host = telemetryHost,
+    this.enabled,
+    this.debugBuild = kDebugMode,
+  }) : _post = post ?? _send;
 
   final Post _post;
   final String host;
+
+  /// A debug build sends no count: every e2e run and every UAT APK is one,
+  /// each starting from clean data with a new install id, so each would
+  /// count as a new install. People run release builds. A test sets it.
+  final bool debugBuild;
 
   /// Whether to send, for a test that must not depend on the app's own
   /// switch. Null reads [telemetryOn].
@@ -159,7 +168,7 @@ class Telemetry {
   /// nothing at all, and the day is marked as counted either way so a machine
   /// that cannot reach the Worker does not try again at every launch.
   Future<void> pingDaily() async {
-    if (!_on) return;
+    if (debugBuild || !_on) return;
     final prefs = await SharedPreferences.getInstance();
     final last = prefs.getInt(pingedKey) ?? 0;
     final now = DateTime.now().millisecondsSinceEpoch;
