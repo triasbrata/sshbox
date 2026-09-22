@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/git/git_diff.dart';
 import 'package:sshbox/src/git/git_repo.dart';
 
 /// A host that answers each command from a script, and remembers what it was
@@ -430,6 +431,91 @@ void main() {
       // were, and the shell made nothing it was not asked to.
       expect(await repo.branch(), 'main');
       expect(File('$proj/evil.txt').existsSync(), isFalse);
+      expect(planted(), isEmpty);
+    });
+
+    test('every kind of diff reads as git\'s plain format whatever the host '
+        'config says, and its old blob holds the lines around its hunks, '
+        'however the file is named', () async {
+      final proj = await repository('${sandbox.path}/$nasty/proj');
+      const name = r"it's $(touch>pwned) `touch>pwned2`; x.kt";
+      final file = File('$proj/$name');
+      final lines = [for (var n = 1; n <= 40; n++) 'line $n'];
+      void write() => file.writeAsStringSync('${lines.join('\n')}\n');
+      write();
+      await git(proj, ['add', '--', name]);
+      await git(proj, ['commit', '--quiet', '-m', 'forty lines']);
+
+      // Everything a host's config can do to a diff that the tab could not
+      // read: colour codes, i/ and w/ where a/ and b/ go, and an external
+      // tool — this one leaves a file behind if it is ever run.
+      await git(proj, ['config', 'color.ui', 'always']);
+      await git(proj, ['config', 'diff.mnemonicPrefix', 'true']);
+      await git(proj, ['config', 'diff.external', 'touch pwned-by-ext']);
+
+      // Line 20 changed and staged, then line 30 changed on top of it.
+      lines[19] = 'line 20, staged';
+      write();
+      await git(proj, ['add', '--', name]);
+      lines[29] = 'line 30, not staged';
+      write();
+
+      final repo = GitRepo(root: proj, run: run);
+
+      /// The one file of [text], checked the way the tab relies on it: its
+      /// kept lines are the old blob's lines at the same numbers.
+      Future<List<String>> old(String text) async {
+        expect(text, isNot(contains('\x1b')));
+        final diff = parseDiff(text);
+        final changed = diff.files.single;
+        expect(changed.oldPath, name);
+        expect(changed.newPath, name);
+        expect(changed.expandable, isTrue);
+        // The whole id, not one git abbreviated to what is unique today.
+        expect(changed.oldBlob, hasLength(40));
+        final blob = (await repo.blob(changed.oldBlob!)).split('\n');
+        for (final line in changed.hunks.expand((hunk) => hunk.lines)) {
+          if (line.kind == DiffLineKind.context) {
+            expect(blob[line.oldNo! - 1], line.text);
+          }
+        }
+        return blob;
+      }
+
+      // Unstaged: against the index, which holds the staged line 20.
+      final unstaged = await old(await repo.diff(name, staged: false));
+      expect(unstaged[19], 'line 20, staged');
+      expect(unstaged[29], 'line 30');
+      // Staged: against HEAD.
+      final staged = await old(await repo.diff(name, staged: true));
+      expect(staged[19], 'line 20');
+
+      // A commit: against its parent.
+      await git(proj, ['commit', '--quiet', '-m', 'line 20']);
+      final sha = (await repo.log()).first.sha;
+      final committed = await old(await repo.show(sha));
+      expect(committed[19], 'line 20');
+
+      // An untracked file is all new, and has no old side to read.
+      File('$proj/new $name').writeAsStringSync('fresh\n');
+      final fresh = parseDiff(await repo.diff('new $name', staged: false))
+          .files
+          .single;
+      expect(fresh.isNew, isTrue);
+      expect(fresh.path, 'new $name');
+      expect(fresh.expandable, isFalse);
+      expect(fresh.hunks.single.lines.single.text, 'fresh');
+
+      // An id is held to what an id looks like before it reaches the host.
+      await expectLater(
+        repo.blob(r"abc'; touch pwned3; '"),
+        throwsA(isA<GitException>()),
+      );
+      await expectLater(
+        repo.blob('--output=pwned4'),
+        throwsA(isA<GitException>()),
+      );
+
       expect(planted(), isEmpty);
     });
   });
