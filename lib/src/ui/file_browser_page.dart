@@ -9,6 +9,7 @@ import '../files/transfers.dart';
 import 'file_download.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
+import 'settings_page.dart' show showDotfiles;
 import 'terminal_link.dart';
 import 'toast.dart';
 
@@ -166,7 +167,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   String? _error;
   bool _loading = true;
   bool _busy = false;
-  bool _showHidden = false;
+
+  /// App-wide and saved, so it outlives this tree: the drawer builds a new one
+  /// every time it opens.
+  bool get _showHidden => showDotfiles.value;
 
   /// The upload or download under way, which its bar follows, and what the
   /// bar says where the file's name is not enough.
@@ -184,11 +188,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   @override
   void initState() {
     super.initState();
+    showDotfiles.addListener(_redraw);
     _start();
   }
 
+  void _redraw() => setState(() {});
+
   @override
   void dispose() {
+    showDotfiles.removeListener(_redraw);
     _filterController.dispose();
     _scroll.dispose();
     if (widget.ownsBrowser) widget.browser.close();
@@ -1017,7 +1025,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           onSelected: (choice) {
             switch (choice) {
               case 'hidden':
-                setState(() => _showHidden = !_showHidden);
+                showDotfiles.choose(!_showHidden);
               case 'saveRoot':
                 _confirmSaveRoot();
               case 'follow':
