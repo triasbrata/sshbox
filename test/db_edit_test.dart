@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/db/db_session.dart';
@@ -155,6 +156,29 @@ void main() {
     expect(find.text('ann'), findsOneWidget);
     await tester.pump(const Duration(seconds: 5));
   });
+
+  testWidgets('on a desktop a right-click on a row opens what a hold does', (
+    tester,
+  ) async {
+    await _open(tester, _people([]));
+    expect(
+      find.text('Click a cell to edit it, right-click a row to delete it'),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.text('2'),
+      buttons: kSecondaryButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete row'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 change not saved'), findsOneWidget);
+    // Not a click as well: the cell's editor never opened.
+    expect(find.byType(AlertDialog), findsNothing);
+  }, variant: TargetPlatformVariant.desktop());
 
   testWidgets('running the query again drops what was not saved', (
     tester,

@@ -11,7 +11,6 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
-import 'package:toastification/toastification.dart';
 import 'package:xterm2/xterm.dart';
 
 /// A shell that is up the moment it is asked for, and keeps what the
@@ -196,7 +195,9 @@ void main() {
   });
 
   group('copy on select', () {
-    const line = 'git push origin --delete some-branch';
+    // Spaced the way Claude Code's renderer spaces it, with cursor moves,
+    // which a copy has to turn back into spaces: see selectedText.
+    const line = 'git\x1b[Cpush\x1b[Corigin\x1b[C--delete\x1b[Csome-branch';
 
     testWidgets('copies what the mouse selects as it comes up', (tester) async {
       await pumpPage(tester);

@@ -20,6 +20,7 @@ import 'git_diff_page.dart';
 import 'git_page.dart';
 import 'hosts_page.dart';
 import 'pane_record_page.dart';
+import 'right_click.dart';
 import 'tab_groups.dart';
 import 'terminal_page.dart';
 import 'toast.dart';
@@ -1106,6 +1107,9 @@ class _TabChip extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         onLongPress: menu.isEmpty ? null : () => _showMenu(context),
+        onSecondaryTapUp: rightClick(
+          menu.isEmpty ? null : (at) => _showMenu(context, at),
+        ),
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
@@ -1175,22 +1179,14 @@ class _TabChip extends StatelessWidget {
   }
 
   /// Dropped from the chip's own lower edge rather than from the finger, so
-  /// it reads as the pressed tab's menu and leaves the tab itself in view.
-  void _showMenu(BuildContext context) {
+  /// it reads as the pressed tab's menu and leaves the tab itself in view —
+  /// or, from a right-click, at the pointer [at], as a context menu opens.
+  void _showMenu(BuildContext context, [Offset? at]) {
     final chip = context.findRenderObject()! as RenderBox;
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final corner = chip.localToGlobal(
-      chip.size.bottomLeft(Offset.zero),
-      ancestor: overlay,
-    );
-    showMenu<void>(
-      context: context,
-      position: RelativeRect.fromRect(
-        corner & Size.zero,
-        Offset.zero & overlay.size,
-      ),
-      items: [
+    showMenuAt<void>(
+      context,
+      at ?? chip.localToGlobal(chip.size.bottomLeft(Offset.zero)),
+      [
         for (final (label, onTap) in menu)
           PopupMenuItem(onTap: onTap, child: Text(label)),
       ],
