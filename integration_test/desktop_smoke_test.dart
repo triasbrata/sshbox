@@ -83,9 +83,7 @@ Future<void> _until(
           .whereType<String>()
           .take(60)
           .join(' | ');
-      debugPrint(
-        'On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}',
-      );
+      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
       debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
       fail('Gave up waiting for $what');
     }
@@ -128,8 +126,9 @@ Future<TerminalView> _localShell(
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
-    for (final element
-        in find.byType(TerminalView, skipOffstage: false).evaluate()) {
+    for (final element in find
+        .byType(TerminalView, skipOffstage: false)
+        .evaluate()) {
       final each = element.widget as TerminalView;
       final onstage = find.byWidget(each).evaluate().isNotEmpty;
       debugPrint(
@@ -231,7 +230,11 @@ void main() {
     // claims to be.
     expect(
       defaultTargetPlatform,
-      anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
+      anyOf(
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+        TargetPlatform.macOS,
+      ),
     );
     expect(isDesktop, isTrue);
   });
@@ -514,8 +517,9 @@ touch '${done.path}'
     (tester) async {
       // Where a Local shell's Git panel looks: the login home, a folder or
       // two down. Made for this test and gone after it.
-      final repo = Directory(Platform.environment['HOME']!)
-          .createTempSync('jeansh-e2e-repo-');
+      final repo = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('jeansh-e2e-repo-');
       addTearDown(() => repo.deleteSync(recursive: true));
       Future<void> git(List<String> args) async {
         final done = await Process.run('git', ['-C', repo.path, ...args]);
@@ -582,32 +586,17 @@ touch '${done.path}'
       // says which to expect, and both are held to it.
       final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
       if (wide) {
-        expect(
-          find.byTooltip('Unified view'),
-          findsOneWidget,
-          reason: 'a wide page did not open split',
-        );
-        expect(
-          old.dy,
-          closeTo(now.dy, 1),
-          reason: 'the changed line is not level with what replaced it',
-        );
-        expect(
-          old.dx,
-          lessThan(now.dx),
-          reason: 'the old line is not on the left',
-        );
+        expect(find.byTooltip('Unified view'), findsOneWidget,
+            reason: 'a wide page did not open split');
+        expect(old.dy, closeTo(now.dy, 1),
+            reason: 'the changed line is not level with what replaced it');
+        expect(old.dx, lessThan(now.dx),
+            reason: 'the old line is not on the left');
       } else {
-        expect(
-          find.byTooltip('Split view'),
-          findsOneWidget,
-          reason: 'a narrow page did not open unified',
-        );
-        expect(
-          old.dy,
-          lessThan(now.dy),
-          reason: 'the old line is not above the new',
-        );
+        expect(find.byTooltip('Split view'), findsOneWidget,
+            reason: 'a narrow page did not open unified');
+        expect(old.dy, lessThan(now.dy),
+            reason: 'the old line is not above the new');
       }
       await _closeTabs(tester);
     },
@@ -749,10 +738,7 @@ touch '${done.path}'
       if (Platform.isMacOS) {
         family = 'Menlo';
       } else {
-        final listed = await Process.run('fc-list', [
-          ':spacing=mono',
-          'family',
-        ]);
+        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
         final mono =
             LineSplitter.split('${listed.stdout}')
                 .map((line) => line.split(',').first.trim())
@@ -777,10 +763,7 @@ touch '${done.path}'
       );
       await _until(
         tester,
-        () => find
-            .textContaining('families, monospaced first')
-            .evaluate()
-            .isNotEmpty,
+        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
         "this computer's fonts to be listed",
       );
       // Built is not on screen: a list builds a little past its edge.
@@ -929,10 +912,10 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () => find
-            .textContaining('is not the file the release describes')
-            .evaluate()
-            .isNotEmpty,
+        () =>
+            find.textContaining('is not the file the release describes')
+                .evaluate()
+                .isNotEmpty,
         'a download of the wrong file to be refused',
       );
       expect(find.bySemanticsLabel('Restart to update'), findsNothing);

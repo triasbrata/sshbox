@@ -211,6 +211,9 @@ class _SshboxAppState extends State<SshboxApp> {
       'turn both off in Settings.',
       duration: const Duration(seconds: 8),
       action: (label: 'Settings', onPressed: _openSettings),
+      // Low, clear of Home's header and title, which it lands on, and of
+      // its Add.
+      low: true,
     );
   }
 

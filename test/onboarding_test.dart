@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/telemetry/telemetry.dart' show telemetryOn;
 import 'package:sshbox/src/ui/onboarding_page.dart';
+import 'package:sshbox/src/ui/toast.dart' show ToastCard;
 
 /// The app's own gate, as `SshboxApp` has it: the slides until they are
 /// done, then Home.
@@ -111,7 +112,24 @@ void main() {
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    expect(find.textContaining('Jeansh reports crashes'), findsOneWidget);
+    final notice = find.textContaining('Jeansh reports crashes');
+    expect(notice, findsOneWidget);
+    // Low on Home, where it lands: clear of the header, the title and Add.
+    final card = tester.getRect(
+      find.ancestor(of: notice, matching: find.byType(ToastCard)),
+    );
+    for (final (what, finder) in [
+      ('the header', find.bySemanticsLabel('Jeansh')),
+      ('Settings', find.byTooltip('Settings')),
+      ('the title', find.text('No hosts\nyet')),
+      ('Add', find.bySemanticsLabel('Add')),
+    ]) {
+      expect(
+        card.overlaps(tester.getRect(finder.first)),
+        isFalse,
+        reason: 'the notice lies over $what',
+      );
+    }
     // Let the toast go before the test ends.
     await tester.pump(const Duration(seconds: 10));
     await tester.pump(const Duration(seconds: 1));

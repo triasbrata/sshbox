@@ -29,11 +29,18 @@ const toastConfig = ToastificationConfig(
 );
 
 /// A tenth of the window either side, from the window as it is now, so a
-/// tablet turned on its side gets its own.
-EdgeInsetsGeometry _column(BuildContext context, AlignmentGeometry _) {
+/// tablet turned on its side gets its own. One placed low sits clear of a
+/// page's bottom row of buttons, as Home's Add.
+EdgeInsetsGeometry _column(BuildContext context, AlignmentGeometry alignment) {
   final side = MediaQuery.sizeOf(context).width / 10;
-  return EdgeInsets.fromLTRB(side, 12, side, 0);
+  return alignment == Alignment.bottomCenter
+      ? EdgeInsets.fromLTRB(side, 0, side, _clearOfButtons)
+      : EdgeInsets.fromLTRB(side, 12, side, 0);
 }
+
+/// Home's Add sits 24 from the bottom and is 30 tall: this leaves it, and a
+/// little air, uncovered.
+const _clearOfButtons = 72.0;
 
 /// The overlay a [ToastLayer] draws toasts in, while there is one.
 final _layer = GlobalKey<OverlayState>();
@@ -119,6 +126,7 @@ void showToast(
   ToastificationType type = ToastificationType.info,
   ({String label, VoidCallback onPressed})? action,
   Duration? duration,
+  bool low = false,
 }) {
   _showing.removeWhere((_, toast) => !toast.isRunning);
   if (_showing.containsKey(message)) return;
@@ -132,7 +140,9 @@ void showToast(
     overlayState:
         _layer.currentState ??
         Navigator.of(context, rootNavigator: true).overlay,
-    alignment: Alignment.topCenter,
+    // Low for a long word that must not lie over a page's header and title;
+    // at the top for the rest.
+    alignment: low ? Alignment.bottomCenter : Alignment.topCenter,
     autoCloseDuration:
         duration ??
         (type == ToastificationType.error ? _errorDuration : toastDuration),
