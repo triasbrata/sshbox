@@ -25,7 +25,13 @@ class NotificationGateway {
   static const _channelId = 'sshbox.sessions';
   static const _channelName = 'Sessions';
 
-  Future<void> initialize() async {
+  /// Starts the plugin. One that will not start — a PlatformException out of
+  /// its native half, as Play's pre-launch robot met (JEANSH-2) — costs the
+  /// app its local notifications and nothing else: said once and never
+  /// thrown, so what starts after it, the transfers' bars and FCM, still does.
+  Future<void> initialize() => _quietly(_initialize);
+
+  Future<void> _initialize() async {
     await _plugin.initialize(
       // Every platform the app is built for has to be named here, or the
       // plugin throws "settings must be set when targeting <platform>" as it
@@ -117,7 +123,8 @@ class NotificationGateway {
 
   static bool _saidUnavailable = false;
 
-  /// Runs [post], a notification's show or cancel, and lets it fail quietly.
+  /// Runs [post] — the plugin's start, or a notification's show or cancel —
+  /// and lets it fail quietly.
   /// A notification is a courtesy beside what it is about: a Linux desktop
   /// with no notification server — a bare window manager, a headless
   /// session — answers every post with a DBusServiceUnknownException for

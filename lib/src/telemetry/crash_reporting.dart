@@ -209,22 +209,30 @@ SentryEvent? scrubEvent(SentryEvent event, Hint hint) {
   );
 }
 
-SentryException _exception(SentryException exception) => SentryException(
-  type: exception.type,
-  value: scrubValue(exception.type, exception.value),
-  module: exception.module,
-  stackTrace: _stack(exception.stackTrace),
-  // Rebuilt rather than carried: a mechanism's `data` and `meta` are free maps
-  // an integration fills in, and what goes in them is not ours to promise.
-  mechanism: exception.mechanism == null
-      ? null
-      : Mechanism(
-          type: exception.mechanism!.type,
-          handled: exception.mechanism!.handled,
-          synthetic: exception.mechanism!.synthetic,
-        ),
-  threadId: exception.threadId,
-);
+SentryException _exception(SentryException exception) {
+  final mechanism = exception.mechanism;
+  // sentry_flutter puts a PlatformException's code and message in the
+  // mechanism's data. The message goes; the code stays if it is a constant.
+  final code = scrubCode(mechanism?.data['code']);
+  return SentryException(
+    type: exception.type,
+    value: scrubValue(exception.type, exception.value),
+    module: exception.module,
+    stackTrace: _stack(exception.stackTrace),
+    // Rebuilt rather than carried: a mechanism's `data` and `meta` are free
+    // maps an integration fills in, and what goes in them is not ours to
+    // promise.
+    mechanism: mechanism == null
+        ? null
+        : Mechanism(
+            type: mechanism.type,
+            handled: mechanism.handled,
+            synthetic: mechanism.synthetic,
+            data: code == null ? null : {'code': code},
+          ),
+    threadId: exception.threadId,
+  );
+}
 
 SentryStackTrace? _stack(SentryStackTrace? stack) => stack == null
     ? null

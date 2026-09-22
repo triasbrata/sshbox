@@ -83,18 +83,44 @@ String scrub(String text) {
   );
 }
 
+/// A bare Dart file name, `port_forwarding_page.dart`: no directory, so no
+/// path, and no hostname either, `.dart` being no top-level domain.
+final _dartFile = RegExp(r'^[\w.\-]+\.dart$');
+
 /// [scrub], for a file name in a stack frame.
 ///
 /// A frame from a release build names its file as `package:sshbox/src/…` or
-/// `dart:async`, which carries nothing of the user's and is the whole of what
-/// makes a stack trace readable — so those are kept exactly as they are.
+/// `dart:async` in `absPath`, and sentry-dart puts the last part of it,
+/// `x.dart`, in `fileName`. Neither carries anything of the user's, and they
+/// are the whole of what makes a stack trace readable — so they are kept
+/// exactly as they are. Without the bare-name case the hostname rule took
+/// every `x.dart` for a host, and every frame and every issue read `<host>`.
 /// Anything else is a real path off this machine (a debug build's
 /// `file:///home/…`) and goes through [scrub] like any other text.
 String? scrubFrame(String? name) {
   if (name == null) return null;
-  if (name.startsWith('package:') || name.startsWith('dart:')) return name;
+  if (name.startsWith('package:') ||
+      name.startsWith('dart:') ||
+      _dartFile.hasMatch(name)) {
+    return name;
+  }
   return scrub(name);
 }
+
+/// A plugin's constant, `invalid_icon` or `sign_in_failed`: the shape a
+/// `PlatformException.code` takes when it names what went wrong.
+final _constantCode = RegExp(r'^[A-Za-z][A-Za-z0-9_.\-]{0,63}$');
+
+/// A `PlatformException`'s code, kept when it is a constant and dropped when
+/// it could be data. Its message is dropped whole (see [droppedValues]), and
+/// the code is then the one thing left that says which failure it was.
+///
+/// A dotted code such as `my-box.ts.net` fits the shape and is still a
+/// hostname, so a code [scrub] would change is dropped too.
+String? scrubCode(Object? code) =>
+    code is String && _constantCode.hasMatch(code) && scrub(code) == code
+    ? code
+    : null;
 
 /// [scrub], for a whole line of a printed stack trace.
 ///

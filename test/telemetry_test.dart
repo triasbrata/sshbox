@@ -141,6 +141,36 @@ void main() {
       expect(out, isNot(contains('trias')));
     });
 
+    test("keeps a frame's bare .dart name, and nothing else dotted", () {
+      // What sentry-dart puts in fileName: the last part of the URI.
+      expect(
+        scrubFrame('port_forwarding_page.dart'),
+        'port_forwarding_page.dart',
+      );
+      expect(scrubFrame('my-box.tail1a2b.ts.net'), '<host>');
+      expect(scrubFrame('/home/trias/a.dart'), isNot(contains('trias')));
+    });
+
+    test(
+      'keeps a constant-looking code and drops one that looks like data',
+      () {
+        expect(scrubCode('invalid_icon'), 'invalid_icon');
+        expect(scrubCode('sign_in_failed'), 'sign_in_failed');
+        for (final data in [
+          'my-box.tail1a2b.ts.net',
+          '/home/trias/.ssh/id_ed25519',
+          'trias@my-box',
+          'Unexpected security result code',
+          '-34018',
+          '',
+          42,
+          null,
+        ]) {
+          expect(scrubCode(data), isNull, reason: '$data');
+        }
+      },
+    );
+
     test("drops a Jeansh exception's message whole, and keeps the type", () {
       // Every one of these is written to be shown to the user, which is
       // exactly why it holds the user's own world.
@@ -253,6 +283,55 @@ void main() {
       expect(out.contexts.device?.name, isNull);
       expect(out.contexts.operatingSystem?.version, '15');
       expect(out.contexts.operatingSystem?.rawDescription, isNull);
+    });
+
+    test("keeps a release frame's file, as sentry-dart names it", () {
+      final event = SentryEvent(
+        exceptions: [
+          SentryException(
+            type: 'StateError',
+            value: 'Bad state',
+            stackTrace: SentryStackTrace(
+              frames: [
+                SentryStackFrame(
+                  absPath: 'package:sshbox/src/ui/port_forwarding_page.dart',
+                  fileName: 'port_forwarding_page.dart',
+                  function: '_ForwardEditorState._save',
+                  lineNo: 420,
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+      final frame = scrubEvent(
+        event,
+        Hint(),
+      )!.exceptions!.first.stackTrace!.frames.single;
+      expect(frame.fileName, 'port_forwarding_page.dart');
+      expect(frame.absPath, 'package:sshbox/src/ui/port_forwarding_page.dart');
+    });
+
+    test("keeps a PlatformException's code and drops its message", () {
+      SentryEvent platform(String code) => SentryEvent(
+        exceptions: [
+          SentryException(
+            type: 'PlatformException',
+            value: 'PlatformException($code, no icon at /home/trias, null)',
+            mechanism: Mechanism(
+              type: 'platformException',
+              data: {'code': code, 'message': 'no icon at /home/trias'},
+            ),
+          ),
+        ],
+      );
+      final kept = scrubEvent(platform('invalid_icon'), Hint())!;
+      expect(kept.exceptions!.single.mechanism!.data, {'code': 'invalid_icon'});
+      expect(jsonEncode(kept.toJson()), isNot(contains('trias')));
+
+      final dropped = scrubEvent(platform('my-box.ts.net'), Hint())!;
+      expect(dropped.exceptions!.single.mechanism!.data, isEmpty);
+      expect(jsonEncode(dropped.toJson()), isNot(contains('my-box')));
     });
 
     test('drops the source line and the locals of every frame', () {
