@@ -793,32 +793,34 @@ touch '${done.path}'
       );
       await rightClick(other);
       await menuWith('Take out of group');
-      // An open menu holds the focus itself, and gives it back as it closes:
-      // to the pane clicked, if the click moved it there.
+      // The menu keeps the keys, so Escape closes it and the focus goes back
+      // to the pane the click moved it to. It once lost them to the rebuild
+      // of the frame that moved the focus: Escape reached the terminal and
+      // the menu stayed open (#87's group bug).
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Take out of group'),
+        findsNothing,
+        reason: 'Escape did not close the menu: it did not hold the keys',
+      );
       expect(
         other.focusNode?.hasFocus,
         isTrue,
         reason: 'the menu opened for a pane that did not take focus',
       );
-      // Seen once: a second right-click on the pane, focused by then, showed
-      // its menu and lost it within 600 ms. Watched here, not yet asserted,
-      // until it is known whether that is the app or this test.
+      // And a menu opened on the pane, focused by now, stays open.
       await rightClick(other);
-      final open = <bool>[];
       for (var i = 0; i < 20; i++) {
         await tester.pump(const Duration(milliseconds: 100));
-        open.add(find.text('Take out of group').evaluate().isNotEmpty);
+        expect(
+          find.text('Take out of group'),
+          findsOneWidget,
+          reason: 'the menu closed by itself ${(i + 1) * 100} ms after opening',
+        );
       }
-      debugPrint(
-        'A second right-click on the focused pane, the menu open every '
-        '100 ms: ${open.map((o) => o ? 'O' : '.').join()}',
-      );
-      if (open.last) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-        await tester.pump(const Duration(milliseconds: 600));
-      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 600));
 
       await _closeTabs(tester);
     },
