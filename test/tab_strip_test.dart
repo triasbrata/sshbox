@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -361,4 +362,57 @@ void main() {
       expect(picked, [nasty]);
     },
   );
+
+  group('a right-click on a tab', () {
+    Future<void> rightClick(WidgetTester tester, Offset at) async {
+      await tester.tapAt(
+        at,
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'opens its long-press menu on a desktop, where the pointer is',
+      (tester) async {
+        final shell = _shell(tester, 'host-1', 'box');
+        String? duplicated;
+        await _pump(tester, [
+          shell,
+        ], onDuplicate: (hostId) => duplicated = hostId);
+
+        // On the name's first letter: in the strip's left half, where a menu
+        // grows rightwards from the pointer.
+        final at = tester.getTopLeft(find.text('box')) + const Offset(4, 4);
+        await rightClick(tester, at);
+        final item = find.widgetWithText(
+          PopupMenuItem<void>,
+          'Duplicate session',
+        );
+        // At the pointer, as a context menu opens, not the chip's corner.
+        expect(tester.getTopLeft(item).dx, moreOrLessEquals(at.dx));
+
+        await tester.tap(item);
+        await tester.pumpAndSettle();
+        expect(duplicated, 'host-1');
+      },
+      variant: TargetPlatformVariant.desktop(),
+    );
+
+    testWidgets(
+      'opens nothing new on Android, where a long press is how it is asked',
+      (tester) async {
+        await _pump(tester, [_shell(tester, 'host-1', 'box')]);
+
+        await rightClick(tester, tester.getCenter(find.text('box')));
+        expect(find.text('Duplicate session'), findsNothing);
+
+        await tester.longPress(find.text('box'));
+        await tester.pumpAndSettle();
+        expect(find.text('Duplicate session'), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+  });
 }
