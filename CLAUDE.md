@@ -25,7 +25,16 @@ the user has tried it.
    `version:` line, which decides only X.Y — a new major or minor is set
    there by hand. If merging `main` conflicts on it, take `main`'s. The
    repository has no git hooks, and `core.hooksPath` stays unset.
-2. Fast-forward `main` to the branch and push. Releases come in batches, as
+2. Land it on `main` through a pull request, never by pushing to `main` directly. The user asked for this on
+   2026-09-22 ("jangan langsung push ke main, tapi merge saja mr-nya").
+   - Push the branch and open the pull request with the collaborator account's token the coordinator holds,
+     not the owner's.
+   - Wait for its `check` to go green, then merge it.
+   - The owner's credentials do the merge, since the collaborator is no admin and cannot approve its own
+     pull request.
+   - A merge is a push to `main`, so what follows below about releases is unchanged.
+
+   Releases come in batches, as
    the user chose ("di tumpuk dulu sampai ada 10 build kecuali itu adalah
    feature baru"): `tag.yml` releases once ten commits that change the app
    have gathered since the last release, or at once when one of them is a
