@@ -605,9 +605,16 @@ class TmuxSession {
 
   /// Finds tmux as [command] says, into `$t`, or says it is not installed and
   /// stops.
+  ///
+  /// `$SSHBOX_TMUX`, when set, is taken instead and nothing else is: the tmux
+  /// binary Settings gives the Local shell, which `LocalTransport` hands its
+  /// commands. One that is not an executable says so rather than quietly
+  /// finding another tmux. An SSH channel carries no such variable.
   static const _findTmux =
       r'ok() { case $1 in /*) [ -f "$1" ] && [ -x "$1" ];; *) return 1;; esac; }; '
-      r't=$(command -v tmux); '
+      r't=$SSHBOX_TMUX; [ -z "$t" ] || ok "$t" || { echo "tmux is not at $t, '
+      r'the path Settings gives for it"; exit 1; }; '
+      r'ok "$t" || t=$(command -v tmux); '
       r'ok "$t" || for t in /opt/homebrew/bin/tmux /usr/local/bin/tmux '
       r'/opt/local/bin/tmux /home/linuxbrew/.linuxbrew/bin/tmux '
       r'"$HOME/.nix-profile/bin/tmux" /run/current-system/sw/bin/tmux '

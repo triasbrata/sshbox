@@ -42,6 +42,31 @@ const _wslPrefix = 'wsl:';
 String? wslDistroOf(String hostId) =>
     hostId.startsWith(_wslPrefix) ? hostId.substring(_wslPrefix.length) : null;
 
+/// Whether [hostId] is one of this machine's own shells, [localHost] or a
+/// [wslHost], rather than a saved host.
+bool isLocalHostId(String hostId) =>
+    hostId == localHostId || wslDistroOf(hostId) != null;
+
+/// Opens nothing, and says why: a tab of this machine's own shells brought
+/// back where there can be none — a Local shell on a phone, a WSL one off
+/// Windows — rather than one that vanishes.
+class RefusedTransport implements SessionTransport {
+  const RefusedTransport(this.reason);
+
+  final String reason;
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async => throw SshSessionException(reason);
+}
+
 /// `USER` on a Mac or Linux, `USERNAME` on Windows.
 String _userName() =>
     Platform.environment['USER'] ?? Platform.environment['USERNAME'] ?? 'local';
@@ -145,19 +170,23 @@ String wslEnv(String? current, Iterable<String> names) {
 /// important as what it does: no [FileBrowseCapable] or [ForwardCapable], so
 /// the files drawer and the tailnet forwarding switch themselves off for it
 /// rather than failing at a use. [CommandCapable] it does have, which is what
-/// the git tab runs through, and on a Mac or Linux [FileUploadCapable], which
-/// is what a pasted picture goes through.
+/// the git tab runs through, [ChannelCapable], which is what tmux's control
+/// mode runs through — see [connect]'s `shell` — and on a Mac or Linux
+/// [FileUploadCapable], which is what a pasted picture goes through.
 class LocalTransport implements SessionTransport {
   /// [windows] and [environment] stand in for [Platform.isWindows] and
-  /// [Platform.environment], for tests.
+  /// [Platform.environment], for tests, and [distros] for [wslDistros].
   LocalTransport({
     this.shell,
     this.wslDistro,
+    this.tmux,
     this.startPty = Pty.start,
     bool? windows,
     Map<String, String>? environment,
+    Future<List<String>> Function()? distros,
   }) : _windows = windows ?? Platform.isWindows,
-       _env = environment ?? Platform.environment;
+       _env = environment ?? Platform.environment,
+       _distros = distros ?? wslDistros;
 
   /// The program a session runs, defaulting to the user's login shell and
   /// falling back to `/bin/bash`, which macOS still ships; PowerShell on
@@ -167,8 +196,13 @@ class LocalTransport implements SessionTransport {
   /// The WSL distro to open instead, on Windows: see [wslDistros].
   final String? wslDistro;
 
+  /// The tmux binary to run rather than the one `TmuxSession` would find,
+  /// handed to every command as `SSHBOX_TMUX`. Null finds it.
+  final String? tmux;
+
   final bool _windows;
   final Map<String, String> _env;
+  final Future<List<String>> Function() _distros;
 
   /// How a pty is started, so a test can hand over one of its own: the real
   /// one loads a native library this app only has on a desktop.
@@ -197,11 +231,17 @@ class LocalTransport implements SessionTransport {
     // and hand the relay key over. Nothing here needs either: the app and the
     // shell are the same machine, so it is not called, and its variables are
     // never in this shell's environment.
-    if (!shell) {
-      throw const SshSessionException(
-        'A local session is a shell; it has nothing else to open.',
+    final distro = wslDistro;
+    // A tab brought back from an earlier run can name a distro removed since,
+    // which wsl.exe would answer with an error in a shell that dies at once.
+    if (_windows && distro != null && !(await _distros()).contains(distro)) {
+      throw SshSessionException(
+        'WSL has no distro called $distro on this machine any more.',
       );
     }
+    // No shell: a session for tmux, whose panes come over [_LocalSession.open]
+    // and which is up for as long as it is not disposed, as a connection is.
+    if (!shell) return _session(null);
     // This terminal shows an OSC 8 hyperlink and a Ctrl+tap opens it, which
     // Claude Code, and every program built on `supports-hyperlinks`, learns
     // from this: without it they write a link as `LABEL (URL)`. Set here
@@ -212,7 +252,6 @@ class LocalTransport implements SessionTransport {
     final List<String> arguments;
     final String? home;
     Map<String, String>? env = environment.isEmpty ? null : environment;
-    final distro = wslDistro;
     if (!_windows) {
       program = this.shell ?? _env['SHELL'] ?? '/bin/bash';
       // A login shell, so it reads the profile that sets PATH — without it a
@@ -253,12 +292,46 @@ class LocalTransport implements SessionTransport {
         rows: rows,
         columns: columns,
       );
-      return _windows
-          ? _LocalSession(pty, _commandLine)
-          : _UnixLocalSession(pty, _commandLine);
+      return _session(pty);
     } catch (error) {
       throw SshSessionException('Cannot start $program: $error');
     }
+  }
+
+  /// A session over [pty], or with none one for tmux: on a Mac or Linux one
+  /// that takes a pasted picture too, tmux's included, whose panes are
+  /// pasted into as the shell is.
+  _LocalSession _session(Pty? pty) => _windows
+      ? _LocalSession(pty, _process)
+      : _UnixLocalSession(pty, _process);
+
+  /// Starts [command] beside the shell, as [_commandLine] runs it.
+  ///
+  /// In the login home, as an SSH exec channel starts: a windowed app's own
+  /// folder is `/` on a Mac, and a tmux session made there would open its
+  /// panes in it. The app's environment, but for where tmux says it is
+  /// running inside one of the user's own sessions, which would point this
+  /// tmux at whichever server the app was started from, and plus the tmux
+  /// binary Settings gives, for `TmuxSession`'s finder to take first.
+  Future<Process> _process(String command) {
+    final line = _commandLine(command);
+    if (line == null) {
+      throw const SshSessionException(
+        'This needs a Unix shell. On Windows, open a WSL shell from Home.',
+      );
+    }
+    final tmux = this.tmux;
+    return Process.start(
+      line.first,
+      line.sublist(1),
+      workingDirectory: _windows ? null : _env['HOME'],
+      environment: {
+        for (final MapEntry(:key, :value) in _env.entries)
+          if (key != 'TMUX' && key != 'TMUX_PANE') key: value,
+        'SSHBOX_TMUX': ?tmux,
+      },
+      includeParentEnvironment: false,
+    );
   }
 
   /// What runs [command] beside the shell — see [_LocalSession.run] — as the
@@ -281,29 +354,37 @@ class LocalTransport implements SessionTransport {
   }
 }
 
-class _LocalSession implements TerminalSession, CommandCapable {
-  _LocalSession(this._pty, this._commandLine) {
+/// A local shell, or with no [_pty] the session a tmux tab holds, which has
+/// no terminal of its own: its panes come through [open].
+class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
+  _LocalSession(this._pty, this._process) {
+    final pty = _pty;
+    if (pty == null) return;
     // Chunked rather than a decode per event: a character the shell writes in
     // two reads arrives split across them, and this holds the first half until
     // the rest comes. Malformed bytes are let through as the replacement
     // character — a terminal shows what it is sent.
-    _subscription = _pty.output
+    _subscription = pty.output
         .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen(_output.add);
-    unawaited(_watchExit());
+    unawaited(_watchExit(pty));
   }
 
-  final Pty _pty;
-  final List<String>? Function(String command) _commandLine;
+  final Pty? _pty;
+  final Future<Process> Function(String command) _process;
   final _output = StreamController<String>.broadcast();
   final _status = ValueNotifier(SessionStatus.connected);
-  late final StreamSubscription<String> _subscription;
+  StreamSubscription<String>? _subscription;
   String? _failure;
   bool _disposed = false;
 
-  Future<void> _watchExit() async {
-    final code = await _pty.exitCode;
+  /// What [open] started and has not seen end, ended with the session as a
+  /// connection's channels end with it.
+  final _channels = <void Function()>{};
+
+  Future<void> _watchExit(Pty pty) async {
+    final code = await pty.exitCode;
     if (_disposed) return;
     // `exit` is how a shell is meant to end, so only a code says something
     // went wrong — and even then the closed tab is the message, as it is for
@@ -324,14 +405,14 @@ class _LocalSession implements TerminalSession, CommandCapable {
   @override
   void send(String data) {
     if (_disposed) return;
-    _pty.write(const Utf8Encoder().convert(data));
+    _pty?.write(const Utf8Encoder().convert(data));
   }
 
   @override
   void resize(int columns, int rows, int pixelWidth, int pixelHeight) {
     if (_disposed) return;
     // The pty takes rows first, the terminal gives columns first.
-    _pty.resize(rows, columns);
+    _pty?.resize(rows, columns);
   }
 
   /// A command beside the shell, as the SSH transport runs one — a process of
@@ -350,13 +431,10 @@ class _LocalSession implements TerminalSession, CommandCapable {
     if (_disposed) {
       throw const SshSessionException('This shell has ended.');
     }
-    final line = _commandLine(command);
-    if (line == null) {
-      throw const SshSessionException(
-        'This needs a Unix shell. On Windows, open a WSL shell from Home.',
-      );
-    }
-    final process = await Process.start(line.first, line.sublist(1));
+    final process = await _process(command);
+    // Read and dropped, as an SSH channel carries stdout alone: a pipe left
+    // full would stop the command.
+    unawaited(process.stderr.drain<void>());
     try {
       yield* process.stdout
           .transform(const Utf8Decoder(allowMalformed: true))
@@ -366,15 +444,54 @@ class _LocalSession implements TerminalSession, CommandCapable {
     }
   }
 
+  /// A command beside the shell that is talked to as well as listened to, in
+  /// raw bytes both ways and with no pty: what tmux's control mode runs
+  /// through, as an SSH exec channel carries it.
+  ///
+  /// Closing it closes its stdin, which ends a tmux client however many
+  /// shells stand in front of it, as sshd closing a channel does, and kills
+  /// the process too.
+  @override
+  Future<CommandChannel> open(String command) async {
+    if (_disposed) {
+      throw const SshSessionException('This shell has ended.');
+    }
+    final process = await _process(command);
+    // A write after the command has gone fails here rather than anywhere.
+    unawaited(process.stdin.done.catchError((Object _) {}));
+    unawaited(process.stderr.drain<void>());
+    var closed = false;
+    void close() {
+      if (closed) return;
+      closed = true;
+      _channels.remove(close);
+      process.stdin.close().ignore();
+      process.kill();
+    }
+
+    _channels.add(close);
+    unawaited(process.exitCode.then((_) => _channels.remove(close)));
+    return (
+      output: process.stdout.map(Uint8List.fromList),
+      write: (Uint8List data) {
+        if (!closed) process.stdin.add(data);
+      },
+      close: close,
+    );
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    await _subscription.cancel();
+    await _subscription?.cancel();
     try {
-      _pty.kill();
+      _pty?.kill();
     } catch (_) {
       // Already gone: the shell exited on its own.
+    }
+    for (final close in _channels.toList()) {
+      close();
     }
     await _output.close();
     _status.value = SessionStatus.closed;
@@ -389,7 +506,7 @@ class _LocalSession implements TerminalSession, CommandCapable {
 /// Not on Windows, PowerShell or WSL: Windows' clipboard has no picture half
 /// to paste from, and a Windows path would mean nothing inside a distro.
 class _UnixLocalSession extends _LocalSession implements FileUploadCapable {
-  _UnixLocalSession(super._pty, super._commandLine);
+  _UnixLocalSession(super._pty, super._process);
 
   /// Where the files go: a folder made new under a name nobody had, and 0700
   /// before anything goes in, so nobody else can reach into it or plant a

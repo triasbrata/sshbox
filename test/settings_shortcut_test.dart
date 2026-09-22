@@ -106,6 +106,10 @@ void main() {
       'sshbox.telemetry.notice': true,
     }),
   );
+  // The Local shell as a plain one, which [_Shell] is: in tmux it would ask
+  // for a channel [_Shell] does not have, and say so over the page.
+  setUp(() => localTmux.value = (on: false, path: ''));
+  tearDown(() => localTmux.value = (on: true, path: ''));
 
   group('on a Mac, ⌘, opens Settings', () {
     testWidgets('from Home, once however often it is pressed, and the same '

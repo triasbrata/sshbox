@@ -17,6 +17,7 @@ Future<void> main() async {
   await keyBarSettings.load();
   await appTheme.load();
   await gitInDrawer.load();
+  await localTmux.load();
   await showDotfiles.load();
   await copyOnSelect.load();
   // Likewise, so the first tab is never drawn under the Mac's window buttons.

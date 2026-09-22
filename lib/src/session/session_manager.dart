@@ -20,6 +20,7 @@ import '../git/git_diff.dart';
 import '../git/git_repo.dart';
 import 'clipboard_terminal.dart';
 import 'isolate_transport.dart';
+import 'local_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 import 'tmux.dart';
@@ -35,6 +36,10 @@ typedef TransportMaker = SessionTransport Function(
   Future<bool> Function(HostKeyCheck check)? confirmHostKey,
   void Function(String banner) onAuthBanner,
 );
+
+/// One of this machine's own shells, which are saved nowhere: the host a tab
+/// of it runs on, and what the tab connects through — see `LocalTransport`.
+typedef LocalShell = ({HostProfile host, TransportMaker transport});
 
 /// Posts a notification that opens [hostId] when tapped, as a push does:
 /// `NotificationGateway.showForHost`.
@@ -393,7 +398,11 @@ class LiveSession extends ChangeNotifier {
 
   /// Whether Claude can be run beside the shell at all — a transport that
   /// carries only a terminal, as mosh does, cannot.
-  bool get canChat => _session is ChannelCapable;
+  ///
+  /// Not this machine's own shells yet, though they carry a channel for
+  /// tmux: typing into a running session goes through a terminal channel,
+  /// which they do not have, and chat mode was never tried there.
+  bool get canChat => _session is ChannelCapable && !isLocalHostId(host.id);
 
   /// The connection whose Claude Code passed [chatRefusal]. Asked once a
   /// connection, since a version does not change under a session unless it
@@ -1774,10 +1783,16 @@ class SessionManager extends ChangeNotifier {
   /// its tab shows; its files come back once it has. A tab whose host or
   /// database has been deleted since does not come back. [transport] is a
   /// test's, as [create] takes one.
+  ///
+  /// This machine's own shells are in no list of saved hosts, so
+  /// [localShell] says what a tab of one comes back on, given its host id:
+  /// null for a saved host's. One can never have been deleted, so it always
+  /// comes back, and its connect says so if it can no longer open.
   Future<void> restoreTabs({
     required List<HostProfile> hosts,
     required List<DbConnection> databases,
     TransportMaker? transport,
+    LocalShell? Function(String hostId)? localShell,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     try {
@@ -1786,14 +1801,15 @@ class SessionManager extends ChangeNotifier {
       ) as Map<String, dynamic>;
       for (final tab in saved['sessions'] as List? ?? const []) {
         if (tab is! Map<String, dynamic>) continue;
-        final host = hosts
-            .where((host) => host.id == tab['hostId'])
-            .firstOrNull;
+        final id = tab['hostId'];
+        final local = id is String ? localShell?.call(id) : null;
+        final host =
+            local?.host ?? hosts.where((host) => host.id == id).firstOrNull;
         if (host == null) continue;
         final tmux = tab['tmux'];
         final session = create(
           host,
-          transport: transport,
+          transport: local?.transport ?? transport,
           // The app's own name, or one Attach picked: either is the session
           // this tab was last in, and losing it would start an empty one
           // under a name the user knows.

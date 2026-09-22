@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
@@ -372,6 +374,60 @@ class GitPanelSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True is the drawer.
 final gitInDrawer = GitPanelSetting();
 
+/// Whether this machine's own shells run in tmux, and which tmux. The Local
+/// shell is saved nowhere, so its choice cannot live on a host, as a saved
+/// host's `useTmux` does.
+///
+/// On to begin with: a shell where no tmux is found is a plain login shell,
+/// as it always was. An empty [path] finds tmux the way an SSH host's is
+/// found; anything else is that binary and no other.
+///
+/// Read when a shell opens, so a change reaches the next one and leaves what
+/// is open alone.
+class LocalTmuxSetting extends ValueNotifier<({bool on, String path})> {
+  LocalTmuxSetting() : super((on: true, path: ''));
+
+  static const _onKey = 'sshbox.local.tmux';
+  static const _pathKey = 'sshbox.local.tmuxPath';
+
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = (
+      on: prefs.getBool(_onKey) ?? true,
+      path: prefs.getString(_pathKey) ?? '',
+    );
+  }
+
+  /// Applies to the next shell opened, and is saved for the next start. A
+  /// [path] [tmuxPathProblem] turns down is not taken, and what it said is
+  /// handed back.
+  Future<String?> choose({bool? on, String? path}) async {
+    final problem = path == null ? null : tmuxPathProblem(path);
+    if (problem != null) return problem;
+    value = (on: on ?? value.on, path: path ?? value.path);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_onKey, value.on);
+    await prefs.setString(_pathKey, value.path);
+    return null;
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final localTmux = LocalTmuxSetting();
+
+/// Why [path] cannot be the Local shell's tmux, or null when it can: empty,
+/// which finds one, or an absolute path to a file that can be run, links
+/// followed, as Homebrew's is one.
+String? tmuxPathProblem(String path) {
+  if (path.isEmpty) return null;
+  if (!path.startsWith('/')) return 'Give the whole path, from /.';
+  final stat = FileStat.statSync(path);
+  if (stat.type != FileSystemEntityType.file) return 'No file is at $path.';
+  // Any of the three execute bits: whose they are, the shell asks at use.
+  if (stat.mode & 0x49 == 0) return '$path is not executable.';
+  return null;
+}
+
 /// Whether the files tree lists dotfiles. One choice for the whole app, as
 /// VS Code's is, and kept: the drawer builds its tree anew each time it opens,
 /// so a choice held by the tree itself went back to hidden every time it shut.
@@ -470,6 +526,8 @@ class SettingsPage extends StatelessWidget {
             ),
           ),
           const _GitSection(),
+          // Desktop alone: only a desktop has a shell of its own to run.
+          if (isDesktop) const _LocalShellSection(),
           _NotificationsSection(notifyKeys),
           const _PrivacySection(),
           // Desktop alone: Android updates through Play, and there is no
@@ -1592,6 +1650,99 @@ class _GitSection extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// This machine's own shells in tmux: see [localTmux]. On Windows the Local
+/// shell is PowerShell, which has no tmux, so the switch is for the WSL
+/// shells there, and each distro finds its own tmux, so there is no path to
+/// give.
+class _LocalShellSection extends StatefulWidget {
+  const _LocalShellSection();
+
+  @override
+  State<_LocalShellSection> createState() => _LocalShellSectionState();
+}
+
+class _LocalShellSectionState extends State<_LocalShellSection> {
+  late final _path = TextEditingController(text: localTmux.value.path);
+  final _focus = FocusNode();
+
+  /// Why the path typed was not taken, until it is typed again.
+  String? _problem;
+
+  @override
+  void initState() {
+    super.initState();
+    // Taken when the field is left as well as on Enter: a path typed and
+    // clicked away from is a path meant.
+    _focus.addListener(() {
+      if (!_focus.hasFocus) _apply();
+    });
+  }
+
+  @override
+  void dispose() {
+    _path.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _apply() async {
+    final problem = await localTmux.choose(path: _path.text.trim());
+    if (mounted) setState(() => _problem = problem);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final windows = defaultTargetPlatform == TargetPlatform.windows;
+    return ValueListenableBuilder(
+      valueListenable: localTmux,
+      builder: (context, setting, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _SectionHeader('Local shell'),
+          SwitchListTile(
+            secondary: const Icon(Icons.view_quilt_outlined),
+            title: Text(
+              windows
+                  ? 'Use tmux in WSL shells'
+                  : 'Use tmux in the Local shell',
+            ),
+            subtitle: const Text(
+              'Where tmux is found: panes split, and sessions outlive the '
+              'app. Where it is not, a plain login shell. Applies to the next '
+              'shell opened.',
+            ),
+            value: setting.on,
+            onChanged: (on) => localTmux.choose(on: on),
+          ),
+          if (!windows)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: TextField(
+                controller: _path,
+                focusNode: _focus,
+                enabled: setting.on,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  labelText: 'tmux binary',
+                  hintText: 'Found by itself',
+                  helperText:
+                      'Empty looks on PATH, in Homebrew and the other usual '
+                      'places. A path is used instead.',
+                  errorText: _problem,
+                  border: const OutlineInputBorder(),
+                ),
+                onChanged: (_) {
+                  if (_problem != null) setState(() => _problem = null);
+                },
+                onSubmitted: (_) => _apply(),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
