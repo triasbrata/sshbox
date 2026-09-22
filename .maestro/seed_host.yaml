@@ -87,14 +87,14 @@ env:
 
 # The row now exists, which is the whole point of the flow.
 - extendedWaitUntil:
-    visible: "(?s).*${HOST_LABEL}.*"
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
     timeout: 15000
 
 # Connect once so the key is pinned and the prompt never interrupts a later
 # flow. Not optional here: on a clean device this prompt MUST appear, and if it
 # does not, something is wrong with the host key check that the other flows
 # would then silently skip past.
-- tapOn: "(?s).*${HOST_LABEL}.*"
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
 - extendedWaitUntil:
     visible: "Trust"
     timeout: 20000
@@ -110,4 +110,4 @@ env:
 # Leave the device on the host list with the session closed, so every flow
 # after this one starts from the same place.
 - tapOn: "(?s)Close .*"
-- assertVisible: "(?s).*${HOST_LABEL}.*"
+- assertVisible: '(?s).*${HOST_LABEL}.*\n.*'

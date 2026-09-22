@@ -96,12 +96,13 @@ the-host-list-tab-chip-reads-home-with:
 
 several-sessions-per-host-the-host-list-counts:
   guard: e2e-android
-  by: .maestro/tabs.yaml
-  why: "opening a host twice and counting the active sessions on the card"
+  by: .maestro/duplicate_session.yaml
+  why: "two live sessions on one host, which is the state this feature is about: duplicate_session opens one and duplicates it. This entry used to name tabs.yaml and say it opened a host twice; it opens one, so it never guarded this"
 
 long-press-a-shell-tab-duplicate-session:
-  guard: todo
-  why: "a long press on the tab strip then Duplicate session; tabs.yaml is the natural home once seeding lands"
+  guard: e2e-android
+  by: .maestro/duplicate_session.yaml
+  why: "a long press on the shell's own tab, Duplicate session, and a second live session -- index 1 of the close buttons exists only if there are two. Failed on every run until the host selector matched the card alone: it had been tapping a restored tab's close button. Report-only until it has earned the gate"
 
 files-drawer-is-a-vs-code-style-tree:
   guard: e2e-android
@@ -497,3 +498,49 @@ the-tailscale-sign-in-link-opens-in-a:
 forward-servers-started-in-a-session-to-the:
   guard: manual
   why: "needs a real tailnet for the forwarded address to mean anything; the port-picking half is in tailnet_forwarder_test"
+
+# ------------------------------------------ passed later, all by existing tests
+# Eight features the user passed after this map was first written. The checker
+# flagged each as unguarded the moment its row said "UAT passed" -- which is the
+# point of it. Each was then searched for across the whole of test/,
+# case-insensitively, not guessed from a file name.
+
+the-terminal-resizes-once-when-the-soft-keyboard:
+  guard: unit
+  by: test/keyboard_resize_test.dart
+  why: "the soft keyboard sliding in resizes each terminal once, with the insets faked; a device adds only the real IME's own animation"
+
+terminal-hyperlinks-a-program-s-osc-8-link:
+  guard: unit
+  by: test/terminal_page_test.dart
+  why: "group('Ctrl+tap') underlines an OSC 8 link under CTRL and opens it on a Ctrl+tap, the hyperlink work having added its cases there"
+
+attach-and-detach-for-tmux-sessions-attach-lists:
+  guard: unit
+  by: test/connect_sheet_test.dart, test/tab_strip_test.dart, test/tmux_live_test.dart
+  why: "the sheet lists a host's tmux sessions once connected, the tab strip offers attach and detach, and tmux_live_test drives a real tmux server"
+
+the-git-panel-opens-where-the-user-wants:
+  guard: unit
+  by: test/git_drawer_test.dart
+  why: "Tab by default and Drawer by the setting, the files tree and the panel sharing the one drawer, and the choice saved and read back"
+
+a-record-of-every-tmux-pane-kept-by:
+  guard: unit
+  by: test/pane_record_test.dart, test/tmux_live_test.dart
+  why: "tmux_live_test records against a real tmux -- a cleared line kept, output with nothing attached, a pane split with nothing attached -- and pane_record_test builds the page that reads it back"
+
+a-tmux-tab-keeps-what-a-pane-writes:
+  guard: unit
+  by: test/tmux_test.dart, test/tmux_live_test.dart
+  why: "a fake tmux answering a capture and going on in the same read draws nothing where the output was without the fix; tmux_live_test is the CI failure that found it"
+
+tab-groups-two-tabs-or-more-shown-as:
+  guard: unit
+  by: test/tab_groups_test.dart
+  why: "the core only: grouped tabs side by side with keys going to the focused pane, and the grouping rules. The drag grip, the stacked layout and the ungroup menu are not built by any test -- a gap stated here rather than hidden"
+
+git-panel-the-key-bar-s-new-git:
+  guard: unit
+  by: test/git_page_test.dart, test/git_diff_tab_test.dart, test/git_drawer_test.dart, test/git_repo_test.dart
+  why: "git_repo_test runs a real git, which is where History once broke on a missing trailing newline; the page, diff tab and drawer tests build the panel around it"

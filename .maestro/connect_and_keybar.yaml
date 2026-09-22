@@ -16,10 +16,10 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s).*${HOST_LABEL}.*"
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
     timeout: 15000
 
-- tapOn: "(?s).*${HOST_LABEL}.*"
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
 
 # The first connection to a host this device has never seen puts up the trust
 # prompt, and nothing else in this flow would ever press it. Optional, so a
@@ -53,6 +53,16 @@ env:
 # PGUP used to be asserted here too. It is eleven keys past ALT, and reaching it
 # on a phone would mean a chain of swipes on every release, each one a way for
 # the gate to fail that says nothing about the build. That the default bar
-# carries it is a layout fact, not a platform one; it belongs in a widget test,
-# and none asserts it yet -- a gap written into e2e/coverage.yaml rather than
-# hidden by deleting a line here.
+# carries it is a layout fact, not a platform one, and a widget test holds it:
+# key_bar_test.dart, "the default bar carries its modifiers and paging keys",
+# which fails if pgup leaves the default.
+
+# Close the session, so the next flow does not relaunch into a restored tab.
+# A tab left live survives the app being stopped and comes back on the strip
+# with its close button named after the host -- which is how the "dead tap"
+# came about, a host selector matching that button. Optional here and only
+# here: this flow gates releases, closing a tab is housekeeping rather than
+# what it tests, and a gate must never fail on its own tidying up.
+- tapOn:
+    text: "Close ${HOST_LABEL}.*"
+    optional: true

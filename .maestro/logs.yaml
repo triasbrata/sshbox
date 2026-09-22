@@ -15,7 +15,7 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s).*${HOST_LABEL}.*"
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
     timeout: 15000
 
 - tapOn: "Logs"
@@ -27,7 +27,7 @@ env:
     visible: "Save"
     timeout: 10000
 - assertNotVisible: "No sessions yet"
-- assertVisible: "(?s).*${HOST_LABEL}.*"
+- assertVisible: '(?s).*${HOST_LABEL}.*\n.*'
 
 # Saving keeps the entry: the same button now offers to take it back. Then it
 # is put back, so a second run on the same device starts where this one did.
