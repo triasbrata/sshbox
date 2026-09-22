@@ -987,32 +987,34 @@ void main() {
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    // Escaped as iTerm2 escapes a drop, which Claude Code still takes as an
+    // image and a shell reads as one word, bracketed or not.
+    const escaped = r"it\'s\ a\ shot\ \(1\).png";
+
     testWidgets('a file dropped on a Local shell pastes its own path, '
-        'quoted for a plain shell, nothing copied', (tester) async {
+        'escaped for the shell, nothing copied', (tester) async {
       await pumpLocal(tester);
-      final file = File("${temp.path}/it's a file.txt")..writeAsStringSync('x');
+      final file = File("${temp.path}/it's a shot (1).png")
+        ..writeAsStringSync('x');
 
       await dropOnTerminal(tester, [file.path]);
       await tester.pump();
 
-      expect(pty.typed.toString(), "'${temp.path}/it'\\''s a file.txt' ");
+      expect(pty.typed.toString(), '${temp.path}/$escaped ');
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
-    testWidgets('and bracketed, unquoted, when the program asked for it', (
-      tester,
-    ) async {
+    testWidgets('and bracketed, still escaped, when the program asked for '
+        'it: bash 5.1 does, and would split the raw name', (tester) async {
       final session = await pumpLocal(tester);
       session.terminal.write('\x1b[?2004h');
-      final file = File("${temp.path}/it's a file.png")..writeAsStringSync('x');
+      final file = File("${temp.path}/it's a shot (1).png")
+        ..writeAsStringSync('x');
 
       await dropOnTerminal(tester, [file.path]);
       await tester.pump();
 
-      expect(
-        pty.typed.toString(),
-        "\x1b[200~${temp.path}/it's a file.png \x1b[201~",
-      );
+      expect(pty.typed.toString(), '\x1b[200~${temp.path}/$escaped \x1b[201~');
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 

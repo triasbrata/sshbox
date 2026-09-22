@@ -563,15 +563,23 @@ class _TerminalPageState extends State<TerminalPage> {
   /// turns a pasted image path into [Image #N], while typed keys stay text.
   /// The space goes inside the brackets — Claude trims it, a shell keeps it;
   /// outside, it lands before the chip, which Claude inserts only after
-  /// reading the file. Otherwise typed, shell-quoted when [quote].
-  void _pastePath(String path, {bool quote = false}) {
+  /// reading the file. Otherwise typed.
+  void _pastePath(String path) {
     final terminal = _session.terminal;
     if (terminal.bracketedPasteMode) {
       terminal.paste('$path ');
     } else {
-      _session.sendRaw('${quote ? _shellQuote(path) : path} ');
+      _session.sendRaw('$path ');
     }
   }
+
+  /// A dropped path escaped as iTerm2 escapes one: a backslash before every
+  /// character a shell would read. Measured on Claude Code 2.1.280, the
+  /// escaped form pasted still becomes [Image #N] while a single-quoted one
+  /// stays text — and a bracketed-paste shell (bash 5.1+) needs it escaped
+  /// just as a plain one does.
+  static String _dropEscape(String path) =>
+      path.replaceAllMapped(RegExp(r'[^A-Za-z0-9._/-]'), (m) => '\\${m[0]}');
 
   /// Files dropped from the OS file manager, one after another in order.
   ///
@@ -587,8 +595,18 @@ class _TerminalPageState extends State<TerminalPage> {
     for (final item in details.files) {
       final path = item.path;
       final kind = FileSystemEntity.typeSync(path);
-      if (here && kind != FileSystemEntityType.notFound) {
-        _pastePath(path, quote: true);
+      if (here && path.runes.any((c) => c < 0x20 || c == 0x7f)) {
+        // A backslash cannot make a newline or a CR in a name harmless at a
+        // prompt that is not bracketed.
+        if (mounted) {
+          showToast(
+            context,
+            'Not pasted: the name holds a control character: ${item.name}',
+            type: ToastificationType.warning,
+          );
+        }
+      } else if (here && kind != FileSystemEntityType.notFound) {
+        _pastePath(_dropEscape(path));
       } else if (kind == FileSystemEntityType.file && _session.canUploadFiles) {
         await _upload((path: path, name: item.name));
       } else if (mounted) {
