@@ -270,15 +270,15 @@ class _Recording {
   final File _stop;
   final String _done;
 
-  /// What the program read, once [length] bytes are in — or, not knowing
-  /// how many to expect, once they have stopped coming for a second — and
-  /// the program ended.
+  /// What the program read, once [length] bytes are in or they have stopped
+  /// coming for a second — so fewer than expected still reach the caller's
+  /// comparison, which says what did come — and the program ended.
   Future<String> bytes(String what, {int? length}) async {
     var last = -1;
     var still = DateTime.now();
     await _until(_tester, () {
       final now = _got.existsSync() ? _got.lengthSync() : 0;
-      if (length != null) return now >= length;
+      if (length != null && now >= length) return true;
       if (now != last) {
         last = now;
         still = DateTime.now();
@@ -713,6 +713,65 @@ touch '${done.path}'
         'a second Local shell',
       );
 
+      // A program reading the mouse: a plain right-click reaches it as
+      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
+      // menu. It records what it reads until told to stop.
+      final dir = _scratch();
+      final got = File('${dir.path}/got');
+      final ready = File('${dir.path}/ready');
+      final stop = File('${dir.path}/stop');
+      final script = File('${dir.path}/mouse.sh')
+        ..writeAsStringSync(
+          "printf '\\033[?1000h'\n"
+          'stty raw -echo\n'
+          'touch ${ready.path}\n'
+          // From the terminal by name: a background job of a
+          // non-interactive sh reads /dev/null otherwise.
+          'dd bs=1 count=6 of=${got.path} </dev/tty 2>/dev/null &\n'
+          'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
+          'kill \$! 2>/dev/null\n'
+          'stty sane\n'
+          "printf '\\033[?1000l'\n"
+          'echo mouse-done\n',
+        );
+      final view = focused();
+      _run(view, 'sh ${script.path}');
+      try {
+        await _until(tester, ready.existsSync, 'the program to read the mouse');
+      } on TestFailure {
+        debugPrint('The terminal holds:\n${_text(view).join('\n')}');
+        rethrow;
+      }
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await rightClick(view);
+      await _until(
+        tester,
+        () => got.existsSync() && got.lengthSync() >= 3,
+        'the right-click to reach the program',
+      );
+      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Duplicate session'),
+        findsNothing,
+        reason: 'a menu opened over a program that reads the mouse',
+      );
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await rightClick(view);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await menuWith('Duplicate session');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      stop.createSync();
+      await _until(
+        tester,
+        () => _text(focused()).any((line) => line.contains('mouse-done')),
+        'the program to finish',
+      );
+
       // The two in a group: the pane that is not focused, right-clicked,
       // takes focus and opens its own menu.
       await rightClick(focused());
@@ -761,59 +820,6 @@ touch '${done.path}'
         await tester.pump(const Duration(milliseconds: 600));
       }
 
-      // A program reading the mouse: a plain right-click reaches it as
-      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
-      // menu. It records what it reads until told to stop.
-      final dir = _scratch();
-      final got = File('${dir.path}/got');
-      final ready = File('${dir.path}/ready');
-      final stop = File('${dir.path}/stop');
-      final script = File('${dir.path}/mouse.sh')
-        ..writeAsStringSync(
-          "printf '\\033[?1000h'\n"
-          'stty raw -echo\n'
-          'touch ${ready.path}\n'
-          // From the terminal by name: a background job of a
-          // non-interactive sh reads /dev/null otherwise.
-          'dd bs=1 count=6 of=${got.path} </dev/tty 2>/dev/null &\n'
-          'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
-          'kill \$! 2>/dev/null\n'
-          'stty sane\n'
-          "printf '\\033[?1000l'\n"
-          'echo mouse-done\n',
-        );
-      final view = focused();
-      _run(view, 'sh ${script.path}');
-      await _until(tester, ready.existsSync, 'the program to read the mouse');
-      await tester.pump(const Duration(milliseconds: 300));
-
-      await rightClick(view);
-      await _until(
-        tester,
-        () => got.existsSync() && got.lengthSync() >= 3,
-        'the right-click to reach the program',
-      );
-      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(
-        find.text('Duplicate session'),
-        findsNothing,
-        reason: 'a menu opened over a program that reads the mouse',
-      );
-
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await rightClick(view);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-      await menuWith('Duplicate session');
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump(const Duration(milliseconds: 600));
-
-      stop.createSync();
-      await _until(
-        tester,
-        () => _text(focused()).any((line) => line.contains('mouse-done')),
-        'the program to finish',
-      );
       await _closeTabs(tester);
     },
   );
