@@ -58,6 +58,18 @@ abstract class FileUploadCapable {
   });
 }
 
+/// [fileName] as [FileUploadCapable.uploadToTmp] names the file it puts on the
+/// host: no directory, and nothing but letters, digits, `.`, `-` and `_`.
+///
+/// It arrives from a picker or a clipboard and would otherwise be free to
+/// carry a path separator or a shell metacharacter into the command line the
+/// path is typed into.
+String uploadName(String fileName) {
+  final base = fileName.split('/').last.split(r'\').last;
+  final safe = base.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  return safe.isEmpty ? 'upload' : safe;
+}
+
 /// Optional capability: reading and writing files on the remote host.
 ///
 /// Kept apart from [FileUploadCapable] because they are different promises.
