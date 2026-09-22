@@ -11,6 +11,7 @@ import 'package:flutter_pty/flutter_pty.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/data/host_repository.dart';
+import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/models/host_profile.dart';
@@ -19,10 +20,12 @@ import 'package:sshbox/src/session/local_transport.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
+import 'package:sshbox/src/ui/desktop_clipboard.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/magic_key.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart' show desktopClipboard;
 import 'package:xterm2/xterm.dart' show TerminalView;
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
@@ -938,20 +941,169 @@ void main() {
       }),
     );
 
-    testWidgets('of text reaches a WSL shell, which is never asked for a '
-        'picture', (tester) async {
+    testWidgets('of text reaches a WSL shell, which takes a picture too', (
+      tester,
+    ) async {
+      // Windows' clipboard is read by the app itself, not the channel: here
+      // it holds no picture.
+      desktopClipboard = DesktopClipboard(
+        start: (_, _, {environment}) async =>
+            throw const ProcessException('powershell', []),
+      );
+      addTearDown(() => desktopClipboard = DesktopClipboard());
       final session = await pumpLocal(tester, wslDistro: 'Ubuntu');
       clipboardText = 'echo hello world';
 
       await paste(tester);
 
       expect(pty.typed.toString(), 'echo hello world');
-      // Windows' clipboard has no picture half, and a Windows path would
-      // mean nothing inside the distro anyway.
       expect(askedForImage, isFalse);
-      expect(session.canUploadFiles, isFalse);
+      // Into the distro's own /tmp, see "a file put in a WSL distro".
+      expect(session.canUploadFiles, isTrue);
       await settle(tester);
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+  });
+
+  group('a file put in a WSL distro or PowerShell', () {
+    late Directory temp;
+    late File picture;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('local-upload');
+      picture = File('${temp.path}/source.png')
+        ..writeAsBytesSync(List.generate(300000, (i) => i % 251));
+    });
+
+    tearDown(() => temp.deleteSync(recursive: true));
+
+    /// [transport] connected on a pty that says nothing, as an upload's
+    /// [FileUploadCapable].
+    Future<FileUploadCapable> connected(LocalTransport transport) async {
+      final session = await transport.connect(
+        host: localHost(),
+        secrets: _NoSecrets(),
+        columns: 80,
+        rows: 25,
+      );
+      addTearDown(session.dispose);
+      return session as FileUploadCapable;
+    }
+
+    Pty noPty(
+      String executable, {
+      List<String> arguments = const [],
+      String? workingDirectory,
+      Map<String, String>? environment,
+      int rows = 25,
+      int columns = 80,
+      bool ackRead = false,
+    }) => _Pty();
+
+    test('in a WSL distro lands in the distro\'s own /tmp, piped through '
+        'wsl.exe, and the path typed is a Linux one', () async {
+      late List<String> ran;
+      final shell = await connected(
+        LocalTransport(
+          wslDistro: 'Ubuntu-22.04',
+          distros: () async => ['Ubuntu-22.04'],
+          startPty: noPty,
+          windows: true,
+          environment: _windowsEnv,
+          tmp: '/tmp',
+          startProcess: (executable, arguments) {
+            ran = [executable, ...arguments];
+            // Inside the distro it is sh running this; here it is this
+            // machine's own, into a /tmp of the test's.
+            final exec = arguments.indexOf('--exec');
+            final sh = [...arguments.sublist(exec + 1)];
+            sh[sh.length - 3] = temp.path;
+            return Process.start('/bin/sh', sh.sublist(1));
+          },
+        ),
+      );
+
+      final typed = await shell.uploadToTmp(
+        localPath: picture.path,
+        fileName: 'pasted-20260921-070503.png',
+      );
+
+      expect(ran.take(8), [
+        r'C:\WINDOWS\System32\wsl.exe',
+        '-d',
+        'Ubuntu-22.04',
+        '--cd',
+        '~',
+        '--exec',
+        'sh',
+        '-c',
+      ]);
+      expect(ran[8], LocalTransport.uploadScript);
+      // The distro's /tmp, each an argument of its own.
+      expect(ran.sublist(9, 12), ['sh', '/tmp', 'pasted-20260921-070503.png']);
+      // What the sh inside printed back: a path in its own filesystem, never
+      // a Windows one a program in WSL could not open.
+      expect(typed, '${temp.path}/pasted-20260921-070503.png');
+      expect(typed, isNot(contains(r'\')));
+      expect(File(typed).readAsBytesSync(), picture.readAsBytesSync());
+    });
+
+    test('in PowerShell lands in the user\'s %TEMP%, quoted when the path '
+        'has a space', () async {
+      final user = Directory('${temp.path}/Trias Gagah')..createSync();
+      final shell = await connected(
+        LocalTransport(
+          startPty: noPty,
+          windows: true,
+          environment: {..._windowsEnv, 'TEMP': user.path},
+          startProcess: (_, _) => throw StateError('no sh on Windows'),
+        ),
+      );
+
+      final typed = await shell.uploadToTmp(
+        localPath: picture.path,
+        fileName: 'shot.png',
+      );
+
+      final path = '${user.path}${Platform.pathSeparator}shot.png';
+      expect(typed, '"$path"');
+      expect(File(path).readAsBytesSync(), picture.readAsBytesSync());
+      expect(typedWindowsPath(r'C:\Temp\shot.png'), r'C:\Temp\shot.png');
+    });
+
+    test('a cancelled upload leaves nothing half written in the '
+        'distro', () async {
+      final shell = await connected(
+        LocalTransport(
+          wslDistro: 'Ubuntu',
+          distros: () async => ['Ubuntu'],
+          startPty: noPty,
+          windows: true,
+          environment: _windowsEnv,
+          startProcess: (executable, arguments) {
+            final exec = arguments.indexOf('--exec');
+            final sh = [...arguments.sublist(exec + 1)];
+            if (sh.length > 3) sh[sh.length - 3] = temp.path;
+            return Process.start('/bin/sh', sh.sublist(1));
+          },
+        ),
+      );
+
+      await expectLater(
+        shell.uploadToTmp(
+          localPath: picture.path,
+          fileName: 'shot.png',
+          cancel: Future.value(),
+        ),
+        throwsA(
+          isA<FileBrowserException>().having(
+            (e) => e.fault,
+            'fault',
+            FileBrowserFault.cancelled,
+          ),
+        ),
+      );
+      expect(File('${temp.path}/shot.png').existsSync(), isFalse);
+    });
   });
 
   test('the local host is this machine, saved nowhere', () {

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../session/session_manager.dart' show SharedFile;
+import 'desktop_clipboard.dart';
 
 /// MainActivity's clipboard, which hands an image over as a file of ours
 /// rather than as pixels over the channel.
@@ -50,8 +51,22 @@ Future<void> pasteIntoTerminal(
     terminal.paste(text);
     return;
   }
-  onNothing?.call('Nothing on the clipboard a terminal can paste');
+  // A desktop whose clipboard could not be asked for a picture says what is
+  // missing, since a picture may be exactly what is there.
+  final missing = _desktop ? desktopClipboard.missing : null;
+  onNothing?.call(missing ?? 'Nothing on the clipboard a terminal can paste');
 }
+
+bool get _desktop => const {
+  TargetPlatform.linux,
+  TargetPlatform.windows,
+}.contains(defaultTargetPlatform);
+
+/// Linux's and Windows' clipboard, read through a program the desktop has
+/// rather than a native half: see [DesktopClipboard]. A test stands its own
+/// in.
+@visibleForTesting
+DesktopClipboard desktopClipboard = DesktopClipboard();
 
 /// The most text a share will paste at a prompt.
 ///
@@ -93,14 +108,20 @@ Future<String?> pasteShared(Terminal terminal, String shared) async {
 /// The image on the clipboard, copied into a file of the app's own, or null
 /// when the clipboard holds none.
 ///
-/// Android and macOS: `Clipboard.getData` reads text and nothing else, and
-/// there is nothing behind this channel on Linux or Windows, whose clipboards
-/// are a job of their own. The native half takes the copy — Android because
-/// SFTP cannot read a `content://` URI, the Mac because a pasteboard holds
-/// bytes rather than a file — and only the path crosses the channel, the same
-/// shape a share arrives in and for the same reason: a picture sent over as
-/// bytes is what freezes the app.
+/// `Clipboard.getData` reads text and nothing else. On Android and macOS a
+/// native half takes the copy — Android because SFTP cannot read a
+/// `content://` URI, the Mac because a pasteboard holds bytes rather than a
+/// file — and only the path crosses the channel, the same shape a share
+/// arrives in and for the same reason: a picture sent over as bytes is what
+/// freezes the app. On Linux and Windows [desktopClipboard] hands back the
+/// same shape, read through a program of the desktop's own.
 Future<SharedFile?> clipboardImage() async {
+  if (_desktop) {
+    return desktopClipboard.image(
+      pasteImageLimit,
+      windows: defaultTargetPlatform == TargetPlatform.windows,
+    );
+  }
   const native = {TargetPlatform.android, TargetPlatform.macOS};
   if (!native.contains(defaultTargetPlatform)) return null;
   final file = await _android.invokeMapMethod<String, String>(
@@ -130,7 +151,8 @@ Future<SharedFile?> insertedImage(KeyboardInsertedContent content) async {
   if (data.length > pasteImageLimit) {
     throw PlatformException(
       code: 'too_big',
-      message: 'That image is bigger than ${pasteImageLimit ~/ (1024 * 1024)} '
+      message:
+          'That image is bigger than ${pasteImageLimit ~/ (1024 * 1024)} '
           'MB — send it from the files drawer instead.',
     );
   }
