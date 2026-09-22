@@ -85,6 +85,11 @@ the shade: the shade also shows the system's own notifications.
 
 ## Claude Code in the container
 
+**Local only, never CI.** The Dockerfile and `swap-demo.sh` act on this
+machine's own containers and volumes, and a signed-in Claude is a person's
+account; neither belongs in a workflow or in `tools/e2e_android.sh`, which run
+only the named flows in `.maestro/` and never look in `.maestro/promo/`.
+
 `Dockerfile` here is the image `jeansh-demo` first ran, with tmux and git added
 (they had been `apk add`ed by hand), and Claude Code from its native installer.
 The login user's home is `/config`, a volume that hides anything built into it,
