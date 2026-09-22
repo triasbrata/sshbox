@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show FileSystemEntity, FileSystemEntityType;
+
+import 'package:desktop_drop/desktop_drop.dart';
 
 import 'package:file_picker/file_picker.dart';
 
@@ -18,6 +21,7 @@ import '../files/transfers.dart';
 import '../git/git_diff.dart';
 import '../platform.dart';
 import '../session/clipboard_terminal.dart';
+import '../session/local_transport.dart' show localHostId;
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
@@ -102,6 +106,9 @@ class _TerminalPageState extends State<TerminalPage> {
   /// The upload under way from here, which the bar along the terminal's
   /// bottom edge follows.
   Transfer? _sending;
+
+  /// Files are being dragged over this terminal, from the OS file manager.
+  bool _dropping = false;
 
   /// Kept for the width of a tablet session rather than per visit, because the
   /// drawer holding it is rebuilt every time it opens and reconnecting SFTP on
@@ -550,6 +557,72 @@ class _TerminalPageState extends State<TerminalPage> {
   /// Puts a path at the prompt, ready for a command to be written around it.
   void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
 
+  /// Puts a file's path at the prompt the way a drop in iTerm2 does, with a
+  /// trailing space so it is ready to be followed by arguments.
+  ///
+  /// As a paste when the program asked for bracketed paste: Claude Code
+  /// turns a pasted image path into [Image #N], while typed keys stay text.
+  /// The space goes inside the brackets — Claude trims it, a shell keeps it;
+  /// outside, it lands before the chip, which Claude inserts only after
+  /// reading the file. Otherwise typed.
+  void _pastePath(String path) {
+    final terminal = _session.terminal;
+    if (terminal.bracketedPasteMode) {
+      terminal.paste('$path ');
+    } else {
+      _session.sendRaw('$path ');
+    }
+  }
+
+  /// A dropped path escaped as iTerm2 escapes one: a backslash before every
+  /// character a shell would read. Measured on Claude Code 2.1.280, the
+  /// escaped form pasted still becomes [Image #N] while a single-quoted one
+  /// stays text — and a bracketed-paste shell (bash 5.1+) needs it escaped
+  /// just as a plain one does.
+  static String _dropEscape(String path) =>
+      path.replaceAllMapped(RegExp(r'[^A-Za-z0-9._/-]'), (m) => '\\${m[0]}');
+
+  /// Files dropped from the OS file manager, one after another in order.
+  ///
+  /// A Mac or Linux Local shell runs on this machine, so the file's own path
+  /// is pasted and nothing copied. Everywhere else — a host over SSH, a WSL
+  /// distro, Windows' PowerShell — it goes through [_upload], as the
+  /// paperclip's pick does, which says how it went itself.
+  Future<void> _dropped(DropDoneDetails details) async {
+    setState(() => _dropping = false);
+    final here =
+        _session.host.id == localHostId &&
+        defaultTargetPlatform != TargetPlatform.windows;
+    for (final item in details.files) {
+      final path = item.path;
+      final kind = FileSystemEntity.typeSync(path);
+      if (here && path.runes.any((c) => c < 0x20 || c == 0x7f)) {
+        // A backslash cannot make a newline or a CR in a name harmless at a
+        // prompt that is not bracketed.
+        if (mounted) {
+          showToast(
+            context,
+            'Not pasted: the name holds a control character: ${item.name}',
+            type: ToastificationType.warning,
+          );
+        }
+      } else if (here && kind != FileSystemEntityType.notFound) {
+        _pastePath(_dropEscape(path));
+      } else if (kind == FileSystemEntityType.file && _session.canUploadFiles) {
+        await _upload((path: path, name: item.name));
+      } else if (mounted) {
+        showToast(
+          context,
+          kind == FileSystemEntityType.directory
+              ? 'A folder cannot be uploaded: ${item.name}'
+              : 'Not a file on this computer: ${item.name}',
+          type: ToastificationType.warning,
+        );
+      }
+      if (!mounted) return;
+    }
+  }
+
   /// Sends the shell to a directory — the one way anything does, so every
   /// `cd` is checked here.
   ///
@@ -629,8 +702,8 @@ class _TerminalPageState extends State<TerminalPage> {
         },
       );
 
-      // A trailing space so the path is ready to be followed by arguments.
-      _session.sendRaw('$remotePath ');
+      // Its name is scrubbed to characters no shell reads, so typed bare.
+      _pastePath(remotePath);
 
       if (mounted) {
         showToast(
@@ -668,9 +741,11 @@ class _TerminalPageState extends State<TerminalPage> {
       // page's two buttons ride in the key bar, where the thumb already is.
       // The font and size come from Settings, and a change there redraws
       // every terminal here at once, tmux's panes re-measured with them.
-      body: ValueListenableBuilder(
-        valueListenable: terminalSettings,
-        builder: (context, style, _) => _buildBody(style),
+      body: _dropTarget(
+        ValueListenableBuilder(
+          valueListenable: terminalSettings,
+          builder: (context, style, _) => _buildBody(style),
+        ),
       ),
       // In the Scaffold's own slot rather than the body so it rides above the
       // soft keyboard and the button below floats clear of it. Its keys are
@@ -737,6 +812,44 @@ class _TerminalPageState extends State<TerminalPage> {
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// On a desktop, files dropped from the OS file manager: see [_dropped].
+  /// Only while this tab is the one showing and nothing covers it, since the
+  /// plugin hands a drop to every target enabled under the pointer, and the
+  /// tabs' IndexedStack lays the hidden ones out right there.
+  Widget _dropTarget(Widget child) {
+    if (!isDesktop) return child;
+    final enable =
+        _session.isConnected &&
+        Visibility.of(context) &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
+    final theme = Theme.of(context);
+    return DropTarget(
+      enable: enable,
+      onDragEntered: (_) => setState(() => _dropping = true),
+      onDragExited: (_) => setState(() => _dropping = false),
+      onDragDone: _dropped,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          if (_dropping && enable)
+            IgnorePointer(
+              child: DecoratedBox(
+                key: const ValueKey('drop-highlight'),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                  border: Border.all(
+                    color: theme.colorScheme.primary,
+                    width: 2,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -1194,7 +1307,8 @@ class _PaneViewState extends State<_PaneView> {
 
   /// A desktop's right-click, where a phone would long-press: the menu a
   /// desktop terminal gives it — Copy for a selection, Paste, and Copy link
-  /// address on an OSC 8 hyperlink, the one clicked or the one selected.
+  /// address on an OSC 8 hyperlink, the one clicked or the one selected —
+  /// then the tab's own menu, as its chip's right-click opens it.
   ///
   /// A program reading the mouse gets the click instead, as in any other
   /// terminal: xterm2 offers it to the program first and calls this only
@@ -1206,6 +1320,7 @@ class _PaneViewState extends State<_PaneView> {
     final link =
         terminal.hyperlinkAt(cell) ??
         (range == null ? null : hyperlinkIn(terminal, range));
+    final tabMenu = TabMenu.of(context)?.entries() ?? const [];
     void copy(String text, String said) {
       Clipboard.setData(ClipboardData(text: text));
       showToast(context, said, type: ToastificationType.success);
@@ -1226,6 +1341,8 @@ class _PaneViewState extends State<_PaneView> {
           onTap: () => copy(link, 'Copied $link'),
           child: const Text('Copy link address'),
         ),
+      // The tab's own, as its chip offers them.
+      if (tabMenu.isNotEmpty) ...[const PopupMenuDivider(), ...tabMenu],
     ]);
   }
 

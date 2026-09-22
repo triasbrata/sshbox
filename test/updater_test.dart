@@ -9,7 +9,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/update_dialog.dart';
 import 'package:sshbox/src/update/updater.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:toastification/toastification.dart';
+
+import 'tui_finders.dart';
 
 /// A release's whole `latest.json`, with [platforms] as given.
 String feedJson({
@@ -116,7 +119,7 @@ _Net _goodBuild() {
 /// Check for updates, then Download, and the download let through: writing
 /// the file is real I/O, which runs only outside the test's own clock.
 Future<void> checkAndDownload(WidgetTester tester) async {
-  await tester.tap(find.text('Check for updates'));
+  await tester.tap(find.bySemanticsLabel('Check for updates'));
   await tester.pumpAndSettle();
   await tester.tap(find.bySemanticsLabel('Download'));
   for (var i = 0; i < 10; i++) {
@@ -162,6 +165,9 @@ void asLinux() {
 }
 
 void main() {
+  // What a check found is app-wide: each test starts with nothing found.
+  setUp(() => updateAvailable.value = null);
+
   group('the version comparison', () {
     test('counts each part as a number, not as text', () {
       expect(isNewer('1.0.10', '1.0.9'), isTrue);
@@ -419,7 +425,7 @@ void main() {
     await pumpTile(tester, _updater(net, host: ''));
 
     expect(find.textContaining('takes no updates'), findsOneWidget);
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     await tester.pumpAndSettle();
     expect(net.asked, isEmpty);
   }, variant: TargetPlatformVariant.desktop());
@@ -428,7 +434,7 @@ void main() {
     final net = _Net({_feed: utf8.encode(feedJson())});
     await pumpTile(tester, _updater(net));
 
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     await tester.pumpAndSettle();
     expect(net.asked, [_feed]);
     expect(find.text('Jeansh 1.0.63 is out'), findsOneWidget);
@@ -443,7 +449,7 @@ void main() {
     final net = _Net({_feed: TimeoutException('no answer in 60s')});
     await pumpTile(tester, _updater(net));
 
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     // The check, then the toast's overlay and its slide in, as the other
     // page tests pump one: pumpAndSettle alone never shows it.
     await tester.pump();
@@ -452,7 +458,8 @@ void main() {
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(
-      tester.widget<ListTile>(find.byType(ListTile)).enabled,
+      tester.widget<TuiButton>(findTuiButton('Check for updates')).onPressed !=
+          null,
       isTrue,
       reason: 'the row can be tapped again',
     );
@@ -537,7 +544,7 @@ void main() {
     final net = _Net({_feed: utf8.encode(feedJson()), _build: body.stream});
     await pumpTile(tester, _updater(net, downloads: downloads));
 
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Download'));
     await tester.pump();

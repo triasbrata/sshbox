@@ -34,56 +34,142 @@ class _UpdateTileState extends State<UpdateTile> {
 
   Future<void> _check() async {
     setState(() => _checking = true);
-    final Update? update;
-    try {
-      update = await _updater.check();
-    } catch (error) {
-      // Everything, not [UpdateException] alone: an error nobody expected
-      // would otherwise leave the row spinning and disabled for good, with
-      // no way out but leaving Settings.
-      if (!mounted) return;
-      setState(() => _checking = false);
-      showToast(context, _said(error), type: ToastificationType.error);
-      return;
-    }
+    final update = await askForUpdate(context, _updater);
     if (!mounted) return;
     // Before the dialog, so the row is not still spinning behind it.
     setState(() => _checking = false);
-    if (update == null) {
-      showToast(
-        context,
-        'Jeansh is up to date',
-        type: ToastificationType.success,
-      );
-      return;
-    }
-    await showUpdate(context, update, using: _updater);
+    if (update != null) await showUpdate(context, update, using: _updater);
   }
 
   @override
   Widget build(BuildContext context) {
     final enabled = _updater.enabled;
-    return ListTile(
-      leading: const Icon(Icons.system_update_alt),
-      title: const Text('Check for updates'),
-      subtitle: Text(
-        enabled
-            ? 'This is Jeansh ${_updater.version}. Jeansh also looks once a '
-                  'day when it starts.'
-            : 'This build takes no updates — it was built without an update '
-                  'host, so there is nothing to check against.',
-      ),
-      enabled: enabled && !_checking,
-      trailing: _checking
-          ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : null,
-      onTap: enabled && !_checking ? _check : null,
+    // termul's action rows, as Settings' others: a button, its small print
+    // under it.
+    Widget note(String text) => Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 16),
+      child: TuiText(text, tone: TuiTextTone.muted, size: 10),
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ValueListenableBuilder<Update?>(
+          valueListenable: updateAvailable,
+          builder: (context, update, _) => update == null
+              ? const SizedBox.shrink()
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TuiButton(
+                      label: 'Jeansh ${update.version} is available',
+                      prefix: '↑',
+                      onPressed: () =>
+                          showUpdate(context, update, using: _updater),
+                    ),
+                    note('Tap to see it and update.'),
+                  ],
+                ),
+        ),
+        Row(
+          children: [
+            TuiButton(
+              label: 'Check for updates',
+              prefix: '↻',
+              variant: TuiButtonVariant.ghost,
+              onPressed: enabled && !_checking ? _check : null,
+            ),
+            if (_checking) ...[
+              const SizedBox(width: 12),
+              // TODO(termul): a spinner (gap 5).
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ],
+          ],
+        ),
+        note(
+          enabled
+              ? 'This is Jeansh ${_updater.version}. Jeansh also looks once '
+                    'a day while it runs.'
+              : _noUpdates,
+        ),
+      ],
     );
   }
+}
+
+const _noUpdates =
+    'This build takes no updates — it was built without an update host, so '
+    'there is nothing to check against.';
+
+/// A check under way, which a second ask joins rather than starting another.
+Future<Update?>? _asking;
+
+/// Asks the feed and always answers: the newer release, or null having said
+/// why there is none — up to date, a feed out of reach, or a build that takes
+/// no updates. Settings' Check for updates and the menu's both come here.
+Future<Update?> askForUpdate(BuildContext context, [Updater? using]) =>
+    _asking ??= _ask(context, using ?? updater).whenComplete(
+      () => _asking = null,
+    );
+
+Future<Update?> _ask(BuildContext context, Updater updater) async {
+  if (!updater.enabled) {
+    showToast(
+      context,
+      'This build takes no updates',
+      type: ToastificationType.info,
+    );
+    return null;
+  }
+  final Update? update;
+  try {
+    update = await updater.check();
+  } catch (error) {
+    // Everything, not [UpdateException] alone: an error nobody expected
+    // would otherwise leave the row spinning and disabled for good.
+    if (context.mounted) {
+      showToast(context, _said(error), type: ToastificationType.error);
+    }
+    return null;
+  }
+  if (update == null && context.mounted) {
+    showToast(context, 'Jeansh is up to date', type: ToastificationType.success);
+  }
+  return update;
+}
+
+/// The menu's Check for updates: [askForUpdate], and the dialog when there
+/// is something newer.
+Future<void> checkForUpdates(BuildContext context, [Updater? using]) async {
+  final update = await askForUpdate(context, using);
+  if (update != null && context.mounted) {
+    await showUpdate(context, update, using: using);
+  }
+}
+
+/// Home's marker while [updateAvailable] holds a newer release: a tap opens
+/// its dialog. Nothing at all otherwise.
+class UpdateChip extends StatelessWidget {
+  const UpdateChip({super.key});
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<Update?>(
+    valueListenable: updateAvailable,
+    builder: (context, update, _) => update == null
+        ? const SizedBox.shrink()
+        : Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: TuiButton(
+              label: 'Update ${update.version}',
+              prefix: '↑',
+              onPressed: () => showUpdate(context, update),
+            ),
+          ),
+  );
 }
 
 /// What a newer release is, and a Download that brings it down and checks it,
@@ -94,10 +180,24 @@ Future<void> showUpdate(
   BuildContext context,
   Update update, {
   Updater? using,
-}) => showDialog<void>(
-  context: context,
-  builder: (_) => _UpdateDialog(update, using ?? updater),
-);
+}) async {
+  // One at a time: two checks finishing together, or a menu click while the
+  // dialog is up, must not stack a second.
+  if (_showingOn?.mounted ?? false) return;
+  final navigator = _showingOn = Navigator.of(context);
+  try {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _UpdateDialog(update, using ?? updater),
+    );
+  } finally {
+    if (_showingOn == navigator) _showingOn = null;
+  }
+}
+
+/// The navigator the update dialog is up in, while it is; a navigator gone
+/// with it still up takes its dialog along.
+NavigatorState? _showingOn;
 
 class _UpdateDialog extends StatefulWidget {
   const _UpdateDialog(this.update, this.updater);

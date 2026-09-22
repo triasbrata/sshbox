@@ -94,15 +94,34 @@ class _SshboxAppState extends State<SshboxApp> {
     localTmux.addListener(_noTmux.clear);
     if (defaultTargetPlatform == TargetPlatform.macOS) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
+    }
+    if (isDesktop) {
       _menuChannel.setMethodCallHandler((call) async {
         if (call.method == 'openSettings') _openSettings();
+        if (call.method == 'checkForUpdates') _checkFromMenu();
       });
+    }
+    // Desktop apps stay open for days: the daily check is asked again every
+    // hour, and still reaches the network once a day.
+    if (updater.enabled) {
+      _updateTimer = Timer.periodic(
+        const Duration(hours: 1),
+        (_) => unawaited(_checkDaily()),
+      );
     }
   }
 
-  /// The Mac's app menu: its Settings… item, clicked, arrives here — see
-  /// `AppDelegate.openSettings`.
+  Timer? _updateTimer;
+
+  /// The native menus: the Mac's Settings… and Check for Updates…, and the
+  /// Help menu's Check for updates… on Windows and Linux, clicked, arrive
+  /// here — see `AppDelegate`, flutter_window.cpp and my_application.cc.
   static const _menuChannel = MethodChannel('sshbox/menu');
+
+  void _checkFromMenu() {
+    final context = _navigator.currentContext;
+    if (context != null) unawaited(checkForUpdates(context));
+  }
 
   void _openSettings() {
     final navigator = _navigator.currentState;
@@ -214,10 +233,8 @@ class _SshboxAppState extends State<SshboxApp> {
     );
   }
 
-  /// Once a day, on a desktop build with an update host baked in: a newer
-  /// release offers itself, and anything else — no update, a feed out of
-  /// reach, a release with no build for this platform — says nothing here.
-  /// Settings' Check for updates is where an answer is always given.
+  /// What the last update left beside this copy goes first, then
+  /// [_checkDaily].
   Future<void> _checkForUpdate() async {
     // What the last update left beside this copy — the copy it replaced, or
     // a build it never swapped in — goes first, and the second is said.
@@ -233,6 +250,14 @@ class _SshboxAppState extends State<SshboxApp> {
         );
       }
     }
+    await _checkDaily();
+  }
+
+  /// Once a day, on a desktop build with an update host baked in: a newer
+  /// release offers itself, and anything else — no update, a feed out of
+  /// reach, a release with no build for this platform — says nothing here.
+  /// Settings' Check for updates, and the menu's, always answer.
+  Future<void> _checkDaily() async {
     final Update? update;
     try {
       update = await updater.checkDaily();
@@ -513,6 +538,7 @@ class _SshboxAppState extends State<SshboxApp> {
 
   @override
   void dispose() {
+    _updateTimer?.cancel();
     lastFault.removeListener(_offerToReport);
     localTmux.removeListener(_noTmux.clear);
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);

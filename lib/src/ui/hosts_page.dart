@@ -19,6 +19,7 @@ import 'os_icon.dart';
 import 'port_forwarding_page.dart';
 import 'settings_page.dart';
 import 'tui.dart';
+import 'update_dialog.dart';
 
 class HostsPage extends StatefulWidget {
   const HostsPage({
@@ -489,7 +490,9 @@ class _HomeHeader extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              for (final (tooltip, icon, onTap) in actions)
+              for (final (tooltip, icon, onTap) in actions) ...[
+                // Left of Settings, while a newer release is out.
+                if (tooltip == 'Settings') const UpdateChip(),
                 // TODO(termul): tooltip (gap 4).
                 Tooltip(
                   message: tooltip,
@@ -507,6 +510,7 @@ class _HomeHeader extends StatelessWidget {
                     ),
                   ),
                 ),
+              ],
             ],
           ),
           const SizedBox(height: 4),

@@ -30,6 +30,7 @@ import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'fake_drop.dart';
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 
@@ -1614,6 +1615,34 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: _android);
 
+    testWidgets('a program that asked for bracketed paste gets the path as a '
+        'paste, which Claude Code turns into [Image #N]', (tester) async {
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+      image = pictureNamed('Screenshot.png');
+
+      await pressCtrlV(tester);
+
+      expect(shell.sent, contains('\x1b[200~/tmp/Screenshot.png \x1b[201~'));
+      expect(shell.sent, isNot(contains('/tmp/Screenshot.png ')));
+      await tester.pumpAndSettle();
+    }, variant: _android);
+
+    testWidgets('the paperclip\'s picture is pasted the same way', (
+      tester,
+    ) async {
+      useFakePicker().next = [
+        _Picked(File('${temp.path}/shot.png')..writeAsBytesSync([1])),
+      ];
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+
+      await tester.tap(find.byTooltip('Upload a file to /tmp'));
+      await tester.pumpAndSettle();
+
+      expect(shell.sent, contains('\x1b[200~/tmp/shot.png \x1b[201~'));
+    }, variant: _android);
+
     testWidgets('on a Mac the picture goes up too, from Cmd+V', (tester) async {
       await pumpPage(tester);
       image = pictureNamed('Screenshot.png');
@@ -1687,7 +1716,8 @@ void main() {
 
     /// The key a copy or a paste chord is made with here: ⌘ on a Mac, Ctrl
     /// everywhere else.
-    LogicalKeyboardKey chordKey() => defaultTargetPlatform == TargetPlatform.macOS
+    LogicalKeyboardKey chordKey() =>
+        defaultTargetPlatform == TargetPlatform.macOS
         ? LogicalKeyboardKey.metaLeft
         : LogicalKeyboardKey.controlLeft;
 
@@ -1773,6 +1803,55 @@ void main() {
 
       expect(shell.uploaded, isEmpty);
       expect(_toast(desktop.said!, ToastificationType.warning), findsOneWidget);
+      await tester.pumpAndSettle();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('files dropped on a desktop go up to the host in order, '
+        'each path pasted, the highlight showing while they hover', (
+      tester,
+    ) async {
+      final session = await pumpPage(tester);
+      session.terminal.write('\x1b[?2004h');
+      final shot = File('${temp.path}/shot.png')..writeAsBytesSync([1]);
+      final log = File('${temp.path}/build.log')..writeAsBytesSync([1]);
+
+      await dropOnTerminal(tester, [shot.path], land: false);
+      expect(find.byKey(const ValueKey('drop-highlight')), findsOneWidget);
+
+      await dropOnTerminal(tester, [shot.path, log.path]);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('drop-highlight')), findsNothing);
+      expect(shell.uploaded.map((file) => file.name), [
+        'shot.png',
+        'build.log',
+      ]);
+      expect(shell.sent.where((text) => text.contains('/tmp/')), [
+        '\x1b[200~/tmp/shot.png \x1b[201~',
+        '\x1b[200~/tmp/build.log \x1b[201~',
+      ]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a folder dropped on a host is refused, not uploaded', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      final folder = Directory('${temp.path}/photos')..createSync();
+
+      await dropOnTerminal(tester, [folder.path]);
+      // A toast goes in after the frame that asked for it.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(shell.uploaded, isEmpty);
+      expect(
+        _toast(
+          'A folder cannot be uploaded: photos',
+          ToastificationType.warning,
+        ),
+        findsOneWidget,
+      );
       await tester.pumpAndSettle();
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 

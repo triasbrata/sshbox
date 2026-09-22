@@ -279,7 +279,7 @@ void main() {
     // that has it. Scroll until it is built rather than weakening the
     // assertion.
     await tester.scrollUntilVisible(
-      find.text('Check for updates'),
+      find.bySemanticsLabel('Check for updates'),
       300,
       scrollable: find.byType(Scrollable).first,
     );
@@ -288,7 +288,7 @@ void main() {
     // Desktop only: Android updates through Play, so this section is not built
     // there at all.
     expect(find.bySemanticsLabel('Updates'), findsOneWidget);
-    expect(find.text('Check for updates'), findsOneWidget);
+    expect(find.bySemanticsLabel('Check for updates'), findsOneWidget);
 
     // With no JEANSH_UPDATE_HOST baked in — which is every build until the
     // bucket is served — the row must say the build takes no updates rather
@@ -885,7 +885,7 @@ touch '${done.path}'
       });
 
       // Asked from Settings, opening it first when it is not open.
-      final check = find.text('Check for updates');
+      final check = find.bySemanticsLabel('Check for updates');
       Future<void> askSettings() async {
         if (check.evaluate().isEmpty) {
           await _settings(tester);

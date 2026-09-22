@@ -88,6 +88,11 @@ dependencies:
   # Already here under package_info_plus, pure Dart: GDI's font families on
   # Windows, for the terminal font picker (lib/src/system_fonts.dart).
   win32: ^6.4.0
+  # Files dropped from the OS file manager onto a terminal, on a desktop.
+  # 0.8.4 without its Android half, which would take every drag on the
+  # activity's content view — see third_party/desktop_drop/JEANSH.md.
+  desktop_drop:
+    path: third_party/desktop_drop
 
 dev_dependencies:
   flutter_test:
