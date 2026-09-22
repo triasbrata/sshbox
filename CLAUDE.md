@@ -79,6 +79,18 @@ it on the tablet and said it is OK.
 
 - **New feature:** as soon as work starts, add a row to the table below naming
   the responsible session.
+- **E2E before UAT:** nothing goes to the user for UAT until a flow for it has run
+  green. The user asked for this on 2026-09-22 ("coba sebelum aku melakukan uat kamu juga
+  melakukan e2e, dan kordinasikan dengan sibling agent yang bertugas ini"), so that a UAT
+  fails less often and what reaches the user stays safe.
+  - When a change lands on `main`, the coordinator sends the e2e session (**sshbox e2e
+    center**, owner of `.maestro/` and `e2e/coverage.yaml`) the commit, what to check, and
+    the steps.
+  - The e2e session writes or extends the flow, and runs it on the CI emulator.
+  - Only after that run is green does the coordinator install a build on the tablet or
+    open the UAT issue, attaching the evidence where it helps.
+  - A change no Android flow can reach, such as desktop-only work, gets whatever test
+    the e2e session can offer instead. The row says plainly what went unproven.
 - **Status:** update the row as the feature moves along:
   `in development` → `on tablet, UAT pending` → `UAT passed` or
   `UAT failed: <what the user saw>`.
