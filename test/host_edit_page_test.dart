@@ -106,6 +106,34 @@ TextField _field(WidgetTester tester, String label) =>
     tester.widget<TextField>(find.widgetWithText(TextField, label));
 
 void main() {
+  testWidgets('a new host reads Host, Port, Username, one under the other, '
+      'with no help text between them', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    // A phone.
+    await tester.binding.setSurfaceSize(const Size(412, 915));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final secrets = InMemorySecretStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostEditPage(
+          repository: HostRepository(secrets),
+          secrets: secrets,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    Rect field(String label) =>
+        tester.getRect(find.widgetWithText(TextFormField, label));
+    final host = field('Host');
+    final port = field('Port');
+    final username = field('Username');
+    // Only the gap the form puts between two fields.
+    expect(port.top - host.bottom, lessThanOrEqualTo(12));
+    expect(username.top - port.bottom, lessThanOrEqualTo(12));
+    expect(field('Alternative address').top, greaterThan(username.bottom));
+  });
+
   testWidgets('picks a saved host to jump through, and saves it with the '
       'alternative address', (
     tester,

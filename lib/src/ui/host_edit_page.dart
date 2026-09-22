@@ -392,23 +392,6 @@ class _HostEditPageState extends State<HostEditPage> {
             ),
             const SizedBox(height: 12),
             TextFormField(
-              controller: _altHost,
-              decoration: const InputDecoration(
-                labelText: 'Alternative address',
-                hintText: '192.168.1.20',
-                helperText:
-                    'Optional. Another address for the same '
-                    'machine, such as its LAN IP when you usually reach it '
-                    'over Tailscale. Jeansh tries both and uses whichever '
-                    'answers first, with the same port, user and sign-in.',
-                helperMaxLines: 5,
-              ),
-              autocorrect: false,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
               controller: _port,
               decoration: const InputDecoration(labelText: 'Port'),
               keyboardType: TextInputType.number,
@@ -430,6 +413,26 @@ class _HostEditPageState extends State<HostEditPage> {
               validator: (value) => (value == null || value.trim().isEmpty)
                   ? 'A username is required'
                   : null,
+            ),
+            const SizedBox(height: 12),
+            // After the three a first host needs, not between Host and Port:
+            // its help runs to three lines, which on a phone with the
+            // keyboard up pushed Port off the screen.
+            TextFormField(
+              controller: _altHost,
+              decoration: const InputDecoration(
+                labelText: 'Alternative address',
+                hintText: '192.168.1.20',
+                helperText:
+                    'Optional. Another address for the same '
+                    'machine, such as its LAN IP when you usually reach it '
+                    'over Tailscale. Jeansh tries both and uses whichever '
+                    'answers first, with the same port, user and sign-in.',
+                helperMaxLines: 5,
+              ),
+              autocorrect: false,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 12),
             if (_jumpHosts case final jumpHosts?) ...[
