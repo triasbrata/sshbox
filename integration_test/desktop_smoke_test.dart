@@ -30,7 +30,9 @@ import 'package:flutter/material.dart'
         DropdownButton,
         InkWell,
         ListTile,
+        PopupMenuDivider,
         SegmentedButton,
+        SimpleDialogOption,
         TextField,
         Tooltip;
 import 'package:flutter/services.dart';
@@ -508,6 +510,158 @@ touch '${done.path}'
         'a second Local shell',
       );
       expect(find.textContaining('no longer saved'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #87: a right-click in a tab's page opens the tab's own menu there. In a
+  // terminal its Paste comes first and the tab's items after a divider; a
+  // program reading the mouse gets a plain right-click, and Shift keeps one
+  // for the menu; and in a group the pane clicked takes focus and opens its
+  // own menu, Take out of group among it.
+  testWidgets(
+    'a right-click in a terminal opens its tab\'s menu, unless a program '
+    'reads the mouse',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      await _launch(tester);
+      await _localShell(tester);
+      final tabs = find.byWidgetPredicate(
+        (w) =>
+            w is Tooltip &&
+            ((w.message ?? '').startsWith('Close ') ||
+                w.message == 'Reconnect'),
+      );
+      final before = tabs.evaluate().length;
+
+      // The terminals on screen: two in a group, one otherwise.
+      List<TerminalView> shown() => find
+          .byType(TerminalView)
+          .evaluate()
+          .map((element) => element.widget as TerminalView)
+          .toList();
+      TerminalView focused() =>
+          shown().firstWhere((each) => each.focusNode?.hasFocus ?? false);
+      // Found by its focus node, which the page keeps: the widget itself is
+      // built anew as the shell draws.
+      Future<void> rightClick(TerminalView view) => tester.tapAt(
+        tester.getCenter(
+          find.byWidgetPredicate(
+            (w) => w is TerminalView && w.focusNode == view.focusNode,
+          ),
+        ),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      Future<void> menuWith(String item) async {
+        await _until(
+          tester,
+          () => find.text(item).evaluate().isNotEmpty,
+          'the menu to offer $item',
+        );
+        await tester.pump(const Duration(milliseconds: 600));
+      }
+
+      // Paste, a divider, then what the tab's chip offers.
+      await rightClick(focused());
+      await menuWith('Duplicate session');
+      final paste = tester.getTopLeft(find.text('Paste')).dy;
+      final divider = tester.getTopLeft(find.byType(PopupMenuDivider)).dy;
+      final duplicate = tester.getTopLeft(find.text('Duplicate session')).dy;
+      expect(
+        paste < divider && divider < duplicate,
+        isTrue,
+        reason: 'Paste, a divider and the tab\'s items, in that order',
+      );
+      await tester.tap(find.text('Duplicate session'));
+      await _until(
+        tester,
+        () => tabs.evaluate().length == before + 1,
+        'a second Local shell',
+      );
+
+      // The two in a group: the pane that is not focused, right-clicked,
+      // takes focus and opens its own menu.
+      await rightClick(focused());
+      await _pick(tester, 'Group with…');
+      await _until(
+        tester,
+        () => find.byType(SimpleDialogOption).evaluate().isNotEmpty,
+        'the tabs to group with',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(find.byType(SimpleDialogOption).first);
+      await _until(
+        tester,
+        () => shown().length == 2,
+        'the two shells side by side',
+      );
+      final other = shown().firstWhere(
+        (each) => !(each.focusNode?.hasFocus ?? false),
+      );
+      await rightClick(other);
+      await menuWith('Take out of group');
+      expect(
+        other.focusNode?.hasFocus,
+        isTrue,
+        reason: 'the menu opened for a pane that did not take focus',
+      );
+      await tester.tap(find.text('Take out of group'));
+      await _until(tester, () => shown().length == 1, 'the group undone');
+
+      // A program reading the mouse: a plain right-click reaches it as
+      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
+      // menu. It records what it reads until told to stop.
+      final dir = _scratch();
+      final got = File('${dir.path}/got');
+      final ready = File('${dir.path}/ready');
+      final stop = File('${dir.path}/stop');
+      final script = File('${dir.path}/mouse.sh')
+        ..writeAsStringSync(
+          "printf '\\033[?1000h'\n"
+          'stty raw -echo\n'
+          'touch ${ready.path}\n'
+          // From the terminal by name: a background job of a
+          // non-interactive sh reads /dev/null otherwise.
+          'dd bs=1 count=6 of=${got.path} </dev/tty 2>/dev/null &\n'
+          'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
+          'kill \$! 2>/dev/null\n'
+          'stty sane\n'
+          "printf '\\033[?1000l'\n"
+          'echo mouse-done\n',
+        );
+      final view = focused();
+      _run(view, 'sh ${script.path}');
+      await _until(tester, ready.existsSync, 'the program to read the mouse');
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await rightClick(view);
+      await _until(
+        tester,
+        () => got.existsSync() && got.lengthSync() >= 3,
+        'the right-click to reach the program',
+      );
+      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Duplicate session'),
+        findsNothing,
+        reason: 'a menu opened over a program that reads the mouse',
+      );
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await rightClick(view);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await menuWith('Duplicate session');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      stop.createSync();
+      await _until(
+        tester,
+        () => _text(focused()).any((line) => line.contains('mouse-done')),
+        'the program to finish',
+      );
       await _closeTabs(tester);
     },
   );
