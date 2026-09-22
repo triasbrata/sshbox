@@ -217,6 +217,28 @@ void main() {
     expect(shell.sent, ['a', 'b']);
   });
 
+  testWidgets('a dialog over the shell keeps the keys it holds', (
+    tester,
+  ) async {
+    await pumpTabs(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+
+    // Nothing in it takes focus, so its route's own scope holds it: never the
+    // shell's scope, which is all the rescue above ever takes focus from.
+    showDialog<void>(
+      context: tester.element(find.byType(TerminalView)),
+      builder: (_) => const AlertDialog(content: Text('asking')),
+    );
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
+    expect(terminal(tester).hasFocus, isFalse);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('asking'), findsNothing);
+    expect(shell.sent, ['a']);
+  });
+
   testWidgets('a tab opened before a page leaves the page as it was', (
     tester,
   ) async {

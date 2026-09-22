@@ -297,6 +297,39 @@ class _Recording {
   }
 }
 
+/// xdotool, which drives this run's own Xvfb display as a person would.
+Future<String> _xdo(List<String> args) async {
+  final result = await Process.run('xdotool', args);
+  expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
+  return '${result.stdout}'.trim();
+}
+
+/// Jeansh's window on the display.
+Future<String> _window() async => (await _xdo([
+  'search',
+  '--onlyvisible',
+  '--name',
+  r'^Jeansh$',
+])).split('\n').first;
+
+/// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
+/// the embedder, which is how a menu is shut.
+///
+/// A menu it shuts is gone only once its closing animation has run, and this
+/// binding draws a frame only when pumped: one pump after the key is the
+/// animation's first tick, the menu still fully drawn. So a check that it
+/// closed waits for it with [_until], as the one after this does — a single
+/// pump read an open menu that had already been popped (run 35782032581).
+Future<void> _escape(WidgetTester tester) async {
+  if (Platform.isLinux) {
+    await _xdo(['windowfocus', '--sync', await _window()]);
+    await _xdo(['key', 'Escape']);
+  } else {
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+  }
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
 /// A GTK window offering files for a drag, as a file manager does, put
 /// below Jeansh's window, which fills the top 720 rows of the 1280x900
 /// display tools/e2e_desktop.sh gives the run.
@@ -762,8 +795,13 @@ touch '${done.path}'
       await rightClick(view);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await menuWith('Duplicate session');
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump(const Duration(milliseconds: 600));
+      // Escape shuts it, and the focus goes back to the terminal.
+      await _escape(tester);
+      await _until(
+        tester,
+        () => find.text('Duplicate session').evaluate().isEmpty,
+        'Escape to close the terminal\'s menu',
+      );
 
       stop.createSync();
       await _until(
@@ -793,32 +831,30 @@ touch '${done.path}'
       );
       await rightClick(other);
       await menuWith('Take out of group');
-      // An open menu holds the focus itself, and gives it back as it closes:
-      // to the pane clicked, if the click moved it there.
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump(const Duration(milliseconds: 600));
+      // The menu keeps the keys, so Escape closes it and the focus goes back
+      // to the pane the click moved it to.
+      await _escape(tester);
+      await _until(
+        tester,
+        () => find.text('Take out of group').evaluate().isEmpty,
+        'Escape to close the menu: it did not hold the keys',
+      );
       expect(
         other.focusNode?.hasFocus,
         isTrue,
         reason: 'the menu opened for a pane that did not take focus',
       );
-      // Seen once: a second right-click on the pane, focused by then, showed
-      // its menu and lost it within 600 ms. Watched here, not yet asserted,
-      // until it is known whether that is the app or this test.
+      // And a menu opened on the pane, focused by now, stays open.
       await rightClick(other);
-      final open = <bool>[];
       for (var i = 0; i < 20; i++) {
         await tester.pump(const Duration(milliseconds: 100));
-        open.add(find.text('Take out of group').evaluate().isNotEmpty);
+        expect(
+          find.text('Take out of group'),
+          findsOneWidget,
+          reason: 'the menu closed by itself ${(i + 1) * 100} ms after opening',
+        );
       }
-      debugPrint(
-        'A second right-click on the focused pane, the menu open every '
-        '100 ms: ${open.map((o) => o ? 'O' : '.').join()}',
-      );
-      if (open.last) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-        await tester.pump(const Duration(milliseconds: 600));
-      }
+      await _escape(tester);
 
       await _closeTabs(tester);
     },
@@ -1402,22 +1438,10 @@ touch '${done.path}'
 
       // The menu bar's Help, then its one item.
       Future<void> helpCheck() async {
-        Future<String> xdo(List<String> args) async {
-          final result = await Process.run('xdotool', args);
-          expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
-          return '${result.stdout}'.trim();
-        }
-
-        final window = (await xdo([
-          'search',
-          '--onlyvisible',
-          '--name',
-          r'^Jeansh$',
-        ])).split('\n').first;
-        await xdo(['mousemove', '--window', window, '20', '10']);
-        await xdo(['click', '1']);
+        await _xdo(['mousemove', '--window', await _window(), '20', '10']);
+        await _xdo(['click', '1']);
         await Future<void>.delayed(const Duration(milliseconds: 600));
-        await xdo(['key', 'Down', 'Return']);
+        await _xdo(['key', 'Down', 'Return']);
       }
 
       await helpCheck();
