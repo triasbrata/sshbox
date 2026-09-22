@@ -301,6 +301,76 @@ for name in chat_scroll chat_tool_rows; do
   done
   echo "::endgroup::"
 done
+
+# Chat typing into a running Claude Code session and showing what is typed at
+# its terminal, both ways (UAT issue #15), against a stand-in interactive
+# session in a tmux pane on the host: tools/e2e_live_claude.py, which keeps
+# the state file, the ❯ input line and the transcript chat's host checks
+# read. The phone's message must be typed into the pane and answered; then a
+# line typed at the pane itself, once the phone's has landed, must show in
+# the chat too.
+LIVE_SID=e2e00004-0000-4000-8000-000000000004
+live_session() {
+  local home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H)
+  # Only where nothing of anyone's is: no tmux session of this name, and no
+  # session state file already there.
+  if "${as[@]}" tmux has-session -t e2e-live 2>/dev/null ||
+    sudo find "$home/.claude/sessions" -name '*.json' 2>/dev/null | grep -q .; then
+    echo "::error::the host already has a live session; not starting another" >&2
+    exit 1
+  fi
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_live_claude.py "$home/.e2e-live-claude.py"
+  # One turn already said, so the chat has a transcript to open.
+  "${as[@]}" python3 - "$home" "$LIVE_SID" <<'PY'
+import json, os, sys
+home, sid = sys.argv[1], sys.argv[2]
+d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+os.makedirs(d, exist_ok=True)
+with open(os.path.join(d, sid + '.jsonl'), 'a') as f:
+    for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'Earlier question'}},
+              {'type': 'assistant', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': 'Earlier answer'}]}}):
+        f.write(json.dumps(e) + '\n')
+PY
+  "${as[@]}" sh -c 'cd && LANG=C.UTF-8 LC_ALL=C.UTF-8 tmux new-session -d -s e2e-live \
+    -x 120 -y 30 "env PYTHONIOENCODING=utf-8 python3 $HOME/.e2e-live-claude.py $1"' \
+    sh "$LIVE_SID"
+  sleep 1
+  local pid
+  pid=$("${as[@]}" tmux list-panes -t e2e-live -F '#{pane_pid}')
+  # Listed as the CLI lists an interactive session: its pid, idle, no id.
+  "${as[@]}" python3 - "$home" "$LIVE_SID" "$pid" <<'PY'
+import json, os, sys
+home, sid, pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+path = os.path.join(home, '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'kind': 'interactive', 'pid': pid, 'sessionId': sid,
+             'name': 'E2E live session', 'cwd': home, 'status': 'idle',
+             'startedAt': 1790000000100})
+json.dump(rows, open(path, 'w'))
+PY
+  echo "live session in tmux pane of pid $pid"
+}
+
+echo "::group::chat_two_way (report only)"
+live_session
+# The terminal's side: once the phone's message is in the transcript, a line
+# typed at the pane, as someone at that terminal would.
+transcript=/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl
+(
+  for _ in $(seq 240); do
+    sudo grep -qi 'hello from the phone' "$transcript" 2>/dev/null && break
+    sleep 1
+  done
+  sleep 3
+  sudo -u "$SSH_USER" -H tmux send-keys -t e2e-live -l 'typed at the terminal'
+  sudo -u "$SSH_USER" -H tmux send-keys -t e2e-live Enter
+) &
+terminal_side=$!
+flow chat_two_way || echo "::warning::chat_two_way failed -- report only, not gating"
+kill "$terminal_side" 2>/dev/null
+sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+echo "::endgroup::"
 stand_in ''
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named

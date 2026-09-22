@@ -110,11 +110,12 @@ jobs:
       # The host the flows connect to: this runner's own sshd, which the
       # emulator reaches as 10.0.2.2 -- its alias for the host's loopback.
       # A throwaway user with a throwaway password, both made here and gone
-      # with the runner.
+      # with the runner. tmux for the chat flow that types into a session's
+      # pane.
       - name: Start an sshd for the flows
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openssh-server sshpass
+          sudo apt-get install -y -qq openssh-server sshpass tmux
           password="$(openssl rand -hex 16)"
           echo "::add-mask::$password"
           sudo useradd -m -s /bin/bash e2e

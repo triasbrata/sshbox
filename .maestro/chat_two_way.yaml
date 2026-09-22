@@ -1,0 +1,67 @@
+# Chat and a running Claude Code session, both ways (UAT issue #15): "harusnya,
+# flow yang expected adalah user bisa mengirimkan chat dari terminal dan
+# terbaca di chat tab dan sebaliknya". An interactive session used to be
+# read-only in chat; now chat types into its tmux pane.
+#
+# The session is a stand-in's, from tools/e2e_android.sh's live_session:
+# tools/e2e_live_claude.py in a tmux pane on the host, keeping the state file,
+# the ❯ input line and the transcript chat's host checks read, and answering
+# each line with "Echo: …". The phone's message must go into the pane and be
+# answered; then a line typed at the pane itself — the runner types it once
+# the phone's has landed — must show in the chat too.
+#
+# Matched without regard to case: the field capitalises a sentence.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)E2E live session.*"
+
+# Typed into, not read-only: the pane was found, and the input says so.
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+- assertVisible: "Message “E2E live session”…"
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "hello from the phone"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "(?i)Echo: hello from the phone"
+    timeout: 30000
+- takeScreenshot: chat-two-way-phone
+
+# And the other way: what was typed at the terminal shows here as it happens.
+- extendedWaitUntil:
+    visible: "(?i)Echo: typed at the terminal"
+    timeout: 60000
+- assertVisible: "(?i)typed at the terminal"
+- takeScreenshot: chat-two-way-terminal
+
+# No hideKeyboard: with none up it presses Back. The strip is reachable either
+# way.
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
