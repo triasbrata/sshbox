@@ -734,11 +734,17 @@ touch '${done.path}'
       );
       await rightClick(other);
       await menuWith('Take out of group');
+      // An open menu holds the focus itself, and gives it back as it closes:
+      // to the pane clicked, if the click moved it there.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 600));
       expect(
         other.focusNode?.hasFocus,
         isTrue,
         reason: 'the menu opened for a pane that did not take focus',
       );
+      await rightClick(other);
+      await menuWith('Take out of group');
       await tester.tap(find.text('Take out of group'));
       await _until(tester, () => shown().length == 1, 'the group undone');
 
