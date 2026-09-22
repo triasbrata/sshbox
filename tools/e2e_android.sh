@@ -26,7 +26,7 @@ APK="${APK:-build/app/outputs/flutter-apk/app-debug.apk}"
 : "${SSH_PASSWORD:?SSH_PASSWORD must be set}"
 
 GATING=(smoke connect_and_keybar)
-REPORT_ONLY=(tabs file_browser logs duplicate_session)
+REPORT_ONLY=(tabs file_browser logs duplicate_session card_tap_reconnect)
 
 # No HOST_LABEL here. Maestro 2.10 applies a flow's own `env:` block after the
 # -e values, so every flow's default of "WSL via" would win over anything passed

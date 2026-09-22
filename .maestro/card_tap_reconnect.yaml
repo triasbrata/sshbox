@@ -1,0 +1,59 @@
+# A tap on a host card reconnects that host's restored tab, rather than opening
+# a second one beside it (0ce4c2c).
+#
+# A session live when the app is killed leaves its tab saved, and a relaunch
+# brings it back on the strip, unconnected. Before this change a tap on the card
+# opened a new tab next to it -- two tabs for one host, one of them dead. Now the
+# first tap connects the restored tab, so there is one.
+#
+# The other flows close their sessions on purpose, so they never meet a restored
+# tab. This one kills the app with a session live, which is the case itself.
+#
+# The check that tells the old behaviour from the new is the tab count: exactly
+# one close button, and no second. Before the change there would be two.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+# A live session.
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# Killed with it live -- no tab closed -- so its tab is saved and comes back.
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+
+# The restored tab is on the strip, unconnected: one close button already.
+- assertVisible: "(?s)Close .*"
+
+# One tap on the card: the restored tab connects, and no second tab opens.
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+- assertVisible: "(?s)Close .*"
+- assertNotVisible:
+    text: "(?s)Close .*"
+    index: 1
+
+# Close it, leaving no restored tab for the next flow.
+- tapOn: "Close ${HOST_LABEL}.*"
