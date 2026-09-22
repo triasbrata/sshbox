@@ -34,7 +34,8 @@ appId: cloud.brata.terminal
             text: "Add port"
           direction: DOWN
       - tapOn: "Add port"
-- hideKeyboard
+# No hideKeyboard: nothing here raises one, and with none up Maestro's
+# hideKeyboard presses Back, which left the editor in the first run.
 - scrollUntilVisible:
     element:
       text: "Add port"
@@ -49,5 +50,7 @@ appId: cloud.brata.terminal
     direction: UP
 - takeScreenshot: port-forward-no-host
 
+# And nothing saved: the list behind the editor is still empty.
 - back
+- assertVisible: "No port forwards yet"
 - back
