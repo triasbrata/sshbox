@@ -297,6 +297,35 @@ class _Recording {
   }
 }
 
+/// xdotool, which drives this run's own Xvfb display as a person would.
+Future<String> _xdo(List<String> args) async {
+  final result = await Process.run('xdotool', args);
+  expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
+  return '${result.stdout}'.trim();
+}
+
+/// Jeansh's window on the display.
+Future<String> _window() async => (await _xdo([
+  'search',
+  '--onlyvisible',
+  '--name',
+  r'^Jeansh$',
+])).split('\n').first;
+
+/// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
+/// the embedder, which is how a menu is shut. The test framework's own
+/// simulated Escape left a popup menu open here even with the menu holding
+/// the focus, so a menu's Escape is not checked with it.
+Future<void> _escape(WidgetTester tester) async {
+  if (Platform.isLinux) {
+    await _xdo(['windowfocus', '--sync', await _window()]);
+    await _xdo(['key', 'Escape']);
+  } else {
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+  }
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
 /// A GTK window offering files for a drag, as a file manager does, put
 /// below Jeansh's window, which fills the top 720 rows of the 1280x900
 /// display tools/e2e_desktop.sh gives the run.
@@ -762,15 +791,11 @@ touch '${done.path}'
       await rightClick(view);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await menuWith('Duplicate session');
-      debugPrint(
-        'Focus with the single shell\'s menu open: '
-        '${FocusManager.instance.primaryFocus}',
-      );
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump(const Duration(milliseconds: 600));
-      debugPrint(
-        'After Escape on the single shell, menu still open: '
-        '${find.text('Duplicate session').evaluate().isNotEmpty}',
+      await _escape(tester);
+      expect(
+        find.text('Duplicate session'),
+        findsNothing,
+        reason: 'Escape did not close the terminal\'s menu',
       );
 
       stop.createSync();
@@ -801,21 +826,9 @@ touch '${done.path}'
       );
       await rightClick(other);
       await menuWith('Take out of group');
-      debugPrint(
-        'Focus with the grouped pane\'s menu open: '
-        '${FocusManager.instance.primaryFocus}',
-      );
       // The menu keeps the keys, so Escape closes it and the focus goes back
-      // to the pane the click moved it to. It once lost them to the rebuild
-      // of the frame that moved the focus: Escape reached the terminal and
-      // the menu stayed open (#87's group bug).
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump(const Duration(milliseconds: 600));
-      debugPrint(
-        'Focus after Escape: ${FocusManager.instance.primaryFocus}, '
-        'menu still open: '
-        '${find.text('Take out of group').evaluate().isNotEmpty}',
-      );
+      // to the pane the click moved it to.
+      await _escape(tester);
       expect(
         find.text('Take out of group'),
         findsNothing,
@@ -836,8 +849,7 @@ touch '${done.path}'
           reason: 'the menu closed by itself ${(i + 1) * 100} ms after opening',
         );
       }
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump(const Duration(milliseconds: 600));
+      await _escape(tester);
 
       await _closeTabs(tester);
     },
@@ -1421,22 +1433,10 @@ touch '${done.path}'
 
       // The menu bar's Help, then its one item.
       Future<void> helpCheck() async {
-        Future<String> xdo(List<String> args) async {
-          final result = await Process.run('xdotool', args);
-          expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
-          return '${result.stdout}'.trim();
-        }
-
-        final window = (await xdo([
-          'search',
-          '--onlyvisible',
-          '--name',
-          r'^Jeansh$',
-        ])).split('\n').first;
-        await xdo(['mousemove', '--window', window, '20', '10']);
-        await xdo(['click', '1']);
+        await _xdo(['mousemove', '--window', await _window(), '20', '10']);
+        await _xdo(['click', '1']);
         await Future<void>.delayed(const Duration(milliseconds: 600));
-        await xdo(['key', 'Down', 'Return']);
+        await _xdo(['key', 'Down', 'Return']);
       }
 
       await helpCheck();
