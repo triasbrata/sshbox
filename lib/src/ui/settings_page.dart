@@ -359,6 +359,21 @@ class DotfilesSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True shows them.
 final showDotfiles = DotfilesSetting();
 
+/// The Settings route open on each navigator, for [openSettings] to find.
+final _openSettings = Expando<Route<void>>();
+
+/// Settings, pushed on [navigator] — unless it is open there already, when
+/// asking again does nothing rather than stack a second copy. Home's ⚙, the
+/// first run's toast and a Mac's ⌘, all come here, so each finds the others'.
+void openSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
+  if (_openSettings[navigator]?.isActive ?? false) return;
+  final route = MaterialPageRoute<void>(
+    builder: (_) => SettingsPage(notifyKeys: notifyKeys),
+  );
+  _openSettings[navigator] = route;
+  navigator.push(route);
+}
+
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.notifyKeys});
