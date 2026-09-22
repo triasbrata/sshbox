@@ -406,9 +406,12 @@ class _TerminalPageState extends State<TerminalPage> {
     widget.onOpenFile(path, line: line);
   }
 
-  /// Whether a tap now is a Ctrl+tap: CTRL latched on the bar, or held on a
-  /// hardware keyboard — which covers a mouse click with Ctrl too.
-  bool get _ctrl => _keyBar.ctrl || HardwareKeyboard.instance.isControlPressed;
+  /// Whether a tap now is a Ctrl+tap: CTRL latched on the bar, or the link
+  /// key held on a hardware keyboard — which covers a mouse click with it
+  /// too. That key is Ctrl on a phone, and on a desktop whichever Settings
+  /// picked, ⌘ by default on a Mac: see [LinkModifierSetting]. The other one
+  /// then opens nothing, and its click reaches the program as a click.
+  bool get _ctrl => _keyBar.ctrl || linkModifier.chosen.isPressed;
 
   /// Only watches. The key still goes wherever it was going.
   bool _onHardwareKey(KeyEvent _) {

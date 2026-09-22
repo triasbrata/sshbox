@@ -1,0 +1,78 @@
+# The files drawer remembers whether it shows dotfiles (e00c941). Before, the
+# choice went back to its default every time the drawer closed, so a user who
+# works in dotfiles turned it on again at every open. It is now kept with the
+# app's settings: across the drawer closing, and across an app restart.
+#
+# The setting is app-wide and persists, so this flow MUST end with dotfiles
+# hidden again: file_browser asserts the menu offers "Show dotfiles", and would
+# fail for this flow's reason if it were left on. The runner also puts this
+# after file_browser, so even a failure halfway cannot reach it.
+#
+# The runner's e2e user was made with useradd -m, so its home holds .bashrc and
+# .profile from /etc/skel -- dotfiles to look for. A row may carry more than the
+# name, so the selector is anchored at the name and open after it.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: "Filter by name"
+    timeout: 15000
+# Hidden, to begin with.
+- assertNotVisible: '(?s)\.bashrc.*'
+- tapOn: "More"
+- tapOn: "Show dotfiles"
+- extendedWaitUntil:
+    visible: '(?s)\.bashrc.*'
+    timeout: 10000
+
+# Closed and opened again: still shown. This is the part that used to forget.
+- tapOn: "Close files"
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: '(?s)\.bashrc.*'
+    timeout: 10000
+
+# Across an app restart: still shown. The tab is closed first, so the relaunch
+# brings back no restored tab to trip over.
+- tapOn: "Close files"
+- tapOn: "Close ${HOST_LABEL}.*"
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: '(?s)\.bashrc.*'
+    timeout: 15000
+
+# Hide sticks the same way -- and this puts the setting back to its default.
+- tapOn: "More"
+- tapOn: "Hide dotfiles"
+- assertNotVisible: '(?s)\.bashrc.*'
+- tapOn: "Close files"
+- tapOn: "Close ${HOST_LABEL}.*"

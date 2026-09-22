@@ -171,16 +171,19 @@ String wslEnv(String? current, Iterable<String> names) {
 /// the files drawer and the tailnet forwarding switch themselves off for it
 /// rather than failing at a use. [CommandCapable] it does have, which is what
 /// the git tab runs through, [ChannelCapable], which is what tmux's control
-/// mode runs through — see [connect]'s `shell` — and on a Mac or Linux
-/// [FileUploadCapable], which is what a pasted picture goes through.
+/// mode runs through — see [connect]'s `shell` — and [FileUploadCapable],
+/// which is what a pasted picture, the upload button and a share go through.
 class LocalTransport implements SessionTransport {
   /// [windows] and [environment] stand in for [Platform.isWindows] and
-  /// [Platform.environment], for tests, and [distros] for [wslDistros].
+  /// [Platform.environment], for tests, [distros] for [wslDistros],
+  /// [startProcess] for [Process.start] and [tmp] for a WSL distro's `/tmp`.
   LocalTransport({
     this.shell,
     this.wslDistro,
     this.tmux,
     this.startPty = Pty.start,
+    this.startProcess = Process.start,
+    this.tmp = '/tmp',
     bool? windows,
     Map<String, String>? environment,
     Future<List<String>> Function()? distros,
@@ -216,6 +219,14 @@ class LocalTransport implements SessionTransport {
     bool ackRead,
   })
   startPty;
+
+  /// How the `sh` an upload pipes a file into is started.
+  final Future<Process> Function(String executable, List<String> arguments)
+  startProcess;
+
+  /// Where an upload lands in a Mac's, a Linux machine's or a WSL distro's
+  /// own filesystem.
+  final String tmp;
 
   @override
   Future<TerminalSession> connect({
@@ -298,11 +309,12 @@ class LocalTransport implements SessionTransport {
     }
   }
 
-  /// A session over [pty], or with none one for tmux: on a Mac or Linux one
-  /// that takes a pasted picture too, tmux's included, whose panes are
-  /// pasted into as the shell is.
+  /// A session over [pty], or with none one for tmux, taking a pasted
+  /// picture either way — tmux's panes are pasted into as the shell is: on a
+  /// Mac or Linux kept on this machine, on Windows put where the distro or
+  /// PowerShell can open it, see [_upload].
   _LocalSession _session(Pty? pty) => _windows
-      ? _LocalSession(pty, _process)
+      ? _WindowsLocalSession(pty, _process, _upload)
       : _UnixLocalSession(pty, _process);
 
   /// Starts [command] beside the shell, as [_commandLine] runs it.
@@ -352,7 +364,150 @@ class LocalTransport implements SessionTransport {
       command,
     ];
   }
+
+  /// On Windows, a file put where the program in this shell can open it, and
+  /// the path to type for it there — the local half of what SFTP does for a
+  /// host. A Mac or Linux shell keeps its own, see [_UnixLocalSession].
+  ///
+  /// The file is already on this machine, but in a directory of the app's
+  /// own that the next paste empties, and a WSL distro may not see Windows'
+  /// drives at all (`automount` off) or see them under another root, so the
+  /// path typed is never the one it arrived at:
+  ///
+  /// - a WSL distro gets it in its own `/tmp`, the bytes piped into `sh`
+  ///   running there through wsl.exe, as [_commandLine]'s commands run, so the
+  ///   path typed is the one that `sh` printed back, a Linux path, and never
+  ///   a `C:\` one a program in WSL could not open;
+  /// - PowerShell gets it in the user's own `%TEMP%`, a Windows path, which
+  ///   is what a program run there, Claude Code included, reads.
+  ///
+  /// Named by [uploadName], as SFTP names an upload, so nothing a shell reads
+  /// can reach the prompt.
+  Future<String> _upload(
+    String localPath,
+    String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  ) async {
+    final name = uploadName(fileName);
+    final fallback = '${SftpFileBrowser.randomName()}-$name';
+    final line = _commandLine(uploadScript);
+    if (line == null) {
+      return _copyToTemp(localPath, name, fallback, onProgress, cancel);
+    }
+    final process = await startProcess(line.first, [
+      ...line.sublist(1),
+      'sh',
+      tmp,
+      name,
+      fallback,
+    ]);
+    unawaited(process.stderr.drain<void>());
+    final printed = process.stdout.transform(utf8.decoder).join();
+    // A cancel stops the sending and nothing else. Killing wsl.exe need not
+    // reach the `sh` it started in the distro, nor does killing an `sh` reach
+    // the `cat` it is waiting on, so a kill could leave the script going on
+    // after the cleanup below. With its input closed it ends by itself.
+    var cancelled = false;
+    unawaited(cancel?.then((_) => cancelled = true));
+    final source = File(localPath);
+    final total = source.lengthSync();
+    var sent = 0;
+    try {
+      await for (final chunk in source.openRead()) {
+        if (cancelled) break;
+        process.stdin.add(chunk);
+        await process.stdin.flush();
+        sent += chunk.length;
+        onProgress?.call(sent, total);
+      }
+      await process.stdin.close();
+    } on Object {
+      // The shell went away mid-file; its exit code says so below.
+      process.kill();
+    }
+    final path = await printed;
+    final code = await process.exitCode;
+    if (cancelled) {
+      // The script has exited, so nothing can write the half file after it
+      // goes — both names ours, and the first removable only if it is ours.
+      final rm = _commandLine('rm -f $tmp/$name $tmp/$fallback')!;
+      await (await startProcess(rm.first, rm.sublist(1))).exitCode;
+      throw FileBrowserException.cancelled;
+    }
+    if (code != 0 || path.isEmpty) {
+      final where = wslDistro == null ? tmp : '$tmp in $wslDistro';
+      throw SshSessionException('Could not put $name in $where.');
+    }
+    return path;
+  }
+
+  /// The upload's script: `<dir>/<name>` made new and ours — an earlier one
+  /// of ours under the name replaced, as SFTP replaces it — or the fallback
+  /// when the name is someone else's, `set -C` creating it exclusively, which
+  /// neither follows a planted link nor opens a file already there; 0600, as
+  /// SFTP's are. It prints the path it wrote. `$1` is the directory, `$2` the
+  /// name and `$3` the fallback, none holding anything but letters, digits,
+  /// `.`, `-`, `_` and `/`, so they need no quoting on the way through
+  /// wsl.exe's command line.
+  @visibleForTesting
+  static const uploadScript =
+      r'umask 077; t=$1/$2; rm -f $t 2>/dev/null; '
+      r'if ! (set -C; : >$t) 2>/dev/null; then '
+      r't=$1/$3; (set -C; : >$t) || exit 1; fi; '
+      r'cat >$t || { rm -f $t; exit 1; }; printf %s $t';
+
+  /// PowerShell's half: `%TEMP%` is the user's own, shared with no other
+  /// login, so a plain exclusive copy does, and the path goes in double
+  /// quotes when it has a space in it — `C:\Users\Trias Gagah\…` — as a
+  /// path dragged into Windows Terminal arrives.
+  Future<String> _copyToTemp(
+    String localPath,
+    String name,
+    String fallback,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  ) async {
+    final temp =
+        _env['TEMP'] ??
+        _env['TMP'] ??
+        '${_env['USERPROFILE']}\\AppData\\Local\\Temp';
+    final separator = Platform.pathSeparator;
+    var target = File('$temp$separator$name');
+    try {
+      if (target.existsSync()) target.deleteSync();
+      target.createSync(exclusive: true);
+    } on FileSystemException {
+      target = File('$temp$separator$fallback')..createSync(exclusive: true);
+    }
+    var cancelled = false;
+    unawaited(cancel?.then((_) => cancelled = true));
+    final source = File(localPath);
+    final total = source.lengthSync();
+    final sink = target.openWrite();
+    var sent = 0;
+    try {
+      await for (final chunk in source.openRead()) {
+        if (cancelled) break;
+        sink.add(chunk);
+        sent += chunk.length;
+        onProgress?.call(sent, total);
+      }
+    } finally {
+      await sink.close();
+    }
+    if (cancelled) {
+      target.deleteSync();
+      throw FileBrowserException.cancelled;
+    }
+    return typedWindowsPath(target.path);
+  }
 }
+
+/// [path] as it is typed at a PowerShell prompt: in double quotes when a
+/// space would otherwise split it.
+@visibleForTesting
+String typedWindowsPath(String path) => path.contains(' ') ? '"$path"' : path;
 
 /// A local shell, or with no [_pty] the session a tmux tab holds, which has
 /// no terminal of its own: its panes come through [open].
@@ -499,12 +654,38 @@ class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
   }
 }
 
+/// A WSL distro's shell or PowerShell, which can be handed a file as well:
+/// into the distro's own `/tmp` through `sh` running there, or into the
+/// user's `%TEMP%` — see [LocalTransport._upload].
+class _WindowsLocalSession extends _LocalSession implements FileUploadCapable {
+  _WindowsLocalSession(super._pty, super._process, this._upload);
+
+  final Future<String> Function(
+    String localPath,
+    String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  )
+  _upload;
+
+  @override
+  Future<String> uploadToTmp({
+    required String localPath,
+    required String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) {
+    if (_disposed) throw const SshSessionException('This shell has ended.');
+    return _upload(localPath, fileName, onProgress, cancel);
+  }
+}
+
 /// A local shell on a Mac or Linux, which can be handed a file as well: a
 /// picture pasted at its prompt is kept where the shell can read it and its
 /// path typed, as one pasted into a host's shell is uploaded to its `/tmp`.
 ///
-/// Not on Windows, PowerShell or WSL: Windows' clipboard has no picture half
-/// to paste from, and a Windows path would mean nothing inside a distro.
+/// Windows has its own, [_WindowsLocalSession], a Windows path meaning
+/// nothing inside a distro.
 class _UnixLocalSession extends _LocalSession implements FileUploadCapable {
   _UnixLocalSession(super._pty, super._process);
 

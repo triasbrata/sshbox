@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -493,6 +494,72 @@ void openSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
   navigator.push(route);
 }
 
+/// A key a hardware keyboard holds down to make a click on the terminal open
+/// the link under it: see [LinkModifierSetting].
+enum LinkModifier {
+  control('Ctrl'),
+  command('⌘ Cmd'),
+  alt('Alt');
+
+  const LinkModifier(this.label);
+
+  /// What Settings and the hint under it call the key.
+  final String label;
+
+  /// Whether the key is down now, on either side of the keyboard.
+  bool get isPressed => switch (this) {
+    control => HardwareKeyboard.instance.isControlPressed,
+    command => HardwareKeyboard.instance.isMetaPressed,
+    alt => HardwareKeyboard.instance.isAltPressed,
+  };
+}
+
+/// Which key, held with a click, opens a link in the terminal: ⌘ or Ctrl on
+/// a Mac, Ctrl or Alt on Linux and Windows. A phone or a tablet has only
+/// Ctrl, a hardware keyboard's or the key bar's CTRL, which is not a choice
+/// and is not offered.
+///
+/// ⌘ is a Mac's own: iTerm2, Terminal and VS Code all open a link on ⌘-click,
+/// and elsewhere on a Mac Ctrl+click is a right click. Everywhere else Ctrl
+/// is what it has always been. Whichever is picked, the other one no longer
+/// opens anything: its click goes to the program in the terminal, as a click.
+///
+/// Read at the key and at the tap rather than watched, so a change reaches
+/// the next click in every open terminal.
+class LinkModifierSetting extends ValueNotifier<LinkModifier?> {
+  LinkModifierSetting() : super(null);
+
+  static const _key = 'sshbox.terminal.linkModifier';
+
+  /// The keys this platform offers, its default first.
+  static List<LinkModifier> get offered => switch (defaultTargetPlatform) {
+    TargetPlatform.macOS => const [LinkModifier.command, LinkModifier.control],
+    TargetPlatform.linux ||
+    TargetPlatform.windows => const [LinkModifier.control, LinkModifier.alt],
+    _ => const [LinkModifier.control],
+  };
+
+  /// The key in use: the one picked, or the platform's default when none was
+  /// or the one picked is not offered here.
+  LinkModifier get chosen => offered.contains(value) ? value! : offered.first;
+
+  /// Reads the saved choice. Nothing saved is the platform's default.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = LinkModifier.values.asNameMap()[prefs.getString(_key)];
+  }
+
+  /// Applies to the next click, and is saved for the next start.
+  Future<void> choose(LinkModifier key) async {
+    value = key;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, key.name);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final linkModifier = LinkModifierSetting();
+
 /// Jeansh's settings: a list of sections, each a header and its rows.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.notifyKeys});
@@ -525,6 +592,7 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           ),
+          if (LinkModifierSetting.offered.length > 1) const _LinkModifierTile(),
           const _GitSection(),
           // Desktop alone: only a desktop has a shell of its own to run.
           if (isDesktop) const _LocalShellSection(),
@@ -1590,6 +1658,60 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Which key a click holds to open a link, on a desktop, where there are two
+/// to pick from; with the hint under it naming the one in use.
+class _LinkModifierTile extends StatelessWidget {
+  const _LinkModifierTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return ValueListenableBuilder(
+      valueListenable: linkModifier,
+      builder: (context, _, _) {
+        final chosen = linkModifier.chosen;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.link),
+              title: const Text('Open links with'),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: SegmentedButton<LinkModifier>(
+                    segments: [
+                      for (final key in LinkModifierSetting.offered)
+                        ButtonSegment(value: key, label: Text(key.label)),
+                    ],
+                    selected: {chosen},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (picked) =>
+                        linkModifier.choose(picked.first),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Hold ${chosen.label} and click a URL, a path or a link a '
+                'program printed in the terminal to open it. A click without '
+                'it focuses and selects as it always has.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

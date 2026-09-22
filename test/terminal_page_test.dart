@@ -20,7 +20,9 @@ import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
-import 'package:sshbox/src/ui/terminal_paste.dart' show shareTextLimit;
+import 'package:sshbox/src/ui/desktop_clipboard.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart'
+    show desktopClipboard, shareTextLimit;
 import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:toastification/toastification.dart';
@@ -155,6 +157,24 @@ class _Shell
     uploaded.add((path: localPath, name: fileName));
     return '/tmp/$fileName';
   }
+}
+
+/// A Linux or Windows clipboard as [DesktopClipboard] reads it, without the
+/// program it would start: [picture] is what it found, [said] why it could
+/// not look.
+class _Desktop extends DesktopClipboard {
+  SharedFile? picture;
+  String? said;
+  bool? askedWindows;
+
+  @override
+  Future<SharedFile?> image(int limit, {required bool windows}) async {
+    askedWindows = windows;
+    return picture;
+  }
+
+  @override
+  String? get missing => said;
 }
 
 /// Every paste test runs as Android: the clipboard's image comes over a
@@ -719,6 +739,92 @@ void main() {
       // these and froze the terminal until the app was killed.
       expect(shell.sent, isNotEmpty);
       expect(shell.sent, everyElement('\x1b[A'));
+    });
+
+    group('on a desktop, the key Settings picked', () {
+      setUp(() => SharedPreferences.setMockInitialValues({}));
+      tearDown(() => linkModifier.value = null);
+
+      /// A click on notes.txt with [key] held, as a mouse gives it.
+      Future<void> clickHolding(
+        WidgetTester tester,
+        LogicalKeyboardKey key,
+      ) async {
+        await tester.sendKeyDownEvent(key);
+        await tester.pump();
+        await tapColumn(tester, 24);
+        await tester.sendKeyUpEvent(key);
+        await tester.pump();
+      }
+
+      testWidgets('on a Mac is ⌘ by default, and Ctrl opens nothing', (
+        tester,
+      ) async {
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.metaLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('on a Mac can be Ctrl, and then ⌘ opens nothing', (
+        tester,
+      ) async {
+        await linkModifier.choose(LinkModifier.control);
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.metaLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('on Linux is Ctrl by default, and Alt opens nothing', (
+        tester,
+      ) async {
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.altLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+      testWidgets('on Linux can be Alt: its click opens the link and never '
+          'reaches a program reading the mouse, while Ctrl+click now does', (
+        tester,
+      ) async {
+        await linkModifier.choose(LinkModifier.alt);
+        await pumpPage(tester);
+        // Mouse reporting on, as vim, less or Claude Code turn it on.
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .write('\x1b[?1000h');
+        await tester.pump();
+        shell.sent.clear();
+
+        await clickHolding(tester, LogicalKeyboardKey.altLeft);
+        expect(opened, ['/home/me/notes.txt']);
+        expect(shell.sent.join(), isNot(contains('\x1b[M')));
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+        expect(shell.sent.join(), contains('\x1b[M'));
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+      testWidgets('a choice another platform offers gives way to Ctrl on a '
+          'phone', (tester) async {
+        // Saved on a Mac and restored onto Android, say: not offered here.
+        linkModifier.value = LinkModifier.command;
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.metaLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      });
     });
 
     group('an OSC 8 hyperlink', () {
@@ -1382,7 +1488,11 @@ void main() {
 
     const channel = MethodChannel('sshbox/share');
 
+    late _Desktop desktop;
+
     setUp(() {
+      desktop = _Desktop();
+      desktopClipboard = desktop;
       temp = Directory.systemTemp.createTempSync('paste-test');
       image = null;
       refusal = null;
@@ -1409,6 +1519,7 @@ void main() {
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       messenger.setMockMethodCallHandler(channel, null);
       messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+      desktopClipboard = DesktopClipboard();
       temp.deleteSync(recursive: true);
       transfers.clearFinished();
     });
@@ -1520,13 +1631,44 @@ void main() {
       await tester.pumpAndSettle();
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-    testWidgets('where no clipboard of ours answers, a paste is text', (
+    testWidgets('on Linux the picture goes up too, from Ctrl+V, '
+        'read off the desktop\'s own clipboard', (tester) async {
+      await pumpPage(tester);
+      final shot = pictureNamed('pasted-20260921-070503.png');
+      desktop.picture = (path: shot['path']!, name: shot['name']!);
+      // Not Android's channel: nothing answers it on these desktops.
+      image = pictureNamed('wrong.png');
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, [
+        (path: shot['path'], name: 'pasted-20260921-070503.png'),
+      ]);
+      expect(shell.sent, contains('/tmp/pasted-20260921-070503.png '));
+      expect(desktop.askedWindows, isFalse);
+      await tester.pumpAndSettle();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('and on Windows, where it is asked of PowerShell', (
       tester,
     ) async {
       await pumpPage(tester);
-      // Linux and Windows have no native half yet: the channel is not even
-      // asked, and what is on the clipboard as text is what is pasted.
-      image = pictureNamed('Screenshot.png');
+      final shot = pictureNamed('Capture.PNG');
+      desktop.picture = (path: shot['path']!, name: shot['name']!);
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, [(path: shot['path'], name: 'Capture.PNG')]);
+      expect(shell.sent, contains('/tmp/Capture.PNG '));
+      expect(desktop.askedWindows, isTrue);
+      await tester.pumpAndSettle();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('where no picture is found, a desktop paste is text', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      desktop.said = 'install wl-clipboard';
       clipboardText = 'plain';
 
       await pressCtrlV(tester);
@@ -1619,6 +1761,20 @@ void main() {
       // Nothing of the chord reached the shell.
       expect(shell.sent, isEmpty);
     }, variant: desktops);
+
+    testWidgets('with no tool to read a picture and no text, what to install '
+        'is said', (tester) async {
+      await pumpPage(tester);
+      desktop.said =
+          'Nothing on the clipboard a terminal can paste as text. To paste a '
+          'picture, install wl-clipboard.';
+
+      await pressCtrlV(tester);
+
+      expect(shell.uploaded, isEmpty);
+      expect(_toast(desktop.said!, ToastificationType.warning), findsOneWidget);
+      await tester.pumpAndSettle();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     testWidgets('the upload button takes several files, and types every '
         'path in the order they were picked', (tester) async {

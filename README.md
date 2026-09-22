@@ -196,6 +196,16 @@ the drawer opens. The tap types nothing, a program reading the mouse does not se
 it uses CTRL up whether it hit anything or not. A path that is not there says
 **Not found:** and the path.
 
+**On a desktop the key is yours to pick.** Settings → **Open links with**
+chooses which key a click holds: ⌘ (the default) or Ctrl on a Mac, where
+iTerm2, Terminal and VS Code all open links on ⌘-click and Ctrl+click is a
+right click; Ctrl (the default) or Alt on Linux and Windows. Whichever is
+picked, the other one opens nothing, and its click reaches the program in the
+terminal as a click. A phone or tablet has only Ctrl — a hardware keyboard's,
+or the bar's CTRL — so it offers no choice, and a key saved on another
+platform gives way to that platform's default. `LinkModifierSetting` in
+`ui/settings_page.dart` holds it.
+
 **Links open in a tab.** A Ctrl+tapped URL, a forwarded port's **Open** and a
 Tailscale sign-in all go through `openUrl` in `ui/terminal_page.dart`, which
 opens a web page in a tab of its own beside the shell it came from — see

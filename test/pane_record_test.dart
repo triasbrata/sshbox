@@ -70,9 +70,26 @@ void main() {
     );
     String dir(String session) => '${home.path}/${PaneRecord.dir(session)}';
 
+    // What this sh's `ulimit -f` counts in, found by writing past a limit of
+    // one: 512 bytes as POSIX has it, 1024 where it counts KB, as macOS's does.
+    late int unit;
+    setUpAll(() async {
+      final probe = await Directory.systemTemp.createTemp('ulimit');
+      final file = '${probe.path}/f';
+      await Process.run('/bin/sh', [
+        '-c',
+        r'trap "" XFSZ; ulimit -f 1; head -c 4096 /dev/zero > "$0"',
+        file,
+      ]);
+      unit = File(file).lengthSync();
+      await probe.delete(recursive: true);
+      expect(unit, anyOf(512, 1024));
+    });
+
     test('turns over to a new file at its size, keeping the newest, in '
         'private files', () async {
-      final pipe = await run('sshbox-a', blocks: 2);
+      // A file of 1024 bytes wherever it runs, so 40 chunks turn it over.
+      final pipe = await run('sshbox-a', blocks: 1024 ~/ unit);
       for (var i = 0; i < 40; i++) {
         final chunk = 'chunk-$i '.padRight(99, '.');
         pipe.stdin.add(utf8.encode('$chunk\n'));

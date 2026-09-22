@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/notifications/notify_key.dart';
+import 'package:sshbox/src/session/local_transport.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 
@@ -94,6 +96,39 @@ class _Host
     commands.add(command);
     return Stream.fromFuture(reply.future).expand((lines) => lines);
   }
+}
+
+/// A keyring that answers nothing, as libsecret does on a Linux desktop with
+/// no Secret Service running.
+class _NoKeyring implements SecretStore {
+  static final _error = PlatformException(
+    code: 'Libsecret error',
+    message: 'Timeout was reached',
+  );
+
+  @override
+  Future<String?> read(String key) async => throw _error;
+
+  @override
+  Future<void> write(String key, String? value) async => throw _error;
+
+  @override
+  Future<void> purgeHost(String hostId) async => throw _error;
+}
+
+/// A shell on this machine, opened as [LocalTransport] opens one: with no
+/// `beforeShell` asked for, so nothing waits on what it would have sent.
+class _LocalShell extends _Host {
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async => this;
 }
 
 const _host = HostProfile(
@@ -544,6 +579,44 @@ void main() {
         'LC_SSHBOX_KEY',
         'LC_SSHBOX_HOST_ID',
       });
+    });
+
+    test('a Local or WSL shell gets no key: there is no host to send '
+        'from', () async {
+      final relay = FakeRelay();
+      final manager = SessionManager(notifyKeys: await withToken(relay));
+      for (final host in [localHost(), wslHost('Ubuntu')]) {
+        final session = manager.create(
+          host,
+          transport: (_, _) => _LocalShell(),
+        );
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+      }
+      await pumpEventQueue();
+      expect(relay.registered, isEmpty);
+    });
+
+    // The e2e session's Linux desktop: opening a Local shell threw an
+    // uncaught PlatformException(Libsecret error … Timeout was reached).
+    test('a Local shell opens with a keyring that fails, and nothing is '
+        'left uncaught', () async {
+      final session = SessionManager(
+        notifyKeys: NotifyKeys(_NoKeyring(), relay: FakeRelay()),
+      ).create(localHost(), transport: (_, _) => _LocalShell());
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoKeyring());
+      await pumpEventQueue();
+      expect(session.isConnected, isTrue);
+    });
+
+    test('an SSH host connects with a keyring that fails, going without a '
+        'key', () async {
+      final notifyKeys = NotifyKeys(_NoKeyring(), relay: FakeRelay());
+      expect(
+        await sent(SessionManager(notifyKeys: notifyKeys)),
+        _hyperlinksOnly,
+      );
     });
 
     test('nothing of it without push', () async {
