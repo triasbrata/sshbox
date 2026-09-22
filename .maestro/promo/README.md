@@ -82,3 +82,49 @@ which). Open a fresh session and the variables match a forward that is up.
 
 The notification is filmed as the heads-up banner over the terminal, not from
 the shade: the shade also shows the system's own notifications.
+
+## Claude Code in the container
+
+`Dockerfile` here is the image `jeansh-demo` first ran, with tmux and git added
+(they had been `apk add`ed by hand), and Claude Code from its native installer.
+The login user's home is `/config`, a volume that hides anything built into it,
+so Claude goes under `/opt/claude` and is linked at `/usr/local/bin/claude`,
+on the PATH of login and non-login shells alike. Its auto-updater is off, since
+it would install a second copy into `/config` that PATH never reaches; rebuild
+the image to update.
+
+```sh
+sudo docker build -t jeansh-demo:claude - < .maestro/promo/Dockerfile
+sh .maestro/promo/swap-demo.sh
+```
+
+`swap-demo.sh` recreates `jeansh-demo` from that image on the same `/config`
+volume, so the home, `/config/project`, `sshd_config` (`AcceptEnv LC_*`),
+`.gitconfig` and the **host keys** stay — the key lives in
+`/config/ssh_host_keys`, not in the image, and the emulator's pin still holds.
+`jeansh-mongo` and `jeansh-redis` run in `jeansh-demo`'s network namespace,
+which Docker records by container id, so any new `jeansh-demo` strands them;
+the script recreates them too, on their own volumes. It keeps the old three as
+`jeansh-demo-old`, `jeansh-mongo-old` and `jeansh-redis-old`. To roll back:
+
+```sh
+sudo docker rm -f jeansh-demo jeansh-mongo jeansh-redis
+for c in jeansh-demo jeansh-mongo jeansh-redis; do sudo docker rename $c-old $c; done
+sudo docker start jeansh-demo jeansh-mongo jeansh-redis
+```
+
+tmux sessions die with the container, so the restored `demo` tabs come back
+with their sessions gone; `setup-panes.yaml` puts the panes back.
+
+**Signing Claude in** is done once, by a person:
+
+```sh
+sudo docker exec -it -u demo -e HOME=/config -w /config/project jeansh-demo bash -lc claude
+```
+
+(`-e HOME=/config` because the image's env says `HOME=/root`, which
+`docker exec` keeps; over SSH the home is right by itself, so opening the
+`demo` host in Jeansh and typing `claude` works too.) Pick a theme, choose the
+Claude account, open the link it prints, and paste the code back if asked.
+The credentials land in `/config/.claude`, on the volume, so they survive the
+next rebuild.
