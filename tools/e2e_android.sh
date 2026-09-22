@@ -67,6 +67,15 @@ stand_in() {
   sudo chmod 755 "$bin"
 }
 
+# On a slow runner the emulator's own apps stall, and Android puts up "<app>
+# isn't responding". The first time, it was Pixel Launcher, over Jeansh, just as
+# seed_host looked for Add: the dialog is modal, so it hid the app from Maestro
+# and the run failed over the emulator, not the build -- and seed_host runs in
+# the release gate too, so it could have held back a release. hide_error_dialogs
+# keeps such dialogs down. It hides no fault of ours: a Jeansh that crashes or
+# freezes still fails its flow, since only the blocking dialog is gone.
+adb shell settings put global hide_error_dialogs 1 || true
+
 echo "::group::Install the candidate"
 adb install -r -t "$APK" || { echo "::error::could not install $APK"; exit 1; }
 echo "::endgroup::"
