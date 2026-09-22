@@ -67,6 +67,71 @@ stand_in() {
   sudo chmod 755 "$bin"
 }
 
+# Chat mode's host: three finished Claude Code sessions with transcripts where
+# the CLI keeps them, and a claude that lists them, answers a version chat
+# takes, and, run as a resumed session, waits quietly on stdin as one with
+# nothing new to say. The flows read what chat makes of the transcripts —
+# where a conversation comes back to, and how a tool's row reads.
+chat_stand_in() {
+  local home=/home/$SSH_USER
+  sudo -u "$SSH_USER" mkdir -p "$home/.local/bin"
+  sudo -u "$SSH_USER" tee "$home/.local/bin/claude" >/dev/null <<'SH'
+#!/bin/sh
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo chmod 755 "$home/.local/bin/claude"
+  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
+import json, os
+home = os.environ['HOME']
+projects = os.path.join(home, '.claude', 'projects', '-home-' + os.path.basename(home))
+os.makedirs(projects, exist_ok=True)
+
+def user(text):
+    return {'type': 'user', 'message': {'role': 'user', 'content': text}}
+
+def said(text):
+    return {'type': 'assistant',
+            'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}}
+
+def tool(id, name, input, result):
+    return [
+        {'type': 'assistant', 'message': {'role': 'assistant', 'content': [
+            {'type': 'tool_use', 'id': id, 'name': name, 'input': input}]}},
+        {'type': 'user', 'message': {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': id, 'content': result}]}},
+    ]
+
+# Short answers, one line each, so a small scroll moves several of them.
+sessions = {
+    'E2E long session': [e for n in range(1, 61)
+                         for e in (user(f'Question {n}'), said(f'Answer {n} of the long session'))],
+    'E2E short session': [user('Short question'), said('Short answer of the short session')],
+    'E2E tool rows': [user('run it'),
+                      *tool('toolu_e2e1', 'Bash',
+                            {'command': 'ls -la /tmp/e2e-tool-rows',
+                             'description': 'List the e2e folder'}, 'total 0'),
+                      *tool('toolu_e2e2', 'Write',
+                            {'file_path': '/tmp/e2e-tool-rows/notes.txt',
+                             'content': 'first line\nsecond line'}, 'ok'),
+                      said('Tools done')],
+}
+rows = []
+for n, (name, events) in enumerate(sessions.items(), start=1):
+    sid = f'e2e0000{n}-0000-4000-8000-00000000000{n}'
+    with open(os.path.join(projects, sid + '.jsonl'), 'w') as f:
+        f.write('\n'.join(json.dumps(e) for e in events) + '\n')
+    rows.append({'id': f'e2e{n}', 'cwd': home, 'kind': 'background',
+                 'startedAt': 1790000000000 + n, 'sessionId': sid,
+                 'name': name, 'state': 'done'})
+with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
+    json.dump(rows, f)
+PY
+}
+
 # On a slow runner the emulator's own apps stall, and Android puts up "<app>
 # isn't responding". The first time, it was Pixel Launcher, over Jeansh, just as
 # seed_host looked for Add: the dialog is modal, so it hid the app from Maestro
@@ -134,6 +199,22 @@ chat_version not-a-version 'claude: something went wrong' \
   '(?s).*Could not tell which Claude Code this host has.*2\.1\.259.*'
 chat_version not-installed '' \
   '(?s).*Claude Code is not installed on this host.*'
+
+# Chat mode against sessions the stand-in keeps (chat_stand_in): where a
+# conversation comes back to, and how a tool's row reads. Report-only until
+# they have earned the gate.
+chat_stand_in
+for name in chat_scroll chat_tool_rows; do
+  echo "::group::$name (report only)"
+  flow "$name" || echo "::warning::$name failed -- report only, not gating"
+  # Their screenshots are evidence, wherever Maestro put them: see chat_version.
+  # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
+  for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png'
+                   find "$HOME/.maestro" -name 'chat-tool-rows-*.png'; } 2>/dev/null); do
+    mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
+  done
+  echo "::endgroup::"
+done
 stand_in ''
 
 if [ "${#failed[@]}" -gt 0 ]; then
