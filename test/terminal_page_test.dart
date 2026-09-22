@@ -741,6 +741,92 @@ void main() {
       expect(shell.sent, everyElement('\x1b[A'));
     });
 
+    group('on a desktop, the key Settings picked', () {
+      setUp(() => SharedPreferences.setMockInitialValues({}));
+      tearDown(() => linkModifier.value = null);
+
+      /// A click on notes.txt with [key] held, as a mouse gives it.
+      Future<void> clickHolding(
+        WidgetTester tester,
+        LogicalKeyboardKey key,
+      ) async {
+        await tester.sendKeyDownEvent(key);
+        await tester.pump();
+        await tapColumn(tester, 24);
+        await tester.sendKeyUpEvent(key);
+        await tester.pump();
+      }
+
+      testWidgets('on a Mac is ⌘ by default, and Ctrl opens nothing', (
+        tester,
+      ) async {
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.metaLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('on a Mac can be Ctrl, and then ⌘ opens nothing', (
+        tester,
+      ) async {
+        await linkModifier.choose(LinkModifier.control);
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.metaLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('on Linux is Ctrl by default, and Alt opens nothing', (
+        tester,
+      ) async {
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.altLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+      testWidgets('on Linux can be Alt: its click opens the link and never '
+          'reaches a program reading the mouse, while Ctrl+click now does', (
+        tester,
+      ) async {
+        await linkModifier.choose(LinkModifier.alt);
+        await pumpPage(tester);
+        // Mouse reporting on, as vim, less or Claude Code turn it on.
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .write('\x1b[?1000h');
+        await tester.pump();
+        shell.sent.clear();
+
+        await clickHolding(tester, LogicalKeyboardKey.altLeft);
+        expect(opened, ['/home/me/notes.txt']);
+        expect(shell.sent.join(), isNot(contains('\x1b[M')));
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+        expect(shell.sent.join(), contains('\x1b[M'));
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+      testWidgets('a choice another platform offers gives way to Ctrl on a '
+          'phone', (tester) async {
+        // Saved on a Mac and restored onto Android, say: not offered here.
+        linkModifier.value = LinkModifier.command;
+        await pumpPage(tester);
+        await clickHolding(tester, LogicalKeyboardKey.metaLeft);
+        expect(opened, isEmpty);
+
+        await clickHolding(tester, LogicalKeyboardKey.controlLeft);
+        expect(opened, ['/home/me/notes.txt']);
+      });
+    });
+
     group('an OSC 8 hyperlink', () {
       /// The page, with [label] on the second row as a hyperlink to
       /// [address], written the way Claude Code writes one once it believes

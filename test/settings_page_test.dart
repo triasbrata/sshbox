@@ -1102,4 +1102,83 @@ void main() {
       expect(prefs.getString('sshbox.keyBar.v1'), isNull);
     });
   });
+
+    group('open links with', () {
+    tearDown(() => linkModifier.value = null);
+
+    testWidgets('on a Mac offers ⌘ and Ctrl, ⌘ first; the pick is saved and '
+        'the next start reads it back', (tester) async {
+      await _wide(tester);
+      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.ensureVisible(find.text('Open links with'));
+      await tester.pumpAndSettle();
+
+      final button = find.byType(SegmentedButton<LinkModifier>);
+      expect(tester.widget<SegmentedButton<LinkModifier>>(button).selected, {
+        LinkModifier.command,
+      });
+      expect(find.text('Alt'), findsNothing);
+      expect(find.textContaining('Hold ⌘ Cmd and click'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(of: button, matching: find.text('Ctrl')),
+      );
+      await tester.pumpAndSettle();
+      expect(linkModifier.chosen, LinkModifier.control);
+      expect(find.textContaining('Hold Ctrl and click'), findsOneWidget);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('sshbox.terminal.linkModifier'), 'control');
+
+      // The next start.
+      linkModifier.value = null;
+      await linkModifier.load();
+      expect(linkModifier.chosen, LinkModifier.control);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets(
+      'on Linux and Windows offers Ctrl and Alt, Ctrl first',
+      (tester) async {
+        await _wide(tester);
+        await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+        await tester.ensureVisible(find.text('Open links with'));
+        await tester.pumpAndSettle();
+
+        final button = find.byType(SegmentedButton<LinkModifier>);
+        expect(tester.widget<SegmentedButton<LinkModifier>>(button).selected, {
+          LinkModifier.control,
+        });
+        expect(
+          find.descendant(of: button, matching: find.text('Alt')),
+          findsOneWidget,
+        );
+        expect(find.text('⌘ Cmd'), findsNothing);
+      },
+      variant: TargetPlatformVariant({
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+      }),
+    );
+
+    testWidgets('on a phone is not offered: Ctrl is the only key', (
+      tester,
+    ) async {
+      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      expect(find.text('Open links with'), findsNothing);
+      expect(linkModifier.chosen, LinkModifier.control);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    test(
+      'a saved key this platform does not offer reads as its default',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'sshbox.terminal.linkModifier': 'alt',
+        });
+        debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        await linkModifier.load();
+        expect(linkModifier.value, LinkModifier.alt);
+        expect(linkModifier.chosen, LinkModifier.command);
+      },
+    );
+  });
 }
