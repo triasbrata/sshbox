@@ -806,7 +806,6 @@ class _TabStripState extends State<TabStrip> {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 2),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: group.ids.contains(active)
               ? theme.colorScheme.primary.withValues(alpha: 0.7)
@@ -983,7 +982,14 @@ class _TabStripState extends State<TabStrip> {
     final bar = Container(
       height: drawsInTitleBar ? 40 : 44,
       padding: EdgeInsets.only(left: inset > 0 ? inset : 6, right: 6),
-      color: drawsInTitleBar ? null : theme.colorScheme.surfaceContainerHighest,
+      decoration: drawsInTitleBar
+          ? null
+          : BoxDecoration(
+              color: theme.colorScheme.surfaceContainerLow,
+              border: Border(
+                bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+              ),
+            ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           // Wide: the button follows the last tab, the way a desktop browser
@@ -1030,7 +1036,7 @@ class _TabStripState extends State<TabStrip> {
       children: [
         Positioned.fill(
           child: ColoredBox(
-            color: theme.colorScheme.surfaceContainerHighest,
+            color: theme.colorScheme.surfaceContainerLow,
             child: const Listener(
               behavior: HitTestBehavior.opaque,
               onPointerDown: dragWindow,
@@ -1148,20 +1154,24 @@ class _TabChip extends StatelessWidget {
           );
 
     final chip = Material(
-      // The page's own colour marks where you are. Everything else wears the
-      // same faint fill, so it reads as a button — without one, the host list
-      // collapses to a bare icon the moment a session is showing.
+      // Termul's tab: the page's own colour and the accent under it mark
+      // where you are. Everything else wears a square edge, so it reads as a
+      // button — without one, the host list collapses to a bare icon the
+      // moment a session is showing.
       color: selected
           ? theme.colorScheme.surface
-          : theme.colorScheme.onSurface.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(8),
+          : theme.colorScheme.surfaceContainerHigh,
+      shape: selected
+          ? Border(
+              bottom: BorderSide(color: theme.colorScheme.primary, width: 2),
+            )
+          : Border.all(color: theme.colorScheme.outlineVariant),
       child: InkWell(
         onTap: onTap,
         onLongPress: menu.isEmpty ? null : () => _showMenu(context),
         onSecondaryTapUp: rightClick(
           menu.isEmpty ? null : (at) => _showMenu(context, at),
         ),
-        borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             _inset,

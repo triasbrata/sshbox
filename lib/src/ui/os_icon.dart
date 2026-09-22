@@ -46,7 +46,7 @@ OsLogo? osLogo(OsInfo? os) {
 String sshLine(String username, OsInfo? os) =>
     ['ssh', username, ?os?.id].where((part) => part.isNotEmpty).join(', ');
 
-/// A host's OS as a rounded square in its colour with its logo in white, the
+/// A host's OS as a square in its colour with its logo in white, the
 /// way Termius shows one. A host that has not said yet, or runs something
 /// without a logo here, gets a plain badge in the theme's colours with a
 /// server in it.
@@ -70,7 +70,6 @@ class OsBadge extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: logo?.color ?? scheme.secondaryContainer,
-          borderRadius: BorderRadius.circular(size / 4),
         ),
         child: logo == null
             ? Icon(

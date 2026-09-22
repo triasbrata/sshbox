@@ -10,6 +10,7 @@ import 'package:xterm2/xterm.dart';
 import '../platform.dart';
 import 'ctrl_click.dart' show hyperlinkIn, selectedText;
 import 'toast.dart';
+import 'tui.dart' show tuiFontFamily;
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
 /// form; sending CSI there produces stray characters instead of movement.
@@ -564,7 +565,8 @@ class TerminalKeyBar extends StatelessWidget {
     if (shown.lastOrNull == keyBarDivider) shown.removeLast();
 
     return Material(
-      color: theme.colorScheme.surfaceContainerHighest,
+      color: theme.colorScheme.surfaceContainerLow,
+      shape: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
       child: SafeArea(
         top: false,
         child: SizedBox(
@@ -635,7 +637,8 @@ class EditorKeyBar extends StatelessWidget {
     );
 
     return Material(
-      color: theme.colorScheme.surfaceContainerHighest,
+      color: theme.colorScheme.surfaceContainerLow,
+      shape: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
       child: SafeArea(
         top: false,
         child: SizedBox(
@@ -729,13 +732,18 @@ class KeyButton extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
+      // Termul's key cap: square, edged, a layer up from the bar; lit in the
+      // accent while armed.
       child: Material(
         color: active
             ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(6),
+            : theme.colorScheme.surfaceContainerHighest,
+        shape: Border.all(
+          color: active
+              ? theme.colorScheme.primary
+              : theme.colorScheme.outlineVariant,
+        ),
         child: InkWell(
-          borderRadius: BorderRadius.circular(6),
           onTap: onTap,
           child: Container(
             constraints: BoxConstraints(minWidth: minWidth),
@@ -744,7 +752,7 @@ class KeyButton extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                fontFamily: 'monospace',
+                fontFamily: tuiFontFamily,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: foreground,
@@ -836,14 +844,14 @@ class _IconKey extends StatelessWidget {
         data: IconButtonThemeData(
           style: IconButton.styleFrom(
             foregroundColor: colors.onSurface,
-            backgroundColor: colors.surfaceContainerHigh,
+            backgroundColor: colors.surfaceContainerHighest,
             // Greyed out rather than gone: still a key, just not one to press.
-            disabledBackgroundColor: colors.surfaceContainerHigh,
+            disabledBackgroundColor: colors.surfaceContainerHighest,
             iconSize: compact ? 15 : 20,
             minimumSize: compact ? const Size(30, 24) : const Size(44, 36),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(6),
+              side: BorderSide(color: colors.outlineVariant),
             ),
           ),
         ),

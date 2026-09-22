@@ -18,6 +18,7 @@ import 'update_dialog.dart';
 import 'terminal_schemes.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// Where a Nerd Font glyph comes from, whichever font is picked.
 ///
@@ -610,24 +611,14 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
+/// Termul's `# Theme`: see [TuiHeading].
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader(this.title);
 
   final String title;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-      child: Text(
-        title,
-        style: theme.textTheme.titleSmall?.copyWith(
-          color: theme.colorScheme.primary,
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => TuiHeading(title);
 }
 
 /// Light, dark or the system's, over a card for each theme, with a tick on
@@ -702,8 +693,10 @@ class _SchemeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = scheme.terminal(theme.brightness);
-    TextSpan token(String text, Color color) =>
-        TextSpan(text: text, style: TextStyle(color: color));
+    TextSpan token(String text, Color color) => TextSpan(
+      text: text,
+      style: TextStyle(color: color),
+    );
 
     return Semantics(
       selected: chosen,
@@ -711,7 +704,6 @@ class _SchemeCard extends StatelessWidget {
         margin: EdgeInsets.zero,
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
           side: chosen
               ? BorderSide(color: theme.colorScheme.primary, width: 2)
               : BorderSide(color: theme.colorScheme.outlineVariant),
@@ -743,10 +735,7 @@ class _SchemeCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: colors.background,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
+                  decoration: BoxDecoration(color: colors.background),
                   child: Padding(
                     padding: const EdgeInsets.all(6),
                     child: Text.rich(

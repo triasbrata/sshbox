@@ -26,7 +26,7 @@ const _brands = <DbKind, DbBrand>{
 /// [kind]'s brand mark, or null for a kind added to [DbKind] without one.
 DbBrand? dbBrand(DbKind kind) => _brands[kind];
 
-/// A database's brand as a rounded square in its own colour with the mark in
+/// A database's brand as a square in its own colour with the mark in
 /// white, the way [OsBadge] shows a host's OS, so a database and a host read
 /// as one family on Home. A kind without a mark of its own gets a plain badge
 /// in the theme's colours with a database in it.
@@ -50,7 +50,6 @@ class DbBadge extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: brand?.color ?? scheme.secondaryContainer,
-          borderRadius: BorderRadius.circular(size / 4),
         ),
         child: brand == null
             ? Icon(

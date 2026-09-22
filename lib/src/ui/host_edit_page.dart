@@ -11,12 +11,14 @@ import '../models/host_profile.dart';
 import '../notifications/notify_key.dart';
 import '../platform.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// The most a key file may hold. A private key is a few KB, so a larger file
 /// is something else, and is refused before it is read.
 const maxKeyFileBytes = 64 * 1024;
 
-const _keyFileTooBig = 'That file is over 64 KB\n'
+const _keyFileTooBig =
+    'That file is over 64 KB\n'
     'A private key is a few KB. Pick the key file itself.';
 
 /// A private key from BEGIN to its own END: OpenSSH's format, PKCS#1 RSA
@@ -92,6 +94,11 @@ class HostEditPage extends StatefulWidget {
   State<HostEditPage> createState() => _HostEditPageState();
 }
 
+/// The editor's `# Connection`, `# Session` and `# Sign-in`, level with the
+/// fields: see [TuiHeading].
+const _headingFirst = EdgeInsets.only(bottom: 12);
+const _heading = EdgeInsets.fromLTRB(0, 16, 0, 12);
+
 /// Explains why there is nothing to fill in for Tailscale SSH.
 class _TailscaleNotice extends StatelessWidget {
   const _TailscaleNotice();
@@ -111,11 +118,11 @@ class _TailscaleNotice extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                'No credential is stored. Tailscale decides who you are, and '
-                'the first connection may ask you to sign in through a link. '
-                'After that it stops asking until the check expires.\n\n'
-                'Use the host\'s tailnet address, and make sure Tailscale SSH '
-                'is enabled there (tailscale up --ssh).',
+                'Nothing is stored here: Tailscale checks who you are. The '
+                'first connection may ask you to sign in through a link, and '
+                'it won\'t ask again until that check expires.\n\n'
+                'Use the host\'s tailnet address, and turn on Tailscale SSH '
+                'there with tailscale up --ssh.',
                 style: theme.textTheme.bodySmall,
               ),
             ),
@@ -307,8 +314,8 @@ class _HostEditPageState extends State<HostEditPage> {
 
     setState(() => _saving = true);
 
-    final id = widget.existing?.id ??
-        DateTime.now().microsecondsSinceEpoch.toString();
+    final id =
+        widget.existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString();
 
     final profile = HostProfile(
       id: id,
@@ -363,18 +370,22 @@ class _HostEditPageState extends State<HostEditPage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
           children: [
+            const TuiHeading('Connection', padding: _headingFirst),
             TextFormField(
               controller: _label,
               decoration: const InputDecoration(
                 labelText: 'Label',
-                helperText: 'Optional. Defaults to user@host.',
+                helperText: 'Optional. Blank shows user@host on Home.',
               ),
               textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _host,
-              decoration: const InputDecoration(labelText: 'Host'),
+              decoration: const InputDecoration(
+                labelText: 'Host',
+                hintText: 'example.com or 192.168.1.10',
+              ),
               autocorrect: false,
               keyboardType: TextInputType.url,
               textInputAction: TextInputAction.next,
@@ -388,11 +399,11 @@ class _HostEditPageState extends State<HostEditPage> {
               decoration: const InputDecoration(
                 labelText: 'Alternative address',
                 hintText: '192.168.1.20',
-                helperText: 'Optional. A second address for the same machine, '
-                    'dialled alongside the one above and used if it answers '
-                    'first: the LAN address of a host you normally reach over '
-                    'Tailscale, so a tailnet that is down needs no edit here. '
-                    'Same port, user and credentials.',
+                helperText:
+                    'Optional. Another address for the same '
+                    'machine, such as its LAN IP when you usually reach it '
+                    'over Tailscale. Jeansh tries both and uses whichever '
+                    'answers first, with the same port, user and sign-in.',
                 helperMaxLines: 5,
               ),
               autocorrect: false,
@@ -431,12 +442,12 @@ class _HostEditPageState extends State<HostEditPage> {
                 decoration: InputDecoration(
                   labelText: 'Jump host',
                   helperText: jumpHosts.isEmpty
-                      ? 'To connect through another host, like ssh -J, add '
-                            'that host first.'
-                      : 'Optional. Connects through another saved host '
-                            'first, like ssh -J, signing in there with its own '
-                            'login. Host above is then the address that host '
-                            'reaches this one at.',
+                      ? 'To go through another host, like ssh -J, save '
+                            'that one first.'
+                      : 'Optional. Connect through another saved host '
+                            'first, like ssh -J, using its own login. The Host '
+                            'field above is then the address as that host '
+                            'sees it.',
                   helperMaxLines: 3,
                 ),
                 items: [
@@ -457,13 +468,15 @@ class _HostEditPageState extends State<HostEditPage> {
               ),
               const SizedBox(height: 12),
             ],
+            const TuiHeading('Session', padding: _heading),
             TextFormField(
               controller: _fileRoot,
               decoration: const InputDecoration(
                 labelText: 'File tree root',
                 hintText: '~/projects or /var/www',
-                helperText: 'Optional. Where the file tree opens after you '
-                    'connect. Blank is your home directory.',
+                helperText:
+                    'Optional. The folder the file tree opens in. '
+                    'Blank means your home folder.',
                 helperMaxLines: 2,
               ),
               autocorrect: false,
@@ -490,11 +503,11 @@ class _HostEditPageState extends State<HostEditPage> {
               onChanged: (value) => setState(() => _useTmux = value),
               title: const Text('Use tmux'),
               subtitle: Text(
-                'Each tab is a tmux session you can split into panes from '
-                'its ${isDesktop ? 'right-click' : 'long-press'} menu. A '
-                'dropped connection comes back to the same panes with their '
-                'programs still running; closing the tab ends them. Needs '
-                'tmux on the host.',
+                'Each tab runs in its own tmux session. Split it into panes '
+                'from the tab\'s ${isDesktop ? 'right-click' : 'long-press'} '
+                'menu. If the connection drops, you come back to the same '
+                'panes with their programs still running. Closing the tab '
+                'ends the session. Needs tmux on the host.',
               ),
             ),
             if (_useTmux)
@@ -522,7 +535,7 @@ class _HostEditPageState extends State<HostEditPage> {
                 ),
                 onTap: _copyNotifyKey,
               ),
-            const SizedBox(height: 24),
+            const TuiHeading('Sign-in', padding: _heading),
             SegmentedButton<SshAuthMethod>(
               segments: const [
                 ButtonSegment(
@@ -556,7 +569,7 @@ class _HostEditPageState extends State<HostEditPage> {
                   labelText: 'Password',
                   helperText: _isEditing
                       ? 'Leave blank to keep the stored password'
-                      : 'Stored in the device keystore, never in plain settings',
+                      : 'Saved encrypted in the device keystore.',
                   helperMaxLines: 2,
                 ),
               )
@@ -575,7 +588,8 @@ class _HostEditPageState extends State<HostEditPage> {
                   alignLabelWithHint: true,
                   helperText: _isEditing
                       ? 'Leave blank to keep the stored key'
-                      : 'Paste the full key including its BEGIN/END lines',
+                      : 'Paste the whole key, BEGIN and END lines '
+                            'included, or choose the file below.',
                   helperMaxLines: 2,
                 ),
               ),

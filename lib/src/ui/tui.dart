@@ -35,6 +35,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'terminal_schemes.dart';
+
 /// The app's font: monospaced everywhere, as a terminal's own chrome is.
 /// Bundled, so every platform draws the same. The symbols it lacks come from
 /// the bundled Noto Sans Symbols 2, as in the terminal.
@@ -222,8 +224,13 @@ class Tui extends ThemeExtension<Tui> {
 
   final TuiPalette palette;
 
-  static TuiPalette of(BuildContext context) =>
-      Theme.of(context).extension<Tui>()!.palette;
+  /// Jeansh's own theme where a page is shown without the app's, as in a
+  /// test of one page.
+  static TuiPalette of(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.extension<Tui>()?.palette ??
+        terminalSchemes.first.palette(theme.brightness);
+  }
 
   @override
   Tui copyWith({TuiPalette? palette}) => Tui(palette ?? this.palette);
@@ -248,28 +255,29 @@ ThemeData tuiTheme(TuiPalette p) {
   TextStyle? size(TextStyle? s, double px, [FontWeight? w]) =>
       s?.copyWith(fontSize: px, fontWeight: w, letterSpacing: 0);
   final t = base.textTheme;
-  final text = TextTheme(
-    displayLarge: size(t.displayLarge, 44),
-    displayMedium: size(t.displayMedium, 36),
-    displaySmall: size(t.displaySmall, 30),
-    headlineLarge: size(t.headlineLarge, 26, FontWeight.w700),
-    headlineMedium: size(t.headlineMedium, 23, FontWeight.w700),
-    headlineSmall: size(t.headlineSmall, 20, FontWeight.w700),
-    titleLarge: size(t.titleLarge, 18, FontWeight.w700),
-    titleMedium: size(t.titleMedium, 15, FontWeight.w700),
-    titleSmall: size(t.titleSmall, 13, FontWeight.w700),
-    bodyLarge: size(t.bodyLarge, 15),
-    bodyMedium: size(t.bodyMedium, 13.5),
-    bodySmall: size(t.bodySmall, 12),
-    labelLarge: size(t.labelLarge, 13, FontWeight.w700),
-    labelMedium: size(t.labelMedium, 12),
-    labelSmall: size(t.labelSmall, 11),
-  ).apply(
-    fontFamily: tuiFontFamily,
-    fontFamilyFallback: _tuiFallback,
-    bodyColor: p.text,
-    displayColor: p.text,
-  );
+  final text =
+      TextTheme(
+        displayLarge: size(t.displayLarge, 44),
+        displayMedium: size(t.displayMedium, 36),
+        displaySmall: size(t.displaySmall, 30),
+        headlineLarge: size(t.headlineLarge, 26, FontWeight.w700),
+        headlineMedium: size(t.headlineMedium, 23, FontWeight.w700),
+        headlineSmall: size(t.headlineSmall, 20, FontWeight.w700),
+        titleLarge: size(t.titleLarge, 18, FontWeight.w700),
+        titleMedium: size(t.titleMedium, 15, FontWeight.w700),
+        titleSmall: size(t.titleSmall, 13, FontWeight.w700),
+        bodyLarge: size(t.bodyLarge, 15),
+        bodyMedium: size(t.bodyMedium, 13.5),
+        bodySmall: size(t.bodySmall, 12),
+        labelLarge: size(t.labelLarge, 13, FontWeight.w700),
+        labelMedium: size(t.labelMedium, 12),
+        labelSmall: size(t.labelSmall, 11),
+      ).apply(
+        fontFamily: tuiFontFamily,
+        fontFamilyFallback: _tuiFallback,
+        bodyColor: p.text,
+        displayColor: p.text,
+      );
   final label = text.labelLarge;
   final square = tuiShape();
   final edged = tuiShape(p.border);
@@ -537,30 +545,42 @@ class TuiHeading extends StatelessWidget {
 }
 
 /// A small label in a box: Termul's badge. [color] is its ink, muted when
-/// left out.
+/// left out. [live] puts Termul's lit status dot before it, in the theme's
+/// green, for something running; the dot says nothing to a screen reader.
 class TuiBadge extends StatelessWidget {
-  const TuiBadge(this.label, {super.key, this.color});
+  const TuiBadge(this.label, {super.key, this.color, this.live = false});
 
   final String label;
   final Color? color;
+  final bool live;
 
   @override
   Widget build(BuildContext context) {
     final p = Tui.of(context);
+    final style = Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: color ?? (live ? p.green : p.muted),
+      fontWeight: FontWeight.w700,
+      height: 1.3,
+    );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
       decoration: BoxDecoration(
         color: p.raised,
         border: Border.all(color: p.border),
       ),
-      child: Text(
-        label,
-        maxLines: 1,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: color ?? p.muted,
-          fontWeight: FontWeight.w700,
-          height: 1.3,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (live) ExcludeSemantics(child: Text('● ', style: style)),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -18,6 +18,7 @@ import 'logs_page.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart';
 import 'settings_page.dart';
+import 'tui.dart';
 
 class HostsPage extends StatefulWidget {
   const HostsPage({
@@ -236,7 +237,20 @@ class _HostsPageState extends State<HostsPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Jeansh'),
+            // A prompt's chevron before the name, as Termul heads its shell.
+            Row(
+              children: [
+                ExcludeSemantics(
+                  child: Text(
+                    '❯ ',
+                    style: TextStyle(color: theme.colorScheme.primary),
+                  ),
+                ),
+                const Flexible(
+                  child: Text('Jeansh', overflow: TextOverflow.ellipsis),
+                ),
+              ],
+            ),
             Text(
               _tagline,
               maxLines: 1,
@@ -314,7 +328,7 @@ class _HostsPageState extends State<HostsPage> {
           // A desktop always has one thing to show, the local shell, so the
           // "add your first host" page would be standing in front of it.
           : hosts.isEmpty && databases.isEmpty && !_local
-          ? const _EmptyState()
+          ? _EmptyState(onAddHost: () => _openEditor())
           : LayoutBuilder(
               builder: (context, constraints) {
                 // Material's compact breakpoint, as the tab strip uses: one
@@ -389,7 +403,10 @@ class _HostsPageState extends State<HostsPage> {
                 final items = [
                   if (_local) ...[
                     if (hosts.isNotEmpty || databases.isNotEmpty)
-                      const _SectionHeader('This machine'),
+                      const TuiHeading(
+                        'This machine',
+                        padding: _headingPadding,
+                      ),
                     ...rows([
                       _LocalTile(
                         sessions: widget.sessions.sessionsFor(localHostId),
@@ -407,10 +424,11 @@ class _HostsPageState extends State<HostsPage> {
                         ),
                     ]),
                   ],
-                  if (hosts.isNotEmpty && headed) const _SectionHeader('Hosts'),
+                  if (hosts.isNotEmpty && headed)
+                    const TuiHeading('Hosts', padding: _headingPadding),
                   ...rows([for (final host in hosts) hostCard(host)]),
                   if (databases.isNotEmpty) ...[
-                    const _SectionHeader('Databases'),
+                    const TuiHeading('Databases', padding: _headingPadding),
                     ...rows([for (final db in databases) databaseCard(db)]),
                   ],
                 ];
@@ -459,7 +477,6 @@ class _LocalTile extends StatelessWidget {
       margin: const EdgeInsets.all(6),
       child: InkWell(
         onTap: onOpen,
-        borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
@@ -477,14 +494,20 @@ class _LocalTile extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    Text(
-                      open == 0 ? idle : '$open open',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
+                    if (open == 0)
+                      Text(
+                        idle,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    else
+                      Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: TuiBadge('$open open', live: true),
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
                   ],
                 ),
               ),
@@ -552,26 +575,8 @@ class _AddButtonState extends State<_AddButton> {
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.title);
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 12, 10, 4),
-      child: Text(
-        title,
-        style: theme.textTheme.titleSmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-    );
-  }
-}
+/// Where Home's `# Hosts` and the rest sit: in line with the cards' text.
+const _headingPadding = EdgeInsets.fromLTRB(10, 12, 10, 4);
 
 class _HostTile extends StatelessWidget {
   const _HostTile({
@@ -642,8 +647,7 @@ class _HostTile extends StatelessWidget {
                               width: 10,
                               height: 10,
                               decoration: BoxDecoration(
-                                color: theme.colorScheme.primary,
-                                shape: BoxShape.circle,
+                                color: Tui.of(context).green,
                                 // Cut out of the icon in the card's own
                                 // colour.
                                 border: Border.all(
@@ -694,24 +698,35 @@ class _HostTile extends StatelessWidget {
                       host.displayName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    for (final line in [
-                      host.target,
-                      switch (activeCount) {
-                        0 => authLabel,
-                        1 => 'active session',
-                        _ => '$activeCount active sessions',
-                      },
-                    ])
-                      Text(
-                        line,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: muted,
-                        ),
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
+                    ),
+                    Text(
+                      host.target,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(color: muted),
+                    ),
+                    const SizedBox(height: 4),
+                    // How it signs in, and tmux, as Termul's badges; while a
+                    // session is up, how many, lit, in their place.
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        if (activeCount > 0)
+                          TuiBadge(
+                            activeCount == 1
+                                ? 'active session'
+                                : '$activeCount active sessions',
+                            live: true,
+                          )
+                        else
+                          TuiBadge(authLabel),
+                        if (host.useTmux) const TuiBadge('tmux'),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -800,7 +815,9 @@ class _DatabaseTile extends StatelessWidget {
                       db.displayName(host),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyLarge,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     for (final line in [
                       '${db.kind.label} · ${db.summary}',
@@ -836,37 +853,31 @@ class _DatabaseTile extends StatelessWidget {
   }
 }
 
+/// A fresh install's Home: what Jeansh is for, the two things Add makes, and
+/// a button straight to the first host.
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  const _EmptyState({required this.onAddHost});
+
+  final VoidCallback onAddHost;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.terminal,
-              size: 48,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: 16),
-            Text('No hosts yet', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              'Add a host to open a shell on it.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
+  Widget build(BuildContext context) => TuiEmptyState(
+    icon: Icons.terminal,
+    title: 'No hosts yet',
+    body:
+        'Save a server once and open a shell on it with one tap. Jeansh '
+        'signs in with a password, a private key or Tailscale.',
+    hints: const [
+      ('Add ▸ Host', 'a server you SSH into'),
+      (
+        'Add ▸ Database',
+        'PostgreSQL, MongoDB or Redis, reached through a host',
       ),
-    );
-  }
+    ],
+    action: FilledButton.icon(
+      onPressed: onAddHost,
+      icon: const Icon(Icons.add),
+      label: const Text('Add your first host'),
+    ),
+  );
 }

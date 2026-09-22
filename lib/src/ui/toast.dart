@@ -189,9 +189,9 @@ class ToastCard extends StatelessWidget {
           metaData: ToastCard,
           child: Material(
             color: scheme.surfaceContainerHigh,
+            // Square and edged, as every box in the app: see `tuiTheme`.
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: scheme.outlineVariant),
+              side: BorderSide(color: scheme.outline),
             ),
             clipBehavior: Clip.antiAlias,
             // As wide as the row of what it says, with the countdown laid

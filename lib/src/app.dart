@@ -168,8 +168,9 @@ class _SshboxAppState extends State<SshboxApp> {
     if (context == null || !context.mounted) return;
     showToast(
       context,
-      'Jeansh counts installs\nIt sends a daily count and any crashes, never '
-      'a hostname, a login, a path or a command. Settings turns it off.',
+      'Jeansh reports crashes\nIt also counts this install once a day. '
+      'Neither report carries a hostname, login, path or command. You can '
+      'turn both off in Settings.',
       duration: const Duration(seconds: 8),
       action: (label: 'Settings', onPressed: _openSettings),
     );
