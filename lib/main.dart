@@ -16,6 +16,7 @@ Future<void> main() async {
   await keyBarSettings.load();
   await appTheme.load();
   await gitInDrawer.load();
+  await showDotfiles.load();
   // Before any session can connect, so its entry joins the saved log rather
   // than being wiped by it.
   await sessionLog.load();

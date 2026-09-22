@@ -7,9 +7,11 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
+import 'package:sshbox/src/ui/settings_page.dart' show showDotfiles;
 import 'package:sshbox/src/ui/terminal_link.dart';
 import 'package:sshbox/src/ui/toast.dart';
 
@@ -66,6 +68,11 @@ class _SlowFolderBrowser extends FakeFileBrowser {
 }
 
 void main() {
+  // Show dotfiles is app-wide and saved, so one test's choice must not leak
+  // into the next.
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+  tearDown(() => showDotfiles.value = false);
+
   testWidgets('lists a directory with folders before files', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
