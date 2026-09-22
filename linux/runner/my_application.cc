@@ -10,9 +10,20 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  // sshbox/menu, which the Help menu's items are handed to Dart on.
+  FlMethodChannel* menu_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+// Help › Check for updates…: Dart runs the check Settings runs, and answers.
+static void check_for_updates_cb(GSimpleAction* action, GVariant* parameter,
+                                 gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->menu_channel == nullptr) return;
+  fl_method_channel_invoke_method(self->menu_channel, "checkForUpdates",
+                                  nullptr, nullptr, nullptr, nullptr);
+}
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
@@ -95,6 +106,11 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->menu_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)), "sshbox/menu",
+      FL_METHOD_CODEC(codec));
+
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
@@ -121,11 +137,26 @@ static gboolean my_application_local_command_line(GApplication* application,
 
 // Implements GApplication::startup.
 static void my_application_startup(GApplication* application) {
-  // MyApplication* self = MY_APPLICATION(object);
-
-  // Perform any actions required at application startup.
-
   G_APPLICATION_CLASS(my_application_parent_class)->startup(application);
+
+  // A Help menu in the window's own menu bar, which GtkApplicationWindow
+  // draws under the title bar or the header bar alike. No mnemonic and no
+  // F10: Alt+H and F10 belong to the program in the terminal (readline,
+  // htop, mc), so the menu is reached with the mouse.
+  static const GActionEntry actions[] = {
+      {"check-for-updates", check_for_updates_cb, nullptr, nullptr, nullptr,
+       {}},
+  };
+  g_action_map_add_action_entries(G_ACTION_MAP(application), actions,
+                                  G_N_ELEMENTS(actions), application);
+  g_autoptr(GMenu) help = g_menu_new();
+  g_menu_append(help, "Check for updates…", "app.check-for-updates");
+  g_autoptr(GMenu) bar = g_menu_new();
+  g_menu_append_submenu(bar, "Help", G_MENU_MODEL(help));
+  gtk_application_set_menubar(GTK_APPLICATION(application),
+                              G_MENU_MODEL(bar));
+  g_object_set(gtk_settings_get_default(), "gtk-menu-bar-accel", nullptr,
+               nullptr);
 }
 
 // Implements GApplication::shutdown.
@@ -141,6 +172,7 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+  g_clear_object(&self->menu_channel);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

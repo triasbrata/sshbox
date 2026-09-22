@@ -162,6 +162,7 @@ class Updater {
     await install.handOff(staged);
     // Unpacked and on its way in: the archive has done its work.
     _remove(archive);
+    updateAvailable.value = null;
     _quit();
   }
 
@@ -179,7 +180,9 @@ class Updater {
   Future<Update?> check() async {
     if (!enabled) return null;
     final update = parseFeed(await _read(Uri.parse(feed)), updatePlatform);
-    return isNewer(update.label, version) ? update : null;
+    final newer = isNewer(update.label, version) ? update : null;
+    updateAvailable.value = newer;
+    return newer;
   }
 
   /// [check], but at most once every [checkEvery]: what the app does when it
@@ -461,4 +464,11 @@ Directory downloadsFolder() {
 }
 
 /// The app's own, which Settings and the check at startup share.
-final updater = Updater();
+/// Replaced by a test that drives the app against a feed of its own.
+Updater updater = Updater();
+
+/// The newer release the last check found, whichever asked — the daily one,
+/// the menu or Settings — for Home's marker and the top of Settings' Updates.
+/// A dismissed dialog leaves it; a check finding nothing newer, or the
+/// update going in, clears it. A check that fails leaves it as it was.
+final updateAvailable = ValueNotifier<Update?>(null);

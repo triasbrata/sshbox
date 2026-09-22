@@ -162,6 +162,9 @@ void asLinux() {
 }
 
 void main() {
+  // What a check found is app-wide: each test starts with nothing found.
+  setUp(() => updateAvailable.value = null);
+
   group('the version comparison', () {
     test('counts each part as a number, not as text', () {
       expect(isNewer('1.0.10', '1.0.9'), isTrue);
