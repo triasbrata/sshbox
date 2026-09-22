@@ -12,9 +12,9 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s).*${HOST_LABEL}.*"
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
     timeout: 15000
-- tapOn: "(?s).*${HOST_LABEL}.*"
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
 - tapOn:
     text: "Trust"
     optional: true
@@ -24,7 +24,7 @@ env:
 
 # The shell's tab carries the host's name. On the terminal page the host's card
 # is not drawn, so the name matches the tab and nothing else.
-- longPressOn: "(?s).*${HOST_LABEL}.*"
+- longPressOn: "(?s)${HOST_LABEL}.*"
 - tapOn: "Duplicate session"
 
 # A second connection: the key is already pinned, so no prompt, but it is still
@@ -45,5 +45,5 @@ env:
 - tapOn: "(?s)Close .*"
 - tapOn: "(?s)Close .*"
 - extendedWaitUntil:
-    visible: "(?s).*${HOST_LABEL}.*"
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
     timeout: 10000

@@ -22,7 +22,7 @@ env:
     clearState: false
 
 - extendedWaitUntil:
-    visible: "(?s).*${HOST_LABEL}.*"
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
     timeout: 15000
 
 - openLink: "sshbox://host/${HOST_ID}"
