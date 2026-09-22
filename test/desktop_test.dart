@@ -461,6 +461,7 @@ void main() {
           startPty: startPty,
           windows: true,
           environment: {..._windowsEnv, 'WSLENV': 'USERPROFILE/p'},
+          distros: () async => ['Debian', 'Ubuntu-22.04'],
         ),
       );
 
@@ -487,6 +488,50 @@ void main() {
       );
 
       expect(started.executable, '/bin/bash');
+    });
+
+    test('no shell for a WSL distro removed since, and says so, for a tab '
+        'brought back that names one', () async {
+      var started = false;
+      final transport = LocalTransport(
+        wslDistro: 'Ubuntu-22.04',
+        startPty:
+            (
+              _, {
+              arguments = const [],
+              workingDirectory,
+              environment,
+              rows = 25,
+              columns = 80,
+              ackRead = false,
+            }) {
+              started = true;
+              return _Pty();
+            },
+        windows: true,
+        environment: _windowsEnv,
+        distros: () async => ['Debian'],
+      );
+
+      for (final shell in [true, false]) {
+        await expectLater(
+          transport.connect(
+            host: wslHost('Ubuntu-22.04'),
+            secrets: _NoSecrets(),
+            columns: 80,
+            rows: 25,
+            shell: shell,
+          ),
+          throwsA(
+            isA<SshSessionException>().having(
+              (error) => error.message,
+              'message',
+              'WSL has no distro called Ubuntu-22.04 on this machine any more.',
+            ),
+          ),
+        );
+      }
+      expect(started, isFalse);
     });
   });
 

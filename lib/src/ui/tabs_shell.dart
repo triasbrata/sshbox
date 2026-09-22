@@ -678,8 +678,9 @@ class _TabStripState extends State<TabStrip> {
         // The last pane goes with the tab, by the tab's own close button.
         if (tmux.panes.length > 1) ('Close pane', () => _tmux(tmux.closePane)),
         // Not on a session somebody made by hand, which the app never sets
-        // recording.
-        if (tmux.record != null)
+        // recording, nor where there is no file browser to read one through:
+        // this machine's own shells, which keep none.
+        if (tmux.record != null && session.canBrowseFiles)
           ('Pane record', () => _openRecord(session, tmux)),
       ],
     ];
