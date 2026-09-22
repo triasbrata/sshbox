@@ -31,14 +31,16 @@ Future<T?> showMenuAt<T>(
 ) async {
   if (SchedulerBinding.instance.hasScheduledFrame) {
     await SchedulerBinding.instance.endOfFrame;
-    if (!context.mounted) return null;
   }
-  final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+  if (!context.mounted) return null;
+  final overlay = Overlay.of(context).context;
+  if (!overlay.mounted) return null;
+  final box = overlay.findRenderObject()! as RenderBox;
   return showMenu<T>(
     context: context,
     position: RelativeRect.fromRect(
-      overlay.globalToLocal(at) & Size.zero,
-      Offset.zero & overlay.size,
+      box.globalToLocal(at) & Size.zero,
+      Offset.zero & box.size,
     ),
     items: items,
   );
