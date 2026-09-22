@@ -41,6 +41,16 @@ env:
 - launchApp:
     clearState: true
 
+# A fresh install shows the onboarding pager once before Home, where the
+# build has one; its Skip is labelled "Skip" whatever case it is drawn in.
+# Waiting for either makes the check below immediate, and with no pager the
+# optional tap finds nothing and moves on.
+- extendedWaitUntil:
+    visible: "(Skip|Add)"
+    timeout: 15000
+- tapOn:
+    text: "Skip"
+    optional: true
 - extendedWaitUntil:
     visible: "Add"
     timeout: 15000
@@ -66,10 +76,22 @@ env:
 - tapOn: "Host"
 - inputText: "${SSH_HOST}"
 
+# Each field is scrolled to before it is tapped. The keyboard is up from here
+# on, and whatever sits under Host decides whether Port is still above it: run
+# 35760501957 lost Port behind the keyboard once the Alternative address helper
+# grew to a paragraph. Where a field is already in view, this scrolls nothing.
+- scrollUntilVisible:
+    element:
+      text: "Port"
+    direction: DOWN
 - tapOn: "Port"
 - eraseText
 - inputText: "${SSH_PORT}"
 
+- scrollUntilVisible:
+    element:
+      text: "Username"
+    direction: DOWN
 - tapOn: "Username"
 - inputText: "${SSH_USER}"
 
