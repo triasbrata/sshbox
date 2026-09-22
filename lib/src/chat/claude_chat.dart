@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 import '../session/terminal_session.dart';
+import '../session/tmux.dart';
 
 /// How much of a tool's result is kept for the transcript. A `cat` of a large
 /// file comes back whole, and every byte of it would sit in memory for as
@@ -332,6 +333,13 @@ class ClaudeChat extends ChangeNotifier {
 
   ClaudeAgent? get watching => _watching;
 
+  /// Why the session being watched cannot be typed into from here, or null
+  /// when it can: an interactive one the tmux the tabs use holds no pane of
+  /// — see [paneCommand].
+  String? _readOnly;
+
+  String? get readOnly => _watching == null ? null : _readOnly;
+
   CommandChannel? _follower;
   StreamSubscription<String>? _followed;
 
@@ -566,15 +574,21 @@ class ClaudeChat extends ChangeNotifier {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
       if (read == null) return;
+      final pane = agent.interactive ? await _findPane(agent, pid) : null;
       _watching = agent;
       _say(
         ChatNotice(
-          agent.interactive
-              ? 'Watching “${agent.name}” live, read-only: somebody is typing '
-                    'into it at a terminal on the host. What it does shows '
-                    'here as it happens; to type into it, use that terminal.'
-              : 'Watching “${agent.name}” live: what it does on the host '
-                    'shows here as it happens, and what you send goes into it.',
+          !agent.interactive
+              ? 'Watching “${agent.name}” live: what it does on the host '
+                    'shows here as it happens, and what you send goes into it.'
+              : pane != null
+              ? 'Watching “${agent.name}” live: it runs at a terminal on the '
+                    'host, in tmux pane $pane, and what you send is typed '
+                    'into that pane — only while it is waiting for a '
+                    'message, never into a question it is asking there.'
+              : 'Watching “${agent.name}” live, read-only: $_readOnly What '
+                    'it does shows here as it happens; to type into it, use '
+                    'that terminal.',
         ),
       );
       await _follow(agent, pid: pid, from: read.from, carry: read.carry);
@@ -610,7 +624,40 @@ class ClaudeChat extends ChangeNotifier {
     _busy = false;
     _ended = false;
     _watching = null;
+    _readOnly = null;
     _pending.clear();
+  }
+
+  /// The tmux pane [agent], an interactive session, runs in — or null, with
+  /// [_readOnly] saying why it cannot be typed into.
+  Future<String?> _findPane(ClaudeAgent agent, int pid) async {
+    final String answer;
+    try {
+      answer = utf8.decode(
+        await _readAll(
+          paneCommand(agent.sessionId, pid: pid),
+          const Duration(seconds: 20),
+        ),
+        allowMalformed: true,
+      );
+    } catch (error) {
+      _readOnly = 'where it runs could not be found out ($error), so it is '
+          'not typed into from here.';
+      return null;
+    }
+    final pane = RegExp(
+      r'^sshbox:pane (%\d+)$',
+      multiLine: true,
+    ).firstMatch(answer)?.group(1);
+    if (pane != null) return pane;
+    final why = answer.trim();
+    _readOnly = why.startsWith('sshbox:no ') || why.isEmpty
+        ? 'it runs in a terminal outside tmux, or in a tmux this app does '
+              'not use, so there is no way to type into it from here.'
+        // The host's own words: tmux not installed, most likely.
+        : 'it is in no tmux pane this app can reach — $why — so there is no '
+              'way to type into it from here.';
+    return null;
   }
 
   /// Starts a new conversation on the host as a background session, with
@@ -814,11 +861,6 @@ class ClaudeChat extends ChangeNotifier {
   }
 
   Future<void> _deliver(ChatSaid said, ClaudeAgent agent) async {
-    final openTerminal = this.openTerminal;
-    if (openTerminal == null) {
-      return _undelivered(said, 'This connection cannot open a terminal on '
-          'the host, which typing into a session needs.');
-    }
     // What it is doing now, not what the list said when it was picked.
     final ClaudeAgent? now;
     try {
@@ -831,10 +873,16 @@ class ClaudeChat extends ChangeNotifier {
     if (now == null || !now.live) {
       return _undelivered(said, '“${agent.name}” is no longer running.');
     }
+    if (now.interactive) return _typeIntoPane(said, agent, now);
+    final openTerminal = this.openTerminal;
+    if (openTerminal == null) {
+      return _undelivered(said, 'This connection cannot open a terminal on '
+          'the host, which typing into a session needs.');
+    }
     final id = now.id;
-    if (id == null || now.interactive) {
-      return _undelivered(said, 'Somebody is typing into “${agent.name}” at a '
-          'terminal. Type there, so two people are not typing at once.');
+    if (id == null) {
+      return _undelivered(said, 'This session has no id that can be '
+          'attached to.');
     }
     if (!_typeable(now)) {
       return _undelivered(said, '“${agent.name}” is waiting for '
@@ -891,6 +939,93 @@ class ClaudeChat extends ChangeNotifier {
       await screen.cancel();
       // The attach goes; the session keeps running either way.
       terminal.close();
+    }
+  }
+
+  /// Types [said] into the tmux pane [agent], an interactive session, runs
+  /// in: the way in that a terminal somebody typed `claude` into has, the
+  /// CLI giving it no id to attach to. [now] is what `claude agents` says of
+  /// it this moment; the host checks again right before each keystroke, see
+  /// [paneCommand].
+  ///
+  /// ponytail: only between turns. Mid-turn a permission prompt can come up
+  /// at any moment, and a digit alone answers one, so a message sent then is
+  /// refused rather than queued; queue it here and send it when the turn
+  /// ends, if refusing proves a nuisance.
+  Future<void> _typeIntoPane(
+    ChatSaid said,
+    ClaudeAgent agent,
+    ClaudeAgent now,
+  ) async {
+    final name = '“${agent.name}”';
+    final readOnly = _readOnly;
+    if (readOnly != null) return _undelivered(said, 'Not typed: $readOnly');
+    final waitingFor = now.waitingFor;
+    if (waitingFor != null) {
+      return _undelivered(said, '$name is waiting for $waitingFor at its '
+          'terminal. Answer it there, then send this again.');
+    }
+    if (now.status != 'idle') {
+      return _undelivered(said, '$name is in the middle of a turn. Send this '
+          'again once it has finished: typed now, it could land in a '
+          'question the turn asks at its terminal.');
+    }
+    // Taken now: the session can record it before the host has finished
+    // saying it typed it, and recording it lets this go.
+    final recorded = _recorded[said]?.future;
+    final keys = Uint8List.fromList(utf8.encode(_keystrokes(said.text)));
+    final String answer;
+    try {
+      final channel = await open(
+        paneCommand(agent.sessionId, pid: now.pid!, typing: keys.length),
+      );
+      try {
+        channel.write(keys);
+        answer = await utf8.decoder
+            .bind(channel.output)
+            .join()
+            .timeout(const Duration(seconds: 30));
+      } finally {
+        channel.close();
+      }
+    } catch (error) {
+      return _undelivered(said, 'Not delivered: $error');
+    }
+    if (!RegExp(r'^sshbox:typed ', multiLine: true).hasMatch(answer)) {
+      final code = RegExp(
+        r'^sshbox:no (\w+)',
+        multiLine: true,
+      ).firstMatch(answer)?.group(1);
+      final why = switch (code) {
+        'terminal' || 'pane' => '$name is no longer in a tmux pane here.',
+        'gone' => '$name is no longer running.',
+        'busy' => '$name has started a turn, or is asking something at its '
+            'terminal. Send this again once it is waiting for a message.',
+        'foreground' => 'Something is in front of $name in its pane: it is '
+            'suspended, or another program runs there. Bring it back at that '
+            'terminal first.',
+        'dialog' => '$name is showing a question or a picker at its '
+            'terminal. Answer it there first.',
+        'draft' => 'Something is typed into $name at its terminal and not '
+            'sent yet. Send or clear it there first, so the two do not go '
+            'as one.',
+        _ => answer.trim().isEmpty
+            ? 'The host said nothing.'
+            : 'tmux would not take it: ${answer.trim()}',
+      };
+      return _undelivered(
+        said,
+        answer.contains('sshbox:pasted')
+            ? 'Typed into $name but not sent — $why It is in its input line '
+                  'at the terminal.'
+            : 'Not typed: $why',
+      );
+    }
+    try {
+      await recorded?.timeout(deliveryTimeout);
+    } on TimeoutException {
+      _undelivered(said, 'Not delivered: $name did not record it within '
+          '${deliveryTimeout.inSeconds} s. Look at its terminal to see why.');
     }
   }
 
@@ -1693,6 +1828,98 @@ class ClaudeChat extends ChangeNotifier {
   static String attachCommand(String id) => 'sh -c '
       '${_shellQuote('$_findClaude'
           'exec "\$c" attach ${_shellQuote(id)}')}';
+
+  /// What the host runs to find the tmux pane an interactive session runs in
+  /// — process [pid], session [sessionId] — and, given the length of what to
+  /// type, to type it there: that many bytes read from stdin, then Enter.
+  ///
+  /// The CLI gives an interactive session no id to attach to, so the pane is
+  /// the only way in. It is found by the session's terminal, never guessed:
+  /// the pane whose tty is the one `ps` says the process has, on the tmux
+  /// server the tabs use. A tty belongs to one pane and nothing else, so
+  /// there is no near miss — a Claude run in a plain terminal, inside
+  /// `script`, or over ssh from the pane has a tty no pane holds, and is
+  /// said to be in none.
+  ///
+  /// Every check runs again right before the text goes in, and again before
+  /// Enter, since the listing the chat read may be a second old. Measured on
+  /// 2.1.278: a digit alone answers a permission prompt, no Enter needed, and
+  /// a dialog swallows what is typed and takes Enter as yes — so nothing is
+  /// typed unless all of these hold, and each failure says which:
+  /// - `~/.claude/sessions/<pid>.json`, the file `claude agents` is read
+  ///   from, still names this session, `idle`, and waiting for nothing. An
+  ///   interactive session has no `state`, but a permission prompt turns it
+  ///   `waiting`, measured. Not `busy` either: mid-turn, a prompt can come up
+  ///   at any moment, and between turns none can come without a turn.
+  /// - Claude is the foreground of its terminal, not suspended with a shell
+  ///   in front of it, where Enter would run the message as a command.
+  /// - Its input line has the keyboard: the cursor is showing, on the `❯`
+  ///   line, just after it — so no draft of somebody's at that terminal is
+  ///   sent along. Measured: a permission prompt or a picker hides the
+  ///   cursor.
+  /// - Nothing on screen says `Esc to cancel` or `Enter to confirm`, as
+  ///   every dialog measured did: one of them, "Teach auto mode about your
+  ///   environment?", came up after a turn with the session still `idle`.
+  ///
+  /// ponytail: the checks read Claude Code's own screen and state file, so a
+  /// release that redraws the prompt or renames a field makes them refuse,
+  /// never type blind; a dialog that says neither phrase and leaves the
+  /// cursor on the input line would get through, and none was found.
+  ///
+  /// The text never touches the command line or tmux's parser: it comes on
+  /// stdin into `load-buffer`, and `paste-buffer -r` writes it to that one
+  /// pane's terminal as it is — not `send-keys`, which would copy it into
+  /// every pane of a window with `synchronize-panes` on, and hand it to a
+  /// pane's copy mode as key bindings. Every command before `head` reads
+  /// /dev/null, so none of them eats it. [pid] is a number and [sessionId]
+  /// is quoted once for sh, the whole script once more.
+  static String paneCommand(
+    String sessionId, {
+    required int pid,
+    int typing = 0,
+  }) {
+    final type = typing <= 0
+        ? r'echo "sshbox:pane $w"'
+        : r'j="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$p.json"; '
+              'ready() { '
+              r'grep -q "\"sessionId\":\"$s\"" "$j" </dev/null 2>/dev/null '
+              '|| no gone; '
+              r'grep -q "\"status\":\"idle\"" "$j" </dev/null && '
+              r'! grep -q "\"waitingFor\"" "$j" </dev/null || no busy; '
+              r'set -- $(ps -o pgid=,tpgid= -p $p </dev/null 2>/dev/null); '
+              r'[ -n "$1" ] && [ "$1" = "$2" ] || no foreground; '
+              r'"$t" -u capture-pane -p -t "$w" </dev/null 2>/dev/null | '
+              'grep -q -e "Esc to cancel" -e "Enter to confirm" && no dialog; '
+              r'c=$("$t" display -p -t "$w" '
+              r'"#{cursor_flag} #{cursor_x} #{cursor_y}" </dev/null '
+              '2>/dev/null); '
+              r'set -- $c; [ "$1" = 1 ] || no dialog; }; '
+              'ready; set -- \$c; '
+              r'[ "$2" = 2 ] && "$t" -u capture-pane -p -t "$w" -S "$3" -E "$3" '
+              '</dev/null 2>/dev/null | grep -q "^❯" || no draft; '
+              r'b=sshbox-chat-$$; '
+              'head -c $typing | '
+              r'"$t" load-buffer -b "$b" - && '
+              r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+              r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
+              'no paste; }; '
+              'echo sshbox:pasted; sleep 1; ready; '
+              r'printf "\r" | "$t" load-buffer -b "$b" - && '
+              r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+              'no enter; '
+              r'echo "sshbox:typed $w"';
+    return 'sh -c '
+        '${_shellQuote('${TmuxSession.findTmux}'
+            'p=$pid; s=${_shellQuote(sessionId)}; '
+            r'no() { echo "sshbox:no $1"; exit 0; }; '
+            r'y=$(ps -o tty= -p $p </dev/null 2>/dev/null | tr -d " "); '
+            r'case $y in ""|"?"|"??") no terminal;; esac; '
+            r'w=$("$t" list-panes -a -F "#{pane_tty} #{pane_id}" </dev/null '
+            r'2>/dev/null | awk -v y="/dev/$y" '
+            r"'$1 == y { n++; w = $2 } END { if (n == 1) print w }'); "
+            r'[ -n "$w" ] || no pane; '
+            '$type')}';
+  }
 
   /// Finds [sessionId]'s transcript into `$f`, or says there is none and
   /// stops — by its id, not by the directory the CLI files it under. With

@@ -420,8 +420,9 @@ class _ChatPageState extends State<ChatPage> {
     final connected = widget.session.isConnected;
     // Before there is a conversation, what is sent starts one.
     final composing = chat.composing && connected;
-    // Somebody is typing into it at a terminal: shown here, typed there.
-    final readOnly = watching != null && watching.interactive;
+    // Running at a terminal in no tmux pane this app can type into: shown
+    // here, typed there.
+    final readOnly = watching != null && chat.readOnly != null;
     // Into a session being watched, what is typed goes to that session and
     // queues behind whatever it is doing; to this chat's own Claude, only
     // between its turns.
@@ -488,8 +489,8 @@ class _ChatPageState extends State<ChatPage> {
                   isDense: true,
                   border: const OutlineInputBorder(),
                   hintText: readOnly
-                      ? 'Read-only: type into “${watching.name}” at its '
-                            'terminal'
+                      ? 'Read-only: “${watching.name}” cannot be typed into '
+                            'from here'
                       : watching != null
                       ? 'Message “${watching.name}”…'
                       : composing

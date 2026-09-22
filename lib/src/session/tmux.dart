@@ -617,6 +617,10 @@ class TmuxSession {
       r'ok "$t" || { echo "tmux is not installed on this host (looked on PATH, '
       'in Homebrew and the other usual places)"; exit 1; }; ';
 
+  /// [_findTmux] for the chat, which types into the pane an interactive
+  /// Claude Code session runs in, and so has to find the tmux the tabs use.
+  static const findTmux = _findTmux;
+
   /// How far back a pane's history reaches when it is filled in on attach.
   // ponytail: a fixed 2000 lines, a fifth of the plain terminal's 10k,
   // because it crosses the connection at every attach; follow tmux's

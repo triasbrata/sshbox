@@ -112,6 +112,13 @@ class _Shell
   /// What `claude agents --json` answers, when a test sets one.
   String? listing;
 
+  /// What finding an interactive session's tmux pane answers: none, unless a
+  /// test puts it in one.
+  String pane = 'sshbox:no pane\n';
+
+  /// What was written to each command that typed into a pane.
+  final paneTyped = <String>[];
+
   /// What `claude --bg` prints, as it printed it on a real host: the short
   /// id of the session it started.
   String background =
@@ -153,6 +160,21 @@ class _Shell
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    // Before the rest: tmux's finder has a ` -f ` of its own.
+    if (command.contains('list-panes')) {
+      final typing = command.contains('load-buffer');
+      return (
+        output: Stream.value(
+          Uint8List.fromList(
+            utf8.encode(
+              typing ? 'sshbox:pasted\nsshbox:typed %4\n' : pane,
+            ),
+          ),
+        ),
+        write: (Uint8List data) => paneTyped.add(utf8.decode(data)),
+        close: () {},
+      );
+    }
     if (command.contains(' --bg ')) {
       return (
         output: Stream.value(Uint8List.fromList(utf8.encode(background))),
@@ -957,8 +979,8 @@ void main() {
     expect(row.selected, isFalse);
   });
 
-  testWidgets('a session somebody is typing into at a terminal is shown '
-      'read-only, and the box says to type there instead', (tester) async {
+  testWidgets('a session started at a terminal in no tmux pane is shown '
+      'read-only, and says why', (tester) async {
     final shell = _Shell()
       ..history = _nightlyHistory
       ..listing = jsonEncode([
@@ -984,15 +1006,19 @@ void main() {
     // Followed live, like any running session, and its turns drawn.
     expect(shell.commands.last, contains(' -f '));
     expect(find.text('It failed at the lint step.'), findsOneWidget);
-    // Said to be read-only, and nowhere said to take what is sent.
-    expect(find.textContaining('live, read-only'), findsOneWidget);
-    expect(find.textContaining('what you send goes into it'), findsNothing);
-    // The box is shut, and says where typing goes; there is nothing to send.
+    // Said to be read-only, why, and nowhere said to take what is sent.
+    expect(
+      find.textContaining('live, read-only: it runs in a terminal outside '
+          'tmux'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('what you send'), findsNothing);
+    // The box is shut; there is nothing to send.
     final field = tester.widget<TextField>(find.byType(TextField));
     expect(field.enabled, isFalse);
     expect(
       field.decoration!.hintText,
-      'Read-only: type into “dev-e0” at its terminal',
+      'Read-only: “dev-e0” cannot be typed into from here',
     );
     expect(
       tester
@@ -1001,6 +1027,62 @@ void main() {
       isNull,
     );
     expect(shell.typed, isEmpty);
+  });
+
+  testWidgets('a session started at a terminal in a tmux pane takes what is '
+      'sent, typed into that pane, and shows it sent once recorded',
+      (tester) async {
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..pane = 'sshbox:pane %4\n'
+      ..listing = jsonEncode([
+        {
+          'pid': 1259765,
+          'cwd': '/home/me',
+          'kind': 'interactive',
+          'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+          'name': 'dev-e0',
+          'status': 'idle',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'dev-e0');
+
+    expect(find.textContaining('in tmux pane %4'), findsOneWidget);
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.enabled, isTrue);
+    expect(field.decoration!.hintText, 'Message “dev-e0”…');
+
+    await tester.enterText(find.byType(TextField), 'and the lint?');
+    await tester.pump();
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.arrow_upward));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pump();
+
+    // Into the pane, on stdin; no attach, which it has no id for.
+    expect(shell.paneTyped, ['and the lint?']);
+    expect(shell.typed, isEmpty);
+    expect(find.text('Sending…'), findsOneWidget);
+
+    shell.adds({
+      'type': 'user',
+      'message': {'role': 'user', 'content': 'and the lint?'},
+    });
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pump();
+    expect(find.text('Sending…'), findsNothing);
+    expect(find.text('and the lint?'), findsOneWidget);
   });
 
   testWidgets('earlier turns go in above the first one showing, and what is '
