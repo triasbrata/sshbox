@@ -105,7 +105,8 @@ void main() {
     // The hunk's header as git printed it, and the file's own header.
     expect(find.text('@@ -10,3 +10,5 @@ class A {'), findsOneWidget);
     expect(find.text('src/A.kt'), findsOneWidget);
-    expect(find.text('4'), findsOneWidget);
+    expect(find.text('+3'), findsOneWidget);
+    expect(find.text('−1'), findsOneWidget);
   });
 
   testWidgets('the code is coloured by its language', (tester) async {
