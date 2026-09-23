@@ -1323,170 +1323,31 @@ class _ResultJson extends StatelessWidget {
 
   final DbResult result;
 
+  /// A row's card as termul draws a document: its number, Copy JSON, and
+  /// its fields as termul's tree.
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    // Room for a branch's arrow and no more, so the tree stays tight.
-    return ListTileTheme.merge(
-      minLeadingWidth: 20,
-      horizontalTitleGap: 4,
-      minVerticalPadding: 0,
-      child: ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: result.rows.length,
-        itemBuilder: (context, i) {
-          final json = result.json(i);
-          final row = jsonDecode(json) as Map<String, dynamic>;
-          return Card.outlined(
-            margin: const EdgeInsets.only(bottom: 8),
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsetsDirectional.only(start: 12),
-                        child: Text(
-                          '${i + 1}',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        tooltip: 'Copy JSON',
-                        visualDensity: VisualDensity.compact,
-                        icon: const Icon(Icons.copy, size: 18),
-                        onPressed: () {
-                          unawaited(
-                            Clipboard.setData(ClipboardData(text: json)),
-                          );
-                          showToast(context, 'Copied');
-                        },
-                      ),
-                    ],
-                  ),
-                  for (final MapEntry(:key, :value) in row.entries)
-                    _JsonNode(name: key, value: value),
-                ],
-              ),
-            ),
-          );
+  Widget build(BuildContext context) => ListView.builder(
+    padding: const EdgeInsets.all(12),
+    itemCount: result.rows.length,
+    itemBuilder: (context, i) {
+      final json = result.json(i);
+      return TuiJsonCard(
+        index: i + 1,
+        data: jsonDecode(json) as Map<String, dynamic>,
+        onCopy: () {
+          unawaited(Clipboard.setData(ClipboardData(text: json)));
+          showToast(context, 'Copied');
         },
-      ),
-    );
-  }
-}
-
-/// One field of a JSON value, [depth] levels in: a line with its value, or,
-/// for an object or array with something in it, a line that opens to what
-/// is in it, built only while open.
-class _JsonNode extends StatelessWidget {
-  const _JsonNode({required this.name, required this.value, this.depth = 0});
-
-  final String name;
-  final Object? value;
-  final int depth;
-
-  /// How many fields or items a line opens to. The rest are counted, and
-  /// Copy JSON has them: a long array would otherwise build every line.
-  static const _shown = 100;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final value = this.value;
-    // MongoDB's $oid, $date and the like are one value, not a branch.
-    final wrapped =
-        value is Map &&
-        value.length == 1 &&
-        '${value.keys.first}'.startsWith(r'$');
-    final children = switch (value) {
-      Map map when map.isNotEmpty && !wrapped => [
-        for (final entry in map.entries) ('${entry.key}', entry.value),
-      ],
-      List list when list.isNotEmpty => [
-        for (final (index, item) in list.indexed) ('$index', item),
-      ],
-      _ => null,
-    };
-    final indent = 12.0 + depth * 16;
-    final nameSpan = TextSpan(
-      text: name,
-      style: TextStyle(color: scheme.primary),
-    );
-
-    if (children == null) {
-      return Padding(
-        // Past a branch's arrow, so every name at one depth lines up.
-        padding: EdgeInsetsDirectional.fromSTEB(indent + 28, 4, 12, 4),
-        child: SelectableText.rich(
-          TextSpan(
-            style: _ResultGrid._mono,
-            children: [
-              nameSpan,
-              const TextSpan(text: ': '),
-              TextSpan(
-                text: jsonEncode(value),
-                style: TextStyle(
-                  color: value is String ? scheme.tertiary : scheme.onSurface,
-                ),
-              ),
-            ],
-          ),
-        ),
       );
-    }
-    final count = children.length;
-    return ExpansionTile(
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      minTileHeight: 32,
-      controlAffinity: ListTileControlAffinity.leading,
-      tilePadding: EdgeInsetsDirectional.only(start: indent, end: 12),
-      childrenPadding: EdgeInsets.zero,
-      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-      shape: const Border(),
-      collapsedShape: const Border(),
-      title: Text.rich(
-        TextSpan(
-          style: _ResultGrid._mono,
-          children: [
-            nameSpan,
-            TextSpan(
-              text: value is Map
-                  ? '  {$count ${count == 1 ? 'key' : 'keys'}}'
-                  : '  [$count ${count == 1 ? 'item' : 'items'}]',
-              style: TextStyle(color: scheme.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
-      children: [
-        for (final (name, child) in children.take(_shown))
-          _JsonNode(name: name, value: child, depth: depth + 1),
-        if (count > _shown)
-          Padding(
-            padding: EdgeInsetsDirectional.fromSTEB(indent + 44, 4, 12, 8),
-            child: Text(
-              '… ${count - _shown} more: Copy JSON has them all',
-              style: _ResultGrid._mono.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ),
-      ],
-    );
-  }
+    },
+  );
 }
 
 /// A result's rows under its column names, scrolling both ways. A tap on a
 /// row shows it whole; or, when [changes] can be made to it, a tap on a
 /// cell edits it and holding a row deletes it, and what is not saved shows
 /// in colour, new rows on top.
-class _ResultGrid extends StatelessWidget {
+class _ResultGrid extends StatefulWidget {
   const _ResultGrid(this.result, {this.changes, this.update});
 
   final DbResult result;
@@ -1601,17 +1462,51 @@ class _ResultGrid extends StatelessWidget {
   }
 
   @override
+  @override
+  State<_ResultGrid> createState() => _ResultGridState();
+}
+
+class _ResultGridState extends State<_ResultGrid> {
+  /// termul's grid list, reached as the primary controller: where it has
+  /// scrolled to is what finds the row a long press is on.
+  final _rows = ScrollController();
+
+  @override
+  void dispose() {
+    _rows.dispose();
+    super.dispose();
+  }
+
+  /// The row, as shown, under [at], or null past the last one.
+  ///
+  /// ponytail: termul's grid gives a row no long-press of its own, so it is
+  /// found from where its list has scrolled to and termul's fixed row height
+  /// — 8 above and below a 12px line at 1.3, and a hairline. A callback of
+  /// its own is asked of termul.
+  int? _rowAt(Offset at, int count) {
+    if (!_rows.hasClients) return null;
+    final list =
+        _rows.position.context.storageContext.findRenderObject() as RenderBox?;
+    if (list == null) return null;
+    final scale = MediaQuery.textScalerOf(context);
+    final height = 16 + scale.scale(12) * 1.3 + 1;
+    final y = list.globalToLocal(at).dy + _rows.offset;
+    if (y < 0) return null;
+    final row = y ~/ height;
+    return row < count ? row : null;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final result = widget.result;
+    final changes = widget.changes;
+    final update = widget.update;
     final columns = result.columns;
     final rows = result.rows;
     if (columns.isEmpty) return const SizedBox();
-    final changes = this.changes;
     final locked = result.edit?.locked ?? const <int>{};
-    final unset = result.edit?.unset ?? 'NULL';
     final added = changes?.added ?? const <Map<int, String?>>[];
-    final muted = scheme.onSurfaceVariant;
+    final count = added.length + rows.length;
 
     // Room for its name and the longest of its first 100 values' first
     // lines, between 64 and 320 dp.
@@ -1628,118 +1523,72 @@ class _ResultGrid extends StatelessWidget {
             .clamp(64.0, 320.0),
     ];
 
-    // Column [c]'s value, or [empty] for none, on a fill and in its ink
-    // when it is changed.
-    Widget cell(
-      int c,
-      String? value, {
-      bool header = false,
-      String empty = 'NULL',
-      (Color, Color)? fill,
-      bool struck = false,
-    }) {
-      final text = Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Text(
-          value ?? empty,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _mono.copyWith(
-            fontWeight: header ? FontWeight.bold : null,
-            color: value == null ? muted : fill?.$2,
-            decoration: struck ? TextDecoration.lineThrough : null,
-          ),
-        ),
-      );
-      return SizedBox(
-        width: widths[c],
-        child: fill == null ? text : ColoredBox(color: fill.$1, child: text),
-      );
-    }
-
-    Widget line(BuildContext context, int d) {
+    TuiDataGridRow row(int d) {
       final r = d - added.length;
       if (changes == null) {
-        return InkWell(
-          onTap: () => _showRow(context, r),
-          child: Row(
-            children: [
-              for (var c = 0; c < columns.length; c++) cell(c, rows[r][c]),
-            ],
-          ),
+        return TuiDataGridRow(
+          id: '$d',
+          cells: [for (final value in rows[r]) TuiDataGridCell(value: value)],
         );
       }
       final isNew = r < 0;
-      final deleted = changes.deleted.contains(r);
       final cells = isNew
           ? added[d]
           : changes.edits[r] ?? const <int, String?>{};
-      return GestureDetector(
-        onLongPressStart: update == null
-            ? null
-            : (details) => _rowMenu(context, d, details.globalPosition),
-        onSecondaryTapUp: rightClick(
-          update == null ? null : (at) => _rowMenu(context, d, at),
-        ),
-        child: Row(
-          children: [
-            for (var c = 0; c < columns.length; c++)
-              InkWell(
-                onTap: update == null || deleted || locked.contains(c)
-                    ? null
-                    : () => _editCell(context, d, c),
-                child: cell(
-                  c,
-                  isNew ? cells[c] : changes.value(rows, r, c),
-                  empty: isNew && !cells.containsKey(c) ? unset : 'NULL',
-                  fill: deleted
-                      ? (scheme.errorContainer, scheme.onErrorContainer)
-                      : isNew
-                      ? (scheme.primaryContainer, scheme.onPrimaryContainer)
-                      : cells.containsKey(c)
-                      ? (scheme.tertiaryContainer, scheme.onTertiaryContainer)
-                      : null,
-                  struck: deleted,
-                ),
-              ),
-          ],
-        ),
+      final unset = result.edit?.unset ?? 'NULL';
+      return TuiDataGridRow(
+        id: '$d',
+        isNew: isNew,
+        deleted: !isNew && changes.deleted.contains(r),
+        cells: [
+          for (var c = 0; c < columns.length; c++)
+            TuiDataGridCell(
+              // A new row's untouched cell reads as what it will take.
+              value: isNew
+                  ? (cells.containsKey(c) ? cells[c] : unset)
+                  : changes.value(rows, r, c),
+              dirty: cells.containsKey(c),
+            ),
+        ],
       );
     }
 
-    return LayoutBuilder(
-      builder: (context, constraints) => Scrollbar(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: math.max(
-              widths.fold(0.0, (sum, width) => sum + width),
-              constraints.maxWidth,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ColoredBox(
-                  color: scheme.surfaceContainerHigh,
-                  child: Row(
-                    children: [
-                      for (var c = 0; c < columns.length; c++)
-                        cell(c, columns[c], header: true),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: added.length + rows.length,
-                    itemBuilder: line,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+    void menuAt(Offset at) {
+      final d = _rowAt(at, count);
+      if (d != null) widget._rowMenu(context, d, at);
+    }
+
+    final grid = PrimaryScrollController(
+      controller: _rows,
+      automaticallyInheritForPlatforms: TargetPlatform.values.toSet(),
+      child: TuiDataGrid(
+        minColumnWidth: 64,
+        readOnly: changes == null,
+        columns: [
+          for (var c = 0; c < columns.length; c++)
+            TuiDataGridColumn(id: '$c', label: columns[c], width: widths[c]),
+        ],
+        rows: [for (var d = 0; d < count; d++) row(d)],
+        // Read-only, a tap shows the row whole; editable, it edits the cell.
+        onSelect: changes != null
+            ? null
+            : ((int, int) at) => widget._showRow(context, at.$1),
+        onCellTap: (d, c) {
+          final r = d - added.length;
+          if (update == null ||
+              locked.contains(c) ||
+              (r >= 0 && changes!.deleted.contains(r))) {
+            return;
+          }
+          widget._editCell(context, d, c);
+        },
       ),
+    );
+    if (changes == null || update == null) return grid;
+    return GestureDetector(
+      onLongPressStart: (details) => menuAt(details.globalPosition),
+      onSecondaryTapUp: rightClick(menuAt),
+      child: grid,
     );
   }
 }

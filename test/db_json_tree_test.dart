@@ -82,21 +82,21 @@ void main() {
     // and an ObjectId as the one value it is.
     expect(find.textContaining('name: "shop"'), findsOneWidget);
     expect(find.textContaining(r'_id: {"$oid":"5f1d"}'), findsOneWidget);
-    expect(find.text('owner  {2 keys}'), findsOneWidget);
-    expect(find.text('many  [150 items]'), findsOneWidget);
+    expect(find.text('owner: Object(2)'), findsOneWidget);
+    expect(find.text('many: Array(150)'), findsOneWidget);
     expect(find.textContaining('name: "ann"'), findsNothing);
     expect(find.byTooltip('Copy JSON'), findsOneWidget);
 
-    await tester.tap(find.text('owner  {2 keys}'));
+    await tester.tap(find.text('owner: Object(2)'));
     await tester.pumpAndSettle();
     expect(find.textContaining('name: "ann"'), findsOneWidget);
-    await tester.tap(find.text('langs  [2 items]'));
+    await tester.tap(find.text('langs: Array(2)'));
     await tester.pumpAndSettle();
     expect(find.textContaining('0: "dart"'), findsOneWidget);
     expect(find.textContaining('1: "go"'), findsOneWidget);
 
     // A long array opens to its first hundred, and counts the rest.
-    await tester.tap(find.text('many  [150 items]'));
+    await tester.tap(find.text('many: Array(150)'));
     await tester.pumpAndSettle();
     expect(find.textContaining('99: 99', skipOffstage: false), findsOneWidget);
     expect(find.textContaining('100: 100', skipOffstage: false), findsNothing);
