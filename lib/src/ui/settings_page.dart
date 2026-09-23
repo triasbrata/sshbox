@@ -640,8 +640,6 @@ class SettingsPage extends StatelessWidget {
                   // no desktop build to offer anywhere else.
                   if (isDesktop) ...[
                     const _SectionHeader('Updates'),
-                    // TODO(termul): an action row with a spinner and a
-                    // result line, until termul has one.
                     const UpdateTile(),
                   ],
                   const _AboutSection(),
