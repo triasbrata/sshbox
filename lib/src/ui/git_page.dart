@@ -270,47 +270,31 @@ class _GitPageState extends State<GitPage> {
     padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
     child: Row(
       children: [
-        const Icon(Icons.account_tree_outlined, size: 18),
-        const SizedBox(width: 8),
         Expanded(
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              value: repo?.root,
-              hint: const Text('Select a repository…'),
-              items: [
-                for (final option in _repos.repos)
-                  DropdownMenuItem(
-                    value: option.root,
-                    // A worktree's folder is named after whatever made it —
-                    // Claude Code calls them agent-a4c3… — so whose it is has
-                    // to be said beside it.
-                    child: Text.rich(
-                      TextSpan(
-                        text: option.name,
-                        children: [
-                          if (option.mainRoot case final main?)
-                            TextSpan(
-                              text:
-                                  '  worktree of ${RemotePath.basename(main)}',
-                              style: TextStyle(
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                        ],
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-              onChanged: (root) {
-                final picked = _repos.repos
-                    .where((option) => option.root == root)
-                    .firstOrNull;
-                if (picked != null) _repos.select(picked);
-              },
-            ),
+          child: TuiDropdown<String>(
+            label: 'Repository',
+            value: repo?.root,
+            hint: 'Select a repository…',
+            options: [
+              for (final option in _repos.repos)
+                TuiDropdownOption(
+                  value: option.root,
+                  label: option.name,
+                  // A worktree's folder is named after whatever made it —
+                  // Claude Code calls them agent-a4c3… — so whose it is has
+                  // to be said beside it.
+                  subtitle: switch (option.mainRoot) {
+                    final main? => 'worktree of ${RemotePath.basename(main)}',
+                    null => null,
+                  },
+                ),
+            ],
+            onChanged: (root) {
+              final picked = _repos.repos
+                  .where((option) => option.root == root)
+                  .firstOrNull;
+              if (picked != null) _repos.select(picked);
+            },
           ),
         ),
         if (_branch.isNotEmpty) ...[
@@ -513,34 +497,26 @@ class _GitPageState extends State<GitPage> {
       padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
       child: Row(
         children: [
-          const Icon(Icons.call_split, size: 18),
-          const SizedBox(width: 8),
           Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value: _viewing ?? checkedOut?.ref ?? detached,
-                items: [
-                  if (checkedOut == null)
-                    DropdownMenuItem(
-                      value: detached,
-                      child: Text('$_branch (checked out)'),
-                    ),
-                  for (final b in _branches)
-                    DropdownMenuItem(
-                      value: b.ref,
-                      child: Text(
-                        b.current ? '${b.name} (checked out)' : b.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                ],
-                onChanged: (ref) => _view(
-                  ref == null || ref == detached || ref == checkedOut?.ref
-                      ? null
-                      : ref,
-                ),
+            child: TuiDropdown<String>(
+              label: 'Branch',
+              value: _viewing ?? checkedOut?.ref ?? detached,
+              options: [
+                if (checkedOut == null)
+                  TuiDropdownOption(
+                    value: detached,
+                    label: '$_branch (checked out)',
+                  ),
+                for (final b in _branches)
+                  TuiDropdownOption(
+                    value: b.ref,
+                    label: b.current ? '${b.name} (checked out)' : b.name,
+                  ),
+              ],
+              onChanged: (ref) => _view(
+                ref == null || ref == detached || ref == checkedOut?.ref
+                    ? null
+                    : ref,
               ),
             ),
           ),

@@ -4,6 +4,7 @@ import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/db/wire.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 /// A database that keeps every query run and answers with one row of a
 /// table, editable or not as [edit] says.
@@ -264,14 +265,14 @@ void main() {
     expect(db.runs.single, 'SELECT * FROM public.people LIMIT 100;');
 
     // The columns on offer are the ones that run came back with.
-    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
     expect(find.text('id'), findsWidgets);
     expect(find.text('name'), findsWidgets);
     await tester.tap(find.text('name').last);
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(DropdownButton<PgOp>));
+    await tester.tap(find.byType(TuiDropdown<PgOp>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('contains').last);
     await tester.pumpAndSettle();
@@ -294,7 +295,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('OR'), findsNothing);
 
-    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('name').last);
     await tester.pumpAndSettle();
@@ -302,7 +303,7 @@ void main() {
 
     await tester.tap(find.text('Add condition'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(DropdownButton<String>).last);
+    await tester.tap(find.byType(TuiDropdown<String>).last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('id').last);
     await tester.pumpAndSettle();
@@ -318,7 +319,7 @@ void main() {
     );
 
     // Its tick leaves a row out without deleting it.
-    await tester.tap(find.byType(Checkbox).first);
+    await tester.tap(find.byType(TuiCheckbox).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Apply'));
     await tester.pumpAndSettle();
@@ -340,7 +341,7 @@ void main() {
     final db = await _open(tester);
     await tester.tap(find.text('people'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('name').last);
     await tester.pumpAndSettle();

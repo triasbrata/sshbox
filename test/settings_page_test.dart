@@ -192,10 +192,10 @@ void main() {
       terminalStyleOf('JetBrains Mono', 13),
     );
 
-    // The last size offered is the largest.
-    final largest = find.bySemanticsLabel('${maxFontSize.round()}px');
-    await tester.ensureVisible(largest);
-    await tester.tap(largest);
+    // termul's slider, dragged to its end, is the largest.
+    final slider = find.byType(TuiSlider);
+    await tester.ensureVisible(slider);
+    await tester.drag(slider, const Offset(2000, 0));
     await tester.pump();
     expect(terminalSettings.value.fontSize, maxFontSize);
 
@@ -739,8 +739,8 @@ void main() {
       expect(find.widgetWithText(TextField, 'Sends'), findsNothing);
       expect(_canSave(tester, 'Add'), isFalse);
 
-      await tester.tap(find.widgetWithText(FilterChip, 'Ctrl'));
-      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Ctrl'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Alt'));
       await tester.pump();
       expect(_shown('Ctrl+Alt+…'), findsOneWidget);
       expect(_canSave(tester, 'Add'), isFalse);
@@ -800,7 +800,7 @@ void main() {
       await _addFromSheet(tester, 'Custom key…');
 
       await tester.enterText(_labelField, 'BS');
-      await tester.tap(find.widgetWithText(FilterChip, 'Shift'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Shift'));
       await tester.pump();
       expect(_cap('@'), findsOneWidget);
       expect(_cap('2'), findsNothing);
@@ -816,8 +816,8 @@ void main() {
       await tester.pump();
       expect(_shown('Shift+F12'), findsOneWidget);
 
-      await tester.tap(find.widgetWithText(FilterChip, 'Shift'));
-      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Shift'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Alt'));
       await tester.scrollUntilVisible(_cap(r'\'), -100, scrollable: keys);
       await tester.tap(_cap(r'\'));
       await tester.pump();
@@ -871,8 +871,8 @@ void main() {
       expect(_shown('Ctrl+→'), findsOneWidget);
       expect(tester.widget<KeyButton>(_cap('→')).active, isTrue);
 
-      await tester.tap(find.widgetWithText(FilterChip, 'Ctrl'));
-      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Ctrl'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Alt'));
       await tester.pump();
       expect(_shown('Alt+→'), findsOneWidget);
       expect(_labelText(tester), 'M-→');
@@ -928,7 +928,7 @@ void main() {
       expect(_labelText(tester), 'LS');
       expect(_canSave(tester, 'Save'), isFalse);
 
-      await tester.tap(find.widgetWithText(FilterChip, 'Ctrl'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Ctrl'));
       await tester.tap(_cap('l'));
       await tester.pump();
       expect(_labelText(tester), 'LS');
@@ -959,7 +959,7 @@ void main() {
       await _addFromSheet(tester, 'Custom key…');
 
       for (final name in ['Ctrl', 'Alt', 'Shift', 'Super']) {
-        await tester.tap(find.widgetWithText(FilterChip, name));
+        await tester.tap(find.widgetWithText(TuiFilterChip, name));
       }
       await tester.tap(_cap('F5'));
       await tester.pump();
@@ -1009,17 +1009,17 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: KeyBarSettingsPage()));
       await _addFromSheet(tester, 'Custom key…');
 
-      await tester.tap(find.widgetWithText(FilterChip, 'Alt'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, 'Alt'));
       await tester.tap(_cap('b'));
       await tester.pump();
       expect(_labelText(tester), 'M-b');
 
       await tester.tap(find.bySemanticsLabel('macOS'));
       await tester.pump();
-      expect(find.widgetWithText(FilterChip, 'Alt'), findsNothing);
+      expect(find.widgetWithText(TuiFilterChip, 'Alt'), findsNothing);
       expect(
         tester
-            .widget<FilterChip>(find.widgetWithText(FilterChip, '⌥ Option'))
+            .widget<TuiFilterChip>(find.widgetWithText(TuiFilterChip, '⌥ Option'))
             .selected,
         isTrue,
       );
@@ -1031,8 +1031,8 @@ void main() {
 
       // ⌘⌫ deletes the line, with a plain control character: no word about
       // extended keys.
-      await tester.tap(find.widgetWithText(FilterChip, '⌥ Option'));
-      await tester.tap(find.widgetWithText(FilterChip, '⌘ Command'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, '⌥ Option'));
+      await tester.tap(find.widgetWithText(TuiFilterChip, '⌘ Command'));
       await tester.tap(_cap('⌫'));
       await tester.pump();
       expect(_labelText(tester), '⌘⌫');
@@ -1087,7 +1087,7 @@ void main() {
       expect(find.text('Change custom key'), findsOneWidget);
       expect(
         tester
-            .widget<FilterChip>(find.widgetWithText(FilterChip, '⌘ Command'))
+            .widget<TuiFilterChip>(find.widgetWithText(TuiFilterChip, '⌘ Command'))
             .selected,
         isTrue,
       );
@@ -1097,10 +1097,10 @@ void main() {
 
       // A new key opens on the layout last picked, and PC is kept too.
       await _addFromSheet(tester, 'Custom key…');
-      expect(find.widgetWithText(FilterChip, '⌃ Control'), findsOneWidget);
+      expect(find.widgetWithText(TuiFilterChip, '⌃ Control'), findsOneWidget);
       await tester.tap(find.bySemanticsLabel('PC'));
       await tester.pump();
-      expect(find.widgetWithText(FilterChip, 'Ctrl'), findsOneWidget);
+      expect(find.widgetWithText(TuiFilterChip, 'Ctrl'), findsOneWidget);
       expect(prefs.getString('sshbox.keyBar.layout'), 'pc');
     });
 

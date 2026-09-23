@@ -604,11 +604,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     return const Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        children: [
-          TuiSpinner(),
-          SizedBox(height: 16),
-          Text('Connecting…'),
-        ],
+        children: [TuiSpinner(), SizedBox(height: 16), Text('Connecting…')],
       ),
     );
   }
@@ -689,14 +685,9 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               runSpacing: 6,
               children: [
                 for (final type in types)
-                  FilterChip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text(
-                      [
-                        view.types[type]?.$1 ?? type,
-                        if (!_capped) '${counts[type] ?? 0}',
-                      ].join(' '),
-                    ),
+                  TuiFilterChip(
+                    label: view.types[type]?.$1 ?? type,
+                    count: _capped ? null : counts[type] ?? 0,
                     selected: _type == type,
                     onSelected: (on) => _pickType(on ? type : null),
                   ),
@@ -1078,23 +1069,20 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     }.toList();
     return Row(
       children: [
-        Checkbox(
+        TuiCheckbox(
           value: condition.on,
           onChanged: (on) => setState(() => condition.on = on ?? true),
         ),
+        const SizedBox(width: 8),
         Expanded(
           flex: 3,
-          child: DropdownButton<String>(
-            isExpanded: true,
-            style: mono,
+          child: TuiDropdown<String>(
+            label: 'Column',
             value: condition.column.isEmpty ? null : condition.column,
-            hint: const Text('Column'),
-            items: [
+            hint: 'Column',
+            options: [
               for (final name in columns)
-                DropdownMenuItem(
-                  value: name,
-                  child: Text(name, overflow: TextOverflow.ellipsis),
-                ),
+                TuiDropdownOption(value: name, label: name),
             ],
             onChanged: (name) => setState(() => condition.column = name ?? ''),
           ),
@@ -1102,15 +1090,12 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         const SizedBox(width: 8),
         Expanded(
           flex: 3,
-          child: DropdownButton<PgOp>(
-            isExpanded: true,
+          child: TuiDropdown<PgOp>(
+            label: 'Operator',
             value: condition.op,
-            items: [
+            options: [
               for (final op in PgOp.values)
-                DropdownMenuItem(
-                  value: op,
-                  child: Text(op.label, overflow: TextOverflow.ellipsis),
-                ),
+                TuiDropdownOption(value: op, label: op.label),
             ],
             onChanged: (op) => setState(() => condition.op = op ?? PgOp.eq),
           ),

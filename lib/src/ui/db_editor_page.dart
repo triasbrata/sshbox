@@ -352,33 +352,19 @@ class _DbEditorState extends State<_DbEditor> {
                 onSelectionChanged: (picked) => _pickKind(picked.single),
               ),
               const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
+              DropdownField<String>(
+                label: 'Host',
                 initialValue: _hostId,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: 'Host',
-                  helperText: widget.hosts.isEmpty
-                      ? 'Add a host first: Add, then Host, on Home.'
-                      : 'Reached through its SSH connection, and its jump '
-                            'host too.',
-                  helperMaxLines: 2,
-                ),
-                items: [
+                helper: widget.hosts.isEmpty
+                    ? 'Add a host first: Add, then Host, on Home.'
+                    : 'Reached through its SSH connection, and its jump '
+                          'host too.',
+                options: [
                   for (final host in widget.hosts)
-                    DropdownMenuItem(
+                    TuiDropdownOption(
                       value: host.id,
-                      child: Row(
-                        children: [
-                          OsBadge(host.os, size: 24),
-                          const SizedBox(width: 12),
-                          Flexible(
-                            child: Text(
-                              host.displayName,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
+                      label: host.displayName,
+                      subtitle: host.host,
                     ),
                 ],
                 validator: (value) => value == null ? 'Pick a host' : null,

@@ -15,7 +15,9 @@ import 'package:flutter/material.dart';
 import 'terminal_schemes.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
+import 'termul/tui_dropdown.dart';
 import 'termul/tui_menu.dart';
+import 'termul/tui_text.dart';
 import 'termul/tui_tooltip.dart';
 
 export 'termul/components.dart';
@@ -477,6 +479,49 @@ TuiMenuItem<VoidCallback> menuAction(
   checked: checked,
   shortcut: shortcut,
 );
+
+/// termul's [TuiDropdown] in a form: its [validator] runs with the form's,
+/// its message drawn as termul draws a field's error, and [helper] under it
+/// while there is none, which termul's own has no place for.
+class DropdownField<T> extends FormField<T> {
+  DropdownField({
+    super.key,
+    required String label,
+    required List<TuiDropdownOption<T>> options,
+    super.initialValue,
+    super.validator,
+    ValueChanged<T?>? onChanged,
+    String? helper,
+    String hint = 'Select…',
+    bool allowClear = false,
+    String emptyLabel = 'None',
+  }) : super(
+         builder: (state) => Column(
+           mainAxisSize: MainAxisSize.min,
+           crossAxisAlignment: CrossAxisAlignment.stretch,
+           children: [
+             TuiDropdown<T>(
+               label: label,
+               options: options,
+               value: state.value,
+               hint: hint,
+               allowClear: allowClear,
+               emptyLabel: emptyLabel,
+               errorText: state.errorText,
+               onChanged: (value) {
+                 state.didChange(value);
+                 onChanged?.call(value);
+               },
+             ),
+             if (helper != null && state.errorText == null)
+               Padding(
+                 padding: const EdgeInsets.only(top: 6),
+                 child: TuiText(helper, tone: TuiTextTone.muted, size: 11),
+               ),
+           ],
+         ),
+       );
+}
 
 /// termul's [TuiMenuButton] with its word on hover as well, as every icon
 /// button in Jeansh has: termul's own speaks it to a screen reader only.

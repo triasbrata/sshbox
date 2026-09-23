@@ -311,11 +311,7 @@ class _HostEditPageState extends State<HostEditPage> {
     }
     await Clipboard.setData(ClipboardData(text: value));
     if (mounted) {
-      showToast(
-        context,
-        'Notification key copied',
-        type: TuiToastType.success,
-      );
+      showToast(context, 'Notification key copied', type: TuiToastType.success);
     }
   }
 
@@ -495,34 +491,27 @@ class _HostEditPageState extends State<HostEditPage> {
                       ),
                       if (_jumpHosts case final jumpHosts?) ...[
                         gap,
-                        // TODO(termul): dropdown / picker for a long list
-                        // (gap 15); Material's until then.
-                        DropdownButtonFormField<String>(
-                          initialValue: _jumpHostId,
-                          isExpanded: true,
-                          decoration: InputDecoration(
-                            labelText: 'Jump host',
-                            helperText: jumpHosts.isEmpty
-                                ? 'To go through another host, like ssh -J, '
-                                      'save that one first.'
-                                : 'Optional. Connect through another saved '
-                                      'host first, like ssh -J, using its own '
-                                      'login. The Host field above is then the '
-                                      'address as that host sees it.',
-                            helperMaxLines: 3,
-                          ),
-                          items: [
-                            const DropdownMenuItem(
-                              value: '',
-                              child: Text('None, connect directly'),
-                            ),
+                        DropdownField<String>(
+                          label: 'Jump host',
+                          initialValue: _jumpHostId.isEmpty
+                              ? null
+                              : _jumpHostId,
+                          allowClear: true,
+                          emptyLabel: 'None, connect directly',
+                          hint: 'None, connect directly',
+                          helper: jumpHosts.isEmpty
+                              ? 'To go through another host, like ssh -J, '
+                                    'save that one first.'
+                              : 'Optional. Connect through another saved '
+                                    'host first, like ssh -J, using its own '
+                                    'login. The Host field above is then the '
+                                    'address as that host sees it.',
+                          options: [
                             for (final host in jumpHosts)
-                              DropdownMenuItem(
+                              TuiDropdownOption(
                                 value: host.id,
-                                child: Text(
-                                  host.displayName,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                                label: host.displayName,
+                                subtitle: host.host,
                               ),
                           ],
                           onChanged: (id) =>

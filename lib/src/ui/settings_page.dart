@@ -1055,17 +1055,14 @@ class _TerminalSectionState extends State<_TerminalSection> {
               ),
             ),
             const _Label('Font size'),
-            TuiSelect<double>(
-              options: [
-                for (
-                  var size = minFontSize.round();
-                  size <= maxFontSize.round();
-                  size++
-                )
-                  (size.toDouble(), '${size}px'),
-              ],
+            TuiSlider(
               value: style.fontSize.roundToDouble(),
-              onChanged: (size) => terminalSettings.choose(size: size),
+              min: minFontSize.roundToDouble(),
+              max: maxFontSize.roundToDouble(),
+              divisions: (maxFontSize.round() - minFontSize.round()),
+              valueLabel: '${style.fontSize.round()}px',
+              onChanged: (size) =>
+                  terminalSettings.choose(size: size.roundToDouble()),
             ),
             const _Label('Font'),
             for (final font in terminalFonts) ...[
@@ -1706,8 +1703,8 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
         ? const ['⌃ Control', '⌥ Option', '⇧ Shift', '⌘ Command']
         : const ['Ctrl', 'Alt', 'Shift', 'Super'];
     Widget modifier(int index, bool held, void Function(bool) hold) =>
-        FilterChip(
-          label: Text(names[index]),
+        TuiFilterChip(
+          label: names[index],
           selected: held,
           onSelected: (held) => _change(() => hold(held)),
         );

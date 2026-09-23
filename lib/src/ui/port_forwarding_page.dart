@@ -516,8 +516,8 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         spacing: 8,
         children: [
           for (final snippet in portSnippets)
-            ChoiceChip(
-              label: Text('${snippet.name} ${snippet.port}'),
+            TuiFilterChip(
+              label: '${snippet.name} ${snippet.port}',
               selected: port == snippet.port,
               // Both ports take it; a host typed there stays.
               onSelected: (_) => setState(() {
@@ -715,43 +715,23 @@ class _ForwardEditorState extends State<_ForwardEditor> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
+                DropdownField<String>(
                   key: _hostField,
+                  label: 'Host',
                   initialValue: _hostId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Host',
-                    helperText:
-                        'Reached as a terminal session reaches it, '
-                        'through its jump host too.',
-                    helperMaxLines: 2,
-                  ),
-                  items: [
+                  helper:
+                      'Reached as a terminal session reaches it, '
+                      'through its jump host too.',
+                  options: [
                     for (final host in _hosts)
-                      DropdownMenuItem(
+                      TuiDropdownOption(
                         value: host.id,
-                        child: Row(
-                          children: [
-                            OsBadge(host.os, size: 24),
-                            const SizedBox(width: 12),
-                            Flexible(
-                              child: Text(
-                                host.displayName,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
+                        label: host.displayName,
+                        subtitle: host.host,
                       ),
-                    const DropdownMenuItem(
+                    const TuiDropdownOption(
                       value: _newHost,
-                      child: Row(
-                        children: [
-                          Icon(Icons.add),
-                          SizedBox(width: 12),
-                          Text('New host…'),
-                        ],
-                      ),
+                      label: 'New host…',
                     ),
                   ],
                   validator: (value) =>

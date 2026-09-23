@@ -9,6 +9,7 @@ import 'package:sshbox/src/session/port_forwards.dart';
 import 'package:sshbox/src/ui/port_forwarding_page.dart';
 
 import 'tui_finders.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 void main() {
   late HostRepository repository;
@@ -56,7 +57,7 @@ void main() {
   Future<void> addOne(WidgetTester tester) async {
     await tester.tap(find.byTooltip('Add port forward'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('db box').last);
     await tester.pumpAndSettle();
@@ -84,7 +85,7 @@ void main() {
       await tester.pump();
       expect(find.text('Pick a host'), findsOneWidget);
 
-      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.tap(find.byType(TuiDropdown<String>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('db box').last);
       await tester.pumpAndSettle();
@@ -252,8 +253,8 @@ void main() {
     await tester.enterText(tabletPort, '6000');
     await tester.pump();
     expect(textOf(tester, remotePort), '6000');
-    final postgres = find.widgetWithText(ChoiceChip, 'PostgreSQL 5432');
-    expect(tester.widget<ChoiceChip>(postgres).selected, isFalse);
+    final postgres = find.widgetWithText(TuiFilterChip, 'PostgreSQL 5432');
+    expect(tester.widget<TuiFilterChip>(postgres).selected, isFalse);
 
     // Edited, the far port keeps its own.
     await tester.enterText(remotePort, '7000');
@@ -314,7 +315,7 @@ void main() {
     await open(tester, 400);
     await tester.tap(find.byTooltip('Add port forward'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('New host…').last);
     await tester.pumpAndSettle();

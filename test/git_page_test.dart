@@ -160,7 +160,7 @@ void main() {
 
     await tester.tap(find.text('dev'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('agent-x  worktree of dev').last);
+    await tester.tap(find.text('agent-x').last);
     await _settle(tester);
 
     expect(find.text('agent'), findsOneWidget);
