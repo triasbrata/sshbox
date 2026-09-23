@@ -1648,8 +1648,8 @@ void main() {
       await showToast(tester);
       await tester.tap(
         find.descendant(
-          of: find.byType(ToastCard),
-          matching: find.text('Copy'),
+          of: find.byType(TuiToastCard),
+          matching: find.text('COPY'),
         ),
       );
       await tester.pumpAndSettle();
@@ -1725,7 +1725,7 @@ void main() {
       expect(copied, ['lib/src/ui/chat_page.dart']);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.textContaining('lib/src/ui/chat_page.dart'),
         ),
         findsOneWidget,

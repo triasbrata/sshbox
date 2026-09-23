@@ -11,7 +11,6 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/ui/host_edit_page.dart';
 import 'package:sshbox/src/ui/tui.dart';
-import 'package:toastification/toastification.dart';
 
 import 'fake_relay.dart';
 
@@ -87,8 +86,7 @@ Future<void> _openKeyHost(WidgetTester tester) async {
   addTearDown(() => tester.binding.setSurfaceSize(null));
   final secrets = InMemorySecretStore();
   await tester.pumpWidget(
-    ToastificationWrapper(
-      child: MaterialApp(
+    MaterialApp(
         home: HostEditPage(
           repository: HostRepository(secrets),
           secrets: secrets,
@@ -101,7 +99,6 @@ Future<void> _openKeyHost(WidgetTester tester) async {
           ),
         ),
       ),
-    ),
   );
   await tester.pumpAndSettle();
 }
@@ -282,8 +279,7 @@ void main() {
 
     Future<void> open(String? hostId) async {
       await tester.pumpWidget(
-        ToastificationWrapper(
-          child: MaterialApp(
+        MaterialApp(
             home: HostEditPage(
               key: ValueKey(hostId),
               repository: HostRepository(secrets),
@@ -299,7 +295,6 @@ void main() {
                     ),
             ),
           ),
-        ),
       );
       await tester.pumpAndSettle();
     }
@@ -393,15 +388,13 @@ void main() {
     );
     await repository.upsert(box);
     await tester.pumpWidget(
-      ToastificationWrapper(
-        child: MaterialApp(
+      MaterialApp(
           home: HostEditPage(
             repository: repository,
             secrets: secrets,
             existing: box,
           ),
         ),
-      ),
     );
     await tester.pumpAndSettle();
 

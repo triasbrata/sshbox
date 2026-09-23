@@ -4,7 +4,6 @@ import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/db/wire.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
-import 'package:toastification/toastification.dart';
 
 /// A database that keeps every query run and answers with one row of a
 /// table, editable or not as [edit] says.
@@ -53,9 +52,7 @@ Future<_Fake> _open(
   addTearDown(tester.view.reset);
   final session = db ?? _Fake();
   await tester.pumpWidget(
-    ToastificationWrapper(
-      config: toastConfig,
-      child: MaterialApp(
+    MaterialApp(
         builder: (context, child) => ToastLayer(child: child!),
         home: DbBrowserPage(
           db: DbConnection(id: 'db', kind: kind, hostId: 'box', port: 5432),
@@ -64,7 +61,6 @@ Future<_Fake> _open(
               session,
         ),
       ),
-    ),
   );
   await tester.pumpAndSettle();
   return session;

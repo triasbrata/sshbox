@@ -25,7 +25,6 @@ import 'package:sshbox/src/ui/terminal_paste.dart'
     show desktopClipboard, shareTextLimit;
 import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:sshbox/src/ui/toast.dart';
-import 'package:toastification/toastification.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:xterm2/xterm.dart';
@@ -187,10 +186,10 @@ final _android = TargetPlatformVariant.only(TargetPlatform.android);
 const _address = 'https://edot.youtrack.cloud/issue/COR-6025';
 
 /// The toast saying [message], if it is one of [type]'s.
-Finder _toast(String message, ToastificationType type) => find.ancestor(
+Finder _toast(String message, TuiToastType type) => find.ancestor(
   of: find.text(message),
   matching: find.byWidgetPredicate(
-    (widget) => widget is ToastCard && widget.type == type,
+    (widget) => widget is TuiToastCard && widget.type == type,
   ),
 );
 
@@ -485,7 +484,7 @@ void main() {
         expect(
           _toast(
             'Not opened: a $scheme: link is not a web, mail or phone link',
-            ToastificationType.warning,
+            TuiToastType.warning,
           ),
           findsOneWidget,
         );
@@ -500,7 +499,8 @@ void main() {
             return null;
           },
         );
-        await tester.tap(find.text('Copy'));
+        await tester.tap(find.text('COPY'));
+        await tester.pump();
         expect(copied, Uri.parse(url).toString());
         await tester.pumpAndSettle();
       });
@@ -513,7 +513,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        _toast('No app can open https://dart.dev', ToastificationType.error),
+        _toast('No app can open https://dart.dev', TuiToastType.error),
         findsOneWidget,
       );
       expect(find.byType(SnackBar), findsNothing);
@@ -684,7 +684,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
 
       expect(
-        _toast('Not found: /home/me/missing/x', ToastificationType.error),
+        _toast('Not found: /home/me/missing/x', TuiToastType.error),
         findsOneWidget,
       );
       expect(find.byType(SnackBar), findsNothing);
@@ -907,7 +907,7 @@ void main() {
           expect(
             _toast(
               'Not opened: a $scheme: link is not a web, mail or phone link',
-              ToastificationType.warning,
+              TuiToastType.warning,
             ),
             findsOneWidget,
           );
@@ -965,7 +965,7 @@ void main() {
         expect(
           _toast(
             'Copied https://edot.youtrack.cloud/issue/COR-6025',
-            ToastificationType.success,
+            TuiToastType.success,
           ),
           findsOneWidget,
         );
@@ -1174,7 +1174,7 @@ void main() {
       expect(
         _toast(
           'claude is running — not moving the shell',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -1191,7 +1191,7 @@ void main() {
       expect(
         _toast(
           'The host cannot say what the shell is running — not moving it',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -1255,7 +1255,7 @@ void main() {
       tester,
     ) async {
       await pumpPage(tester);
-      expect(_toast(said, ToastificationType.info), findsOneWidget);
+      expect(_toast(said, TuiToastType.info), findsOneWidget);
       expect(find.byType(SnackBar), findsNothing);
 
       // Four seconds in, still up.
@@ -1272,7 +1272,7 @@ void main() {
       tester,
     ) async {
       await pumpPage(tester);
-      await tester.tap(find.text('Open'));
+      await tester.tap(find.text('OPEN'));
       await tester.pumpAndSettle();
 
       expect(openedWeb, [Uri.parse('http://a.tail1.ts.net:3001')]);
@@ -1313,9 +1313,7 @@ void main() {
       );
 
       await tester.pumpWidget(
-        ToastificationWrapper(
-          config: toastConfig,
-          child: MaterialApp(
+        MaterialApp(
             builder: (context, child) => ToastLayer(child: child!),
             home: TabsShell(
               repository: HostRepository(_NoSecrets()),
@@ -1324,7 +1322,6 @@ void main() {
               onOpenHost: (_) async {},
             ),
           ),
-        ),
       );
       await manager.sessions.single.connect(secrets: _NoSecrets());
       await tester.pump();
@@ -1361,10 +1358,10 @@ void main() {
       await pumpApp(tester);
       await viteStarts(tester, ['|-- tcp://a.tail1.ts.net:3001']);
 
-      final toast = _toast(said, ToastificationType.info);
+      final toast = _toast(said, TuiToastType.info);
       expect(toast, findsOneWidget);
       expect(
-        find.descendant(of: toast, matching: find.text('Open')),
+        find.descendant(of: toast, matching: find.text('OPEN')),
         findsOneWidget,
       );
       // Up where the tabs are, not down by the shell's key bar.
@@ -1391,7 +1388,7 @@ void main() {
       expect(manager.activeKind, TabKind.file);
 
       await viteStarts(tester, ['|-- tcp://a.tail1.ts.net:3001']);
-      expect(_toast(said, ToastificationType.info), findsOneWidget);
+      expect(_toast(said, TuiToastType.info), findsOneWidget);
       await tester.pumpAndSettle();
     });
 
@@ -1403,8 +1400,8 @@ void main() {
         ['|-- tcp://a.tail1.ts.net:3001'],
         beside: ['0100007F:240D 1000'], // 127.0.0.1:9229
       );
-      expect(_toast(said, ToastificationType.info), findsOneWidget);
-      expect(find.byType(ToastCard), findsOneWidget);
+      expect(_toast(said, TuiToastType.info), findsOneWidget);
+      expect(find.byType(TuiToastCard), findsOneWidget);
       await tester.pumpAndSettle();
     });
 
@@ -1417,7 +1414,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        _toast('Port 3000 closed', ToastificationType.info),
+        _toast('Port 3000 closed', TuiToastType.info),
         findsOneWidget,
       );
       await tester.pumpAndSettle();
@@ -1433,7 +1430,7 @@ void main() {
       await pumpApp(tester);
       await viteStarts(tester, why, exits: true);
 
-      final toast = _toast('Port 3000 not forwarded', ToastificationType.error);
+      final toast = _toast('Port 3000 not forwarded', TuiToastType.error);
       expect(toast, findsOneWidget);
       // Under the title rather than in it, which stops at two lines.
       expect(
@@ -1458,7 +1455,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
 
-      final toast = _toast('Not forwarding ports', ToastificationType.error);
+      final toast = _toast('Not forwarding ports', TuiToastType.error);
       expect(
         find.descendant(
           of: toast,
@@ -1609,7 +1606,7 @@ void main() {
       // A trailing space, so the next thing written is an argument.
       expect(shell.sent, contains('/tmp/Screenshot.png '));
       expect(
-        _toast('Uploaded to /tmp/Screenshot.png', ToastificationType.success),
+        _toast('Uploaded to /tmp/Screenshot.png', TuiToastType.success),
         findsOneWidget,
       );
       await tester.pumpAndSettle();
@@ -1802,7 +1799,7 @@ void main() {
       await pressCtrlV(tester);
 
       expect(shell.uploaded, isEmpty);
-      expect(_toast(desktop.said!, ToastificationType.warning), findsOneWidget);
+      expect(_toast(desktop.said!, TuiToastType.warning), findsOneWidget);
       await tester.pumpAndSettle();
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
@@ -1848,7 +1845,7 @@ void main() {
       expect(
         _toast(
           'A folder cannot be uploaded: photos',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -1928,7 +1925,7 @@ void main() {
       expect(
         _toast(
           'Nothing on the clipboard a terminal can paste',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -1954,7 +1951,7 @@ void main() {
         _toast(
           'com.android.chrome.FileProvider would not hand over the picture on '
           'the clipboard. Try copying it again, or share it into Jeansh.',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -1979,7 +1976,7 @@ void main() {
         _toast(
           'That image is bigger than 20 MB — send it from the files drawer '
           'instead.',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -2040,7 +2037,7 @@ void main() {
         _toast(
           'Not pasted: this shell would run each line of it. It is on the '
           'clipboard instead.',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -2059,7 +2056,7 @@ void main() {
       expect(
         _toast(
           'The shared text is too long to paste: 64 KB at most',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -2143,7 +2140,7 @@ void main() {
         _toast(
           'Claude Code 2.0.14 on this host is too old for chat — it needs '
           '2.1.259 or newer.',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -2162,7 +2159,7 @@ void main() {
         _toast(
           'Claude Code 2.1.100 on this host is too old for chat — it needs '
           '2.1.259 or newer.',
-          ToastificationType.warning,
+          TuiToastType.warning,
         ),
         findsOneWidget,
       );
@@ -2178,7 +2175,7 @@ void main() {
 
       expect(opened, hasLength(2));
       expect(host.asked, 1);
-      expect(find.byType(ToastCard), findsNothing);
+      expect(find.byType(TuiToastCard), findsNothing);
     });
 
     testWidgets('a host with no Claude Code keeps saying so', (tester) async {

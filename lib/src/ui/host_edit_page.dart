@@ -280,7 +280,7 @@ class _HostEditPageState extends State<HostEditPage> {
         showToast(
           context,
           error is FormatException ? error.message : "Couldn't read that file",
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
           duration: const Duration(seconds: 6),
         );
       }
@@ -304,7 +304,7 @@ class _HostEditPageState extends State<HostEditPage> {
       showToast(
         context,
         'No notification key yet\nThis host gets one when it next connects.',
-        type: ToastificationType.warning,
+        type: TuiToastType.warning,
         duration: const Duration(seconds: 3),
       );
       return;
@@ -314,7 +314,7 @@ class _HostEditPageState extends State<HostEditPage> {
       showToast(
         context,
         'Notification key copied',
-        type: ToastificationType.success,
+        type: TuiToastType.success,
       );
     }
   }

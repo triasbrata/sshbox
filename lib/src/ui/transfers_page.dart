@@ -111,7 +111,7 @@ class _TransferRow extends StatelessWidget {
     showToast(
       context,
       'No app on this phone opens ${transfer.name}',
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
     );
   }
 }

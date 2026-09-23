@@ -313,11 +313,11 @@ class _GitDiffPageState extends State<GitDiffPage> {
         view.old = text.isEmpty ? const [] : text.split('\n');
       } on GitException catch (error) {
         if (mounted) {
-          showToast(context, error.message, type: ToastificationType.error);
+          showToast(context, error.message, type: TuiToastType.error);
         }
       } catch (error) {
         if (mounted) {
-          showToast(context, '$error', type: ToastificationType.error);
+          showToast(context, '$error', type: TuiToastType.error);
         }
       } finally {
         view.reading = false;
@@ -608,7 +608,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
       showToast(
         context,
         tooLargeToCopy('This diff'),
-        type: ToastificationType.warning,
+        type: TuiToastType.warning,
       );
       return Future.value();
     }
@@ -1183,7 +1183,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
                         showToast(
                           context,
                           tooLargeToCopy(file.path),
-                          type: ToastificationType.warning,
+                          type: TuiToastType.warning,
                         );
                         return;
                       }

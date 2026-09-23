@@ -12,7 +12,6 @@ import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
-import 'package:sshbox/src/ui/toast.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_file_browser.dart';
@@ -185,7 +184,7 @@ void main() {
     expect(browser.contents['/home/me/notes.txt'], 'rewritten\n');
     expect(
       find.descendant(
-        of: find.byType(ToastCard),
+        of: find.byType(TuiToastCard),
         matching: find.text('Saved notes.txt'),
       ),
       findsOneWidget,
@@ -548,6 +547,7 @@ void main() {
     Future<void> untilPrompted(WidgetTester tester) async {
       await tester.pump();
       await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
     }
 
     testWidgets('opens a file the login may not read', (tester) async {
@@ -628,8 +628,8 @@ void main() {
 
       await tester.tap(
         find.descendant(
-          of: find.byType(ToastCard),
-          matching: find.text('Save with sudo'),
+          of: find.byType(TuiToastCard),
+          matching: find.text('SAVE WITH SUDO'),
         ),
       );
       await untilPrompted(tester);
@@ -758,7 +758,7 @@ void main() {
       expect(copied, ['first line\nsecond line\nand a third\n']);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text('Copied notes.txt'),
         ),
         findsOneWidget,
@@ -891,7 +891,7 @@ void main() {
       expect(picker.saved?.bytes, utf8.encode('one\r\ntwo\r\n'));
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text('Saved notes.txt'),
         ),
         findsOneWidget,
@@ -938,7 +938,7 @@ void main() {
       expect(picker.saved, isNull);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.textContaining('a download does not go through sudo'),
         ),
         findsOneWidget,
@@ -1064,7 +1064,7 @@ void main() {
       expect(opened, hasLength(1));
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.textContaining('docs/setup.md'),
         ),
         findsOneWidget,
@@ -1317,7 +1317,7 @@ After it.
       expect(copied, ["void main() {\n  print('hi');\n}"]);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text('Copied code block'),
         ),
         findsOneWidget,
@@ -1431,7 +1431,7 @@ After it.
       expect(browser.downloads, hasLength(1));
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text('Copied shot.png'),
         ),
         findsOneWidget,

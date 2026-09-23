@@ -113,14 +113,14 @@ Future<void> copyAndSay(
   try {
     await copy();
     if (context.mounted) {
-      showToast(context, 'Copied $name', type: ToastificationType.success);
+      showToast(context, 'Copied $name', type: TuiToastType.success);
     }
   } on PlatformException catch (error) {
     if (context.mounted) {
       showToast(
         context,
         'Could not copy $name: ${error.message ?? error.code}',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
   }
@@ -761,7 +761,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       showToast(
         context,
         'Saved ${RemotePath.basename(widget.path)}',
-        type: ToastificationType.success,
+        type: TuiToastType.success,
       );
     } on FileBrowserException catch (error) {
       if (!mounted) return;
@@ -777,7 +777,7 @@ class _TextFileTabState extends State<_TextFileTab> {
         showToast(
           context,
           error.message,
-          type: ToastificationType.error,
+          type: TuiToastType.error,
           action: offerSudo
               ? (
                   label: 'Save with sudo',
@@ -902,7 +902,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       showToast(
         context,
         tooLargeToCopy(name),
-        type: ToastificationType.warning,
+        type: TuiToastType.warning,
       );
       return Future.value();
     }

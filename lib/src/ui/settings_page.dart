@@ -140,7 +140,7 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
       context,
       '$family is not installed\nThe terminal draws in $instead until it is '
       'back, or until Settings picks another font.',
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
       duration: const Duration(seconds: 8),
     );
   }
@@ -2155,7 +2155,7 @@ class _NotificationsSection extends StatelessWidget {
           context,
           'Some old keys are not revoked yet\nNo host gets them again, and '
           'Jeansh tries again when it next starts.',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
           duration: const Duration(seconds: 3),
         );
       }
@@ -2166,7 +2166,7 @@ class _NotificationsSection extends StatelessWidget {
         context,
         'Notification keys reset\nEach host gets a new one when it next '
         'connects.',
-        type: ToastificationType.success,
+        type: TuiToastType.success,
         duration: const Duration(seconds: 3),
       );
     }

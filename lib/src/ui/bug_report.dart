@@ -141,7 +141,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
       showToast(
         context,
         'Could not open a browser for GitHub',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
     Navigator.of(context).pop();
@@ -164,7 +164,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
       showToast(
         context,
         error is TelemetryException ? error.message : 'Could not send: $error',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
       return;
     }
@@ -172,7 +172,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     showToast(
       context,
       'Reported\n$where',
-      type: ToastificationType.success,
+      type: TuiToastType.success,
       duration: const Duration(seconds: 5),
     );
     Navigator.of(context).pop();

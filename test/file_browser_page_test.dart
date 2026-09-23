@@ -310,7 +310,7 @@ void main() {
 
     expect(
       find.descendant(
-        of: find.byType(ToastCard),
+        of: find.byType(TuiToastCard),
         matching: find.text('Could not list /home/me/dev: permission denied.'),
       ),
       findsOneWidget,
@@ -353,7 +353,7 @@ void main() {
     expect(_row('notes.txt'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ToastCard),
+        of: find.byType(TuiToastCard),
         matching: find.text('dangling is a link that points nowhere.'),
       ),
       findsOneWidget,
@@ -826,7 +826,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
 
     expect(
-      find.descendant(of: find.byType(ToastCard), matching: find.text(refused)),
+      find.descendant(of: find.byType(TuiToastCard), matching: find.text(refused)),
       findsOneWidget,
     );
     expect(browser.uploads, isEmpty);
@@ -855,7 +855,7 @@ void main() {
     await _rowAction(tester, 'notes.txt', 'Download');
     expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
     expect(File(picker.savedFrom!).existsSync(), isFalse);
-    expect(find.byType(ToastCard), findsNothing);
+    expect(find.byType(TuiToastCard), findsNothing);
 
     // Failed with the bytes in: no dialog, and the copy goes all the same.
     picker.saved = null;
@@ -874,7 +874,7 @@ void main() {
     expect(picker.saved, isNull);
     expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
     expect(
-      find.descendant(of: find.byType(ToastCard), matching: find.text(lost)),
+      find.descendant(of: find.byType(TuiToastCard), matching: find.text(lost)),
       findsOneWidget,
     );
     await tester.pumpAndSettle();
@@ -892,7 +892,7 @@ void main() {
       expect(copied, ['first line\nsecond line\n']);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text('Copied notes.txt'),
         ),
         findsOneWidget,
@@ -976,7 +976,7 @@ void main() {
       expect(copied, isEmpty);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text(refused),
         ),
         findsOneWidget,

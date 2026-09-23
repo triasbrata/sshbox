@@ -1233,7 +1233,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
       Clipboard.setData(
         ClipboardData(text: selectedText(widget.terminal.buffer, range)),
       );
-      showToast(context, 'Copied', type: ToastificationType.success);
+      showToast(context, 'Copied', type: TuiToastType.success);
     }
     widget.controller.clearSelection();
   }
@@ -1251,7 +1251,7 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// anywhere to look at.
   void _copyLink(String address) {
     Clipboard.setData(ClipboardData(text: address));
-    showToast(context, 'Copied $address', type: ToastificationType.success);
+    showToast(context, 'Copied $address', type: TuiToastType.success);
     widget.controller.clearSelection();
   }
 

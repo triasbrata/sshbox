@@ -146,7 +146,7 @@ class _TerminalPageState extends State<TerminalPage> {
     showToast(
       context,
       why,
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
       duration: const Duration(seconds: 5),
     );
   }
@@ -195,7 +195,7 @@ class _TerminalPageState extends State<TerminalPage> {
       showToast(
         context,
         'Not using tmux: $tmuxProblem',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
     // A file shared from another app may have been queued before this page
@@ -221,7 +221,7 @@ class _TerminalPageState extends State<TerminalPage> {
     void failed(String what, String why) => showToast(
       context,
       '$what\n$why',
-      type: ToastificationType.error,
+      type: TuiToastType.error,
       duration: const Duration(seconds: 8),
     );
     for (final forward in forwarder.forwards) {
@@ -277,7 +277,7 @@ class _TerminalPageState extends State<TerminalPage> {
         case String text:
           final refused = await pasteShared(_session.terminal, text);
           if (refused != null && mounted) {
-            showToast(context, refused, type: ToastificationType.warning);
+            showToast(context, refused, type: TuiToastType.warning);
           }
       }
     }
@@ -523,7 +523,7 @@ class _TerminalPageState extends State<TerminalPage> {
           showToast(
             context,
             'Not a file or a folder: $path',
-            type: ToastificationType.error,
+            type: TuiToastType.error,
           );
         case null:
           // A bare name only counted if it was there, so a miss on one is
@@ -535,12 +535,12 @@ class _TerminalPageState extends State<TerminalPage> {
                 ? 'Not found: $path\nTaken from home: the host did not '
                       'say where the terminal is.'
                 : 'Not found: $path',
-            type: ToastificationType.error,
+            type: TuiToastType.error,
           );
       }
     } on FileBrowserException catch (error) {
       if (mounted) {
-        showToast(context, error.message, type: ToastificationType.error);
+        showToast(context, error.message, type: TuiToastType.error);
       }
     }
   }
@@ -603,7 +603,7 @@ class _TerminalPageState extends State<TerminalPage> {
           showToast(
             context,
             'Not pasted: the name holds a control character: ${item.name}',
-            type: ToastificationType.warning,
+            type: TuiToastType.warning,
           );
         }
       } else if (here && kind != FileSystemEntityType.notFound) {
@@ -616,7 +616,7 @@ class _TerminalPageState extends State<TerminalPage> {
           kind == FileSystemEntityType.directory
               ? 'A folder cannot be uploaded: ${item.name}'
               : 'Not a file on this computer: ${item.name}',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
         );
       }
       if (!mounted) return;
@@ -643,7 +643,7 @@ class _TerminalPageState extends State<TerminalPage> {
     // tapped on the way down to a file can be refused, and as snack bars each
     // would wait its turn.
     void refuse(String why) {
-      if (mounted) showToast(context, why, type: ToastificationType.warning);
+      if (mounted) showToast(context, why, type: TuiToastType.warning);
     }
 
     var slow = false;
@@ -709,7 +709,7 @@ class _TerminalPageState extends State<TerminalPage> {
         showToast(
           context,
           'Uploaded to $remotePath',
-          type: ToastificationType.success,
+          type: TuiToastType.success,
         );
       }
     } catch (error) {
@@ -721,7 +721,7 @@ class _TerminalPageState extends State<TerminalPage> {
         showToast(
           context,
           'Upload failed: $error',
-          type: ToastificationType.error,
+          type: TuiToastType.error,
         );
       }
     } finally {
@@ -1212,7 +1212,7 @@ class _PaneViewState extends State<_PaneView> {
 
   void _say(String message) {
     if (!mounted) return;
-    showToast(context, message, type: ToastificationType.warning);
+    showToast(context, message, type: TuiToastType.warning);
   }
 
   void _letGoOfClipboard(Terminal terminal) {
@@ -1235,7 +1235,7 @@ class _PaneViewState extends State<_PaneView> {
     showToast(
       context,
       'Copied from the terminal',
-      type: ToastificationType.success,
+      type: TuiToastType.success,
     );
   }
 
@@ -1272,7 +1272,7 @@ class _PaneViewState extends State<_PaneView> {
       final text = selectedText(widget.terminal.buffer, range);
       if (text.trim().isEmpty) return;
       unawaited(Clipboard.setData(ClipboardData(text: text)));
-      showToast(context, 'Copied', type: ToastificationType.success);
+      showToast(context, 'Copied', type: TuiToastType.success);
     });
   }
 
@@ -1323,7 +1323,7 @@ class _PaneViewState extends State<_PaneView> {
     final tabMenu = TabMenu.of(context)?.entries() ?? const [];
     void copy(String text, String said) {
       Clipboard.setData(ClipboardData(text: text));
-      showToast(context, said, type: ToastificationType.success);
+      showToast(context, said, type: TuiToastType.success);
     }
 
     showMenuAt<void>(context, details.globalPosition, [
@@ -1571,7 +1571,7 @@ Future<void> openUrl(
       url.hasScheme
           ? 'Not opened: a ${url.scheme}: link is not a web, mail or phone link'
           : 'Not opened: $url is not a web, mail or phone link',
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
       // Time to read why, and to reach for Copy.
       duration: const Duration(seconds: 5),
       action: (
@@ -1602,7 +1602,7 @@ Future<void> openUrl(
     }
   }
   if (context.mounted) {
-    showToast(context, 'No app can open $url', type: ToastificationType.error);
+    showToast(context, 'No app can open $url', type: TuiToastType.error);
   }
 }
 

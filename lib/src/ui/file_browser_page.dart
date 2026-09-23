@@ -318,7 +318,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     setState(() => _expanded.add(path));
     _reportExpanded();
     final error = await _loadFolder(path);
-    if (error != null && mounted) _say(error, ToastificationType.error);
+    if (error != null && mounted) _say(error, TuiToastType.error);
   }
 
   void _collapseAll() {
@@ -391,7 +391,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       return;
     }
     if (entry.kind == RemoteEntryKind.other) {
-      _say('${entry.name} is not a regular file.', ToastificationType.error);
+      _say('${entry.name} is not a regular file.', TuiToastType.error);
       return;
     }
     if (entry.kind == RemoteEntryKind.symlink) {
@@ -400,7 +400,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       // "it is no longer there", which is true but blames the wrong thing.
       _say(
         '${entry.name} is a link that points nowhere.',
-        ToastificationType.error,
+        TuiToastType.error,
       );
       return;
     }
@@ -473,10 +473,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     try {
       await action();
       if (!mounted) return;
-      _say(success, ToastificationType.success);
+      _say(success, TuiToastType.success);
       await _refresh();
     } on FileBrowserException catch (error) {
-      if (mounted) _say(error.message, ToastificationType.error);
+      if (mounted) _say(error.message, TuiToastType.error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -493,7 +493,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
-  void _say(String message, ToastificationType type) =>
+  void _say(String message, TuiToastType type) =>
       showToast(context, message, type: type);
 
   /// Asks before writing the root into the host's config: unlike everything
@@ -523,14 +523,14 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       if (mounted) {
         _say(
           '${widget.title} now opens its files at $root',
-          ToastificationType.success,
+          TuiToastType.success,
         );
       }
     } catch (error) {
       if (mounted) {
         _say(
           'Could not update the host config: $error',
-          ToastificationType.error,
+          TuiToastType.error,
         );
       }
     }
@@ -587,7 +587,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       // half-finished action; what they wanted was to write something in it.
       await _openEditor(target);
     } on FileBrowserException catch (error) {
-      if (mounted) _say(error.message, ToastificationType.error);
+      if (mounted) _say(error.message, TuiToastType.error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -629,7 +629,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// [_say], for the news at the end of a long transfer. The drawer may have
   /// been shut by then, and the answer should not go with it, so it goes
   /// through the app's navigator rather than this page.
-  void Function(String, ToastificationType) _sayAnyway() {
+  void Function(String, TuiToastType) _sayAnyway() {
     final app = Navigator.of(context, rootNavigator: true).context;
     return (message, type) {
       if (app.mounted) showToast(app, message, type: type);
@@ -659,7 +659,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           // Straight from a cloud provider, with no copy on the phone to send.
           say(
             '${file.name} is not on the phone, so it was skipped',
-            ToastificationType.warning,
+            TuiToastType.warning,
           );
           continue;
         }
@@ -723,11 +723,11 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           sent.length == 1
               ? 'Uploaded ${sent.single} to $folder'
               : 'Uploaded ${sent.length} files to $folder',
-          ToastificationType.success,
+          TuiToastType.success,
         );
       }
     } on FileBrowserException catch (error) {
-      say(error.message, ToastificationType.error);
+      say(error.message, TuiToastType.error);
     } finally {
       if (mounted) {
         setState(() {
@@ -811,7 +811,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   Future<void> _copyContent(RemoteEntry entry) async {
     final size = entry.size;
     if (size != null && size > copyLimit) {
-      _say(tooLargeToCopy(entry.name), ToastificationType.warning);
+      _say(tooLargeToCopy(entry.name), TuiToastType.warning);
       return;
     }
     setState(() => _busy = true);
@@ -834,7 +834,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       final tooLarge = error.fault == FileBrowserFault.tooLarge;
       _say(
         tooLarge ? tooLargeToCopy(entry.name) : error.message,
-        tooLarge ? ToastificationType.warning : ToastificationType.error,
+        tooLarge ? TuiToastType.warning : TuiToastType.error,
       );
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -895,7 +895,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           item('Copy content', () => _copyContent(entry)),
         item('Copy path', () {
           Clipboard.setData(ClipboardData(text: entry.path));
-          _say('Path copied', ToastificationType.success);
+          _say('Path copied', TuiToastType.success);
         }),
         const PopupMenuDivider(),
         item('Rename…', () => _promptRename(entry)),

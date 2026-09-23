@@ -49,7 +49,7 @@ Future<void> downloadFile(
   String? denied,
 }) async {
   final app = Navigator.of(context, rootNavigator: true).context;
-  void say(String message, ToastificationType type) {
+  void say(String message, TuiToastType type) {
     if (app.mounted) showToast(app, message, type: type);
   }
 
@@ -81,18 +81,18 @@ Future<void> downloadFile(
         }
       },
     );
-    say('Saved $name', ToastificationType.success);
+    say('Saved $name', TuiToastType.success);
   } on FileBrowserException catch (error) {
     if (error.fault == FileBrowserFault.cancelled) return;
     final refused = error.fault == FileBrowserFault.permissionDenied;
     say(
       refused ? (denied ?? error.message) : error.message,
-      ToastificationType.error,
+      TuiToastType.error,
     );
   } on PlatformException catch (error) {
     say(
       'Could not save $name: ${error.message ?? error.code}',
-      ToastificationType.error,
+      TuiToastType.error,
     );
   }
 }

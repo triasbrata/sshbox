@@ -174,7 +174,7 @@ class _GitPageState extends State<GitPage> {
       await _reload();
     } on GitException catch (error) {
       if (mounted) {
-        showToast(context, error.message, type: ToastificationType.error);
+        showToast(context, error.message, type: TuiToastType.error);
       }
     } finally {
       if (mounted) setState(() => _busy = false);

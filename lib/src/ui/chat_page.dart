@@ -247,7 +247,7 @@ class _ChatPageState extends State<ChatPage> {
         showToast(
           context,
           'Earlier turns could not be read\n$error',
-          type: ToastificationType.error,
+          type: TuiToastType.error,
         );
       }
     }

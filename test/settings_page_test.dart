@@ -11,7 +11,6 @@ import 'package:sshbox/src/system_fonts.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
-import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/tui.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -394,7 +393,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.textContaining('Comic Mono is not installed'),
         ),
         findsOneWidget,
@@ -1126,7 +1125,7 @@ void main() {
       expect(keyBarSettings.customKeys, isEmpty);
       expect(find.text('Deleted LS'), findsOneWidget);
 
-      await tester.tap(find.text('Undo'));
+      await tester.tap(find.text('UNDO'));
       await tester.pumpAndSettle();
       expect(keyBarSettings.value, [ls, ...KeyBarSettings.defaults]);
     });

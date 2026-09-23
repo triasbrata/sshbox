@@ -121,7 +121,7 @@ Future<Update?> _ask(BuildContext context, Updater updater) async {
     showToast(
       context,
       'This build takes no updates',
-      type: ToastificationType.info,
+      type: TuiToastType.info,
     );
     return null;
   }
@@ -132,12 +132,12 @@ Future<Update?> _ask(BuildContext context, Updater updater) async {
     // Everything, not [UpdateException] alone: an error nobody expected
     // would otherwise leave the row spinning and disabled for good.
     if (context.mounted) {
-      showToast(context, _said(error), type: ToastificationType.error);
+      showToast(context, _said(error), type: TuiToastType.error);
     }
     return null;
   }
   if (update == null && context.mounted) {
-    showToast(context, 'Jeansh is up to date', type: ToastificationType.success);
+    showToast(context, 'Jeansh is up to date', type: TuiToastType.success);
   }
   return update;
 }
@@ -262,13 +262,13 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       });
       final refusal = _refusal;
       if (refusal != null) {
-        showToast(context, refusal, type: ToastificationType.warning);
+        showToast(context, refusal, type: TuiToastType.warning);
       }
     } catch (error) {
       // As above: anything at all, or the dialog is stuck on its bar.
       if (!mounted) return;
       Navigator.of(context).pop();
-      showToast(context, _said(error), type: ToastificationType.error);
+      showToast(context, _said(error), type: TuiToastType.error);
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
@@ -290,7 +290,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       showToast(
         context,
         '${_said(error)} It is in your Downloads instead.',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
   }

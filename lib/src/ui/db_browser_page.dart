@@ -486,7 +486,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     } catch (error) {
       if (mounted) {
         setState(() => _running = false);
-        showToast(context, 'Not saved\n$error', type: ToastificationType.error);
+        showToast(context, 'Not saved\n$error', type: TuiToastType.error);
       }
       return;
     }
@@ -503,8 +503,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
           ? 'Saved ${_count(changes.count)}'
           : 'Not all saved\n$missed',
       type: missed == null
-          ? ToastificationType.success
-          : ToastificationType.warning,
+          ? TuiToastType.success
+          : TuiToastType.warning,
     );
     await _read(_shownQuery);
   }

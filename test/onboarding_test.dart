@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/telemetry/telemetry.dart' show telemetryOn;
 import 'package:sshbox/src/ui/onboarding_page.dart';
-import 'package:sshbox/src/ui/toast.dart' show ToastCard;
+import 'package:sshbox/src/ui/toast.dart' show TuiToastCard;
 
 /// The app's own gate, as `SshboxApp` has it: the slides until they are
 /// done, then Home.
@@ -116,7 +116,7 @@ void main() {
     expect(notice, findsOneWidget);
     // Low on Home, where it lands: clear of the header, the title and Add.
     final card = tester.getRect(
-      find.ancestor(of: notice, matching: find.byType(ToastCard)),
+      find.ancestor(of: notice, matching: find.byType(TuiToastCard)),
     );
     for (final (what, finder) in [
       ('the header', find.bySemanticsLabel('Jeansh')),

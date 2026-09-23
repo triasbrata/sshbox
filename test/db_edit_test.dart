@@ -5,7 +5,6 @@ import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/tui.dart';
-import 'package:toastification/toastification.dart';
 
 /// A database whose every run reads the same [rows] back, saved through
 /// [edit], and which keeps every query run.
@@ -66,9 +65,7 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
   addTearDown(tester.view.reset);
   // Wrapped the way the app wraps its pages, so a toast shows.
   await tester.pumpWidget(
-    ToastificationWrapper(
-      config: toastConfig,
-      child: MaterialApp(
+    MaterialApp(
         builder: (context, child) => ToastLayer(child: child!),
         home: DbBrowserPage(
           db: const DbConnection(
@@ -81,7 +78,6 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
           open: (_, {required confirmHostKey, required onSignIn}) async => db,
         ),
       ),
-    ),
   );
   await tester.pumpAndSettle();
   // PostgreSQL opens on Filters; this is the free-text box's own tab.

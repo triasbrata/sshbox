@@ -6,11 +6,10 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/update_dialog.dart';
 import 'package:sshbox/src/update/updater.dart';
+import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/tui.dart';
-import 'package:toastification/toastification.dart';
 
 import 'tui_finders.dart';
 
@@ -146,13 +145,10 @@ const _build = '$_host/desktop/linux/Jeansh-1.0.63+67-linux-x64.tar.gz';
 /// screen to be read, as the app wraps it.
 Future<void> pumpTile(WidgetTester tester, Updater updater) =>
     tester.pumpWidget(
-      ToastificationWrapper(
-        config: toastConfig,
-        child: MaterialApp(
+      MaterialApp(
           builder: (context, child) => ToastLayer(child: child!),
           home: Scaffold(body: UpdateTile(using: updater)),
         ),
-      ),
     );
 
 /// The updater is a desktop's, and under `flutter test` the platform is

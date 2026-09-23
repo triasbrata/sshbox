@@ -262,7 +262,7 @@ void main() {
       expect(transfer.state, TransferState.cancelled);
       expect(picker.saved, isNull);
       expect(copy.parent.existsSync(), isFalse);
-      expect(find.byType(ToastCard), findsNothing);
+      expect(find.byType(TuiToastCard), findsNothing);
       expect(find.textContaining('Downloading'), findsNothing);
     });
 

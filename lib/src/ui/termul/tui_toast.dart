@@ -2,7 +2,12 @@
 // lib/components/tui_toast.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// TuiToastHost takes an optional [controller], so a toast can be shown
+// from a context with no host above it — a message from no page, or a page
+// tested alone — and an [alignment] and [margin], so a host can sit low,
+// clear of a page's header, as Jeansh's first-run notice does. A host
+// given a controller leaves it alone when it goes.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -68,20 +73,34 @@ void showTuiToast(
 /// Owns the toast stack and paints it above [child] without eating taps beside
 /// the cards (only the cards themselves hit-test).
 class TuiToastHost extends StatefulWidget {
-  const TuiToastHost({super.key, required this.child});
+  const TuiToastHost({
+    super.key,
+    required this.child,
+    this.controller,
+    this.alignment = Alignment.topCenter,
+    this.margin = const EdgeInsets.only(top: 12),
+  });
 
   final Widget child;
+
+  /// The stack this host paints; its own when null.
+  final TuiToastController? controller;
+
+  /// Where the stack sits, and how far in from that edge.
+  final Alignment alignment;
+  final EdgeInsets margin;
 
   @override
   State<TuiToastHost> createState() => _TuiToastHostState();
 }
 
 class _TuiToastHostState extends State<TuiToastHost> {
-  late final TuiToastController _controller = TuiToastController();
+  late final TuiToastController _controller =
+      widget.controller ?? TuiToastController();
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (widget.controller == null) _controller.dispose();
     super.dispose();
   }
 
@@ -104,9 +123,9 @@ class _TuiToastHostState extends State<TuiToastHost> {
               final maxW = MediaQuery.sizeOf(context).width * 0.8;
               return SafeArea(
                 child: Align(
-                  alignment: Alignment.topCenter,
+                  alignment: widget.alignment,
                   child: Padding(
-                    padding: const EdgeInsets.only(top: 12),
+                    padding: widget.margin,
                     child: ConstrainedBox(
                       constraints: BoxConstraints(maxWidth: maxW),
                       child: SizedBox(

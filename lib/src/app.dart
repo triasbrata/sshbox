@@ -5,7 +5,6 @@ import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:toastification/toastification.dart';
 
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
@@ -228,7 +227,7 @@ class _SshboxAppState extends State<SshboxApp> {
     showToast(
       context,
       'Jeansh hit an error',
-      type: ToastificationType.error,
+      type: TuiToastType.error,
       action: (
         label: 'Report',
         onPressed: () => showBugReport(context, about: fault),
@@ -249,7 +248,7 @@ class _SshboxAppState extends State<SshboxApp> {
           context,
           'The last update did not go in, so this is still Jeansh '
           '${updater.version}.',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
         );
       }
     }
@@ -416,7 +415,7 @@ class _SshboxAppState extends State<SshboxApp> {
         showToast(
           context,
           'That host is no longer saved',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
         );
       }
       return;
@@ -557,80 +556,69 @@ class _SshboxAppState extends State<SshboxApp> {
   @override
   Widget build(BuildContext context) {
     // Toasts (see `showToast`), stacked the way `toastConfig` says.
-    return ToastificationWrapper(
-      config: toastConfig,
-      // The mode and theme picked in Settings. A change rebuilds the app's
-      // theme only: every page keeps its state.
-      // Rebuilt for the font too: termul's components are drawn in the one
-      // picked in Settings.
-      child: ListenableBuilder(
-        listenable: Listenable.merge([appTheme, terminalSettings]),
-        builder: (context, _) {
-          final look = appTheme.value;
-          // termul's look in the theme's own colours: see `jeanshTheme`.
-          ThemeData themeOf(Brightness brightness) =>
-              jeanshTheme(look.scheme.palette(brightness));
+    return ListenableBuilder(
+      listenable: Listenable.merge([appTheme, terminalSettings]),
+      builder: (context, _) {
+        final look = appTheme.value;
+        // termul's look in the theme's own colours: see `jeanshTheme`.
+        ThemeData themeOf(Brightness brightness) =>
+            jeanshTheme(look.scheme.palette(brightness));
 
-          return MaterialApp(
-            title: 'Jeansh',
-            debugShowCheckedModeBanner: false,
-            navigatorKey: _navigator,
-            themeMode: look.mode,
-            theme: themeOf(Brightness.light),
-            darkTheme: themeOf(Brightness.dark),
-            // Under the status bar is the tab strip, with no app bar to set
-            // the bar's icons, so they follow the theme from here: the
-            // system's white ones would vanish on a light theme.
-            builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
-              value: SystemUiOverlayStyle(
-                statusBarIconBrightness:
-                    Theme.of(context).brightness == Brightness.dark
-                    ? Brightness.light
-                    : Brightness.dark,
-              ),
-              // On a Mac, every page and toast clear of the window's buttons.
-              child: TitleBarSpace(
-                covered: () => _navigator.currentState?.canPop() ?? false,
-                // Toasts over every page, taking only the touches that land
-                // on one.
-                child: ToastLayer(child: child!),
-              ),
+        return MaterialApp(
+          title: 'Jeansh',
+          debugShowCheckedModeBanner: false,
+          navigatorKey: _navigator,
+          themeMode: look.mode,
+          theme: themeOf(Brightness.light),
+          darkTheme: themeOf(Brightness.dark),
+          // Under the status bar is the tab strip, with no app bar to set
+          // the bar's icons, so they follow the theme from here: the
+          // system's white ones would vanish on a light theme.
+          builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle(
+              statusBarIconBrightness:
+                  Theme.of(context).brightness == Brightness.dark
+                  ? Brightness.light
+                  : Brightness.dark,
             ),
-            // termul's onboarding before Home, on a fresh install alone: see
-            // OnboardingDone.
-            home: ValueListenableBuilder(
-              valueListenable: onboardingDone,
-              builder: (context, done, _) => !done
-                  ? OnboardingPage(onDone: onboardingDone.complete)
-                  : TabsShell(
-                      repository: _repository,
-                      secrets: _secrets,
-                      sessions: _sessions,
-                      onOpenHost: (hostId) => openHost(
-                        hostId,
-                        newSession: true,
-                        restoredFirst: true,
-                      ),
-                      onDuplicate: (hostId) =>
-                          openHost(hostId, newSession: true),
-                      // Home draws the Local card on a desktop alone.
-                      onOpenLocal: () => openHost(
-                        localHostId,
-                        newSession: true,
-                        restoredFirst: true,
-                      ),
-                      onOpenWsl: Platform.isWindows
-                          ? (distro) => openHost(
-                              wslHost(distro).id,
-                              newSession: true,
-                              restoredFirst: true,
-                            )
-                          : null,
+            // On a Mac, every page and toast clear of the window's buttons.
+            child: TitleBarSpace(
+              covered: () => _navigator.currentState?.canPop() ?? false,
+              // Toasts over every page, taking only the touches that land
+              // on one.
+              child: ToastLayer(child: child!),
+            ),
+          ),
+          // termul's onboarding before Home, on a fresh install alone: see
+          // OnboardingDone.
+          home: ValueListenableBuilder(
+            valueListenable: onboardingDone,
+            builder: (context, done, _) => !done
+                ? OnboardingPage(onDone: onboardingDone.complete)
+                : TabsShell(
+                    repository: _repository,
+                    secrets: _secrets,
+                    sessions: _sessions,
+                    onOpenHost: (hostId) =>
+                        openHost(hostId, newSession: true, restoredFirst: true),
+                    onDuplicate: (hostId) => openHost(hostId, newSession: true),
+                    // Home draws the Local card on a desktop alone.
+                    onOpenLocal: () => openHost(
+                      localHostId,
+                      newSession: true,
+                      restoredFirst: true,
                     ),
-            ),
-          );
-        },
-      ),
+                    onOpenWsl: Platform.isWindows
+                        ? (distro) => openHost(
+                            wslHost(distro).id,
+                            newSession: true,
+                            restoredFirst: true,
+                          )
+                        : null,
+                  ),
+          ),
+        );
+      },
     );
   }
 }

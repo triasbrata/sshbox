@@ -144,7 +144,7 @@ class _TabsShellState extends State<TabsShell> {
     showToast(
       context,
       notice.message,
-      type: notice.failed ? ToastificationType.error : ToastificationType.info,
+      type: notice.failed ? TuiToastType.error : TuiToastType.info,
       // Time to read a reason, or to reach for Open.
       duration: Duration(seconds: notice.failed || link != null ? 8 : 3),
       action: link == null
@@ -711,7 +711,7 @@ class _TabStripState extends State<TabStrip> {
       await command();
     } on TmuxException catch (error) {
       if (!mounted) return;
-      showToast(context, 'tmux: $error', type: ToastificationType.error);
+      showToast(context, 'tmux: $error', type: TuiToastType.error);
     }
   }
 
@@ -754,7 +754,7 @@ class _TabStripState extends State<TabStrip> {
       showToast(
         context,
         'tmux did not say which pane this is.',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
       return;
     }
