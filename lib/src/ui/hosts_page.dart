@@ -621,7 +621,14 @@ class HomeRow extends StatelessWidget {
       live: activeCount > 0,
       verb: 'connect',
       onOpen: onOpen,
-      badge: _OsBadgeWithVersion(host: host, live: activeCount > 0),
+      // termul's badge, the version under it, and its corner mark while a
+      // session is up. Always a line's room for the version, so every name
+      // starts as high.
+      badge: OsBadge(
+        host.os,
+        version: host.os?.version ?? '',
+        active: activeCount > 0,
+      ),
       menu: [
         if (sessionCount > 0)
           (
@@ -775,67 +782,6 @@ class HomeRow extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// A host's OS logo with its version under it and a dot while a session is
-/// up. TODO(termul): OS / brand logo badge (gap 18); Jeansh's own until then.
-class _OsBadgeWithVersion extends StatelessWidget {
-  const _OsBadgeWithVersion({required this.host, required this.live});
-
-  final HostProfile host;
-  final bool live;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = TermulThemeData.of(context).palette;
-    final theme = Theme.of(context);
-    // As wide on every row, so every name starts at the same x.
-    return SizedBox(
-      width: 64,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Stack(
-            clipBehavior: Clip.none,
-            children: [
-              OsBadge(host.os),
-              if (live)
-                Positioned(
-                  right: -2,
-                  bottom: -2,
-                  child: Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: p.accent,
-                      // Cut out of the icon in the page's own colour.
-                      border: Border.all(color: p.bg, width: 2),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          // Only the version: the badge already says which OS. Always a
-          // line's room, even blank before the first connect or with no
-          // version, so every badge sits as high.
-          DefaultTextStyle.merge(
-            style: theme.textTheme.labelSmall!.copyWith(color: p.dim),
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            child: Stack(
-              alignment: Alignment.topCenter,
-              children: [
-                const ExcludeSemantics(child: Text(' ')),
-                Text(host.os?.version ?? ''),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

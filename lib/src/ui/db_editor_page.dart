@@ -12,27 +12,28 @@ import 'settings_page.dart' show nerdFontFamily;
 import 'tui.dart';
 
 /// A database's own brand mark — PostgreSQL's elephant, MongoDB's leaf,
-/// Redis's stack — as a devicon glyph of the bundled Nerd Font, the same font
-/// the host OS logos in [OsBadge] are drawn from, and the brand's own colour,
-/// dark enough that a white mark on it has 3:1 contrast or better
-/// (PostgreSQL 6.0:1, MongoDB 3.2:1, Redis 4.5:1), in either theme.
+/// Redis's stack — as termul's [TuiBrand] has it: a devicon glyph of the
+/// bundled Nerd Font, the same font the host OS logos are drawn from, and
+/// the brand's own colour.
 typedef DbBrand = ({int glyph, Color color});
 
-const _brands = <DbKind, DbBrand>{
-  DbKind.postgres: (glyph: 0xe76e, color: Color(0xFF336791)),
-  DbKind.mongo: (glyph: 0xe7a4, color: Color(0xFF47A248)),
-  DbKind.redis: (glyph: 0xe76d, color: Color(0xFFDC382D)),
+/// [kind]'s brand in termul.
+TuiBrand dbTuiBrand(DbKind kind) => switch (kind) {
+  DbKind.postgres => TuiBrand.postgres,
+  DbKind.mongo => TuiBrand.mongo,
+  DbKind.redis => TuiBrand.redis,
 };
 
-/// [kind]'s brand mark, or null for a kind added to [DbKind] without one.
-DbBrand? dbBrand(DbKind kind) => _brands[kind];
+/// [kind]'s brand mark, or null for a brand termul draws without one.
+DbBrand? dbBrand(DbKind kind) => switch (dbTuiBrand(kind)) {
+  TuiBrand(:final glyph?, :final color) => (glyph: glyph, color: color),
+  _ => null,
+};
 
-/// A database's brand as a square in its own colour with the mark in
-/// white, the way [OsBadge] shows a host's OS, so a database and a host read
-/// as one family on Home. A kind without a mark of its own gets a plain badge
-/// in the theme's colours with a database in it.
+/// A database's brand as termul's [TuiBrandBadge], as [OsBadge] draws a
+/// host's OS, so a database and a host read as one family on Home.
 class DbBadge extends StatelessWidget {
-  const DbBadge(this.kind, {super.key, this.size = 40});
+  const DbBadge(this.kind, {super.key, this.size = 36});
 
   final DbKind kind;
 
@@ -40,43 +41,14 @@ class DbBadge extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) {
-    final brand = dbBrand(kind);
-    final scheme = Theme.of(context).colorScheme;
-
-    return ExcludeSemantics(
-      child: Container(
-        width: size,
-        height: size,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: brand?.color ?? scheme.secondaryContainer,
-        ),
-        child: brand == null
-            ? Icon(
-                Icons.storage,
-                size: size * 0.55,
-                color: scheme.onSecondaryContainer,
-              )
-            // Text rather than an IconData: release builds shrink every font
-            // a const IconData names down to the glyphs named, and the
-            // terminal draws with this one.
-            : Text(
-                String.fromCharCode(brand.glyph),
-                textScaler: TextScaler.noScaling,
-                style: TextStyle(
-                  fontFamily: nerdFontFamily,
-                  // The Mono font fits a logo into one cell, 0.6 em wide.
-                  fontSize: size * 0.95,
-                  height: 1,
-                  color: Colors.white,
-                  // Whatever the page around it says, e.g. no Material.
-                  decoration: TextDecoration.none,
-                ),
-              ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: TuiBrandBadge(
+      brand: dbTuiBrand(kind),
+      size: size,
+      reserveVersion: false,
+      markFontFamily: nerdFontFamily,
+    ),
+  );
 }
 
 /// What the editor closes with: the database saved, or the one deleted.

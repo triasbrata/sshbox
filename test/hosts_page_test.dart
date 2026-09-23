@@ -169,10 +169,11 @@ void main() {
 
       // The version is under its badge, centred on it, without the OS's
       // name: the badge already shows it.
+      // termul's badge draws the version itself, under Ubuntu's mark.
       final badge = tester.getRect(
         find.descendant(
           of: find.widgetWithText(HomeRow, '22.04.5 LTS'),
-          matching: find.byType(OsBadge),
+          matching: find.text(String.fromCharCode(0xf31b)),
         ),
       );
       final version = tester.getRect(find.text('22.04.5 LTS'));
