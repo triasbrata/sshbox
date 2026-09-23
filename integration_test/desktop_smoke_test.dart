@@ -27,7 +27,6 @@ import 'package:flutter/material.dart'
     show
         InkWell,
         PopupMenuDivider,
-        SimpleDialogOption,
         TextField,
         Tooltip;
 import 'package:flutter/services.dart';
@@ -810,11 +809,11 @@ touch '${done.path}'
       await _pick(tester, 'Group with…');
       await _until(
         tester,
-        () => find.byType(SimpleDialogOption).evaluate().isNotEmpty,
+        () => find.byType(TuiSheetOption).evaluate().isNotEmpty,
         'the tabs to group with',
       );
       await tester.pump(const Duration(milliseconds: 600));
-      await tester.tap(find.byType(SimpleDialogOption).first);
+      await tester.tap(find.byType(TuiSheetOption).first);
       await _until(
         tester,
         () => shown().length == 2,
