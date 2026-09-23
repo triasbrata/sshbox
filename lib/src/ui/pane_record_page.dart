@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../files/file_browser.dart';
 import '../session/pane_record.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'tui.dart';
 
 /// A tmux pane's record, as the host kept it: the text the pane showed, in
 /// order, the newest at the bottom — see [PaneRecord].
@@ -96,7 +97,7 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
       ),
       body: Column(
         children: [
-          if (_loading) const LinearProgressIndicator(),
+          if (_loading) const TuiProgressBar(),
           if (error != null)
             Padding(
               padding: const EdgeInsets.all(16),

@@ -648,7 +648,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
           bottom: _loading && _parsed != null
               ? const PreferredSize(
                   preferredSize: Size.fromHeight(3),
-                  child: LinearProgressIndicator(),
+                  child: TuiProgressBar(),
                 )
               : null,
           actions: [
@@ -706,7 +706,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
     final parsed = _parsed;
     if (parsed == null) {
       if (_error case final error?) return _Failure(error);
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: TuiSpinner());
     }
     if (_error case final error?) return _Failure(error);
     if (parsed.files.isEmpty && parsed.preamble.isEmpty) {
@@ -1076,7 +1076,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
                 ? const Center(
                     child: SizedBox.square(
                       dimension: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: TuiSpinner(),
                     ),
                   )
                 : Column(

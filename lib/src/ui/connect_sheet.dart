@@ -312,7 +312,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
               children: [
                 const SizedBox.square(
                   dimension: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: TuiSpinner(),
                 ),
                 const SizedBox(width: 16),
                 Text('Connecting…', style: theme.textTheme.bodyLarge),

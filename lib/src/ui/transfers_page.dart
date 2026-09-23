@@ -4,6 +4,7 @@ import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import 'file_download.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// Every download and upload since the app started, newest first, like a
 /// browser's downloads page: one tab for the whole app. A running one can be
@@ -85,7 +86,7 @@ class _TransferRow extends StatelessWidget {
           if (running)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: LinearProgressIndicator(value: transfer.fraction),
+              child: TuiProgressBar(value: transfer.fraction),
             ),
         ],
       ),

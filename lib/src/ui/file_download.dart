@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// MainActivity's save dialog, which takes a download as a file of ours
 /// rather than as bytes over the channel, and opens what it saved.
@@ -184,7 +185,7 @@ class TransferBar extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 4),
-            LinearProgressIndicator(value: fraction),
+            TuiProgressBar(value: fraction),
           ],
         ),
       );

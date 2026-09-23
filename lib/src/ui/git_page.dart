@@ -250,7 +250,7 @@ class _GitPageState extends State<GitPage> {
                   Tab(text: 'History'),
                 ],
               ),
-              if (_busy) const LinearProgressIndicator(minHeight: 2),
+              if (_busy) const TuiProgressBar(height: 2),
               Expanded(
                 child: TabBarView(
                   children: [

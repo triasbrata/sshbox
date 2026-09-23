@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../files/file_browser.dart';
-import 'tui.dart' show TermulFonts;
+import 'tui.dart';
 
 /// Finds text inside files under one directory.
 ///
@@ -158,7 +158,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
     }
 
     if (_hits.isEmpty) {
-      if (_running) return const Center(child: CircularProgressIndicator());
+      if (_running) return const Center(child: TuiSpinner());
       return _SearchMessage(
         icon: _ranFor == null ? Icons.travel_explore_outlined : Icons.search_off,
         message: _ranFor == null

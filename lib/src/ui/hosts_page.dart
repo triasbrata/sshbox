@@ -295,8 +295,7 @@ class _HostsPageState extends State<HostsPage> {
             ),
             Expanded(
               child: hosts == null || databases == null
-                  // TODO(termul): progress indicator (gap 5).
-                  ? const Center(child: CircularProgressIndicator())
+                  ? const Center(child: TuiSpinner())
                   : empty
                   ? const _EmptyState()
                   : _list(hosts, databases),

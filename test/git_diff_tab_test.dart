@@ -14,6 +14,7 @@ import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
 import 'fake_file_browser.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 class _NoSecrets implements SecretStore {
   @override
@@ -354,7 +355,7 @@ void main() {
 
     expect(find.byType(GitDiffPage), findsOneWidget);
     expect(find.textContaining('no such path'), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(TuiSpinner), findsNothing);
   });
 
   test('a diff is not saved with the open tabs: it is a command\'s output, '

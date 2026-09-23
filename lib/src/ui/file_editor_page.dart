@@ -950,7 +950,7 @@ class _TextFileTabState extends State<_TextFileTab> {
           bottom: _saving
               ? const PreferredSize(
                   preferredSize: Size.fromHeight(3),
-                  child: LinearProgressIndicator(),
+                  child: TuiProgressBar(),
                 )
               : null,
           actions: [
@@ -1025,7 +1025,7 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   Widget _buildBody() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) return const Center(child: TuiSpinner());
 
     final error = _error;
     if (error != null) {
@@ -1464,7 +1464,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   }
 
   Widget _buildBody() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) return const Center(child: TuiSpinner());
 
     final error = _error;
     if (error != null) return _EditorError(message: error, fault: _fault);
@@ -1711,7 +1711,7 @@ Widget _imageAlt(
               ? const SizedBox(
                   width: 14,
                   height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: TuiSpinner(),
                 )
               : const Icon(Icons.image_outlined, size: 16),
         ),

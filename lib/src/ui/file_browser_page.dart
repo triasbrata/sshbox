@@ -981,7 +981,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       bottom: (_loading || _busy) && _transfer == null
           ? const PreferredSize(
               preferredSize: Size.fromHeight(2),
-              child: LinearProgressIndicator(minHeight: 2),
+              child: TuiProgressBar(height: 2),
             )
           : null,
       actions: [
@@ -1124,7 +1124,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
     final listing = _listings[_root];
     if (_loading && listing == null) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: TuiSpinner());
     }
 
     final rows = _rows();
@@ -1170,7 +1170,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       lead = const Center(
         child: SizedBox.square(
           dimension: 12,
-          child: CircularProgressIndicator(strokeWidth: 1.5),
+          child: TuiSpinner(),
         ),
       );
     } else {

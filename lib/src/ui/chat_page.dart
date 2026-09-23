@@ -382,10 +382,7 @@ class _ChatPageState extends State<ChatPage> {
               SizedBox(
                 width: 12,
                 height: 12,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: theme.colorScheme.primary,
-                ),
+                child: TuiSpinner(),
               ),
               const SizedBox(width: 8),
               Text(
@@ -621,7 +618,7 @@ class _Earlier extends StatelessWidget {
             ? const SizedBox(
                 width: 20,
                 height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: TuiSpinner(),
               )
             : chat.canLoadEarlier
             ? TextButton.icon(
@@ -829,7 +826,7 @@ class _ToolRow extends StatelessWidget {
                   : const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: TuiSpinner(),
                     ),
               title: Row(
                 children: [
@@ -1227,7 +1224,7 @@ class _SessionList extends StatelessWidget {
                   future: agents,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState != ConnectionState.done) {
-                      return const Center(child: CircularProgressIndicator());
+                      return const Center(child: TuiSpinner());
                     }
                     final error = snapshot.error;
                     if (error != null) {
@@ -1313,7 +1310,7 @@ class _SessionList extends StatelessWidget {
           ? const SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              child: TuiSpinner(),
             )
           : Icon(
               // Somebody is typing into an interactive one; a background one

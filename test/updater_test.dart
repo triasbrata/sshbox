@@ -452,7 +452,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
 
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(TuiSpinner), findsNothing);
     expect(
       tester.widget<TuiButton>(findTuiButton('Check for updates')).onPressed !=
           null,

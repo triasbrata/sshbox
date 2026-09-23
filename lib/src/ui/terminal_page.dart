@@ -941,7 +941,7 @@ class _TerminalPageState extends State<TerminalPage> {
             child: ListenableBuilder(
               listenable: transfers,
               builder: (_, _) =>
-                  LinearProgressIndicator(value: sending.fraction),
+                  TuiProgressBar(value: sending.fraction),
             ),
           ),
         // In the body rather than the Scaffold's button slot so it can be

@@ -12,7 +12,7 @@ import '../session/port_forwards.dart';
 import 'host_edit_page.dart';
 import 'os_icon.dart';
 import 'terminal_page.dart' show openUrl;
-import 'tui.dart' show showTuiConfirmDialog;
+import 'tui.dart';
 
 /// Side padding that keeps a page's column readable on a tablet: 16 dp on a
 /// phone, and a 720 dp column in the middle of anything wider.
@@ -88,7 +88,7 @@ class _PortForwardingPageState extends State<PortForwardingPage> {
               child: const Icon(Icons.add),
             ),
       body: hosts == null
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: TuiSpinner())
           : ListenableBuilder(
               listenable: widget.forwards,
               builder: (context, _) {

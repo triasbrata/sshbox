@@ -605,7 +605,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          CircularProgressIndicator(),
+          TuiSpinner(),
           SizedBox(height: 16),
           Text('Connecting…'),
         ],
@@ -723,7 +723,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   ),
                 )
               : objects == null
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: TuiSpinner())
               : entries.isEmpty
               ? Center(child: Text('No ${label.toLowerCase()}'))
               : ListView.builder(
@@ -923,7 +923,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             ),
           const SizedBox(height: 8),
           _running
-              ? const LinearProgressIndicator()
+              ? const TuiProgressBar()
               : const Divider(height: 4, thickness: 1),
           Expanded(
             child: error != null

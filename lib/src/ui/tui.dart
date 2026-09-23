@@ -294,15 +294,8 @@ ThemeData jeanshTheme(TermulPalette p) {
       shape: square,
       endShape: Border(left: BorderSide(color: p.border)),
     ),
-    // TODO(termul): popup / context menu (gap 3).
-    popupMenuTheme: PopupMenuThemeData(
-      color: p.panel,
-      surfaceTintColor: Colors.transparent,
-      elevation: 2,
-      shape: edged,
-      textStyle: text.bodyMedium,
-      labelTextStyle: WidgetStatePropertyAll(text.bodyMedium),
-    ),
+    // termul's menu look, for any Material popup left.
+    popupMenuTheme: tuiPopupMenuTheme(p),
     menuTheme: MenuThemeData(
       style: MenuStyle(
         backgroundColor: WidgetStatePropertyAll(p.panel),

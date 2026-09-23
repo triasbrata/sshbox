@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../models/host_profile.dart';
-import 'tui.dart' show TermulFonts, showTuiConfirmDialog;
+import 'tui.dart';
 
 /// The host keys the user has trusted, each with the saved hosts that use it,
 /// and a way to forget one.
@@ -67,7 +67,7 @@ class _KnownHostsPageState extends State<KnownHostsPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Known hosts')),
       body: switch (_pins) {
-        null => const Center(child: CircularProgressIndicator()),
+        null => const Center(child: TuiSpinner()),
         // TODO(termul): empty state, until termul has one.
         [] => Center(
           child: Padding(

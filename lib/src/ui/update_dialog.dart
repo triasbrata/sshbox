@@ -81,11 +81,10 @@ class _UpdateTileState extends State<UpdateTile> {
             ),
             if (_checking) ...[
               const SizedBox(width: 12),
-              // TODO(termul): a spinner (gap 5).
               const SizedBox(
                 width: 16,
                 height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: TuiSpinner(),
               ),
             ],
           ],
@@ -320,7 +319,6 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     final update = widget.update;
     final file = _file;
     if (_installing) {
-      // TODO(termul): a spinner (gap 5).
       return TuiDialog(
         title: 'update',
         maxWidth: 420,
@@ -330,7 +328,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              child: TuiSpinner(),
             ),
             SizedBox(width: 16),
             Expanded(
@@ -413,8 +411,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               size: 11,
             ),
             const SizedBox(height: 12),
-            // TODO(termul): a progress bar (gap 5).
-            LinearProgressIndicator(value: progress),
+            TuiProgressBar(value: progress),
           ],
         ),
       );
