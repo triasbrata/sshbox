@@ -764,14 +764,13 @@ class HomeRow extends StatelessWidget {
               ],
               Expanded(child: text),
               if (menu.isNotEmpty)
-                // TODO(termul): popup / context menu (gap 3).
-                PopupMenuButton<String>(
-                  iconColor: p.dim,
-                  onSelected: (label) =>
-                      menu.firstWhere((item) => item.$1 == label).$2(),
-                  itemBuilder: (_) => [
-                    for (final (label, _) in menu)
-                      PopupMenuItem(value: label, child: Text(label)),
+                MenuButton<VoidCallback>(
+                  // Material's word for it, which an e2e flow taps.
+                  tooltip: 'Show menu',
+                  onSelected: (onTap) => onTap(),
+                  entries: [
+                    for (final (label, onTap) in menu)
+                      menuAction(label, onTap, destructive: label == 'Delete'),
                   ],
                 ),
             ],

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/db/db_session.dart';
@@ -235,7 +236,7 @@ void main() {
       expect(closeTab, findsNothing);
       expect(card, findsOneWidget);
 
-      await tester.tap(find.byType(PopupMenuButton<String>).last);
+      await tester.tap(find.byType(TuiMenuButton<VoidCallback>).last);
       await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Delete'));
       await tester.pumpAndSettle();

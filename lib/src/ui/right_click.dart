@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../platform.dart';
-import 'termul/tui_menu.dart';
+import 'tui.dart';
 
 /// A right-click that opens whatever a long press opens, for a widget's
 /// `onSecondaryTapUp`: a desktop is driven by a mouse, which has no long
@@ -46,24 +46,6 @@ Future<void> showActionsAt(
   List<TuiMenuEntry<VoidCallback>> entries,
 ) async => (await showMenuAt(context, at, entries))?.call();
 
-/// A row of an actions menu, for [showActionsAt] and [TuiMenuButton]; one
-/// that ends or deletes something is [destructive], in termul's deep ink.
-TuiMenuItem<VoidCallback> action(
-  String label,
-  VoidCallback onTap, {
-  bool destructive = false,
-  bool enabled = true,
-  bool? checked,
-  String? shortcut,
-}) => TuiMenuItem(
-  value: onTap,
-  label: label,
-  destructive: destructive,
-  enabled: enabled,
-  checked: checked,
-  shortcut: shortcut,
-);
-
 /// A tab's own menu — what a right-click on its chip opens — handed down to
 /// its page, so a right-click inside the page opens it too. [items] is asked
 /// at the click, so it is the menu as the strip last drew it.
@@ -91,5 +73,5 @@ List<TuiMenuEntry<VoidCallback>> tabMenuEntries(
   List<(String, VoidCallback)> items,
 ) => [
   for (final (label, onTap) in items)
-    action(label, onTap, destructive: label == 'Close tab'),
+    menuAction(label, onTap, destructive: label == 'Close tab'),
 ];

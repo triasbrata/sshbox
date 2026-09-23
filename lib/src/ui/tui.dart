@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'terminal_schemes.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
+import 'termul/tui_menu.dart';
 import 'termul/tui_tooltip.dart';
 
 export 'termul/components.dart';
@@ -464,4 +465,54 @@ class TermulTextAction extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A row of an actions menu, for `showActionsAt` and [TuiMenuButton]; one
+/// that ends or deletes something is [destructive], in termul's deep ink.
+TuiMenuItem<VoidCallback> menuAction(
+  String label,
+  VoidCallback onTap, {
+  bool destructive = false,
+  bool enabled = true,
+  bool? checked,
+  String? shortcut,
+}) => TuiMenuItem(
+  value: onTap,
+  label: label,
+  destructive: destructive,
+  enabled: enabled,
+  checked: checked,
+  shortcut: shortcut,
+);
+
+/// termul's [TuiMenuButton] with its word on hover as well, as every icon
+/// button in Jeansh has: termul's own speaks it to a screen reader only.
+class MenuButton<T> extends StatelessWidget {
+  const MenuButton({
+    super.key,
+    required this.entries,
+    this.onSelected,
+    this.tooltip = 'Menu',
+    this.icon = '⋮',
+    this.enabled = true,
+  });
+
+  final List<TuiMenuEntry<T>> entries;
+  final ValueChanged<T>? onSelected;
+  final String tooltip;
+  final String icon;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => TuiTooltip(
+    message: tooltip,
+    excludeFromSemantics: true,
+    child: TuiMenuButton<T>(
+      entries: entries,
+      onSelected: onSelected,
+      tooltip: tooltip,
+      icon: icon,
+      enabled: enabled,
+    ),
+  );
 }

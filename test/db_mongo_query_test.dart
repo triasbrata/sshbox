@@ -219,7 +219,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('No stages yet: add one below.'), findsOneWidget);
 
-    await tester.tap(find.text('Add stage'));
+    await tester.tap(find.bySemanticsLabel('Add stage'));
     await tester.pumpAndSettle();
     await tester.tap(find.text(r'$match').last);
     await tester.pumpAndSettle();

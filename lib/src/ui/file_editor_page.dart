@@ -899,11 +899,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     final name = RemotePath.basename(widget.path);
     final text = _controller.text;
     if (text.length > copyLimit) {
-      showToast(
-        context,
-        tooLargeToCopy(name),
-        type: TuiToastType.warning,
-      );
+      showToast(context, tooLargeToCopy(name), type: TuiToastType.warning);
       return Future.value();
     }
     return copyAndSay(
@@ -983,49 +979,33 @@ class _TextFileTabState extends State<_TextFileTab> {
               onPressed: canSave ? _save : null,
               icon: const Icon(Icons.save_outlined),
             ),
-            PopupMenuButton<VoidCallback>(
+            MenuButton<VoidCallback>(
               tooltip: 'More',
               onSelected: (action) => action(),
-              itemBuilder: (context) => [
+              entries: [
                 // Only the path is needed, so a file that would not open as
                 // text can still be saved on the phone.
-                PopupMenuItem(
-                  value: _download,
-                  enabled: _transfer == null,
-                  child: const Text('Download'),
-                ),
+                menuAction('Download', _download, enabled: _transfer == null),
                 // Nothing to copy while the file is still coming, and nothing
                 // worth copying when it would not open as text.
                 if (!_loading && _error == null)
-                  PopupMenuItem(
-                    value: _copyContent,
-                    child: const Text('Copy content'),
-                  ),
-                const PopupMenuDivider(),
+                  menuAction('Copy content', _copyContent),
+                const TuiMenuDivider(),
                 if (!_loading && _error == null) ...[
-                  PopupMenuItem(
-                    value: () => _inSource(_find.replaceMode),
-                    child: const Text('Find and replace'),
+                  menuAction(
+                    'Find and replace',
+                    () => _inSource(_find.replaceMode),
                   ),
-                  PopupMenuItem(
-                    value: () => _inSource(_goToLine),
-                    child: const Text('Go to line…'),
-                  ),
-                  const PopupMenuDivider(),
+                  menuAction('Go to line…', () => _inSource(_goToLine)),
+                  const TuiMenuDivider(),
                 ],
-                CheckedPopupMenuItem(
-                  value: () => _setLook(wordWrap: !_wordWrap),
+                menuAction(
+                  'Word wrap',
+                  () => _setLook(wordWrap: !_wordWrap),
                   checked: _wordWrap,
-                  child: const Text('Word wrap'),
                 ),
-                PopupMenuItem(
-                  value: () => _setLook(fontSize: _fontSize + 1),
-                  child: const Text('Larger text'),
-                ),
-                PopupMenuItem(
-                  value: () => _setLook(fontSize: _fontSize - 1),
-                  child: const Text('Smaller text'),
-                ),
+                menuAction('Larger text', () => _setLook(fontSize: _fontSize + 1)),
+                menuAction('Smaller text', () => _setLook(fontSize: _fontSize - 1)),
               ],
             ),
           ],
@@ -1457,25 +1437,18 @@ class _ImageFileTabState extends State<_ImageFileTab> {
           ],
         ),
         actions: [
-          PopupMenuButton<VoidCallback>(
+          MenuButton<VoidCallback>(
             tooltip: 'More',
             onSelected: (action) => action(),
-            itemBuilder: (context) => [
+            entries: [
               // Only the path is needed, so an image that would not open here
               // can still be saved on the phone.
-              PopupMenuItem(
-                value: _download,
-                enabled: _transfer == null,
-                child: const Text('Download'),
-              ),
+              menuAction('Download', _download, enabled: _transfer == null),
               // Only once there is a picture to copy, and only where there is
               // a clipboard that takes one: MainActivity's, over the channel.
               if (_image != null &&
                   defaultTargetPlatform == TargetPlatform.android)
-                PopupMenuItem(
-                  value: _copyImage,
-                  child: const Text('Copy image'),
-                ),
+                menuAction('Copy image', _copyImage),
             ],
           ),
         ],

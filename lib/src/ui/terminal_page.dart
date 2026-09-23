@@ -1352,13 +1352,13 @@ class _PaneViewState extends State<_PaneView> {
 
     showActionsAt(context, details.globalPosition, [
       if (range != null)
-        action(
+        menuAction(
           'Copy',
           () => copy(selectedText(terminal.buffer, range), 'Copied'),
         ),
-      action('Paste', () => unawaited(_paste())),
+      menuAction('Paste', () => unawaited(_paste())),
       if (link != null)
-        action('Copy link address', () => copy(link, 'Copied $link')),
+        menuAction('Copy link address', () => copy(link, 'Copied $link')),
       // The tab's own, as its chip offers them.
       if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
     ]);

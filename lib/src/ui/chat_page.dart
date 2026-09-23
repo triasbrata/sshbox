@@ -469,9 +469,8 @@ class _ChatPageState extends State<ChatPage> {
               icon: const Icon(Icons.view_sidebar_outlined),
               selectedIcon: const Icon(Icons.view_sidebar),
             ),
-            PopupMenuButton<Object>(
+            MenuButton<Object>(
               tooltip: 'Chat settings',
-              icon: const Icon(Icons.more_vert),
               onSelected: (choice) {
                 if (choice is ChatPermission) {
                   unawaited(chat.restart(permission: choice));
@@ -481,24 +480,21 @@ class _ChatPageState extends State<ChatPage> {
                   unawaited(chat.restart());
                 }
               },
-              itemBuilder: (context) => [
-                PopupMenuItem(
+              entries: [
+                TuiMenuItem(
                   value: 'new',
+                  label: 'New chat',
                   enabled: connected,
-                  child: const Text('New chat'),
                 ),
-                const PopupMenuDivider(),
+                const TuiMenuDivider(),
                 for (final mode in ChatPermission.values)
-                  CheckedPopupMenuItem(
+                  TuiMenuItem(
                     value: mode,
+                    label: mode.label,
                     checked: chat.permission == mode,
-                    child: Text(mode.label),
                   ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'restart',
-                  child: Text('Restart Claude'),
-                ),
+                const TuiMenuDivider(),
+                const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
               ],
             ),
             Expanded(

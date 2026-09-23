@@ -672,39 +672,27 @@ class _GitDiffPageState extends State<GitDiffPage> {
               onPressed: _loading ? null : _load,
               icon: const Icon(Icons.refresh),
             ),
-            PopupMenuButton<VoidCallback>(
+            MenuButton<VoidCallback>(
               tooltip: 'More',
               onSelected: (action) => action(),
-              itemBuilder: (context) => [
-                if (ready)
-                  PopupMenuItem(
-                    value: _copyAll,
-                    child: const Text('Copy diff'),
-                  ),
+              entries: [
+                if (ready) menuAction('Copy diff', _copyAll),
                 if (ready && _views.isNotEmpty) ...[
-                  PopupMenuItem(
-                    value: () => setState(() {
+                  menuAction(
+                    _views.any((view) => !view.collapsed)
+                        ? 'Collapse all files'
+                        : 'Expand all files',
+                    () => setState(() {
                       final fold = _views.any((view) => !view.collapsed);
                       for (final view in _views) {
                         view.collapsed = fold;
                       }
                     }),
-                    child: Text(
-                      _views.any((view) => !view.collapsed)
-                          ? 'Collapse all files'
-                          : 'Expand all files',
-                    ),
                   ),
                 ],
-                const PopupMenuDivider(),
-                PopupMenuItem(
-                  value: () => _setFontSize(_fontSize + 1),
-                  child: const Text('Larger text'),
-                ),
-                PopupMenuItem(
-                  value: () => _setFontSize(_fontSize - 1),
-                  child: const Text('Smaller text'),
-                ),
+                const TuiMenuDivider(),
+                menuAction('Larger text', () => _setFontSize(_fontSize + 1)),
+                menuAction('Smaller text', () => _setFontSize(_fontSize - 1)),
               ],
             ),
           ],
@@ -1172,37 +1160,29 @@ class _GitDiffPageState extends State<GitDiffPage> {
                 ),
                 icon: const Icon(Icons.copy, size: 18),
               ),
-              PopupMenuButton<VoidCallback>(
+              MenuButton<VoidCallback>(
                 tooltip: 'File actions',
-                icon: const Icon(Icons.more_horiz),
+                icon: '⋯',
                 onSelected: (action) => action(),
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    value: () {
-                      if (file.raw.length > copyLimit) {
-                        showToast(
-                          context,
-                          tooLargeToCopy(file.path),
-                          type: TuiToastType.warning,
-                        );
-                        return;
-                      }
-                      unawaited(
-                        copyAndSay(
-                          context,
-                          'the diff of ${RemotePath.basename(file.path)}',
-                          () =>
-                              Clipboard.setData(ClipboardData(text: file.raw)),
-                        ),
+                entries: [
+                  menuAction('Copy this file\'s diff', () {
+                    if (file.raw.length > copyLimit) {
+                      showToast(
+                        context,
+                        tooLargeToCopy(file.path),
+                        type: TuiToastType.warning,
                       );
-                    },
-                    child: const Text('Copy this file\'s diff'),
-                  ),
-                  if (expandable)
-                    PopupMenuItem(
-                      value: wholeFile,
-                      child: const Text('Show the whole file'),
-                    ),
+                      return;
+                    }
+                    unawaited(
+                      copyAndSay(
+                        context,
+                        'the diff of ${RemotePath.basename(file.path)}',
+                        () => Clipboard.setData(ClipboardData(text: file.raw)),
+                      ),
+                    );
+                  }),
+                  if (expandable) menuAction('Show the whole file', wholeFile),
                 ],
               ),
             ],

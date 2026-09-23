@@ -12,6 +12,7 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/known_hosts_page.dart';
 import 'package:sshbox/src/ui/os_icon.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 import 'fake_relay.dart';
 
@@ -254,7 +255,7 @@ void main() {
     // Nothing of it on Home: a host's own is copied from its edit page.
     expect(find.byIcon(Icons.key_outlined), findsNothing);
 
-    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.tap(find.byType(TuiMenuButton<VoidCallback>));
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
@@ -304,7 +305,7 @@ void main() {
             of: find.text(label),
             matching: find.byType(HomeRow),
           ),
-          matching: find.byType(PopupMenuButton<String>),
+          matching: find.byType(TuiMenuButton<VoidCallback>),
         ),
       );
       await tester.pumpAndSettle();
@@ -363,7 +364,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.tap(find.byType(TuiMenuButton<VoidCallback>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Duplicate'));
     await tester.pumpAndSettle();
@@ -394,7 +395,7 @@ void main() {
     }
 
     // A second copy of the same host takes the next name free.
-    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.tap(find.byType(TuiMenuButton<VoidCallback>).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Duplicate'));
     await tester.pumpAndSettle();

@@ -502,9 +502,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
       missed == null
           ? 'Saved ${_count(changes.count)}'
           : 'Not all saved\n$missed',
-      type: missed == null
-          ? TuiToastType.success
-          : TuiToastType.warning,
+      type: missed == null ? TuiToastType.success : TuiToastType.warning,
     );
     await _read(_shownQuery);
   }
@@ -1269,31 +1267,36 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         ),
         Align(
           alignment: Alignment.centerLeft,
-          child: PopupMenuButton<String>(
-            tooltip: 'Add a stage',
-            onSelected: (template) => setState(
-              () => _mStages.add(TextEditingController(text: template)),
-            ),
-            itemBuilder: (context) => [
-              for (final template in _stageTemplates)
-                PopupMenuItem(
-                  value: template,
-                  child: Text(
-                    // The operator alone: the template is what it fills in.
-                    template.substring(2, template.indexOf('"', 2)),
-                    style: mono,
-                  ),
-                ),
-            ],
-            child: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.add),
-                  SizedBox(width: 4),
-                  Text('Add stage'),
-                ],
+          child: Builder(
+            builder: (anchor) => TuiTooltip(
+              message: 'Add a stage',
+              child: TuiButton(
+                label: 'Add stage',
+                prefix: '+',
+                variant: TuiButtonVariant.ghost,
+                onPressed: () async {
+                  final template = await showTuiMenu<String>(
+                    context,
+                    anchor: anchor,
+                    entries: [
+                      for (final template in _stageTemplates)
+                        TuiMenuItem(
+                          value: template,
+                          // The operator alone: the template is what it
+                          // fills in.
+                          label: template.substring(
+                            2,
+                            template.indexOf('"', 2),
+                          ),
+                        ),
+                    ],
+                  );
+                  if (template != null) {
+                    setState(
+                      () => _mStages.add(TextEditingController(text: template)),
+                    );
+                  }
+                },
               ),
             ),
           ),
@@ -1584,22 +1587,18 @@ class _ResultGrid extends StatelessWidget {
     final isNew = d < changes.added.length;
     final r = d - changes.added.length;
     final deleted = changes.deleted.contains(r);
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final action = await showMenu<VoidCallback>(
-      context: context,
-      position: RelativeRect.fromRect(
-        overlay.globalToLocal(at) & Size.zero,
-        Offset.zero & overlay.size,
-      ),
-      items: [
-        if (!isNew)
-          PopupMenuItem(
-            value: () => _showRow(context, r),
-            child: const Text('Show row'),
-          ),
-        PopupMenuItem(
-          value: () => update?.call(() {
+    final picked = await showTuiMenu<VoidCallback>(
+      context,
+      at: at,
+      entries: [
+        if (!isNew) menuAction('Show row', () => _showRow(context, r)),
+        menuAction(
+          isNew
+              ? 'Remove new row'
+              : deleted
+              ? 'Restore row'
+              : 'Delete row',
+          () => update?.call(() {
             if (isNew) {
               changes.added.removeAt(d);
             } else if (deleted) {
@@ -1608,18 +1607,12 @@ class _ResultGrid extends StatelessWidget {
               changes.deleted.add(r);
             }
           }),
-          child: Text(
-            isNew
-                ? 'Remove new row'
-                : deleted
-                ? 'Restore row'
-                : 'Delete row',
-          ),
+          destructive: !isNew && !deleted,
         ),
       ],
     );
     // Once the menu is gone, so the row's dialog is not stacked on it.
-    if (context.mounted) action?.call();
+    if (context.mounted) picked?.call();
   }
 
   @override
