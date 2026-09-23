@@ -1286,7 +1286,7 @@ class _TabChip extends StatelessWidget {
       height: _height,
       // An icon alone is a square, as + beside it is.
       width: title == null && onEnd == null ? _height : null,
-      child: tooltip == null ? named : Tooltip(message: tooltip!, child: named),
+      child: tooltip == null ? named : TuiTooltip(message: tooltip!, child: named),
     );
   }
 
@@ -1316,7 +1316,7 @@ class _AddTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
-    return Tooltip(
+    return TuiTooltip(
       message: 'New tab',
       child: Semantics(
         container: true,

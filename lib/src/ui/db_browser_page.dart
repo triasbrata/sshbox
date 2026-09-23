@@ -841,7 +841,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   ),
                 ),
                 if (result?.readOnly case final why?) ...[
-                  Tooltip(
+                  TuiTooltip(
                     message: why,
                     child: Icon(
                       Icons.lock_outline,

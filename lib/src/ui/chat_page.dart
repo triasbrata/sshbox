@@ -1336,7 +1336,7 @@ class _SessionList extends StatelessWidget {
       ),
       // Pinned in `claude agents` on the host, and so first here too.
       trailing: agent.pinned
-          ? Tooltip(
+          ? TuiTooltip(
               message: 'Pinned',
               child: Icon(
                 Icons.push_pin,

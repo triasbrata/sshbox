@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'terminal_schemes.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
+import 'termul/tui_tooltip.dart';
 
 export 'termul/components.dart';
 export 'termul/termul_palette.dart';
@@ -308,14 +309,8 @@ ThemeData jeanshTheme(TermulPalette p) {
         shape: WidgetStatePropertyAll(edged),
       ),
     ),
-    // TODO(termul): tooltip (gap 4).
-    tooltipTheme: TooltipThemeData(
-      decoration: BoxDecoration(
-        color: p.panel,
-        border: Border.all(color: p.border),
-      ),
-      textStyle: text.bodySmall,
-    ),
+    // termul's own tooltip, for every Tooltip Material draws too.
+    tooltipTheme: tuiTooltipTheme(p),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         shape: square,
@@ -444,8 +439,7 @@ class TermulTextAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
-    // TODO(termul): tooltip (gap 4).
-    return Tooltip(
+    return TuiTooltip(
       message: label,
       child: Semantics(
         container: true,

@@ -7,6 +7,7 @@ import '../git/git_diff.dart';
 import '../git/git_repo.dart';
 import '../session/session_manager.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// The repositories on the host, beside that host's shell — what the editors
 /// put in their side panel: what has changed, what is staged, the history, and
@@ -620,7 +621,7 @@ class _FileRow extends StatelessWidget {
 
     return ListTile(
       dense: true,
-      leading: Tooltip(
+      leading: TuiTooltip(
         message: change.label,
         child: Text(
           change.code,

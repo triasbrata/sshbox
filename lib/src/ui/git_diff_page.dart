@@ -973,7 +973,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
                   if (line.noNewline)
                     WidgetSpan(
                       alignment: PlaceholderAlignment.middle,
-                      child: Tooltip(
+                      child: TuiTooltip(
                         message: 'No newline at end of file',
                         child: Padding(
                           padding: const EdgeInsets.only(left: 6),
@@ -1040,7 +1040,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
     final last = g == file.hunks.length;
     final expandable = widget.diff.blob != null && file.expandable;
 
-    Widget arrow(IconData icon, String tip, VoidCallback onTap) => Tooltip(
+    Widget arrow(IconData icon, String tip, VoidCallback onTap) => TuiTooltip(
       message: tip,
       child: InkWell(
         onTap: view.reading ? null : onTap,

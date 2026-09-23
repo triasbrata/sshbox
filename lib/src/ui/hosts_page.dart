@@ -493,8 +493,7 @@ class _HomeHeader extends StatelessWidget {
               for (final (tooltip, icon, onTap) in actions) ...[
                 // Left of Settings, while a newer release is out.
                 if (tooltip == 'Settings') const UpdateChip(),
-                // TODO(termul): tooltip (gap 4).
-                Tooltip(
+                TuiTooltip(
                   message: tooltip,
                   child: Semantics(
                     container: true,
