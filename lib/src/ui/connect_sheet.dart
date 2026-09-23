@@ -89,13 +89,11 @@ Future<bool> connectInSheet(
   required void Function(Uri url) inTab,
   Set<String> taken = const {},
 }) async {
-  final kept = await showModalBottomSheet<bool>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    useSafeArea: true,
-    builder: (_) =>
-        _ConnectSheet(session: session, secrets: secrets, taken: taken),
+  final kept = await showTuiSheet<bool>(
+    context,
+    builder: (_) => Flexible(
+      child: _ConnectSheet(session: session, secrets: secrets, taken: taken),
+    ),
   );
   if (kept != true) {
     session.abandon();
@@ -112,24 +110,22 @@ Future<bool> connectInSheet(
 /// connect sheet on screen. Anything but Trust or Replace key refuses it.
 Future<bool> confirmHostKey(BuildContext context, HostKeyCheck check) async {
   if (!context.mounted) return false;
-  final trusted = await showModalBottomSheet<bool>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    useSafeArea: true,
-    builder: (context) => SingleChildScrollView(
-      padding: _padding,
-      child: _HostKeyPrompt(
-        check: check,
-        onAnswer: (trusted) => Navigator.of(context).pop(trusted),
+  final trusted = await showTuiSheet<bool>(
+    context,
+    builder: (context) => Flexible(
+      child: SingleChildScrollView(
+        child: TuiSheet(
+          title: 'Host key',
+          child: _HostKeyPrompt(
+            check: check,
+            onAnswer: (trusted) => Navigator.of(context).pop(trusted),
+          ),
+        ),
       ),
     ),
   );
   return trusted ?? false;
 }
-
-/// Under a sheet's drag handle, which leaves room enough above.
-const _padding = EdgeInsets.fromLTRB(24, 0, 24, 24);
 
 class _ConnectSheet extends StatefulWidget {
   const _ConnectSheet({
@@ -235,7 +231,6 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final host = _session.host;
     final check = _check;
     final found = _found;
@@ -243,82 +238,53 @@ class _ConnectSheetState extends State<_ConnectSheet> {
     final url = _session.connecting ? _session.authUrl : null;
 
     return SingleChildScrollView(
-      padding: _padding,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(host.displayName, style: theme.textTheme.titleLarge),
-          // A prompt's chevron before where it goes, as Termul draws a
-          // command line.
-          Row(
-            children: [
-              ExcludeSemantics(
-                child: Text(
-                  '❯ ',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.primary,
-                  ),
+      child: TuiSheet(
+        title: 'Connect',
+        message: host.displayName,
+        detail: '${host.username}@${host.host}:${host.port}',
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (check != null)
+              _HostKeyPrompt(check: check, onAnswer: _rule)
+            else if (found != null) ...[
+              TmuxSessionList(
+                sessions: found,
+                taken: widget.taken,
+                onPick: _choose,
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TuiButton(
+                  label: 'Cancel',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: () => Navigator.of(context).pop(false),
                 ),
               ),
-              Flexible(
-                child: Text(
-                  '${host.username}@${host.host}:${host.port}',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          if (check != null)
-            _HostKeyPrompt(check: check, onAnswer: _rule)
-          else if (found != null) ...[
-            TmuxSessionList(
-              sessions: found,
-              taken: widget.taken,
-              onPick: _choose,
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TuiButton(
-                label: 'Cancel',
-                variant: TuiButtonVariant.ghost,
-                onPressed: () => Navigator.of(context).pop(false),
-              ),
-            ),
-          ] else if (error != null)
-            ConnectionError(
-              message: error,
-              // A tab brought back after its tmux session went: trying again
-              // finds the same, so it offers a new one.
-              retryLabel: _session.tmuxGone ? 'Start a new session' : null,
-              onRetry: () {
-                if (_session.tmuxGone) _session.startNewTmux();
-                unawaited(_connect());
-              },
-              onClose: () => Navigator.of(context).pop(false),
-            )
-          else if (url != null)
-            // Closed with a yes: the connect carries on, and the link opens
-            // beside the session's tab — see [connectInSheet].
-            AuthCheckPrompt(
-              url: url,
-              onOpen: () => Navigator.of(context).pop(true),
-            )
-          else
-            Row(
-              children: [
-                const SizedBox.square(
-                  dimension: 20,
-                  child: TuiSpinner(),
-                ),
-                const SizedBox(width: 16),
-                Text('Connecting…', style: theme.textTheme.bodyLarge),
-              ],
-            ),
-        ],
+            ] else if (error != null)
+              ConnectionError(
+                message: error,
+                // A tab brought back after its tmux session went: trying again
+                // finds the same, so it offers a new one.
+                retryLabel: _session.tmuxGone ? 'Start a new session' : null,
+                onRetry: () {
+                  if (_session.tmuxGone) _session.startNewTmux();
+                  unawaited(_connect());
+                },
+                onClose: () => Navigator.of(context).pop(false),
+              )
+            else if (url != null)
+              // Closed with a yes: the connect carries on, and the link opens
+              // beside the session's tab — see [connectInSheet].
+              AuthCheckPrompt(
+                url: url,
+                onOpen: () => Navigator.of(context).pop(true),
+              )
+            else
+              const TuiSheetLoading(),
+          ],
+        ),
       ),
     );
   }

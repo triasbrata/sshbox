@@ -1349,15 +1349,18 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
       for (final id in terminalKeys.keys)
         if (id != keyBarDivider && !items.any((item) => item.id == id)) id,
     ];
-    final picked = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
+    final picked = await showTuiSheet<String>(
+      context,
       builder: (context) {
         void pick(String id) => Navigator.of(context).pop(id);
-        return SafeArea(
+        return Flexible(
           child: ListView(
             shrinkWrap: true,
             children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 12),
+                child: TuiSectionLabel('Add key'),
+              ),
               if (off.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 13),

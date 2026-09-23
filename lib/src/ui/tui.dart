@@ -276,7 +276,7 @@ ThemeData jeanshTheme(TermulPalette p) {
       ),
       contentTextStyle: text.bodyMedium,
     ),
-    // TODO(termul): bottom sheet (gap 2).
+    // What termul's showTuiSheet leaves to the theme.
     bottomSheetTheme: BottomSheetThemeData(
       backgroundColor: p.panel,
       modalBackgroundColor: p.panel,

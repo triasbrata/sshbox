@@ -548,6 +548,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('SHA256:other'), findsOneWidget);
+    await tester.ensureVisible(find.bySemanticsLabel('Cancel'));
+    await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     expect(await trusted, isFalse);
