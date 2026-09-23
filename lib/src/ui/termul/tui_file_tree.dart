@@ -2,7 +2,10 @@
 // lib/components/tui_file_tree.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// A glyph button is a node of its own, named by its word, with the glyph
+// left out, so a screen reader, an e2e flow and a finder reach it by that
+// word.
 
 import 'package:flutter/material.dart';
 
@@ -490,22 +493,31 @@ class _GlyphBtn extends StatelessWidget {
 
     return TuiTooltip(
       message: label,
-      child: InkWell(
-        onTap: onPressed,
-        child: SizedBox(
-          width: 32,
-          height: 32,
-          child: Center(
-            child: Text(
-              mark,
-              style: TextStyle(
-                fontFamily: TermulFonts.mono,
-                fontSize: 13,
-                color: !enabled
-                    ? p.dim
-                    : selected
-                    ? p.accent
-                    : p.text,
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        button: true,
+        enabled: enabled,
+        label: label,
+        child: InkWell(
+          onTap: onPressed,
+          child: SizedBox(
+            width: 32,
+            height: 32,
+            child: Center(
+              child: ExcludeSemantics(
+                child: Text(
+                  mark,
+                  style: TextStyle(
+                    fontFamily: TermulFonts.mono,
+                    fontSize: 13,
+                    color: !enabled
+                        ? p.dim
+                        : selected
+                        ? p.accent
+                        : p.text,
+                  ),
+                ),
               ),
             ),
           ),

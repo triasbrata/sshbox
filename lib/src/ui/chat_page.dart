@@ -498,9 +498,16 @@ class _ChatPageState extends State<ChatPage> {
                 maxLines: 5,
                 keyboardType: TextInputType.multiline,
                 textCapitalization: TextCapitalization.sentences,
+                // termul's TuiInput look — its ❯ prompt in the accent — on
+                // a field that takes several lines and can be shut, which
+                // TuiInput does not.
                 decoration: InputDecoration(
                   isDense: true,
-                  border: const OutlineInputBorder(),
+                  prefixText: '❯ ',
+                  prefixStyle: TextStyle(
+                    fontFamily: TermulFonts.mono,
+                    color: TermulThemeData.of(context).palette.accent,
+                  ),
                   hintText: readOnly
                       ? 'Read-only: “${watching.name}” cannot be typed into '
                             'from here'
@@ -523,7 +530,7 @@ class _ChatPageState extends State<ChatPage> {
               onPressed: canSend && _input.text.trim().isNotEmpty
                   ? _send
                   : null,
-              icon: const Icon(Icons.arrow_upward),
+              icon: const Icon(Icons.send),
             ),
           ],
         ),

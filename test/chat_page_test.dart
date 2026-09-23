@@ -376,7 +376,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'why is nginx slow?');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await _settlePickUp(tester);
 
     // Started as a background session, in the files' root; how the message
@@ -419,7 +419,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'check the nginx log');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
 
     expect(
@@ -665,7 +665,7 @@ void main() {
     );
     await tester.enterText(find.byType(TextField), 'run it once more');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
     expect(find.text('Sending…'), findsOneWidget);
 
@@ -801,7 +801,7 @@ void main() {
     await _continue(tester, 'Zsh config fix');
     await tester.enterText(find.byType(TextField), 'check the nginx log');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
 
     shell.event({
@@ -871,7 +871,7 @@ void main() {
       await _continue(tester, 'Zsh config fix');
       await tester.enterText(find.byType(TextField), 'go on');
       await tester.pump();
-      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.tap(find.byIcon(Icons.send));
       await tester.pump();
       shell.event({
         'type': 'assistant',
@@ -1275,7 +1275,7 @@ void main() {
     );
     expect(
       tester
-          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.arrow_upward))
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.send))
           .onPressed,
       isNull,
     );
@@ -1315,7 +1315,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'and the lint?');
     await tester.pump();
-    await tester.tap(find.widgetWithIcon(IconButton, Icons.arrow_upward));
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.send));
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 100)),
     );
