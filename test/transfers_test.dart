@@ -345,7 +345,7 @@ void main() {
       await tester.pump();
       expect(picker.opened, ['content://downloads/notes.txt']);
 
-      await tester.tap(find.text('Clear finished'));
+      await tester.tap(find.text('CLEAR FINISHED'));
       await tester.pump();
       expect(find.text('No transfers yet'), findsOneWidget);
     });

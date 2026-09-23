@@ -223,8 +223,8 @@ void main() {
       // Up to the top of what is read, where the button is.
       await tester.drag(find.byType(ListView), const Offset(0, 5000));
       await tester.pump(const Duration(seconds: 2));
-      if (find.text('Load earlier').evaluate().isEmpty) break;
-      await tester.tap(find.text('Load earlier'));
+      if (find.text('LOAD EARLIER').evaluate().isEmpty) break;
+      await tester.tap(find.text('LOAD EARLIER'));
       await settle();
     }
     expect(find.text('line 1'), findsOneWidget);

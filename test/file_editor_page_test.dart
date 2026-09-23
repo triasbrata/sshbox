@@ -560,7 +560,7 @@ void main() {
       final browser = SudoFakeFileBrowser()..failReadWith = denied;
       await _pumpEditor(tester, browser);
 
-      await tester.tap(find.text('Open with sudo'));
+      await tester.tap(find.text('OPEN WITH SUDO'));
       await untilPrompted(tester);
       expect(find.bySemanticsLabel('sudo password'), findsOneWidget);
       await tester.enterText(passwordField, 'hunter2');
@@ -587,7 +587,7 @@ void main() {
         ..sudoPassword = null;
       await _pumpEditor(tester, browser);
 
-      await tester.tap(find.text('Open with sudo'));
+      await tester.tap(find.text('OPEN WITH SUDO'));
       await tester.pumpAndSettle();
 
       expect(find.bySemanticsLabel('sudo password'), findsNothing);
@@ -599,14 +599,14 @@ void main() {
       final browser = SudoFakeFileBrowser()..failReadWith = denied;
       await _pumpEditor(tester, browser);
 
-      await tester.tap(find.text('Open with sudo'));
+      await tester.tap(find.text('OPEN WITH SUDO'));
       await untilPrompted(tester);
       await tester.enterText(passwordField, 'wrong');
       await tester.tap(find.bySemanticsLabel('Continue'));
       await tester.pumpAndSettle();
       expect(find.text('sudo did not accept that password.'), findsOneWidget);
 
-      await tester.tap(find.text('Open with sudo'));
+      await tester.tap(find.text('OPEN WITH SUDO'));
       await untilPrompted(tester);
       await tester.enterText(passwordField, 'hunter2');
       await tester.tap(find.bySemanticsLabel('Continue'));
@@ -654,7 +654,7 @@ void main() {
       await _pumpEditor(tester, browser);
 
       expect(find.text('Could not open: permission denied.'), findsOneWidget);
-      expect(find.text('Open with sudo'), findsNothing);
+      expect(find.text('OPEN WITH SUDO'), findsNothing);
     });
   });
 
@@ -937,7 +937,7 @@ void main() {
         )
         ..sudoPassword = null;
       await _pumpEditor(tester, browser);
-      await tester.tap(find.text('Open with sudo'));
+      await tester.tap(find.text('OPEN WITH SUDO'));
       await tester.pumpAndSettle();
 
       await _download(tester);

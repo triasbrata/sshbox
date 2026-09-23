@@ -643,9 +643,11 @@ class _Message extends StatelessWidget {
             ),
             if (onRetry != null) ...[
               const SizedBox(height: 12),
-              OutlinedButton(
+              TuiButton(
+                label: 'Try again',
+                prefix: '↻',
+                variant: TuiButtonVariant.ghost,
                 onPressed: onRetry,
-                child: const Text('Try again'),
               ),
             ],
           ],

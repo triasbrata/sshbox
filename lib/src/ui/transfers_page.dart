@@ -27,9 +27,13 @@ class TransfersPage extends StatelessWidget {
           title: const Text('Transfers'),
           actions: [
             if (items.any((item) => item.state != TransferState.running))
-              TextButton(
-                onPressed: transfers.clearFinished,
-                child: const Text('Clear finished'),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: TermulTextAction(
+                  label: 'Clear finished',
+                  text: 'CLEAR FINISHED',
+                  onTap: transfers.clearFinished,
+                ),
               ),
           ],
         ),

@@ -139,9 +139,11 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
           if (_lines.isEmpty) return const SizedBox.shrink();
           return Center(
             child: more
-                ? TextButton(
+                ? TuiButton(
+                    label: 'Load earlier',
+                    prefix: '↑',
+                    variant: TuiButtonVariant.ghost,
                     onPressed: _loading ? null : _earlier,
-                    child: const Text('Load earlier'),
                   )
                 : Text('Start of the record', style: theme.textTheme.bodySmall),
           );

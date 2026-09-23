@@ -1541,10 +1541,10 @@ class _EditorError extends StatelessWidget {
             ),
             if (onSudo != null) ...[
               const SizedBox(height: 16),
-              FilledButton.tonalIcon(
+              TuiButton(
+                label: 'Open with sudo',
+                prefix: '#',
                 onPressed: onSudo,
-                icon: const Icon(Icons.admin_panel_settings_outlined),
-                label: const Text('Open with sudo'),
               ),
             ],
           ],

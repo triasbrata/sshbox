@@ -802,7 +802,6 @@ class _TabStripState extends State<TabStrip> {
     final target = await showDialog<String>(
       context: context,
       builder: (context) {
-        final p = TermulThemeData.of(context).palette;
         return TuiDialog(
           title: 'Tab group',
           message: 'Group ${names[id]} with',
@@ -820,20 +819,14 @@ class _TabStripState extends State<TabStrip> {
                 children: [
                   for (final slot in slots)
                     if (slot != id && slot != own) ...[
-                      InkWell(
+                      // termul's choice row.
+                      TuiSheetOption(
+                        label: slot is TabGroup
+                            ? slot.ids.map((id) => names[id]).join(' + ')
+                            : names[slot]!,
                         onTap: () => Navigator.pop(
                           context,
                           slot is TabGroup ? slot.ids.first : slot as String,
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Text(
-                            slot is TabGroup
-                                ? slot.ids.map((id) => names[id]).join(' + ')
-                                : names[slot]!,
-                            style: Theme.of(context).textTheme.bodyMedium!
-                                .copyWith(color: p.text),
-                          ),
                         ),
                       ),
                       const TuiDivider(),

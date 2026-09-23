@@ -11,6 +11,12 @@ import 'package:sshbox/src/ui/port_forwarding_page.dart';
 import 'tui_finders.dart';
 import 'package:sshbox/src/ui/tui.dart';
 
+/// termul's field labelled [label], its text box.
+Finder _field(String label) => find.descendant(
+  of: find.widgetWithText(TuiField, label.toUpperCase()),
+  matching: find.byType(TextField),
+);
+
 void main() {
   late HostRepository repository;
   late PortForwards forwards;
@@ -55,7 +61,7 @@ void main() {
 
   /// A new setting's editor, with the saved host picked.
   Future<void> addOne(WidgetTester tester) async {
-    await tester.tap(find.byTooltip('Add port forward'));
+    await tester.tap(find.bySemanticsLabel('Add port forward'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
@@ -63,12 +69,12 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  final tabletPort = find.widgetWithText(TextFormField, 'Tablet port');
-  final remotePort = find.widgetWithText(TextFormField, 'Remote port');
+  final tabletPort = _field('Tablet port');
+  final remotePort = _field('Remote port');
 
   /// What [field] holds.
   String textOf(WidgetTester tester, Finder field) =>
-      tester.widget<TextFormField>(field).controller!.text;
+      tester.widget<TextField>(field).controller!.text;
 
   // A phone in portrait, and a tablet.
   for (final width in [400.0, 1200.0]) {
@@ -79,7 +85,7 @@ void main() {
       await open(tester, width);
       expect(find.text('No port forwards yet'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('Add port forward'));
+      await tester.tap(find.bySemanticsLabel('Add port forward'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Save'));
       await tester.pump();
@@ -96,7 +102,7 @@ void main() {
       expect(find.textContaining('Use 1024 or above'), findsOneWidget);
 
       await tester.enterText(tabletPort, '5432');
-      await tester.tap(find.text('Add port'));
+      await tester.tap(find.bySemanticsLabel('Add port'));
       await tester.pumpAndSettle();
       await tester.enterText(tabletPort.last, '5432');
       await tester.tap(find.byTooltip('Save'));
@@ -127,7 +133,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Delete'));
       await tester.pumpAndSettle();
-      await tester.tap(find.bySemanticsLabel('Delete'));
+      await tester.tap(find.bySemanticsLabel('Delete').last);
       await tester.pumpAndSettle();
       expect(find.text('No port forwards yet'), findsOneWidget);
       expect(forwards.runs, isEmpty);
@@ -139,7 +145,7 @@ void main() {
     ) async {
       await open(tester, width);
       await addOne(tester);
-      await tester.tap(find.text('Remote → Tablet'));
+      await tester.tap(find.bySemanticsLabel('Remote → Tablet'));
       await tester.pumpAndSettle();
 
       await tester.enterText(remotePort, '80');
@@ -157,9 +163,9 @@ void main() {
         findsOneWidget,
       );
 
-      final listenOn = find.widgetWithText(TextFormField, 'Remote listens on');
+      final listenOn = _field('Remote listens on');
       expect(listenOn, findsNothing);
-      await tester.tap(find.text('Advanced'));
+      await tester.tap(find.bySemanticsLabel('Advanced'));
       await tester.pumpAndSettle();
       await tester.enterText(listenOn, '0.0.0.0');
       await tester.enterText(tabletPort, '9000');
@@ -191,7 +197,7 @@ void main() {
       expect(textOf(tester, remotePort), '8000');
       expect(textOf(tester, listenOn), '0.0.0.0');
       expect(
-        textOf(tester, find.widgetWithText(TextFormField, 'Tablet host')),
+        textOf(tester, _field('Tablet host')),
         '127.0.0.1',
       );
       expect(textOf(tester, tabletPort), '9000');
@@ -204,17 +210,17 @@ void main() {
     // enough to carry the host field and the first port past the list's
     // cache extent.
     await open(tester, 400, height: 480, withHost: false);
-    await tester.tap(find.byTooltip('Add port forward'));
+    await tester.tap(find.bySemanticsLabel('Add port forward'));
     await tester.pumpAndSettle();
     final page = find.byType(Scrollable).first;
     // The ports after the first get a number; the first stays blank.
     for (var i = 1; i < 5; i++) {
       await tester.scrollUntilVisible(
-        find.text('Add port'),
+        find.bySemanticsLabel('Add port'),
         200,
         scrollable: page,
       );
-      await tester.tap(find.text('Add port'));
+      await tester.tap(find.bySemanticsLabel('Add port'));
       await tester.pumpAndSettle();
       await tester.enterText(tabletPort.last, '${15000 + i}');
     }
@@ -241,12 +247,12 @@ void main() {
     await tester.tap(find.text('PostgreSQL 5432'));
     await tester.pump();
     // Opened after the chip, it holds the chip's port already.
-    await tester.tap(find.text('Advanced'));
+    await tester.tap(find.bySemanticsLabel('Advanced'));
     await tester.pumpAndSettle();
     expect(textOf(tester, tabletPort), '5432');
     expect(textOf(tester, remotePort), '5432');
     expect(
-      textOf(tester, find.widgetWithText(TextFormField, 'Remote host')),
+      textOf(tester, _field('Remote host')),
       'localhost',
     );
 
@@ -272,14 +278,14 @@ void main() {
 
     // The other way, Port is the host's and the far port the tablet's.
     await tester.enterText(remotePort, '7000');
-    await tester.tap(find.text('Remote → Tablet'));
+    await tester.tap(find.bySemanticsLabel('Remote → Tablet'));
     await tester.pumpAndSettle();
     expect(
-      textOf(tester, find.widgetWithText(TextFormField, 'Remote listens on')),
+      textOf(tester, _field('Remote listens on')),
       'localhost',
     );
     expect(
-      textOf(tester, find.widgetWithText(TextFormField, 'Tablet host')),
+      textOf(tester, _field('Tablet host')),
       '127.0.0.1',
     );
     expect(textOf(tester, remotePort), '6379');
@@ -294,7 +300,7 @@ void main() {
     await tester.tap(find.text('PostgreSQL 5432'));
     await tester.pump();
 
-    expect(tester.widget<TextFormField>(tabletPort).controller!.text, '5432');
+    expect(tester.widget<TextField>(tabletPort).controller!.text, '5432');
     expect(
       find.text(
         'Apps on this tablet open 127.0.0.1:5432 (PostgreSQL) to reach port '
@@ -313,7 +319,7 @@ void main() {
   testWidgets('New host… makes one in the host editor and comes back with it '
       'picked', (tester) async {
     await open(tester, 400);
-    await tester.tap(find.byTooltip('Add port forward'));
+    await tester.tap(find.bySemanticsLabel('Add port forward'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(TuiDropdown<String>));
     await tester.pumpAndSettle();
