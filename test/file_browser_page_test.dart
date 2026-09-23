@@ -48,9 +48,14 @@ Future<void> _rowAction(WidgetTester tester, String name, String action) async {
 
 /// Picks [path] from the menu behind the root's name.
 Future<void> _climbTo(WidgetTester tester, String path) async {
-  await tester.tap(find.byTooltip('Change root'));
-  await tester.pumpAndSettle();
+  await _openRootMenu(tester);
   await tester.tap(find.text(path));
+  await tester.pumpAndSettle();
+}
+
+/// Opens the menu behind the root's name, termul's root header.
+Future<void> _openRootMenu(WidgetTester tester) async {
+  await tester.tap(find.text(' ▾'));
   await tester.pumpAndSettle();
 }
 
@@ -95,9 +100,7 @@ void main() {
 
     expect(_row('.bashrc'), findsNothing);
 
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Show dotfiles'));
+    await tester.tap(find.byTooltip('Show dotfiles'));
     await tester.pumpAndSettle();
 
     expect(_row('.bashrc'), findsOneWidget);
@@ -114,16 +117,13 @@ void main() {
     // rather than replacing them.
     expect(_row('main.dart'), findsOneWidget);
     expect(_row('notes.txt'), findsOneWidget);
-    expect(find.byIcon(Icons.expand_more), findsOneWidget);
-    // Nested one level in: indented, with a guide line down from its folder.
+    // termul's open folder mark.
+    expect(find.text('▾'), findsOneWidget);
+    // Nested one level in: indented.
     expect(
       tester.getTopLeft(_row('main.dart')).dx,
       greaterThan(tester.getTopLeft(_row('notes.txt')).dx),
     );
-    expect(find.byType(VerticalDivider), findsOneWidget);
-    // Each file carries its type's icon, the way VS Code's theme marks it.
-    expect(find.byIcon(Icons.flutter_dash), findsOneWidget);
-    expect(find.byIcon(Icons.notes), findsOneWidget);
 
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
@@ -318,7 +318,7 @@ void main() {
     // The rest of the tree was fine, so it stays rather than turning into the
     // whole-page error.
     expect(_row('notes.txt'), findsOneWidget);
-    expect(find.byIcon(Icons.expand_more), findsNothing);
+    expect(find.text('▾'), findsNothing);
     await tester.pumpAndSettle();
   });
 
@@ -405,7 +405,8 @@ void main() {
       find.text('Could not list /root: permission denied.'),
       findsOneWidget,
     );
-    expect(find.bySemanticsLabel('Try again'), findsOneWidget);
+    // termul's own way to try again.
+    expect(find.text('retry'), findsOneWidget);
   });
 
   testWidgets('deleting asks first, then goes through', (tester) async {
@@ -467,20 +468,18 @@ void main() {
   testWidgets('hides search when the transport cannot do it', (tester) async {
     // The plain fake is not FileSearchCapable, so the button must not appear.
     await _pumpBrowser(tester, FakeFileBrowser());
-    await tester.tap(find.byTooltip('Filter by name'));
-    await tester.pumpAndSettle();
+    await _openRootMenu(tester);
 
-    expect(find.byTooltip('Search file contents'), findsNothing);
+    expect(find.text('Search file contents…'), findsNothing);
   });
 
   testWidgets('offers search when the transport can do it', (tester) async {
     // Same page, same fake data, one extra interface implemented — this is the
     // probe that keeps the capability honest rather than decorative.
     await _pumpBrowser(tester, SearchingFakeFileBrowser());
-    await tester.tap(find.byTooltip('Filter by name'));
-    await tester.pumpAndSettle();
+    await _openRootMenu(tester);
 
-    expect(find.byTooltip('Search file contents'), findsOneWidget);
+    expect(find.text('Search file contents…'), findsOneWidget);
   });
 
   testWidgets('closes the browser it was handed', (tester) async {
@@ -510,9 +509,8 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Filter by name'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Search file contents'));
+    await _openRootMenu(tester);
+    await tester.tap(find.text('Search file contents…'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.widgetWithText(TextField, 'Text to find'),
@@ -710,8 +708,7 @@ void main() {
     await _rowAction(tester, 'dev', 'Set as root');
 
     Future<void> pickSave() async {
-      await tester.tap(find.byTooltip('More'));
-      await tester.pumpAndSettle();
+      await _openRootMenu(tester);
       await tester.tap(find.text('Save root to host config'));
       await tester.pumpAndSettle();
     }
@@ -733,8 +730,7 @@ void main() {
   testWidgets('offers no config to save to without a host behind it',
       (tester) async {
     await _pumpBrowser(tester, FakeFileBrowser());
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
+    await _openRootMenu(tester);
 
     expect(find.text('Save root to host config'), findsNothing);
   });

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart' show FilePicker;
@@ -133,14 +135,6 @@ class FileBrowserPage extends StatefulWidget {
 }
 
 class _FileBrowserPageState extends State<FileBrowserPage> {
-  /// VS Code's rows are 22px, which a finger cannot hit reliably; this keeps
-  /// the density while staying a comfortable tap.
-  static const double _rowHeight = 32;
-
-  /// One level of nesting — also the width of the chevron column, so each
-  /// guide line lands under the chevron of the folder it belongs to.
-  static const double _indent = 16;
-
   /// Roots the tree hung from before this one, for the back gesture. Setting a
   /// folder as root is the one move here that replaces the view, so it is the
   /// one move back undoes.
@@ -160,10 +154,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// The row last tapped, drawn highlighted the way VS Code marks its
   /// selection.
   String? _selected;
-
-  /// Where the last press on a row went down. A long press reports no
-  /// position of its own, and the context menu opens under the finger.
-  Offset _pressedAt = Offset.zero;
 
   String? _error;
   bool _loading = true;
@@ -398,10 +388,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       // Traversable links were handled above, so what is left is a link whose
       // target could not be followed. Opening the editor on it would show
       // "it is no longer there", which is true but blames the wrong thing.
-      _say(
-        '${entry.name} is a link that points nowhere.',
-        TuiToastType.error,
-      );
+      _say('${entry.name} is a link that points nowhere.', TuiToastType.error);
       return;
     }
     await _openEditor(entry.path);
@@ -528,10 +515,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       }
     } catch (error) {
       if (mounted) {
-        _say(
-          'Could not update the host config: $error',
-          TuiToastType.error,
-        );
+        _say('Could not update the host config: $error', TuiToastType.error);
       }
     }
   }
@@ -845,9 +829,6 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// down.
   Future<void> _showContextMenu(RemoteEntry entry, Offset pressedAt) async {
     setState(() => _selected = entry.path);
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final at = overlay.globalToLocal(pressedAt);
     final terminal = widget.terminal;
     final isFolder = entry.isTraversable;
     // A file, or a link to one. A folder is not one thing to save or to copy.
@@ -856,26 +837,26 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         (entry.kind == RemoteEntryKind.symlink &&
             entry.targetIsDirectory == false);
 
-    PopupMenuItem<VoidCallback> item(String label, VoidCallback action) =>
-        PopupMenuItem(value: action, child: Text(label));
+    TuiMenuItem<VoidCallback> item(
+      String label,
+      VoidCallback action, {
+      bool destructive = false,
+    }) => menuAction(label, action, destructive: destructive);
 
-    final action = await showMenu<VoidCallback>(
-      context: context,
-      position: RelativeRect.fromRect(
-        at & Size.zero,
-        Offset.zero & overlay.size,
-      ),
-      items: [
+    final action = await showTuiMenu<VoidCallback>(
+      context,
+      at: pressedAt,
+      entries: [
         if (isFolder) ...[
           item('New file…', () => _promptNewFile(entry.path)),
           item('New folder…', () => _promptNewDirectory(entry.path)),
           item('Upload here…', () => _uploadInto(entry.path)),
           item('Set as root', () => _setRoot(entry.path)),
-          const PopupMenuDivider(),
+          const TuiMenuDivider(),
         ],
         if (isFile) ...[
           item('Download', () => _download(entry)),
-          const PopupMenuDivider(),
+          const TuiMenuDivider(),
         ],
         if (terminal != null) ...[
           if (isFolder)
@@ -897,9 +878,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           Clipboard.setData(ClipboardData(text: entry.path));
           _say('Path copied', TuiToastType.success);
         }),
-        const PopupMenuDivider(),
+        const TuiMenuDivider(),
         item('Rename…', () => _promptRename(entry)),
-        item('Delete', () => _confirmDelete(entry)),
+        item('Delete', () => _confirmDelete(entry), destructive: true),
       ],
     );
     // Run once the menu is gone, so a dialog the action opens is not stacked
@@ -910,321 +891,138 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   @override
   Widget build(BuildContext context) {
     final root = _root;
+    final busy = _busy;
     return PopScope(
       canPop: _history.isEmpty && !_filtering,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _handleBack();
       },
       child: Scaffold(
-        appBar: _buildAppBar(),
         body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (root != null) _buildRootHeader(root),
             if (_transfer case final transfer?)
               TransferBar(transfer, label: _transferLabel),
-            Expanded(child: _buildBody()),
-          ],
-        ),
-      ),
-    );
-  }
-
-  PreferredSizeWidget _buildAppBar() {
-    final theme = Theme.of(context);
-    final canSearch = widget.browser is FileSearchCapable;
-    final onClose = widget.onClose;
-
-    return AppBar(
-      toolbarHeight: 44,
-      titleSpacing: onClose == null ? null : 0,
-      // Inside a drawer there is no route of our own to pop, and the implied
-      // button would pop the page behind it instead.
-      automaticallyImplyLeading: onClose == null,
-      leading: onClose == null
-          ? null
-          : IconButton(
-              tooltip: 'Close files',
-              onPressed: onClose,
-              icon: const Icon(Icons.close, size: 20),
-            ),
-      title: _filtering
-          ? TextField(
-              controller: _filterController,
-              autofocus: true,
-              style: theme.textTheme.bodyMedium,
-              decoration: const InputDecoration(
-                hintText: 'Filter the tree',
-                border: InputBorder.none,
-              ),
-              onChanged: (_) => setState(() {}),
-            )
-          // VS Code's view title, with the host after it: several sessions
-          // can each have a tree open, and this says whose this is.
-          : Text.rich(
-              TextSpan(
-                text: 'EXPLORER',
-                children: [
-                  TextSpan(
-                    text: '   ${widget.title}',
-                    style: TextStyle(
-                      color: theme.colorScheme.onSurfaceVariant,
-                      letterSpacing: 0,
-                    ),
-                  ),
-                ],
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelLarge?.copyWith(letterSpacing: 1.2),
-            ),
-      // A transfer has a bar of its own, under the root's header.
-      bottom: (_loading || _busy) && _transfer == null
-          ? const PreferredSize(
-              preferredSize: Size.fromHeight(2),
-              child: TuiProgressBar(height: 2),
-            )
-          : null,
-      actions: [
-        if (_filtering && canSearch)
-          IconButton(
-            tooltip: 'Search file contents',
-            onPressed: _openSearch,
-            icon: const Icon(Icons.travel_explore_outlined, size: 20),
-          ),
-        IconButton(
-          tooltip: _filtering ? 'Clear filter' : 'Filter by name',
-          onPressed: () {
-            if (_filtering) {
-              _clearFilter();
-            } else {
-              setState(() => _filtering = true);
-            }
-          },
-          icon: Icon(_filtering ? Icons.close : Icons.search, size: 20),
-        ),
-        PopupMenuButton<String>(
-          tooltip: 'More',
-          icon: const Icon(Icons.more_horiz, size: 20),
-          onSelected: (choice) {
-            switch (choice) {
-              case 'hidden':
-                showDotfiles.choose(!_showHidden);
-              case 'saveRoot':
-                _confirmSaveRoot();
-              case 'follow':
-                final link = widget.terminal;
-                if (link != null) setState(() => link.follow = !link.follow);
-            }
-          },
-          itemBuilder: (context) => [
-            PopupMenuItem(
-              value: 'hidden',
-              child: Text(_showHidden ? 'Hide dotfiles' : 'Show dotfiles'),
-            ),
-            if (widget.onSaveRoot != null)
-              PopupMenuItem(
-                value: 'saveRoot',
-                enabled: _root != null,
-                child: const Text('Save root to host config'),
-              ),
-            if (widget.terminal case final link?) ...[
-              const PopupMenuDivider(),
-              CheckedPopupMenuItem(
-                value: 'follow',
-                checked: link.follow,
-                child: const Text('Follow in terminal'),
-              ),
-            ],
-          ],
-        ),
-      ],
-    );
-  }
-
-  /// The root as VS Code heads a workspace folder: its name in capitals, and
-  /// beside it the actions that act on the whole tree.
-  Widget _buildRootHeader(String root) {
-    final theme = Theme.of(context);
-    final isTop = root == '/';
-
-    Widget action(String tooltip, IconData icon, VoidCallback onPressed) =>
-        IconButton(
-          tooltip: tooltip,
-          onPressed: _busy ? null : onPressed,
-          icon: Icon(icon, size: 18),
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-        );
-
-    return Material(
-      color: theme.colorScheme.surfaceContainerHigh,
-      child: SizedBox(
-        height: 36,
-        child: Row(
-          children: [
             Expanded(
-              // The name is also the way back up: it lists the folders above
-              // the root, any of which the tree can be hung from instead.
-              child: PopupMenuButton<String>(
-                tooltip: 'Change root',
-                enabled: !isTop && !_busy,
-                onSelected: _setRoot,
-                itemBuilder: (_) => [
-                  for (final crumb in RemotePath.crumbs(root).reversed.skip(1))
-                    PopupMenuItem(value: crumb.path, child: Text(crumb.path)),
-                ],
-                child: Padding(
-                  padding: const EdgeInsetsDirectional.only(start: 12),
-                  child: Row(
-                    children: [
-                      Flexible(
-                        child: Text(
-                          RemotePath.basename(root).toUpperCase(),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.labelLarge?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.6,
-                          ),
-                        ),
-                      ),
-                      if (!isTop) const Icon(Icons.arrow_drop_down, size: 18),
-                    ],
-                  ),
+              // termul's list takes no controller of its own, so the drawer's
+              // remembered offset reaches it as the primary one, on every
+              // platform.
+              child: PrimaryScrollController(
+                controller: _scroll,
+                automaticallyInheritForPlatforms: TargetPlatform.values.toSet(),
+                child: TuiFileTree(
+                  // VS Code's view title, with the host after it: several
+                  // sessions can each have a tree open, and this says whose
+                  // this is.
+                  title: widget.title,
+                  rootLabel: root == null ? null : _rootLabel(root),
+                  nodes: [for (final row in _rows()) _node(row)],
+                  selectedId: _selected,
+                  filtering: _filtering,
+                  filterController: _filterController,
+                  onFilterChanged: (_) => setState(() {}),
+                  onToggleFilter: () {
+                    if (_filtering) {
+                      _clearFilter();
+                    } else {
+                      setState(() => _filtering = true);
+                    }
+                  },
+                  showDotfiles: _showHidden,
+                  onToggleDotfiles: () => showDotfiles.choose(!_showHidden),
+                  loading: _loading || busy,
+                  errorMessage: _error,
+                  emptyMessage: _emptyMessage(),
+                  onSelect: busy ? null : _select,
+                  onContextMenu: busy
+                      ? null
+                      : (node, at) => _showContextMenu(_entryOf(node), at),
+                  onRootPressed: root == null || busy
+                      ? null
+                      : () => _rootMenu(root),
+                  onNewFile: root == null ? null : () => _promptNewFile(root),
+                  onNewFolder: root == null
+                      ? null
+                      : () => _promptNewDirectory(root),
+                  onUpload: root == null ? null : () => _uploadInto(root),
+                  onRefresh: _refresh,
+                  onCollapseAll: _collapseAll,
+                  onClose: widget.onClose,
                 ),
               ),
             ),
-            action('New file', Icons.note_add_outlined, () {
-              _promptNewFile(root);
-            }),
-            action('New folder', Icons.create_new_folder_outlined, () {
-              _promptNewDirectory(root);
-            }),
-            action('Upload here', Icons.upload_file_outlined, () {
-              _uploadInto(root);
-            }),
-            action('Refresh', Icons.refresh, _refresh),
-            action('Collapse all', Icons.unfold_less, _collapseAll),
-            const SizedBox(width: 4),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildBody() {
-    final error = _error;
-    if (error != null) {
-      return _BrowserMessage(
-        icon: Icons.folder_off_outlined,
-        message: error,
-        onRetry: _refresh,
-      );
-    }
+  /// The root's name as VS Code heads a workspace folder, in capitals.
+  String _rootLabel(String root) =>
+      root == '/' ? '/' : RemotePath.basename(root);
 
-    final listing = _listings[_root];
-    if (_loading && listing == null) {
-      return const Center(child: TuiSpinner());
-    }
-
-    final rows = _rows();
-    if (rows.isEmpty) {
-      final filtered = _filterController.text.trim().isNotEmpty;
-      final hiddenOnly = (listing?.isNotEmpty ?? false) && !_showHidden;
-      return _BrowserMessage(
-        icon: filtered ? Icons.search_off : Icons.inbox_outlined,
-        message: filtered
-            ? 'Nothing here matches that.'
-            : hiddenOnly
-            ? 'Only dotfiles here. Show them from the menu.'
-            : 'This folder is empty.',
-      );
-    }
-
-    return RefreshIndicator(
-      onRefresh: _refresh,
-      child: ListView.builder(
-        controller: _scroll,
-        // Always scrollable so pull-to-refresh works on a short listing too.
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        itemExtent: _rowHeight,
-        itemCount: rows.length,
-        itemBuilder: (context, index) => _buildRow(rows[index]),
-      ),
-    );
+  String _emptyMessage() {
+    final filtered = _filterController.text.trim().isNotEmpty;
+    final hiddenOnly = (_listings[_root]?.isNotEmpty ?? false) && !_showHidden;
+    return filtered
+        ? 'Nothing here matches that.'
+        : hiddenOnly
+        ? 'Only dotfiles here. Show them with the dotfiles toggle.'
+        : 'This folder is empty.';
   }
 
-  Widget _buildRow(_Row row) {
-    final theme = Theme.of(context);
+  /// Every entry the tree shows, by its path, for a row termul hands back.
+  final _shown = <String, RemoteEntry>{};
+
+  RemoteEntry _entryOf(TuiFileNode node) => _shown[node.id]!;
+
+  TuiFileNode _node(_Row row) {
     final entry = row.entry;
-    final dim = theme.colorScheme.onSurfaceVariant;
-
-    // One column per level: a folder's chevron, or a file's icon in the same
-    // place, so every name at a level starts at the same x.
-    final Widget lead;
-    if (!entry.isTraversable) {
-      final (icon, color) = _fileIcon(entry);
-      lead = Icon(icon, size: 16, color: color ?? dim);
-    } else if (_loadingFolders.contains(entry.path)) {
-      lead = const Center(
-        child: SizedBox.square(
-          dimension: 12,
-          child: TuiSpinner(),
-        ),
-      );
-    } else {
-      final isOpen = _expanded.contains(entry.path);
-      lead = Icon(isOpen ? Icons.expand_more : Icons.chevron_right, size: 18);
-    }
-
-    return Ink(
-      key: ValueKey(entry.path),
-      color: entry.path == _selected
-          ? theme.colorScheme.primary.withValues(alpha: 0.16)
-          : null,
-      child: InkWell(
-        onTap: _busy ? null : () => _openEntry(entry),
-        onTapDown: _busy
-            ? null
-            : (details) => _pressedAt = details.globalPosition,
-        onLongPress: _busy ? null : () => _showContextMenu(entry, _pressedAt),
-        onSecondaryTapDown: _busy
-            ? null
-            : (details) => _showContextMenu(entry, details.globalPosition),
-        child: Row(
-          children: [
-            const SizedBox(width: 8),
-            // Indent guides: a line down each open folder above this row,
-            // under that folder's chevron.
-            for (var level = 0; level < row.depth; level++)
-              VerticalDivider(
-                width: _indent,
-                thickness: 1,
-                color: theme.colorScheme.outlineVariant,
-              ),
-            SizedBox(
-              width: _indent,
-              child: Center(child: lead),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                entry.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyMedium,
-              ),
-            ),
-            if (entry.kind == RemoteEntryKind.symlink)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Icon(Icons.link, size: 14, color: dim),
-              ),
-          ],
-        ),
-      ),
+    _shown[entry.path] = entry;
+    return TuiFileNode(
+      id: entry.path,
+      name: entry.name,
+      depth: row.depth,
+      // A link to a folder opens as one; a link to nothing is a link.
+      kind: entry.isTraversable
+          ? TuiFileKind.folder
+          : entry.kind == RemoteEntryKind.symlink
+          ? TuiFileKind.symlink
+          : TuiFileKind.file,
+      expanded: _expanded.contains(entry.path),
+      loading: _loadingFolders.contains(entry.path),
     );
+  }
+
+  void _select(TuiFileNode node) => _openEntry(_entryOf(node));
+
+  /// The root's own menu, what termul's root header opens: the folders above
+  /// it, any of which the tree can be hung from instead, and what acts on
+  /// the whole tree.
+  Future<void> _rootMenu(String root) async {
+    final terminal = widget.terminal;
+    final canSearch = widget.browser is FileSearchCapable;
+    final header = context.findRenderObject()! as RenderBox;
+    final action = await showTuiMenu<VoidCallback>(
+      context,
+      at: header.localToGlobal(const Offset(12, 72)),
+      entries: [
+        for (final crumb in RemotePath.crumbs(root).reversed.skip(1))
+          menuAction(crumb.path, () => _setRoot(crumb.path)),
+        if (root != '/') const TuiMenuDivider(),
+        if (canSearch)
+          menuAction('Search file contents…', () => unawaited(_openSearch())),
+        if (widget.onSaveRoot != null)
+          menuAction('Save root to host config', _confirmSaveRoot),
+        if (terminal != null)
+          menuAction(
+            'Follow in terminal',
+            () => setState(() => terminal.follow = !terminal.follow),
+            checked: terminal.follow,
+          ),
+      ],
+    );
+    action?.call();
   }
 }
 
@@ -1295,107 +1093,6 @@ class _NamePromptState extends State<_NamePrompt> {
             return null;
           },
           onSubmitted: (_) => _submit(),
-        ),
-      ),
-    );
-  }
-}
-
-/// File-type icons in the colours VS Code's default theme gives them, by
-/// extension.
-///
-/// ponytail: Material glyphs stand in for the real icon theme — a few dozen
-/// types, and most languages share the generic code glyph. Bundle an icon
-/// font (vscode-icons, Seti) if per-language glyphs are wanted.
-final Map<String, (IconData, Color)> _fileIcons = {
-  for (final (extensions, icon, color) in const [
-    (['dart'], Icons.flutter_dash, Color(0xFF40C4FF)),
-    (['js', 'mjs', 'cjs', 'jsx'], Icons.javascript, Color(0xFFCBCB41)),
-    (['ts', 'tsx', 'mts'], Icons.javascript, Color(0xFF519ABA)),
-    (['html', 'htm'], Icons.html, Color(0xFFE37933)),
-    (['css', 'scss', 'sass', 'less'], Icons.css, Color(0xFF519ABA)),
-    (['php'], Icons.php, Color(0xFFA074C4)),
-    (['json', 'jsonc'], Icons.data_object, Color(0xFFCBCB41)),
-    (
-      ['yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'env', 'properties'],
-      Icons.settings_outlined,
-      Color(0xFFA074C4),
-    ),
-    (['md', 'markdown', 'rst'], Icons.article_outlined, Color(0xFF519ABA)),
-    (['txt', 'log'], Icons.notes, Color(0xFF9DA5B4)),
-    (['sh', 'bash', 'zsh', 'fish'], Icons.terminal, Color(0xFF8DC149)),
-    (
-      [
-        'py', 'go', 'rs', 'rb', 'java', 'kt', 'kts', 'swift', //
-        'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'lua', 'sql', 'gradle',
-      ],
-      Icons.code,
-      Color(0xFF519ABA),
-    ),
-    (
-      ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'],
-      Icons.image_outlined,
-      Color(0xFFA074C4),
-    ),
-    (
-      ['zip', 'tar', 'gz', 'tgz', 'xz', 'bz2', '7z', 'rar', 'deb', 'apk'],
-      Icons.folder_zip_outlined,
-      Color(0xFFE37933),
-    ),
-    (['lock'], Icons.lock_outline, Color(0xFF9DA5B4)),
-  ])
-    for (final extension in extensions) extension: (icon, color),
-};
-
-/// The icon for anything that is not a folder. Null colour means the muted
-/// default, for types the table does not know. A link to a file gets its
-/// target's icon — the row marks it as a link on its other end.
-(IconData, Color?) _fileIcon(RemoteEntry entry) {
-  final broken =
-      entry.kind == RemoteEntryKind.symlink && entry.targetIsDirectory == null;
-  if (broken) return (Icons.link_off, null);
-  if (entry.kind == RemoteEntryKind.other) return (Icons.help_outline, null);
-  final dot = entry.name.lastIndexOf('.');
-  final extension = dot < 0 ? '' : entry.name.substring(dot + 1).toLowerCase();
-  return _fileIcons[extension] ?? (Icons.insert_drive_file_outlined, null);
-}
-
-class _BrowserMessage extends StatelessWidget {
-  const _BrowserMessage({
-    required this.icon,
-    required this.message,
-    this.onRetry,
-  });
-
-  final IconData icon;
-  final String message;
-  final VoidCallback? onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 40, color: theme.colorScheme.onSurfaceVariant),
-            const SizedBox(height: 16),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium,
-            ),
-            if (onRetry != null) ...[
-              const SizedBox(height: 20),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Try again'),
-              ),
-            ],
-          ],
         ),
       ),
     );

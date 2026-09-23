@@ -272,9 +272,7 @@ void main() {
 
     await _tapBar(tester, 'Browse files');
     expect(treeRow('.bashrc'), findsNothing);
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Show dotfiles'));
+    await tester.tap(find.byTooltip('Show dotfiles'));
     await tester.pumpAndSettle();
     expect(treeRow('.bashrc'), findsOneWidget);
 
