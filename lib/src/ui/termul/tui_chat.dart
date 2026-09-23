@@ -2,7 +2,10 @@
 // lib/components/tui_chat.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
 
 import 'package:flutter/material.dart';
 
@@ -654,6 +657,7 @@ class _IconGlyph extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
     return Semantics(
+      container: true,
       button: true,
       label: label,
       child: InkWell(

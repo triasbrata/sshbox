@@ -2,7 +2,10 @@
 // lib/components/tui_magic_key.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -489,6 +492,7 @@ class _TuiMagicKeyState extends State<TuiMagicKey> {
               width: _size,
               height: _size,
               child: Semantics(
+                container: true,
                 label: _docked ? 'Show Enter key' : 'Send Enter',
                 button: true,
                 child: GestureDetector(
@@ -596,14 +600,16 @@ class _Button extends StatelessWidget {
         alignment: tucked == null
             ? Alignment.center
             : Alignment(tucked ? 0.8 : -0.8, 0),
-        child: Text(
-          glyph,
-          style: TextStyle(
-            fontFamily: TermulFonts.mono,
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-            color: fg,
-            height: 1,
+        child: ExcludeSemantics(
+          child: Text(
+            glyph,
+            style: TextStyle(
+              fontFamily: TermulFonts.mono,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: fg,
+              height: 1,
+            ),
           ),
         ),
       ),

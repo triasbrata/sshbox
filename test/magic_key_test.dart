@@ -160,21 +160,26 @@ void main() {
       SharedPreferences.setMockInitialValues({});
     });
 
-    Future<void> pumpKey(WidgetTester tester) => tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Stack(
-                children: [
-                  Positioned.fill(
-                    child: MagicKey(terminal: Terminal(), onEmit: sent.add),
-                  ),
-                ],
-              ),
+    Future<void> pumpKey(WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Stack(
+              children: [
+                Positioned.fill(
+                  child: MagicKey(terminal: Terminal(), onEmit: sent.add),
+                ),
+              ],
             ),
           ),
-        );
+        ),
+      );
+      // Its place is read before termul's key is put there.
+      await tester.pump();
+    }
 
-    final button = find.byIcon(Icons.keyboard_return);
+    // termul's button.
+    final button = find.byKey(const ValueKey('tui-magic-key-button'));
 
     testWidgets('a tap sends Enter', (tester) async {
       await pumpKey(tester);
@@ -296,12 +301,17 @@ void main() {
       expect(sent, ['\x1b[A']);
     });
 
-    final box = find.byKey(const ValueKey('magic-key-button'));
+    final box = find.byKey(const ValueKey('tui-magic-key-button'));
 
     /// The label on the petal lit up as aimed at, or null when none is.
     String? aimed(WidgetTester tester) {
+      // termul's aimed petal: a circle with a border twice as thick.
       final lit = find.byWidgetPredicate(
-        (w) => w is Material && w.elevation == 8,
+        (w) =>
+            w is DecoratedBox &&
+            w.decoration is BoxDecoration &&
+            (w.decoration as BoxDecoration).shape == BoxShape.circle &&
+            (w.decoration as BoxDecoration).border?.top.width == 2,
       );
       final label = find.descendant(of: lit, matching: find.byType(Text));
       return label.evaluate().isEmpty ? null : tester.widget<Text>(label).data;
@@ -427,9 +437,12 @@ void main() {
       final screen = tester.getRect(find.byType(MagicKey));
 
       final gesture = await hold(tester);
+      // Every petal's label, leaving out termul's own glyph on the button.
       final labels = find.descendant(
         of: find.byType(MagicKey),
-        matching: find.byType(Text),
+        matching: find.byWidgetPredicate(
+          (w) => w is Text && w.data != '◎',
+        ),
       );
       final count = magicKeys.length +
           magicSubKeys.values.expand((keys) => keys).length;
@@ -519,7 +532,7 @@ void main() {
 
       await tester.pump(const Duration(seconds: 3));
       await tester.pumpAndSettle();
-      expect(opacity(), moreOrLessEquals(0.6));
+      expect(opacity(), moreOrLessEquals(0.55));
 
       final gesture = await tester.startGesture(tester.getCenter(button));
       await tester.pump();

@@ -3,6 +3,10 @@
 // LICENSE beside this file.
 //
 // Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
+//
 // showTuiGoToLineDialog no longer disposes its field's controller as soon
 // as showDialog's future completes: that is while the dialog is still
 // animating out, and its TextField, rebuilt for the animation, threw "A
@@ -102,6 +106,7 @@ class TuiFindBar extends StatelessWidget {
     }) {
       final enabled = onPressed != null;
       return Semantics(
+        container: true,
         button: true,
         enabled: enabled,
         label: label,
@@ -112,12 +117,14 @@ class TuiFindBar extends StatelessWidget {
             height: 36,
             alignment: Alignment.center,
             color: selected ? p.selection : Colors.transparent,
-            child: Text(
-              glyph,
-              style: TextStyle(
-                fontFamily: TermulFonts.mono,
-                fontSize: 14,
-                color: enabled ? (selected ? p.accent : p.text) : p.dim,
+            child: ExcludeSemantics(
+              child: Text(
+                glyph,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 14,
+                  color: enabled ? (selected ? p.accent : p.text) : p.dim,
+                ),
               ),
             ),
           ),

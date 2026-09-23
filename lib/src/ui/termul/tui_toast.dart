@@ -3,6 +3,10 @@
 // LICENSE beside this file.
 //
 // Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
+//
 // TuiToastHost takes an optional [controller], so a toast can be shown
 // from a context with no host above it — a message from no page, or a page
 // tested alone — and an [alignment] and [margin], so a host can sit low,
@@ -572,12 +576,17 @@ class _ToastIconButton extends StatelessWidget {
     // No Tooltip: toast host sits in MaterialApp.builder, above the
     // navigator Overlay Tooltips need.
     return Semantics(
+      container: true,
       button: true,
       label: tooltip ?? 'Close',
       child: InkWell(
         onTap: onPressed,
         hoverColor: p.selection,
-        child: SizedBox(width: 36, height: 36, child: Center(child: child)),
+        child: SizedBox(
+          width: 36,
+          height: 36,
+          child: Center(child: ExcludeSemantics(child: child)),
+        ),
       ),
     );
   }

@@ -2,7 +2,10 @@
 // lib/components/tui_dropdown.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
 
 import 'package:flutter/material.dart';
 
@@ -108,6 +111,7 @@ class TuiDropdown<T> extends StatelessWidget {
         : TuiTextTone.normal;
 
     return Semantics(
+      container: true,
       button: true,
       enabled: active,
       label: label,

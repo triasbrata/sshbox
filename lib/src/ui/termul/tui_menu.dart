@@ -2,7 +2,10 @@
 // lib/components/tui_menu.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -222,6 +225,7 @@ class TuiMenuButton<T> extends StatelessWidget {
     return Builder(
       builder: (buttonContext) {
         return Semantics(
+          container: true,
           button: true,
           enabled: enabled,
           label: tooltip,
@@ -241,13 +245,15 @@ class TuiMenuButton<T> extends StatelessWidget {
               width: 36,
               height: 36,
               child: Center(
-                child: Text(
-                  icon,
-                  style: TextStyle(
-                    fontFamily: TermulFonts.mono,
-                    fontSize: 16,
-                    height: 1,
-                    color: enabled ? p.text : p.dim,
+                child: ExcludeSemantics(
+                  child: Text(
+                    icon,
+                    style: TextStyle(
+                      fontFamily: TermulFonts.mono,
+                      fontSize: 16,
+                      height: 1,
+                      color: enabled ? p.text : p.dim,
+                    ),
                   ),
                 ),
               ),

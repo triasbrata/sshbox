@@ -2,7 +2,10 @@
 // lib/components/tui_slider.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// A control's Semantics is its own node (container: true), so its word is
+// not merged into whatever is around it: a screen reader, an e2e flow and a
+// finder can each reach it by that word.
 
 import 'package:flutter/material.dart';
 
@@ -386,6 +389,7 @@ class _StepButtonState extends State<_StepButton> {
     final fg = widget.enabled ? p.text : p.dim;
 
     return Semantics(
+      container: true,
       button: true,
       enabled: widget.enabled,
       label: widget.semanticLabel,
