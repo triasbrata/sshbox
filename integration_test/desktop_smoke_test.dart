@@ -25,7 +25,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show
-        DropdownButton,
         InkWell,
         PopupMenuDivider,
         SimpleDialogOption,
@@ -891,20 +890,20 @@ touch '${done.path}'
       // already; on a machine with others it is picked from the list.
       final name = repo.path.split('/').last;
       bool ours(String? root) => root != null && root.endsWith('/$name');
-      final picker = find.byType(DropdownButton<String>);
-      DropdownButton<String> shown() => tester.widget(picker);
+      final picker = find.byType(TuiDropdown<String>);
+      TuiDropdown<String> shown() => tester.widget(picker.first);
       await _until(
         tester,
         () =>
             picker.evaluate().isNotEmpty &&
-            shown().items!.any((item) => ours(item.value)),
+            shown().options.any((item) => ours(item.value)),
         "the Git panel to find this test's repository",
       );
       if (!ours(shown().value)) {
         // Picked through the picker's own onChanged, which is what choosing
         // it from the list calls: this test is of the diff, and a long list
         // in a small menu is its own fight.
-        final root = shown().items!.map((item) => item.value).firstWhere(ours);
+        final root = shown().options.map((item) => item.value).firstWhere(ours);
         shown().onChanged!(root);
         await _until(
           tester,
