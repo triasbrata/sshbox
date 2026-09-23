@@ -35,6 +35,12 @@ bool _canSave(WidgetTester tester) => tester
         .onPressed !=
     null;
 
+/// A termul control by the word it gives a screen reader, which merges into
+/// the bar around it rather than standing as a node of its own.
+Finder _labelled(String label) => find.byWidgetPredicate(
+  (widget) => widget is Semantics && widget.properties.label == label,
+);
+
 CodeLineEditingController _editor(WidgetTester tester) =>
     tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!;
 
@@ -287,18 +293,18 @@ void main() {
       await untilShown(tester, '1/2');
       expect(find.text('1/2'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('Next match'));
+      await tester.tap(_labelled('Next match'));
       await untilShown(tester, '2/2');
       expect(find.text('2/2'), findsOneWidget);
       expect(_editor(tester).selection.extentIndex, 1);
 
-      await tester.tap(find.byTooltip('Replace…'));
+      await tester.tap(_labelled('Replace'));
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextField, 'Replace with'),
         'row',
       );
-      await tester.tap(find.text('Replace all'));
+      await tester.tap(find.text('All'));
       await tester.pumpAndSettle();
       expect(_editor(tester).text, 'first row\nsecond row\n');
     });
@@ -312,7 +318,7 @@ void main() {
       await untilShown(tester, 'No results');
       expect(find.text('No results'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('Close find'));
+      await tester.tap(_labelled('Close find'));
       await tester.pumpAndSettle();
       expect(find.widgetWithText(TextField, 'Find'), findsNothing);
     });
@@ -332,7 +338,7 @@ void main() {
       ),
       '2',
     );
-    await tester.tap(find.bySemanticsLabel('Go'));
+    await tester.tap(find.bySemanticsLabel('go'));
     await tester.pumpAndSettle();
 
     expect(_editor(tester).selection.extentIndex, 1);
@@ -680,7 +686,7 @@ void main() {
     expect(find.text(banner), findsOneWidget);
     expect(text(), 'first line\nsecond line\n');
 
-    await tester.tap(find.text('Restore'));
+    await tester.tap(find.bySemanticsLabel('Restore'));
     await tester.pumpAndSettle();
     expect(find.text(banner), findsNothing);
     expect(text(), 'draft\n');
@@ -871,7 +877,7 @@ void main() {
 
       expect(find.byType(Markdown), findsOneWidget);
       await expectOnMenu();
-      await tester.tap(find.byTooltip('Show source'));
+      await tester.tap(find.bySemanticsLabel('source'));
       await tester.pumpAndSettle();
       expect(find.byType(Markdown), findsNothing);
       await expectOnMenu();
@@ -970,16 +976,21 @@ void main() {
       return browser;
     }
 
+    // termul's Source / Preview switch in the file's header.
     Future<void> toggle(WidgetTester tester, String tooltip) async {
-      await tester.tap(find.byTooltip(tooltip));
+      await tester.tap(
+        find.bySemanticsLabel(
+          tooltip == 'Show source' ? 'source' : 'preview',
+        ),
+      );
       await tester.pumpAndSettle();
     }
 
     testWidgets('only a Markdown file has a preview, and opens in it',
         (tester) async {
       await _pumpEditor(tester, FakeFileBrowser());
-      expect(find.byTooltip('Show preview'), findsNothing);
-      expect(find.byTooltip('Show source'), findsNothing);
+      expect(find.bySemanticsLabel('preview'), findsNothing);
+      expect(find.bySemanticsLabel('source'), findsNothing);
       expect(find.byType(Markdown), findsNothing);
 
       await tester.pumpWidget(const SizedBox());
@@ -1381,7 +1392,7 @@ After it.
         findsNothing,
       );
       expect(find.byTooltip('Find'), findsNothing);
-      expect(find.byTooltip('Show preview'), findsNothing);
+      expect(find.bySemanticsLabel('preview'), findsNothing);
       // What it is and how big, out of the way in the title.
       expect(find.text('shot.png'), findsOneWidget);
       expect(find.text('1 × 1 · ${png.length} B'), findsOneWidget);

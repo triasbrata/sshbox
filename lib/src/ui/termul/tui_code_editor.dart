@@ -2,7 +2,12 @@
 // lib/components/tui_code_editor.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// showTuiGoToLineDialog no longer disposes its field's controller as soon
+// as showDialog's future completes: that is while the dialog is still
+// animating out, and its TextField, rebuilt for the animation, threw "A
+// TextEditingController was used after being disposed". The controller
+// holds nothing but its text and goes with the garbage.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -265,7 +270,6 @@ Future<int?> showTuiGoToLineDialog(
       );
     },
   );
-  controller.dispose();
   if (result == null) return null;
   if (max != null && result > max) return max;
   if (result < 1) return 1;

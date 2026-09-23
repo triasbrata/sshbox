@@ -477,16 +477,11 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   Future<void> _goToLine() async {
-    final answer = await showDialog<String>(
-      context: context,
-      builder: (_) => _TextPrompt(
-        title: 'Go to line',
-        label: 'Line, 1 to ${_controller.lineCount}',
-        action: 'Go',
-        number: true,
-      ),
+    final line = await showTuiGoToLineDialog(
+      context,
+      current: _controller.selection.baseIndex + 1,
+      max: _controller.lineCount,
     );
-    final line = int.tryParse(answer?.trim() ?? '');
     if (line != null && mounted) _jumpTo(line);
   }
 
@@ -929,24 +924,6 @@ class _TextFileTabState extends State<_TextFileTab> {
             icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
             onPressed: _leaveIfConfirmed,
           ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                RemotePath.basename(widget.path),
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(
-                [
-                  if (_asRoot) 'as root',
-                  _dirty ? 'Unsaved changes' : RemotePath.parent(widget.path),
-                ].join(' · '),
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
           bottom: _saving
               ? const PreferredSize(
                   preferredSize: Size.fromHeight(3),
@@ -954,14 +931,6 @@ class _TextFileTabState extends State<_TextFileTab> {
                 )
               : null,
           actions: [
-            if (_markdown)
-              IconButton(
-                tooltip: _preview ? 'Show source' : 'Show preview',
-                onPressed: _loading || _error != null
-                    ? null
-                    : () => _setPreview(!_preview),
-                icon: Icon(_preview ? Icons.code : Icons.preview_outlined),
-              ),
             IconButton(
               tooltip: 'Find',
               onPressed: _loading || _error != null
@@ -1004,8 +973,14 @@ class _TextFileTabState extends State<_TextFileTab> {
                   () => _setLook(wordWrap: !_wordWrap),
                   checked: _wordWrap,
                 ),
-                menuAction('Larger text', () => _setLook(fontSize: _fontSize + 1)),
-                menuAction('Smaller text', () => _setLook(fontSize: _fontSize - 1)),
+                menuAction(
+                  'Larger text',
+                  () => _setLook(fontSize: _fontSize + 1),
+                ),
+                menuAction(
+                  'Smaller text',
+                  () => _setLook(fontSize: _fontSize - 1),
+                ),
               ],
             ),
           ],
@@ -1014,12 +989,63 @@ class _TextFileTabState extends State<_TextFileTab> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (_transfer case final transfer?) TransferBar(transfer),
-            Expanded(child: _buildBody()),
+            Expanded(child: _editorChrome()),
           ],
         ),
         bottomNavigationBar: _loading || _error != null || _preview
             ? null
             : EditorKeyBar(controller: _controller, useTabs: _useTabs),
+      ),
+    );
+  }
+
+  /// termul's file chrome round the text: the file's name, where it is or
+  /// that it is unsaved, and Source or Preview for Markdown. The same body
+  /// goes in both of termul's slots, so the text stays built behind the
+  /// preview, with its cursor and scroll position, as it always has.
+  Widget _editorChrome() {
+    final body = _buildBody();
+    return TuiCodeEditor(
+      path: RemotePath.basename(widget.path),
+      subtitle: [
+        if (_asRoot) 'as root',
+        RemotePath.parent(widget.path),
+      ].join(' · '),
+      dirty: _dirty,
+      loading: _loading,
+      showModeToggle: _markdown,
+      mode: _preview ? TuiCodeViewMode.preview : TuiCodeViewMode.source,
+      onModeChanged: _error != null
+          ? null
+          : (mode) => _setPreview(mode == TuiCodeViewMode.preview),
+      banner: _draft == null ? null : _draftBanner(),
+      sourceChild: body,
+      previewChild: body,
+    );
+  }
+
+  /// termul's word across the top of the text: an earlier edit kept.
+  Widget _draftBanner() {
+    final p = TermulThemeData.of(context).palette;
+    return Container(
+      color: p.selection,
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      child: Row(
+        children: [
+          const Expanded(
+            child: TuiText(
+              'There are unsaved edits to this file from last time.',
+              size: 12,
+            ),
+          ),
+          TuiButton(
+            label: 'Discard',
+            variant: TuiButtonVariant.ghost,
+            onPressed: _discardStoredDraft,
+          ),
+          const SizedBox(width: 8),
+          TuiButton(label: 'Restore', onPressed: _restoreDraft),
+        ],
       ),
     );
   }
@@ -1040,22 +1066,6 @@ class _TextFileTabState extends State<_TextFileTab> {
 
     return Column(
       children: [
-        if (_draft != null)
-          MaterialBanner(
-            content: const Text(
-              'There are unsaved edits to this file from last time.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: _discardStoredDraft,
-                child: const Text('Discard'),
-              ),
-              TextButton(
-                onPressed: _restoreDraft,
-                child: const Text('Restore'),
-              ),
-            ],
-          ),
         Expanded(
           // The text stays built behind the preview, so Source comes back
           // with its cursor and scroll position; out of focus meanwhile, so
@@ -1708,11 +1718,7 @@ Widget _imageAlt(
         WidgetSpan(
           alignment: PlaceholderAlignment.middle,
           child: loading
-              ? const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: TuiSpinner(),
-                )
+              ? const SizedBox(width: 14, height: 14, child: TuiSpinner())
               : const Icon(Icons.image_outlined, size: 16),
         ),
         TextSpan(text: ' $label${because == null ? '' : ' — $because'}'),
@@ -2048,15 +2054,16 @@ class _FindBar extends StatelessWidget implements PreferredSizeWidget {
 
   final CodeFindController controller;
 
-  static const _rowHeight = 48.0;
+  static const _rowHeight = 44.0;
 
   @override
   Size get preferredSize {
     final value = controller.value;
     if (value == null) return Size.zero;
-    return Size.fromHeight(_rowHeight * (value.replaceMode ? 2 : 1));
+    return Size.fromHeight(_rowHeight * (value.replaceMode ? 2 : 1) + 1);
   }
 
+  /// termul's find bar over re_editor's search.
   @override
   Widget build(BuildContext context) {
     final value = controller.value;
@@ -2070,88 +2077,19 @@ class _FindBar extends StatelessWidget implements PreferredSizeWidget {
         : found
         ? '${result.index + 1}/${result.matches.length}'
         : 'No results';
-
-    Widget row(Widget field, List<Widget> trailing) => SizedBox(
-      height: _rowHeight,
-      child: Row(
-        children: [
-          const SizedBox(width: 12),
-          Expanded(child: field),
-          ...trailing,
-        ],
-      ),
-    );
-    Widget field(TextEditingController text, FocusNode focus, String hint) =>
-        TextField(
-          controller: text,
-          focusNode: focus,
-          autocorrect: false,
-          enableSuggestions: false,
-          style: TextStyle(fontFamily: TermulFonts.mono, fontSize: 14),
-          decoration: InputDecoration(
-            hintText: hint,
-            border: InputBorder.none,
-            isDense: true,
-          ),
-        );
-
-    return Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          row(
-            field(
-              controller.findInputController,
-              controller.findInputFocusNode,
-              'Find',
-            ),
-            [
-              Text(count, style: Theme.of(context).textTheme.bodySmall),
-              IconButton(
-                tooltip: 'Previous match',
-                onPressed: found ? controller.previousMatch : null,
-                icon: const Icon(Icons.keyboard_arrow_up),
-              ),
-              IconButton(
-                tooltip: 'Next match',
-                onPressed: found ? controller.nextMatch : null,
-                icon: const Icon(Icons.keyboard_arrow_down),
-              ),
-              IconButton(
-                tooltip: 'Replace…',
-                isSelected: value.replaceMode,
-                onPressed: controller.toggleMode,
-                icon: const Icon(Icons.find_replace),
-              ),
-              IconButton(
-                tooltip: 'Close find',
-                onPressed: controller.close,
-                icon: const Icon(Icons.close),
-              ),
-            ],
-          ),
-          if (value.replaceMode)
-            row(
-              field(
-                controller.replaceInputController,
-                controller.replaceInputFocusNode,
-                'Replace with',
-              ),
-              [
-                TextButton(
-                  onPressed: found ? controller.replaceMatch : null,
-                  child: const Text('Replace'),
-                ),
-                TextButton(
-                  onPressed: found ? controller.replaceAllMatches : null,
-                  child: const Text('Replace all'),
-                ),
-                const SizedBox(width: 8),
-              ],
-            ),
-        ],
-      ),
+    return TuiFindBar(
+      findController: controller.findInputController,
+      findFocusNode: controller.findInputFocusNode,
+      replaceController: controller.replaceInputController,
+      replaceFocusNode: controller.replaceInputFocusNode,
+      replaceMode: value.replaceMode,
+      matchLabel: count,
+      onPrevious: found ? controller.previousMatch : null,
+      onNext: found ? controller.nextMatch : null,
+      onToggleReplace: controller.toggleMode,
+      onClose: controller.close,
+      onReplace: found ? controller.replaceMatch : null,
+      onReplaceAll: found ? controller.replaceAllMatches : null,
     );
   }
 }
@@ -2168,7 +2106,6 @@ class _TextPrompt extends StatefulWidget {
     required this.action,
     this.helper,
     this.obscure = false,
-    this.number = false,
   });
 
   final String title;
@@ -2176,7 +2113,6 @@ class _TextPrompt extends StatefulWidget {
   final String action;
   final String? helper;
   final bool obscure;
-  final bool number;
 
   @override
   State<_TextPrompt> createState() => _TextPromptState();
@@ -2212,7 +2148,6 @@ class _TextPromptState extends State<_TextPrompt> {
         obscure: widget.obscure,
         autocorrect: false,
         enableSuggestions: false,
-        keyboardType: widget.number ? TextInputType.number : null,
         helper: widget.helper,
         onSubmitted: (_) => _submit(),
       ),
