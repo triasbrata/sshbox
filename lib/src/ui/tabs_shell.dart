@@ -238,7 +238,7 @@ class _TabsShellState extends State<TabsShell> {
       behavior: HitTestBehavior.translucent,
       onSecondaryTapUp: rightClick((at) {
         final entries = menu.entries();
-        if (entries.isNotEmpty) showMenuAt<void>(context, at, entries);
+        if (entries.isNotEmpty) showActionsAt(context, at, entries);
       }),
       child: menu,
     );
@@ -1286,7 +1286,9 @@ class _TabChip extends StatelessWidget {
       height: _height,
       // An icon alone is a square, as + beside it is.
       width: title == null && onEnd == null ? _height : null,
-      child: tooltip == null ? named : TuiTooltip(message: tooltip!, child: named),
+      child: tooltip == null
+          ? named
+          : TuiTooltip(message: tooltip!, child: named),
     );
   }
 
@@ -1295,13 +1297,10 @@ class _TabChip extends StatelessWidget {
   /// or, from a right-click, at the pointer [at], as a context menu opens.
   void _showMenu(BuildContext context, [Offset? at]) {
     final chip = context.findRenderObject()! as RenderBox;
-    showMenuAt<void>(
+    showActionsAt(
       context,
       at ?? chip.localToGlobal(chip.size.bottomLeft(Offset.zero)),
-      [
-        for (final (label, onTap) in menu)
-          PopupMenuItem(onTap: onTap, child: Text(label)),
-      ],
+      tabMenuEntries(menu),
     );
   }
 }

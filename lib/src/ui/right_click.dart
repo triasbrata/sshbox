@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../platform.dart';
+import 'termul/tui_menu.dart';
 
 /// A right-click that opens whatever a long press opens, for a widget's
 /// `onSecondaryTapUp`: a desktop is driven by a mouse, which has no long
@@ -16,8 +17,8 @@ GestureTapUpCallback? rightClick(void Function(Offset at)? open) =>
     ? (details) => open(details.globalPosition)
     : null;
 
-/// Opens a menu with its corner at [at], a global position — the pointer's,
-/// as a context menu opens, or the finger's.
+/// Opens termul's menu ([showTuiMenu]) with its corner at [at], a global
+/// position — the pointer's, as a context menu opens, or the finger's.
 ///
 /// After a frame already asked for: the click that opens it may have moved
 /// focus — a group's pane takes it on the pointer going down — and that
@@ -27,24 +28,41 @@ GestureTapUpCallback? rightClick(void Function(Offset at)? open) =>
 Future<T?> showMenuAt<T>(
   BuildContext context,
   Offset at,
-  List<PopupMenuEntry<T>> items,
+  List<TuiMenuEntry<T>> entries,
 ) async {
   if (SchedulerBinding.instance.hasScheduledFrame) {
     await SchedulerBinding.instance.endOfFrame;
   }
   if (!context.mounted) return null;
-  final overlay = Overlay.of(context).context;
-  if (!overlay.mounted) return null;
-  final box = overlay.findRenderObject()! as RenderBox;
-  return showMenu<T>(
-    context: context,
-    position: RelativeRect.fromRect(
-      box.globalToLocal(at) & Size.zero,
-      Offset.zero & box.size,
-    ),
-    items: items,
-  );
+  if (!Overlay.of(context).context.mounted) return null;
+  return showTuiMenu<T>(context, at: at, entries: entries);
 }
+
+/// A menu whose entries each do something: [showMenuAt], and what was
+/// picked done once it has closed.
+Future<void> showActionsAt(
+  BuildContext context,
+  Offset at,
+  List<TuiMenuEntry<VoidCallback>> entries,
+) async => (await showMenuAt(context, at, entries))?.call();
+
+/// A row of an actions menu, for [showActionsAt] and [TuiMenuButton]; one
+/// that ends or deletes something is [destructive], in termul's deep ink.
+TuiMenuItem<VoidCallback> action(
+  String label,
+  VoidCallback onTap, {
+  bool destructive = false,
+  bool enabled = true,
+  bool? checked,
+  String? shortcut,
+}) => TuiMenuItem(
+  value: onTap,
+  label: label,
+  destructive: destructive,
+  enabled: enabled,
+  checked: checked,
+  shortcut: shortcut,
+);
 
 /// A tab's own menu — what a right-click on its chip opens — handed down to
 /// its page, so a right-click inside the page opens it too. [items] is asked
@@ -62,11 +80,16 @@ class TabMenu extends InheritedWidget {
       context.getInheritedWidgetOfExactType<TabMenu>();
 
   /// The menu's entries, as the chip shows them.
-  List<PopupMenuEntry<void>> entries() => [
-    for (final (label, onTap) in items())
-      PopupMenuItem<void>(onTap: onTap, child: Text(label)),
-  ];
+  List<TuiMenuEntry<VoidCallback>> entries() => tabMenuEntries(items());
 
   @override
   bool updateShouldNotify(TabMenu oldWidget) => false;
 }
+
+/// A tab's menu as termul's entries: closing the tab in deep ink.
+List<TuiMenuEntry<VoidCallback>> tabMenuEntries(
+  List<(String, VoidCallback)> items,
+) => [
+  for (final (label, onTap) in items)
+    action(label, onTap, destructive: label == 'Close tab'),
+];

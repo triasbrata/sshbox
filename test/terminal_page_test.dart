@@ -1020,11 +1020,11 @@ void main() {
           // Plain text, nothing selected: no Copy, and no address.
           final at = cellAt(tester, 18);
           await rightClick(tester, at);
-          final paste = find.widgetWithText(PopupMenuItem<void>, 'Paste');
+          final paste = find.widgetWithText(PopupMenuItem<VoidCallback>, 'Paste');
           expect(tester.getTopLeft(paste).dx, moreOrLessEquals(at.dx));
           expect(find.text('Copy'), findsNothing);
           expect(find.text('Copy link address'), findsNothing);
-          await tester.tapAt(cellAt(tester, 30, 3));
+          await tester.tapAt(cellAt(tester, 30, 8));
           await tester.pumpAndSettle();
 
           // "https" selected, as a mouse drag would.

@@ -387,7 +387,7 @@ void main() {
         final at = tester.getTopLeft(find.text('box')) + const Offset(4, 4);
         await rightClick(tester, at);
         final item = find.widgetWithText(
-          PopupMenuItem<void>,
+          PopupMenuItem<VoidCallback>,
           'Duplicate session',
         );
         // At the pointer, as a context menu opens, not the chip's corner.

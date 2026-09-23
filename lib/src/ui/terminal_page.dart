@@ -37,7 +37,7 @@ import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
-import 'tui.dart' show TuiButton, TuiButtonVariant;
+import 'tui.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -718,11 +718,7 @@ class _TerminalPageState extends State<TerminalPage> {
           error is FileBrowserException &&
           error.fault == FileBrowserFault.cancelled;
       if (mounted && !cancelled) {
-        showToast(
-          context,
-          'Upload failed: $error',
-          type: TuiToastType.error,
-        );
+        showToast(context, 'Upload failed: $error', type: TuiToastType.error);
       }
     } finally {
       if (mounted) setState(() => _sending = null);
@@ -1264,11 +1260,7 @@ class _PaneViewState extends State<_PaneView> {
     // which [ClipboardTerminal] never sees.
     if (utf8.encode(text).length > maxClipboardBytes) return;
     unawaited(Clipboard.setData(ClipboardData(text: text)));
-    showToast(
-      context,
-      'Copied from the terminal',
-      type: TuiToastType.success,
-    );
+    showToast(context, 'Copied from the terminal', type: TuiToastType.success);
   }
 
   /// The selection as the mouse button went down, to tell one the mouse has
@@ -1358,23 +1350,17 @@ class _PaneViewState extends State<_PaneView> {
       showToast(context, said, type: TuiToastType.success);
     }
 
-    showMenuAt<void>(context, details.globalPosition, [
+    showActionsAt(context, details.globalPosition, [
       if (range != null)
-        PopupMenuItem(
-          onTap: () => copy(selectedText(terminal.buffer, range), 'Copied'),
-          child: const Text('Copy'),
+        action(
+          'Copy',
+          () => copy(selectedText(terminal.buffer, range), 'Copied'),
         ),
-      PopupMenuItem(
-        onTap: () => unawaited(_paste()),
-        child: const Text('Paste'),
-      ),
+      action('Paste', () => unawaited(_paste())),
       if (link != null)
-        PopupMenuItem(
-          onTap: () => copy(link, 'Copied $link'),
-          child: const Text('Copy link address'),
-        ),
+        action('Copy link address', () => copy(link, 'Copied $link')),
       // The tab's own, as its chip offers them.
-      if (tabMenu.isNotEmpty) ...[const PopupMenuDivider(), ...tabMenu],
+      if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
     ]);
   }
 

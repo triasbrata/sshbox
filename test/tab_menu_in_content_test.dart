@@ -114,7 +114,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Finder item(String text) => find.widgetWithText(PopupMenuItem<void>, text);
+  Finder item(String text) => find.widgetWithText(PopupMenuItem<VoidCallback>, text);
 
   testWidgets(
     "a right-click in a terminal gives its own items, then the tab's",
