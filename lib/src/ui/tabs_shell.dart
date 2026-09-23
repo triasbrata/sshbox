@@ -858,36 +858,16 @@ class _TabStripState extends State<TabStrip> {
     Map<String, VoidCallback> selects,
     String? active,
   ) {
-    final p = TermulThemeData.of(context).palette;
     final groups = widget.groups!;
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(
-          color: group.ids.contains(active) ? p.accent : p.border,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _TabChip(
-            icon: group.stacked
-                ? Icons.view_agenda_outlined
-                : Icons.view_column_outlined,
-            label: null,
-            tooltip: 'Tab group',
-            selected: false,
-            onTap: () => selects[group.focused ?? group.ids.first]?.call(),
-            menu: [
-              (
-                group.stacked ? 'Side by side' : 'Stacked',
-                () => groups.flip(group),
-              ),
-              ('Ungroup', () => groups.ungroup(group)),
-            ],
-          ),
-          for (final id in group.ids) chips[id]!,
-        ],
-      ),
+    // termul's group chip: its button — a tap shows the group, a long press
+    // or right-click flips or ungroups it — then its tabs' own chips.
+    return TuiTabGroupChip(
+      stacked: group.stacked,
+      active: group.ids.contains(active),
+      onActivate: () => selects[group.focused ?? group.ids.first]?.call(),
+      onFlip: () => groups.flip(group),
+      onUngroup: () => groups.ungroup(group),
+      children: [for (final id in group.ids) chips[id]!],
     );
   }
 

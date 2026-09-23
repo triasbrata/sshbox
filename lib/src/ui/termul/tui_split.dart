@@ -2,7 +2,10 @@
 // lib/components/tui_split.dart. MIT License, Copyright (c) 2026 TUI-Termul: see
 // LICENSE beside this file.
 //
-// As upstream.
+// Changed for Jeansh:
+// The group button's menu opens on a long press or a right-click: its tap
+// is the button's own, focusing the group, so the menu around it could not
+// be reached by touch at all.
 
 import 'dart:math' as math;
 
@@ -406,7 +409,7 @@ class TuiTabGroupChip extends StatelessWidget {
   }
 }
 
-class _GroupLead extends StatelessWidget {
+class _GroupLead extends StatefulWidget {
   const _GroupLead({
     required this.stacked,
     required this.onActivate,
@@ -420,9 +423,22 @@ class _GroupLead extends StatelessWidget {
   final VoidCallback? onUngroup;
 
   @override
+  State<_GroupLead> createState() => _GroupLeadState();
+}
+
+class _GroupLeadState extends State<_GroupLead> {
+  final _menu = GlobalKey<PopupMenuButtonState<String>>();
+
+  bool get stacked => widget.stacked;
+  VoidCallback? get onActivate => widget.onActivate;
+  VoidCallback? get onFlip => widget.onFlip;
+  VoidCallback? get onUngroup => widget.onUngroup;
+
+  @override
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
     return PopupMenuButton<String>(
+      key: _menu,
       tooltip: 'Tab group',
       padding: EdgeInsets.zero,
       onSelected: (v) {
@@ -454,6 +470,8 @@ class _GroupLead extends StatelessWidget {
       ],
       child: InkWell(
         onTap: onActivate,
+        onLongPress: () => _menu.currentState?.showButtonMenu(),
+        onSecondaryTap: () => _menu.currentState?.showButtonMenu(),
         child: SizedBox(
           width: 32,
           height: 28,

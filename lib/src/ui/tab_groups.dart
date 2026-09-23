@@ -1,6 +1,6 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
+
+import 'tui.dart';
 
 /// Tabs shown together, each page in a pane of its own, the way tmux splits
 /// a window: see [TabGroupView]. A group keeps only its tabs' ids, so a tab
@@ -109,7 +109,7 @@ class TabGroups extends ChangeNotifier {
 ///
 /// Only the focused pane may hold focus, as only the showing tab may, so no
 /// key goes to a pane that is not outlined. Touching a pane focuses it.
-class TabGroupView extends StatefulWidget {
+class TabGroupView extends StatelessWidget {
   const TabGroupView({
     super.key,
     required this.group,
@@ -128,185 +128,17 @@ class TabGroupView extends StatefulWidget {
 
   final void Function(String id) onFocus;
 
+  /// termul's split view: its grip, its 48dp floor, its accent outline, and
+  /// only the outlined pane holding focus.
   @override
-  State<TabGroupView> createState() => _TabGroupViewState();
-}
-
-class _TabGroupViewState extends State<TabGroupView> {
-  /// How thick the grip between two panes is.
-  static const double _grip = 8;
-
-  /// Moves the grip before pane [index] by [delta], out of [room] to share.
-  /// No pane is squeezed under 48dp.
-  void _drag(int index, double delta, double room) {
-    final group = widget.group;
-    final before = group.ids[index - 1];
-    final after = group.ids[index];
-    final a = group.weightOf(before);
-    final b = group.weightOf(after);
-    final total = group.ids.map(group.weightOf).reduce((x, y) => x + y);
-    final floor = math.min(total * 48 / room, (a + b) / 2);
-    final moved = (delta / room * total).clamp(floor - a, b - floor);
-    setState(() {
-      group.weights[before] = a + moved;
-      group.weights[after] = b - moved;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final group = widget.group;
-    final stacked = group.stacked;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final room =
-            (stacked ? constraints.maxHeight : constraints.maxWidth) -
-            _grip * (group.ids.length - 1);
-        return Flex(
-          direction: stacked ? Axis.vertical : Axis.horizontal,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (final (index, id) in group.ids.indexed) ...[
-              if (index > 0)
-                _Grip(
-                  stacked: stacked,
-                  thickness: _grip,
-                  onDrag: (delta) => _drag(index, delta, room),
-                ),
-              Expanded(
-                // By id, so a pane keeps its place in the focus as another
-                // leaves from before it.
-                key: ValueKey(id),
-                flex: math.max(1, (group.weightOf(id) * 1000).round()),
-                child: _Pane(
-                  focused: id == widget.focused,
-                  onFocus: () => widget.onFocus(id),
-                  child: widget.pages[id]!,
-                ),
-              ),
-            ],
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _Pane extends StatefulWidget {
-  const _Pane({
-    required this.focused,
-    required this.onFocus,
-    required this.child,
-  });
-
-  final bool focused;
-  final VoidCallback onFocus;
-  final Widget child;
-
-  @override
-  State<_Pane> createState() => _PaneState();
-}
-
-class _PaneState extends State<_Pane> {
-  /// Remembers what in the pane last had focus, for when it is focused again.
-  final _scope = FocusScopeNode(debugLabel: 'Tab group pane');
-
-  @override
-  void didUpdateWidget(_Pane oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!widget.focused || oldWidget.focused) return;
-    // Focused from the strip rather than by a touch, typing goes back to
-    // where it last was in the pane, without the soft keyboard, as a tab
-    // shown again does. After the frame, once the pane may take focus.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !widget.focused) return;
-      _scope.requestFocus();
-      FocusNode? node = _scope.focusedChild;
-      while (node is FocusScopeNode) {
-        node = node.focusedChild;
-      }
-      node?.consumeKeyboardToken();
-    });
-  }
-
-  @override
-  void dispose() {
-    _scope.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    // A Listener rather than a gesture, so the touch still goes on to the
-    // page's own taps, swipes and scrolling.
-    return Listener(
-      onPointerDown: (_) => widget.onFocus(),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          ExcludeFocus(
-            excluding: !widget.focused,
-            child: FocusScope(node: _scope, child: widget.child),
-          ),
-          if (widget.focused)
-            IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  // tmux's own pane outline: see TmuxPaneLayout.
-                  border: Border.all(
-                    color: theme.colorScheme.primary.withValues(alpha: 0.7),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The gutter between two panes, with a grip in it to drag.
-class _Grip extends StatelessWidget {
-  const _Grip({
-    required this.stacked,
-    required this.thickness,
-    required this.onDrag,
-  });
-
-  final bool stacked;
-  final double thickness;
-  final ValueChanged<double> onDrag;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return MouseRegion(
-      cursor: stacked
-          ? SystemMouseCursors.resizeRow
-          : SystemMouseCursors.resizeColumn,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onHorizontalDragUpdate: stacked ? null : (d) => onDrag(d.delta.dx),
-        onVerticalDragUpdate: stacked ? (d) => onDrag(d.delta.dy) : null,
-        child: ColoredBox(
-          color: theme.colorScheme.surfaceContainerHighest,
-          child: SizedBox(
-            width: stacked ? null : thickness,
-            height: stacked ? thickness : null,
-            child: Center(
-              child: Container(
-                width: stacked ? 32 : 3,
-                height: stacked ? 3 : 32,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.outline,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => TuiSplitView(
+    axis: group.stacked ? TuiSplitAxis.vertical : TuiSplitAxis.horizontal,
+    focusedId: focused,
+    onFocus: onFocus,
+    onWeightsChanged: group.weights.addAll,
+    panes: [
+      for (final id in group.ids)
+        TuiSplitPane(id: id, weight: group.weightOf(id), child: pages[id]!),
+    ],
+  );
 }
