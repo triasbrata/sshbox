@@ -623,7 +623,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
       final split = _split[wide]!;
       final ready = _parsed != null && _error == null;
       return Scaffold(
-        appBar: AppBar(
+        appBar: TuiAppBar(
           automaticallyImplyLeading: false,
           leading: IconButton(
             tooltip: 'Close diff',

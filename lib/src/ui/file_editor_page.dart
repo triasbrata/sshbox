@@ -917,7 +917,7 @@ class _TextFileTabState extends State<_TextFileTab> {
         if (!didPop) _leaveIfConfirmed();
       },
       child: Scaffold(
-        appBar: AppBar(
+        appBar: TuiAppBar(
           automaticallyImplyLeading: false,
           leading: IconButton(
             tooltip: _embedded ? 'Close file' : 'Back',
@@ -1424,7 +1424,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
         : '$_width × $_height · ${formatBytes(_bytes)}';
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         automaticallyImplyLeading: false,
         leading: IconButton(
           tooltip: _embedded ? 'Close file' : 'Back',

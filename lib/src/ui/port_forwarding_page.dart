@@ -79,7 +79,7 @@ class _PortForwardingPageState extends State<PortForwardingPage> {
     final hosts = _hosts;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Port forwarding')),
+      appBar: TuiAppBar(title: const Text('Port forwarding')),
       floatingActionButton: hosts == null
           ? null
           : FloatingActionButton(
@@ -685,7 +685,7 @@ class _ForwardEditorState extends State<_ForwardEditor> {
     final defaultName = _defaultName;
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         title: Text(
           widget.existing == null ? 'New port forward' : 'Edit port forward',
         ),

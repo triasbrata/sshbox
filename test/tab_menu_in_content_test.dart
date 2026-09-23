@@ -13,6 +13,7 @@ import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_file_browser.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 class _NoSecrets implements SecretStore {
   @override
@@ -172,7 +173,7 @@ void main() {
       manager.openFile(box.id, '/home/me/notes.txt');
       await tester.pumpAndSettle();
 
-      await rightClick(tester, tester.getCenter(find.byType(AppBar).last));
+      await rightClick(tester, tester.getCenter(find.byType(TuiAppBar).last));
       expect(item('Group with…'), findsOneWidget);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();

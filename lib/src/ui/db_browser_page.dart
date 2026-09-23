@@ -531,7 +531,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         final wide = constraints.maxWidth >= 720;
         return Scaffold(
           key: _scaffold,
-          appBar: AppBar(
+          appBar: TuiAppBar(
             title: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,

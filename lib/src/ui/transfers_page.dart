@@ -21,7 +21,7 @@ class TransfersPage extends StatelessWidget {
     builder: (context, _) {
       final items = transfers.items;
       return Scaffold(
-        appBar: AppBar(
+        appBar: TuiAppBar(
           toolbarHeight: 44,
           automaticallyImplyLeading: false,
           title: const Text('Transfers'),

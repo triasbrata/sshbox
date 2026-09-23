@@ -480,6 +480,96 @@ TuiMenuItem<VoidCallback> menuAction(
   shortcut: shortcut,
 );
 
+/// A page's bar as termul's terminal screen heads itself: an ← in the
+/// accent, the title in the ink at body size, the page's own buttons on the
+/// right, and a hairline under it. For the pages termul has no screen of
+/// its own for; takes what Material's AppBar did, so each page keeps its
+/// title, buttons and anything under the bar.
+class TuiAppBar extends StatelessWidget implements PreferredSizeWidget {
+  const TuiAppBar({
+    super.key,
+    this.title,
+    this.actions = const [],
+    this.leading,
+    this.automaticallyImplyLeading = true,
+    this.toolbarHeight,
+    this.bottom,
+    this.titleSpacing,
+  });
+
+  final Widget? title;
+  final List<Widget> actions;
+  final Widget? leading;
+  final bool automaticallyImplyLeading;
+  final double? toolbarHeight;
+  final PreferredSizeWidget? bottom;
+  final double? titleSpacing;
+
+  double get _height => toolbarHeight ?? 52;
+
+  @override
+  Size get preferredSize =>
+      Size.fromHeight(_height + 1 + (bottom?.preferredSize.height ?? 0));
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final text = Theme.of(context).textTheme;
+    final back =
+        leading ??
+        (automaticallyImplyLeading && (ModalRoute.of(context)?.canPop ?? false)
+            ? TermulTextAction(
+                label: 'Back',
+                text: '←',
+                onTap: () => Navigator.of(context).maybePop(),
+              )
+            : null);
+    return Material(
+      color: p.bg,
+      child: SafeArea(
+        bottom: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: _height,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    if (back != null) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: back,
+                      ),
+                      SizedBox(width: titleSpacing ?? 12),
+                    ] else
+                      SizedBox(width: titleSpacing ?? 8),
+                    Expanded(
+                      child: DefaultTextStyle.merge(
+                        style: text.bodyMedium!.copyWith(
+                          color: p.text,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        child: title ?? const SizedBox(),
+                      ),
+                    ),
+                    ...actions,
+                  ],
+                ),
+              ),
+            ),
+            ?bottom,
+            Divider(height: 1, thickness: 1, color: p.border),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// termul's [TuiDropdown] in a form: its [validator] runs with the form's,
 /// its message drawn as termul draws a field's error, and [helper] under it
 /// while there is none, which termul's own has no place for.

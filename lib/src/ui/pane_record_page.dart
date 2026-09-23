@@ -85,7 +85,7 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
     final theme = Theme.of(context);
     final error = _error;
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         title: const Text('Pane record'),
         actions: [
           IconButton(

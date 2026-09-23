@@ -65,7 +65,7 @@ class _KnownHostsPageState extends State<KnownHostsPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Known hosts')),
+      appBar: TuiAppBar(title: const Text('Known hosts')),
       body: switch (_pins) {
         null => const Center(child: TuiSpinner()),
         // TODO(termul): empty state, until termul has one.

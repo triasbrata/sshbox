@@ -101,7 +101,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         title: TextField(
           controller: _controller,
           autofocus: widget.initialQuery.isEmpty,

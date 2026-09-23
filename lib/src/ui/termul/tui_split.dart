@@ -470,8 +470,13 @@ class _GroupLeadState extends State<_GroupLead> {
       ],
       child: InkWell(
         onTap: onActivate,
-        onLongPress: () => _menu.currentState?.showButtonMenu(),
-        onSecondaryTap: () => _menu.currentState?.showButtonMenu(),
+        // With no tap of its own, the tap opens the menu, as upstream.
+        onLongPress: onActivate == null
+            ? null
+            : () => _menu.currentState?.showButtonMenu(),
+        onSecondaryTap: onActivate == null
+            ? null
+            : () => _menu.currentState?.showButtonMenu(),
         child: SizedBox(
           width: 32,
           height: 28,
