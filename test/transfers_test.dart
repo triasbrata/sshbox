@@ -341,7 +341,7 @@ void main() {
       expect(find.text('Download from box cancelled'), findsOneWidget);
       expect(find.byTooltip('Cancel'), findsNothing);
 
-      await tester.tap(find.text('Open'));
+      await tester.tap(find.text('OPEN'));
       await tester.pump();
       expect(picker.opened, ['content://downloads/notes.txt']);
 
