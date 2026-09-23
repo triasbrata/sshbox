@@ -277,7 +277,7 @@ void main() {
     await tester.tap(find.text('contains').last);
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextField, 'Value 1'), 'an');
-    await tester.tap(find.text('Apply'));
+    await tester.tap(find.bySemanticsLabel('Apply'));
     await tester.pumpAndSettle();
 
     expect(
@@ -301,7 +301,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextField, 'Value 1'), 'ann');
 
-    await tester.tap(find.text('Add condition'));
+    await tester.tap(find.bySemanticsLabel('Add condition'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(TuiDropdown<String>).last);
     await tester.pumpAndSettle();
@@ -310,7 +310,7 @@ void main() {
     await tester.enterText(find.widgetWithText(TextField, 'Value 2'), '3');
     await tester.tap(find.text('OR'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Apply'));
+    await tester.tap(find.bySemanticsLabel('Apply'));
     await tester.pumpAndSettle();
     expect(
       db.runs.last,
@@ -321,7 +321,7 @@ void main() {
     // Its tick leaves a row out without deleting it.
     await tester.tap(find.byType(TuiCheckbox).first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Apply'));
+    await tester.tap(find.bySemanticsLabel('Apply'));
     await tester.pumpAndSettle();
     expect(
       db.runs.last,
@@ -330,7 +330,7 @@ void main() {
 
     await tester.tap(find.bySemanticsLabel('Clear'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Apply'));
+    await tester.tap(find.bySemanticsLabel('Apply'));
     await tester.pumpAndSettle();
     expect(db.runs.last, 'SELECT * FROM public.people LIMIT 100;');
   });
@@ -345,7 +345,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('name').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Apply'));
+    await tester.tap(find.bySemanticsLabel('Apply'));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Condition 1'), findsOneWidget);
@@ -363,7 +363,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('SELECT * FROM public.people LIMIT 100;'), findsOneWidget);
     await tester.enterText(find.byType(TextField).last, 'SELECT 1');
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     expect(db.runs.last, 'SELECT 1');
   });
@@ -388,7 +388,7 @@ void main() {
     // Kept: the tab does not change behind the question.
     await tester.tap(find.bySemanticsLabel('Keep editing'));
     await tester.pumpAndSettle();
-    expect(find.text('Add condition'), findsOneWidget);
+    expect(find.bySemanticsLabel('Add condition'), findsOneWidget);
     expect(db.runs, hasLength(1));
   });
 }

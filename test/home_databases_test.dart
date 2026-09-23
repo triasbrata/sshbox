@@ -216,7 +216,7 @@ void main() {
       expect(find.text('ann'), findsOneWidget);
 
       await tester.enterText(queryBox, 'select boom');
-      await tester.tap(find.text('Run'));
+      await tester.tap(find.bySemanticsLabel('Run'));
       await tester.pumpAndSettle();
       expect(find.text('ERROR: boom'), findsOneWidget);
 

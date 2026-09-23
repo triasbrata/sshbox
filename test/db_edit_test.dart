@@ -89,7 +89,7 @@ Future<void> _open(WidgetTester tester, DbSession db) async {
     ),
     _query,
   );
-  await tester.tap(find.text('Run'));
+  await tester.tap(find.bySemanticsLabel('Run'));
   await tester.pumpAndSettle();
 }
 
@@ -204,7 +204,7 @@ void main() {
 
     await _type(tester, find.text('ann'), 'zed');
     expect(find.text('zed'), findsOneWidget);
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     // Asked first, the run reading the rows afresh.
     expect(find.text('Discard 1 change?'), findsOneWidget);
@@ -225,7 +225,7 @@ void main() {
 
     // A run reads the rows afresh: Keep editing leaves the change where it
     // is, and runs nothing.
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     expect(find.text('Discard 1 change?'), findsOneWidget);
     await tester.tap(_inDialog('Keep editing'));

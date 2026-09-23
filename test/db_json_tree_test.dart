@@ -73,7 +73,7 @@ void main() {
       ),
       '{"find": "shops"}',
     );
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('JSON'));
     await tester.pumpAndSettle();

@@ -841,30 +841,33 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   const SizedBox(width: 8),
                 ],
                 if (result != null && result.rows.isNotEmpty) ...[
-                  SegmentedButton<bool>(
-                    showSelectedIcon: false,
-                    segments: const [
-                      ButtonSegment(
-                        value: false,
-                        icon: Icon(Icons.table_rows_outlined),
-                        tooltip: 'Table',
-                      ),
-                      ButtonSegment(
-                        value: true,
-                        icon: Icon(Icons.data_object),
-                        tooltip: 'JSON',
-                      ),
+                  // termul's select, each choice with its word on hover.
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    spacing: 8,
+                    children: [
+                      for (final (json, label) in [
+                        (false, 'Table'),
+                        (true, 'JSON'),
+                      ])
+                        TuiTooltip(
+                          message: label,
+                          child: TuiButton(
+                            label: label,
+                            variant: _asJson == json
+                                ? TuiButtonVariant.primary
+                                : TuiButtonVariant.ghost,
+                            onPressed: () => setState(() => _asJson = json),
+                          ),
+                        ),
                     ],
-                    selected: {_asJson},
-                    onSelectionChanged: (picked) =>
-                        setState(() => _asJson = picked.single),
                   ),
                   const SizedBox(width: 8),
                 ],
-                FilledButton.icon(
+                TuiButton(
+                  label: _onFilters ? 'Apply' : 'Run',
+                  prefix: '▶',
                   onPressed: _running ? null : _run,
-                  icon: const Icon(Icons.play_arrow),
-                  label: Text(_onFilters ? 'Apply' : 'Run'),
                 ),
               ],
             ),
@@ -897,17 +900,18 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                       icon: const Icon(Icons.add),
                     ),
                   if (!changes.isEmpty)
-                    TextButton(
+                    TuiButton(
+                      label: 'Discard',
+                      variant: TuiButtonVariant.ghost,
                       onPressed: _running
                           ? null
                           : () => setState(() => _changes = DbChanges()),
-                      child: const Text('Discard'),
                     ),
                   const SizedBox(width: 4),
-                  FilledButton.icon(
+                  TuiButton(
+                    label: 'Save',
+                    prefix: '✓',
                     onPressed: _running || changes.isEmpty ? null : _save,
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('Save'),
                   ),
                 ],
               ),
@@ -974,16 +978,12 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: SegmentedButton<_PgTab>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: _PgTab.filters, label: Text('Filters')),
-                  ButtonSegment(value: _PgTab.sql, label: Text('SQL')),
-                ],
-                selected: {_pgTab},
-                onSelectionChanged: (picked) => _pickTab(
-                  picked.single != _pgTab,
-                  () => _pgTab = picked.single,
+              child: TuiTabs(
+                tabs: const ['Filters', 'SQL'],
+                index: _PgTab.values.indexOf(_pgTab),
+                onChanged: (i) => _pickTab(
+                  _PgTab.values[i] != _pgTab,
+                  () => _pgTab = _PgTab.values[i],
                 ),
               ),
             ),
@@ -1014,19 +1014,10 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               ),
             ),
             if (_pgConditions.length > 1)
-              SegmentedButton<bool>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                segments: const [
-                  ButtonSegment(value: false, label: Text('AND')),
-                  ButtonSegment(value: true, label: Text('OR')),
-                ],
-                selected: {_pgAny},
-                onSelectionChanged: (picked) =>
-                    setState(() => _pgAny = picked.single),
+              TuiSelect<bool>(
+                options: const [(false, 'AND'), (true, 'OR')],
+                value: _pgAny,
+                onChanged: (any) => setState(() => _pgAny = any),
               ),
           ],
         ),
@@ -1041,15 +1032,17 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         ),
         Row(
           children: [
-            TextButton.icon(
+            TuiButton(
+              label: 'Add condition',
+              prefix: '+',
+              variant: TuiButtonVariant.ghost,
               onPressed: () => setState(() => _pgConditions.add(_Condition())),
-              icon: const Icon(Icons.add),
-              label: const Text('Add condition'),
             ),
             const Spacer(),
-            TextButton(
-              onPressed: () => setState(_clearConditions),
-              child: const Text('Clear'),
+            TermulTextAction(
+              label: 'Clear',
+              text: 'CLEAR',
+              onTap: () => setState(_clearConditions),
             ),
           ],
         ),
@@ -1144,19 +1137,13 @@ class DbBrowserPageState extends State<DbBrowserPage> {
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
           child: Align(
             alignment: Alignment.centerLeft,
-            child: SegmentedButton<_MongoTab>(
-              showSelectedIcon: false,
-              segments: const [
-                ButtonSegment(value: _MongoTab.find, label: Text('Find')),
-                ButtonSegment(
-                  value: _MongoTab.aggregate,
-                  label: Text('Aggregate'),
-                ),
-                ButtonSegment(value: _MongoTab.command, label: Text('Command')),
-              ],
-              selected: {_tab},
-              onSelectionChanged: (picked) =>
-                  _pickTab(picked.single != _tab, () => _tab = picked.single),
+            child: TuiTabs(
+              tabs: const ['Find', 'Aggregate', 'Command'],
+              index: _MongoTab.values.indexOf(_tab),
+              onChanged: (i) => _pickTab(
+                _MongoTab.values[i] != _tab,
+                () => _tab = _MongoTab.values[i],
+              ),
             ),
           ),
         ),

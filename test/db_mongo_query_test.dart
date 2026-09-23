@@ -201,7 +201,7 @@ void main() {
     expect(db.runs.single, contains('"limit": 50'));
 
     await tester.enterText(find.widgetWithText(TextField, 'Filter'), '{"city": "Bandung"}');
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     expect(jsonDecode(db.runs.last), {
       'find': 'customers',
@@ -227,7 +227,7 @@ void main() {
       find.widgetWithText(TextField, 'Stage 1'),
       r'{"$count": "n"}',
     );
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
 
     expect(jsonDecode(db.runs.last), {
