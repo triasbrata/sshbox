@@ -12,9 +12,9 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
-import 'package:sshbox/src/ui/toast.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 /// Takes every link it is handed and remembers it: what would have gone to
 /// the phone's browser, or to whatever app answers the link's scheme.
@@ -610,12 +610,10 @@ void main() {
 
     // Still beside the chat, with the one picked marked, and its
     // conversation drawn next to it.
-    final row = tester.widget<ListTile>(
-      find.ancestor(
-        of: find.text('the nightly build'),
-        matching: find.byType(ListTile),
-      ),
-    );
+    final row = tester
+        .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+        .sessions
+        .singleWhere((session) => session.title == 'the nightly build');
     expect(row.selected, isTrue);
     expect(find.text('is the nightly build green?'), findsOneWidget);
 
@@ -781,11 +779,12 @@ void main() {
     await tester.pumpAndSettle();
 
     final rows = tester
-        .widgetList<ListTile>(find.byType(ListTile))
-        .map((tile) => (tile.title! as Text).data)
-        .toList();
-    expect(rows, ['pinned', 'not pinned']);
-    expect(find.byIcon(Icons.push_pin), findsOneWidget);
+        .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+        .sessions;
+    expect([for (final row in rows) row.title], ['pinned', 'not pinned']);
+    // termul's pinned mark, on the first alone.
+    expect(rows.first.kind, TuiChatSessionKind.pinned);
+    expect(find.text('★'), findsOneWidget);
   });
 
   testWidgets('a tool row opens to its input and its result', (tester) async {
@@ -1214,7 +1213,7 @@ void main() {
     await _settlePickUp(tester);
     expect(find.text('It failed at the lint step.'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('New chat'));
+    await tester.tap(find.bySemanticsLabel('New chat'));
     await _settlePickUp(tester);
 
     // A new one: nothing of the old on screen, and the box starts one.
@@ -1226,12 +1225,10 @@ void main() {
     // The old one was let go of, not stopped, and is still listed.
     expect(shell.commands.any((c) => c.contains(' stop ')), isFalse);
     expect(find.text('the nightly build'), findsOneWidget);
-    final row = tester.widget<ListTile>(
-      find.ancestor(
-        of: find.text('the nightly build'),
-        matching: find.byType(ListTile),
-      ),
-    );
+    final row = tester
+        .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+        .sessions
+        .singleWhere((session) => session.title == 'the nightly build');
     expect(row.selected, isFalse);
   });
 

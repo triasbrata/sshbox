@@ -666,12 +666,14 @@ class _IconGlyph extends StatelessWidget {
           width: 32,
           height: 32,
           child: Center(
-            child: Text(
-              glyph,
-              style: TextStyle(
-                fontFamily: TermulFonts.mono,
-                fontSize: 14,
-                color: onPressed == null ? p.dim : p.text,
+            child: ExcludeSemantics(
+              child: Text(
+                glyph,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 14,
+                  color: onPressed == null ? p.dim : p.text,
+                ),
               ),
             ),
           ),
