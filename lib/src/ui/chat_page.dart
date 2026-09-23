@@ -589,10 +589,11 @@ class _Empty extends StatelessWidget {
             // the host are offered before anything has been typed.
             if (onPickSession case final show?) ...[
               const SizedBox(height: 20),
-              FilledButton.tonalIcon(
+              TuiButton(
+                label: 'Sessions on this host',
+                prefix: '▸',
+                variant: TuiButtonVariant.ghost,
                 onPressed: show,
-                icon: const Icon(Icons.view_sidebar_outlined),
-                label: const Text('Sessions on this host'),
               ),
             ],
           ],

@@ -314,7 +314,7 @@ Map<String, Object?> _finished(String id, String name, {int started = 0}) => {
 /// Picks the finished session [name] from the list, on a phone's drawer:
 /// it is continued in place, by a Claude of this chat's own.
 Future<void> _continue(WidgetTester tester, String name) async {
-  await tester.tap(find.text('Sessions on this host'));
+  await tester.tap(find.text('SESSIONS ON THIS HOST'));
   await _settlePickUp(tester);
   await tester.tap(find.text(name));
   await _settlePickUp(tester);
@@ -512,7 +512,7 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Sessions on this host'));
+    await tester.tap(find.text('SESSIONS ON THIS HOST'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
@@ -564,7 +564,7 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Sessions on this host'));
+    await tester.tap(find.text('SESSIONS ON THIS HOST'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
@@ -602,7 +602,7 @@ void main() {
     // In view without asking: no sheet, no drawer, and no button in the empty
     // tab to show what is already showing.
     expect(find.text('the nightly build'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Sessions on this host'),
+    expect(find.text('SESSIONS ON THIS HOST'),
         findsNothing);
 
     await tester.tap(find.text('the nightly build'));

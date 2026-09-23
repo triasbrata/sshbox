@@ -224,6 +224,9 @@ class _GitPageState extends State<GitPage> {
     read: () => repo.diff(path, staged: staged),
   );
 
+  /// Changes or History.
+  var _tab = 0;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -237,30 +240,30 @@ class _GitPageState extends State<GitPage> {
         if (entry.worktree != null) entry,
     ];
 
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        body: SafeArea(
-          child: Column(
-            children: [
-              _header(theme, repo),
-              const TabBar(
-                tabs: [
-                  Tab(text: 'Changes'),
-                  Tab(text: 'History'),
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _header(theme, repo),
+            // termul's tabs; both kept built, as a tab bar's pages are.
+            TuiTabs(
+              tabs: const ['Changes', 'History'],
+              index: _tab,
+              onChanged: (tab) => setState(() => _tab = tab),
+            ),
+            if (_busy) const TuiProgressBar(height: 2),
+            Expanded(
+              child: IndexedStack(
+                index: _tab,
+                sizing: StackFit.expand,
+                children: [
+                  _changes(theme, repo, staged: staged, unstaged: unstaged),
+                  _history(theme, repo),
                 ],
               ),
-              if (_busy) const TuiProgressBar(height: 2),
-              Expanded(
-                child: TabBarView(
-                  children: [
-                    _changes(theme, repo, staged: staged, unstaged: unstaged),
-                    _history(theme, repo),
-                  ],
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -398,28 +401,25 @@ class _GitPageState extends State<GitPage> {
           padding: const EdgeInsets.all(12),
           child: Column(
             children: [
-              TextField(
+              TuiField(
+                label: 'Commit message',
                 controller: _message,
+                hint: 'Enter commit message',
                 minLines: 2,
                 maxLines: 4,
-                decoration: const InputDecoration(
-                  hintText: 'Enter commit message',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
               ),
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  FilledButton.icon(
+                  TuiButton(
+                    label: 'Commit',
+                    prefix: '✓',
                     // Only what is staged goes in, as the editors do it: the
                     // list above says exactly what that is.
                     onPressed: _busy || staged.isEmpty
                         ? null
                         : () => unawaited(_commit()),
-                    icon: const Icon(Icons.check, size: 18),
-                    label: const Text('Commit'),
                   ),
                 ],
               ),
@@ -554,9 +554,10 @@ class _SectionRow extends StatelessWidget {
           ),
           const Spacer(),
           if (action != null)
-            TextButton(
-              onPressed: action!.onPressed,
-              child: Text(action!.label),
+            TermulTextAction(
+              label: action!.label,
+              text: action!.label.toUpperCase(),
+              onTap: action!.onPressed,
             ),
         ],
       ),
@@ -586,13 +587,14 @@ class _FileRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Green for what is added, red for what is gone, the accent for the rest:
-    // the same reading as the letters down an editor's gutter.
+    final p = TermulThemeData.of(context).palette;
+    // termul's green for what is added, red for what is gone, the accent for
+    // the rest: the same reading as the letters down an editor's gutter.
     final colour = switch (change) {
-      GitChange.added || GitChange.untracked => Colors.green,
-      GitChange.deleted => theme.colorScheme.error,
-      GitChange.conflicted => Colors.orange,
-      _ => theme.colorScheme.primary,
+      GitChange.added || GitChange.untracked => p.green,
+      GitChange.deleted => p.red,
+      GitChange.conflicted => p.yellow,
+      _ => p.accent,
     };
 
     return ListTile(

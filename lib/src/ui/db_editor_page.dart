@@ -7,7 +7,6 @@ import '../db/db_session.dart';
 import '../models/forward_setting.dart' show PortMapping;
 import '../models/host_profile.dart';
 import 'os_icon.dart';
-import 'port_forwarding_page.dart' show pageGutters;
 import 'settings_page.dart' show nerdFontFamily;
 import 'tui.dart';
 
@@ -268,171 +267,203 @@ class _DbEditorState extends State<_DbEditor> {
 
   @override
   Widget build(BuildContext context) {
-    InputDecoration hinted(String label, String hint, {String? helper}) =>
-        InputDecoration(
-          labelText: label,
-          hintText: hint,
-          helperText: helper,
-          helperMaxLines: 3,
-          floatingLabelBehavior: FloatingLabelBehavior.always,
-        );
-
+    final p = TermulThemeData.of(context).palette;
+    final theme = Theme.of(context);
+    const gap = SizedBox(height: 16);
+    // As the host editor is: termul's add_connection_screen, back and the
+    // page's own words along the top, the page's name large, then fields.
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.existing == null ? 'New database' : 'Edit database'),
-        actions: [
-          if (widget.existing != null)
-            IconButton(
-              tooltip: 'Delete',
-              onPressed: _delete,
-              icon: const Icon(Icons.delete_outline),
-            ),
-          IconButton(
-            tooltip: 'Save',
-            onPressed: _save,
-            icon: const Icon(Icons.check),
-          ),
-        ],
-      ),
-      body: Form(
-        key: _form,
-        child: LayoutBuilder(
-          builder: (context, constraints) => ListView(
-            padding: pageGutters(constraints.maxWidth),
-            children: [
-              const SizedBox(height: 8),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: OutlinedButton.icon(
-                  onPressed: _importUri,
-                  icon: const Icon(Icons.link),
-                  label: const Text('Import URI'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SegmentedButton<DbKind>(
-                showSelectedIcon: false,
-                segments: [
-                  for (final kind in DbKind.values)
-                    ButtonSegment(
-                      value: kind,
-                      icon: DbBadge(kind, size: 18),
-                      label: Text(kind.label),
-                    ),
-                ],
-                selected: {_kind},
-                onSelectionChanged: (picked) => _pickKind(picked.single),
-              ),
-              const SizedBox(height: 16),
-              DropdownField<String>(
-                label: 'Host',
-                initialValue: _hostId,
-                helper: widget.hosts.isEmpty
-                    ? 'Add a host first: Add, then Host, on Home.'
-                    : 'Reached through its SSH connection, and its jump '
-                          'host too.',
-                options: [
-                  for (final host in widget.hosts)
-                    TuiDropdownOption(
-                      value: host.id,
-                      label: host.displayName,
-                      subtitle: host.host,
-                    ),
-                ],
-                validator: (value) => value == null ? 'Pick a host' : null,
-                onChanged: (id) => setState(() => _hostId = id),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _name,
-                decoration: InputDecoration(
-                  labelText: 'Name',
-                  helperText:
-                      'Optional. Defaults to ${_kind.label} on the host\'s '
-                      'name.',
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 8,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+              child: Row(
                 children: [
-                  Expanded(
-                    flex: 3,
-                    child: TextFormField(
-                      controller: _address,
-                      decoration: hinted(
-                        'Address',
-                        'localhost',
-                        helper:
-                            'As the host reaches it: localhost is the host '
-                            'itself.',
-                      ),
-                      autocorrect: false,
-                      keyboardType: TextInputType.url,
+                  TermulTextAction.back(context),
+                  const Spacer(),
+                  if (widget.existing != null) ...[
+                    TermulTextAction(
+                      label: 'Delete',
+                      text: 'DELETE',
+                      color: p.isLight ? p.deep : p.red,
+                      onTap: _delete,
                     ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: TextFormField(
-                      controller: _port,
-                      decoration: const InputDecoration(labelText: 'Port'),
-                      keyboardType: TextInputType.number,
-                      validator: PortMapping.portError,
-                    ),
-                  ),
+                    const SizedBox(width: 20),
+                  ],
+                  TermulTextAction(label: 'Save', text: 'SAVE', onTap: _save),
                 ],
               ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _user,
-                decoration: hinted(
-                  'User',
-                  _kind.user.isEmpty ? 'None' : _kind.user,
-                ),
-                autocorrect: false,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _password,
-                obscureText: !_showPassword,
-                autocorrect: false,
-                enableSuggestions: false,
-                enableIMEPersonalizedLearning: false,
-                decoration: InputDecoration(
-                  labelText: 'Password',
-                  helperText: 'Kept in the device keystore.',
-                  suffixIcon: IconButton(
-                    tooltip: _showPassword ? 'Hide password' : 'Show password',
-                    icon: Icon(
-                      _showPassword ? Icons.visibility_off : Icons.visibility,
-                    ),
-                    onPressed: () =>
-                        setState(() => _showPassword = !_showPassword),
+            ),
+            Expanded(
+              // Not a lazy list: a field scrolled off would be let go, and
+              // Save would then check only the ones on screen.
+              child: Form(
+                key: _form,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Semantics(
+                        header: true,
+                        container: true,
+                        label: widget.existing == null
+                            ? 'New database'
+                            : 'Edit database',
+                        excludeSemantics: true,
+                        child: Text(
+                          widget.existing == null
+                              ? 'Add\ndatabase'
+                              : 'Edit\ndatabase',
+                          style: theme.textTheme.displayMedium!.copyWith(
+                            color: p.accent,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Reached through a saved host, as ssh -L does. The '
+                        'name is optional.',
+                        style: theme.textTheme.bodyMedium!.copyWith(
+                          color: p.muted,
+                          height: 1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: TuiButton(
+                          label: 'Import URI',
+                          prefix: '↓',
+                          variant: TuiButtonVariant.ghost,
+                          onPressed: _importUri,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      const TuiSectionLabel('Database'),
+                      const SizedBox(height: 10),
+                      TuiSelect<DbKind>(
+                        options: [
+                          for (final kind in DbKind.values) (kind, kind.label),
+                        ],
+                        value: _kind,
+                        onChanged: _pickKind,
+                      ),
+                      gap,
+                      DropdownField<String>(
+                        label: 'Host',
+                        initialValue: _hostId,
+                        helper: widget.hosts.isEmpty
+                            ? 'Add a host first: Add, then Host, on Home.'
+                            : 'Reached through its SSH connection, and its '
+                                  'jump host too.',
+                        options: [
+                          for (final host in widget.hosts)
+                            TuiDropdownOption(
+                              value: host.id,
+                              label: host.displayName,
+                              subtitle: host.host,
+                            ),
+                        ],
+                        validator: (value) =>
+                            value == null ? 'Pick a host' : null,
+                        onChanged: (id) => setState(() => _hostId = id),
+                      ),
+                      gap,
+                      TuiField(
+                        label: 'Name',
+                        controller: _name,
+                        helper:
+                            'Optional. Defaults to ${_kind.label} on the '
+                            'host\'s name.',
+                      ),
+                      gap,
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        spacing: 12,
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: TuiField(
+                              label: 'Address',
+                              controller: _address,
+                              hint: 'localhost',
+                              helper:
+                                  'As the host reaches it: localhost is the '
+                                  'host itself.',
+                              autocorrect: false,
+                              keyboardType: TextInputType.url,
+                            ),
+                          ),
+                          Expanded(
+                            flex: 2,
+                            child: TuiField(
+                              label: 'Port',
+                              controller: _port,
+                              keyboardType: TextInputType.number,
+                              validator: PortMapping.portError,
+                            ),
+                          ),
+                        ],
+                      ),
+                      gap,
+                      TuiField(
+                        label: 'User',
+                        controller: _user,
+                        hint: _kind.user.isEmpty ? 'None' : _kind.user,
+                        autocorrect: false,
+                      ),
+                      gap,
+                      TuiField(
+                        label: 'Password',
+                        controller: _password,
+                        obscure: !_showPassword,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        enableIMEPersonalizedLearning: false,
+                        helper: 'Kept in the device keystore.',
+                        suffix: IconButton(
+                          tooltip: _showPassword
+                              ? 'Hide password'
+                              : 'Show password',
+                          color: p.dim,
+                          icon: Icon(
+                            _showPassword
+                                ? Icons.visibility_off
+                                : Icons.visibility,
+                          ),
+                          onPressed: () =>
+                              setState(() => _showPassword = !_showPassword),
+                        ),
+                      ),
+                      gap,
+                      TuiField(
+                        label: switch (_kind) {
+                          DbKind.postgres => 'Database',
+                          DbKind.mongo => 'Authentication database',
+                          DbKind.redis => 'Database number',
+                        },
+                        controller: _database,
+                        hint: _kind.database,
+                        autocorrect: false,
+                        keyboardType: _kind == DbKind.redis
+                            ? TextInputType.number
+                            : TextInputType.text,
+                        validator: (value) =>
+                            _kind == DbKind.redis &&
+                                (value ?? '').trim().isNotEmpty &&
+                                int.tryParse(value!.trim()) == null
+                            ? 'A number, like 0'
+                            : null,
+                      ),
+                    ],
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _database,
-                decoration: hinted(switch (_kind) {
-                  DbKind.postgres => 'Database',
-                  DbKind.mongo => 'Authentication database',
-                  DbKind.redis => 'Database number',
-                }, _kind.database),
-                autocorrect: false,
-                keyboardType: _kind == DbKind.redis
-                    ? TextInputType.number
-                    : TextInputType.text,
-                validator: (value) =>
-                    _kind == DbKind.redis &&
-                        (value ?? '').trim().isNotEmpty &&
-                        int.tryParse(value!.trim()) == null
-                    ? 'A number, like 0'
-                    : null,
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

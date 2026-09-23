@@ -156,7 +156,7 @@ void main() {
       await tester.pumpAndSettle();
       // Filled from a URI, its password too. One the app cannot read says
       // why, and stays open.
-      await tester.tap(find.text('Import URI'));
+      await tester.tap(find.bySemanticsLabel('Import URI'));
       await tester.pumpAndSettle();
       final uriField = find.byWidgetPredicate(
         (widget) =>
