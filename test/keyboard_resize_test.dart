@@ -107,7 +107,11 @@ void main() {
 
     /// The keyboard's slide as Android reports it: a new inset every frame,
     /// easing out, from [from] to [to] physical pixels.
-    Future<void> slide({required double from, required double to}) async {
+    Future<void> slide({
+      required double from,
+      required double to,
+      void Function()? eachFrame,
+    }) async {
       for (var frame = 1; frame <= 20; frame++) {
         final t = Curves.easeOutCubic.transform(frame / 20);
         tester.view.viewInsets = FakeViewPadding(
@@ -121,6 +125,7 @@ void main() {
           tester.getRect(find.byType(TerminalView).first).bottom,
           tester.getRect(find.byType(TerminalKeyBar).first).top,
         );
+        eachFrame?.call();
       }
     }
 
@@ -138,8 +143,27 @@ void main() {
       expect(shell.resizes.single.$2, lessThan(before.$2));
     }
 
-    // And going away: one more, back where it was.
-    await slide(from: 900, to: 0);
+    // And going away: no band of bare background above the terminal while
+    // the keyboard slides off and the resize waits — the terminal fills the
+    // room it is shown in on every frame, its top cut off rather than empty.
+    final view = find.byType(TerminalView).first;
+    final room = find.ancestor(of: view, matching: find.byType(ClipRect)).first;
+    await slide(
+      from: 900,
+      to: 0,
+      eachFrame: () {
+        expect(
+          tester.getRect(view).top,
+          lessThanOrEqualTo(tester.getRect(room).top),
+        );
+        // Resized once, as the slide starts, to where it ends up, so the
+        // host has redrawn before the rows come into view.
+        for (final shell in shells) {
+          expect(shell.resizes, hasLength(2));
+          expect(shell.resizes.last, before);
+        }
+      },
+    );
     await tester.pump(const Duration(milliseconds: 200));
     for (final shell in shells) {
       expect(shell.resizes, hasLength(2));

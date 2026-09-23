@@ -31,6 +31,11 @@ the-desktop-build-loses-what-stands-in-for:
 
 # ---------------------------------------------------- real platform: e2e ----
 
+a-backspace-from-the-on-screen-keyboard-no:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/soft_backspace_start.yaml, test/terminal_hardware_key_test.dart
+  why: "soft_backspace: on CI's emulator, whose keyboard is Gboard, KEYCODE_DEL with nothing to delete leaves the keyboard up and one tap brings it back after Back; red with 2088f11 reverted (run 35777420652). adb injects from device -1 without FLAG_SOFT_KEYBOARD, so the flag half is held by the widget tests (report-only)"
+
 sharing-text-to-jeansh-pastes-it-into-the:
   guard: e2e-android
   by: tools/e2e_android.sh, .maestro/share_text_start.yaml, .maestro/share_text_finish.yaml

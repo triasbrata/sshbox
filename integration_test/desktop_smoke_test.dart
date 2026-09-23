@@ -24,16 +24,23 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, InkWell, TextField, Tooltip;
+    show
+        DropdownButton,
+        InkWell,
+        PopupMenuDivider,
+        SimpleDialogOption,
+        TextField,
+        Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/ui/tui.dart';
 import 'package:sshbox/src/update/updater.dart'
-    show downloadsFolder, updateHost, updatePlatform;
+    show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/hosts_page.dart' show HomeRow;
 import 'package:sshbox/src/ui/settings_page.dart'
@@ -83,7 +90,9 @@ Future<void> _until(
           .whereType<String>()
           .take(60)
           .join(' | ');
-      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
+      debugPrint(
+        'On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}',
+      );
       debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
       fail('Gave up waiting for $what');
     }
@@ -126,9 +135,8 @@ Future<TerminalView> _localShell(
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
-    for (final element in find
-        .byType(TerminalView, skipOffstage: false)
-        .evaluate()) {
+    for (final element
+        in find.byType(TerminalView, skipOffstage: false).evaluate()) {
       final each = element.widget as TerminalView;
       final onstage = find.byWidget(each).evaluate().isNotEmpty;
       debugPrint(
@@ -221,6 +229,170 @@ Future<void> _closeTabs(WidgetTester tester) async {
 Future<String?> _clipboard() async =>
     (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
+/// A program in [view]'s shell that asks for bracketed paste, or turns it
+/// off, and keeps every byte it reads until it is asked what it got: what a
+/// paste or a drop really sends, which the prompt's own drawing of it hides.
+Future<_Recording> _record(
+  WidgetTester tester,
+  TerminalView view, {
+  required bool bracketed,
+}) async {
+  final dir = _scratch();
+  final got = File('${dir.path}/got');
+  final ready = File('${dir.path}/ready');
+  final stop = File('${dir.path}/stop');
+  final done = 'recorded-${dir.path.hashCode}';
+  final script = File('${dir.path}/record.sh')
+    ..writeAsStringSync(
+      "printf '\\033[?2004${bracketed ? 'h' : 'l'}'\n"
+      'stty raw -echo\n'
+      'touch ${ready.path}\n'
+      // From the terminal by name: a background job of a non-interactive sh
+      // reads /dev/null otherwise.
+      'dd bs=1 of=${got.path} </dev/tty 2>/dev/null &\n'
+      'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
+      'kill \$! 2>/dev/null\n'
+      'stty sane\n'
+      "printf '\\033[?2004l'\n"
+      'echo $done\n',
+    );
+  _run(view, 'sh ${script.path}');
+  await _until(tester, ready.existsSync, 'the program to start reading');
+  await tester.pump(const Duration(milliseconds: 300));
+  return _Recording(tester, view, got, stop, done);
+}
+
+class _Recording {
+  _Recording(this._tester, this._view, this._got, this._stop, this._done);
+
+  final WidgetTester _tester;
+  final TerminalView _view;
+  final File _got;
+  final File _stop;
+  final String _done;
+
+  /// What the program read, once [length] bytes are in or they have stopped
+  /// coming for a second — so fewer than expected still reach the caller's
+  /// comparison, which says what did come — and the program ended.
+  Future<String> bytes(String what, {int? length}) async {
+    var last = -1;
+    var still = DateTime.now();
+    await _until(_tester, () {
+      final now = _got.existsSync() ? _got.lengthSync() : 0;
+      if (length != null && now >= length) return true;
+      if (now != last) {
+        last = now;
+        still = DateTime.now();
+        return false;
+      }
+      return now > 0 &&
+          DateTime.now().difference(still) > const Duration(seconds: 1);
+    }, what);
+    _stop.createSync();
+    await _until(
+      _tester,
+      () => _text(_view).any((line) => line.contains(_done)),
+      'the recording program to end',
+    );
+    return utf8.decode(_got.readAsBytesSync(), allowMalformed: true);
+  }
+}
+
+/// xdotool, which drives this run's own Xvfb display as a person would.
+Future<String> _xdo(List<String> args) async {
+  final result = await Process.run('xdotool', args);
+  expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
+  return '${result.stdout}'.trim();
+}
+
+/// Jeansh's window on the display.
+Future<String> _window() async =>
+    (await _xdo(['search', '--onlyvisible', '--name', r'^Jeansh$']))
+        .split('\n')
+        .first;
+
+/// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
+/// the embedder, which is how a menu is shut.
+///
+/// A menu it shuts is gone only once its closing animation has run, and this
+/// binding draws a frame only when pumped: one pump after the key is the
+/// animation's first tick, the menu still fully drawn. So a check that it
+/// closed waits for it with [_until], as the one after this does — a single
+/// pump read an open menu that had already been popped (run 35782032581).
+Future<void> _escape(WidgetTester tester) async {
+  if (Platform.isLinux) {
+    await _xdo(['windowfocus', '--sync', await _window()]);
+    await _xdo(['key', 'Escape']);
+  } else {
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+  }
+  await tester.pump(const Duration(milliseconds: 600));
+}
+
+/// A GTK window offering files for a drag, as a file manager does, put
+/// below Jeansh's window, which fills the top 720 rows of the 1280x900
+/// display tools/e2e_desktop.sh gives the run.
+const _dragSource = r'''
+import sys
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gdk, Gio, Gtk
+
+uris = [Gio.File.new_for_path(p).get_uri() for p in sys.argv[1:]]
+window = Gtk.Window(title='e2e drag source')
+window.set_default_size(200, 100)
+window.move(0, 760)
+button = Gtk.Button(label='drag')
+button.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [], Gdk.DragAction.COPY)
+button.drag_source_add_uri_targets()
+button.connect('drag-data-get', lambda w, c, data, i, t: data.set_uris(uris))
+window.add(button)
+window.connect('destroy', Gtk.main_quit)
+window.show_all()
+Gtk.main()
+''';
+
+/// Drags [path] from [_dragSource] onto the middle of Jeansh's window — the
+/// terminal of the tab showing — with the X pointer, as a hand would.
+Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
+  final source = File('${dir.path}/drag_source.py')
+    ..writeAsStringSync(_dragSource);
+  final process = await Process.start('python3', [source.path, path]);
+  try {
+    Future<void> xdo(List<String> args) async {
+      final result = await Process.run('xdotool', args);
+      expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
+    }
+
+    await xdo([
+      'search',
+      '--sync',
+      '--onlyvisible',
+      '--name',
+      r'^e2e drag source$',
+    ]);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await xdo(['mousemove', '100', '810']);
+    await xdo(['mousedown', '1']);
+    for (final (x, y) in [
+      (110, 805),
+      (130, 790),
+      (300, 650),
+      (500, 500),
+      (640, 400),
+      (645, 405),
+    ]) {
+      await xdo(['mousemove', '$x', '$y']);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await tester.pump();
+    }
+    await xdo(['mouseup', '1']);
+    await tester.pump(const Duration(milliseconds: 500));
+  } finally {
+    process.kill();
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -230,11 +402,7 @@ void main() {
     // claims to be.
     expect(
       defaultTargetPlatform,
-      anyOf(
-        TargetPlatform.linux,
-        TargetPlatform.windows,
-        TargetPlatform.macOS,
-      ),
+      anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
     );
     expect(isDesktop, isTrue);
   });
@@ -507,6 +675,186 @@ touch '${done.path}'
     },
   );
 
+  // #87: a right-click in a tab's page opens the tab's own menu there. In a
+  // terminal its Paste comes first and the tab's items after a divider; a
+  // program reading the mouse gets a plain right-click, and Shift keeps one
+  // for the menu; and in a group the pane clicked takes focus and opens its
+  // own menu, Take out of group among it.
+  testWidgets(
+    'a right-click in a terminal opens its tab\'s menu, unless a program '
+    'reads the mouse',
+    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    (tester) async {
+      await _launch(tester);
+      await _localShell(tester);
+      final tabs = find.byWidgetPredicate(
+        (w) =>
+            w is Tooltip &&
+            ((w.message ?? '').startsWith('Close ') ||
+                w.message == 'Reconnect'),
+      );
+      final before = tabs.evaluate().length;
+
+      // The terminals on screen: two in a group, one otherwise.
+      List<TerminalView> shown() => find
+          .byType(TerminalView)
+          .evaluate()
+          .map((element) => element.widget as TerminalView)
+          .toList();
+      TerminalView focused() =>
+          shown().firstWhere((each) => each.focusNode?.hasFocus ?? false);
+      // Found by its focus node, which the page keeps: the widget itself is
+      // built anew as the shell draws.
+      Future<void> rightClick(TerminalView view) => tester.tapAt(
+        tester.getCenter(
+          find.byWidgetPredicate(
+            (w) => w is TerminalView && w.focusNode == view.focusNode,
+          ),
+        ),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      Future<void> menuWith(String item) async {
+        await _until(
+          tester,
+          () => find.text(item).evaluate().isNotEmpty,
+          'the menu to offer $item',
+        );
+        await tester.pump(const Duration(milliseconds: 600));
+      }
+
+      // Paste, a divider, then what the tab's chip offers.
+      await rightClick(focused());
+      await menuWith('Duplicate session');
+      final paste = tester.getTopLeft(find.text('Paste')).dy;
+      final divider = tester.getTopLeft(find.byType(PopupMenuDivider)).dy;
+      final duplicate = tester.getTopLeft(find.text('Duplicate session')).dy;
+      expect(
+        paste < divider && divider < duplicate,
+        isTrue,
+        reason: 'Paste, a divider and the tab\'s items, in that order',
+      );
+      await tester.tap(find.text('Duplicate session'));
+      await _until(
+        tester,
+        () => tabs.evaluate().length == before + 1,
+        'a second Local shell',
+      );
+
+      // A program reading the mouse: a plain right-click reaches it as
+      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
+      // menu. It records what it reads until told to stop.
+      final dir = _scratch();
+      final got = File('${dir.path}/got');
+      final ready = File('${dir.path}/ready');
+      final stop = File('${dir.path}/stop');
+      final script = File('${dir.path}/mouse.sh')
+        ..writeAsStringSync(
+          "printf '\\033[?1000h'\n"
+          'stty raw -echo\n'
+          'touch ${ready.path}\n'
+          // From the terminal by name: a background job of a
+          // non-interactive sh reads /dev/null otherwise.
+          'dd bs=1 count=6 of=${got.path} </dev/tty 2>/dev/null &\n'
+          'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
+          'kill \$! 2>/dev/null\n'
+          'stty sane\n'
+          "printf '\\033[?1000l'\n"
+          'echo mouse-done\n',
+        );
+      final view = focused();
+      _run(view, 'sh ${script.path}');
+      try {
+        await _until(tester, ready.existsSync, 'the program to read the mouse');
+      } on TestFailure {
+        debugPrint('The terminal holds:\n${_text(view).join('\n')}');
+        rethrow;
+      }
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await rightClick(view);
+      await _until(
+        tester,
+        () => got.existsSync() && got.lengthSync() >= 3,
+        'the right-click to reach the program',
+      );
+      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Duplicate session'),
+        findsNothing,
+        reason: 'a menu opened over a program that reads the mouse',
+      );
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await rightClick(view);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await menuWith('Duplicate session');
+      // Escape shuts it, and the focus goes back to the terminal.
+      await _escape(tester);
+      await _until(
+        tester,
+        () => find.text('Duplicate session').evaluate().isEmpty,
+        'Escape to close the terminal\'s menu',
+      );
+
+      stop.createSync();
+      await _until(
+        tester,
+        () => _text(focused()).any((line) => line.contains('mouse-done')),
+        'the program to finish',
+      );
+
+      // The two in a group: the pane that is not focused, right-clicked,
+      // takes focus and opens its own menu.
+      await rightClick(focused());
+      await _pick(tester, 'Group with…');
+      await _until(
+        tester,
+        () => find.byType(SimpleDialogOption).evaluate().isNotEmpty,
+        'the tabs to group with',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(find.byType(SimpleDialogOption).first);
+      await _until(
+        tester,
+        () => shown().length == 2,
+        'the two shells side by side',
+      );
+      final other = shown().firstWhere(
+        (each) => !(each.focusNode?.hasFocus ?? false),
+      );
+      await rightClick(other);
+      await menuWith('Take out of group');
+      // The menu keeps the keys, so Escape closes it and the focus goes back
+      // to the pane the click moved it to.
+      await _escape(tester);
+      await _until(
+        tester,
+        () => find.text('Take out of group').evaluate().isEmpty,
+        'Escape to close the menu: it did not hold the keys',
+      );
+      expect(
+        other.focusNode?.hasFocus,
+        isTrue,
+        reason: 'the menu opened for a pane that did not take focus',
+      );
+      // And a menu opened on the pane, focused by now, stays open.
+      await rightClick(other);
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(
+          find.text('Take out of group'),
+          findsOneWidget,
+          reason: 'the menu closed by itself ${(i + 1) * 100} ms after opening',
+        );
+      }
+      await _escape(tester);
+
+      await _closeTabs(tester);
+    },
+  );
+
   // #3: a diff opens split on a wide page, as GitHub's does — old on the
   // left, new on the right, a changed line level with the line that replaced
   // it; a narrow one stacks them. This window is past the 900 dp where split
@@ -517,9 +865,8 @@ touch '${done.path}'
     (tester) async {
       // Where a Local shell's Git panel looks: the login home, a folder or
       // two down. Made for this test and gone after it.
-      final repo = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('jeansh-e2e-repo-');
+      final repo = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-repo-');
       addTearDown(() => repo.deleteSync(recursive: true));
       Future<void> git(List<String> args) async {
         final done = await Process.run('git', ['-C', repo.path, ...args]);
@@ -586,17 +933,32 @@ touch '${done.path}'
       // says which to expect, and both are held to it.
       final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
       if (wide) {
-        expect(find.byTooltip('Unified view'), findsOneWidget,
-            reason: 'a wide page did not open split');
-        expect(old.dy, closeTo(now.dy, 1),
-            reason: 'the changed line is not level with what replaced it');
-        expect(old.dx, lessThan(now.dx),
-            reason: 'the old line is not on the left');
+        expect(
+          find.byTooltip('Unified view'),
+          findsOneWidget,
+          reason: 'a wide page did not open split',
+        );
+        expect(
+          old.dy,
+          closeTo(now.dy, 1),
+          reason: 'the changed line is not level with what replaced it',
+        );
+        expect(
+          old.dx,
+          lessThan(now.dx),
+          reason: 'the old line is not on the left',
+        );
       } else {
-        expect(find.byTooltip('Split view'), findsOneWidget,
-            reason: 'a narrow page did not open unified');
-        expect(old.dy, lessThan(now.dy),
-            reason: 'the old line is not above the new');
+        expect(
+          find.byTooltip('Split view'),
+          findsOneWidget,
+          reason: 'a narrow page did not open unified',
+        );
+        expect(
+          old.dy,
+          lessThan(now.dy),
+          reason: 'the old line is not above the new',
+        );
       }
       await _closeTabs(tester);
     },
@@ -725,6 +1087,100 @@ touch '${done.path}'
     },
   );
 
+  // #67: a pasted picture's path goes in as a paste where the program asked
+  // for bracketed paste, which is what Claude Code turns into [Image #N],
+  // and typed where it did not: ESC[200~<path> ESC[201~, one space inside,
+  // or <path> and a space.
+  testWidgets(
+    'a pasted picture\'s path is bracketed when the program asks for it',
+    skip: !Platform.isLinux,
+    (tester) async {
+      final png = base64.decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+        'CB0C8AAAAASUVORK5CYII=',
+      );
+      final picture = File('${_scratch().path}/picture.png')
+        ..writeAsBytesSync(png);
+      final put = await Process.run('sh', [
+        '-c',
+        r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
+        'sh',
+        picture.path,
+      ]);
+      expect(put.exitCode, 0, reason: 'xclip could not take the picture');
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final pasted = RegExp(r'/\S*/pasted-\d{8}-\d{6}[^ \x1b]*\.png');
+      for (final bracketed in [true, false]) {
+        final got = await _record(tester, view, bracketed: bracketed);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        final bytes = await got.bytes('the pasted picture\'s path');
+        final path = pasted.firstMatch(bytes)?.group(0);
+        expect(
+          path,
+          isNotNull,
+          reason: 'no picture path in ${jsonEncode(bytes)}',
+        );
+        expect(
+          bytes,
+          bracketed ? '\x1b[200~$path \x1b[201~' : '$path ',
+          reason: bracketed ? 'not sent as a paste' : 'not typed as it was',
+        );
+        expect(File(path!).readAsBytesSync(), png);
+      }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #67: a file dragged from the desktop onto a Local shell pastes its own
+  // path, escaped as iTerm2 escapes one — a backslash before every character
+  // a shell reads — bracketed where the program asked for it, typed with a
+  // space where it did not. A folder, here on this machine, is pasted the
+  // same way; only a shell elsewhere refuses one, being unable to upload it.
+  //
+  // The drag is a real X drag-and-drop: a small GTK window offers the file,
+  // and xdotool presses on it, moves onto Jeansh's terminal and lets go.
+  testWidgets(
+    'a file or folder dropped on a Local shell pastes its escaped path',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true',
+    (tester) async {
+      final dir = _scratch();
+      final file = File("${dir.path}/it's a shot (1).png")
+        ..writeAsStringSync('png');
+      final folder = Directory('${dir.path}/a folder')..createSync();
+      String escaped(String path) => path.replaceAllMapped(
+        RegExp(r'[^A-Za-z0-9._/-]'),
+        (m) => '\\${m[0]}',
+      );
+      // Written out literally rather than through [escaped], so a change to
+      // the rule the app and this test share cannot pass unnoticed.
+      expect(escaped(file.path), endsWith(r"/it\'s\ a\ shot\ \(1\).png"));
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      for (final (dropped, bracketed) in [
+        (file.path, true),
+        (folder.path, false),
+      ]) {
+        final got = await _record(tester, view, bracketed: bracketed);
+        await _drag(tester, dropped, dir);
+        final want = escaped(dropped);
+        expect(
+          await got.bytes(
+            'the dropped path',
+            length: bracketed ? want.length + 13 : want.length + 1,
+          ),
+          bracketed ? '\x1b[200~$want \x1b[201~' : '$want ',
+        );
+      }
+      expect(find.textContaining('cannot be uploaded'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
   // #14: a desktop's terminal can use a font the machine has, not only the
   // five the app bundles — listed from the machine itself, monospaced ones
   // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
@@ -738,7 +1194,10 @@ touch '${done.path}'
       if (Platform.isMacOS) {
         family = 'Menlo';
       } else {
-        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
+        final listed = await Process.run('fc-list', [
+          ':spacing=mono',
+          'family',
+        ]);
         final mono =
             LineSplitter.split('${listed.stdout}')
                 .map((line) => line.split(',').first.trim())
@@ -763,7 +1222,10 @@ touch '${done.path}'
       );
       await _until(
         tester,
-        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
+        () => find
+            .textContaining('families, monospaced first')
+            .evaluate()
+            .isNotEmpty,
         "this computer's fonts to be listed",
       );
       // Built is not on screen: a list builds a little past its edge.
@@ -912,15 +1374,122 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () =>
-            find.textContaining('is not the file the release describes')
-                .evaluate()
-                .isNotEmpty,
+        () => find
+            .textContaining('is not the file the release describes')
+            .evaluate()
+            .isNotEmpty,
         'a download of the wrong file to be refused',
       );
       expect(find.bySemanticsLabel('Restart to update'), findsNothing);
       expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
       expect(File('${kept.path}.part').existsSync(), isFalse);
+    },
+  );
+
+  // #65: a newer release is said where the user will see it — the daily
+  // check offers it, and once put off it stays marked on Home and in
+  // Settings — and the window's own Help menu checks on demand, answering up
+  // to date when it is, which clears the mark.
+  //
+  // The menu is GTK's, outside Flutter, so it is clicked as a person would:
+  // xdotool on the window's menu bar under Xvfb. F10 and Alt+H are left to
+  // the terminal on purpose, so the mouse is the way in.
+  testWidgets(
+    'Help checks for updates, and a newer release stays marked until a '
+    'check finds none',
+    skip: updateHost.isEmpty || !Platform.isLinux,
+    (tester) async {
+      // The build's own version, 1.0.0+1 in e2e.yml, is current; 9.9.8 is out.
+      var latest = (version: '9.9.8', build: 998);
+      final server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        Uri.parse(updateHost).port,
+      );
+      addTearDown(() => server.close(force: true));
+      server.listen((request) {
+        final response = request.response;
+        if (request.uri.path == '/latest.json') {
+          response.write(
+            jsonEncode({
+              'version': latest.version,
+              'build': latest.build,
+              'platforms': {
+                updatePlatform: {
+                  'path': 'desktop/$updatePlatform/jeansh.tar.gz',
+                  'size': 1,
+                  'sha256': '0' * 64,
+                },
+              },
+            }),
+          );
+        } else {
+          response.statusCode = HttpStatus.notFound;
+        }
+        unawaited(response.close());
+      });
+
+      // Today's check is due again, and nothing is marked yet: an earlier
+      // test's check leaves both behind in this one process.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(Updater.checkedKey);
+      updateAvailable.value = null;
+
+      await _launch(tester);
+      await _until(
+        tester,
+        () => find.text('Jeansh 9.9.8 is out').evaluate().isNotEmpty,
+        'the daily check to offer the newer release',
+      );
+      await _pick(tester, 'Not now');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Update 9.9.8'),
+        findsOneWidget,
+        reason: 'Home does not mark a release that was put off',
+      );
+
+      await _settings(tester);
+      final available = find.text('Jeansh 9.9.8 is available');
+      await tester.scrollUntilVisible(
+        available,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(available, findsOneWidget);
+      await _backHome(tester);
+
+      // The menu bar's Help, then its one item.
+      Future<void> helpCheck() async {
+        await _xdo(['mousemove', '--window', await _window(), '20', '10']);
+        await _xdo(['click', '1']);
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        await _xdo(['key', 'Down', 'Return']);
+      }
+
+      await helpCheck();
+      await _until(
+        tester,
+        () => find.text('Jeansh 9.9.8 is out').evaluate().isNotEmpty,
+        'Help › Check for updates… to offer the newer release',
+      );
+      await _pick(tester, 'Not now');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.text('Update 9.9.8'), findsOneWidget);
+
+      // Nothing newer any more: the menu says so, and the mark goes.
+      latest = (version: '1.0.0', build: 1);
+      await helpCheck();
+      await _until(
+        tester,
+        () => find.text('Jeansh is up to date').evaluate().isNotEmpty,
+        'Help › Check for updates… to say Jeansh is up to date',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Update 9.9.8'),
+        findsNothing,
+        reason: 'the mark outlived a check that found nothing newer',
+      );
     },
   );
 

@@ -219,6 +219,51 @@ void main() {
     variant: _desktop,
   );
 
+  testWidgets(
+    "a right-click that focuses a group's pane leaves the keys with its menu, "
+    'and a second one on that pane opens one menu that stays open',
+    (tester) async {
+      await pump(tester, ['one', 'two']);
+      await tester.longPress(find.text('two'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Group with…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('one').last);
+      await tester.pumpAndSettle();
+      final pane = tester.getCenter(find.byType(TerminalView).first);
+      // Two menus would be two of each, the one below still on screen.
+      Finder all(String text) => find.text(text, skipOffstage: false);
+
+      // "two" holds the keys: this focuses "one", and its menu takes Escape.
+      await rightClick(tester, pane);
+      expect(all('Take out of group'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(all('Take out of group'), findsNothing);
+      expect(shells['one']!.sent.join(), isNot(contains('\x1b')));
+
+      // "one" holds the keys now: right-click it again.
+      await tester.tapAt(
+        pane,
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(all('Take out of group'), findsOneWidget);
+      expect(all('Paste'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(all('Take out of group'), findsNothing);
+
+      // And the keys are back with the pane clicked.
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
+      expect(shells['one']!.sent, contains('b'));
+      expect(shells['two']!.sent, isNot(contains('b')));
+    },
+    variant: _desktop,
+  );
+
   testWidgets('on Android a right-click in a tab opens nothing new', (
     tester,
   ) async {
