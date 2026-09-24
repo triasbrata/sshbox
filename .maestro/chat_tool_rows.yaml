@@ -41,14 +41,14 @@ env:
     visible: "Tools done"
     timeout: 20000
 
-- tapOn: "(?s)Bash.*"
+- tapOn: "(?s)\\W*Bash.*"
 - extendedWaitUntil:
     visible: "List the e2e folder"
     timeout: 5000
 - assertNotVisible: '(?s).*"command".*'
 - takeScreenshot: chat-tool-rows-bash
 
-- tapOn: "(?s)Write.*"
+- tapOn: "(?s)\\W*Write.*"
 - extendedWaitUntil:
     visible: '(?s)first line\nsecond line'
     timeout: 5000
