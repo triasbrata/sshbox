@@ -46,9 +46,9 @@ on:
         type: string
         default: ''
       only:
-        description: Run every job, the Linux desktop job alone, or the Android one alone
+        description: Run every job, or one of them alone
         type: choice
-        options: [all, linux-desktop, android]
+        options: [all, android, linux-desktop, windows-desktop, macos-desktop]
         default: all
       block:
         description: One Android block to run alone after seed_host, or empty for every flow
@@ -68,10 +68,10 @@ permissions:
 
 jobs:
   run:
-    # A hand run may ask for the Linux desktop job alone, which is minutes
-    # rather than the emulator's half hour; tag.yml's call passes no `only`,
-    # so the release gate always runs this.
-    if: inputs.only != 'linux-desktop'
+    # A hand run may ask for one desktop job alone, which is minutes rather
+    # than the emulator's half hour; tag.yml's call passes no `only`, so the
+    # release gate always runs this, and every other job too.
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -272,7 +272,7 @@ jobs:
   # releases the moment it landed. It reports until it has been green a while,
   # as every new check here does, and joins the gate only by choice.
   desktop:
-    if: inputs.only != 'android'
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'linux-desktop' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     continue-on-error: true
@@ -325,14 +325,10 @@ jobs:
 
   # macOS: the Cocoa embedder in the runner's own login session -- a window
   # nobody looks at, which is as headless as a Mac gets. Report-only, as the
-  # Linux job is.
-  #
-  # Hand runs only. tag.yml waits on every job here before it promotes, and a
-  # macOS runner is slow to come and slow to build, so in the release gate it
-  # would only hold a release back for a result nothing gates on. tag.yml runs
-  # on a push, so its call never sees this job; a workflow_dispatch does.
+  # Linux job is, and on every release: tag.yml waits on it, but at about ten
+  # minutes it is done well inside the emulator's half hour.
   desktop-macos:
-    if: github.event_name == 'workflow_dispatch' && inputs.only == 'all'
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'macos-desktop' }}
     runs-on: macos-latest
     timeout-minutes: 40
     continue-on-error: true
@@ -356,5 +352,55 @@ jobs:
 
       - run: flutter pub get
 
+      # tmux, which the Local shell uses where the machine has it: the image
+      # has Homebrew but not tmux.
+      - run: brew install tmux
+
+      # The same feed as Linux, so the updater and the Jeansh menu's Check for
+      # Updates… have a newer release to find.
       - name: Drive the desktop build
-        run: tools/e2e_desktop.sh macos
+        run: |
+          feed=http://127.0.0.1:47719
+          tools/e2e_desktop.sh macos \
+            --dart-define=JEANSH_UPDATE_HOST=$feed \
+            --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
+            --dart-define=JEANSH_VERSION=1.0.0+1
+
+  # Windows: the Win32 embedder in the runner's own session, as on macOS.
+  # Report-only, on every release. Its Local shell is PowerShell under
+  # ConPTY, so the tests that drive sh skip there, each saying why.
+  desktop-windows:
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'windows-desktop' }}
+    runs-on: windows-latest
+    timeout-minutes: 50
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2 # .fvmrc
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Drive the desktop build
+        run: |
+          feed=http://127.0.0.1:47719
+          tools/e2e_desktop.sh windows \
+            --dart-define=JEANSH_UPDATE_HOST=$feed \
+            --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
+            --dart-define=JEANSH_VERSION=1.0.0+1

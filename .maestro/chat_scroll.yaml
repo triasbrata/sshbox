@@ -37,10 +37,11 @@ env:
     visible: "Sessions on this host"
     timeout: 20000
 - tapOn: "Sessions on this host"
+# \W*: the redesign draws a state glyph before each session's name.
 - extendedWaitUntil:
-    visible: "(?s)E2E long session.*"
+    visible: "(?s)\\W*E2E long session.*"
     timeout: 20000
-- tapOn: "(?s)E2E long session.*"
+- tapOn: "(?s)\\W*E2E long session.*"
 # A session opens at its end.
 - extendedWaitUntil:
     visible: "Answer 60 of the long session"
@@ -56,13 +57,13 @@ env:
 - evalScript: ${output.place = maestro.copiedText}
 
 - tapOn: "Sessions on this host"
-- tapOn: "(?s)E2E short session.*"
+- tapOn: "(?s)\\W*E2E short session.*"
 - extendedWaitUntil:
     visible: "Short answer of the short session"
     timeout: 20000
 
 - tapOn: "Sessions on this host"
-- tapOn: "(?s)E2E long session.*"
+- tapOn: "(?s)\\W*E2E long session.*"
 - extendedWaitUntil:
     visible: "Answer \\d+ of the long session"
     timeout: 20000

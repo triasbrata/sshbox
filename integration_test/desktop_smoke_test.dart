@@ -25,6 +25,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show
+        DropdownButton,
         InkWell,
         PopupMenuDivider,
         TextField,
@@ -36,13 +37,11 @@ import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/platform.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sshbox/src/ui/tui.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
-import 'package:sshbox/src/ui/hosts_page.dart' show HomeRow;
 import 'package:sshbox/src/ui/settings_page.dart'
-    show LinkModifier, localTmux, terminalFonts;
+    show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
@@ -52,9 +51,10 @@ import 'package:xterm2/xterm.dart';
 /// widget tree pumped in memory.
 Future<void> _launch(WidgetTester tester) async {
   await app.main();
-  // A fresh data folder is a fresh install, which opens on the slides. They
-  // animate, so nothing settles until they are skipped.
-  final skip = find.bySemanticsLabel('Skip');
+  // A fresh install opens on the redesign's first-run slides, which animate,
+  // so nothing settles until they are skipped; main has none and opens on
+  // Home. Waited for rather than settled, for either.
+  final skip = _label('Skip');
   await _until(
     tester,
     () =>
@@ -62,7 +62,7 @@ Future<void> _launch(WidgetTester tester) async {
         find.byTooltip('Settings').evaluate().isNotEmpty,
     'Home, or the first-run slides',
   );
-  if (skip.evaluate().isNotEmpty) await tester.tap(skip);
+  if (skip.evaluate().isNotEmpty) await tester.tap(skip.first);
   await tester.pumpAndSettle(const Duration(seconds: 5));
 }
 
@@ -88,9 +88,7 @@ Future<void> _until(
           .whereType<String>()
           .take(60)
           .join(' | ');
-      debugPrint(
-        'On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}',
-      );
+      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
       debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
       fail('Gave up waiting for $what');
     }
@@ -115,7 +113,7 @@ Future<TerminalView> _localShell(
   // its tabs, goes first, so one failure does not become the next test's.
   await _closeTabs(tester);
   // The card, not a tab of the same name brought back from a run before.
-  await tester.tap(find.widgetWithText(HomeRow, 'Local shell'));
+  await tester.tap(_homeCard('Local shell'));
   // Ready once a terminal holds focus and its shell has drawn a prompt: typed
   // before that, a command can reach a terminal with no shell behind it yet.
   // The focused one, where a tab shows several panes; looked up afresh each
@@ -133,8 +131,9 @@ Future<TerminalView> _localShell(
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
-    for (final element
-        in find.byType(TerminalView, skipOffstage: false).evaluate()) {
+    for (final element in find
+        .byType(TerminalView, skipOffstage: false)
+        .evaluate()) {
       final each = element.widget as TerminalView;
       final onstage = find.byWidget(each).evaluate().isNotEmpty;
       debugPrint(
@@ -172,6 +171,30 @@ Directory _scratch() {
   return dir;
 }
 
+/// Text reading [text] in any case: the redesign's buttons draw their labels
+/// in capitals, and main's as written.
+Finder _label(String text) => find.byWidgetPredicate(
+  (w) =>
+      w is Text &&
+      (w.data ?? w.textSpan?.toPlainText())?.toLowerCase() ==
+          text.toLowerCase(),
+);
+
+/// Widgets whose type is named one of [names], generics and all: main's
+/// Material widget beside the redesign's termul one, found by name so this
+/// file builds on both.
+Finder _kind(String a, String b) => find.byWidgetPredicate((w) {
+  final type = '${w.runtimeType}';
+  return type == a || type == b;
+});
+
+/// Home's own card or row for [title], not a tab of the same name: a Card on
+/// main, a HomeRow in the redesign.
+Finder _homeCard(String title) => find.ancestor(
+  of: find.text(title),
+  matching: _kind('Card', 'HomeRow'),
+);
+
 /// Picks [item] from a menu once it has finished opening. A menu grows open,
 /// and its items are built before they can be hit: tapped as soon as one is
 /// built, the tap can land on the barrier beside a clipped item, which shuts
@@ -180,11 +203,11 @@ Directory _scratch() {
 Future<void> _pick(WidgetTester tester, String item) async {
   await _until(
     tester,
-    () => find.text(item).evaluate().isNotEmpty,
+    () => _label(item).evaluate().isNotEmpty,
     'the menu to offer $item',
   );
   await tester.pump(const Duration(milliseconds: 600));
-  await tester.tap(find.text(item));
+  await tester.tap(_label(item));
 }
 
 /// Settings, opened from Home and slid all the way in. Scrolled sooner, a
@@ -199,11 +222,17 @@ Future<void> _settings(WidgetTester tester) async {
 /// found while Settings is still sliding out over it, and a tap on it then
 /// lands on the page leaving — a Mac run opened no shell that way.
 Future<void> _backHome(WidgetTester tester) async {
-  // termul's ← BACK, named Back.
-  await tester.tap(find.bySemanticsLabel('Back'));
+  // An AppBar's BackButton on main, its tooltip Back; the redesign's ← BACK,
+  // which has no tooltip and is named Back for accessibility instead.
+  final material = find.byTooltip('Back');
+  await tester.tap(
+    material.evaluate().isNotEmpty
+        ? material.last
+        : find.bySemanticsLabel('Back').last,
+  );
   await _until(
     tester,
-    () => find.widgetWithText(HomeRow, 'Local shell').evaluate().isNotEmpty,
+    () => _homeCard('Local shell').evaluate().isNotEmpty,
     'Home again',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -304,10 +333,12 @@ Future<String> _xdo(List<String> args) async {
 }
 
 /// Jeansh's window on the display.
-Future<String> _window() async =>
-    (await _xdo(['search', '--onlyvisible', '--name', r'^Jeansh$']))
-        .split('\n')
-        .first;
+Future<String> _window() async => (await _xdo([
+  'search',
+  '--onlyvisible',
+  '--name',
+  r'^Jeansh$',
+])).split('\n').first;
 
 /// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
 /// the embedder, which is how a menu is shut.
@@ -391,30 +422,166 @@ Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
   }
 }
 
+/// testWidgets, with a skip that says why in the log: flutter test prints only
+/// a skipped test's name, and a skip is no coverage, so it has to be read as
+/// one.
+void _test(String name, WidgetTesterCallback body, {String? skip}) {
+  if (skip != null) {
+    debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
+  }
+  testWidgets(name, body, skip: skip != null);
+}
+
+const _powershell = 'its Local shell is PowerShell under ConPTY, which '
+    'redraws what a program writes, and this test drives sh';
+
+/// Why a picture-paste test skips here, or null where it runs.
+final _pictureSkip = Platform.isWindows
+    ? 'a picture pasted into PowerShell goes through %TEMP%, which this test '
+          'does not check'
+    : Platform.isMacOS && Platform.environment['CI'] != 'true'
+    ? "off CI a Mac's pasteboard is its user's own"
+    : null;
+
+/// The window's own Check for updates… menu item, chosen as a person would:
+/// GTK's Help menu clicked with xdotool on Linux, the Win32 Help menu with the
+/// mouse on Windows, the Jeansh menu through System Events on macOS. Each is
+/// outside Flutter, so each is reached from outside.
+Future<void> _menuCheckForUpdates() async {
+  if (Platform.isLinux) {
+    await _xdo(['mousemove', '--window', await _window(), '20', '10']);
+    await _xdo(['click', '1']);
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    await _xdo(['key', 'Down', 'Return']);
+  } else if (Platform.isWindows) {
+    final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+    try {
+      final script = File('${dir.path}\\menu.ps1')..writeAsStringSync(_winMenu);
+      final done = await Process.run('powershell', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script.path, //
+      ]);
+      expect(done.exitCode, 0, reason: 'the Help menu: ${done.stderr}${done.stdout}');
+    } finally {
+      dir.deleteSync(recursive: true);
+    }
+  } else {
+    final done = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh"',
+      '-e',
+      'set frontmost to true',
+      '-e',
+      'click menu item "Check for Updates…" of menu 1 of menu bar item 2 '
+          'of menu bar 1',
+      '-e',
+      'end tell',
+    ]);
+    expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
+  }
+}
+
+/// Clicks Help, then Check for updates… in it, with the mouse, after reading
+/// both labels off the window's own menu: what the runner in
+/// windows/runner/flutter_window.cpp puts there.
+const _winMenu = r'''
+$ErrorActionPreference = 'Stop'
+Add-Type @"
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class W {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string n);
+  [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr m, int i);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuString(IntPtr m, uint i, StringBuilder s, int n, uint f);
+  [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr h, IntPtr m, uint i, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  public static string Text(IntPtr m, uint i) { var s = new StringBuilder(256); GetMenuString(m, i, s, 256, 0x400); return s.ToString(); }
+  public static void Click(RECT r) {
+    SetCursorPos((r.L + r.R) / 2, (r.T + r.B) / 2);
+    System.Threading.Thread.Sleep(150);
+    mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+  }
+}
+"@
+[W]::SetProcessDPIAware() | Out-Null
+$h = [W]::FindWindow('FLUTTER_RUNNER_WIN32_WINDOW', 'Jeansh')
+if ($h -eq [IntPtr]::Zero) { throw 'no Jeansh window' }
+$bar = [W]::GetMenu($h)
+if ([W]::Text($bar, 0) -ne 'Help') { throw "the menu bar reads '$([W]::Text($bar, 0))'" }
+$help = [W]::GetSubMenu($bar, 0)
+$item = [W]::Text($help, 0)
+if ($item -ne "Check for updates$([char]0x2026)") { throw "Help reads '$item'" }
+[W]::SetForegroundWindow($h) | Out-Null
+$r = New-Object W+RECT
+if (-not [W]::GetMenuItemRect($h, $bar, 0, [ref]$r)) { throw 'Help has no place on screen' }
+[W]::Click($r)
+Start-Sleep -Milliseconds 800
+if (-not [W]::GetMenuItemRect([IntPtr]::Zero, $help, 0, [ref]$r)) { throw 'the Help menu did not open' }
+[W]::Click($r)
+''';
+
+/// [png] on the machine's clipboard as a picture: xclip on Linux's X11,
+/// AppleScript's PNG class on macOS.
+Future<void> _putPicture(String png) async {
+  final put = Platform.isMacOS
+      ? await Process.run('osascript', [
+          '-e', 'on run argv', //
+          '-e', 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)',
+          '-e', 'end run',
+          png,
+        ])
+      // xclip stays behind to hand the picture over, so it is given nothing
+      // of ours to hold open, or this would wait for it.
+      : await Process.run('sh', [
+          '-c',
+          r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
+          'sh',
+          png,
+        ]);
+  expect(put.exitCode, 0, reason: 'the clipboard would not take the picture: ${put.stderr}');
+}
+
+/// The paste chord: ⌘V on a Mac, Ctrl+V elsewhere.
+Future<void> _paste(WidgetTester tester) async {
+  final key = Platform.isMacOS
+      ? LogicalKeyboardKey.metaLeft
+      : LogicalKeyboardKey.controlLeft;
+  await tester.sendKeyDownEvent(key);
+  await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+  await tester.sendKeyUpEvent(key);
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('it is a real desktop, not a faked one', (tester) async {
+  _test('it is a real desktop, not a faked one', (tester) async {
     // No override anywhere: this is what the embedder really reports. If this
     // ever passes under `flutter test` the suite is not running where it
     // claims to be.
     expect(
       defaultTargetPlatform,
-      anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
+      anyOf(
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+        TargetPlatform.macOS,
+      ),
     );
     expect(isDesktop, isTrue);
   });
 
-  testWidgets('the app boots and draws Home', (tester) async {
+  _test('the app boots and draws Home', (tester) async {
     await _launch(tester);
 
     // If a plugin threw on the way up — secure storage with no Secret Service,
     // notifications, app_links — this is where it shows, as nothing drawn.
-    expect(find.text('Jeansh'), findsWidgets);
+    expect(_label('Jeansh'), findsWidgets);
     expect(find.text('Terminal buddy in your pocket'), findsOneWidget);
   });
 
-  testWidgets('a desktop offers a shell on the machine itself', (tester) async {
+  _test('a desktop offers a shell on the machine itself', (tester) async {
     await _launch(tester);
 
     // Desktop only, through flutter_pty: a phone has no pty to open. This is
@@ -430,7 +597,7 @@ void main() {
   // rather than as a green tick that proves nothing. desktop_test.dart covers
   // the choice itself against a faked platform.
 
-  testWidgets('Settings offers updates, and says so honestly when it cannot', (
+  _test('Settings offers updates, and says so honestly when it cannot', (
     tester,
   ) async {
     await _launch(tester);
@@ -448,7 +615,7 @@ void main() {
     // that has it. Scroll until it is built rather than weakening the
     // assertion.
     await tester.scrollUntilVisible(
-      find.bySemanticsLabel('Check for updates'),
+      _label('Check for updates'),
       300,
       scrollable: find.byType(Scrollable).first,
     );
@@ -456,8 +623,8 @@ void main() {
 
     // Desktop only: Android updates through Play, so this section is not built
     // there at all.
-    expect(find.bySemanticsLabel('Updates'), findsOneWidget);
-    expect(find.bySemanticsLabel('Check for updates'), findsOneWidget);
+    expect(_label('Updates'), findsOneWidget);
+    expect(_label('Check for updates'), findsOneWidget);
 
     // With no JEANSH_UPDATE_HOST baked in — which is every build until the
     // bucket is served — the row must say the build takes no updates rather
@@ -486,9 +653,9 @@ void main() {
   // which _programCopied only lets a focused terminal do, so there is
   // something to leak; and the reply is read where the program read it. A
   // mutation run of the pre-fix terminal must fail this test.
-  testWidgets(
+  _test(
     'a program in the shell cannot read the clipboard back',
-    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
       final view = await _localShell(tester);
@@ -544,9 +711,9 @@ touch '${done.path}'
   // went through selectedText. Drawn here the same way, selected with a real
   // mouse drag, which copy on select — on by default on a desktop — puts on
   // the clipboard, and copied again from the right-click menu.
-  testWidgets(
+  _test(
     'a mouse selection copies what the line reads, a drawn gap as a space',
-    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
       final view = await _localShell(tester);
@@ -629,9 +796,8 @@ touch '${done.path}'
   // opened nothing and said "That host is no longer saved": openHost looked
   // every id up among the saved hosts, and `local` never is one. A mouse has
   // no long press, so on a desktop the tab's menu is a right-click away.
-  testWidgets(
+  _test(
     'a right-click on a Local shell tab duplicates it',
-    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
     (tester) async {
       await _launch(tester);
       await _localShell(tester);
@@ -678,10 +844,10 @@ touch '${done.path}'
   // program reading the mouse gets a plain right-click, and Shift keeps one
   // for the menu; and in a group the pane clicked takes focus and opens its
   // own menu, Take out of group among it.
-  testWidgets(
+  _test(
     'a right-click in a terminal opens its tab\'s menu, unless a program '
     'reads the mouse',
-    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
       await _localShell(tester);
@@ -809,11 +975,11 @@ touch '${done.path}'
       await _pick(tester, 'Group with…');
       await _until(
         tester,
-        () => find.byType(TuiSheetOption).evaluate().isNotEmpty,
+        () => _kind('SimpleDialogOption', 'TuiSheetOption').evaluate().isNotEmpty,
         'the tabs to group with',
       );
       await tester.pump(const Duration(milliseconds: 600));
-      await tester.tap(find.byType(TuiSheetOption).first);
+      await tester.tap(_kind('SimpleDialogOption', 'TuiSheetOption').first);
       await _until(
         tester,
         () => shown().length == 2,
@@ -857,14 +1023,18 @@ touch '${done.path}'
   // left, new on the right, a changed line level with the line that replaced
   // it; a narrow one stacks them. This window is past the 900 dp where split
   // begins, so the check is that the two sit on one row, side by side.
-  testWidgets(
+  _test(
     'a diff on a wide page opens split, the old line beside the new',
-    skip: Platform.isWindows, // Its Local shell is PowerShell, not sh.
+    skip: Platform.isWindows
+        ? 'the repository is made under HOME for a POSIX login shell to find; '
+              'a Windows Local shell is PowerShell, with no HOME'
+        : null,
     (tester) async {
       // Where a Local shell's Git panel looks: the login home, a folder or
       // two down. Made for this test and gone after it.
-      final repo = Directory(Platform.environment['HOME']!)
-          .createTempSync('jeansh-e2e-repo-');
+      final repo = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('jeansh-e2e-repo-');
       addTearDown(() => repo.deleteSync(recursive: true));
       Future<void> git(List<String> args) async {
         final done = await Process.run('git', ['-C', repo.path, ...args]);
@@ -889,24 +1059,30 @@ touch '${done.path}'
       // already; on a machine with others it is picked from the list.
       final name = repo.path.split('/').last;
       bool ours(String? root) => root != null && root.endsWith('/$name');
-      final picker = find.byType(TuiDropdown<String>);
-      TuiDropdown<String> shown() => tester.widget(picker.first);
+      // Material's DropdownButton on main, the redesign's TuiDropdown: both
+      // hold a value, an onChanged and choices that each have a value.
+      final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
+      dynamic shown() => tester.widget(picker.first);
+      Iterable<String?> choices() => [
+        for (final dynamic item in shown() is DropdownButton
+            ? shown().items as List
+            : shown().options as List)
+          item.value as String?,
+      ];
       await _until(
         tester,
-        () =>
-            picker.evaluate().isNotEmpty &&
-            shown().options.any((item) => ours(item.value)),
+        () => picker.evaluate().isNotEmpty && choices().any(ours),
         "the Git panel to find this test's repository",
       );
-      if (!ours(shown().value)) {
+      if (!ours(shown().value as String?)) {
         // Picked through the picker's own onChanged, which is what choosing
         // it from the list calls: this test is of the diff, and a long list
         // in a small menu is its own fight.
-        final root = shown().options.map((item) => item.value).firstWhere(ours);
+        final root = choices().firstWhere(ours);
         shown().onChanged!(root);
         await _until(
           tester,
-          () => ours(shown().value),
+          () => ours(shown().value as String?),
           "this test's repository to be picked",
         );
       }
@@ -931,32 +1107,17 @@ touch '${done.path}'
       // says which to expect, and both are held to it.
       final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
       if (wide) {
-        expect(
-          find.byTooltip('Unified view'),
-          findsOneWidget,
-          reason: 'a wide page did not open split',
-        );
-        expect(
-          old.dy,
-          closeTo(now.dy, 1),
-          reason: 'the changed line is not level with what replaced it',
-        );
-        expect(
-          old.dx,
-          lessThan(now.dx),
-          reason: 'the old line is not on the left',
-        );
+        expect(find.byTooltip('Unified view'), findsOneWidget,
+            reason: 'a wide page did not open split');
+        expect(old.dy, closeTo(now.dy, 1),
+            reason: 'the changed line is not level with what replaced it');
+        expect(old.dx, lessThan(now.dx),
+            reason: 'the old line is not on the left');
       } else {
-        expect(
-          find.byTooltip('Split view'),
-          findsOneWidget,
-          reason: 'a narrow page did not open unified',
-        );
-        expect(
-          old.dy,
-          lessThan(now.dy),
-          reason: 'the old line is not above the new',
-        );
+        expect(find.byTooltip('Split view'), findsOneWidget,
+            reason: 'a narrow page did not open unified');
+        expect(old.dy, lessThan(now.dy),
+            reason: 'the old line is not above the new');
       }
       await _closeTabs(tester);
     },
@@ -966,12 +1127,16 @@ touch '${done.path}'
   // host's tabs do — an sshbox- session on the machine's own tmux server, a
   // tab that splits into panes, and the session ended by the tab's ✕.
   //
-  // Linux only: tools/e2e_desktop.sh gives the run a tmux server of its own
-  // there, through TMUX_TMPDIR, and elsewhere this would open sessions on the
-  // server of whoever runs it.
-  testWidgets(
+  // Linux, where tools/e2e_desktop.sh gives the run a tmux server of its own
+  // through TMUX_TMPDIR, and a Mac on CI, a runner nobody else's tmux is on;
+  // on a Mac someone uses this would open sessions on their own server.
+  _test(
     'a Local shell runs in tmux where the machine has it',
-    skip: !Platform.isLinux,
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no tmux'
+        : Platform.isMacOS && Platform.environment['CI'] != 'true'
+        ? "off CI a Mac's tmux server is its user's own"
+        : null,
     (tester) async {
       Future<List<String>> sessions() async {
         final listed = await Process.run('tmux', [
@@ -1037,11 +1202,12 @@ touch '${done.path}'
   // as a Linux desktop without Wayland has it; copied into a folder only its
   // owner can enter, the file only its owner can read.
   //
-  // Linux only: the picture is put on the clipboard with xclip, and the run's
-  // display is Xvfb's own (tools/e2e_desktop.sh).
-  testWidgets(
+  // On Linux the picture goes on Xvfb's clipboard with xclip, and on a Mac on
+  // the pasteboard through AppleScript, then ⌘V. Off CI a Mac's pasteboard is
+  // its user's own, so it is left alone there.
+  _test(
     "a picture pasted into a Local shell is copied and its path typed",
-    skip: !Platform.isLinux,
+    skip: _pictureSkip,
     (tester) async {
       // One transparent pixel: a real PNG, small enough to write out here.
       final png = base64.decode(
@@ -1050,26 +1216,28 @@ touch '${done.path}'
       );
       final picture = File('${_scratch().path}/picture.png')
         ..writeAsBytesSync(png);
-      // xclip stays behind to hand the picture over, so it is given nothing
-      // of ours to hold open, or this would wait for it.
-      final put = await Process.run('sh', [
-        '-c',
-        r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
-        'sh',
-        picture.path,
-      ]);
-      expect(put.exitCode, 0, reason: 'xclip could not take the picture');
+      await _putPicture(picture.path);
 
       await _launch(tester);
       final view = await _localShell(tester);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await _paste(tester);
 
       final typed = RegExp(r'(/\S*/pasted-\d{8}-\d{6}\.png)');
       String? path;
       await _until(tester, () {
-        for (final line in _text(view)) {
+        // Whole lines, rows a long path wrapped onto joined back: a Mac's
+        // $TMPDIR is long enough to wrap.
+        final lines = view.terminal.buffer.lines;
+        final joined = <String>[];
+        for (var i = 0; i < lines.length; i++) {
+          final row = lines[i].getText().trimRight();
+          if (lines[i].isWrapped && joined.isNotEmpty) {
+            joined.last += row;
+          } else {
+            joined.add(row);
+          }
+        }
+        for (final line in joined) {
           path = typed.firstMatch(line)?.group(1) ?? path;
         }
         return path != null;
@@ -1089,9 +1257,9 @@ touch '${done.path}'
   // for bracketed paste, which is what Claude Code turns into [Image #N],
   // and typed where it did not: ESC[200~<path> ESC[201~, one space inside,
   // or <path> and a space.
-  testWidgets(
+  _test(
     'a pasted picture\'s path is bracketed when the program asks for it',
-    skip: !Platform.isLinux,
+    skip: _pictureSkip,
     (tester) async {
       final png = base64.decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
@@ -1099,29 +1267,17 @@ touch '${done.path}'
       );
       final picture = File('${_scratch().path}/picture.png')
         ..writeAsBytesSync(png);
-      final put = await Process.run('sh', [
-        '-c',
-        r'xclip -selection clipboard -t image/png -i "$1" >/dev/null 2>&1',
-        'sh',
-        picture.path,
-      ]);
-      expect(put.exitCode, 0, reason: 'xclip could not take the picture');
+      await _putPicture(picture.path);
 
       await _launch(tester);
       final view = await _localShell(tester);
       final pasted = RegExp(r'/\S*/pasted-\d{8}-\d{6}[^ \x1b]*\.png');
       for (final bracketed in [true, false]) {
         final got = await _record(tester, view, bracketed: bracketed);
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await _paste(tester);
         final bytes = await got.bytes('the pasted picture\'s path');
         final path = pasted.firstMatch(bytes)?.group(0);
-        expect(
-          path,
-          isNotNull,
-          reason: 'no picture path in ${jsonEncode(bytes)}',
-        );
+        expect(path, isNotNull, reason: 'no picture path in ${jsonEncode(bytes)}');
         expect(
           bytes,
           bracketed ? '\x1b[200~$path \x1b[201~' : '$path ',
@@ -1141,9 +1297,13 @@ touch '${done.path}'
   //
   // The drag is a real X drag-and-drop: a small GTK window offers the file,
   // and xdotool presses on it, moves onto Jeansh's terminal and lets go.
-  testWidgets(
+  _test(
     'a file or folder dropped on a Local shell pastes its escaped path',
-    skip: !Platform.isLinux || Platform.environment['CI'] != 'true',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI it would drag with the user's own pointer"
+        : null,
     (tester) async {
       final dir = _scratch();
       final file = File("${dir.path}/it's a shot (1).png")
@@ -1167,10 +1327,7 @@ touch '${done.path}'
         await _drag(tester, dropped, dir);
         final want = escaped(dropped);
         expect(
-          await got.bytes(
-            'the dropped path',
-            length: bracketed ? want.length + 13 : want.length + 1,
-          ),
+          await got.bytes('the dropped path', length: bracketed ? want.length + 13 : want.length + 1),
           bracketed ? '\x1b[200~$want \x1b[201~' : '$want ',
         );
       }
@@ -1183,19 +1340,18 @@ touch '${done.path}'
   // five the app bundles — listed from the machine itself, monospaced ones
   // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
   // first monospaced family fontconfig lists that the app does not bundle.
-  testWidgets(
+  _test(
     "the terminal takes a font installed on the machine",
-    skip: Platform.isWindows,
     (tester) async {
       final bundled = terminalFonts.map((font) => font.family).toSet();
       final String family;
       if (Platform.isMacOS) {
         family = 'Menlo';
+      } else if (Platform.isWindows) {
+        // Listed through GDI, and marked monospaced by its FIXED_PITCH.
+        family = 'Consolas';
       } else {
-        final listed = await Process.run('fc-list', [
-          ':spacing=mono',
-          'family',
-        ]);
+        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
         final mono =
             LineSplitter.split('${listed.stdout}')
                 .map((line) => line.split(',').first.trim())
@@ -1220,10 +1376,7 @@ touch '${done.path}'
       );
       await _until(
         tester,
-        () => find
-            .textContaining('families, monospaced first')
-            .evaluate()
-            .isNotEmpty,
+        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
         "this computer's fonts to be listed",
       );
       // Built is not on screen: a list builds a little past its edge.
@@ -1232,11 +1385,11 @@ touch '${done.path}'
       await tester.tap(row);
       await _until(
         tester,
-        () => find.bySemanticsLabel('Installed fonts').evaluate().isNotEmpty,
+        () => _label('Installed fonts').evaluate().isNotEmpty,
         'the font picker',
       );
       // Settings' own fields are behind the dialog.
-      final picker = find.byType(TuiDialog);
+      final picker = _kind('AlertDialog', 'TuiDialog');
       await tester.enterText(
         find.descendant(of: picker, matching: find.byType(TextField)),
         family,
@@ -1282,9 +1435,9 @@ touch '${done.path}'
   // machine are baked in with --dart-define, which e2e.yml's Linux job
   // passes, and a download lands in the user's Downloads — a runner's, then,
   // not a machine someone uses.
-  testWidgets(
+  _test(
     'an update is kept only when its hash is the release\'s',
-    skip: updateHost.isEmpty,
+    skip: updateHost.isEmpty ? 'this build has no update host baked in' : null,
     (tester) async {
       final build = utf8.encode('not a real build, only bytes to be checked');
       const name = 'jeansh-e2e-update.tar.gz';
@@ -1328,7 +1481,7 @@ touch '${done.path}'
       });
 
       // Asked from Settings, opening it first when it is not open.
-      final check = find.bySemanticsLabel('Check for updates');
+      final check = _label('Check for updates');
       Future<void> askSettings() async {
         if (check.evaluate().isEmpty) {
           await _settings(tester);
@@ -1357,7 +1510,7 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () => find.bySemanticsLabel('Restart to update').evaluate().isNotEmpty,
+        () => _label('Restart to update').evaluate().isNotEmpty,
         'the download to be checked and offered to install',
       );
       expect(find.text('Jeansh 9.9.9 is ready'), findsOneWidget);
@@ -1372,13 +1525,13 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () => find
-            .textContaining('is not the file the release describes')
-            .evaluate()
-            .isNotEmpty,
+        () =>
+            find.textContaining('is not the file the release describes')
+                .evaluate()
+                .isNotEmpty,
         'a download of the wrong file to be refused',
       );
-      expect(find.bySemanticsLabel('Restart to update'), findsNothing);
+      expect(_label('Restart to update'), findsNothing);
       expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
       expect(File('${kept.path}.part').existsSync(), isFalse);
     },
@@ -1389,13 +1542,14 @@ touch '${done.path}'
   // Settings — and the window's own Help menu checks on demand, answering up
   // to date when it is, which clears the mark.
   //
-  // The menu is GTK's, outside Flutter, so it is clicked as a person would:
-  // xdotool on the window's menu bar under Xvfb. F10 and Alt+H are left to
-  // the terminal on purpose, so the mouse is the way in.
-  testWidgets(
+  // The menu is the platform's, outside Flutter, so it is clicked as a person
+  // would, through _menuCheckForUpdates: GTK's and Win32's Help, the Mac's
+  // Jeansh menu. F10 and Alt+H are left to the terminal on purpose, so the
+  // mouse is the way in.
+  _test(
     'Help checks for updates, and a newer release stays marked until a '
     'check finds none',
-    skip: updateHost.isEmpty || !Platform.isLinux,
+    skip: updateHost.isEmpty ? 'this build has no update host baked in' : null,
     (tester) async {
       // The build's own version, 1.0.0+1 in e2e.yml, is current; 9.9.8 is out.
       var latest = (version: '9.9.8', build: 998);
@@ -1441,13 +1595,13 @@ touch '${done.path}'
       await _pick(tester, 'Not now');
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        find.text('Update 9.9.8'),
+        _label('Update 9.9.8'),
         findsOneWidget,
         reason: 'Home does not mark a release that was put off',
       );
 
       await _settings(tester);
-      final available = find.text('Jeansh 9.9.8 is available');
+      final available = _label('Jeansh 9.9.8 is available');
       await tester.scrollUntilVisible(
         available,
         300,
@@ -1456,13 +1610,7 @@ touch '${done.path}'
       expect(available, findsOneWidget);
       await _backHome(tester);
 
-      // The menu bar's Help, then its one item.
-      Future<void> helpCheck() async {
-        await _xdo(['mousemove', '--window', await _window(), '20', '10']);
-        await _xdo(['click', '1']);
-        await Future<void>.delayed(const Duration(milliseconds: 600));
-        await _xdo(['key', 'Down', 'Return']);
-      }
+      const helpCheck = _menuCheckForUpdates;
 
       await helpCheck();
       await _until(
@@ -1472,7 +1620,7 @@ touch '${done.path}'
       );
       await _pick(tester, 'Not now');
       await tester.pump(const Duration(milliseconds: 600));
-      expect(find.text('Update 9.9.8'), findsOneWidget);
+      expect(_label('Update 9.9.8'), findsOneWidget);
 
       // Nothing newer any more: the menu says so, and the mark goes.
       latest = (version: '1.0.0', build: 1);
@@ -1484,7 +1632,7 @@ touch '${done.path}'
       );
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        find.text('Update 9.9.8'),
+        _label('Update 9.9.8'),
         findsNothing,
         reason: 'the mark outlived a check that found nothing newer',
       );
@@ -1500,9 +1648,14 @@ touch '${done.path}'
   // put in the run's data folder, that notes each address it is given. On CI
   // alone — on a machine someone uses, their own browser choice, which the
   // desktop reads first, would open a real window instead.
-  testWidgets(
+  _test(
     'a link opens with the key Settings names, and not the other',
-    skip: !Platform.isLinux || Platform.environment['CI'] != 'true',
+    skip: !Platform.isLinux
+        ? 'the stand-in browser is registered through XDG mime handlers, '
+              'which only Linux reads'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI the machine's own browser would open"
+        : null,
     (tester) async {
       final data = Platform.environment['XDG_DATA_HOME']!;
       final opened = File('$data/e2e-opened-links');
@@ -1526,7 +1679,7 @@ touch '${done.path}'
 
       await _launch(tester);
       await _settings(tester);
-      final choice = find.byType(TuiSelect<LinkModifier>);
+      final choice = _kind('SegmentedButton<LinkModifier>', 'TuiSelect<LinkModifier>');
       await tester.scrollUntilVisible(
         choice,
         300,
@@ -1535,7 +1688,7 @@ touch '${done.path}'
       await tester.ensureVisible(choice);
       await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(
-        find.descendant(of: choice, matching: find.bySemanticsLabel('Alt')),
+        find.descendant(of: choice, matching: _label('Alt')),
       );
       await _until(
         tester,
