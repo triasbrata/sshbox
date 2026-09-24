@@ -34,21 +34,21 @@ env:
     timeout: 20000
 - tapOn: "Sessions on this host"
 - extendedWaitUntil:
-    visible: "(?s)E2E tool rows.*"
+    visible: "(?s)\\W*E2E tool rows.*"
     timeout: 20000
-- tapOn: "(?s)E2E tool rows.*"
+- tapOn: "(?s)\\W*E2E tool rows.*"
 - extendedWaitUntil:
     visible: "Tools done"
     timeout: 20000
 
-- tapOn: "(?s)Bash.*"
+- tapOn: "(?s)\\W*Bash.*"
 - extendedWaitUntil:
     visible: "List the e2e folder"
     timeout: 5000
 - assertNotVisible: '(?s).*"command".*'
 - takeScreenshot: chat-tool-rows-bash
 
-- tapOn: "(?s)Write.*"
+- tapOn: "(?s)\\W*Write.*"
 - extendedWaitUntil:
     visible: '(?s)first line\nsecond line'
     timeout: 5000

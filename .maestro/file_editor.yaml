@@ -42,7 +42,8 @@ env:
     timeout: 30000
 - tapOn: "Filter by name"
 - inputText: "sshbox-maestro"
-- tapOn: "${FILE}"
+# \W*: the redesign draws a glyph before each name in the tree.
+- tapOn: "(?s)\\W*${FILE}"
 
 - extendedWaitUntil:
     visible: "Save to host"
@@ -65,19 +66,23 @@ env:
 
 # Reload asks before it would drop the edit.
 - tapOn: "Reload from host"
-- assertVisible: "Discard changes?"
+- assertVisible: "(?s).*Discard changes\\?.*"
 - tapOn: "Keep editing"
 - assertVisible: "(?s).*Unsaved changes.*"
 
-# The view settings in the overflow menu.
+# The view settings in the overflow menu, read past the tick column the
+# redesign's menu draws before each item.
 - tapOn: "More"
-- assertVisible: "Word wrap"
-- assertVisible: "Smaller text"
-- tapOn: "Larger text"
+- assertVisible: "(?s).*Word wrap.*"
+- assertVisible: "(?s).*Smaller text.*"
+- tapOn: "(?s).*Larger text.*"
 
+# Saved once the edit is no longer unsaved. Not the "Saved …" toast: it
+# closes after a second, often before Maestro has looked, and CI read it
+# gone after a save that had landed. What arrived is checked on the host.
 - tapOn: "Save to host"
 - extendedWaitUntil:
-    visible: "Saved ${FILE}"
+    notVisible: "(?s).*Unsaved changes.*"
     timeout: 15000
 - assertVisible:
     text: "Save to host"
@@ -85,9 +90,18 @@ env:
 
 # A long press on the first word brings up the platform's selection bar,
 # which stays up over a select-all and goes away once something is picked.
-# The point is the first line on a tablet-sized screen.
+# The point is the first word on CI's phone-sized emulator, the only device
+# Maestro runs on (its driver will not install on the tablet's HyperOS): on
+# main's editor, then, where no selection came of it, on the redesign's,
+# whose file header puts the first line lower.
 - longPressOn:
-    point: "4%,17%"
+    point: "25%,22%"
+- runFlow:
+    when:
+      notVisible: "Copy"
+    commands:
+      - longPressOn:
+          point: "25%,29%"
 - extendedWaitUntil:
     visible: "Copy"
     timeout: 5000

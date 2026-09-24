@@ -7,7 +7,9 @@
 #
 # guard:
 #   e2e-android  a .maestro/ flow drives the real app on a device
-#   e2e-desktop  an integration_test/ test drives the real desktop app
+#   e2e-desktop  an integration_test/ test drives the real desktop app; its
+#                `platforms:` names the desktops it is green on, from linux,
+#                windows and macos -- a test that skips there does not count
 #   unit         widget or unit tests under test/ already reach it; an e2e
 #                flow would be slower and prove no more
 #   manual       cannot be automated on a runner -- `why` says what stops it
@@ -27,7 +29,8 @@
 the-desktop-build-loses-what-stands-in-for:
   guard: e2e-desktop
   by: integration_test/desktop_smoke_test.dart
-  why: "no key bar, no magic key, and a real pty on Home -- only the real desktop embedder shows this; every test under test/ reports Android"
+  platforms: linux, windows, macos
+  why: "no key bar, no magic key, and a real pty on Home -- only the real desktop embedder shows this; every test under test/ reports Android. A desktop offers a shell on the machine itself, and a right-click Duplicate session opens a second one, green on all three (e2e.yml's desktop, desktop-windows and desktop-macos jobs)"
 
 # ---------------------------------------------------- real platform: e2e ----
 

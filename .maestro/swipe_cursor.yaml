@@ -14,7 +14,7 @@
 # Requires a reachable host with a stored credential, same as the other flows.
 appId: cloud.brata.terminal
 env:
-  HOST_LABEL: "wsl"
+  HOST_LABEL: "WSL via"
 ---
 - stopApp
 - launchApp:

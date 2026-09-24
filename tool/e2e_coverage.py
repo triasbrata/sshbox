@@ -39,6 +39,17 @@ GUARDS = {
 }
 
 
+# The desktops an `e2e-desktop` entry may say it is proven on, in its
+# `platforms:` -- a green run there, never a skip. Each has a job in e2e.yml.
+DESKTOPS = {'linux', 'windows', 'macos'}
+
+
+def desktops(entry: dict) -> set[str]:
+    """The platforms an e2e-desktop entry names, or empty when any is unknown."""
+    named = {p.strip() for p in entry.get('platforms', '').split(',') if p.strip()}
+    return named if named and named <= DESKTOPS else set()
+
+
 def slug(text: str) -> str:
     """A short stable key for a feature: the first eight words of its cell.
 
@@ -168,6 +179,8 @@ def main() -> int:
             bad.append((key, entry.get('guard')))
         elif entry['guard'] == 'todo':
             todo.append((key, headline))
+        elif entry['guard'] == 'e2e-desktop' and not desktops(entry):
+            bad.append((key, 'e2e-desktop without platforms: %s' % ', '.join(sorted(DESKTOPS))))
         else:
             guarded.append((key, entry))
 
@@ -184,6 +197,9 @@ def main() -> int:
     print('UAT passed features: %d' % len(passed))
     for name in sorted(counts):
         print('  %-12s %d' % (name, counts[name]))
+    for platform in sorted(DESKTOPS):
+        on = sum(1 for _k, e in guarded if platform in desktops(e))
+        print('    %-10s %d' % ('on ' + platform, on))
     print('  %-12s %d' % ('todo', len(todo)))
     print('  %-12s %d' % ('UNGUARDED', len(unguarded)))
 

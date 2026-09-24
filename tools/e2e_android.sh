@@ -182,6 +182,22 @@ with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
 PY
 }
 
+# The code editor from the drawer: an edit saved through its own chrome. Its
+# file goes in the login home, the root of the host's file tree, with the
+# CRLF endings the flow is about, and is gone with the runner.
+file_editor() {
+  local file=/home/$SSH_USER/sshbox-maestro.yaml
+  printf 'name: maestro\r\nitems:\r\n  - one\r\n' |
+    sudo -u "$SSH_USER" tee "$file" >/dev/null
+  flow file_editor || return 1
+  # The edit arrived -- "maestro" typed once more than the one the file held
+  # -- and every line still ends in CRLF.
+  echo "The file on the host after the save:"
+  sudo od -c "$file" | head -8
+  [ "$(sudo grep -o maestro "$file" | wc -l)" -ge 2 ] &&
+    [ "$(sudo grep -c $'\r$' "$file")" -eq "$(sudo wc -l <"$file")" ]
+}
+
 # #94: Gboard sends Backspace as a raw KEYCODE_DEL key event, from the
 # virtual keyboard's device (-1) and flagged as soft, whenever it sees nothing
 # before the caret. Jeansh took it for a hardware keyboard: the soft keyboard
@@ -448,6 +464,15 @@ stand_in ''
 
 echo "::group::soft_backspace (report only)"
 soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
+echo "::endgroup::"
+
+# Last, since it leaves its session's tab open.
+#
+# Not swipe_cursor, which reads the shell's working directory off the tab's
+# title: a saved host's tab now shows its label, so it never sees a `cd`
+# land, on main or in the redesign. It wants its checks moved to this host.
+echo "::group::file_editor (report only)"
+file_editor || echo "::warning::file_editor failed -- report only, not gating"
 echo "::endgroup::"
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named

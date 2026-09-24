@@ -33,19 +33,26 @@ env:
 - extendedWaitUntil:
     visible: "Filter by name"
     timeout: 15000
-# Hidden, to begin with.
-- assertNotVisible: '(?s)\.bashrc.*'
-- tapOn: "More"
+# Hidden, to begin with. Anywhere in a row, since the redesign draws a glyph
+# before each name.
+- assertNotVisible: '(?s).*\.bashrc.*'
+# In the drawer's ⋮ on main; a button of the drawer's own bar in the
+# redesign, where More is opened for nothing.
+- runFlow:
+    when:
+      notVisible: "Show dotfiles"
+    commands:
+      - tapOn: "More"
 - tapOn: "Show dotfiles"
 - extendedWaitUntil:
-    visible: '(?s)\.bashrc.*'
+    visible: '(?s).*\.bashrc.*'
     timeout: 10000
 
 # Closed and opened again: still shown. This is the part that used to forget.
 - tapOn: "Close files"
 - tapOn: "Browse files"
 - extendedWaitUntil:
-    visible: '(?s)\.bashrc.*'
+    visible: '(?s).*\.bashrc.*'
     timeout: 10000
 
 # Across an app restart: still shown. The tab is closed first, so the relaunch
@@ -67,12 +74,16 @@ env:
     timeout: 30000
 - tapOn: "Browse files"
 - extendedWaitUntil:
-    visible: '(?s)\.bashrc.*'
+    visible: '(?s).*\.bashrc.*'
     timeout: 15000
 
 # Hide sticks the same way -- and this puts the setting back to its default.
-- tapOn: "More"
+- runFlow:
+    when:
+      notVisible: "Hide dotfiles"
+    commands:
+      - tapOn: "More"
 - tapOn: "Hide dotfiles"
-- assertNotVisible: '(?s)\.bashrc.*'
+- assertNotVisible: '(?s).*\.bashrc.*'
 - tapOn: "Close files"
 - tapOn: "Close ${HOST_LABEL}.*"
