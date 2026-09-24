@@ -42,7 +42,8 @@ env:
     timeout: 30000
 - tapOn: "Filter by name"
 - inputText: "sshbox-maestro"
-- tapOn: "${FILE}"
+# \W*: the redesign draws a glyph before each name in the tree.
+- tapOn: "(?s)\\W*${FILE}"
 
 - extendedWaitUntil:
     visible: "Save to host"
