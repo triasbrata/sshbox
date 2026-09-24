@@ -25,14 +25,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show
-        AlertDialog,
-        Card,
         DropdownButton,
         InkWell,
-        ListTile,
         PopupMenuDivider,
-        SegmentedButton,
-        SimpleDialogOption,
         TextField,
         Tooltip;
 import 'package:flutter/services.dart';
@@ -46,7 +41,7 @@ import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/settings_page.dart'
-    show LinkModifier, localTmux, terminalFonts;
+    show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
@@ -56,17 +51,19 @@ import 'package:xterm2/xterm.dart';
 /// widget tree pumped in memory.
 Future<void> _launch(WidgetTester tester) async {
   await app.main();
-  await tester.pumpAndSettle(const Duration(seconds: 5));
-  // A fresh install shows the onboarding pager once before Home, where the
-  // redesign has one; its Skip renders in capitals, so match any case. With
-  // no pager, as on main before the redesign, this finds nothing.
-  final skip = find.byWidgetPredicate(
-    (w) => w is Text && w.data?.toLowerCase() == 'skip',
+  // A fresh install opens on the redesign's first-run slides, which animate,
+  // so nothing settles until they are skipped; main has none and opens on
+  // Home. Waited for rather than settled, for either.
+  final skip = _label('Skip');
+  await _until(
+    tester,
+    () =>
+        skip.evaluate().isNotEmpty ||
+        find.byTooltip('Settings').evaluate().isNotEmpty,
+    'Home, or the first-run slides',
   );
-  if (skip.evaluate().isNotEmpty) {
-    await tester.tap(skip.first);
-    await tester.pumpAndSettle(const Duration(seconds: 2));
-  }
+  if (skip.evaluate().isNotEmpty) await tester.tap(skip.first);
+  await tester.pumpAndSettle(const Duration(seconds: 5));
 }
 
 /// Pumps until [done] says so, failing with [what] after [timeout]. A live
@@ -116,7 +113,7 @@ Future<TerminalView> _localShell(
   // its tabs, goes first, so one failure does not become the next test's.
   await _closeTabs(tester);
   // The card, not a tab of the same name brought back from a run before.
-  await tester.tap(find.widgetWithText(Card, 'Local shell'));
+  await tester.tap(_homeCard('Local shell'));
   // Ready once a terminal holds focus and its shell has drawn a prompt: typed
   // before that, a command can reach a terminal with no shell behind it yet.
   // The focused one, where a tab shows several panes; looked up afresh each
@@ -183,6 +180,21 @@ Finder _label(String text) => find.byWidgetPredicate(
           text.toLowerCase(),
 );
 
+/// Widgets whose type is named one of [names], generics and all: main's
+/// Material widget beside the redesign's termul one, found by name so this
+/// file builds on both.
+Finder _kind(String a, String b) => find.byWidgetPredicate((w) {
+  final type = '${w.runtimeType}';
+  return type == a || type == b;
+});
+
+/// Home's own card or row for [title], not a tab of the same name: a Card on
+/// main, a HomeRow in the redesign.
+Finder _homeCard(String title) => find.ancestor(
+  of: find.text(title),
+  matching: _kind('Card', 'HomeRow'),
+);
+
 /// Picks [item] from a menu once it has finished opening. A menu grows open,
 /// and its items are built before they can be hit: tapped as soon as one is
 /// built, the tap can land on the barrier beside a clipped item, which shuts
@@ -210,10 +222,11 @@ Future<void> _settings(WidgetTester tester) async {
 /// found while Settings is still sliding out over it, and a tap on it then
 /// lands on the page leaving — a Mac run opened no shell that way.
 Future<void> _backHome(WidgetTester tester) async {
-  await tester.pageBack();
+  // An AppBar's BackButton on main, the redesign's ← BACK: both named Back.
+  await tester.tap(find.bySemanticsLabel('Back').last);
   await _until(
     tester,
-    () => find.widgetWithText(Card, 'Local shell').evaluate().isNotEmpty,
+    () => _homeCard('Local shell').evaluate().isNotEmpty,
     'Home again',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -596,7 +609,7 @@ void main() {
     // that has it. Scroll until it is built rather than weakening the
     // assertion.
     await tester.scrollUntilVisible(
-      find.text('Check for updates'),
+      _label('Check for updates'),
       300,
       scrollable: find.byType(Scrollable).first,
     );
@@ -604,8 +617,8 @@ void main() {
 
     // Desktop only: Android updates through Play, so this section is not built
     // there at all.
-    expect(find.text('Updates'), findsOneWidget);
-    expect(find.text('Check for updates'), findsOneWidget);
+    expect(_label('Updates'), findsOneWidget);
+    expect(_label('Check for updates'), findsOneWidget);
 
     // With no JEANSH_UPDATE_HOST baked in — which is every build until the
     // bucket is served — the row must say the build takes no updates rather
@@ -956,11 +969,11 @@ touch '${done.path}'
       await _pick(tester, 'Group with…');
       await _until(
         tester,
-        () => find.byType(SimpleDialogOption).evaluate().isNotEmpty,
+        () => _kind('SimpleDialogOption', 'TuiSheetOption').evaluate().isNotEmpty,
         'the tabs to group with',
       );
       await tester.pump(const Duration(milliseconds: 600));
-      await tester.tap(find.byType(SimpleDialogOption).first);
+      await tester.tap(_kind('SimpleDialogOption', 'TuiSheetOption').first);
       await _until(
         tester,
         () => shown().length == 2,
@@ -1040,24 +1053,30 @@ touch '${done.path}'
       // already; on a machine with others it is picked from the list.
       final name = repo.path.split('/').last;
       bool ours(String? root) => root != null && root.endsWith('/$name');
-      final picker = find.byType(DropdownButton<String>);
-      DropdownButton<String> shown() => tester.widget(picker);
+      // Material's DropdownButton on main, the redesign's TuiDropdown: both
+      // hold a value, an onChanged and choices that each have a value.
+      final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
+      dynamic shown() => tester.widget(picker.first);
+      Iterable<String?> choices() => [
+        for (final dynamic item in shown() is DropdownButton
+            ? shown().items as List
+            : shown().options as List)
+          item.value as String?,
+      ];
       await _until(
         tester,
-        () =>
-            picker.evaluate().isNotEmpty &&
-            shown().items!.any((item) => ours(item.value)),
+        () => picker.evaluate().isNotEmpty && choices().any(ours),
         "the Git panel to find this test's repository",
       );
-      if (!ours(shown().value)) {
+      if (!ours(shown().value as String?)) {
         // Picked through the picker's own onChanged, which is what choosing
         // it from the list calls: this test is of the diff, and a long list
         // in a small menu is its own fight.
-        final root = shown().items!.map((item) => item.value).firstWhere(ours);
+        final root = choices().firstWhere(ours);
         shown().onChanged!(root);
         await _until(
           tester,
-          () => ours(shown().value),
+          () => ours(shown().value as String?),
           "this test's repository to be picked",
         );
       }
@@ -1348,11 +1367,11 @@ touch '${done.path}'
       await tester.tap(row);
       await _until(
         tester,
-        () => find.text('Installed fonts').evaluate().isNotEmpty,
+        () => _label('Installed fonts').evaluate().isNotEmpty,
         'the font picker',
       );
       // Settings' own fields are behind the dialog.
-      final picker = find.byType(AlertDialog);
+      final picker = _kind('AlertDialog', 'TuiDialog');
       await tester.enterText(
         find.descendant(of: picker, matching: find.byType(TextField)),
         family,
@@ -1360,7 +1379,7 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 300));
       final entry = find.descendant(
         of: picker,
-        matching: find.widgetWithText(ListTile, family),
+        matching: find.widgetWithText(InkWell, family),
       );
       expect(
         find.descendant(of: entry, matching: find.text('monospaced')),
@@ -1642,7 +1661,7 @@ touch '${done.path}'
 
       await _launch(tester);
       await _settings(tester);
-      final choice = find.byType(SegmentedButton<LinkModifier>);
+      final choice = _kind('SegmentedButton<LinkModifier>', 'TuiSelect<LinkModifier>');
       await tester.scrollUntilVisible(
         choice,
         300,
@@ -1651,7 +1670,7 @@ touch '${done.path}'
       await tester.ensureVisible(choice);
       await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(
-        find.descendant(of: choice, matching: find.text('Alt')),
+        find.descendant(of: choice, matching: _label('Alt')),
       );
       await _until(
         tester,
