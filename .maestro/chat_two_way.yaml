@@ -36,9 +36,9 @@ env:
     timeout: 20000
 - tapOn: "Sessions on this host"
 - extendedWaitUntil:
-    visible: "(?s)E2E live session.*"
+    visible: "(?s)\\W*E2E live session.*"
     timeout: 20000
-- tapOn: "(?s)E2E live session.*"
+- tapOn: "(?s)\\W*E2E live session.*"
 
 # Typed into, not read-only: the pane was found, and the input says so.
 - extendedWaitUntil:

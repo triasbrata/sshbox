@@ -34,9 +34,9 @@ env:
     timeout: 20000
 - tapOn: "Sessions on this host"
 - extendedWaitUntil:
-    visible: "(?s)E2E tool rows.*"
+    visible: "(?s)\\W*E2E tool rows.*"
     timeout: 20000
-- tapOn: "(?s)E2E tool rows.*"
+- tapOn: "(?s)\\W*E2E tool rows.*"
 - extendedWaitUntil:
     visible: "Tools done"
     timeout: 20000

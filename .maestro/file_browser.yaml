@@ -63,8 +63,13 @@ env:
 - assertVisible: "Close files"
 
 # The overflow menu opening proves the page is interactive rather than stuck
-# behind a spinner.
-- tapOn: "More"
+# behind a spinner. The redesign has no overflow here, the dotfiles toggle
+# sitting in the drawer's own bar, which proves as much by being there.
+- runFlow:
+    when:
+      notVisible: "Show dotfiles"
+    commands:
+      - tapOn: "More"
 - assertVisible: "Show dotfiles"
 
 # Put it all away and close the session, so the next flow does not relaunch

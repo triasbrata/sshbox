@@ -189,6 +189,19 @@ PY
 # injects from that same device -1, though without the soft flag, so it takes
 # the path the fix changed -- Gboard's own key, flag and all, it does not
 # send. Whether the keyboard is up is read off Android itself.
+# The key bar's hold-and-swipe arrows, double tap and Enter, read off the
+# tab's title as the shell sets it.
+swipe_cursor() { flow swipe_cursor; }
+
+# The code editor from the drawer: an edit saved through its own chrome. Its
+# file goes in the login home, the root of the host's file tree, with the
+# CRLF endings the flow is about, and is gone with the runner.
+file_editor() {
+  printf 'name: maestro\r\nitems:\r\n  - one\r\n' |
+    sudo -u "$SSH_USER" tee "/home/$SSH_USER/sshbox-maestro.yaml" >/dev/null
+  flow file_editor
+}
+
 ime_shown() { adb shell dumpsys input_method | grep -q 'mInputShown=true'; }
 soft_backspace() {
   local size w h
@@ -449,6 +462,13 @@ stand_in ''
 echo "::group::soft_backspace (report only)"
 soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
 echo "::endgroup::"
+
+# Last, since each leaves its session's tab open.
+for name in swipe_cursor file_editor; do
+  echo "::group::$name (report only)"
+  "$name" || echo "::warning::$name failed -- report only, not gating"
+  echo "::endgroup::"
+done
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named
 # one in its own results, under takeScreenshot/, which the upload does not
