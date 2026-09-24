@@ -182,6 +182,22 @@ with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
 PY
 }
 
+# The code editor from the drawer: an edit saved through its own chrome. Its
+# file goes in the login home, the root of the host's file tree, with the
+# CRLF endings the flow is about, and is gone with the runner.
+file_editor() {
+  local file=/home/$SSH_USER/sshbox-maestro.yaml
+  printf 'name: maestro\r\nitems:\r\n  - one\r\n' |
+    sudo -u "$SSH_USER" tee "$file" >/dev/null
+  flow file_editor || return 1
+  # The edit arrived -- "maestro" typed once more than the one the file held
+  # -- and every line still ends in CRLF.
+  echo "The file on the host after the save:"
+  sudo od -c "$file" | head -8
+  [ "$(sudo grep -o maestro "$file" | wc -l)" -ge 2 ] &&
+    [ "$(sudo grep -c $'\r$' "$file")" -eq "$(sudo wc -l <"$file")" ]
+}
+
 # #94: Gboard sends Backspace as a raw KEYCODE_DEL key event, from the
 # virtual keyboard's device (-1) and flagged as soft, whenever it sees nothing
 # before the caret. Jeansh took it for a hardware keyboard: the soft keyboard
@@ -189,19 +205,6 @@ PY
 # injects from that same device -1, though without the soft flag, so it takes
 # the path the fix changed -- Gboard's own key, flag and all, it does not
 # send. Whether the keyboard is up is read off Android itself.
-# The key bar's hold-and-swipe arrows, double tap and Enter, read off the
-# tab's title as the shell sets it.
-swipe_cursor() { flow swipe_cursor; }
-
-# The code editor from the drawer: an edit saved through its own chrome. Its
-# file goes in the login home, the root of the host's file tree, with the
-# CRLF endings the flow is about, and is gone with the runner.
-file_editor() {
-  printf 'name: maestro\r\nitems:\r\n  - one\r\n' |
-    sudo -u "$SSH_USER" tee "/home/$SSH_USER/sshbox-maestro.yaml" >/dev/null
-  flow file_editor
-}
-
 ime_shown() { adb shell dumpsys input_method | grep -q 'mInputShown=true'; }
 soft_backspace() {
   local size w h
@@ -463,12 +466,14 @@ echo "::group::soft_backspace (report only)"
 soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
 echo "::endgroup::"
 
-# Last, since each leaves its session's tab open.
-for name in swipe_cursor file_editor; do
-  echo "::group::$name (report only)"
-  "$name" || echo "::warning::$name failed -- report only, not gating"
-  echo "::endgroup::"
-done
+# Last, since it leaves its session's tab open.
+#
+# Not swipe_cursor, which reads the shell's working directory off the tab's
+# title: a saved host's tab now shows its label, so it never sees a `cd`
+# land, on main or in the redesign. It wants its checks moved to this host.
+echo "::group::file_editor (report only)"
+file_editor || echo "::warning::file_editor failed -- report only, not gating"
+echo "::endgroup::"
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named
 # one in its own results, under takeScreenshot/, which the upload does not

@@ -75,9 +75,12 @@ env:
 - assertVisible: "Smaller text"
 - tapOn: "Larger text"
 
+# Saved once the edit is no longer unsaved. Not the "Saved …" toast: it
+# closes after a second, often before Maestro has looked, and CI read it
+# gone after a save that had landed. What arrived is checked on the host.
 - tapOn: "Save to host"
 - extendedWaitUntil:
-    visible: "Saved ${FILE}"
+    notVisible: "(?s).*Unsaved changes.*"
     timeout: 15000
 - assertVisible:
     text: "Save to host"
