@@ -89,9 +89,10 @@ env:
 
 # A long press on the first word brings up the platform's selection bar,
 # which stays up over a select-all and goes away once something is picked.
-# The point is the first line on a tablet-sized screen.
+# The point is the first word on CI's phone-sized emulator, the only device
+# Maestro runs on (its driver will not install on the tablet's HyperOS).
 - longPressOn:
-    point: "4%,17%"
+    point: "25%,22%"
 - extendedWaitUntil:
     visible: "Copy"
     timeout: 5000
