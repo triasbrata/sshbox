@@ -222,8 +222,14 @@ Future<void> _settings(WidgetTester tester) async {
 /// found while Settings is still sliding out over it, and a tap on it then
 /// lands on the page leaving — a Mac run opened no shell that way.
 Future<void> _backHome(WidgetTester tester) async {
-  // An AppBar's BackButton on main, the redesign's ← BACK: both named Back.
-  await tester.tap(find.bySemanticsLabel('Back').last);
+  // An AppBar's BackButton on main, its tooltip Back; the redesign's ← BACK,
+  // which has no tooltip and is named Back for accessibility instead.
+  final material = find.byTooltip('Back');
+  await tester.tap(
+    material.evaluate().isNotEmpty
+        ? material.last
+        : find.bySemanticsLabel('Back').last,
+  );
   await _until(
     tester,
     () => _homeCard('Local shell').evaluate().isNotEmpty,
