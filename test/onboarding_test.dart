@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart'
+    show AndroidFlutterLocalNotificationsPlugin;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/app.dart';
@@ -133,5 +135,45 @@ void main() {
     // Let the toast go before the test ends.
     await tester.pump(const Duration(seconds: 10));
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('Android\'s ask to post notifications waits until the slides '
+      'are done, and comes once after Skip', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final messenger = tester.binding.defaultBinaryMessenger;
+    for (final name in ['sshbox/share', 'com.llfbandit.app_links/messages']) {
+      messenger.setMockMethodCallHandler(MethodChannel(name), (_) async => null);
+    }
+    messenger.setMockStreamHandler(
+      const EventChannel('com.llfbandit.app_links/events'),
+      MockStreamHandler.inline(onListen: (_, _) {}),
+    );
+    var asked = 0;
+    AndroidFlutterLocalNotificationsPlugin.registerWith();
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('dexterous.com/flutter/local_notifications'),
+      (call) async => switch (call.method) {
+        'requestNotificationsPermission' => (asked++, true).$2,
+        'initialize' => true,
+        _ => null,
+      },
+    );
+    telemetryOn.value = false;
+    addTearDown(() => telemetryOn.value = true);
+    onboardingDone.value = false;
+    addTearDown(() => onboardingDone.value = true);
+
+    await tester.pumpWidget(SshboxApp());
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.bySemanticsLabel('Skip'), findsOneWidget);
+    expect(asked, 0, reason: 'asked over the slides');
+
+    await tester.tap(find.bySemanticsLabel('Skip'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(asked, 1);
   });
 }

@@ -184,17 +184,21 @@ class _SshboxAppState extends State<SshboxApp> {
   /// they are done rather than covering them.
   Future<void> _countThisInstall() async {
     unawaited(telemetry.pingDaily());
-    if (!onboardingDone.value) {
-      void once() {
-        if (!onboardingDone.value) return;
-        onboardingDone.removeListener(once);
-        unawaited(_sayTelemetryOn());
-      }
-
-      onboardingDone.addListener(once);
-      return;
-    }
+    if (!onboardingDone.value) await _onboarded();
     await _sayTelemetryOn();
+  }
+
+  /// Completes once the first-run slides are done.
+  Future<void> _onboarded() {
+    final done = Completer<void>();
+    void once() {
+      if (!onboardingDone.value) return;
+      onboardingDone.removeListener(once);
+      done.complete();
+    }
+
+    onboardingDone.addListener(once);
+    return done.future;
   }
 
   Future<void> _sayTelemetryOn() async {
@@ -304,7 +308,10 @@ class _SshboxAppState extends State<SshboxApp> {
   /// last changed: see [_localShell].
   final _noTmux = <String>{};
 
+  /// A fresh install waits for the first-run slides to be done: starting
+  /// asks Android for leave to post, and its dialog would lie over them.
   Future<void> _startNotifications() async {
+    if (!onboardingDone.value) await _onboarded();
     // Local notifications first: FCM only delivers messages, the display and
     // tap routing below it are shared.
     await _notifications.initialize();
