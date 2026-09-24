@@ -35,7 +35,13 @@ env:
     timeout: 15000
 # Hidden, to begin with.
 - assertNotVisible: '(?s)\.bashrc.*'
-- tapOn: "More"
+# In the drawer's ⋮ on main; a button of the drawer's own bar in the
+# redesign, where More is opened for nothing.
+- runFlow:
+    when:
+      notVisible: "Show dotfiles"
+    commands:
+      - tapOn: "More"
 - tapOn: "Show dotfiles"
 - extendedWaitUntil:
     visible: '(?s)\.bashrc.*'
@@ -71,7 +77,11 @@ env:
     timeout: 15000
 
 # Hide sticks the same way -- and this puts the setting back to its default.
-- tapOn: "More"
+- runFlow:
+    when:
+      notVisible: "Hide dotfiles"
+    commands:
+      - tapOn: "More"
 - tapOn: "Hide dotfiles"
 - assertNotVisible: '(?s)\.bashrc.*'
 - tapOn: "Close files"

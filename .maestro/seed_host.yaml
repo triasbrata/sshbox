@@ -73,13 +73,19 @@ env:
       - inputText: "${HOST_LABEL} tailnet"
       - assertVisible: "(?s).*${HOST_LABEL} tailnet.*"
 
+# Each field is scrolled to before it is tapped. The keyboard is up from here
+# on: the redesign's editor opens under a tall "Add host" heading, and with the
+# label typed its Host is already beneath the keyboard. Whatever sits under
+# Host decides whether Port is still above it too: run
+# 35760501957 lost Port behind the keyboard once the Alternative address helper
+# grew to a paragraph. Where a field is already in view, this scrolls nothing.
+- scrollUntilVisible:
+    element:
+      text: "Host"
+    direction: DOWN
 - tapOn: "Host"
 - inputText: "${SSH_HOST}"
 
-# Each field is scrolled to before it is tapped. The keyboard is up from here
-# on, and whatever sits under Host decides whether Port is still above it: run
-# 35760501957 lost Port behind the keyboard once the Alternative address helper
-# grew to a paragraph. Where a field is already in view, this scrolls nothing.
 - scrollUntilVisible:
     element:
       text: "Port"

@@ -1219,7 +1219,19 @@ touch '${done.path}'
       final typed = RegExp(r'(/\S*/pasted-\d{8}-\d{6}\.png)');
       String? path;
       await _until(tester, () {
-        for (final line in _text(view)) {
+        // Whole lines, rows a long path wrapped onto joined back: a Mac's
+        // $TMPDIR is long enough to wrap.
+        final lines = view.terminal.buffer.lines;
+        final joined = <String>[];
+        for (var i = 0; i < lines.length; i++) {
+          final row = lines[i].getText().trimRight();
+          if (lines[i].isWrapped && joined.isNotEmpty) {
+            joined.last += row;
+          } else {
+            joined.add(row);
+          }
+        }
+        for (final line in joined) {
           path = typed.firstMatch(line)?.group(1) ?? path;
         }
         return path != null;
