@@ -174,6 +174,15 @@ Directory _scratch() {
   return dir;
 }
 
+/// Text reading [text] in any case: the redesign's buttons draw their labels
+/// in capitals, and main's as written.
+Finder _label(String text) => find.byWidgetPredicate(
+  (w) =>
+      w is Text &&
+      (w.data ?? w.textSpan?.toPlainText())?.toLowerCase() ==
+          text.toLowerCase(),
+);
+
 /// Picks [item] from a menu once it has finished opening. A menu grows open,
 /// and its items are built before they can be hit: tapped as soon as one is
 /// built, the tap can land on the barrier beside a clipped item, which shuts
@@ -182,11 +191,11 @@ Directory _scratch() {
 Future<void> _pick(WidgetTester tester, String item) async {
   await _until(
     tester,
-    () => find.text(item).evaluate().isNotEmpty,
+    () => _label(item).evaluate().isNotEmpty,
     'the menu to offer $item',
   );
   await tester.pump(const Duration(milliseconds: 600));
-  await tester.tap(find.text(item));
+  await tester.tap(_label(item));
 }
 
 /// Settings, opened from Home and slid all the way in. Scrolled sooner, a
@@ -549,7 +558,7 @@ void main() {
 
     // If a plugin threw on the way up — secure storage with no Secret Service,
     // notifications, app_links — this is where it shows, as nothing drawn.
-    expect(find.text('Jeansh'), findsWidgets);
+    expect(_label('Jeansh'), findsWidgets);
     expect(find.text('Terminal buddy in your pocket'), findsOneWidget);
   });
 
@@ -1435,7 +1444,7 @@ touch '${done.path}'
       });
 
       // Asked from Settings, opening it first when it is not open.
-      final check = find.text('Check for updates');
+      final check = _label('Check for updates');
       Future<void> askSettings() async {
         if (check.evaluate().isEmpty) {
           await _settings(tester);
@@ -1464,7 +1473,7 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () => find.text('Restart to update').evaluate().isNotEmpty,
+        () => _label('Restart to update').evaluate().isNotEmpty,
         'the download to be checked and offered to install',
       );
       expect(find.text('Jeansh 9.9.9 is ready'), findsOneWidget);
@@ -1485,7 +1494,7 @@ touch '${done.path}'
                 .isNotEmpty,
         'a download of the wrong file to be refused',
       );
-      expect(find.text('Restart to update'), findsNothing);
+      expect(_label('Restart to update'), findsNothing);
       expect(kept.existsSync(), isFalse, reason: 'the wrong file was kept');
       expect(File('${kept.path}.part').existsSync(), isFalse);
     },
@@ -1549,7 +1558,7 @@ touch '${done.path}'
       await _pick(tester, 'Not now');
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        find.text('Update 9.9.8'),
+        _label('Update 9.9.8'),
         findsOneWidget,
         reason: 'Home does not mark a release that was put off',
       );
@@ -1574,7 +1583,7 @@ touch '${done.path}'
       );
       await _pick(tester, 'Not now');
       await tester.pump(const Duration(milliseconds: 600));
-      expect(find.text('Update 9.9.8'), findsOneWidget);
+      expect(_label('Update 9.9.8'), findsOneWidget);
 
       // Nothing newer any more: the menu says so, and the mark goes.
       latest = (version: '1.0.0', build: 1);
@@ -1586,7 +1595,7 @@ touch '${done.path}'
       );
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        find.text('Update 9.9.8'),
+        _label('Update 9.9.8'),
         findsNothing,
         reason: 'the mark outlived a check that found nothing newer',
       );
