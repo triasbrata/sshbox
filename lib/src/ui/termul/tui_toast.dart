@@ -12,6 +12,8 @@
 // tested alone — and an [alignment] and [margin], so a host can sit low,
 // clear of a page's header, as Jeansh's first-run notice does. A host
 // given a controller leaves it alone when it goes.
+//
+// A card's Semantics is its own node too, for the same reason.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -467,7 +469,12 @@ class _TuiToastCardState extends State<TuiToastCard>
       ),
     );
 
+    // Its own node: without one the label and the swipe's actions merge
+    // into whatever node is above the host — over the navigator, the one
+    // holding the whole app — and an e2e flow or a screen reader finds no
+    // toast to read.
     return Semantics(
+      container: true,
       liveRegion: true,
       label:
           '${widget.type.semanticsLabel}: ${widget.title}'

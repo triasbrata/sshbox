@@ -2088,8 +2088,9 @@ void main() {
     /// counts the chats the button opened and the times the host was asked.
     Future<({List<void> opened, _ClaudeHost host})> pumpChat(
       WidgetTester tester,
-      String version,
-    ) async {
+      String version, {
+      bool asInTheApp = false,
+    }) async {
       final host = _ClaudeHost(version);
       final opened = <void>[];
       final session = LiveSession(
@@ -2104,6 +2105,10 @@ void main() {
       addTearDown(session.dispose);
       await tester.pumpWidget(
         MaterialApp(
+          // The app lays its toasts over the navigator, as SshboxApp does.
+          builder: asInTheApp
+              ? (context, child) => ToastLayer(child: child!)
+              : null,
           home: TerminalPage(
             session: session,
             secrets: _NoSecrets(),
@@ -2163,6 +2168,36 @@ void main() {
         ),
         findsOneWidget,
       );
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('its refusal shows, and stays past 2 s, in the toast layer the '
+        'app lays over its navigator, as a node of its own', (tester) async {
+      final (:opened, host: _) = await pumpChat(
+        tester,
+        '2.1.100 (Claude Code)',
+        asInTheApp: true,
+      );
+
+      await tapChat(tester);
+      await tester.pump(const Duration(seconds: 2));
+
+      expect(opened, isEmpty);
+      expect(
+        _toast(
+          'Claude Code 2.1.100 on this host is too old for chat — it needs '
+          '2.1.259 or newer.',
+          TuiToastType.warning,
+        ),
+        findsOneWidget,
+      );
+      // A node of its own, the card's size, as Maestro and a screen reader
+      // need: not merged into the node that holds the whole app.
+      final handle = tester.ensureSemantics();
+      final node = tester.getSemantics(find.byType(TuiToastCard));
+      expect(node.label, contains('too old for chat'));
+      expect(node.rect.height, lessThan(200));
+      handle.dispose();
       await tester.pumpAndSettle();
     });
 
