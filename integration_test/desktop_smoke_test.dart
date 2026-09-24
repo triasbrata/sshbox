@@ -1595,7 +1595,7 @@ touch '${done.path}'
       );
 
       await _settings(tester);
-      final available = find.text('Jeansh 9.9.8 is available');
+      final available = _label('Jeansh 9.9.8 is available');
       await tester.scrollUntilVisible(
         available,
         300,
