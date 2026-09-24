@@ -352,6 +352,10 @@ jobs:
 
       - run: flutter pub get
 
+      # tmux, which the Local shell uses where the machine has it: the image
+      # has Homebrew but not tmux.
+      - run: brew install tmux
+
       # The same feed as Linux, so the updater and the Jeansh menu's Check for
       # Updates… have a newer release to find.
       - name: Drive the desktop build
