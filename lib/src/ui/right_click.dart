@@ -71,8 +71,13 @@ class JeanshBinding extends WidgetsFlutterBinding {
   final ControlClick _controlClick;
 
   /// In place of [WidgetsFlutterBinding.ensureInitialized], first in main.
-  static void ensureInitialized({required bool Function() ctrlOpensLinks}) =>
-      JeanshBinding._(ControlClick(ctrlOpensLinks: ctrlOpensLinks));
+  ///
+  /// Not over a binding already made, which only integration_test makes,
+  /// always in a debug build — the one kind that records it.
+  static void ensureInitialized({required bool Function() ctrlOpensLinks}) {
+    if (BindingBase.debugBindingType() != null) return;
+    JeanshBinding._(ControlClick(ctrlOpensLinks: ctrlOpensLinks));
+  }
 
   @override
   void handlePointerEvent(PointerEvent event) =>
