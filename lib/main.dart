@@ -6,12 +6,15 @@ import 'src/session/session_log.dart';
 import 'src/telemetry/crash_reporting.dart';
 import 'src/telemetry/telemetry.dart';
 import 'src/ui/onboarding_page.dart';
+import 'src/ui/right_click.dart';
 import 'src/ui/settings_page.dart';
 import 'src/ui/title_bar.dart';
 import 'src/ui/tui.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  JeanshBinding.ensureInitialized(
+    ctrlOpensLinks: () => linkModifier.chosen == LinkModifier.control,
+  );
   // termul's notice, which the licences page shows: see tui.dart.
   registerTermulLicense();
   // First, before anything saves a setting: whether this is a fresh install,

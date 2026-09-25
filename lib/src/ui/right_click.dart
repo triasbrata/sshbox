@@ -1,5 +1,8 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import '../platform.dart';
 import 'tui.dart';
@@ -16,6 +19,71 @@ GestureTapUpCallback? rightClick(void Function(Offset at)? open) =>
     isDesktop && open != null
     ? (details) => open(details.globalPosition)
     : null;
+
+/// A Mac's Ctrl+click, made the right-click it is everywhere else on a Mac.
+///
+/// AppKit hands Flutter a Ctrl+click as what it is, the primary button with
+/// Ctrl held (FlutterViewController's mouseDown:), and no Flutter widget
+/// reads it as a context menu — so on a trackpad set to Ctrl+click, or a
+/// one-button mouse, not one of [rightClick]'s menus opened. Every press
+/// goes through [convert] before any widget sees it, so each of them, and
+/// the terminal's own right-click, hears the secondary button there.
+///
+/// Not while Ctrl is the key that opens a terminal link, which is a
+/// Ctrl+click of its own; ⌘, the Mac's default, leaves Ctrl free.
+class ControlClick {
+  ControlClick({required this.ctrlOpensLinks});
+
+  final bool Function() ctrlOpensLinks;
+
+  /// The presses made secondary, until they are up.
+  final _pressed = <int>{};
+
+  PointerEvent convert(PointerEvent event) {
+    if (defaultTargetPlatform != TargetPlatform.macOS ||
+        event.kind != PointerDeviceKind.mouse) {
+      return event;
+    }
+    if (event is PointerDownEvent &&
+        event.buttons == kPrimaryMouseButton &&
+        HardwareKeyboard.instance.isControlPressed &&
+        !ctrlOpensLinks()) {
+      _pressed.add(event.pointer);
+    }
+    if (!_pressed.contains(event.pointer)) return event;
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      _pressed.remove(event.pointer);
+      return event;
+    }
+    return event.buttons & kPrimaryMouseButton == 0
+        ? event
+        : event.copyWith(
+            buttons:
+                event.buttons & ~kPrimaryMouseButton | kSecondaryMouseButton,
+          );
+  }
+}
+
+/// The app's binding: Flutter's own, with every pointer event passed
+/// through [ControlClick] first.
+class JeanshBinding extends WidgetsFlutterBinding {
+  JeanshBinding._(this._controlClick);
+
+  final ControlClick _controlClick;
+
+  /// In place of [WidgetsFlutterBinding.ensureInitialized], first in main.
+  ///
+  /// Not over a binding already made, which only integration_test makes,
+  /// always in a debug build — the one kind that records it.
+  static void ensureInitialized({required bool Function() ctrlOpensLinks}) {
+    if (BindingBase.debugBindingType() != null) return;
+    JeanshBinding._(ControlClick(ctrlOpensLinks: ctrlOpensLinks));
+  }
+
+  @override
+  void handlePointerEvent(PointerEvent event) =>
+      super.handlePointerEvent(_controlClick.convert(event));
+}
 
 /// Opens termul's menu ([showTuiMenu]) with its corner at [at], a global
 /// position — the pointer's, as a context menu opens, or the finger's.

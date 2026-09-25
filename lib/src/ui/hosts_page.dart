@@ -17,6 +17,7 @@ import 'known_hosts_page.dart';
 import 'logs_page.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart';
+import 'right_click.dart';
 import 'settings_page.dart';
 import 'tui.dart';
 import 'update_dialog.dart';
@@ -753,6 +754,11 @@ class HomeRow extends StatelessWidget {
       ],
     );
 
+    List<TuiMenuEntry<VoidCallback>> entries() => [
+      for (final (label, onTap) in menu)
+        menuAction(label, onTap, destructive: label == 'Delete'),
+    ];
+
     // A node of its own: an InkWell makes none, so its label and tap merged
     // into the grid line's node, a tablet's whole width, and a tap at that
     // node's centre, where Maestro and a screen reader tap, landed beside
@@ -765,6 +771,10 @@ class HomeRow extends StatelessWidget {
         ),
         child: InkWell(
           onTap: onOpen,
+          // The ⋮'s menu, which a right-click opens too, at the pointer.
+          onSecondaryTapUp: menu.isEmpty
+              ? null
+              : rightClick((at) => showActionsAt(context, at, entries())),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 18),
             child: Row(
@@ -780,14 +790,7 @@ class HomeRow extends StatelessWidget {
                     // Material's word for it, which an e2e flow taps.
                     tooltip: 'Show menu',
                     onSelected: (onTap) => onTap(),
-                    entries: [
-                      for (final (label, onTap) in menu)
-                        menuAction(
-                          label,
-                          onTap,
-                          destructive: label == 'Delete',
-                        ),
-                    ],
+                    entries: entries(),
                   ),
               ],
             ),
