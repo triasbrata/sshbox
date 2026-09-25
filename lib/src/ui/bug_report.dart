@@ -202,55 +202,53 @@ class _BugReportDialogState extends State<_BugReportDialog> {
           onPressed: ready ? _sendAnonymously : null,
         ),
       ],
-      child: Flexible(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TuiField(
-                label: 'What went wrong?',
-                controller: _what,
-                autofocus: true,
-                minLines: 3,
-                maxLines: 6,
-                hint: 'What you did, and what happened instead',
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TuiField(
+              label: 'What went wrong?',
+              controller: _what,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 6,
+              hint: 'What you did, and what happened instead',
+            ),
+            const SizedBox(height: 16),
+            const TuiText(
+              'This is everything that will be sent:',
+              tone: TuiTextTone.muted,
+              size: 11,
+            ),
+            const SizedBox(height: 6),
+            Container(
+              constraints: const BoxConstraints(maxHeight: 180),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: p.bg,
+                border: Border.all(color: p.border),
               ),
-              const SizedBox(height: 16),
-              const TuiText(
-                'This is everything that will be sent:',
-                tone: TuiTextTone.muted,
-                size: 11,
-              ),
-              const SizedBox(height: 6),
-              Container(
-                constraints: const BoxConstraints(maxHeight: 180),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: p.bg,
-                  border: Border.all(color: p.border),
-                ),
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    _body,
-                    style: TextStyle(
-                      fontFamily: TermulFonts.mono,
-                      fontSize: 11,
-                      color: p.text,
-                      height: 1.4,
-                    ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  _body,
+                  style: TextStyle(
+                    fontFamily: TermulFonts.mono,
+                    fontSize: 11,
+                    color: p.text,
+                    height: 1.4,
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              const TuiText(
-                'Hostnames, logins, paths and commands are taken out before '
-                'this is shown. Read it over — nothing else goes.',
-                tone: TuiTextTone.dim,
-                size: 11,
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            const TuiText(
+              'Hostnames, logins, paths and commands are taken out before '
+              'this is shown. Read it over — nothing else goes.',
+              tone: TuiTextTone.dim,
+              size: 11,
+            ),
+          ],
         ),
       ),
     );

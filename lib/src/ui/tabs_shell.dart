@@ -812,27 +812,25 @@ class _TabStripState extends State<TabStrip> {
               onPressed: () => Navigator.pop(context),
             ),
           ],
-          child: Flexible(
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final slot in slots)
-                    if (slot != id && slot != own) ...[
-                      // termul's choice row.
-                      TuiSheetOption(
-                        label: slot is TabGroup
-                            ? slot.ids.map((id) => names[id]).join(' + ')
-                            : names[slot]!,
-                        onTap: () => Navigator.pop(
-                          context,
-                          slot is TabGroup ? slot.ids.first : slot as String,
-                        ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final slot in slots)
+                  if (slot != id && slot != own) ...[
+                    // termul's choice row.
+                    TuiSheetOption(
+                      label: slot is TabGroup
+                          ? slot.ids.map((id) => names[id]).join(' + ')
+                          : names[slot]!,
+                      onTap: () => Navigator.pop(
+                        context,
+                        slot is TabGroup ? slot.ids.first : slot as String,
                       ),
-                      const TuiDivider(),
-                    ],
-                ],
-              ),
+                    ),
+                    const TuiDivider(),
+                  ],
+              ],
             ),
           ),
         );

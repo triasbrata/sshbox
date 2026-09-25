@@ -1376,10 +1376,8 @@ class _ResultGrid extends StatefulWidget {
               onPressed: () => Navigator.of(context).pop(),
             ),
           ],
-          child: Flexible(
-            child: SingleChildScrollView(
-              child: SelectableText(text, style: _mono),
-            ),
+          child: SingleChildScrollView(
+            child: SelectableText(text, style: _mono),
           ),
         ),
       ),

@@ -107,7 +107,12 @@ class TuiDialog extends StatelessWidget {
                       .copyWith(color: p.muted, height: 1.45),
                 ),
               ],
-              if (child != null) ...[const SizedBox(height: 12), child!],
+              // Flexible, so a child taller than a short window — the font
+              // list's 420 — gives way rather than overflowing the dialog.
+              if (child != null) ...[
+                const SizedBox(height: 12),
+                Flexible(child: child!),
+              ],
               if (actions.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 Row(
