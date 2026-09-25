@@ -322,11 +322,20 @@ class _TuiToastCardState extends State<TuiToastCard>
   void initState() {
     super.initState();
     if (!_externalProgress) {
-      _timer = AnimationController(vsync: this, duration: widget.duration)
-        ..addStatusListener((status) {
-          if (status == AnimationStatus.completed) _close();
-        })
-        ..forward();
+      // A countdown, not an animation: with the platform's animations off
+      // (Remove animations, or CI's emulator) Flutter plays a normal
+      // controller at a twentieth of its length, and a 5 s toast went in
+      // 250 ms, before anyone could read it.
+      _timer =
+          AnimationController(
+              vsync: this,
+              duration: widget.duration,
+              animationBehavior: AnimationBehavior.preserve,
+            )
+            ..addStatusListener((status) {
+              if (status == AnimationStatus.completed) _close();
+            })
+            ..forward();
     }
   }
 
