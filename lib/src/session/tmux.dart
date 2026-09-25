@@ -60,6 +60,37 @@ class TmuxLayout {
     }
   }
 
+  /// The `resize-pane` that moves this split's border after
+  /// `children[index - 1]` to cell [border] — a column when [sideBySide], a
+  /// row otherwise — or null when tmux cannot be told to.
+  ///
+  /// tmux resizes the nearest split of the same kind above the pane it is
+  /// given, so the pane is one inside `children[index - 1]` with no split of
+  /// this kind between the two; `-x` or `-y` then sets that child's own
+  /// size, which is where the border goes. A child that is itself a split of
+  /// this kind has no such pane, and only a layout typed in makes one. Each
+  /// side keeps at least a cell; tmux holds nested panes to its own minimum.
+  String? resizeCommand(int index, int border) {
+    final before = children[index - 1];
+    final after = children[index];
+    final start = sideBySide ? before.x : before.y;
+    final end = sideBySide ? after.x + after.width : after.y + after.height;
+    final size = (border - start).clamp(1, math.max(1, end - start - 2));
+    final pane = _edgePane(before, sideBySide);
+    if (pane == null) return null;
+    return 'resize-pane -t %$pane ${sideBySide ? '-x' : '-y'} $size';
+  }
+
+  static int? _edgePane(TmuxLayout node, bool sideBySide) {
+    if (node.pane != null) return node.pane;
+    if (node.sideBySide == sideBySide) return null;
+    for (final child in node.children) {
+      final pane = _edgePane(child, sideBySide);
+      if (pane != null) return pane;
+    }
+    return null;
+  }
+
   /// Throws [FormatException] on anything tmux would not have written.
   static TmuxLayout parse(String layout) {
     final reader = _LayoutReader(layout);
@@ -708,6 +739,41 @@ class TmuxSession {
     }
   }
 
+  /// Moves a border between panes: see [TmuxLayout.resizeCommand]. tmux's
+  /// `%layout-change` is what redraws, so a desk client on the same session
+  /// sees the same. While dragging one resize is in flight, and only the
+  /// latest asked for since waits behind it.
+  void resizeSplit(TmuxLayout split, int index, int border) {
+    final command = split.resizeCommand(index, border);
+    if (command == null || command == _lastResize) return;
+    _lastResize = command;
+    if (_resizing != null) {
+      _nextResize = command;
+    } else {
+      _sendResize(command);
+    }
+  }
+
+  void _sendResize(String command) {
+    _resizing = command;
+    _client
+        .command(command)
+        // Refused — no room, or the pane gone — and the layout stays tmux's.
+        .then((_) {}, onError: (Object _) {})
+        .whenComplete(() {
+          final next = _nextResize;
+          _resizing = _nextResize = null;
+          if (next != null && !_disposed) _sendResize(next);
+        });
+  }
+
+  String? _resizing;
+  String? _nextResize;
+
+  /// The last size asked for, so a drag within one cell asks nothing more;
+  /// forgotten when tmux lays the window out again.
+  String? _lastResize;
+
   /// Keystrokes for the focused pane, as they would reach a plain shell.
   void send(String data) {
     final pane = focused;
@@ -971,6 +1037,7 @@ class TmuxSession {
       return;
     }
     layout = parsed;
+    _lastResize = null;
 
     final added = <TmuxPane>[];
     final shown = <int>{};

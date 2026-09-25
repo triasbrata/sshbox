@@ -206,6 +206,66 @@ void main() {
   });
 
   test(
+    'a border dragged becomes the resize-pane of the split it belongs to',
+    () {
+      final across = TmuxLayout.parse(
+        'b25d,80x24,0,0{40x24,0,0,1,39x24,41,0,2}',
+      );
+      expect(across.resizeCommand(1, 50), 'resize-pane -t %1 -x 50');
+      // Each side keeps a cell, whatever the drag says.
+      expect(across.resizeCommand(1, 200), 'resize-pane -t %1 -x 78');
+      expect(across.resizeCommand(1, -3), 'resize-pane -t %1 -x 1');
+
+      // A left column split top and bottom, whose top is split again side by
+      // side. tmux moves the nearest split of the kind asked for above the pane
+      // it is given, so the outer border is moved through %3, not %1, whose
+      // nearest side-by-side split is its own small one.
+      final nested = TmuxLayout.parse(
+        'aaaa,80x24,0,0{40x24,0,0[40x12,0,0{20x12,0,0,1,19x12,21,0,4},'
+        '40x11,0,13,3],39x24,41,0,2}',
+      );
+      expect(nested.resizeCommand(1, 30), 'resize-pane -t %3 -x 30');
+      final left = nested.children[0];
+      expect(left.resizeCommand(1, 5), 'resize-pane -t %1 -y 5');
+      expect(left.children[0].resizeCommand(1, 10), 'resize-pane -t %1 -x 10');
+      // A split inside one of its own kind, only ever typed in: nothing to
+      // tell tmux.
+      final same = TmuxLayout.parse(
+        'aaaa,80x24,0,0{40x24,0,0{20x24,0,0,1,19x24,21,0,4},39x24,41,0,2}',
+      );
+      expect(same.resizeCommand(1, 30), isNull);
+    },
+  );
+
+  test(
+    'a drag keeps one resize in flight and only the latest behind it',
+    () async {
+      final fake = _FakeTmux('b25d,80x24,0,0{40x24,0,0,1,39x24,41,0,2}');
+      final tmux = TmuxSession(
+        name: 'sshbox-test',
+        channel: fake.channel,
+        newTerminal: Terminal.new,
+        transform: (data) => data,
+        onChanged: () {},
+        onEnded: () {},
+      );
+      addTearDown(tmux.dispose);
+      fake.say('%session-changed \$1 sshbox-test');
+      await pumpEventQueue();
+
+      final split = tmux.layout!;
+      for (final border in [45, 45, 46, 47, 48]) {
+        tmux.resizeSplit(split, 1, border);
+      }
+      Iterable<String> sent() =>
+          fake.commands.where((c) => c.startsWith('resize-pane'));
+      expect(sent(), ['resize-pane -t %1 -x 45']);
+      await pumpEventQueue();
+      expect(sent(), ['resize-pane -t %1 -x 45', 'resize-pane -t %1 -x 48']);
+    },
+  );
+
+  test(
     'a reply goes to the command that asked, around notifications',
     () async {
       final notifications = <String>[];
@@ -437,5 +497,72 @@ void main() {
       'refresh-client -C ${screen.width ~/ cell.width}x'
       '${screen.height ~/ cell.height}',
     );
+  });
+
+  testWidgets('dragging a border sends tmux a resize-pane, and a tap or a '
+      'scroll beside it does not', (tester) async {
+    const style = TerminalStyle(fontSize: 8);
+    final fake = _FakeTmux('b25d,80x24,0,0{40x24,0,0,1,39x24,41,0,2}');
+    late StateSetter rebuild;
+    final tmux = TmuxSession(
+      name: 'sshbox-test',
+      channel: fake.channel,
+      newTerminal: Terminal.new,
+      transform: (data) => data,
+      onChanged: () => rebuild(() {}),
+      onEnded: () {},
+    );
+    addTearDown(tmux.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return TmuxPaneLayout(
+              tmux: tmux,
+              textStyle: style,
+              padding: EdgeInsets.zero,
+              pane: (pane, focused) => TerminalView(
+                pane.terminal,
+                key: ValueKey('pane ${pane.id}'),
+                autoResize: false,
+                textStyle: style,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    fake.say('%session-changed \$1 sshbox-test');
+    await tester.pump();
+    await tester.pump();
+
+    Iterable<String> sent() =>
+        fake.commands.where((c) => c.startsWith('resize-pane'));
+    final cell = terminalCellSize(style, TextScaler.noScaling);
+    final origin = tester.getTopLeft(find.byType(TmuxPaneLayout));
+    // A finger 5 dp right of the line, inside pane %2.
+    final grip = origin + Offset(40.5 * cell.width + 5, 100);
+
+    await tester.tapAt(grip);
+    await tester.pump();
+    await tester.dragFrom(grip, const Offset(0, 80));
+    await tester.pump();
+    expect(sent(), isEmpty);
+    // The tap still reached the pane it landed in.
+    expect(tmux.focused?.id, 2);
+
+    await tester.dragFrom(grip, Offset(10 * cell.width, 0));
+    await tester.pump();
+    expect(sent().last, 'resize-pane -t %1 -x 50');
+
+    // Far from any border, a sideways drag is the pane's own.
+    fake.commands.clear();
+    await tester.dragFrom(
+      origin + Offset(10 * cell.width, 100),
+      Offset(10 * cell.width, 0),
+    );
+    await tester.pump();
+    expect(sent(), isEmpty);
   });
 }
