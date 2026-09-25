@@ -840,6 +840,9 @@ touch '${done.path}'
       );
       // Every toast gone first: toasts sit over every menu, and on Windows
       // and Linux, below the window's buttons, one covers the menu's Copy.
+      // A moment first, for a toast the click itself brings up.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await tester.pump();
       await _until(
         tester,
         () => find.byType(TuiToastCard).evaluate().isEmpty,
