@@ -84,9 +84,7 @@ class Update {
 
   /// Where to fetch it from: [host], with [path] under it.
   Uri url(String host) {
-    final base = host.endsWith('/')
-        ? host.substring(0, host.length - 1)
-        : host;
+    final base = host.endsWith('/') ? host.substring(0, host.length - 1) : host;
     return Uri.parse('$base/$path');
   }
 }
@@ -472,3 +470,157 @@ Updater updater = Updater();
 /// A dismissed dialog leaves it; a check finding nothing newer, or the
 /// update going in, clears it. A check that fails leaves it as it was.
 final updateAvailable = ValueNotifier<Update?>(null);
+
+/// Where the one download of an update has got to.
+enum DownloadPhase { downloading, ready, installing, failed }
+
+/// The update download, app-wide rather than the dialog's, so closing the
+/// dialog — its barrier, Esc — leaves it running, and the dialog opened
+/// again, or Settings, shows the same one. Only Cancel stops it.
+class UpdateDownload {
+  const UpdateDownload._(
+    this.update,
+    this.phase,
+    this._updater, {
+    this.done = 0,
+    this.bytesPerSecond = 0,
+    this.file,
+    this.handOver,
+    this.error,
+  });
+
+  final Update update;
+  final DownloadPhase phase;
+  final Updater _updater;
+
+  /// How much has come down, and how fast, while [DownloadPhase.downloading];
+  /// all of it in means it is being checked against the release's SHA-256.
+  final int done;
+  final double bytesPerSecond;
+  int get total => update.size;
+  bool get checking => phase == DownloadPhase.downloading && done >= total;
+
+  /// The checked file, once [DownloadPhase.ready].
+  final File? file;
+
+  /// Why the file is handed over in the Downloads rather than installed, or
+  /// null when Restart to update can put it in place.
+  final String? handOver;
+
+  /// Why it failed, in [DownloadPhase.failed].
+  final String? error;
+
+  bool get running =>
+      phase == DownloadPhase.downloading || phase == DownloadPhase.installing;
+
+  /// A finished download whose file has gone since — deleted by hand, say —
+  /// which is then no download at all, and the update is offered afresh.
+  bool get gone => phase == DownloadPhase.ready && !file!.existsSync();
+}
+
+/// The download under way or finished, or null when there is none.
+final updateDownload = ValueNotifier<UpdateDownload?>(null);
+
+Completer<void>? _cancelDownload;
+
+/// Starts bringing [update] down, unless a download is already running, which
+/// every ask then shows instead: two asks never download twice.
+void startDownload(Update update, [Updater? using]) {
+  if (updateDownload.value?.running ?? false) return;
+  unawaited(_runDownload(update, using ?? updater));
+}
+
+Future<void> _runDownload(Update update, Updater updater) async {
+  final cancel = _cancelDownload = Completer<void>();
+  final clock = Stopwatch()..start();
+  updateDownload.value = UpdateDownload._(
+    update,
+    DownloadPhase.downloading,
+    updater,
+  );
+  try {
+    final file = await updater.download(
+      update,
+      cancelled: cancel.future,
+      onProgress: (done, _) {
+        final seconds = clock.elapsedMicroseconds / 1e6;
+        updateDownload.value = UpdateDownload._(
+          update,
+          DownloadPhase.downloading,
+          updater,
+          done: done,
+          bytesPerSecond: seconds > 0 ? done / seconds : 0,
+        );
+      },
+    );
+    // Null is Cancel, the user's own doing: nothing left to show.
+    updateDownload.value = file == null
+        ? null
+        : UpdateDownload._(
+            update,
+            DownloadPhase.ready,
+            updater,
+            done: update.size,
+            file: file,
+            handOver: updater.installRefusal,
+          );
+  } catch (error) {
+    // Anything at all, or whatever shows it is stuck on its bar.
+    updateDownload.value = UpdateDownload._(
+      update,
+      DownloadPhase.failed,
+      updater,
+      error: error is UpdateException
+          ? error.message
+          : 'Could not download ${update.name}: $error',
+    );
+  } finally {
+    if (_cancelDownload == cancel) _cancelDownload = null;
+  }
+}
+
+/// Stops the running download, which then leaves nothing behind; a second
+/// tap before it has stopped does nothing.
+void cancelDownload() {
+  final cancel = _cancelDownload;
+  if (cancel != null && !cancel.isCompleted) cancel.complete();
+}
+
+/// Restart to update, from the dialog or Settings: see [Updater.restartInto].
+/// Throws what stopped it, with the file handed over in the Downloads instead
+/// and this copy as it was.
+Future<void> restartToUpdate() async {
+  final ready = updateDownload.value;
+  final file = ready?.file;
+  if (ready == null || file == null || ready.phase != DownloadPhase.ready) {
+    return;
+  }
+  updateDownload.value = UpdateDownload._(
+    ready.update,
+    DownloadPhase.installing,
+    ready._updater,
+    done: ready.done,
+    file: file,
+  );
+  try {
+    await ready._updater.restartInto(ready.update, file);
+  } catch (error) {
+    updateDownload.value = UpdateDownload._(
+      ready.update,
+      DownloadPhase.ready,
+      ready._updater,
+      done: ready.done,
+      file: file,
+      handOver: error is UpdateException ? error.message : '$error',
+    );
+    rethrow;
+  }
+}
+
+/// Try again, after a download that failed: the same update, the same way.
+void retryDownload() {
+  final failed = updateDownload.value;
+  if (failed?.phase == DownloadPhase.failed) {
+    startDownload(failed!.update, failed._updater);
+  }
+}

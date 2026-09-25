@@ -25,11 +25,7 @@ String feedJson({
           '0000000000000000000000000000000000000000000000000000000000000000',
     },
   },
-}) => jsonEncode({
-  'version': version,
-  'build': build,
-  'platforms': platforms,
-});
+}) => jsonEncode({'version': version, 'build': build, 'platforms': platforms});
 
 /// Stands in for the network: every URL asked for, and what each answers.
 class _Net {
@@ -146,9 +142,9 @@ const _build = '$_host/desktop/linux/Jeansh-1.0.63+67-linux-x64.tar.gz';
 Future<void> pumpTile(WidgetTester tester, Updater updater) =>
     tester.pumpWidget(
       MaterialApp(
-          builder: (context, child) => ToastLayer(child: child!),
-          home: Scaffold(body: UpdateTile(using: updater)),
-        ),
+        builder: (context, child) => ToastLayer(child: child!),
+        home: Scaffold(body: UpdateTile(using: updater)),
+      ),
     );
 
 /// The updater is a desktop's, and under `flutter test` the platform is
@@ -162,7 +158,10 @@ void asLinux() {
 
 void main() {
   // What a check found is app-wide: each test starts with nothing found.
-  setUp(() => updateAvailable.value = null);
+  setUp(() {
+    updateAvailable.value = null;
+    updateDownload.value = null;
+  });
 
   group('the version comparison', () {
     test('counts each part as a number, not as text', () {
@@ -198,10 +197,7 @@ void main() {
         () => parseFeed('{"version": "1.0.63", "platforms"', 'linux'),
         throwsA(isA<UpdateException>()),
       );
-      expect(
-        () => parseFeed('[]', 'linux'),
-        throwsA(isA<UpdateException>()),
-      );
+      expect(() => parseFeed('[]', 'linux'), throwsA(isA<UpdateException>()));
     });
 
     test('one with no build for this platform names it', () {
@@ -230,11 +226,7 @@ void main() {
           () => parseFeed(
             feedJson(
               platforms: {
-                'linux': {
-                  'path': path,
-                  'size': 100,
-                  'sha256': '0' * 64,
-                },
+                'linux': {'path': path, 'size': 100, 'sha256': '0' * 64},
               },
             ),
             'linux',
@@ -249,47 +241,51 @@ void main() {
   group('checking', () {
     asLinux();
 
-    test('a build far too big to be one is refused before it is offered',
-        () async {
-      expect(
-        () => parseFeed(
-          feedJson(
-            platforms: {
-              'linux': {
-                'path': 'desktop/linux/Jeansh.tar.gz',
-                'size': 500 * 1024 * 1024 * 1024,
-                'sha256': '0' * 64,
+    test(
+      'a build far too big to be one is refused before it is offered',
+      () async {
+        expect(
+          () => parseFeed(
+            feedJson(
+              platforms: {
+                'linux': {
+                  'path': 'desktop/linux/Jeansh.tar.gz',
+                  'size': 500 * 1024 * 1024 * 1024,
+                  'sha256': '0' * 64,
+                },
               },
-            },
+            ),
+            'linux',
           ),
-          'linux',
-        ),
-        throwsA(
-          isA<UpdateException>().having(
-            (error) => error.message,
-            'message',
-            contains('too big'),
+          throwsA(
+            isA<UpdateException>().having(
+              (error) => error.message,
+              'message',
+              contains('too big'),
+            ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
 
-    test('an error that is not the updater\'s own still comes out as one',
-        () async {
-      // A certificate refused, a stalled read, a URL that is no URL: a
-      // caller has one kind of error to catch, and the line says what it was.
-      final net = _Net({_feed: TimeoutException('no answer in 60s')});
-      await expectLater(
-        _updater(net).check(),
-        throwsA(
-          isA<UpdateException>().having(
-            (error) => error.message,
-            'message',
-            contains('no answer in 60s'),
+    test(
+      'an error that is not the updater\'s own still comes out as one',
+      () async {
+        // A certificate refused, a stalled read, a URL that is no URL: a
+        // caller has one kind of error to catch, and the line says what it was.
+        final net = _Net({_feed: TimeoutException('no answer in 60s')});
+        await expectLater(
+          _updater(net).check(),
+          throwsA(
+            isA<UpdateException>().having(
+              (error) => error.message,
+              'message',
+              contains('no answer in 60s'),
+            ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
 
     test('offers a newer release', () async {
       final net = _Net({_feed: utf8.encode(feedJson())});
@@ -298,12 +294,14 @@ void main() {
       expect(net.asked, [_feed]);
     });
 
-    test('offers nothing for a release this build already is, or older',
-        () async {
-      final net = _Net({_feed: utf8.encode(feedJson())});
-      expect(await _updater(net, version: '1.0.63+67').check(), isNull);
-      expect(await _updater(net, version: '1.0.64+68').check(), isNull);
-    });
+    test(
+      'offers nothing for a release this build already is, or older',
+      () async {
+        final net = _Net({_feed: utf8.encode(feedJson())});
+        expect(await _updater(net, version: '1.0.63+67').check(), isNull);
+        expect(await _updater(net, version: '1.0.64+68').check(), isNull);
+      },
+    );
 
     test('with no update host baked in, nothing is asked', () async {
       final net = _Net({_feed: utf8.encode(feedJson())});
@@ -314,14 +312,16 @@ void main() {
       expect(net.asked, isEmpty);
     });
 
-    test('nothing is asked on a phone, which updates through its store',
-        () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      final net = _Net({_feed: utf8.encode(feedJson())});
-      expect(_updater(net).enabled, isFalse);
-      expect(await _updater(net).check(), isNull);
-      expect(net.asked, isEmpty);
-    });
+    test(
+      'nothing is asked on a phone, which updates through its store',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final net = _Net({_feed: utf8.encode(feedJson())});
+        expect(_updater(net).enabled, isFalse);
+        expect(await _updater(net).check(), isNull);
+        expect(net.asked, isEmpty);
+      },
+    );
   });
 
   group('downloading', () {

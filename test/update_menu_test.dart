@@ -82,8 +82,7 @@ Future<void> _start(
 }) async {
   SharedPreferences.setMockInitialValues({
     'sshbox.telemetry.notice': true,
-    if (checkedToday)
-      Updater.checkedKey: DateTime.now().millisecondsSinceEpoch,
+    if (checkedToday) Updater.checkedKey: DateTime.now().millisecondsSinceEpoch,
   });
   updater = feed.updater();
   FlutterLocalNotificationsPlatform.instance = _BareNotifications();
@@ -118,10 +117,12 @@ void main() {
   final original = updater;
   setUp(() {
     updateAvailable.value = null;
+    updateDownload.value = null;
   });
   tearDown(() {
     updater = original;
     updateAvailable.value = null;
+    updateDownload.value = null;
   });
 
   final linux = TargetPlatformVariant.only(TargetPlatform.linux);
