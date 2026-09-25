@@ -830,6 +830,14 @@ touch '${done.path}'
         'git push origin',
         reason: 'copy on select copied the selection without its drawn gaps',
       );
+      // Its Copied toast gone first: toasts sit over every menu, and on
+      // Windows and Linux, below the window's buttons, this one covers the
+      // menu's Copy.
+      await _until(
+        tester,
+        () => find.text('Copied').evaluate().isEmpty,
+        'the Copied toast to go',
+      );
 
       await Clipboard.setData(const ClipboardData(text: 'untouched'));
       await tester.tapAt(
