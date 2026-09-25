@@ -753,33 +753,44 @@ class HomeRow extends StatelessWidget {
       ],
     );
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: p.border)),
-      ),
-      child: InkWell(
-        onTap: onOpen,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 18),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (badge case final badge?) ...[
-                badge,
-                const SizedBox(width: 16),
+    // A node of its own: an InkWell makes none, so its label and tap merged
+    // into the grid line's node, a tablet's whole width, and a tap at that
+    // node's centre, where Maestro and a screen reader tap, landed beside
+    // the card and opened nothing.
+    return Semantics(
+      container: true,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: p.border)),
+        ),
+        child: InkWell(
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (badge case final badge?) ...[
+                  badge,
+                  const SizedBox(width: 16),
+                ],
+                Expanded(child: text),
+                if (menu.isNotEmpty)
+                  MenuButton<VoidCallback>(
+                    // Material's word for it, which an e2e flow taps.
+                    tooltip: 'Show menu',
+                    onSelected: (onTap) => onTap(),
+                    entries: [
+                      for (final (label, onTap) in menu)
+                        menuAction(
+                          label,
+                          onTap,
+                          destructive: label == 'Delete',
+                        ),
+                    ],
+                  ),
               ],
-              Expanded(child: text),
-              if (menu.isNotEmpty)
-                MenuButton<VoidCallback>(
-                  // Material's word for it, which an e2e flow taps.
-                  tooltip: 'Show menu',
-                  onSelected: (onTap) => onTap(),
-                  entries: [
-                    for (final (label, onTap) in menu)
-                      menuAction(label, onTap, destructive: label == 'Delete'),
-                  ],
-                ),
-            ],
+            ),
           ),
         ),
       ),

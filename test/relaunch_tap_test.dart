@@ -10,6 +10,7 @@ import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
@@ -437,6 +438,44 @@ void main() {
     _quietPlatform(tester, launchedBy: 'sshbox://host/deleted');
     await _start(tester);
     expect(find.text('That host is no longer saved'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('on a tablet, where a host card is a third of its row, a tap '
+      'where Maestro taps the card opens the connect sheet', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'sshbox.hosts.v1': jsonEncode([_host.toJson()]),
+      'sshbox.telemetry.notice': true,
+    });
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    _quietPlatform(tester);
+    final semantics = tester.ensureSemantics();
+    await _start(tester);
+
+    // The flows' selector for the host, and the centre of the node it
+    // finds, which is where Maestro puts its finger.
+    final node = _maestroTap(
+      tester,
+      RegExp(r'^.*WSL via.*\n.*$', dotAll: true),
+    )!;
+    final card = tester.getRect(find.byType(HomeRow));
+    // A node's rect is in its own coordinates; the screen's are its
+    // ancestors' transforms applied in turn, as Android's bridge does.
+    var rect = node.rect;
+    for (SemanticsNode? n = node; n != null; n = n.parent) {
+      if (n.transform case final t?) rect = MatrixUtils.transformRect(t, rect);
+    }
+    expect(rect.width, lessThan(card.width + 1));
+    await tester.tapAt(rect.center);
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(BottomSheet), findsOneWidget);
+
+    tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+    semantics.dispose();
     await tester.pump(const Duration(seconds: 10));
   });
 
