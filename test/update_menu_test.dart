@@ -82,8 +82,7 @@ Future<void> _start(
 }) async {
   SharedPreferences.setMockInitialValues({
     'sshbox.telemetry.notice': true,
-    if (checkedToday)
-      Updater.checkedKey: DateTime.now().millisecondsSinceEpoch,
+    if (checkedToday) Updater.checkedKey: DateTime.now().millisecondsSinceEpoch,
   });
   updater = feed.updater();
   FlutterLocalNotificationsPlatform.instance = _BareNotifications();
@@ -134,6 +133,19 @@ void main() {
     expect(feed.reads, 0, reason: 'checked today already');
 
     await _clickMenu(tester);
+    await _settle(tester);
+    expect(feed.reads, 1);
+    expect(_dialog, findsOneWidget);
+  }, variant: linux);
+
+  testWidgets('Help at the window\'s top right checks for updates, as the '
+      'native menu did', (tester) async {
+    final feed = _Feed('1.0.63+67');
+    await _start(tester, feed);
+
+    await tester.tap(find.bySemanticsLabel('Help'));
+    await _settle(tester);
+    await tester.tap(find.text('Check for updates…'));
     await _settle(tester);
     expect(feed.reads, 1);
     expect(_dialog, findsOneWidget);

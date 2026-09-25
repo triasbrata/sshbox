@@ -443,84 +443,140 @@ final _pictureSkip = Platform.isWindows
     ? "off CI a Mac's pasteboard is its user's own"
     : null;
 
-/// The window's own Check for updates… menu item, chosen as a person would:
-/// GTK's Help menu clicked with xdotool on Linux, the Win32 Help menu with the
-/// mouse on Windows, the Jeansh menu through System Events on macOS. Each is
-/// outside Flutter, so each is reached from outside.
-Future<void> _menuCheckForUpdates() async {
-  if (Platform.isLinux) {
-    await _xdo(['mousemove', '--window', await _window(), '20', '10']);
-    await _xdo(['click', '1']);
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    await _xdo(['key', 'Down', 'Return']);
-  } else if (Platform.isWindows) {
-    final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
-    try {
-      final script = File('${dir.path}\\menu.ps1')..writeAsStringSync(_winMenu);
-      final done = await Process.run('powershell', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script.path, //
-      ]);
-      expect(done.exitCode, 0, reason: 'the Help menu: ${done.stderr}${done.stdout}');
-    } finally {
-      dir.deleteSync(recursive: true);
-    }
-  } else {
-    final done = await Process.run('osascript', [
-      '-e',
-      'tell application "System Events" to tell process "Jeansh"',
-      '-e',
-      'set frontmost to true',
-      '-e',
-      'click menu item "Check for Updates…" of menu 1 of menu bar item 2 '
-          'of menu bar 1',
-      '-e',
-      'end tell',
+/// Check for updates… as a person picks it: on Linux and Windows from Help,
+/// the ⋯ the app draws beside the window's buttons, the title bar and its
+/// menu bar being gone; on macOS from the Jeansh menu, through System
+/// Events, the menu being outside Flutter.
+Future<void> _menuCheckForUpdates(WidgetTester tester) async {
+  if (!Platform.isMacOS) {
+    await tester.tap(_named('Help'));
+    await _pick(tester, 'Check for updates…');
+    return;
+  }
+  final done = await Process.run('osascript', [
+    '-e',
+    'tell application "System Events" to tell process "Jeansh"',
+    '-e',
+    'set frontmost to true',
+    '-e',
+    'click menu item "Check for Updates…" of menu 1 of menu bar item 2 '
+        'of menu bar 1',
+    '-e',
+    'end tell',
+  ]);
+  expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
+}
+
+/// A widget by the name it gives a screen reader, with no semantics tree
+/// asked for: the window's buttons have no text or tooltip to find them by.
+Finder _named(String label) => find.byWidgetPredicate(
+  (w) => w is Semantics && w.properties.label == label,
+);
+
+/// Where the window's content is on the screen. Linux through xwininfo, not
+/// xdotool's geometry, which counts a window manager's title bar twice once
+/// the window sits in its frame; Windows through [_winMouse] with nothing to
+/// do.
+Future<Rect> _windowRect() async {
+  if (Platform.isWindows) return (await _winMouse(const [])).rect;
+  final info = await Process.run('xwininfo', ['-id', await _window()]);
+  double value(String key) => double.parse(
+    RegExp('$key:\\s+(-?\\d+)').firstMatch('${info.stdout}')!.group(1)!,
+  );
+  return Rect.fromLTWH(
+    value('Absolute upper-left X'),
+    value('Absolute upper-left Y'),
+    value('Width'),
+    value('Height'),
+  );
+}
+
+/// The real pointer on Windows, moved and pressed as a hand would: each
+/// step `move x y` in the client area's physical pixels, `moveby dx dy` on
+/// the screen, `down`, `up`, `restore` (the window, from minimized) or
+/// `sleep ms`. Answers where the window is then, and whether it is
+/// maximized or minimized, read off Win32 itself.
+Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
+  List<String> steps,
+) async {
+  final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+  try {
+    final script = File('${dir.path}\\mouse.ps1')
+      ..writeAsStringSync(_winMouseScript);
+    final done = await Process.run('powershell', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script.path, //
+      steps.join(';'),
     ]);
-    expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
+    expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}${done.stdout}');
+    final [l, t, r, b, zoomed, iconic] = '${done.stdout}'.trim().split(' ');
+    return (
+      rect: Rect.fromLTRB(
+        double.parse(l),
+        double.parse(t),
+        double.parse(r),
+        double.parse(b),
+      ),
+      zoomed: zoomed == 'True',
+      iconic: iconic == 'True',
+    );
+  } finally {
+    dir.deleteSync(recursive: true);
   }
 }
 
-/// Clicks Help, then Check for updates… in it, with the mouse, after reading
-/// both labels off the window's own menu: what the runner in
-/// windows/runner/flutter_window.cpp puts there.
-const _winMenu = r'''
+const _winMouseScript = r'''
+param([string]$steps)
 $ErrorActionPreference = 'Stop'
 Add-Type @"
-using System; using System.Runtime.InteropServices; using System.Text;
+using System; using System.Runtime.InteropServices;
 public static class W {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string n);
-  [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr h);
-  [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr m, int i);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuString(IntPtr m, uint i, StringBuilder s, int n, uint f);
-  [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr h, IntPtr m, uint i, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  public static string Text(IntPtr m, uint i) { var s = new StringBuilder(256); GetMenuString(m, i, s, 256, 0x400); return s.ToString(); }
-  public static void Click(RECT r) {
-    SetCursorPos((r.L + r.R) / 2, (r.T + r.B) / 2);
-    System.Threading.Thread.Sleep(150);
-    mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero);
-  }
 }
 "@
 [W]::SetProcessDPIAware() | Out-Null
 $h = [W]::FindWindow('FLUTTER_RUNNER_WIN32_WINDOW', 'Jeansh')
 if ($h -eq [IntPtr]::Zero) { throw 'no Jeansh window' }
-$bar = [W]::GetMenu($h)
-if ([W]::Text($bar, 0) -ne 'Help') { throw "the menu bar reads '$([W]::Text($bar, 0))'" }
-$help = [W]::GetSubMenu($bar, 0)
-$item = [W]::Text($help, 0)
-if ($item -ne "Check for updates$([char]0x2026)") { throw "Help reads '$item'" }
-[W]::SetForegroundWindow($h) | Out-Null
+if ($steps) {
+  [W]::SetForegroundWindow($h) | Out-Null
+  foreach ($step in $steps.Split(';')) {
+    $p = $step.Split(' ')
+    switch ($p[0]) {
+      'move' {
+        $pt = New-Object W+POINT
+        $pt.X = [int]$p[1]; $pt.Y = [int]$p[2]
+        [W]::ClientToScreen($h, [ref]$pt) | Out-Null
+        [W]::SetCursorPos($pt.X, $pt.Y) | Out-Null
+        [W]::mouse_event(1, 0, 0, 0, [UIntPtr]::Zero)
+      }
+      'moveby' {
+        $pt = New-Object W+POINT
+        [W]::GetCursorPos([ref]$pt) | Out-Null
+        [W]::SetCursorPos($pt.X + [int]$p[1], $pt.Y + [int]$p[2]) | Out-Null
+        [W]::mouse_event(1, 0, 0, 0, [UIntPtr]::Zero)
+      }
+      'restore' { [W]::ShowWindow($h, 9) | Out-Null }
+      'down' { [W]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero) }
+      'up' { [W]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+      'sleep' { Start-Sleep -Milliseconds ([int]$p[1]) }
+    }
+  }
+  Start-Sleep -Milliseconds 500
+}
 $r = New-Object W+RECT
-if (-not [W]::GetMenuItemRect($h, $bar, 0, [ref]$r)) { throw 'Help has no place on screen' }
-[W]::Click($r)
-Start-Sleep -Milliseconds 800
-if (-not [W]::GetMenuItemRect([IntPtr]::Zero, $help, 0, [ref]$r)) { throw 'the Help menu did not open' }
-[W]::Click($r)
+[W]::GetWindowRect($h, [ref]$r) | Out-Null
+"$($r.L) $($r.T) $($r.R) $($r.B) $([W]::IsZoomed($h)) $([W]::IsIconic($h))"
 ''';
 
 /// [png] on the machine's clipboard as a picture: xclip on Linux's X11,
@@ -1539,13 +1595,12 @@ touch '${done.path}'
 
   // #65: a newer release is said where the user will see it — the daily
   // check offers it, and once put off it stays marked on Home and in
-  // Settings — and the window's own Help menu checks on demand, answering up
-  // to date when it is, which clears the mark.
+  // Settings — and Help checks on demand, answering up to date when it is,
+  // which clears the mark.
   //
-  // The menu is the platform's, outside Flutter, so it is clicked as a person
-  // would, through _menuCheckForUpdates: GTK's and Win32's Help, the Mac's
-  // Jeansh menu. F10 and Alt+H are left to the terminal on purpose, so the
-  // mouse is the way in.
+  // Help is the Mac's Jeansh menu, outside Flutter and clicked through System
+  // Events, and on Linux and Windows the ⋯ beside the window's buttons
+  // (#117): see _menuCheckForUpdates.
   _test(
     'Help checks for updates, and a newer release stays marked until a '
     'check finds none',
@@ -1610,7 +1665,7 @@ touch '${done.path}'
       expect(available, findsOneWidget);
       await _backHome(tester);
 
-      const helpCheck = _menuCheckForUpdates;
+      Future<void> helpCheck() => _menuCheckForUpdates(tester);
 
       await helpCheck();
       await _until(
@@ -1738,6 +1793,149 @@ touch '${done.path}'
         'Alt+click to hand the link to the browser',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // #117: on Linux and Windows the runner draws no title bar, and the app
+  // draws its buttons and moves the window from the tab strip's empty space.
+  // Pressed with the real pointer, as each goes a way no widget test reaches:
+  // on Windows the maximize button is Windows' own to answer, for the snap
+  // layouts, and a press on the strip is Flutter's first and then the window
+  // manager's, which moves the window while the button is held.
+  //
+  // Last, as it moves the window every test before it expects where it was.
+  // Linux maximizes through a window manager, which Xvfb has none of, so this
+  // test starts openbox for itself and stops it after.
+  _test(
+    'the window buttons and the tab strip move, maximize and restore the '
+    'real window',
+    skip: Platform.isMacOS
+        ? "a Mac's window keeps its own buttons"
+        : Platform.isLinux &&
+              Process.runSync('sh', ['-c', 'command -v openbox']).exitCode != 0
+        ? 'maximizing wants a window manager, and openbox is not installed'
+        : null,
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      await _launch(tester);
+      if (Platform.isLinux) {
+        await _window();
+        final wm = await Process.start('openbox', []);
+        addTearDown(wm.kill);
+        await Future<void>.delayed(const Duration(seconds: 2));
+        await tester.pump();
+      }
+      final ratio = tester.view.devicePixelRatio;
+
+      // [local], a point in the app, where the real pointer finds it: on
+      // Windows the client area's physical pixels, on Linux the screen's,
+      // past the frame GTK draws around the view.
+      Future<Offset> real(Offset local) async {
+        if (Platform.isWindows) return local * ratio;
+        final window = await _windowRect();
+        final frame = (window.width - tester.view.physicalSize.width) / 2;
+        return window.topLeft + Offset(frame, frame) + local * ratio;
+      }
+
+      Future<void> click(Offset local, {int times = 1}) async {
+        final at = await real(local);
+        if (Platform.isWindows) {
+          await _winMouse([
+            'move ${at.dx.round()} ${at.dy.round()}',
+            for (var i = 0; i < times; i++) ...[
+              'down',
+              'sleep 40',
+              'up',
+              'sleep 60',
+            ],
+          ]);
+        } else {
+          await _xdo(['mousemove', '${at.dx.round()}', '${at.dy.round()}']);
+          await _xdo(['click', '--repeat', '$times', '--delay', '100', '1']);
+        }
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      final restored = tester.view.physicalSize;
+      Future<void> becomes(String button, String what) =>
+          _until(tester, () => _named(button).evaluate().isNotEmpty, what);
+
+      // Maximize, and back.
+      await click(tester.getCenter(_named('Maximize')));
+      await becomes('Restore', 'the maximize button to maximize the window');
+      expect(tester.view.physicalSize.height, greaterThan(restored.height));
+      await click(tester.getCenter(_named('Restore')));
+      await becomes('Maximize', 'the restore button to restore the window');
+      await _until(
+        tester,
+        () => tester.view.physicalSize == restored,
+        'the window to come back to its size',
+      );
+
+      // A double-click on the strip's empty space, beside the buttons, does
+      // the same, as on any title bar.
+      Offset strip() => tester.getCenter(_named('Help')) - const Offset(60, 0);
+      await click(strip(), times: 2);
+      await becomes('Restore', 'a double-click on the strip to maximize');
+      await click(strip(), times: 2);
+      await becomes('Maximize', 'a double-click on the strip to restore');
+      await _until(
+        tester,
+        () => tester.view.physicalSize == restored,
+        'the window to come back to its size',
+      );
+
+      // A drag on the strip moves the window.
+      final before = await _windowRect();
+      final from = await real(strip());
+      if (Platform.isWindows) {
+        await _winMouse([
+          'move ${from.dx.round()} ${from.dy.round()}',
+          'down',
+          'sleep 150',
+          for (var i = 0; i < 6; i++) ...['moveby -10 8', 'sleep 50'],
+          'up',
+        ]);
+      } else {
+        await _xdo(['mousemove', '${from.dx.round()}', '${from.dy.round()}']);
+        await _xdo(['mousedown', '1']);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        for (var i = 1; i <= 6; i++) {
+          await _xdo([
+            'mousemove',
+            '${from.dx.round() - 10 * i}',
+            '${from.dy.round() + 8 * i}',
+          ]);
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await _xdo(['mouseup', '1']);
+      }
+      await tester.pump(const Duration(milliseconds: 500));
+      final moved = (await _windowRect()).topLeft - before.topLeft;
+      expect(moved.dx, closeTo(-60, 12), reason: 'the drag moved it $moved');
+      expect(moved.dy, closeTo(48, 12), reason: 'the drag moved it $moved');
+
+      // Minimize, and back by the desktop's own hand.
+      await tester.tap(_named('Minimize'));
+      await tester.pump(const Duration(milliseconds: 800));
+      if (Platform.isWindows) {
+        expect((await _winMouse(const [])).iconic, isTrue);
+        await _winMouse(const ['restore']);
+      } else {
+        final shown = await Process.run('xdotool', [
+          'search', '--onlyvisible', '--name', r'^Jeansh$', //
+        ]);
+        expect('${shown.stdout}'.trim(), isEmpty, reason: 'still on screen');
+        final hidden = (await _xdo(['search', '--name', r'^Jeansh$']))
+            .split('\n')
+            .first;
+        await _xdo(['windowmap', '--sync', hidden]);
+      }
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(_named('Close'), findsOneWidget);
+      // In the body: the binding checks it is back before any tear-down runs.
+      binding.shouldPropagateDevicePointerEvents = false;
     },
   );
 }

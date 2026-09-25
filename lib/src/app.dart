@@ -112,9 +112,10 @@ class _SshboxAppState extends State<SshboxApp> {
 
   Timer? _updateTimer;
 
-  /// The native menus: the Mac's Settings… and Check for Updates…, and the
-  /// Help menu's Check for updates… on Windows and Linux, clicked, arrive
-  /// here — see `AppDelegate`, flutter_window.cpp and my_application.cc.
+  /// The Mac's native menu, its Settings… and Check for Updates… clicked,
+  /// arrives here — see `AppDelegate`. Windows and Linux have no menu bar
+  /// any more: their Help is drawn beside the window's buttons
+  /// (`WindowButtons`), and runs the same check.
   static const _menuChannel = MethodChannel('sshbox/menu');
 
   void _checkFromMenu() {
@@ -588,9 +589,13 @@ class _SshboxAppState extends State<SshboxApp> {
                   ? Brightness.light
                   : Brightness.dark,
             ),
-            // On a Mac, every page and toast clear of the window's buttons.
+            // On a desktop, every page and toast clear of the window's
+            // buttons; onboarding, before the tabs, covers them too.
             child: TitleBarSpace(
-              covered: () => _navigator.currentState?.canPop() ?? false,
+              navigator: _navigator,
+              covered: () =>
+                  !onboardingDone.value ||
+                  (_navigator.currentState?.canPop() ?? false),
               // Toasts over every page, taking only the touches that land
               // on one.
               child: ToastLayer(child: child!),

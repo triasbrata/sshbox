@@ -1003,7 +1003,12 @@ class _TabStripState extends State<TabStrip> {
     // termul's tab bar: 40 high on the sidebar's colour, over a hairline.
     final bar = Container(
       height: 40,
-      padding: EdgeInsets.only(left: inset),
+      // On Windows and Linux the window's own buttons sit over its right end
+      // (see TitleBarSpace), and leave the tabs this much less room.
+      padding: EdgeInsets.only(
+        left: inset,
+        right: drawsWindowButtons ? WindowButtons.width : 0,
+      ),
       // On a Mac the colour and the hairline are the layer's behind, which
       // hears a press on the strip's empty space: a decoration here would
       // take that press for itself.
