@@ -24,12 +24,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show
-        DropdownButton,
-        InkWell,
-        PopupMenuDivider,
-        TextField,
-        Tooltip;
+    show DropdownButton, InkWell, PopupMenuDivider, TextField, Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,8 +36,7 @@ import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
-import 'package:sshbox/src/ui/settings_page.dart'
-    show localTmux, terminalFonts;
+import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
 /// Home, from a cold start, settled.
@@ -89,7 +83,9 @@ Future<void> _until(
           .whereType<String>()
           .take(60)
           .join(' | ');
-      debugPrint('On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}');
+      debugPrint(
+        'On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}',
+      );
       debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
       fail('Gave up waiting for $what');
     }
@@ -132,9 +128,8 @@ Future<TerminalView> _localShell(
     }, 'the Local shell to open, take focus and draw its prompt');
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
-    for (final element in find
-        .byType(TerminalView, skipOffstage: false)
-        .evaluate()) {
+    for (final element
+        in find.byType(TerminalView, skipOffstage: false).evaluate()) {
       final each = element.widget as TerminalView;
       final onstage = find.byWidget(each).evaluate().isNotEmpty;
       debugPrint(
@@ -191,10 +186,8 @@ Finder _kind(String a, String b) => find.byWidgetPredicate((w) {
 
 /// Home's own card or row for [title], not a tab of the same name: a Card on
 /// main, a HomeRow in the redesign.
-Finder _homeCard(String title) => find.ancestor(
-  of: find.text(title),
-  matching: _kind('Card', 'HomeRow'),
-);
+Finder _homeCard(String title) =>
+    find.ancestor(of: find.text(title), matching: _kind('Card', 'HomeRow'));
 
 /// Picks [item] from a menu once it has finished opening. A menu grows open,
 /// and its items are built before they can be hit: tapped as soon as one is
@@ -334,12 +327,10 @@ Future<String> _xdo(List<String> args) async {
 }
 
 /// Jeansh's window on the display.
-Future<String> _window() async => (await _xdo([
-  'search',
-  '--onlyvisible',
-  '--name',
-  r'^Jeansh$',
-])).split('\n').first;
+Future<String> _window() async =>
+    (await _xdo(['search', '--onlyvisible', '--name', r'^Jeansh$']))
+        .split('\n')
+        .first;
 
 /// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
 /// the embedder, which is how a menu is shut.
@@ -433,7 +424,8 @@ void _test(String name, WidgetTesterCallback body, {String? skip}) {
   testWidgets(name, body, skip: skip != null);
 }
 
-const _powershell = 'its Local shell is PowerShell under ConPTY, which '
+const _powershell =
+    'its Local shell is PowerShell under ConPTY, which '
     'redraws what a program writes, and this test drives sh';
 
 /// Why a picture-paste test skips here, or null where it runs.
@@ -598,7 +590,11 @@ Future<void> _putPicture(String png) async {
           'sh',
           png,
         ]);
-  expect(put.exitCode, 0, reason: 'the clipboard would not take the picture: ${put.stderr}');
+  expect(
+    put.exitCode,
+    0,
+    reason: 'the clipboard would not take the picture: ${put.stderr}',
+  );
 }
 
 /// The paste chord: ⌘V on a Mac, Ctrl+V elsewhere.
@@ -620,11 +616,7 @@ void main() {
     // claims to be.
     expect(
       defaultTargetPlatform,
-      anyOf(
-        TargetPlatform.linux,
-        TargetPlatform.windows,
-        TargetPlatform.macOS,
-      ),
+      anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
     );
     expect(isDesktop, isTrue);
   });
@@ -863,48 +855,44 @@ touch '${done.path}'
   // opened nothing and said "That host is no longer saved": openHost looked
   // every id up among the saved hosts, and `local` never is one. A mouse has
   // no long press, so on a desktop the tab's menu is a right-click away.
-  _test(
-    'a right-click on a Local shell tab duplicates it',
-    (tester) async {
-      await _launch(tester);
-      await _localShell(tester);
-      // Counted rather than assumed one: the tests before this left Local
-      // tabs, which come back with each launch.
-      // A tab reads whatever title its shell gives itself, so tabs are found
-      // by their close button, "Close <title>" — "Reconnect" once its shell
-      // has ended. Counted on the strip rather than by terminals, which a
-      // restored tab builds and swaps as it reconnects.
-      final close = find.byWidgetPredicate(
-        (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
-      );
-      final tabs = find.byWidgetPredicate(
-        (w) =>
-            w is Tooltip &&
-            ((w.message ?? '').startsWith('Close ') ||
-                w.message == 'Reconnect'),
-      );
-      final before = tabs.evaluate().length;
+  _test('a right-click on a Local shell tab duplicates it', (tester) async {
+    await _launch(tester);
+    await _localShell(tester);
+    // Counted rather than assumed one: the tests before this left Local
+    // tabs, which come back with each launch.
+    // A tab reads whatever title its shell gives itself, so tabs are found
+    // by their close button, "Close <title>" — "Reconnect" once its shell
+    // has ended. Counted on the strip rather than by terminals, which a
+    // restored tab builds and swaps as it reconnects.
+    final close = find.byWidgetPredicate(
+      (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+    );
+    final tabs = find.byWidgetPredicate(
+      (w) =>
+          w is Tooltip &&
+          ((w.message ?? '').startsWith('Close ') || w.message == 'Reconnect'),
+    );
+    final before = tabs.evaluate().length;
 
-      // Right-clicked on the chip that holds a close button. Any Local tab
-      // duplicates the same way.
-      final chip = find
-          .ancestor(of: close.first, matching: find.byType(InkWell))
-          .first;
-      await tester.tapAt(
-        tester.getCenter(chip),
-        kind: PointerDeviceKind.mouse,
-        buttons: kSecondaryMouseButton,
-      );
-      await _pick(tester, 'Duplicate session');
-      await _until(
-        tester,
-        () => tabs.evaluate().length == before + 1,
-        'a second Local shell',
-      );
-      expect(find.textContaining('no longer saved'), findsNothing);
-      await _closeTabs(tester);
-    },
-  );
+    // Right-clicked on the chip that holds a close button. Any Local tab
+    // duplicates the same way.
+    final chip = find
+        .ancestor(of: close.first, matching: find.byType(InkWell))
+        .first;
+    await tester.tapAt(
+      tester.getCenter(chip),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await _pick(tester, 'Duplicate session');
+    await _until(
+      tester,
+      () => tabs.evaluate().length == before + 1,
+      'a second Local shell',
+    );
+    expect(find.textContaining('no longer saved'), findsNothing);
+    await _closeTabs(tester);
+  });
 
   // #87: a right-click in a tab's page opens the tab's own menu there. In a
   // terminal its Paste comes first and the tab's items after a divider; a
@@ -1042,7 +1030,8 @@ touch '${done.path}'
       await _pick(tester, 'Group with…');
       await _until(
         tester,
-        () => _kind('SimpleDialogOption', 'TuiSheetOption').evaluate().isNotEmpty,
+        () =>
+            _kind('SimpleDialogOption', 'TuiSheetOption').evaluate().isNotEmpty,
         'the tabs to group with',
       );
       await tester.pump(const Duration(milliseconds: 600));
@@ -1099,9 +1088,8 @@ touch '${done.path}'
     (tester) async {
       // Where a Local shell's Git panel looks: the login home, a folder or
       // two down. Made for this test and gone after it.
-      final repo = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('jeansh-e2e-repo-');
+      final repo = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-repo-');
       addTearDown(() => repo.deleteSync(recursive: true));
       Future<void> git(List<String> args) async {
         final done = await Process.run('git', ['-C', repo.path, ...args]);
@@ -1131,9 +1119,10 @@ touch '${done.path}'
       final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
       dynamic shown() => tester.widget(picker.first);
       Iterable<String?> choices() => [
-        for (final dynamic item in shown() is DropdownButton
-            ? shown().items as List
-            : shown().options as List)
+        for (final dynamic item
+            in shown() is DropdownButton
+                ? shown().items as List
+                : shown().options as List)
           item.value as String?,
       ];
       await _until(
@@ -1174,17 +1163,32 @@ touch '${done.path}'
       // says which to expect, and both are held to it.
       final wide = tester.getSize(find.byType(GitDiffPage)).width >= 900;
       if (wide) {
-        expect(find.byTooltip('Unified view'), findsOneWidget,
-            reason: 'a wide page did not open split');
-        expect(old.dy, closeTo(now.dy, 1),
-            reason: 'the changed line is not level with what replaced it');
-        expect(old.dx, lessThan(now.dx),
-            reason: 'the old line is not on the left');
+        expect(
+          find.byTooltip('Unified view'),
+          findsOneWidget,
+          reason: 'a wide page did not open split',
+        );
+        expect(
+          old.dy,
+          closeTo(now.dy, 1),
+          reason: 'the changed line is not level with what replaced it',
+        );
+        expect(
+          old.dx,
+          lessThan(now.dx),
+          reason: 'the old line is not on the left',
+        );
       } else {
-        expect(find.byTooltip('Split view'), findsOneWidget,
-            reason: 'a narrow page did not open unified');
-        expect(old.dy, lessThan(now.dy),
-            reason: 'the old line is not above the new');
+        expect(
+          find.byTooltip('Split view'),
+          findsOneWidget,
+          reason: 'a narrow page did not open unified',
+        );
+        expect(
+          old.dy,
+          lessThan(now.dy),
+          reason: 'the old line is not above the new',
+        );
       }
       await _closeTabs(tester);
     },
@@ -1344,7 +1348,11 @@ touch '${done.path}'
         await _paste(tester);
         final bytes = await got.bytes('the pasted picture\'s path');
         final path = pasted.firstMatch(bytes)?.group(0);
-        expect(path, isNotNull, reason: 'no picture path in ${jsonEncode(bytes)}');
+        expect(
+          path,
+          isNotNull,
+          reason: 'no picture path in ${jsonEncode(bytes)}',
+        );
         expect(
           bytes,
           bracketed ? '\x1b[200~$path \x1b[201~' : '$path ',
@@ -1394,7 +1402,10 @@ touch '${done.path}'
         await _drag(tester, dropped, dir);
         final want = escaped(dropped);
         expect(
-          await got.bytes('the dropped path', length: bracketed ? want.length + 13 : want.length + 1),
+          await got.bytes(
+            'the dropped path',
+            length: bracketed ? want.length + 13 : want.length + 1,
+          ),
           bracketed ? '\x1b[200~$want \x1b[201~' : '$want ',
         );
       }
@@ -1407,90 +1418,90 @@ touch '${done.path}'
   // five the app bundles — listed from the machine itself, monospaced ones
   // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
   // first monospaced family fontconfig lists that the app does not bundle.
-  _test(
-    "the terminal takes a font installed on the machine",
-    (tester) async {
-      final bundled = terminalFonts.map((font) => font.family).toSet();
-      final String family;
-      if (Platform.isMacOS) {
-        family = 'Menlo';
-      } else if (Platform.isWindows) {
-        // Listed through GDI, and marked monospaced by its FIXED_PITCH.
-        family = 'Consolas';
-      } else {
-        final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
-        final mono =
-            LineSplitter.split('${listed.stdout}')
-                .map((line) => line.split(',').first.trim())
-                .where((name) => name.isNotEmpty && !bundled.contains(name))
-                .toList()
-              ..sort();
-        // DejaVu Sans Mono where it is there, which on Ubuntu it is.
-        family = mono.contains('DejaVu Sans Mono')
-            ? 'DejaVu Sans Mono'
-            : mono.first;
-      }
+  _test("the terminal takes a font installed on the machine", (tester) async {
+    final bundled = terminalFonts.map((font) => font.family).toSet();
+    final String family;
+    if (Platform.isMacOS) {
+      family = 'Menlo';
+    } else if (Platform.isWindows) {
+      // Listed through GDI, and marked monospaced by its FIXED_PITCH.
+      family = 'Consolas';
+    } else {
+      final listed = await Process.run('fc-list', [':spacing=mono', 'family']);
+      final mono =
+          LineSplitter.split('${listed.stdout}')
+              .map((line) => line.split(',').first.trim())
+              .where((name) => name.isNotEmpty && !bundled.contains(name))
+              .toList()
+            ..sort();
+      // DejaVu Sans Mono where it is there, which on Ubuntu it is.
+      family = mono.contains('DejaVu Sans Mono')
+          ? 'DejaVu Sans Mono'
+          : mono.first;
+    }
 
-      await _launch(tester);
-      await _settings(tester);
-      // Not findRichText: that would match the Text.rich and the RichText it
-      // draws with, twice over.
-      final row = find.textContaining('Installed on this computer');
-      await tester.scrollUntilVisible(
-        row,
-        300,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await _until(
-        tester,
-        () => find.textContaining('families, monospaced first').evaluate().isNotEmpty,
-        "this computer's fonts to be listed",
-      );
-      // Built is not on screen: a list builds a little past its edge.
-      await tester.ensureVisible(row);
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(row);
-      await _until(
-        tester,
-        () => _label('Installed fonts').evaluate().isNotEmpty,
-        'the font picker',
-      );
-      // Settings' own fields are behind the dialog.
-      final picker = _kind('AlertDialog', 'TuiDialog');
-      await tester.enterText(
-        find.descendant(of: picker, matching: find.byType(TextField)),
-        family,
-      );
-      await tester.pump(const Duration(milliseconds: 300));
-      final entry = find.descendant(
-        of: picker,
-        matching: find.widgetWithText(InkWell, family),
-      );
-      expect(
-        find.descendant(of: entry, matching: find.text('monospaced')),
-        findsOneWidget,
-        reason: '$family is not marked monospaced',
-      );
-      await tester.tap(entry);
-      await _until(
-        tester,
-        () => find.textContaining('on this computer').evaluate().isNotEmpty,
-        'Settings to show the font chosen',
-      );
+    await _launch(tester);
+    await _settings(tester);
+    // Not findRichText: that would match the Text.rich and the RichText it
+    // draws with, twice over.
+    final row = find.textContaining('Installed on this computer');
+    await tester.scrollUntilVisible(
+      row,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await _until(
+      tester,
+      () => find
+          .textContaining('families, monospaced first')
+          .evaluate()
+          .isNotEmpty,
+      "this computer's fonts to be listed",
+    );
+    // Built is not on screen: a list builds a little past its edge.
+    await tester.ensureVisible(row);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(row);
+    await _until(
+      tester,
+      () => _label('Installed fonts').evaluate().isNotEmpty,
+      'the font picker',
+    );
+    // Settings' own fields are behind the dialog.
+    final picker = _kind('AlertDialog', 'TuiDialog');
+    await tester.enterText(
+      find.descendant(of: picker, matching: find.byType(TextField)),
+      family,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    final entry = find.descendant(
+      of: picker,
+      matching: find.widgetWithText(InkWell, family),
+    );
+    expect(
+      find.descendant(of: entry, matching: find.text('monospaced')),
+      findsOneWidget,
+      reason: '$family is not marked monospaced',
+    );
+    await tester.tap(entry);
+    await _until(
+      tester,
+      () => find.textContaining('on this computer').evaluate().isNotEmpty,
+      'Settings to show the font chosen',
+    );
 
-      // The picker closing still holds a barrier over the page, which takes
-      // a tap on Back as its own.
-      await tester.pump(const Duration(milliseconds: 600));
-      await _backHome(tester);
-      final view = await _localShell(tester);
-      expect(
-        view.textStyle.fontFamily,
-        family,
-        reason: 'the terminal does not draw in the font chosen',
-      );
-      await _closeTabs(tester);
-    },
-  );
+    // The picker closing still holds a barrier over the page, which takes
+    // a tap on Back as its own.
+    await tester.pump(const Duration(milliseconds: 600));
+    await _backHome(tester);
+    final view = await _localShell(tester);
+    expect(
+      view.textStyle.fontFamily,
+      family,
+      reason: 'the terminal does not draw in the font chosen',
+    );
+    await _closeTabs(tester);
+  });
 
   // #8, the desktop updater, as far as it goes before anything is replaced: a
   // newer release is offered, downloaded, and kept only when its SHA-256 is
@@ -1514,6 +1525,9 @@ touch '${done.path}'
         if (kept.existsSync()) kept.deleteSync();
       });
       var digest = '${sha256.convert(build)}';
+      // The build's second half waits for this, so the download can be
+      // closed on while it runs (#116).
+      final rest = Completer<void>();
       // Launched first: the app looks for an update itself as it starts,
       // and that one should find nothing to offer over this test.
       await _launch(tester);
@@ -1522,7 +1536,7 @@ touch '${done.path}'
         Uri.parse(updateHost).port,
       );
       addTearDown(() => server.close(force: true));
-      server.listen((request) {
+      server.listen((request) async {
         final response = request.response;
         switch (request.uri.path) {
           case '/latest.json':
@@ -1540,7 +1554,11 @@ touch '${done.path}'
               }),
             );
           case final path when path.endsWith('/$name'):
-            response.add(build);
+            response.contentLength = build.length;
+            response.add(build.sublist(0, build.length ~/ 2));
+            await response.flush();
+            await rest.future;
+            response.add(build.sublist(build.length ~/ 2));
           default:
             response.statusCode = HttpStatus.notFound;
         }
@@ -1577,12 +1595,37 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () => _label('Restart to update').evaluate().isNotEmpty,
-        'the download to be checked and offered to install',
+        () => find.text('Downloading Jeansh 9.9.9').evaluate().isNotEmpty,
+        'the download to start',
       );
-      expect(find.text('Jeansh 9.9.9 is ready'), findsOneWidget);
+
+      // #116: a click outside the dialog while it downloads puts the
+      // download in the background rather than cancelling it, and Settings
+      // shows it going on, then Restart to update.
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tapAt(const Offset(4, 4));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.text('Downloading Jeansh 9.9.9'), findsNothing);
+      final going = find.text('Jeansh 9.9.9 is downloading');
+      if (check.evaluate().isEmpty) await _settings(tester);
+      await tester.scrollUntilVisible(
+        going,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(going, findsOneWidget);
+      expect(_label('Cancel'), findsOneWidget);
+      rest.complete();
+      await _until(
+        tester,
+        () => _label('Restart to update').evaluate().isNotEmpty,
+        'Settings to offer Restart to update once the download is checked',
+      );
+      expect(
+        find.text('Jeansh 9.9.9 is downloaded and checked.'),
+        findsOneWidget,
+      );
       expect(kept.readAsBytesSync(), build);
-      await _pick(tester, 'Later');
       kept.deleteSync();
 
       // A build whose hash is not the release's: refused, and nothing kept.
@@ -1592,10 +1635,10 @@ touch '${done.path}'
       await _pick(tester, 'Download');
       await _until(
         tester,
-        () =>
-            find.textContaining('is not the file the release describes')
-                .evaluate()
-                .isNotEmpty,
+        () => find
+            .textContaining('is not the file the release describes')
+            .evaluate()
+            .isNotEmpty,
         'a download of the wrong file to be refused',
       );
       expect(_label('Restart to update'), findsNothing);
@@ -1745,7 +1788,10 @@ touch '${done.path}'
 
       await _launch(tester);
       await _settings(tester);
-      final choice = _kind('SegmentedButton<LinkModifier>', 'TuiSelect<LinkModifier>');
+      final choice = _kind(
+        'SegmentedButton<LinkModifier>',
+        'TuiSelect<LinkModifier>',
+      );
       await tester.scrollUntilVisible(
         choice,
         300,
@@ -1753,9 +1799,7 @@ touch '${done.path}'
       );
       await tester.ensureVisible(choice);
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(
-        find.descendant(of: choice, matching: _label('Alt')),
-      );
+      await tester.tap(find.descendant(of: choice, matching: _label('Alt')));
       await _until(
         tester,
         () => find.textContaining('Hold Alt and click').evaluate().isNotEmpty,

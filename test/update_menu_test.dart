@@ -117,10 +117,12 @@ void main() {
   final original = updater;
   setUp(() {
     updateAvailable.value = null;
+    updateDownload.value = null;
   });
   tearDown(() {
     updater = original;
     updateAvailable.value = null;
+    updateDownload.value = null;
   });
 
   final linux = TargetPlatformVariant.only(TargetPlatform.linux);
