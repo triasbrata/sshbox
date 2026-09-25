@@ -58,22 +58,23 @@ class _UpdateTileState extends State<UpdateTile> {
           builder: (context, _) {
             final download = updateDownload.value;
             final update = updateAvailable.value;
-            // The download, once there is one, says all the offer would.
-            if (download != null) return _DownloadRow(download, note: note);
-            return update == null
-                ? const SizedBox.shrink()
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TuiButton(
-                        label: 'Jeansh ${update.version} is available',
-                        prefix: '↑',
-                        onPressed: () =>
-                            showUpdate(context, update, using: _updater),
-                      ),
-                      note('Tap to see it and update.'),
-                    ],
-                  );
+            final shown = download != null && !download.gone ? download : null;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (shown != null) _DownloadRow(shown),
+                // Its download, once there is one, says all the offer would.
+                if (update != null && update.label != shown?.update.label) ...[
+                  TuiButton(
+                    label: 'Jeansh ${update.version} is available',
+                    prefix: '↑',
+                    onPressed: () =>
+                        showUpdate(context, update, using: _updater),
+                  ),
+                  note('Tap to see it and update.'),
+                ],
+              ],
+            );
           },
         ),
         Row(
@@ -276,6 +277,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     // finished one; anything else is an offer.
     final shown =
         state != null &&
+            !state.gone &&
             (state.running || state.update.label == widget.update.label)
         ? state
         : null;
@@ -431,10 +433,9 @@ class DownloadProgress extends StatelessWidget {
 /// down, Restart to update once it is checked, why and Try again if it
 /// failed.
 class _DownloadRow extends StatelessWidget {
-  const _DownloadRow(this.download, {required this.note});
+  const _DownloadRow(this.download);
 
   final UpdateDownload download;
-  final Widget Function(String) note;
 
   Future<void> _restart(BuildContext context) async {
     try {

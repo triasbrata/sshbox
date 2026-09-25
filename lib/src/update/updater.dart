@@ -512,6 +512,10 @@ class UpdateDownload {
 
   bool get running =>
       phase == DownloadPhase.downloading || phase == DownloadPhase.installing;
+
+  /// A finished download whose file has gone since — deleted by hand, say —
+  /// which is then no download at all, and the update is offered afresh.
+  bool get gone => phase == DownloadPhase.ready && !file!.existsSync();
 }
 
 /// The download under way or finished, or null when there is none.
