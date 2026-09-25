@@ -226,6 +226,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
 
   @override
   void dispose() {
+    // MUTATION: the old bug, a dismissed dialog cancelling its download.
+    cancelDownload();
     updateDownload.removeListener(_changed);
     super.dispose();
   }
