@@ -40,6 +40,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/settings_page.dart'
     show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
@@ -830,20 +831,19 @@ touch '${done.path}'
         'git push origin',
         reason: 'copy on select copied the selection without its drawn gaps',
       );
-      // Its Copied toast gone first: toasts sit over every menu, and on
-      // Windows and Linux, below the window's buttons, this one covers the
-      // menu's Copy.
-      await _until(
-        tester,
-        () => find.text('Copied').evaluate().isEmpty,
-        'the Copied toast to go',
-      );
 
       await Clipboard.setData(const ClipboardData(text: 'untouched'));
       await tester.tapAt(
         cell(5),
         kind: PointerDeviceKind.mouse,
         buttons: kSecondaryMouseButton,
+      );
+      // Every toast gone first: toasts sit over every menu, and on Windows
+      // and Linux, below the window's buttons, one covers the menu's Copy.
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
       );
       await _pick(tester, 'Copy');
       expect(
