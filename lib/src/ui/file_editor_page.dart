@@ -20,6 +20,7 @@ import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
+import 'tui.dart';
 
 /// One remote file in a tab: an image in a viewer, anything else in the
 /// editor.
@@ -112,14 +113,14 @@ Future<void> copyAndSay(
   try {
     await copy();
     if (context.mounted) {
-      showToast(context, 'Copied $name', type: ToastificationType.success);
+      showToast(context, 'Copied $name', type: TuiToastType.success);
     }
   } on PlatformException catch (error) {
     if (context.mounted) {
       showToast(
         context,
         'Could not copy $name: ${error.message ?? error.code}',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
   }
@@ -351,9 +352,9 @@ class _TextFileTabState extends State<_TextFileTab> {
   String? _sudoPassword;
 
   SudoCapable? get _sudo => switch (widget.browser) {
-        final SudoCapable sudo => sudo,
-        _ => null,
-      };
+    final SudoCapable sudo => sudo,
+    _ => null,
+  };
 
   String? _error;
   FileBrowserFault? _fault;
@@ -476,16 +477,11 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   Future<void> _goToLine() async {
-    final answer = await showDialog<String>(
-      context: context,
-      builder: (_) => _TextPrompt(
-        title: 'Go to line',
-        label: 'Line, 1 to ${_controller.lineCount}',
-        action: 'Go',
-        number: true,
-      ),
+    final line = await showTuiGoToLineDialog(
+      context,
+      current: _controller.selection.baseIndex + 1,
+      max: _controller.lineCount,
     );
-    final line = int.tryParse(answer?.trim() ?? '');
     if (line != null && mounted) _jumpTo(line);
   }
 
@@ -622,10 +618,11 @@ class _TextFileTabState extends State<_TextFileTab> {
         _lineBreak = read.text.contains('\r\n')
             ? '\r\n'
             : read.text.contains('\r')
-                ? '\r'
-                : '\n';
+            ? '\r'
+            : '\n';
         final name = RemotePath.basename(widget.path).toLowerCase();
-        _useTabs = RegExp(r'^\t', multiLine: true).hasMatch(text) ||
+        _useTabs =
+            RegExp(r'^\t', multiLine: true).hasMatch(text) ||
             name == 'makefile' ||
             name == 'gnumakefile' ||
             name.endsWith('.mk');
@@ -759,7 +756,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       showToast(
         context,
         'Saved ${RemotePath.basename(widget.path)}',
-        type: ToastificationType.success,
+        type: TuiToastType.success,
       );
     } on FileBrowserException catch (error) {
       if (!mounted) return;
@@ -768,13 +765,14 @@ class _TextFileTabState extends State<_TextFileTab> {
       } else {
         // Readable but not writable, like /etc/hosts: saving as root is the
         // one way left to get the edit onto the host.
-        final offerSudo = error.fault == FileBrowserFault.permissionDenied &&
+        final offerSudo =
+            error.fault == FileBrowserFault.permissionDenied &&
             !asRoot &&
             _sudo != null;
         showToast(
           context,
           error.message,
-          type: ToastificationType.error,
+          type: TuiToastType.error,
           action: offerSudo
               ? (
                   label: 'Save with sudo',
@@ -795,25 +793,28 @@ class _TextFileTabState extends State<_TextFileTab> {
   Future<void> _resolveConflict({required bool root}) async {
     final choice = await showDialog<_Conflict>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Changed on the host'),
-        content: Text(
-          '${RemotePath.basename(widget.path)} was saved on the host after you '
-          'opened it. Overwrite that version with yours, or reload it and drop '
-          'your edits?',
-        ),
+      builder: (context) => TuiDialog(
+        title: 'save',
+        message: 'Changed on the host',
+        detail:
+            '${RemotePath.basename(widget.path)} was saved on the host after '
+            'you opened it. Overwrite that version with yours, or reload it '
+            'and drop your edits?',
         actions: [
-          TextButton(
+          TuiButton(
+            label: 'Cancel',
+            variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
           ),
-          TextButton(
+          TuiButton(
+            label: 'Reload',
+            variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(_Conflict.reload),
-            child: const Text('Reload'),
           ),
-          FilledButton(
+          TuiButton(
+            label: 'Overwrite',
+            variant: TuiButtonVariant.danger,
             onPressed: () => Navigator.of(context).pop(_Conflict.overwrite),
-            child: const Text('Overwrite'),
           ),
         ],
       ),
@@ -830,27 +831,17 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   Future<bool> _confirmDiscard() async {
-    final discard = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Discard changes?'),
-        content: Text(
+    final discard = await showTuiConfirmDialog(
+      context,
+      title: 'unsaved',
+      message: 'Discard changes?',
+      detail:
           'Your edits to ${RemotePath.basename(widget.path)} have not been '
           'saved to the host.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Keep editing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep editing',
     );
-    return discard == true && mounted;
+    return discard && mounted;
   }
 
   Future<void> _leaveIfConfirmed() async {
@@ -867,26 +858,17 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// asks first.
   Future<void> _download() async {
     if (_dirty) {
-      final go = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          content: const Text(
-            "The download is the version on the server; your unsaved edits "
-            "aren't in it.",
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Download'),
-            ),
-          ],
-        ),
+      final go = await showTuiConfirmDialog(
+        context,
+        title: 'download',
+        message:
+            "The download is the version on the server; your unsaved "
+            "edits aren't in it.",
+        confirmLabel: 'Download',
+        cancelLabel: 'Cancel',
+        confirmVariant: TuiButtonVariant.primary,
       );
-      if (go != true) return;
+      if (!go) return;
     }
     if (!mounted) return;
     await downloadFile(
@@ -897,7 +879,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       // Opened through sudo, while a download reads as the login.
       denied: _asRoot
           ? 'Could not download ${RemotePath.basename(widget.path)}: your '
-              'login may not read it, and a download does not go through sudo.'
+                'login may not read it, and a download does not go through sudo.'
           : null,
       onTransfer: (transfer) {
         if (mounted) setState(() => _transfer = transfer);
@@ -912,11 +894,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     final name = RemotePath.basename(widget.path);
     final text = _controller.text;
     if (text.length > copyLimit) {
-      showToast(
-        context,
-        tooLargeToCopy(name),
-        type: ToastificationType.warning,
-      );
+      showToast(context, tooLargeToCopy(name), type: TuiToastType.warning);
       return Future.value();
     }
     return copyAndSay(
@@ -939,46 +917,20 @@ class _TextFileTabState extends State<_TextFileTab> {
         if (!didPop) _leaveIfConfirmed();
       },
       child: Scaffold(
-        appBar: AppBar(
+        appBar: TuiAppBar(
           automaticallyImplyLeading: false,
           leading: IconButton(
             tooltip: _embedded ? 'Close file' : 'Back',
             icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
             onPressed: _leaveIfConfirmed,
           ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                RemotePath.basename(widget.path),
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(
-                [
-                  if (_asRoot) 'as root',
-                  _dirty ? 'Unsaved changes' : RemotePath.parent(widget.path),
-                ].join(' · '),
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
           bottom: _saving
               ? const PreferredSize(
                   preferredSize: Size.fromHeight(3),
-                  child: LinearProgressIndicator(),
+                  child: TuiProgressBar(),
                 )
               : null,
           actions: [
-            if (_markdown)
-              IconButton(
-                tooltip: _preview ? 'Show source' : 'Show preview',
-                onPressed: _loading || _error != null
-                    ? null
-                    : () => _setPreview(!_preview),
-                icon: Icon(_preview ? Icons.code : Icons.preview_outlined),
-              ),
             IconButton(
               tooltip: 'Find',
               onPressed: _loading || _error != null
@@ -996,48 +948,38 @@ class _TextFileTabState extends State<_TextFileTab> {
               onPressed: canSave ? _save : null,
               icon: const Icon(Icons.save_outlined),
             ),
-            PopupMenuButton<VoidCallback>(
+            MenuButton<VoidCallback>(
               tooltip: 'More',
               onSelected: (action) => action(),
-              itemBuilder: (context) => [
+              entries: [
                 // Only the path is needed, so a file that would not open as
                 // text can still be saved on the phone.
-                PopupMenuItem(
-                  value: _download,
-                  enabled: _transfer == null,
-                  child: const Text('Download'),
-                ),
+                menuAction('Download', _download, enabled: _transfer == null),
                 // Nothing to copy while the file is still coming, and nothing
                 // worth copying when it would not open as text.
                 if (!_loading && _error == null)
-                  PopupMenuItem(
-                    value: _copyContent,
-                    child: const Text('Copy content'),
-                  ),
-                const PopupMenuDivider(),
+                  menuAction('Copy content', _copyContent),
+                const TuiMenuDivider(),
                 if (!_loading && _error == null) ...[
-                  PopupMenuItem(
-                    value: () => _inSource(_find.replaceMode),
-                    child: const Text('Find and replace'),
+                  menuAction(
+                    'Find and replace',
+                    () => _inSource(_find.replaceMode),
                   ),
-                  PopupMenuItem(
-                    value: () => _inSource(_goToLine),
-                    child: const Text('Go to line…'),
-                  ),
-                  const PopupMenuDivider(),
+                  menuAction('Go to line…', () => _inSource(_goToLine)),
+                  const TuiMenuDivider(),
                 ],
-                CheckedPopupMenuItem(
-                  value: () => _setLook(wordWrap: !_wordWrap),
+                menuAction(
+                  'Word wrap',
+                  () => _setLook(wordWrap: !_wordWrap),
                   checked: _wordWrap,
-                  child: const Text('Word wrap'),
                 ),
-                PopupMenuItem(
-                  value: () => _setLook(fontSize: _fontSize + 1),
-                  child: const Text('Larger text'),
+                menuAction(
+                  'Larger text',
+                  () => _setLook(fontSize: _fontSize + 1),
                 ),
-                PopupMenuItem(
-                  value: () => _setLook(fontSize: _fontSize - 1),
-                  child: const Text('Smaller text'),
+                menuAction(
+                  'Smaller text',
+                  () => _setLook(fontSize: _fontSize - 1),
                 ),
               ],
             ),
@@ -1047,7 +989,7 @@ class _TextFileTabState extends State<_TextFileTab> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (_transfer case final transfer?) TransferBar(transfer),
-            Expanded(child: _buildBody()),
+            Expanded(child: _editorChrome()),
           ],
         ),
         bottomNavigationBar: _loading || _error != null || _preview
@@ -1057,8 +999,59 @@ class _TextFileTabState extends State<_TextFileTab> {
     );
   }
 
+  /// termul's file chrome round the text: the file's name, where it is or
+  /// that it is unsaved, and Source or Preview for Markdown. The same body
+  /// goes in both of termul's slots, so the text stays built behind the
+  /// preview, with its cursor and scroll position, as it always has.
+  Widget _editorChrome() {
+    final body = _buildBody();
+    return TuiCodeEditor(
+      path: RemotePath.basename(widget.path),
+      subtitle: [
+        if (_asRoot) 'as root',
+        RemotePath.parent(widget.path),
+      ].join(' · '),
+      dirty: _dirty,
+      loading: _loading,
+      showModeToggle: _markdown,
+      mode: _preview ? TuiCodeViewMode.preview : TuiCodeViewMode.source,
+      onModeChanged: _error != null
+          ? null
+          : (mode) => _setPreview(mode == TuiCodeViewMode.preview),
+      banner: _draft == null ? null : _draftBanner(),
+      sourceChild: body,
+      previewChild: body,
+    );
+  }
+
+  /// termul's word across the top of the text: an earlier edit kept.
+  Widget _draftBanner() {
+    final p = TermulThemeData.of(context).palette;
+    return Container(
+      color: p.selection,
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      child: Row(
+        children: [
+          const Expanded(
+            child: TuiText(
+              'There are unsaved edits to this file from last time.',
+              size: 12,
+            ),
+          ),
+          TuiButton(
+            label: 'Discard',
+            variant: TuiButtonVariant.ghost,
+            onPressed: _discardStoredDraft,
+          ),
+          const SizedBox(width: 8),
+          TuiButton(label: 'Restore', onPressed: _restoreDraft),
+        ],
+      ),
+    );
+  }
+
   Widget _buildBody() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) return const Center(child: TuiSpinner());
 
     final error = _error;
     if (error != null) {
@@ -1073,22 +1066,6 @@ class _TextFileTabState extends State<_TextFileTab> {
 
     return Column(
       children: [
-        if (_draft != null)
-          MaterialBanner(
-            content: const Text(
-              'There are unsaved edits to this file from last time.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: _discardStoredDraft,
-                child: const Text('Discard'),
-              ),
-              TextButton(
-                onPressed: _restoreDraft,
-                child: const Text('Restore'),
-              ),
-            ],
-          ),
         Expanded(
           // The text stays built behind the preview, so Source comes back
           // with its cursor and scroll position; out of focus meanwhile, so
@@ -1120,14 +1097,14 @@ class _TextFileTabState extends State<_TextFileTab> {
                       // Files are code and config far more often than prose,
                       // and both are unreadable in a proportional face once
                       // alignment matters.
-                      fontFamily: 'monospace',
+                      fontFamily: TermulFonts.mono,
                       codeTheme: _codeThemes[Theme.of(context).brightness],
                     ),
                     indicatorBuilder: (context, editing, chunks, notifier) =>
                         DefaultCodeLineNumber(
-                      controller: editing,
-                      notifier: notifier,
-                    ),
+                          controller: editing,
+                          notifier: notifier,
+                        ),
                   ),
                 ),
               ),
@@ -1447,7 +1424,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
         : '$_width × $_height · ${formatBytes(_bytes)}';
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         automaticallyImplyLeading: false,
         leading: IconButton(
           tooltip: _embedded ? 'Close file' : 'Back',
@@ -1470,25 +1447,18 @@ class _ImageFileTabState extends State<_ImageFileTab> {
           ],
         ),
         actions: [
-          PopupMenuButton<VoidCallback>(
+          MenuButton<VoidCallback>(
             tooltip: 'More',
             onSelected: (action) => action(),
-            itemBuilder: (context) => [
+            entries: [
               // Only the path is needed, so an image that would not open here
               // can still be saved on the phone.
-              PopupMenuItem(
-                value: _download,
-                enabled: _transfer == null,
-                child: const Text('Download'),
-              ),
+              menuAction('Download', _download, enabled: _transfer == null),
               // Only once there is a picture to copy, and only where there is
               // a clipboard that takes one: MainActivity's, over the channel.
               if (_image != null &&
                   defaultTargetPlatform == TargetPlatform.android)
-                PopupMenuItem(
-                  value: _copyImage,
-                  child: const Text('Copy image'),
-                ),
+                menuAction('Copy image', _copyImage),
             ],
           ),
         ],
@@ -1504,7 +1474,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   }
 
   Widget _buildBody() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) return const Center(child: TuiSpinner());
 
     final error = _error;
     if (error != null) return _EditorError(message: error, fault: _fault);
@@ -1571,10 +1541,10 @@ class _EditorError extends StatelessWidget {
             ),
             if (onSudo != null) ...[
               const SizedBox(height: 16),
-              FilledButton.tonalIcon(
+              TuiButton(
+                label: 'Open with sudo',
+                prefix: '#',
                 onPressed: onSudo,
-                icon: const Icon(Icons.admin_panel_settings_outlined),
-                label: const Text('Open with sudo'),
               ),
             ],
           ],
@@ -1678,7 +1648,8 @@ class _PreviewImages {
           if (total > _imageLimit) {
             refused = '${formatBytes(total)} is too large to show here';
           } else if (_spent + total > _budget) {
-            refused = 'the preview has already fetched '
+            refused =
+                'the preview has already fetched '
                 '${formatBytes(_budget)} of pictures';
           }
           if (refused.isNotEmpty) stop.complete();
@@ -1747,11 +1718,7 @@ Widget _imageAlt(
         WidgetSpan(
           alignment: PlaceholderAlignment.middle,
           child: loading
-              ? const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
+              ? const SizedBox(width: 14, height: 14, child: TuiSpinner())
               : const Icon(Icons.image_outlined, size: 16),
         ),
         TextSpan(text: ' $label${because == null ? '' : ' — $because'}'),
@@ -1959,7 +1926,7 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
                   ),
                   codeblockDecoration: BoxDecoration(
                     color: scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: scheme.outlineVariant),
                   ),
                   checkbox: body.copyWith(color: scheme.primary),
                   // Sized to what they hold, so a wide one scrolls sideways
@@ -2087,15 +2054,16 @@ class _FindBar extends StatelessWidget implements PreferredSizeWidget {
 
   final CodeFindController controller;
 
-  static const _rowHeight = 48.0;
+  static const _rowHeight = 44.0;
 
   @override
   Size get preferredSize {
     final value = controller.value;
     if (value == null) return Size.zero;
-    return Size.fromHeight(_rowHeight * (value.replaceMode ? 2 : 1));
+    return Size.fromHeight(_rowHeight * (value.replaceMode ? 2 : 1) + 1);
   }
 
+  /// termul's find bar over re_editor's search.
   @override
   Widget build(BuildContext context) {
     final value = controller.value;
@@ -2107,90 +2075,21 @@ class _FindBar extends StatelessWidget implements PreferredSizeWidget {
     final count = value.searching || value.option.pattern.isEmpty
         ? ''
         : found
-            ? '${result.index + 1}/${result.matches.length}'
-            : 'No results';
-
-    Widget row(Widget field, List<Widget> trailing) => SizedBox(
-          height: _rowHeight,
-          child: Row(
-            children: [
-              const SizedBox(width: 12),
-              Expanded(child: field),
-              ...trailing,
-            ],
-          ),
-        );
-    Widget field(TextEditingController text, FocusNode focus, String hint) =>
-        TextField(
-          controller: text,
-          focusNode: focus,
-          autocorrect: false,
-          enableSuggestions: false,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
-          decoration: InputDecoration(
-            hintText: hint,
-            border: InputBorder.none,
-            isDense: true,
-          ),
-        );
-
-    return Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          row(
-            field(
-              controller.findInputController,
-              controller.findInputFocusNode,
-              'Find',
-            ),
-            [
-              Text(count, style: Theme.of(context).textTheme.bodySmall),
-              IconButton(
-                tooltip: 'Previous match',
-                onPressed: found ? controller.previousMatch : null,
-                icon: const Icon(Icons.keyboard_arrow_up),
-              ),
-              IconButton(
-                tooltip: 'Next match',
-                onPressed: found ? controller.nextMatch : null,
-                icon: const Icon(Icons.keyboard_arrow_down),
-              ),
-              IconButton(
-                tooltip: 'Replace…',
-                isSelected: value.replaceMode,
-                onPressed: controller.toggleMode,
-                icon: const Icon(Icons.find_replace),
-              ),
-              IconButton(
-                tooltip: 'Close find',
-                onPressed: controller.close,
-                icon: const Icon(Icons.close),
-              ),
-            ],
-          ),
-          if (value.replaceMode)
-            row(
-              field(
-                controller.replaceInputController,
-                controller.replaceInputFocusNode,
-                'Replace with',
-              ),
-              [
-                TextButton(
-                  onPressed: found ? controller.replaceMatch : null,
-                  child: const Text('Replace'),
-                ),
-                TextButton(
-                  onPressed: found ? controller.replaceAllMatches : null,
-                  child: const Text('Replace all'),
-                ),
-                const SizedBox(width: 8),
-              ],
-            ),
-        ],
-      ),
+        ? '${result.index + 1}/${result.matches.length}'
+        : 'No results';
+    return TuiFindBar(
+      findController: controller.findInputController,
+      findFocusNode: controller.findInputFocusNode,
+      replaceController: controller.replaceInputController,
+      replaceFocusNode: controller.replaceInputFocusNode,
+      replaceMode: value.replaceMode,
+      matchLabel: count,
+      onPrevious: found ? controller.previousMatch : null,
+      onNext: found ? controller.nextMatch : null,
+      onToggleReplace: controller.toggleMode,
+      onClose: controller.close,
+      onReplace: found ? controller.replaceMatch : null,
+      onReplaceAll: found ? controller.replaceAllMatches : null,
     );
   }
 }
@@ -2207,7 +2106,6 @@ class _TextPrompt extends StatefulWidget {
     required this.action,
     this.helper,
     this.obscure = false,
-    this.number = false,
   });
 
   final String title;
@@ -2215,7 +2113,6 @@ class _TextPrompt extends StatefulWidget {
   final String action;
   final String? helper;
   final bool obscure;
-  final bool number;
 
   @override
   State<_TextPrompt> createState() => _TextPromptState();
@@ -2234,28 +2131,26 @@ class _TextPromptState extends State<_TextPrompt> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.title),
-      content: TextField(
+    return TuiDialog(
+      title: widget.title,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        TuiButton(label: widget.action, onPressed: _submit),
+      ],
+      child: TuiField(
+        label: widget.label,
         controller: _controller,
         autofocus: true,
-        obscureText: widget.obscure,
+        obscure: widget.obscure,
         autocorrect: false,
         enableSuggestions: false,
-        keyboardType: widget.number ? TextInputType.number : null,
-        decoration: InputDecoration(
-          labelText: widget.label,
-          helperText: widget.helper,
-        ),
+        helper: widget.helper,
         onSubmitted: (_) => _submit(),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: Text(widget.action)),
-      ],
     );
   }
 }

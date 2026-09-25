@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../files/file_browser.dart';
+import 'tui.dart';
 
 /// Finds text inside files under one directory.
 ///
@@ -100,7 +101,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         title: TextField(
           controller: _controller,
           autofocus: widget.initialQuery.isEmpty,
@@ -157,7 +158,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
     }
 
     if (_hits.isEmpty) {
-      if (_running) return const Center(child: CircularProgressIndicator());
+      if (_running) return const Center(child: TuiSpinner());
       return _SearchMessage(
         icon: _ranFor == null ? Icons.travel_explore_outlined : Icons.search_off,
         message: _ranFor == null
@@ -183,7 +184,7 @@ class _FileSearchPageState extends State<FileSearchPage> {
             hit.preview,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            style: TextStyle(fontFamily: TermulFonts.mono, fontSize: 12),
           ),
           onTap: () => Navigator.of(context).pop(hit),
         );

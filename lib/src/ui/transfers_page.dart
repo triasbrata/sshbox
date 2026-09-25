@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import 'file_download.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// Every download and upload since the app started, newest first, like a
 /// browser's downloads page: one tab for the whole app. A running one can be
@@ -21,23 +21,44 @@ class TransfersPage extends StatelessWidget {
     builder: (context, _) {
       final items = transfers.items;
       return Scaffold(
-        appBar: AppBar(
+        appBar: TuiAppBar(
           toolbarHeight: 44,
           automaticallyImplyLeading: false,
           title: const Text('Transfers'),
           actions: [
             if (items.any((item) => item.state != TransferState.running))
-              TextButton(
-                onPressed: transfers.clearFinished,
-                child: const Text('Clear finished'),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: TermulTextAction(
+                  label: 'Clear finished',
+                  text: 'CLEAR FINISHED',
+                  onTap: transfers.clearFinished,
+                ),
               ),
           ],
         ),
         body: items.isEmpty
-            ? const Center(child: Text('Downloads and uploads show here.'))
+            // TODO(termul): empty state, until termul has one.
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('No transfers yet'),
+                      SizedBox(height: 8),
+                      Text(
+                        'Files you download or upload show up here, with '
+                        'their progress.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              )
             : ListView.separated(
                 itemCount: items.length,
-                separatorBuilder: (_, _) => const Divider(height: 1),
+                separatorBuilder: (_, _) => const TuiDivider(),
                 itemBuilder: (context, index) => _TransferRow(items[index]),
               ),
       );
@@ -54,42 +75,21 @@ class _TransferRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final running = transfer.state == TransferState.running;
     final saved = transfer.saved;
-    return ListTile(
-      leading: Icon(
-        transfer.direction == TransferDirection.download
-            ? Icons.download
-            : Icons.upload,
-      ),
-      title: Text(
-        transfer.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(status(transfer), maxLines: 2, overflow: TextOverflow.ellipsis),
-          if (running)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: LinearProgressIndicator(value: transfer.fraction),
-            ),
-        ],
-      ),
-      trailing: running
-          ? IconButton(
-              tooltip: 'Cancel',
-              onPressed: transfer.cancelling
-                  ? null
-                  : () => transfers.cancel(transfer),
-              icon: const Icon(Icons.close),
-            )
-          : saved == null
-          ? null
-          : TextButton(
-              onPressed: () => _open(context, saved),
-              child: const Text('Open'),
-            ),
+    return TuiTransferRow(
+      name: transfer.name,
+      direction: _direction(transfer),
+      status: _status(transfer),
+      host: transfer.host,
+      doneBytes: transfer.done,
+      totalBytes: transfer.total,
+      speedBytesPerSec: transfer.speed,
+      progress: transfer.fraction,
+      error: transfer.error,
+      cancelling: transfer.cancelling,
+      onCancel: running && !transfer.cancelling
+          ? () => transfers.cancel(transfer)
+          : null,
+      onOpen: saved == null ? null : () => _open(context, saved),
     );
   }
 
@@ -98,33 +98,33 @@ class _TransferRow extends StatelessWidget {
     showToast(
       context,
       'No app on this phone opens ${transfer.name}',
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
     );
   }
 }
 
-/// What a transfer's row says under its name: which way, the host, then how
-/// far along it is or how it went.
+TuiTransferDirection _direction(Transfer transfer) =>
+    transfer.direction == TransferDirection.download
+    ? TuiTransferDirection.download
+    : TuiTransferDirection.upload;
+
+TuiTransferStatus _status(Transfer transfer) => switch (transfer.state) {
+  TransferState.running => TuiTransferStatus.running,
+  TransferState.done => TuiTransferStatus.done,
+  TransferState.failed => TuiTransferStatus.failed,
+  TransferState.cancelled => TuiTransferStatus.cancelled,
+};
+
+/// What a transfer's row says under its name, as termul's row writes it:
+/// which way, the host, then how far along it is or how it went.
 @visibleForTesting
-String status(Transfer transfer) {
-  final down = transfer.direction == TransferDirection.download;
-  final host = transfer.host.isEmpty
-      ? ''
-      : ' ${down ? 'from' : 'to'} ${transfer.host}';
-  final total = transfer.total;
-  final speed = '${formatBytes(transfer.speed.round())}/s';
-  return switch (transfer.state) {
-    TransferState.running when transfer.cancelling => 'Cancelling…',
-    TransferState.running =>
-      '${down ? 'Downloading' : 'Uploading'}$host · '
-          '${formatBytes(transfer.done)}'
-          '${total > 0 ? ' of ${formatBytes(total)}' : ''} · $speed',
-    TransferState.done =>
-      '${down ? 'Downloaded' : 'Uploaded'}$host · '
-          '${formatBytes(total > 0 ? total : transfer.done)} · $speed',
-    TransferState.failed =>
-      '${down ? 'Download' : 'Upload'}$host failed: ${transfer.error}',
-    TransferState.cancelled =>
-      '${down ? 'Download' : 'Upload'}$host cancelled',
-  };
-}
+String status(Transfer transfer) => tuiTransferStatusLine(
+  direction: _direction(transfer),
+  status: _status(transfer),
+  host: transfer.host,
+  doneBytes: transfer.done,
+  totalBytes: transfer.total,
+  speedBytesPerSec: transfer.speed,
+  error: transfer.error,
+  cancelling: transfer.cancelling,
+);

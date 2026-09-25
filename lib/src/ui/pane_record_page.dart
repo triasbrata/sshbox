@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../files/file_browser.dart';
 import '../session/pane_record.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'tui.dart';
 
 /// A tmux pane's record, as the host kept it: the text the pane showed, in
 /// order, the newest at the bottom — see [PaneRecord].
@@ -84,7 +85,7 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
     final theme = Theme.of(context);
     final error = _error;
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         title: const Text('Pane record'),
         actions: [
           IconButton(
@@ -96,7 +97,7 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
       ),
       body: Column(
         children: [
-          if (_loading) const LinearProgressIndicator(),
+          if (_loading) const TuiProgressBar(),
           if (error != null)
             Padding(
               padding: const EdgeInsets.all(16),
@@ -138,9 +139,11 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
           if (_lines.isEmpty) return const SizedBox.shrink();
           return Center(
             child: more
-                ? TextButton(
+                ? TuiButton(
+                    label: 'Load earlier',
+                    prefix: '↑',
+                    variant: TuiButtonVariant.ghost,
                     onPressed: _loading ? null : _earlier,
-                    child: const Text('Load earlier'),
                   )
                 : Text('Start of the record', style: theme.textTheme.bodySmall),
           );

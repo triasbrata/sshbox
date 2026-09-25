@@ -56,7 +56,6 @@ dependencies:
   re_editor: ^0.10.0
   re_highlight: ^0.0.3
   webview_flutter: ^4.14.1
-  toastification: ^3.2.0
   flutter_markdown_plus: ^1.0.12
   # Already here under flutter_markdown_plus, whose builders take its nodes.
   markdown: ^7.3.1
@@ -230,6 +229,9 @@ flutter:
   # engine, which is why the file is 5.6 MB rather than 3.6.
   assets:
     - assets/mermaid/
+    # termul's onboarding art (TUI-Termul/termul at df2cacf,
+    # assets/images/onboarding_butterflies.png, MIT: lib/src/ui/termul/LICENSE).
+    - assets/termul/
 
   # The terminal's fonts, picked in Settings (lib/src/ui/settings_page.dart,
   # which names them by these families). Static Regular and Bold only; each

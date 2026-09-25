@@ -11,6 +11,8 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/update/updater.dart';
 
+import 'tui_finders.dart';
+
 /// A shell nobody opens: the app wants a transport, and these tests never
 /// leave Home.
 class _NoShell implements SessionTransport {
@@ -109,7 +111,8 @@ Future<void> _clickMenu(WidgetTester tester) =>
     );
 
 final _dialog = find.text('Jeansh 1.0.63 is out');
-final _marker = find.text('Update 1.0.63');
+// By the widget, not its semantics: under the dialog, Home's are blocked.
+final _marker = findTuiButton('Update 1.0.63');
 
 void main() {
   final original = updater;
@@ -164,7 +167,7 @@ void main() {
       'dismissed leaves', (tester) async {
     await _start(tester, _Feed('1.0.63+67'), checkedToday: false);
     expect(_dialog, findsOneWidget);
-    await tester.tap(find.text('Not now'));
+    await tester.tap(find.bySemanticsLabel('Not now'));
     await _settle(tester);
     expect(_dialog, findsNothing);
     expect(_marker, findsOneWidget);
@@ -179,7 +182,7 @@ void main() {
   ) async {
     final feed = _Feed('1.0.63+67');
     await _start(tester, feed, checkedToday: false);
-    await tester.tap(find.text('Not now'));
+    await tester.tap(find.bySemanticsLabel('Not now'));
     await _settle(tester);
     expect(_marker, findsOneWidget);
 

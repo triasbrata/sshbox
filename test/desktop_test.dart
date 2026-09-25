@@ -430,7 +430,7 @@ void main() {
 
       await _pumpHome(tester, onOpenLocal: () async {}, sessions: sessions);
 
-      expect(find.text('2 open'), findsOneWidget);
+      expect(find.text('2 OPEN'), findsOneWidget);
     }, variant: _desktop);
 
     testWidgets('is not drawn on a phone, which has no shell to open', (
@@ -762,7 +762,7 @@ void main() {
         sessions: sessions,
       );
 
-      expect(find.text('1 open'), findsOneWidget);
+      expect(find.text('1 OPEN'), findsOneWidget);
       expect(find.text('A shell on this machine'), findsOneWidget);
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 

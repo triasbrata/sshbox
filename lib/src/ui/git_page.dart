@@ -7,6 +7,7 @@ import '../git/git_diff.dart';
 import '../git/git_repo.dart';
 import '../session/session_manager.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// The repositories on the host, beside that host's shell — what the editors
 /// put in their side panel: what has changed, what is staged, the history, and
@@ -174,7 +175,7 @@ class _GitPageState extends State<GitPage> {
       await _reload();
     } on GitException catch (error) {
       if (mounted) {
-        showToast(context, error.message, type: ToastificationType.error);
+        showToast(context, error.message, type: TuiToastType.error);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -223,6 +224,9 @@ class _GitPageState extends State<GitPage> {
     read: () => repo.diff(path, staged: staged),
   );
 
+  /// Changes or History.
+  var _tab = 0;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -236,30 +240,30 @@ class _GitPageState extends State<GitPage> {
         if (entry.worktree != null) entry,
     ];
 
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        body: SafeArea(
-          child: Column(
-            children: [
-              _header(theme, repo),
-              const TabBar(
-                tabs: [
-                  Tab(text: 'Changes'),
-                  Tab(text: 'History'),
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _header(theme, repo),
+            // termul's tabs; both kept built, as a tab bar's pages are.
+            TuiTabs(
+              tabs: const ['Changes', 'History'],
+              index: _tab,
+              onChanged: (tab) => setState(() => _tab = tab),
+            ),
+            if (_busy) const TuiProgressBar(height: 2),
+            Expanded(
+              child: IndexedStack(
+                index: _tab,
+                sizing: StackFit.expand,
+                children: [
+                  _changes(theme, repo, staged: staged, unstaged: unstaged),
+                  _history(theme, repo),
                 ],
               ),
-              if (_busy) const LinearProgressIndicator(minHeight: 2),
-              Expanded(
-                child: TabBarView(
-                  children: [
-                    _changes(theme, repo, staged: staged, unstaged: unstaged),
-                    _history(theme, repo),
-                  ],
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -269,47 +273,31 @@ class _GitPageState extends State<GitPage> {
     padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
     child: Row(
       children: [
-        const Icon(Icons.account_tree_outlined, size: 18),
-        const SizedBox(width: 8),
         Expanded(
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              value: repo?.root,
-              hint: const Text('Select a repository…'),
-              items: [
-                for (final option in _repos.repos)
-                  DropdownMenuItem(
-                    value: option.root,
-                    // A worktree's folder is named after whatever made it —
-                    // Claude Code calls them agent-a4c3… — so whose it is has
-                    // to be said beside it.
-                    child: Text.rich(
-                      TextSpan(
-                        text: option.name,
-                        children: [
-                          if (option.mainRoot case final main?)
-                            TextSpan(
-                              text:
-                                  '  worktree of ${RemotePath.basename(main)}',
-                              style: TextStyle(
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                        ],
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-              onChanged: (root) {
-                final picked = _repos.repos
-                    .where((option) => option.root == root)
-                    .firstOrNull;
-                if (picked != null) _repos.select(picked);
-              },
-            ),
+          child: TuiDropdown<String>(
+            label: 'Repository',
+            value: repo?.root,
+            hint: 'Select a repository…',
+            options: [
+              for (final option in _repos.repos)
+                TuiDropdownOption(
+                  value: option.root,
+                  label: option.name,
+                  // A worktree's folder is named after whatever made it —
+                  // Claude Code calls them agent-a4c3… — so whose it is has
+                  // to be said beside it.
+                  subtitle: switch (option.mainRoot) {
+                    final main? => 'worktree of ${RemotePath.basename(main)}',
+                    null => null,
+                  },
+                ),
+            ],
+            onChanged: (root) {
+              final picked = _repos.repos
+                  .where((option) => option.root == root)
+                  .firstOrNull;
+              if (picked != null) _repos.select(picked);
+            },
           ),
         ),
         if (_branch.isNotEmpty) ...[
@@ -413,28 +401,25 @@ class _GitPageState extends State<GitPage> {
           padding: const EdgeInsets.all(12),
           child: Column(
             children: [
-              TextField(
+              TuiField(
+                label: 'Commit message',
                 controller: _message,
+                hint: 'Enter commit message',
                 minLines: 2,
                 maxLines: 4,
-                decoration: const InputDecoration(
-                  hintText: 'Enter commit message',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
               ),
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  FilledButton.icon(
+                  TuiButton(
+                    label: 'Commit',
+                    prefix: '✓',
                     // Only what is staged goes in, as the editors do it: the
                     // list above says exactly what that is.
                     onPressed: _busy || staged.isEmpty
                         ? null
                         : () => unawaited(_commit()),
-                    icon: const Icon(Icons.check, size: 18),
-                    label: const Text('Commit'),
                   ),
                 ],
               ),
@@ -512,34 +497,26 @@ class _GitPageState extends State<GitPage> {
       padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
       child: Row(
         children: [
-          const Icon(Icons.call_split, size: 18),
-          const SizedBox(width: 8),
           Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value: _viewing ?? checkedOut?.ref ?? detached,
-                items: [
-                  if (checkedOut == null)
-                    DropdownMenuItem(
-                      value: detached,
-                      child: Text('$_branch (checked out)'),
-                    ),
-                  for (final b in _branches)
-                    DropdownMenuItem(
-                      value: b.ref,
-                      child: Text(
-                        b.current ? '${b.name} (checked out)' : b.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                ],
-                onChanged: (ref) => _view(
-                  ref == null || ref == detached || ref == checkedOut?.ref
-                      ? null
-                      : ref,
-                ),
+            child: TuiDropdown<String>(
+              label: 'Branch',
+              value: _viewing ?? checkedOut?.ref ?? detached,
+              options: [
+                if (checkedOut == null)
+                  TuiDropdownOption(
+                    value: detached,
+                    label: '$_branch (checked out)',
+                  ),
+                for (final b in _branches)
+                  TuiDropdownOption(
+                    value: b.ref,
+                    label: b.current ? '${b.name} (checked out)' : b.name,
+                  ),
+              ],
+              onChanged: (ref) => _view(
+                ref == null || ref == detached || ref == checkedOut?.ref
+                    ? null
+                    : ref,
               ),
             ),
           ),
@@ -577,9 +554,10 @@ class _SectionRow extends StatelessWidget {
           ),
           const Spacer(),
           if (action != null)
-            TextButton(
-              onPressed: action!.onPressed,
-              child: Text(action!.label),
+            TermulTextAction(
+              label: action!.label,
+              text: action!.label.toUpperCase(),
+              onTap: action!.onPressed,
             ),
         ],
       ),
@@ -609,18 +587,19 @@ class _FileRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Green for what is added, red for what is gone, the accent for the rest:
-    // the same reading as the letters down an editor's gutter.
+    final p = TermulThemeData.of(context).palette;
+    // termul's green for what is added, red for what is gone, the accent for
+    // the rest: the same reading as the letters down an editor's gutter.
     final colour = switch (change) {
-      GitChange.added || GitChange.untracked => Colors.green,
-      GitChange.deleted => theme.colorScheme.error,
-      GitChange.conflicted => Colors.orange,
-      _ => theme.colorScheme.primary,
+      GitChange.added || GitChange.untracked => p.green,
+      GitChange.deleted => p.red,
+      GitChange.conflicted => p.yellow,
+      _ => p.accent,
     };
 
     return ListTile(
       dense: true,
-      leading: Tooltip(
+      leading: TuiTooltip(
         message: change.label,
         child: Text(
           change.code,
@@ -664,9 +643,11 @@ class _Message extends StatelessWidget {
             ),
             if (onRetry != null) ...[
               const SizedBox(height: 12),
-              OutlinedButton(
+              TuiButton(
+                label: 'Try again',
+                prefix: '↻',
+                variant: TuiButtonVariant.ghost,
                 onPressed: onRetry,
-                child: const Text('Try again'),
               ),
             ],
           ],

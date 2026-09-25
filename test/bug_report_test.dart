@@ -8,8 +8,11 @@ import 'package:sshbox/src/telemetry/telemetry.dart';
 import 'package:sshbox/src/ui/bug_report.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
+import 'package:sshbox/src/ui/tui.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+
+import 'tui_finders.dart';
 
 /// Opens everything, and remembers what it was asked to open.
 class _Launcher extends UrlLauncherPlatform {
@@ -90,9 +93,7 @@ void main() {
     expect(find.text('This is everything that will be sent:'), findsOne);
     // With nothing written there is nothing to send.
     expect(
-      tester
-          .widget<TextButton>(find.widgetWithText(TextButton, 'Under my name'))
-          .onPressed,
+      tester.widget<TuiButton>(findTuiButton('Under my name')).onPressed,
       isNull,
     );
     expect(net.sent, isEmpty);
@@ -123,7 +124,7 @@ void main() {
     tester,
   ) async {
     await open(tester, write: 'the tab froze on my-box.ts.net');
-    await tester.tap(find.text('Under my name'));
+    await tester.tap(find.bySemanticsLabel('Under my name'));
     await tester.pumpAndSettle();
     expect(net.sent, isEmpty);
     final url = Uri.parse(launcher.opened.single);
@@ -138,7 +139,7 @@ void main() {
     tester,
   ) async {
     await open(tester, write: 'the tab froze again and again. ' * 400);
-    await tester.tap(find.text('Under my name'));
+    await tester.tap(find.bySemanticsLabel('Under my name'));
     await tester.pumpAndSettle();
     expect(launcher.opened.single.length, lessThanOrEqualTo(maxIssueUrl));
     expect(
@@ -151,7 +152,7 @@ void main() {
     tester,
   ) async {
     await open(tester, write: 'the tab froze');
-    await tester.tap(find.text('Anonymously'));
+    await tester.tap(find.bySemanticsLabel('Anonymously'));
     // The post, then the toast's overlay and its slide in, as the other page
     // tests pump one: pumpAndSettle alone pumps right through its five
     // seconds and finds nothing left on screen.
@@ -173,7 +174,7 @@ void main() {
   ) async {
     telemetryOn.value = false;
     await open(tester, write: 'the tab froze');
-    await tester.tap(find.text('Anonymously'));
+    await tester.tap(find.bySemanticsLabel('Anonymously'));
     await tester.pumpAndSettle();
     expect(net.sent, hasLength(1));
   });
@@ -197,14 +198,14 @@ void main() {
     ) async {
       await telemetryOn.load();
       await settings(tester);
-      final row = find.widgetWithText(SwitchListTile, 'Telemetry');
-      expect(tester.widget<SwitchListTile>(row).value, isTrue);
+      final row = findTuiSwitch('Telemetry');
+      expect(tester.widget<TuiSwitch>(row).value, isTrue);
       expect(
         find.textContaining('No hostname, username, path or command'),
         findsOne,
       );
 
-      await tester.tap(find.byType(Switch).hitTestable().first);
+      await tester.tap(findTuiSwitchTrack('Telemetry'));
       await tester.pumpAndSettle();
       expect(telemetryOn.value, isFalse);
       expect(find.textContaining('Nothing is sent'), findsOne);
@@ -217,7 +218,7 @@ void main() {
 
     testWidgets('Report a bug sits beside it', (tester) async {
       await settings(tester);
-      expect(find.text('Report a bug'), findsOne);
+      expect(find.bySemanticsLabel('Report a bug'), findsOne);
     });
   });
 }

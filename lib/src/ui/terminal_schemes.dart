@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'tui.dart';
+
 /// A named theme, as Settings offers it: the accent the app's colours grow
 /// from, and the terminal's own colours for a dark app and for a light one.
 class TerminalScheme {
@@ -27,15 +29,13 @@ class TerminalScheme {
   TerminalTheme terminal(Brightness brightness) =>
       brightness == Brightness.dark ? dark : light;
 
-  /// The app's colours, light or dark. The accent itself is the primary
-  /// container, the rest keep close to it, and every pair Material makes
-  /// (text on its surface, a label on its button) is at its medium contrast.
-  ColorScheme colorScheme(Brightness brightness) => ColorScheme.fromSeed(
-    seedColor: accent,
-    brightness: brightness,
-    dynamicSchemeVariant: DynamicSchemeVariant.content,
-    contrastLevel: 0.5,
-  );
+  /// termul's palette for this theme, light or dark: see [termulPaletteOf].
+  TermulPalette palette(Brightness brightness) =>
+      termulPaletteOf(this, brightness);
+
+  /// [palette]'s colours in Material's roles.
+  ColorScheme colorScheme(Brightness brightness) =>
+      termulColorScheme(palette(brightness));
 }
 
 /// Twenty colours in hex, in the order a terminal's settings list them:
@@ -256,5 +256,45 @@ final terminalSchemes = [
         'fafafa 383a42 526fff e5e5e6 '
         'ffffff db3021 40813f 986801 2c6af1 a626a4 017bb0 383a42 '
         '909198 db3021 40813f 986801 2c6af1 a626a4 017bb0 000000',
+  ),
+  // termul's own, from TUI-Termul/termul at 27d94c6 (lib/theme/
+  // termul_palette.dart), where Jeansh's look comes from: Paper, bone and
+  // ink with an indigo accent, and Paper Dark, its night. The app's colours
+  // are termul's palettes themselves: see termulPaletteOf. termul gives six
+  // colours; black, white and the bright ones here are its ink, dim and
+  // paper, the bright ones the
+  // same as the rest. It is indigo throughout on purpose: red, yellow and
+  // magenta are one deep indigo on Paper, so a diff reads by shade rather
+  // than by hue. The selection on Paper Dark is its accent at 30%, not
+  // termul's #1925AA at 20%, which barely shows on the night.
+  TerminalScheme(
+    'paper',
+    'Paper',
+    const Color(0xFF1925AA),
+    dark:
+        '0b0e24 e8e6e0 6b75ff 4d6b75ff '
+        '121636 ff6b8a 6b75ff e8e6e0 6b75ff e8e6e0 94a0ff b8b6b0 '
+        '7a7880 ff6b8a 6b75ff e8e6e0 6b75ff e8e6e0 94a0ff e8e6e0',
+    light:
+        'e8e6e0 000000 1925aa 1a1925aa '
+        '2a2a2a 0d1355 1925aa 0d1355 1925aa 0d1355 4a54b8 6b6b6b '
+        '6b6b6b 0d1355 1925aa 0d1355 1925aa 0d1355 4a54b8 2a2a2a',
+  ),
+  // termul's green-on-black CRT, from the same file. termul has no bright
+  // colours, so they are the same as the rest, and no light one: Phosphor's light is unofficial, a pale green
+  // paper with its colours darkened to read on it. Dark, the app's colours
+  // are termul's Phosphor palette itself.
+  TerminalScheme(
+    'phosphor',
+    'Phosphor',
+    const Color(0xFF39FF14),
+    dark:
+        '0a0f0a b8f0b8 39ff14 1f3a1f '
+        '0f1a0f ff6b6b 39ff14 d4e84a 6bcbff c77dff 5ce1e6 b8f0b8 '
+        '4a704a ff6b6b 39ff14 d4e84a 6bcbff c77dff 5ce1e6 e0ffe0',
+    light:
+        'f0f5ec 0a2a0a 1a8a0a 4d1a8a0a '
+        '0a0f0a b3261e 1a7a0a 6b6b00 0b5c8a 8a2bb3 0a6b70 4a704a '
+        '4a704a b3261e 1a7a0a 6b6b00 0b5c8a 8a2bb3 0a6b70 2a4a2a',
   ),
 ];

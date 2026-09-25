@@ -6,10 +6,12 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/update_dialog.dart';
 import 'package:sshbox/src/update/updater.dart';
-import 'package:toastification/toastification.dart';
+import 'package:sshbox/src/ui/toast.dart';
+import 'package:sshbox/src/ui/tui.dart';
+
+import 'tui_finders.dart';
 
 /// A release's whole `latest.json`, with [platforms] as given.
 String feedJson({
@@ -116,9 +118,9 @@ _Net _goodBuild() {
 /// Check for updates, then Download, and the download let through: writing
 /// the file is real I/O, which runs only outside the test's own clock.
 Future<void> checkAndDownload(WidgetTester tester) async {
-  await tester.tap(find.text('Check for updates'));
+  await tester.tap(find.bySemanticsLabel('Check for updates'));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('Download'));
+  await tester.tap(find.bySemanticsLabel('Download'));
   for (var i = 0; i < 10; i++) {
     await tester.pump();
     await tester.runAsync(
@@ -143,13 +145,10 @@ const _build = '$_host/desktop/linux/Jeansh-1.0.63+67-linux-x64.tar.gz';
 /// screen to be read, as the app wraps it.
 Future<void> pumpTile(WidgetTester tester, Updater updater) =>
     tester.pumpWidget(
-      ToastificationWrapper(
-        config: toastConfig,
-        child: MaterialApp(
+      MaterialApp(
           builder: (context, child) => ToastLayer(child: child!),
           home: Scaffold(body: UpdateTile(using: updater)),
         ),
-      ),
     );
 
 /// The updater is a desktop's, and under `flutter test` the platform is
@@ -422,7 +421,7 @@ void main() {
     await pumpTile(tester, _updater(net, host: ''));
 
     expect(find.textContaining('takes no updates'), findsOneWidget);
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     await tester.pumpAndSettle();
     expect(net.asked, isEmpty);
   }, variant: TargetPlatformVariant.desktop());
@@ -431,11 +430,11 @@ void main() {
     final net = _Net({_feed: utf8.encode(feedJson())});
     await pumpTile(tester, _updater(net));
 
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     await tester.pumpAndSettle();
     expect(net.asked, [_feed]);
     expect(find.text('Jeansh 1.0.63 is out'), findsOneWidget);
-    expect(find.text('Download'), findsOneWidget);
+    expect(find.bySemanticsLabel('Download'), findsOneWidget);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   testWidgets('a check that fails for any other reason leaves the row '
@@ -446,16 +445,17 @@ void main() {
     final net = _Net({_feed: TimeoutException('no answer in 60s')});
     await pumpTile(tester, _updater(net));
 
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     // The check, then the toast's overlay and its slide in, as the other
     // page tests pump one: pumpAndSettle alone never shows it.
     await tester.pump();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
 
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(TuiSpinner), findsNothing);
     expect(
-      tester.widget<ListTile>(find.byType(ListTile)).enabled,
+      tester.widget<TuiButton>(findTuiButton('Check for updates')).onPressed !=
+          null,
       isTrue,
       reason: 'the row can be tapped again',
     );
@@ -474,7 +474,7 @@ void main() {
     expect(find.text('Jeansh 1.0.63 is ready'), findsOneWidget);
     expect(find.textContaining('in your Downloads'), findsNothing);
 
-    await tester.tap(find.text('Restart to update'));
+    await tester.tap(find.bySemanticsLabel('Restart to update'));
     await tester.pump();
     expect(updater.installed, [
       '${downloads.path}${Platform.pathSeparator}'
@@ -500,7 +500,7 @@ void main() {
 
     await checkAndDownload(tester);
     expect(find.text('Jeansh 1.0.63 is in your Downloads'), findsOneWidget);
-    expect(find.text('Restart to update'), findsNothing);
+    expect(find.bySemanticsLabel('Restart to update'), findsNothing);
     expect(find.textContaining('cannot replace itself'), findsOneWidget);
     await tester.pumpAndSettle();
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
@@ -517,7 +517,7 @@ void main() {
     await pumpTile(tester, updater);
 
     await checkAndDownload(tester);
-    await tester.tap(find.text('Restart to update'));
+    await tester.tap(find.bySemanticsLabel('Restart to update'));
     await showToasts(tester);
 
     expect(find.text('Jeansh 1.0.63 is in your Downloads'), findsOneWidget);
@@ -540,16 +540,16 @@ void main() {
     final net = _Net({_feed: utf8.encode(feedJson()), _build: body.stream});
     await pumpTile(tester, _updater(net, downloads: downloads));
 
-    await tester.tap(find.text('Check for updates'));
+    await tester.tap(find.bySemanticsLabel('Check for updates'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Download'));
+    await tester.tap(find.bySemanticsLabel('Download'));
     await tester.pump();
     body.add([1, 2, 3]);
     await tester.pump();
 
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pump();
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pump();
     expect(tester.takeException(), isNull);
 
@@ -565,7 +565,7 @@ void main() {
       );
     }
     await tester.pumpAndSettle();
-    expect(find.text('Cancel'), findsNothing);
+    expect(find.bySemanticsLabel('Cancel'), findsNothing);
     expect(downloads.listSync(), isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 }

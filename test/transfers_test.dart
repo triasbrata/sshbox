@@ -262,7 +262,7 @@ void main() {
       expect(transfer.state, TransferState.cancelled);
       expect(picker.saved, isNull);
       expect(copy.parent.existsSync(), isFalse);
-      expect(find.byType(ToastCard), findsNothing);
+      expect(find.byType(TuiToastCard), findsNothing);
       expect(find.textContaining('Downloading'), findsNothing);
     });
 
@@ -341,13 +341,13 @@ void main() {
       expect(find.text('Download from box cancelled'), findsOneWidget);
       expect(find.byTooltip('Cancel'), findsNothing);
 
-      await tester.tap(find.text('Open'));
+      await tester.tap(find.text('OPEN'));
       await tester.pump();
       expect(picker.opened, ['content://downloads/notes.txt']);
 
-      await tester.tap(find.text('Clear finished'));
+      await tester.tap(find.text('CLEAR FINISHED'));
       await tester.pump();
-      expect(find.text('Downloads and uploads show here.'), findsOneWidget);
+      expect(find.text('No transfers yet'), findsOneWidget);
     });
 
     test('joins the strip, shows, and closes onto its neighbour', () async {
@@ -464,7 +464,7 @@ void main() {
       await tester.tap(find.byTooltip('Transfers'));
       await tester.pumpAndSettle();
       expect((sessions.transfersTab, sessions.transfersActive), (true, true));
-      expect(find.text('Downloads and uploads show here.'), findsOneWidget);
+      expect(find.text('No transfers yet'), findsOneWidget);
       expect(find.byTooltip('Close Transfers'), findsOneWidget);
 
       // Asked for again from Home: the same tab, not a second one.

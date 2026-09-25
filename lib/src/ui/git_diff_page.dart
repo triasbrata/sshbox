@@ -14,6 +14,7 @@ import 'file_editor_page.dart'
     show copyAndSay, copyLimit, editorFontSizeKey, tooLargeToCopy;
 import 'settings_page.dart' show terminalSettings;
 import 'toast.dart';
+import 'tui.dart';
 
 /// A diff drawn the way GitHub draws one, in a tab of its own: each file under
 /// a header of its own, the old version beside the new with a line number on
@@ -55,9 +56,6 @@ const _stepLines = 20;
 /// ponytail: past these, the code is shown in the plain colour rather than
 /// coloured by its language, which would hold the frame while it parsed.
 const _highlightLimit = 256 * 1024;
-
-const _green = Color(0xFF2EA043);
-const _red = Color(0xFFF85149);
 
 typedef _Piece = (String, TextStyle?);
 
@@ -312,11 +310,11 @@ class _GitDiffPageState extends State<GitDiffPage> {
         view.old = text.isEmpty ? const [] : text.split('\n');
       } on GitException catch (error) {
         if (mounted) {
-          showToast(context, error.message, type: ToastificationType.error);
+          showToast(context, error.message, type: TuiToastType.error);
         }
       } catch (error) {
         if (mounted) {
-          showToast(context, '$error', type: ToastificationType.error);
+          showToast(context, '$error', type: TuiToastType.error);
         }
       } finally {
         view.reading = false;
@@ -607,7 +605,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
       showToast(
         context,
         tooLargeToCopy('This diff'),
-        type: ToastificationType.warning,
+        type: TuiToastType.warning,
       );
       return Future.value();
     }
@@ -625,7 +623,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
       final split = _split[wide]!;
       final ready = _parsed != null && _error == null;
       return Scaffold(
-        appBar: AppBar(
+        appBar: TuiAppBar(
           automaticallyImplyLeading: false,
           leading: IconButton(
             tooltip: 'Close diff',
@@ -647,7 +645,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
           bottom: _loading && _parsed != null
               ? const PreferredSize(
                   preferredSize: Size.fromHeight(3),
-                  child: LinearProgressIndicator(),
+                  child: TuiProgressBar(),
                 )
               : null,
           actions: [
@@ -671,39 +669,27 @@ class _GitDiffPageState extends State<GitDiffPage> {
               onPressed: _loading ? null : _load,
               icon: const Icon(Icons.refresh),
             ),
-            PopupMenuButton<VoidCallback>(
+            MenuButton<VoidCallback>(
               tooltip: 'More',
               onSelected: (action) => action(),
-              itemBuilder: (context) => [
-                if (ready)
-                  PopupMenuItem(
-                    value: _copyAll,
-                    child: const Text('Copy diff'),
-                  ),
+              entries: [
+                if (ready) menuAction('Copy diff', _copyAll),
                 if (ready && _views.isNotEmpty) ...[
-                  PopupMenuItem(
-                    value: () => setState(() {
+                  menuAction(
+                    _views.any((view) => !view.collapsed)
+                        ? 'Collapse all files'
+                        : 'Expand all files',
+                    () => setState(() {
                       final fold = _views.any((view) => !view.collapsed);
                       for (final view in _views) {
                         view.collapsed = fold;
                       }
                     }),
-                    child: Text(
-                      _views.any((view) => !view.collapsed)
-                          ? 'Collapse all files'
-                          : 'Expand all files',
-                    ),
                   ),
                 ],
-                const PopupMenuDivider(),
-                PopupMenuItem(
-                  value: () => _setFontSize(_fontSize + 1),
-                  child: const Text('Larger text'),
-                ),
-                PopupMenuItem(
-                  value: () => _setFontSize(_fontSize - 1),
-                  child: const Text('Smaller text'),
-                ),
+                const TuiMenuDivider(),
+                menuAction('Larger text', () => _setFontSize(_fontSize + 1)),
+                menuAction('Smaller text', () => _setFontSize(_fontSize - 1)),
               ],
             ),
           ],
@@ -717,7 +703,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
     final parsed = _parsed;
     if (parsed == null) {
       if (_error case final error?) return _Failure(error);
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: TuiSpinner());
     }
     if (_error case final error?) return _Failure(error);
     if (parsed.files.isEmpty && parsed.preamble.isEmpty) {
@@ -819,7 +805,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
                 focusNode: _queryFocus,
                 autocorrect: false,
                 enableSuggestions: false,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                style: TextStyle(fontFamily: TermulFonts.mono, fontSize: 14),
                 decoration: const InputDecoration(
                   hintText: 'Find',
                   border: InputBorder.none,
@@ -915,7 +901,10 @@ class _GitDiffPageState extends State<GitDiffPage> {
   /// filler that keeps what follows level with the other side.
   Widget _side(DiffLine? line, _Look look, {required bool old}) {
     if (line == null) {
-      return ColoredBox(key: const ValueKey('diff-filler'), color: look.filler);
+      return ColoredBox(
+        key: const ValueKey('diff-filler'),
+        color: look.filler(old: old),
+      );
     }
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -972,14 +961,14 @@ class _GitDiffPageState extends State<GitDiffPage> {
                   if (line.noNewline)
                     WidgetSpan(
                       alignment: PlaceholderAlignment.middle,
-                      child: Tooltip(
+                      child: TuiTooltip(
                         message: 'No newline at end of file',
                         child: Padding(
                           padding: const EdgeInsets.only(left: 6),
                           child: Icon(
                             Icons.do_not_disturb_on_outlined,
                             size: look.code.fontSize,
-                            color: _red,
+                            color: look.p.red,
                           ),
                         ),
                       ),
@@ -1039,14 +1028,25 @@ class _GitDiffPageState extends State<GitDiffPage> {
     final last = g == file.hunks.length;
     final expandable = widget.diff.blob != null && file.expandable;
 
-    Widget arrow(IconData icon, String tip, VoidCallback onTap) => Tooltip(
+    // termul's expand buttons: a glyph in the accent.
+    Widget arrow(String glyph, String tip, VoidCallback onTap) => TuiTooltip(
       message: tip,
       child: InkWell(
         onTap: view.reading ? null : onTap,
+        hoverColor: look.p.selection,
         child: SizedBox(
           height: 28,
           width: double.infinity,
-          child: Icon(icon, size: 18, color: look.number.color),
+          child: Center(
+            child: Text(
+              glyph,
+              style: TextStyle(
+                fontFamily: TermulFonts.mono,
+                fontSize: 10,
+                color: look.p.accent,
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -1056,20 +1056,20 @@ class _GitDiffPageState extends State<GitDiffPage> {
         const SizedBox.shrink()
       else if (hidden != null && hidden <= _stepLines)
         arrow(
-          Icons.unfold_more,
+          '⇕',
           'Show $hidden hidden line${hidden == 1 ? '' : 's'}',
           () => _expand(f, g, all: false, top: hidden),
         )
       else ...[
         if (g > 0)
           arrow(
-            Icons.arrow_downward,
+            '▼',
             'Show $_stepLines more lines below',
             () => _expand(f, g, top: _stepLines),
           ),
         if (!last)
           arrow(
-            Icons.arrow_upward,
+            '▲',
             'Show $_stepLines more lines above',
             () => _expand(f, g, bottom: _stepLines),
           ),
@@ -1085,10 +1085,7 @@ class _GitDiffPageState extends State<GitDiffPage> {
             color: look.arrows,
             child: view.reading
                 ? const Center(
-                    child: SizedBox.square(
-                      dimension: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+                    child: SizedBox.square(dimension: 14, child: TuiSpinner()),
                   )
                 : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -1103,7 +1100,11 @@ class _GitDiffPageState extends State<GitDiffPage> {
               constraints: const BoxConstraints(minHeight: 32),
               child: Text(
                 last ? '' : file.hunks[g].header,
-                style: look.code.copyWith(color: look.number.color),
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 11,
+                  color: look.p.cyan,
+                ),
               ),
             ),
           ),
@@ -1113,7 +1114,6 @@ class _GitDiffPageState extends State<GitDiffPage> {
   }
 
   Widget _fileHeader(BuildContext context, int f, _Look look) {
-    final theme = Theme.of(context);
     final file = _parsed!.files[f];
     final view = _views[f];
     final expandable = widget.diff.blob != null && file.expandable;
@@ -1121,87 +1121,103 @@ class _GitDiffPageState extends State<GitDiffPage> {
         ? '${file.oldPath} → ${file.newPath}'
         : file.path;
     void wholeFile() => _expand(f, 0, all: true);
+    final p = look.p;
+    TextStyle mono(double size, Color color, [FontWeight? weight]) => TextStyle(
+      fontFamily: TermulFonts.mono,
+      fontSize: size,
+      color: color,
+      fontWeight: weight,
+    );
+    // termul's file header: the fold, the change bar, the counts, the path,
+    // and the file's own actions on the right.
     return Padding(
-      padding: EdgeInsets.only(top: f == 0 ? 0 : 16),
+      padding: EdgeInsets.only(top: f == 0 ? 0 : 12),
       child: Material(
-        color: theme.colorScheme.surfaceContainerHigh,
+        color: p.surface,
+        shape: Border.all(color: p.border),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          padding: const EdgeInsets.fromLTRB(8, 6, 4, 6),
           child: Row(
             children: [
-              IconButton(
-                tooltip: view.collapsed ? 'Show this file' : 'Hide this file',
-                visualDensity: VisualDensity.compact,
-                onPressed: () =>
-                    setState(() => view.collapsed = !view.collapsed),
-                icon: Icon(
-                  view.collapsed ? Icons.chevron_right : Icons.expand_more,
+              TuiTooltip(
+                message: view.collapsed ? 'Show this file' : 'Hide this file',
+                child: Semantics(
+                  button: true,
+                  label: view.collapsed ? 'Show this file' : 'Hide this file',
+                  child: InkWell(
+                    onTap: () =>
+                        setState(() => view.collapsed = !view.collapsed),
+                    hoverColor: p.selection,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Text(
+                        view.collapsed ? '▸' : '▾',
+                        style: mono(12, p.dim),
+                      ),
+                    ),
+                  ),
                 ),
               ),
-              if (expandable)
-                IconButton(
-                  tooltip: 'Show the whole file',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: view.reading ? null : wholeFile,
-                  icon: const Icon(Icons.unfold_more),
-                ),
+              TuiChangeBar(added: file.added, removed: file.removed),
+              const SizedBox(width: 8),
+              SelectionContainer.disabled(
+                child: Text('+${file.added}', style: mono(11, p.green)),
+              ),
               const SizedBox(width: 4),
               SelectionContainer.disabled(
-                child: Text(
-                  '${file.added + file.removed}',
-                  style: theme.textTheme.bodyMedium,
-                ),
+                child: Text('−${file.removed}', style: mono(11, p.red)),
               ),
-              const SizedBox(width: 6),
-              _ChangeBar(added: file.added, removed: file.removed),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   name,
-                  style: look.code.copyWith(fontSize: look.code.fontSize! + 1),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: mono(12, p.text, FontWeight.w500),
                 ),
               ),
-              IconButton(
+              if (expandable)
+                TuiIconButton(
+                  icon: '⇕',
+                  tooltip: 'Show the whole file',
+                  size: 32,
+                  iconSize: 14,
+                  onPressed: view.reading ? null : wholeFile,
+                ),
+              TuiIconButton(
+                icon: '⎘',
                 tooltip: 'Copy path',
-                visualDensity: VisualDensity.compact,
+                size: 32,
+                iconSize: 14,
                 onPressed: () => copyAndSay(
                   context,
                   'the path',
                   () => Clipboard.setData(ClipboardData(text: file.path)),
                 ),
-                icon: const Icon(Icons.copy, size: 18),
               ),
-              PopupMenuButton<VoidCallback>(
+              MenuButton<VoidCallback>(
                 tooltip: 'File actions',
-                icon: const Icon(Icons.more_horiz),
+                icon: '⋯',
                 onSelected: (action) => action(),
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    value: () {
-                      if (file.raw.length > copyLimit) {
-                        showToast(
-                          context,
-                          tooLargeToCopy(file.path),
-                          type: ToastificationType.warning,
-                        );
-                        return;
-                      }
-                      unawaited(
-                        copyAndSay(
-                          context,
-                          'the diff of ${RemotePath.basename(file.path)}',
-                          () =>
-                              Clipboard.setData(ClipboardData(text: file.raw)),
-                        ),
+                entries: [
+                  menuAction('Copy this file\'s diff', () {
+                    if (file.raw.length > copyLimit) {
+                      showToast(
+                        context,
+                        tooLargeToCopy(file.path),
+                        type: TuiToastType.warning,
                       );
-                    },
-                    child: const Text('Copy this file\'s diff'),
-                  ),
-                  if (expandable)
-                    PopupMenuItem(
-                      value: wholeFile,
-                      child: const Text('Show the whole file'),
-                    ),
+                      return;
+                    }
+                    unawaited(
+                      copyAndSay(
+                        context,
+                        'the diff of ${RemotePath.basename(file.path)}',
+                        () => Clipboard.setData(ClipboardData(text: file.raw)),
+                      ),
+                    );
+                  }),
+                  if (expandable) menuAction('Show the whole file', wholeFile),
                 ],
               ),
             ],
@@ -1218,9 +1234,8 @@ class _Look {
     required this.code,
     required this.number,
     required this.gutter,
+    required this.p,
     required this.sign,
-    required this.dark,
-    required this.filler,
     required this.divider,
     required this.hunk,
     required this.arrows,
@@ -1233,7 +1248,7 @@ class _Look {
     TextStyle code, {
     required int digits,
   }) {
-    final scheme = Theme.of(context).colorScheme;
+    final p = TermulThemeData.of(context).palette;
     final painter = TextPainter(
       text: TextSpan(text: '0' * digits, style: code),
       textDirection: TextDirection.ltr,
@@ -1243,15 +1258,14 @@ class _Look {
     final char = width / digits;
     painter.dispose();
     return _Look._(
+      p: p,
       code: code,
-      number: code.copyWith(color: scheme.onSurfaceVariant),
+      number: code.copyWith(color: p.dim),
       gutter: width + 16,
       sign: char * 2,
-      dark: Theme.of(context).brightness == Brightness.dark,
-      filler: scheme.onSurface.withValues(alpha: 0.04),
-      divider: scheme.outlineVariant,
-      hunk: scheme.primary.withValues(alpha: 0.08),
-      arrows: scheme.primary.withValues(alpha: 0.18),
+      divider: p.border,
+      hunk: p.selection,
+      arrows: p.selection,
       match: Colors.amber.withValues(alpha: 0.35),
       current: Colors.orange.withValues(alpha: 0.8),
     );
@@ -1261,60 +1275,28 @@ class _Look {
   final TextStyle number;
   final double gutter;
   final double sign;
-  final bool dark;
-  final Color filler;
+  final TermulPalette p;
   final Color divider;
   final Color hunk;
   final Color arrows;
   final Color match;
   final Color current;
 
+  /// termul's tint for a line of [kind], under its number and its code
+  /// alike, as termul's diff rows are washed.
   Color? codeFor(DiffLineKind kind) => switch (kind) {
-    DiffLineKind.added => _green.withValues(alpha: dark ? 0.15 : 0.12),
-    DiffLineKind.removed => _red.withValues(alpha: dark ? 0.15 : 0.12),
+    DiffLineKind.added => p.green.withValues(alpha: p.isLight ? 0.12 : 0.2),
+    DiffLineKind.removed => p.red.withValues(alpha: p.isLight ? 0.12 : 0.22),
     DiffLineKind.context => null,
   };
 
-  Color? gutterFor(DiffLineKind kind) => switch (kind) {
-    DiffLineKind.added => _green.withValues(alpha: dark ? 0.32 : 0.25),
-    DiffLineKind.removed => _red.withValues(alpha: dark ? 0.32 : 0.25),
-    DiffLineKind.context => null,
-  };
-}
+  Color? gutterFor(DiffLineKind kind) => codeFor(kind);
 
-/// GitHub's five blocks: green for what was added and red for what was
-/// removed, in proportion, and grey for the rest of a small change.
-class _ChangeBar extends StatelessWidget {
-  const _ChangeBar({required this.added, required this.removed});
-
-  final int added;
-  final int removed;
-
-  @override
-  Widget build(BuildContext context) {
-    final total = added + removed;
-    final green = total < 5
-        ? added
-        : (total == 0 ? 0 : (added * 5 / total).round());
-    final red = total < 5 ? removed : 5 - green;
-    final grey = Theme.of(context).colorScheme.outlineVariant;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var n = 0; n < 5; n++)
-          Container(
-            width: 8,
-            height: 8,
-            margin: const EdgeInsets.only(right: 1),
-            color: n < green
-                ? _green
-                : n < green + red
-                ? _red
-                : grey,
-          ),
-      ],
-    );
-  }
+  /// Where one side has no line, termul's tint for what the other side did,
+  /// faded.
+  Color filler({required bool old}) =>
+      codeFor(old ? DiffLineKind.removed : DiffLineKind.added)!
+          .withValues(alpha: (p.isLight ? 0.12 : 0.21) * 0.35);
 }
 
 class _Failure extends StatelessWidget {

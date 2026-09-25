@@ -26,6 +26,7 @@ import 'terminal_page.dart';
 import 'title_bar.dart';
 import 'toast.dart';
 import 'transfers_page.dart';
+import 'tui.dart';
 import 'web_page.dart';
 
 /// One tab, named by what it shows rather than by an index — indices shift
@@ -143,7 +144,7 @@ class _TabsShellState extends State<TabsShell> {
     showToast(
       context,
       notice.message,
-      type: notice.failed ? ToastificationType.error : ToastificationType.info,
+      type: notice.failed ? TuiToastType.error : TuiToastType.info,
       // Time to read a reason, or to reach for Open.
       duration: Duration(seconds: notice.failed || link != null ? 8 : 3),
       action: link == null
@@ -237,7 +238,7 @@ class _TabsShellState extends State<TabsShell> {
       behavior: HitTestBehavior.translucent,
       onSecondaryTapUp: rightClick((at) {
         final entries = menu.entries();
-        if (entries.isNotEmpty) showMenuAt<void>(context, at, entries);
+        if (entries.isNotEmpty) showActionsAt(context, at, entries);
       }),
       child: menu,
     );
@@ -710,7 +711,7 @@ class _TabStripState extends State<TabStrip> {
       await command();
     } on TmuxException catch (error) {
       if (!mounted) return;
-      showToast(context, 'tmux: $error', type: ToastificationType.error);
+      showToast(context, 'tmux: $error', type: TuiToastType.error);
     }
   }
 
@@ -753,7 +754,7 @@ class _TabStripState extends State<TabStrip> {
       showToast(
         context,
         'tmux did not say which pane this is.',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
       return;
     }
@@ -800,24 +801,40 @@ class _TabStripState extends State<TabStrip> {
     final own = groups.of(id);
     final target = await showDialog<String>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: Text('Group ${names[id]} with'),
-        children: [
-          for (final slot in slots)
-            if (slot != id && slot != own)
-              SimpleDialogOption(
-                onPressed: () => Navigator.pop(
-                  context,
-                  slot is TabGroup ? slot.ids.first : slot as String,
-                ),
-                child: Text(
-                  slot is TabGroup
-                      ? slot.ids.map((id) => names[id]).join(' + ')
-                      : names[slot]!,
-                ),
-              ),
-        ],
-      ),
+      builder: (context) {
+        return TuiDialog(
+          title: 'Tab group',
+          message: 'Group ${names[id]} with',
+          actions: [
+            TuiButton(
+              label: 'Cancel',
+              variant: TuiButtonVariant.ghost,
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final slot in slots)
+                  if (slot != id && slot != own) ...[
+                    // termul's choice row.
+                    TuiSheetOption(
+                      label: slot is TabGroup
+                          ? slot.ids.map((id) => names[id]).join(' + ')
+                          : names[slot]!,
+                      onTap: () => Navigator.pop(
+                        context,
+                        slot is TabGroup ? slot.ids.first : slot as String,
+                      ),
+                    ),
+                    const TuiDivider(),
+                  ],
+              ],
+            ),
+          ),
+        );
+      },
     );
     if (target == null || !mounted) return;
     groups.join(id, target);
@@ -832,40 +849,16 @@ class _TabStripState extends State<TabStrip> {
     Map<String, VoidCallback> selects,
     String? active,
   ) {
-    final theme = Theme.of(context);
     final groups = widget.groups!;
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: group.ids.contains(active)
-              ? theme.colorScheme.primary.withValues(alpha: 0.7)
-              : theme.colorScheme.outlineVariant,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _TabChip(
-            icon: group.stacked
-                ? Icons.view_agenda_outlined
-                : Icons.view_column_outlined,
-            label: null,
-            tooltip: 'Tab group',
-            selected: false,
-            onTap: () => selects[group.focused ?? group.ids.first]?.call(),
-            menu: [
-              (
-                group.stacked ? 'Side by side' : 'Stacked',
-                () => groups.flip(group),
-              ),
-              ('Ungroup', () => groups.ungroup(group)),
-            ],
-          ),
-          for (final id in group.ids) chips[id]!,
-        ],
-      ),
+    // termul's group chip: its button — a tap shows the group, a long press
+    // or right-click flips or ungroups it — then its tabs' own chips.
+    return TuiTabGroupChip(
+      stacked: group.stacked,
+      active: group.ids.contains(active),
+      onActivate: () => selects[group.focused ?? group.ids.first]?.call(),
+      onFlip: () => groups.flip(group),
+      onUngroup: () => groups.ungroup(group),
+      children: [for (final id in group.ids) chips[id]!],
     );
   }
 
@@ -875,7 +868,7 @@ class _TabStripState extends State<TabStrip> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final p = TermulThemeData.of(context).palette;
     final tabs = widget.tabs;
     final databases = widget.databases;
     final ids = [
@@ -894,13 +887,7 @@ class _TabStripState extends State<TabStrip> {
     // cut short the one name on the strip.
     final single = ids.length == 1;
 
-    final addTab = _TabChip(
-      icon: Icons.add,
-      label: null,
-      tooltip: 'New tab',
-      selected: false,
-      onTap: () => widget.onSelect(null),
-    );
+    final addTab = _AddTab(onTap: () => widget.onSelect(null));
 
     // Each tab's chip, name and tap, by id: a group gathers its tabs' chips
     // into one, and its menu asks for their names.
@@ -1013,10 +1000,19 @@ class _TabStripState extends State<TabStrip> {
     // and a little shorter than elsewhere: AppKit keeps them in the middle of
     // its own shorter bar, and this brings the tabs' middle nearer theirs.
     final inset = drawsInTitleBar ? titleBar.value.inset : 0.0;
+    // termul's tab bar: 40 high on the sidebar's colour, over a hairline.
     final bar = Container(
-      height: drawsInTitleBar ? 40 : 44,
-      padding: EdgeInsets.only(left: inset > 0 ? inset : 6, right: 6),
-      color: drawsInTitleBar ? null : theme.colorScheme.surfaceContainerHighest,
+      height: 40,
+      padding: EdgeInsets.only(left: inset),
+      // On a Mac the colour and the hairline are the layer's behind, which
+      // hears a press on the strip's empty space: a decoration here would
+      // take that press for itself.
+      decoration: drawsInTitleBar
+          ? null
+          : BoxDecoration(
+              color: p.sidebar,
+              border: Border(bottom: BorderSide(color: p.border)),
+            ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           // Wide: the button follows the last tab, the way a desktop browser
@@ -1062,8 +1058,11 @@ class _TabStripState extends State<TabStrip> {
     return Stack(
       children: [
         Positioned.fill(
-          child: ColoredBox(
-            color: theme.colorScheme.surfaceContainerHighest,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: p.sidebar,
+              border: Border(bottom: BorderSide(color: p.border)),
+            ),
             child: const Listener(
               behavior: HitTestBehavior.opaque,
               onPointerDown: dragWindow,
@@ -1140,16 +1139,15 @@ class _TabChip extends StatelessWidget {
   /// tall, and an icon alone gets as much room across as up. The end buttons
   /// come out square and level with the tabs rather than as loose icons of a
   /// different weight beside them.
-  static const double _height = 34;
-  static const double _iconSize = 16;
-  static const double _inset = (_height - _iconSize) / 2;
+  static const double _height = 39;
+  static const double _iconSize = 14;
+  static const double _inset = 12;
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
     final theme = Theme.of(context);
-    final foreground = selected
-        ? theme.colorScheme.onSurface
-        : theme.colorScheme.onSurfaceVariant;
+    final foreground = selected ? p.accent : p.muted;
     final name = label;
     final cut = cutFirst;
     final room = selected ? _selectedText : _idleText;
@@ -1160,7 +1158,10 @@ class _TabChip extends StatelessWidget {
       overflow: TextOverflow.ellipsis,
       maxLines: 1,
       softWrap: false,
-      style: theme.textTheme.labelLarge?.copyWith(color: foreground),
+      style: theme.textTheme.bodySmall!.copyWith(
+        color: foreground,
+        fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+      ),
     );
     final title = name == null
         ? null
@@ -1181,25 +1182,26 @@ class _TabChip extends StatelessWidget {
           );
 
     final chip = Material(
-      // The page's own colour marks where you are. Everything else wears the
-      // same faint fill, so it reads as a button — without one, the host list
-      // collapses to a bare icon the moment a session is showing.
-      color: selected
-          ? theme.colorScheme.surface
-          : theme.colorScheme.onSurface.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(8),
+      // termul's tab: the panel's colour and the accent under it mark where
+      // you are; the rest sit on the bar with nothing under them.
+      color: selected ? p.panel : Colors.transparent,
+      shape: Border(
+        bottom: BorderSide(
+          color: selected ? p.accent : Colors.transparent,
+          width: 2,
+        ),
+      ),
       child: InkWell(
         onTap: onTap,
         onLongPress: menu.isEmpty ? null : () => _showMenu(context),
         onSecondaryTapUp: rightClick(
           menu.isEmpty ? null : (at) => _showMenu(context, at),
         ),
-        borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             _inset,
             0,
-            onEnd == null ? _inset : 2,
+            onEnd == null ? _inset : 4,
             0,
           ),
           child: Row(
@@ -1208,7 +1210,7 @@ class _TabChip extends StatelessWidget {
                   Icon(
                     icon,
                     size: _iconSize,
-                    color: connected ? theme.colorScheme.primary : foreground,
+                    color: connected ? p.accent : foreground,
                   ),
               if (title != null) ...[
                 const SizedBox(width: 6),
@@ -1233,7 +1235,7 @@ class _TabChip extends StatelessWidget {
                   icon: Icon(
                     reconnect ? Icons.cable : Icons.close,
                     size: 14,
-                    color: foreground,
+                    color: selected ? p.accent : p.dim,
                   ),
                 ),
             ],
@@ -1251,14 +1253,13 @@ class _TabChip extends StatelessWidget {
         ? Semantics(label: tooltip, button: true, child: chip)
         : chip;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2),
-      child: SizedBox(
-        height: _height,
-        child: tooltip == null
-            ? named
-            : Tooltip(message: tooltip!, child: named),
-      ),
+    return SizedBox(
+      height: _height,
+      // An icon alone is a square, as + beside it is.
+      width: title == null && onEnd == null ? _height : null,
+      child: tooltip == null
+          ? named
+          : TuiTooltip(message: tooltip!, child: named),
     );
   }
 
@@ -1267,13 +1268,50 @@ class _TabChip extends StatelessWidget {
   /// or, from a right-click, at the pointer [at], as a context menu opens.
   void _showMenu(BuildContext context, [Offset? at]) {
     final chip = context.findRenderObject()! as RenderBox;
-    showMenuAt<void>(
+    showActionsAt(
       context,
       at ?? chip.localToGlobal(chip.size.bottomLeft(Offset.zero)),
-      [
-        for (final (label, onTap) in menu)
-          PopupMenuItem(onTap: onTap, child: Text(label)),
-      ],
+      tabMenuEntries(menu),
+    );
+  }
+}
+
+/// termul's new-tab button: a + in a square the bar's height, a hairline on
+/// its left.
+class _AddTab extends StatelessWidget {
+  const _AddTab({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    return TuiTooltip(
+      message: 'New tab',
+      child: Semantics(
+        container: true,
+        button: true,
+        label: 'New tab',
+        onTap: onTap,
+        excludeSemantics: true,
+        child: GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            width: _TabChip._height,
+            height: _TabChip._height,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              border: Border(left: BorderSide(color: p.border)),
+            ),
+            child: Text(
+              '+',
+              style: Theme.of(context).textTheme.titleMedium!
+                  .copyWith(color: p.accent),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

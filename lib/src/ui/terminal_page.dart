@@ -37,6 +37,7 @@ import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
 /// navigation — the terminal, its scrollback and the SSH connection all belong
@@ -145,7 +146,7 @@ class _TerminalPageState extends State<TerminalPage> {
     showToast(
       context,
       why,
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
       duration: const Duration(seconds: 5),
     );
   }
@@ -194,7 +195,7 @@ class _TerminalPageState extends State<TerminalPage> {
       showToast(
         context,
         'Not using tmux: $tmuxProblem',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
     // A file shared from another app may have been queued before this page
@@ -220,7 +221,7 @@ class _TerminalPageState extends State<TerminalPage> {
     void failed(String what, String why) => showToast(
       context,
       '$what\n$why',
-      type: ToastificationType.error,
+      type: TuiToastType.error,
       duration: const Duration(seconds: 8),
     );
     for (final forward in forwarder.forwards) {
@@ -276,7 +277,7 @@ class _TerminalPageState extends State<TerminalPage> {
         case String text:
           final refused = await pasteShared(_session.terminal, text);
           if (refused != null && mounted) {
-            showToast(context, refused, type: ToastificationType.warning);
+            showToast(context, refused, type: TuiToastType.warning);
           }
       }
     }
@@ -522,7 +523,7 @@ class _TerminalPageState extends State<TerminalPage> {
           showToast(
             context,
             'Not a file or a folder: $path',
-            type: ToastificationType.error,
+            type: TuiToastType.error,
           );
         case null:
           // A bare name only counted if it was there, so a miss on one is
@@ -534,12 +535,12 @@ class _TerminalPageState extends State<TerminalPage> {
                 ? 'Not found: $path\nTaken from home: the host did not '
                       'say where the terminal is.'
                 : 'Not found: $path',
-            type: ToastificationType.error,
+            type: TuiToastType.error,
           );
       }
     } on FileBrowserException catch (error) {
       if (mounted) {
-        showToast(context, error.message, type: ToastificationType.error);
+        showToast(context, error.message, type: TuiToastType.error);
       }
     }
   }
@@ -602,7 +603,7 @@ class _TerminalPageState extends State<TerminalPage> {
           showToast(
             context,
             'Not pasted: the name holds a control character: ${item.name}',
-            type: ToastificationType.warning,
+            type: TuiToastType.warning,
           );
         }
       } else if (here && kind != FileSystemEntityType.notFound) {
@@ -615,7 +616,7 @@ class _TerminalPageState extends State<TerminalPage> {
           kind == FileSystemEntityType.directory
               ? 'A folder cannot be uploaded: ${item.name}'
               : 'Not a file on this computer: ${item.name}',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
         );
       }
       if (!mounted) return;
@@ -642,7 +643,7 @@ class _TerminalPageState extends State<TerminalPage> {
     // tapped on the way down to a file can be refused, and as snack bars each
     // would wait its turn.
     void refuse(String why) {
-      if (mounted) showToast(context, why, type: ToastificationType.warning);
+      if (mounted) showToast(context, why, type: TuiToastType.warning);
     }
 
     var slow = false;
@@ -708,7 +709,7 @@ class _TerminalPageState extends State<TerminalPage> {
         showToast(
           context,
           'Uploaded to $remotePath',
-          type: ToastificationType.success,
+          type: TuiToastType.success,
         );
       }
     } catch (error) {
@@ -717,11 +718,7 @@ class _TerminalPageState extends State<TerminalPage> {
           error is FileBrowserException &&
           error.fault == FileBrowserFault.cancelled;
       if (mounted && !cancelled) {
-        showToast(
-          context,
-          'Upload failed: $error',
-          type: ToastificationType.error,
-        );
+        showToast(context, 'Upload failed: $error', type: TuiToastType.error);
       }
     } finally {
       if (mounted) setState(() => _sending = null);
@@ -944,7 +941,7 @@ class _TerminalPageState extends State<TerminalPage> {
             child: ListenableBuilder(
               listenable: transfers,
               builder: (_, _) =>
-                  LinearProgressIndicator(value: sending.fraction),
+                  TuiProgressBar(value: sending.fraction),
             ),
           ),
         // In the body rather than the Scaffold's button slot so it can be
@@ -1243,7 +1240,7 @@ class _PaneViewState extends State<_PaneView> {
 
   void _say(String message) {
     if (!mounted) return;
-    showToast(context, message, type: ToastificationType.warning);
+    showToast(context, message, type: TuiToastType.warning);
   }
 
   void _letGoOfClipboard(Terminal terminal) {
@@ -1263,11 +1260,7 @@ class _PaneViewState extends State<_PaneView> {
     // which [ClipboardTerminal] never sees.
     if (utf8.encode(text).length > maxClipboardBytes) return;
     unawaited(Clipboard.setData(ClipboardData(text: text)));
-    showToast(
-      context,
-      'Copied from the terminal',
-      type: ToastificationType.success,
-    );
+    showToast(context, 'Copied from the terminal', type: TuiToastType.success);
   }
 
   /// The selection as the mouse button went down, to tell one the mouse has
@@ -1303,7 +1296,7 @@ class _PaneViewState extends State<_PaneView> {
       final text = selectedText(widget.terminal.buffer, range);
       if (text.trim().isEmpty) return;
       unawaited(Clipboard.setData(ClipboardData(text: text)));
-      showToast(context, 'Copied', type: ToastificationType.success);
+      showToast(context, 'Copied', type: TuiToastType.success);
     });
   }
 
@@ -1354,26 +1347,20 @@ class _PaneViewState extends State<_PaneView> {
     final tabMenu = TabMenu.of(context)?.entries() ?? const [];
     void copy(String text, String said) {
       Clipboard.setData(ClipboardData(text: text));
-      showToast(context, said, type: ToastificationType.success);
+      showToast(context, said, type: TuiToastType.success);
     }
 
-    showMenuAt<void>(context, details.globalPosition, [
+    showActionsAt(context, details.globalPosition, [
       if (range != null)
-        PopupMenuItem(
-          onTap: () => copy(selectedText(terminal.buffer, range), 'Copied'),
-          child: const Text('Copy'),
+        menuAction(
+          'Copy',
+          () => copy(selectedText(terminal.buffer, range), 'Copied'),
         ),
-      PopupMenuItem(
-        onTap: () => unawaited(_paste()),
-        child: const Text('Paste'),
-      ),
+      menuAction('Paste', () => unawaited(_paste())),
       if (link != null)
-        PopupMenuItem(
-          onTap: () => copy(link, 'Copied $link'),
-          child: const Text('Copy link address'),
-        ),
+        menuAction('Copy link address', () => copy(link, 'Copied $link')),
       // The tab's own, as its chip offers them.
-      if (tabMenu.isNotEmpty) ...[const PopupMenuDivider(), ...tabMenu],
+      if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
     ]);
   }
 
@@ -1602,7 +1589,7 @@ Future<void> openUrl(
       url.hasScheme
           ? 'Not opened: a ${url.scheme}: link is not a web, mail or phone link'
           : 'Not opened: $url is not a web, mail or phone link',
-      type: ToastificationType.warning,
+      type: TuiToastType.warning,
       // Time to read why, and to reach for Copy.
       duration: const Duration(seconds: 5),
       action: (
@@ -1633,7 +1620,7 @@ Future<void> openUrl(
     }
   }
   if (context.mounted) {
-    showToast(context, 'No app can open $url', type: ToastificationType.error);
+    showToast(context, 'No app can open $url', type: TuiToastType.error);
   }
 }
 
@@ -1678,13 +1665,17 @@ class ConnectionError extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (onClose != null) ...[
-                  TextButton(onPressed: onClose, child: const Text('Close')),
+                  TuiButton(
+                    label: 'Close',
+                    variant: TuiButtonVariant.ghost,
+                    onPressed: onClose,
+                  ),
                   const SizedBox(width: 8),
                 ],
-                FilledButton.icon(
+                TuiButton(
+                  label: retryLabel ?? 'Try again',
+                  prefix: '↻',
                   onPressed: onRetry,
-                  icon: const Icon(Icons.refresh),
-                  label: Text(retryLabel ?? 'Try again'),
                 ),
               ],
             ),

@@ -12,9 +12,9 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
-import 'package:sshbox/src/ui/toast.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 /// Takes every link it is handed and remembers it: what would have gone to
 /// the phone's browser, or to whatever app answers the link's scheme.
@@ -314,7 +314,7 @@ Map<String, Object?> _finished(String id, String name, {int started = 0}) => {
 /// Picks the finished session [name] from the list, on a phone's drawer:
 /// it is continued in place, by a Claude of this chat's own.
 Future<void> _continue(WidgetTester tester, String name) async {
-  await tester.tap(find.text('Sessions on this host'));
+  await tester.tap(find.text('SESSIONS ON THIS HOST'));
   await _settlePickUp(tester);
   await tester.tap(find.text(name));
   await _settlePickUp(tester);
@@ -376,7 +376,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'why is nginx slow?');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await _settlePickUp(tester);
 
     // Started as a background session, in the files' root; how the message
@@ -419,7 +419,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'check the nginx log');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
 
     expect(
@@ -512,7 +512,7 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Sessions on this host'));
+    await tester.tap(find.text('SESSIONS ON THIS HOST'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
@@ -564,7 +564,7 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('Sessions on this host'));
+    await tester.tap(find.text('SESSIONS ON THIS HOST'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
@@ -602,7 +602,7 @@ void main() {
     // In view without asking: no sheet, no drawer, and no button in the empty
     // tab to show what is already showing.
     expect(find.text('the nightly build'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Sessions on this host'),
+    expect(find.text('SESSIONS ON THIS HOST'),
         findsNothing);
 
     await tester.tap(find.text('the nightly build'));
@@ -610,12 +610,10 @@ void main() {
 
     // Still beside the chat, with the one picked marked, and its
     // conversation drawn next to it.
-    final row = tester.widget<ListTile>(
-      find.ancestor(
-        of: find.text('the nightly build'),
-        matching: find.byType(ListTile),
-      ),
-    );
+    final row = tester
+        .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+        .sessions
+        .singleWhere((session) => session.title == 'the nightly build');
     expect(row.selected, isTrue);
     expect(find.text('is the nightly build green?'), findsOneWidget);
 
@@ -667,7 +665,7 @@ void main() {
     );
     await tester.enterText(find.byType(TextField), 'run it once more');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
     expect(find.text('Sending…'), findsOneWidget);
 
@@ -781,11 +779,12 @@ void main() {
     await tester.pumpAndSettle();
 
     final rows = tester
-        .widgetList<ListTile>(find.byType(ListTile))
-        .map((tile) => (tile.title! as Text).data)
-        .toList();
-    expect(rows, ['pinned', 'not pinned']);
-    expect(find.byIcon(Icons.push_pin), findsOneWidget);
+        .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+        .sessions;
+    expect([for (final row in rows) row.title], ['pinned', 'not pinned']);
+    // termul's pinned mark, on the first alone.
+    expect(rows.first.kind, TuiChatSessionKind.pinned);
+    expect(find.text('★'), findsOneWidget);
   });
 
   testWidgets('a tool row opens to its input and its result', (tester) async {
@@ -802,7 +801,7 @@ void main() {
     await _continue(tester, 'Zsh config fix');
     await tester.enterText(find.byType(TextField), 'check the nginx log');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
 
     shell.event({
@@ -872,7 +871,7 @@ void main() {
       await _continue(tester, 'Zsh config fix');
       await tester.enterText(find.byType(TextField), 'go on');
       await tester.pump();
-      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.tap(find.byIcon(Icons.send));
       await tester.pump();
       shell.event({
         'type': 'assistant',
@@ -1136,10 +1135,11 @@ void main() {
           matching: find.byType(Text),
         ),
       ))
+        // The headings are termul's section labels, drawn in capitals.
         if (const {
-          'Pinned',
-          'Running',
-          'Finished (2)',
+          'PINNED',
+          'RUNNING',
+          'FINISHED (2)',
           'pinned and finished',
           'running',
           'finished lately',
@@ -1148,11 +1148,11 @@ void main() {
           text.data,
     ];
     expect(order, [
-      'Pinned',
+      'PINNED',
       'pinned and finished',
-      'Running',
+      'RUNNING',
       'running',
-      'Finished (2)',
+      'FINISHED (2)',
       'finished lately',
       'finished long ago',
     ]);
@@ -1213,7 +1213,7 @@ void main() {
     await _settlePickUp(tester);
     expect(find.text('It failed at the lint step.'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('New chat'));
+    await tester.tap(find.bySemanticsLabel('New chat'));
     await _settlePickUp(tester);
 
     // A new one: nothing of the old on screen, and the box starts one.
@@ -1225,12 +1225,10 @@ void main() {
     // The old one was let go of, not stopped, and is still listed.
     expect(shell.commands.any((c) => c.contains(' stop ')), isFalse);
     expect(find.text('the nightly build'), findsOneWidget);
-    final row = tester.widget<ListTile>(
-      find.ancestor(
-        of: find.text('the nightly build'),
-        matching: find.byType(ListTile),
-      ),
-    );
+    final row = tester
+        .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+        .sessions
+        .singleWhere((session) => session.title == 'the nightly build');
     expect(row.selected, isFalse);
   });
 
@@ -1277,7 +1275,7 @@ void main() {
     );
     expect(
       tester
-          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.arrow_upward))
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.send))
           .onPressed,
       isNull,
     );
@@ -1317,7 +1315,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'and the lint?');
     await tester.pump();
-    await tester.tap(find.widgetWithIcon(IconButton, Icons.arrow_upward));
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.send));
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 100)),
     );
@@ -1647,8 +1645,8 @@ void main() {
       await showToast(tester);
       await tester.tap(
         find.descendant(
-          of: find.byType(ToastCard),
-          matching: find.text('Copy'),
+          of: find.byType(TuiToastCard),
+          matching: find.text('COPY'),
         ),
       );
       await tester.pumpAndSettle();
@@ -1724,7 +1722,7 @@ void main() {
       expect(copied, ['lib/src/ui/chat_page.dart']);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.textContaining('lib/src/ui/chat_page.dart'),
         ),
         findsOneWidget,

@@ -12,16 +12,16 @@ import 'connect_sheet.dart';
 import 'right_click.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
 import 'toast.dart';
+import 'tui.dart';
 
 /// Opens [db], asking about a host key through [confirmHostKey] and
 /// telling of a sign-in to finish through [onSignIn]: [DbSession.open], or
 /// a test's.
-typedef DbOpener =
-    Future<DbSession> Function(
-      DbConnection db, {
-      required Future<bool> Function(HostKeyCheck check) confirmHostKey,
-      required void Function(Uri url) onSignIn,
-    });
+typedef DbOpener = Future<DbSession> Function(
+  DbConnection db, {
+  required Future<bool> Function(HostKeyCheck check) confirmHostKey,
+  required void Function(Uri url) onSignIn,
+});
 
 /// How each kind of database's side list reads: the SQL view's tables by
 /// schema, the NoSQL view's collections by database, and the KV view's keys,
@@ -394,27 +394,16 @@ class DbBrowserPageState extends State<DbBrowserPage> {
   Future<bool> mayDrop() async {
     final changes = _changes;
     if (changes == null || changes.isEmpty || !mounted) return true;
-    final drop = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Discard ${_count(changes.count)}?'),
-        content: const Text(
+    return showTuiConfirmDialog(
+      context,
+      title: 'unsaved',
+      message: 'Discard ${_count(changes.count)}?',
+      detail:
           'They were never saved to the database, and there is no way back '
           'to them.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Keep editing'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep editing',
     );
-    return drop ?? false;
   }
 
   /// Runs [query] and shows what it gives back, dropping whatever was
@@ -497,7 +486,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     } catch (error) {
       if (mounted) {
         setState(() => _running = false);
-        showToast(context, 'Not saved\n$error', type: ToastificationType.error);
+        showToast(context, 'Not saved\n$error', type: TuiToastType.error);
       }
       return;
     }
@@ -510,10 +499,10 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     });
     showToast(
       context,
-      missed == null ? 'Saved ${_count(changes.count)}' : 'Not all saved\n$missed',
-      type: missed == null
-          ? ToastificationType.success
-          : ToastificationType.warning,
+      missed == null
+          ? 'Saved ${_count(changes.count)}'
+          : 'Not all saved\n$missed',
+      type: missed == null ? TuiToastType.success : TuiToastType.warning,
     );
     await _read(_shownQuery);
   }
@@ -542,12 +531,16 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         final wide = constraints.maxWidth >= 720;
         return Scaffold(
           key: _scaffold,
-          appBar: AppBar(
+          appBar: TuiAppBar(
             title: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(
+                  widget.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 Text(
                   '${widget.db.kind.label} · ${widget.db.summary}',
                   maxLines: 1,
@@ -611,11 +604,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     return const Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 16),
-          Text('Connecting…'),
-        ],
+        children: [TuiSpinner(), SizedBox(height: 16), Text('Connecting…')],
       ),
     );
   }
@@ -636,7 +625,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     // A header row per group that has a name, then its names, unless it is
     // folded.
     final entries = <(String, DbObject?)>[
-      for (final MapEntry(key: group, value: names) in (objects ?? {}).entries) ...[
+      for (final MapEntry(key: group, value: names)
+          in (objects ?? {}).entries) ...[
         if (group.isNotEmpty) (group, null),
         if (group.isEmpty || filtering || !_collapsed.contains(group))
           for (final name in names) (group, name),
@@ -695,14 +685,9 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               runSpacing: 6,
               children: [
                 for (final type in types)
-                  FilterChip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text(
-                      [
-                        view.types[type]?.$1 ?? type,
-                        if (!_capped) '${counts[type] ?? 0}',
-                      ].join(' '),
-                    ),
+                  TuiFilterChip(
+                    label: view.types[type]?.$1 ?? type,
+                    count: _capped ? null : counts[type] ?? 0,
                     selected: _type == type,
                     onSelected: (on) => _pickType(on ? type : null),
                   ),
@@ -729,7 +714,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   ),
                 )
               : objects == null
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: TuiSpinner())
               : entries.isEmpty
               ? Center(child: Text('No ${label.toLowerCase()}'))
               : ListView.builder(
@@ -790,7 +775,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                               object.type,
                               style: theme.textTheme.labelSmall?.copyWith(
                                 color: mark,
-                                fontFamily: 'monospace',
+                                fontFamily: TermulFonts.mono,
                               ),
                             ),
                       onTap: () => _open(group, object.name),
@@ -809,7 +794,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     // What is changed is edited in the grid, and saved from over it.
     final edit = _asJson ? null : result?.edit;
     final changes = edit == null ? null : _changes;
-    const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    final mono = TextStyle(fontFamily: TermulFonts.mono, fontSize: 13);
     final note = theme.textTheme.bodySmall?.copyWith(
       color: theme.colorScheme.onSurfaceVariant,
     );
@@ -845,7 +830,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   ),
                 ),
                 if (result?.readOnly case final why?) ...[
-                  Tooltip(
+                  TuiTooltip(
                     message: why,
                     child: Icon(
                       Icons.lock_outline,
@@ -856,30 +841,33 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                   const SizedBox(width: 8),
                 ],
                 if (result != null && result.rows.isNotEmpty) ...[
-                  SegmentedButton<bool>(
-                    showSelectedIcon: false,
-                    segments: const [
-                      ButtonSegment(
-                        value: false,
-                        icon: Icon(Icons.table_rows_outlined),
-                        tooltip: 'Table',
-                      ),
-                      ButtonSegment(
-                        value: true,
-                        icon: Icon(Icons.data_object),
-                        tooltip: 'JSON',
-                      ),
+                  // termul's select, each choice with its word on hover.
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    spacing: 8,
+                    children: [
+                      for (final (json, label) in [
+                        (false, 'Table'),
+                        (true, 'JSON'),
+                      ])
+                        TuiTooltip(
+                          message: label,
+                          child: TuiButton(
+                            label: label,
+                            variant: _asJson == json
+                                ? TuiButtonVariant.primary
+                                : TuiButtonVariant.ghost,
+                            onPressed: () => setState(() => _asJson = json),
+                          ),
+                        ),
                     ],
-                    selected: {_asJson},
-                    onSelectionChanged: (picked) =>
-                        setState(() => _asJson = picked.single),
                   ),
                   const SizedBox(width: 8),
                 ],
-                FilledButton.icon(
+                TuiButton(
+                  label: _onFilters ? 'Apply' : 'Run',
+                  prefix: '▶',
                   onPressed: _running ? null : _run,
-                  icon: const Icon(Icons.play_arrow),
-                  label: Text(_onFilters ? 'Apply' : 'Run'),
                 ),
               ],
             ),
@@ -912,24 +900,25 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                       icon: const Icon(Icons.add),
                     ),
                   if (!changes.isEmpty)
-                    TextButton(
+                    TuiButton(
+                      label: 'Discard',
+                      variant: TuiButtonVariant.ghost,
                       onPressed: _running
                           ? null
                           : () => setState(() => _changes = DbChanges()),
-                      child: const Text('Discard'),
                     ),
                   const SizedBox(width: 4),
-                  FilledButton.icon(
+                  TuiButton(
+                    label: 'Save',
+                    prefix: '✓',
                     onPressed: _running || changes.isEmpty ? null : _save,
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('Save'),
                   ),
                 ],
               ),
             ),
           const SizedBox(height: 8),
           _running
-              ? const LinearProgressIndicator()
+              ? const TuiProgressBar()
               : const Divider(height: 4, thickness: 1),
           Expanded(
             child: error != null
@@ -989,16 +978,12 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: SegmentedButton<_PgTab>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: _PgTab.filters, label: Text('Filters')),
-                  ButtonSegment(value: _PgTab.sql, label: Text('SQL')),
-                ],
-                selected: {_pgTab},
-                onSelectionChanged: (picked) => _pickTab(
-                  picked.single != _pgTab,
-                  () => _pgTab = picked.single,
+              child: TuiTabs(
+                tabs: const ['Filters', 'SQL'],
+                index: _PgTab.values.indexOf(_pgTab),
+                onChanged: (i) => _pickTab(
+                  _PgTab.values[i] != _pgTab,
+                  () => _pgTab = _PgTab.values[i],
                 ),
               ),
             ),
@@ -1029,19 +1014,10 @@ class DbBrowserPageState extends State<DbBrowserPage> {
               ),
             ),
             if (_pgConditions.length > 1)
-              SegmentedButton<bool>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                segments: const [
-                  ButtonSegment(value: false, label: Text('AND')),
-                  ButtonSegment(value: true, label: Text('OR')),
-                ],
-                selected: {_pgAny},
-                onSelectionChanged: (picked) =>
-                    setState(() => _pgAny = picked.single),
+              TuiSelect<bool>(
+                options: const [(false, 'AND'), (true, 'OR')],
+                value: _pgAny,
+                onChanged: (any) => setState(() => _pgAny = any),
               ),
           ],
         ),
@@ -1056,15 +1032,17 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         ),
         Row(
           children: [
-            TextButton.icon(
+            TuiButton(
+              label: 'Add condition',
+              prefix: '+',
+              variant: TuiButtonVariant.ghost,
               onPressed: () => setState(() => _pgConditions.add(_Condition())),
-              icon: const Icon(Icons.add),
-              label: const Text('Add condition'),
             ),
             const Spacer(),
-            TextButton(
-              onPressed: () => setState(_clearConditions),
-              child: const Text('Clear'),
+            TermulTextAction(
+              label: 'Clear',
+              text: 'CLEAR',
+              onTap: () => setState(_clearConditions),
             ),
           ],
         ),
@@ -1084,23 +1062,20 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     }.toList();
     return Row(
       children: [
-        Checkbox(
+        TuiCheckbox(
           value: condition.on,
           onChanged: (on) => setState(() => condition.on = on ?? true),
         ),
+        const SizedBox(width: 8),
         Expanded(
           flex: 3,
-          child: DropdownButton<String>(
-            isExpanded: true,
-            style: mono,
+          child: TuiDropdown<String>(
+            label: 'Column',
             value: condition.column.isEmpty ? null : condition.column,
-            hint: const Text('Column'),
-            items: [
+            hint: 'Column',
+            options: [
               for (final name in columns)
-                DropdownMenuItem(
-                  value: name,
-                  child: Text(name, overflow: TextOverflow.ellipsis),
-                ),
+                TuiDropdownOption(value: name, label: name),
             ],
             onChanged: (name) => setState(() => condition.column = name ?? ''),
           ),
@@ -1108,15 +1083,12 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         const SizedBox(width: 8),
         Expanded(
           flex: 3,
-          child: DropdownButton<PgOp>(
-            isExpanded: true,
+          child: TuiDropdown<PgOp>(
+            label: 'Operator',
             value: condition.op,
-            items: [
+            options: [
               for (final op in PgOp.values)
-                DropdownMenuItem(
-                  value: op,
-                  child: Text(op.label, overflow: TextOverflow.ellipsis),
-                ),
+                TuiDropdownOption(value: op, label: op.label),
             ],
             onChanged: (op) => setState(() => condition.op = op ?? PgOp.eq),
           ),
@@ -1165,19 +1137,13 @@ class DbBrowserPageState extends State<DbBrowserPage> {
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
           child: Align(
             alignment: Alignment.centerLeft,
-            child: SegmentedButton<_MongoTab>(
-              showSelectedIcon: false,
-              segments: const [
-                ButtonSegment(value: _MongoTab.find, label: Text('Find')),
-                ButtonSegment(
-                  value: _MongoTab.aggregate,
-                  label: Text('Aggregate'),
-                ),
-                ButtonSegment(value: _MongoTab.command, label: Text('Command')),
-              ],
-              selected: {_tab},
-              onSelectionChanged: (picked) =>
-                  _pickTab(picked.single != _tab, () => _tab = picked.single),
+            child: TuiTabs(
+              tabs: const ['Find', 'Aggregate', 'Command'],
+              index: _MongoTab.values.indexOf(_tab),
+              onChanged: (i) => _pickTab(
+                _MongoTab.values[i] != _tab,
+                () => _tab = _MongoTab.values[i],
+              ),
             ),
           ),
         ),
@@ -1263,7 +1229,8 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                 ),
                 IconButton(
                   tooltip: 'Remove stage ${index + 1}',
-                  onPressed: () => setState(() => _mStages.removeAt(index).dispose()),
+                  onPressed: () =>
+                      setState(() => _mStages.removeAt(index).dispose()),
                   icon: const Icon(Icons.remove_circle_outline),
                 ),
               ],
@@ -1272,27 +1239,36 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         ),
         Align(
           alignment: Alignment.centerLeft,
-          child: PopupMenuButton<String>(
-            tooltip: 'Add a stage',
-            onSelected: (template) => setState(
-              () => _mStages.add(TextEditingController(text: template)),
-            ),
-            itemBuilder: (context) => [
-              for (final template in _stageTemplates)
-                PopupMenuItem(
-                  value: template,
-                  child: Text(
-                    // The operator alone: the template is what it fills in.
-                    template.substring(2, template.indexOf('"', 2)),
-                    style: mono,
-                  ),
-                ),
-            ],
-            child: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [Icon(Icons.add), SizedBox(width: 4), Text('Add stage')],
+          child: Builder(
+            builder: (anchor) => TuiTooltip(
+              message: 'Add a stage',
+              child: TuiButton(
+                label: 'Add stage',
+                prefix: '+',
+                variant: TuiButtonVariant.ghost,
+                onPressed: () async {
+                  final template = await showTuiMenu<String>(
+                    context,
+                    anchor: anchor,
+                    entries: [
+                      for (final template in _stageTemplates)
+                        TuiMenuItem(
+                          value: template,
+                          // The operator alone: the template is what it
+                          // fills in.
+                          label: template.substring(
+                            2,
+                            template.indexOf('"', 2),
+                          ),
+                        ),
+                    ],
+                  );
+                  if (template != null) {
+                    setState(
+                      () => _mStages.add(TextEditingController(text: template)),
+                    );
+                  }
+                },
               ),
             ),
           ),
@@ -1334,170 +1310,31 @@ class _ResultJson extends StatelessWidget {
 
   final DbResult result;
 
+  /// A row's card as termul draws a document: its number, Copy JSON, and
+  /// its fields as termul's tree.
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    // Room for a branch's arrow and no more, so the tree stays tight.
-    return ListTileTheme.merge(
-      minLeadingWidth: 20,
-      horizontalTitleGap: 4,
-      minVerticalPadding: 0,
-      child: ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: result.rows.length,
-        itemBuilder: (context, i) {
-          final json = result.json(i);
-          final row = jsonDecode(json) as Map<String, dynamic>;
-          return Card.outlined(
-            margin: const EdgeInsets.only(bottom: 8),
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsetsDirectional.only(start: 12),
-                        child: Text(
-                          '${i + 1}',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        tooltip: 'Copy JSON',
-                        visualDensity: VisualDensity.compact,
-                        icon: const Icon(Icons.copy, size: 18),
-                        onPressed: () {
-                          unawaited(
-                            Clipboard.setData(ClipboardData(text: json)),
-                          );
-                          showToast(context, 'Copied');
-                        },
-                      ),
-                    ],
-                  ),
-                  for (final MapEntry(:key, :value) in row.entries)
-                    _JsonNode(name: key, value: value),
-                ],
-              ),
-            ),
-          );
+  Widget build(BuildContext context) => ListView.builder(
+    padding: const EdgeInsets.all(12),
+    itemCount: result.rows.length,
+    itemBuilder: (context, i) {
+      final json = result.json(i);
+      return TuiJsonCard(
+        index: i + 1,
+        data: jsonDecode(json) as Map<String, dynamic>,
+        onCopy: () {
+          unawaited(Clipboard.setData(ClipboardData(text: json)));
+          showToast(context, 'Copied');
         },
-      ),
-    );
-  }
-}
-
-/// One field of a JSON value, [depth] levels in: a line with its value, or,
-/// for an object or array with something in it, a line that opens to what
-/// is in it, built only while open.
-class _JsonNode extends StatelessWidget {
-  const _JsonNode({required this.name, required this.value, this.depth = 0});
-
-  final String name;
-  final Object? value;
-  final int depth;
-
-  /// How many fields or items a line opens to. The rest are counted, and
-  /// Copy JSON has them: a long array would otherwise build every line.
-  static const _shown = 100;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final value = this.value;
-    // MongoDB's $oid, $date and the like are one value, not a branch.
-    final wrapped =
-        value is Map &&
-        value.length == 1 &&
-        '${value.keys.first}'.startsWith(r'$');
-    final children = switch (value) {
-      Map map when map.isNotEmpty && !wrapped => [
-        for (final entry in map.entries) ('${entry.key}', entry.value),
-      ],
-      List list when list.isNotEmpty => [
-        for (final (index, item) in list.indexed) ('$index', item),
-      ],
-      _ => null,
-    };
-    final indent = 12.0 + depth * 16;
-    final nameSpan = TextSpan(
-      text: name,
-      style: TextStyle(color: scheme.primary),
-    );
-
-    if (children == null) {
-      return Padding(
-        // Past a branch's arrow, so every name at one depth lines up.
-        padding: EdgeInsetsDirectional.fromSTEB(indent + 28, 4, 12, 4),
-        child: SelectableText.rich(
-          TextSpan(
-            style: _ResultGrid._mono,
-            children: [
-              nameSpan,
-              const TextSpan(text: ': '),
-              TextSpan(
-                text: jsonEncode(value),
-                style: TextStyle(
-                  color: value is String ? scheme.tertiary : scheme.onSurface,
-                ),
-              ),
-            ],
-          ),
-        ),
       );
-    }
-    final count = children.length;
-    return ExpansionTile(
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      minTileHeight: 32,
-      controlAffinity: ListTileControlAffinity.leading,
-      tilePadding: EdgeInsetsDirectional.only(start: indent, end: 12),
-      childrenPadding: EdgeInsets.zero,
-      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-      shape: const Border(),
-      collapsedShape: const Border(),
-      title: Text.rich(
-        TextSpan(
-          style: _ResultGrid._mono,
-          children: [
-            nameSpan,
-            TextSpan(
-              text: value is Map
-                  ? '  {$count ${count == 1 ? 'key' : 'keys'}}'
-                  : '  [$count ${count == 1 ? 'item' : 'items'}]',
-              style: TextStyle(color: scheme.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
-      children: [
-        for (final (name, child) in children.take(_shown))
-          _JsonNode(name: name, value: child, depth: depth + 1),
-        if (count > _shown)
-          Padding(
-            padding: EdgeInsetsDirectional.fromSTEB(indent + 44, 4, 12, 8),
-            child: Text(
-              '… ${count - _shown} more: Copy JSON has them all',
-              style: _ResultGrid._mono.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ),
-      ],
-    );
-  }
+    },
+  );
 }
 
 /// A result's rows under its column names, scrolling both ways. A tap on a
 /// row shows it whole; or, when [changes] can be made to it, a tap on a
 /// cell edits it and holding a row deletes it, and what is not saved shows
 /// in colour, new rows on top.
-class _ResultGrid extends StatelessWidget {
+class _ResultGrid extends StatefulWidget {
   const _ResultGrid(this.result, {this.changes, this.update});
 
   final DbResult result;
@@ -1509,7 +1346,7 @@ class _ResultGrid extends StatelessWidget {
   /// runs, so nothing changes under it.
   final void Function(VoidCallback change)? update;
 
-  static const _mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+  static final _mono = TextStyle(fontFamily: TermulFonts.mono, fontSize: 13);
 
   void _showRow(BuildContext context, int index) {
     final details = result.details;
@@ -1522,24 +1359,26 @@ class _ResultGrid extends StatelessWidget {
     unawaited(
       showDialog<void>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Row ${index + 1}'),
-          content: SingleChildScrollView(
-            child: SelectableText(text, style: _mono),
-          ),
+        builder: (context) => TuiDialog(
+          title: 'Row ${index + 1}',
+          maxWidth: 520,
           actions: [
-            TextButton(
+            TuiButton(
+              label: 'Copy',
+              variant: TuiButtonVariant.ghost,
               onPressed: () {
                 unawaited(Clipboard.setData(ClipboardData(text: text)));
                 showToast(context, 'Copied');
               },
-              child: const Text('Copy'),
             ),
-            FilledButton(
+            TuiButton(
+              label: 'Close',
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Close'),
             ),
           ],
+          child: SingleChildScrollView(
+            child: SelectableText(text, style: _mono),
+          ),
         ),
       ),
     );
@@ -1579,22 +1418,18 @@ class _ResultGrid extends StatelessWidget {
     final isNew = d < changes.added.length;
     final r = d - changes.added.length;
     final deleted = changes.deleted.contains(r);
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final action = await showMenu<VoidCallback>(
-      context: context,
-      position: RelativeRect.fromRect(
-        overlay.globalToLocal(at) & Size.zero,
-        Offset.zero & overlay.size,
-      ),
-      items: [
-        if (!isNew)
-          PopupMenuItem(
-            value: () => _showRow(context, r),
-            child: const Text('Show row'),
-          ),
-        PopupMenuItem(
-          value: () => update?.call(() {
+    final picked = await showTuiMenu<VoidCallback>(
+      context,
+      at: at,
+      entries: [
+        if (!isNew) menuAction('Show row', () => _showRow(context, r)),
+        menuAction(
+          isNew
+              ? 'Remove new row'
+              : deleted
+              ? 'Restore row'
+              : 'Delete row',
+          () => update?.call(() {
             if (isNew) {
               changes.added.removeAt(d);
             } else if (deleted) {
@@ -1603,32 +1438,60 @@ class _ResultGrid extends StatelessWidget {
               changes.deleted.add(r);
             }
           }),
-          child: Text(
-            isNew
-                ? 'Remove new row'
-                : deleted
-                ? 'Restore row'
-                : 'Delete row',
-          ),
+          destructive: !isNew && !deleted,
         ),
       ],
     );
     // Once the menu is gone, so the row's dialog is not stacked on it.
-    if (context.mounted) action?.call();
+    if (context.mounted) picked?.call();
+  }
+
+  @override
+  @override
+  State<_ResultGrid> createState() => _ResultGridState();
+}
+
+class _ResultGridState extends State<_ResultGrid> {
+  /// termul's grid list, reached as the primary controller: where it has
+  /// scrolled to is what finds the row a long press is on.
+  final _rows = ScrollController();
+
+  @override
+  void dispose() {
+    _rows.dispose();
+    super.dispose();
+  }
+
+  /// The row, as shown, under [at], or null past the last one.
+  ///
+  /// ponytail: termul's grid gives a row no long-press of its own, so it is
+  /// found from where its list has scrolled to and termul's fixed row height
+  /// — 8 above and below a 12px line at 1.3, and a hairline. A callback of
+  /// its own is asked of termul.
+  int? _rowAt(Offset at, int count) {
+    if (!_rows.hasClients) return null;
+    final list =
+        _rows.position.context.storageContext.findRenderObject() as RenderBox?;
+    if (list == null) return null;
+    final scale = MediaQuery.textScalerOf(context);
+    final height = 16 + scale.scale(12) * 1.3 + 1;
+    final y = list.globalToLocal(at).dy + _rows.offset;
+    if (y < 0) return null;
+    final row = y ~/ height;
+    return row < count ? row : null;
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final result = widget.result;
+    final changes = widget.changes;
+    final update = widget.update;
     final columns = result.columns;
     final rows = result.rows;
     if (columns.isEmpty) return const SizedBox();
-    final changes = this.changes;
     final locked = result.edit?.locked ?? const <int>{};
-    final unset = result.edit?.unset ?? 'NULL';
     final added = changes?.added ?? const <Map<int, String?>>[];
-    final muted = scheme.onSurfaceVariant;
+    final count = added.length + rows.length;
 
     // Room for its name and the longest of its first 100 values' first
     // lines, between 64 and 320 dp.
@@ -1636,125 +1499,81 @@ class _ResultGrid extends StatelessWidget {
       for (var c = 0; c < columns.length; c++)
         (rows
                         .take(100)
-                        .map((row) => (row[c] ?? 'NULL').split('\n').first.length)
+                        .map(
+                          (row) => (row[c] ?? 'NULL').split('\n').first.length,
+                        )
                         .fold(columns[c].length, math.max) *
                     8.0 +
                 24)
             .clamp(64.0, 320.0),
     ];
 
-    // Column [c]'s value, or [empty] for none, on a fill and in its ink
-    // when it is changed.
-    Widget cell(
-      int c,
-      String? value, {
-      bool header = false,
-      String empty = 'NULL',
-      (Color, Color)? fill,
-      bool struck = false,
-    }) {
-      final text = Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Text(
-          value ?? empty,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _mono.copyWith(
-            fontWeight: header ? FontWeight.bold : null,
-            color: value == null ? muted : fill?.$2,
-            decoration: struck ? TextDecoration.lineThrough : null,
-          ),
-        ),
-      );
-      return SizedBox(
-        width: widths[c],
-        child: fill == null ? text : ColoredBox(color: fill.$1, child: text),
-      );
-    }
-
-    Widget line(BuildContext context, int d) {
+    TuiDataGridRow row(int d) {
       final r = d - added.length;
       if (changes == null) {
-        return InkWell(
-          onTap: () => _showRow(context, r),
-          child: Row(
-            children: [
-              for (var c = 0; c < columns.length; c++) cell(c, rows[r][c]),
-            ],
-          ),
+        return TuiDataGridRow(
+          id: '$d',
+          cells: [for (final value in rows[r]) TuiDataGridCell(value: value)],
         );
       }
       final isNew = r < 0;
-      final deleted = changes.deleted.contains(r);
       final cells = isNew
           ? added[d]
           : changes.edits[r] ?? const <int, String?>{};
-      return GestureDetector(
-        onLongPressStart: update == null
-            ? null
-            : (details) => _rowMenu(context, d, details.globalPosition),
-        onSecondaryTapUp: rightClick(
-          update == null ? null : (at) => _rowMenu(context, d, at),
-        ),
-        child: Row(
-          children: [
-            for (var c = 0; c < columns.length; c++)
-              InkWell(
-                onTap: update == null || deleted || locked.contains(c)
-                    ? null
-                    : () => _editCell(context, d, c),
-                child: cell(
-                  c,
-                  isNew ? cells[c] : changes.value(rows, r, c),
-                  empty: isNew && !cells.containsKey(c) ? unset : 'NULL',
-                  fill: deleted
-                      ? (scheme.errorContainer, scheme.onErrorContainer)
-                      : isNew
-                      ? (scheme.primaryContainer, scheme.onPrimaryContainer)
-                      : cells.containsKey(c)
-                      ? (scheme.tertiaryContainer, scheme.onTertiaryContainer)
-                      : null,
-                  struck: deleted,
-                ),
-              ),
-          ],
-        ),
+      final unset = result.edit?.unset ?? 'NULL';
+      return TuiDataGridRow(
+        id: '$d',
+        isNew: isNew,
+        deleted: !isNew && changes.deleted.contains(r),
+        cells: [
+          for (var c = 0; c < columns.length; c++)
+            TuiDataGridCell(
+              // A new row's untouched cell reads as what it will take.
+              value: isNew
+                  ? (cells.containsKey(c) ? cells[c] : unset)
+                  : changes.value(rows, r, c),
+              dirty: cells.containsKey(c),
+            ),
+        ],
       );
     }
 
-    return LayoutBuilder(
-      builder: (context, constraints) => Scrollbar(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: math.max(
-              widths.fold(0.0, (sum, width) => sum + width),
-              constraints.maxWidth,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ColoredBox(
-                  color: scheme.surfaceContainerHigh,
-                  child: Row(
-                    children: [
-                      for (var c = 0; c < columns.length; c++)
-                        cell(c, columns[c], header: true),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: added.length + rows.length,
-                    itemBuilder: line,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+    void menuAt(Offset at) {
+      final d = _rowAt(at, count);
+      if (d != null) widget._rowMenu(context, d, at);
+    }
+
+    final grid = PrimaryScrollController(
+      controller: _rows,
+      automaticallyInheritForPlatforms: TargetPlatform.values.toSet(),
+      child: TuiDataGrid(
+        minColumnWidth: 64,
+        readOnly: changes == null,
+        columns: [
+          for (var c = 0; c < columns.length; c++)
+            TuiDataGridColumn(id: '$c', label: columns[c], width: widths[c]),
+        ],
+        rows: [for (var d = 0; d < count; d++) row(d)],
+        // Read-only, a tap shows the row whole; editable, it edits the cell.
+        onSelect: changes != null
+            ? null
+            : ((int, int) at) => widget._showRow(context, at.$1),
+        onCellTap: (d, c) {
+          final r = d - added.length;
+          if (update == null ||
+              locked.contains(c) ||
+              (r >= 0 && changes!.deleted.contains(r))) {
+            return;
+          }
+          widget._editCell(context, d, c);
+        },
       ),
+    );
+    if (changes == null || update == null) return grid;
+    return GestureDetector(
+      onLongPressStart: (details) => menuAt(details.globalPosition),
+      onSecondaryTapUp: rightClick(menuAt),
+      child: grid,
     );
   }
 }
@@ -1801,31 +1620,34 @@ class _CellEditorState extends State<_CellEditor> {
     // One line, where Enter is OK, unless the value has more: a one-line
     // box takes line breaks out of what is edited in it.
     final lines = widget.value?.contains('\n') ?? false;
-    return AlertDialog(
-      title: Text(widget.column),
-      content: TextField(
+    return TuiDialog(
+      title: 'edit cell',
+      maxWidth: 420,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        if (widget.nulls)
+          TuiButton(
+            label: 'Set NULL',
+            variant: TuiButtonVariant.ghost,
+            onPressed: () => Navigator.of(context).pop((null,)),
+          ),
+        TuiButton(label: 'OK', onPressed: _ok),
+      ],
+      child: TuiField(
+        label: widget.column,
         controller: _text,
         autofocus: true,
-        style: _ResultGrid._mono,
         minLines: 1,
         maxLines: lines ? 8 : 1,
         autocorrect: false,
         enableSuggestions: false,
         onSubmitted: lines ? null : (_) => _ok(),
-        decoration: InputDecoration(hintText: widget.hint),
+        hint: widget.hint,
       ),
-      actions: [
-        if (widget.nulls)
-          TextButton(
-            onPressed: () => Navigator.of(context).pop((null,)),
-            child: const Text('Set NULL'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _ok, child: const Text('OK')),
-      ],
     );
   }
 }

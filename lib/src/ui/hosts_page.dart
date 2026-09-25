@@ -19,6 +19,7 @@ import 'os_icon.dart';
 import 'port_forwarding_page.dart';
 import 'right_click.dart';
 import 'settings_page.dart';
+import 'tui.dart';
 import 'update_dialog.dart';
 
 class HostsPage extends StatefulWidget {
@@ -164,26 +165,16 @@ class _HostsPageState extends State<HostsPage> {
   }
 
   Future<void> _confirmDelete(HostProfile host) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete ${host.displayName}?'),
-        content: const Text(
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'delete host',
+      message: 'Delete ${host.displayName}?',
+      detail:
           'Every open session for this host is closed, its saved password or '
           'private key is removed from the device keystore, and its '
           'notification key is revoked.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
     );
 
     if (confirmed != true) return;
@@ -226,281 +217,314 @@ class _HostsPageState extends State<HostsPage> {
   /// Under the app's name in the header.
   static const _tagline = 'Terminal buddy in your pocket';
 
+  Future<void> _openPortForwarding() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PortForwardingPage(
+          forwards: portForwards,
+          repository: widget.repository,
+          secrets: widget.secrets,
+        ),
+      ),
+    );
+    // A host made there belongs here too.
+    await _reload();
+  }
+
   @override
   Widget build(BuildContext context) {
     final hosts = _hosts;
     final databases = _databases;
-    final theme = Theme.of(context);
+    // A desktop always has one thing to show, the local shell, so the
+    // "add your first host" page would be standing in front of it.
+    final empty =
+        hosts != null &&
+        databases != null &&
+        hosts.isEmpty &&
+        databases.isEmpty &&
+        !_local;
 
+    // termul's home_screen: its header, its empty state or its list, and its
+    // add button along the bottom.
     return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Jeansh'),
-            Text(
-              _tagline,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+            _HomeHeader(
+              actions: [
+                // The way in when nothing is on its way: the tab joins the
+                // strip by itself only as a transfer starts, so without this
+                // the history of what was downloaded is out of reach.
+                (
+                  'Transfers',
+                  Icons.swap_vert,
+                  () => widget.sessions.showTransfers(select: true),
+                ),
+                ('Port forwarding', Icons.swap_horiz, _openPortForwarding),
+                (
+                  'Logs',
+                  Icons.history,
+                  () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => LogsPage(
+                        repository: widget.repository,
+                        onOpenHost: widget.onOpenHost,
+                      ),
+                    ),
+                  ),
+                ),
+                (
+                  'Known hosts',
+                  Icons.fingerprint,
+                  () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          KnownHostsPage(repository: widget.repository),
+                    ),
+                  ),
+                ),
+                (
+                  'Settings',
+                  Icons.settings_outlined,
+                  () => openSettings(
+                    Navigator.of(context),
+                    notifyKeys: widget.sessions.notifyKeys,
+                  ),
+                ),
+              ],
+            ),
+            Expanded(
+              child: hosts == null || databases == null
+                  ? const Center(child: TuiSpinner())
+                  : empty
+                  ? const _EmptyState()
+                  : _list(hosts, databases),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+              child: _AddButton(
+                onHost: () => _openEditor(),
+                onDatabase: () => _editDatabase(),
               ),
             ),
           ],
         ),
-        actions: [
-          // The way in when nothing is on its way: the tab joins the strip by
-          // itself only as a transfer starts, so without this the history of
-          // what was downloaded is out of reach. Home, as the known hosts
-          // entry point was moved here; the same icon the tab wears.
-          IconButton(
-            tooltip: 'Transfers',
-            onPressed: () => widget.sessions.showTransfers(select: true),
-            icon: const Icon(Icons.swap_vert),
-          ),
-          IconButton(
-            tooltip: 'Port forwarding',
-            onPressed: () async {
-              await Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => PortForwardingPage(
-                    forwards: portForwards,
-                    repository: widget.repository,
-                    secrets: widget.secrets,
-                  ),
-                ),
-              );
-              // A host made there belongs here too.
-              await _reload();
-            },
-            icon: const Icon(Icons.swap_horiz),
-          ),
-          IconButton(
-            tooltip: 'Logs',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => LogsPage(
-                  repository: widget.repository,
-                  onOpenHost: widget.onOpenHost,
-                ),
-              ),
-            ),
-            icon: const Icon(Icons.history),
-          ),
-          IconButton(
-            tooltip: 'Known hosts',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => KnownHostsPage(repository: widget.repository),
-              ),
-            ),
-            icon: const Icon(Icons.fingerprint),
-          ),
-          const UpdateChip(),
-          IconButton(
-            tooltip: 'Settings',
-            onPressed: () => openSettings(
-              Navigator.of(context),
-              notifyKeys: widget.sessions.notifyKeys,
-            ),
-            icon: const Icon(Icons.settings_outlined),
-          ),
-        ],
       ),
-      floatingActionButton: _AddButton(
-        onHost: () => _openEditor(),
-        onDatabase: () => _editDatabase(),
-      ),
-      body: hosts == null || databases == null
-          ? const Center(child: CircularProgressIndicator())
-          // A desktop always has one thing to show, the local shell, so the
-          // "add your first host" page would be standing in front of it.
-          : hosts.isEmpty && databases.isEmpty && !_local
-          ? const _EmptyState()
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                // Material's compact breakpoint, as the tab strip uses: one
-                // column on a phone, three once there is a tablet's width.
-                final columns = constraints.maxWidth < 600 ? 1 : 3;
+    );
+  }
 
-                Widget hostCard(HostProfile host) {
-                  final open = widget.sessions.sessionsFor(host.id);
-                  return _HostTile(
-                    host: host,
-                    sessionCount: open.length,
-                    activeCount: open.where((s) => s.isConnected).length,
-                    onOpen: () => widget.onOpenHost(host.id),
-                    onEdit: () => _openEditor(existing: host),
-                    onDuplicate: () => _duplicate(host),
-                    onDelete: () => _confirmDelete(host),
-                    onCloseSessions: () => widget.sessions.closeHost(host.id),
-                    // The way back to a session left running with Detach,
-                    // with nothing of the host open: a tap would make a new
-                    // session first, only to be closed again.
-                    onAttach: host.useTmux
-                        ? () => openInSheet(
-                            context,
-                            widget.sessions,
-                            host,
-                            secrets: widget.secrets,
-                            pickTmux: true,
-                          )
-                        : null,
-                  );
-                }
+  /// termul's connection list: the page's title, how many there are, and a
+  /// row each between hairlines — in columns once there is a tablet's width,
+  /// the hosts in sections once there is more than hosts to tell apart.
+  Widget _list(List<HostProfile> hosts, List<DbConnection> databases) {
+    final p = TermulThemeData.of(context).palette;
+    final theme = Theme.of(context);
 
-                Widget databaseCard(DbConnection db) {
-                  final host = hosts
-                      .where((host) => host.id == db.hostId)
-                      .firstOrNull;
-                  return _DatabaseTile(
-                    db: db,
-                    host: host,
-                    onOpen: () =>
-                        widget.sessions.openDb(db, db.displayName(host)),
-                    onEdit: () => _editDatabase(db),
-                    onDelete: () => _deleteDatabase(db),
-                  );
-                }
+    Widget hostRow(HostProfile host) {
+      final open = widget.sessions.sessionsFor(host.id);
+      return HomeRow.host(
+        host: host,
+        sessionCount: open.length,
+        activeCount: open.where((s) => s.isConnected).length,
+        onOpen: () => widget.onOpenHost(host.id),
+        onEdit: () => _openEditor(existing: host),
+        onDuplicate: () => _duplicate(host),
+        onDelete: () => _confirmDelete(host),
+        onCloseSessions: () => widget.sessions.closeHost(host.id),
+        // The way back to a session left running with Detach, with nothing
+        // of the host open: a tap would make a new session first, only to
+        // be closed again.
+        onAttach: host.useTmux
+            ? () => openInSheet(
+                context,
+                widget.sessions,
+                host,
+                secrets: widget.secrets,
+                pickTmux: true,
+              )
+            : null,
+      );
+    }
 
-                // Rows of cards rather than a grid, so a card is as tall as
-                // its text at any font size, and every card in a row as tall
-                // as the tallest. The cards' 6 dp margins make the rest of
-                // the gutters.
-                List<Widget> rows(List<Widget> cards) => [
-                  for (var start = 0; start < cards.length; start += columns)
-                    IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (var i = start; i < start + columns; i++)
-                            Expanded(
-                              child: i < cards.length
-                                  ? cards[i]
-                                  : const SizedBox(),
-                            ),
-                        ],
-                      ),
+    Widget databaseRow(DbConnection db) {
+      final host = hosts.where((host) => host.id == db.hostId).firstOrNull;
+      return HomeRow.database(
+        db: db,
+        host: host,
+        onOpen: () => widget.sessions.openDb(db, db.displayName(host)),
+        onEdit: () => _editDatabase(db),
+        onDelete: () => _deleteDatabase(db),
+      );
+    }
+
+    final machine = [
+      if (_local) ...[
+        HomeRow.local(
+          sessions: widget.sessions.sessionsFor(localHostId),
+          onOpen: () => widget.onOpenLocal!(),
+        ),
+        for (final distro in _wsl)
+          HomeRow.local(
+            title: distro,
+            idle: 'A WSL shell',
+            sessions: widget.sessions.sessionsFor(wslHost(distro).id),
+            onOpen: () => widget.onOpenWsl!(distro),
+          ),
+      ],
+    ];
+    final hostRows = [for (final host in hosts) hostRow(host)];
+    final databaseRows = [for (final db in databases) databaseRow(db)];
+    // Headed only once there is something else to tell the hosts apart
+    // from — a database, or this machine's own shell.
+    final headed = databases.isNotEmpty || _local;
+
+    String count(int n, String one) => '$n $one${n == 1 ? '' : 's'}';
+    final counted = [
+      if (machine.isNotEmpty) count(machine.length, 'local shell'),
+      count(hosts.length, 'SSH connection'),
+      if (databases.isNotEmpty) count(databases.length, 'database'),
+    ].join(' · ');
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Material's compact breakpoint, as the tab strip uses: one column
+        // on a phone, three once there is a tablet's width.
+        final columns = constraints.maxWidth < 600 ? 1 : 3;
+
+        // Rows of rows, so every row in a line is as tall as the tallest.
+        List<Widget> grid(List<Widget> rows) => [
+          for (var start = 0; start < rows.length; start += columns)
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = start; i < start + columns; i++) ...[
+                    if (i > start) const SizedBox(width: 24),
+                    Expanded(
+                      child: i < rows.length ? rows[i] : const SizedBox(),
                     ),
-                ];
-
-                // Headed only once there is something else to tell the hosts
-                // apart from — a database, or this machine's own shell.
-                // Hosts alone read as they always have.
-                final headed = databases.isNotEmpty || _local;
-                final items = [
-                  if (_local) ...[
-                    if (hosts.isNotEmpty || databases.isNotEmpty)
-                      const _SectionHeader('This machine'),
-                    ...rows([
-                      _LocalTile(
-                        sessions: widget.sessions.sessionsFor(localHostId),
-                        onOpen: () => widget.onOpenLocal!(),
-                      ),
-                      for (final distro in _wsl)
-                        _LocalTile(
-                          title: distro,
-                          idle: 'A WSL shell',
-                          icon: Icons.terminal,
-                          sessions: widget.sessions.sessionsFor(
-                            wslHost(distro).id,
-                          ),
-                          onOpen: () => widget.onOpenWsl!(distro),
-                        ),
-                    ]),
                   ],
-                  if (hosts.isNotEmpty && headed) const _SectionHeader('Hosts'),
-                  ...rows([for (final host in hosts) hostCard(host)]),
-                  if (databases.isNotEmpty) ...[
-                    const _SectionHeader('Databases'),
-                    ...rows([for (final db in databases) databaseCard(db)]),
-                  ],
-                ];
-                return ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 88),
-                  itemCount: items.length,
-                  itemBuilder: (context, i) => items[i],
-                );
-              },
+                ],
+              ),
             ),
+        ];
+
+        Widget section(String title) => Padding(
+          padding: const EdgeInsets.only(top: 20, bottom: 4),
+          child: TuiSectionLabel(title),
+        );
+
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+          children: [
+            Text(
+              'Hosts',
+              style: theme.textTheme.displayMedium!.copyWith(
+                color: p.accent,
+                fontSize: 36,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              counted,
+              style: theme.textTheme.labelSmall!.copyWith(
+                color: p.dim,
+                letterSpacing: 0.4,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(height: 1, color: p.border),
+            if (machine.isNotEmpty) ...[
+              if (hostRows.isNotEmpty || databaseRows.isNotEmpty)
+                section('This machine'),
+              ...grid(machine),
+            ],
+            if (hostRows.isNotEmpty) ...[
+              if (headed) section('Hosts'),
+              ...grid(hostRows),
+            ],
+            if (databaseRows.isNotEmpty) ...[
+              section('Databases'),
+              ...grid(databaseRows),
+            ],
+          ],
+        );
+      },
     );
   }
 }
 
-/// The local shell's card, above the saved hosts on a desktop: no address, no
-/// credentials and nothing to edit, because there is no connection to make.
-///
-/// It counts the shells open on this machine the way a host's card counts its
-/// sessions, and a tap opens another — the tab strip is the way back to the
-/// ones already up.
-///
-/// A WSL distro on Windows gets one the same, named for the distro.
-class _LocalTile extends StatelessWidget {
-  const _LocalTile({
-    required this.sessions,
-    required this.onOpen,
-    this.title = 'Local shell',
-    this.idle = 'A shell on this machine',
-    this.icon = Icons.laptop_mac,
-  });
+/// termul's home header: its mark and name, then the page's buttons — its
+/// settings icon, and Jeansh's other ways off Home drawn the same.
+class _HomeHeader extends StatelessWidget {
+  const _HomeHeader({required this.actions});
 
-  final List<LiveSession> sessions;
-  final VoidCallback onOpen;
-  final String title;
-
-  /// What it says with no shell open.
-  final String idle;
-  final IconData icon;
+  final List<(String, IconData, VoidCallback)> actions;
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
     final theme = Theme.of(context);
-    final open = sessions.length;
-
-    return Card(
-      margin: const EdgeInsets.all(6),
-      child: InkWell(
-        onTap: onOpen,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Icon(icon, color: theme.colorScheme.primary),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      title,
-                      style: theme.textTheme.titleMedium,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      open == 0 ? idle : '$open open',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+              Container(width: 10, height: 10, color: p.deep),
+              const SizedBox(width: 10),
+              Semantics(
+                container: true,
+                label: 'Jeansh',
+                header: true,
+                excludeSemantics: true,
+                child: Text(
+                  'JEANSH',
+                  style: theme.textTheme.labelSmall!.copyWith(
+                    color: p.deep,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.4,
+                  ),
                 ),
               ),
+              const Spacer(),
+              for (final (tooltip, icon, onTap) in actions) ...[
+                // Left of Settings, while a newer release is out.
+                if (tooltip == 'Settings') const UpdateChip(),
+                TuiTooltip(
+                  message: tooltip,
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    label: tooltip,
+                    child: GestureDetector(
+                      onTap: onTap,
+                      behavior: HitTestBehavior.opaque,
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Icon(icon, size: 20, color: p.accent),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
-        ),
+          const SizedBox(height: 4),
+          Text(
+            _HostsPageState._tagline,
+            style: theme.textTheme.labelSmall!.copyWith(color: p.dim),
+          ),
+        ],
       ),
     );
   }
 }
 
-/// Home's one add button. A tap stacks Host and Database above it; a second
-/// tap, or a tap anywhere else, puts them away.
+/// Home's one add button, termul's: a tap stacks Host and Database above it;
+/// a second tap, or a tap anywhere else, puts them away.
 class _AddButton extends StatefulWidget {
   const _AddButton({required this.onHost, required this.onDatabase});
 
@@ -524,30 +548,29 @@ class _AddButtonState extends State<_AddButton> {
       onTapOutside: (_) => _close(),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (_open)
-            for (final (label, icon, onPressed) in [
-              ('Database', Icons.storage, widget.onDatabase),
-              ('Host', Icons.dns_outlined, widget.onHost),
+            for (final (label, onPressed) in [
+              ('Database', widget.onDatabase),
+              ('Host', widget.onHost),
             ])
               Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: FloatingActionButton.extended(
-                  // No hero: only the Add button stays on screen.
-                  heroTag: null,
+                padding: const EdgeInsets.only(bottom: 8),
+                child: TuiButton(
+                  label: label,
+                  prefix: '▸',
+                  variant: TuiButtonVariant.ghost,
                   onPressed: () {
                     _close();
                     onPressed();
                   },
-                  icon: Icon(icon),
-                  label: Text(label),
                 ),
               ),
-          FloatingActionButton.extended(
+          TuiButton(
+            label: 'Add',
+            prefix: _open ? '×' : '+',
             onPressed: () => setState(() => _open = !_open),
-            icon: Icon(_open ? Icons.close : Icons.add),
-            label: const Text('Add'),
           ),
         ],
       ),
@@ -555,294 +578,222 @@ class _AddButtonState extends State<_AddButton> {
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.title);
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 12, 10, 4),
-      child: Text(
-        title,
-        style: theme.textTheme.titleSmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-    );
-  }
-}
-
-class _HostTile extends StatelessWidget {
-  const _HostTile({
-    required this.host,
-    required this.sessionCount,
-    required this.activeCount,
+/// One thing on Home, as termul's home_screen draws a connection: its name
+/// large in the accent with what a tap does beside it, where it goes under
+/// it, and a line of how it stands. A host keeps Jeansh's OS badge at its
+/// left and its menu at its right, termul having no component for either.
+class HomeRow extends StatelessWidget {
+  const HomeRow._({
+    required this.title,
+    required this.endpoint,
+    required this.status,
+    required this.verb,
     required this.onOpen,
-    required this.onEdit,
-    required this.onDuplicate,
-    required this.onDelete,
-    required this.onCloseSessions,
-    this.onAttach,
+    this.badge,
+    this.live = false,
+    this.menu = const [],
   });
 
-  final HostProfile host;
-
-  /// Every tab open on this host, connected or not.
-  final int sessionCount;
-
-  /// The ones with a shell actually attached.
-  final int activeCount;
-  final VoidCallback onOpen;
-  final VoidCallback onEdit;
-  final VoidCallback onDuplicate;
-  final VoidCallback onDelete;
-  final VoidCallback onCloseSessions;
-
-  /// Joins a tmux session already running on the host. Null, and not in the
-  /// menu, for a host that does not use tmux.
-  final VoidCallback? onAttach;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final authLabel = switch (host.authMethod) {
+  /// A saved host.
+  factory HomeRow.host({
+    required HostProfile host,
+    required int sessionCount,
+    required int activeCount,
+    required VoidCallback onOpen,
+    required VoidCallback onEdit,
+    required VoidCallback onDuplicate,
+    required VoidCallback onDelete,
+    required VoidCallback onCloseSessions,
+    VoidCallback? onAttach,
+  }) {
+    final auth = switch (host.authMethod) {
       SshAuthMethod.password => 'password',
       SshAuthMethod.privateKey => 'key',
       SshAuthMethod.tailscale => 'tailscale',
     };
-    final muted = theme.colorScheme.onSurfaceVariant;
-    // The ⋮'s menu, which a right-click opens too, at the pointer.
-    void act(String action) => switch (action) {
-      'edit' => onEdit(),
-      'duplicate' => onDuplicate(),
-      'delete' => onDelete(),
-      'close' => onCloseSessions(),
-      'attach' => onAttach?.call(),
-      _ => null,
-    };
-    List<PopupMenuEntry<String>> items() => [
-      if (sessionCount > 0)
-        PopupMenuItem(
-          value: 'close',
-          child: Text(
+    return HomeRow._(
+      title: host.displayName,
+      endpoint: host.target,
+      status: switch (activeCount) {
+        0 => [auth, if (host.useTmux) 'tmux'].join(' · '),
+        1 => 'active session',
+        _ => '$activeCount active sessions',
+      },
+      live: activeCount > 0,
+      verb: 'connect',
+      onOpen: onOpen,
+      // termul's badge, the version under it, and its corner mark while a
+      // session is up. Always a line's room for the version, so every name
+      // starts as high.
+      badge: OsBadge(
+        host.os,
+        version: host.os?.version ?? '',
+        active: activeCount > 0,
+      ),
+      menu: [
+        if (sessionCount > 0)
+          (
             sessionCount == 1
                 ? 'Close session'
                 : 'Close $sessionCount sessions',
+            onCloseSessions,
           ),
-        ),
-      if (onAttach != null)
-        const PopupMenuItem(
-          value: 'attach',
-          child: Text('Attach to a tmux session…'),
-        ),
-      const PopupMenuItem(value: 'edit', child: Text('Edit')),
-      const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
-      const PopupMenuItem(value: 'delete', child: Text('Delete')),
-    ];
-
-    // By hand rather than a ListTile, whose leading is at most 56 dp tall:
-    // too short for the badge with its version under it.
-    return Card(
-      margin: const EdgeInsets.all(6),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onOpen,
-        onSecondaryTapUp: rightClick((at) async {
-          final action = await showMenuAt(context, at, items());
-          if (action != null) act(action);
-        }),
-        child: Padding(
-          padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
-          child: Row(
-            children: [
-              // As wide on every card, so every name starts at the same x.
-              SizedBox(
-                width: 80,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        OsBadge(host.os),
-                        if (activeCount > 0)
-                          Positioned(
-                            right: -2,
-                            bottom: -2,
-                            child: Container(
-                              width: 10,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.primary,
-                                shape: BoxShape.circle,
-                                // Cut out of the icon in the card's own
-                                // colour.
-                                border: Border.all(
-                                  color:
-                                      theme.cardTheme.color ??
-                                      theme.colorScheme.surfaceContainerLow,
-                                  width: 2,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    // Only the version: the badge already says which OS.
-                    // Always a line's room, even blank before the first
-                    // connect or with no version (an empty Text is a little
-                    // shorter), so every badge sits as high.
-                    DefaultTextStyle.merge(
-                      // A step under labelSmall's 11.
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: muted,
-                        fontSize: 9.5,
-                      ),
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      child: Stack(
-                        alignment: Alignment.topCenter,
-                        children: [
-                          const ExcludeSemantics(child: Text(' ')),
-                          Text(host.os?.version ?? ''),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              // A line each, so a long address ellipsizes without taking the
-              // session count with it on a narrow card.
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      host.displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    for (final line in [
-                      host.target,
-                      switch (activeCount) {
-                        0 => authLabel,
-                        1 => 'active session',
-                        _ => '$activeCount active sessions',
-                      },
-                    ])
-                      Text(
-                        line,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: muted,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              PopupMenuButton<String>(
-                onSelected: act,
-                itemBuilder: (_) => items(),
-              ),
-            ],
-          ),
-        ),
-      ),
+        if (onAttach != null) ('Attach to a tmux session…', onAttach),
+        ('Edit', onEdit),
+        ('Duplicate', onDuplicate),
+        ('Delete', onDelete),
+      ],
     );
   }
-}
 
-/// A saved database, laid out as a host's card is: a tap opens it in a tab
-/// of its own.
-class _DatabaseTile extends StatelessWidget {
-  const _DatabaseTile({
-    required this.db,
-    required this.host,
-    required this.onOpen,
-    required this.onEdit,
-    required this.onDelete,
-  });
+  /// A saved database.
+  factory HomeRow.database({
+    required DbConnection db,
+    required HostProfile? host,
+    required VoidCallback onOpen,
+    required VoidCallback onEdit,
+    required VoidCallback onDelete,
+  }) => HomeRow._(
+    title: db.displayName(host),
+    endpoint: '${db.kind.label} · ${db.summary}',
+    status: 'via ${host?.displayName ?? 'a deleted host'}',
+    verb: 'open',
+    onOpen: onOpen,
+    badge: DbBadge(db.kind),
+    menu: [('Edit', onEdit), ('Delete', onDelete)],
+  );
 
-  final DbConnection db;
+  /// This machine's own shell, or a WSL distro's: no address, no
+  /// credentials and nothing to edit. It counts the shells open on it, and a
+  /// tap opens another — the tab strip is the way back to the ones up.
+  factory HomeRow.local({
+    required List<LiveSession> sessions,
+    required VoidCallback onOpen,
+    String title = 'Local shell',
+    String idle = 'A shell on this machine',
+  }) => HomeRow._(
+    title: title,
+    endpoint: idle,
+    status: sessions.isEmpty ? '' : '${sessions.length} open',
+    live: sessions.isNotEmpty,
+    verb: 'open',
+    onOpen: onOpen,
+  );
 
-  /// Null once its host was deleted.
-  final HostProfile? host;
+  final String title;
+  final String endpoint;
+  final String status;
+  final String verb;
   final VoidCallback onOpen;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final Widget? badge;
+
+  /// Something of it is running: its status in the accent.
+  final bool live;
+  final List<(String, VoidCallback)> menu;
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
     final theme = Theme.of(context);
-    final muted = theme.colorScheme.onSurfaceVariant;
-    // The ⋮'s menu, which a right-click opens too, at the pointer.
-    void act(String action) => switch (action) {
-      'edit' => onEdit(),
-      'delete' => onDelete(),
-      _ => null,
-    };
-    const items = [
-      PopupMenuItem(value: 'edit', child: Text('Edit')),
-      PopupMenuItem(value: 'delete', child: Text('Delete')),
-    ];
+    final small = theme.textTheme.labelSmall!;
 
-    return Card(
-      margin: const EdgeInsets.all(6),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onOpen,
-        onSecondaryTapUp: rightClick((at) async {
-          final action = await showMenuAt(context, at, items);
-          if (action != null) act(action);
-        }),
-        child: Padding(
-          padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
-          child: Row(
-            children: [
-              // As wide as a host's badge, so the names line up.
-              SizedBox(width: 80, child: Center(child: DbBadge(db.kind))),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      db.displayName(host),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    for (final line in [
-                      '${db.kind.label} · ${db.summary}',
-                      'via ${host?.displayName ?? 'a deleted host'}',
-                    ])
-                      Text(
-                        line,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: muted,
-                        ),
-                      ),
-                  ],
+    final text = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.headlineMedium!.copyWith(
+                  color: p.accent,
+                  fontSize: 22,
                 ),
               ),
-              PopupMenuButton<String>(
-                onSelected: act,
-                itemBuilder: (_) => items,
+            ),
+            ExcludeSemantics(
+              child: Text(
+                verb.toUpperCase(),
+                style: small.copyWith(color: p.accent, letterSpacing: 0.4),
               ),
-            ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        // Not in capitals, as termul draws its host:port: here it carries
+        // the login, and a username is case-sensitive.
+        Text(
+          endpoint,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: small.copyWith(color: p.dim, letterSpacing: 0.4),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Expanded(
+              child: Semantics(
+                label: status,
+                excludeSemantics: true,
+                child: Text(
+                  status.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: small.copyWith(
+                    color: live ? p.accent : p.muted,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    List<TuiMenuEntry<VoidCallback>> entries() => [
+      for (final (label, onTap) in menu)
+        menuAction(label, onTap, destructive: label == 'Delete'),
+    ];
+
+    // A node of its own: an InkWell makes none, so its label and tap merged
+    // into the grid line's node, a tablet's whole width, and a tap at that
+    // node's centre, where Maestro and a screen reader tap, landed beside
+    // the card and opened nothing.
+    return Semantics(
+      container: true,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: p.border)),
+        ),
+        child: InkWell(
+          onTap: onOpen,
+          // The ⋮'s menu, which a right-click opens too, at the pointer.
+          onSecondaryTapUp: menu.isEmpty
+              ? null
+              : rightClick((at) => showActionsAt(context, at, entries())),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (badge case final badge?) ...[
+                  badge,
+                  const SizedBox(width: 16),
+                ],
+                Expanded(child: text),
+                if (menu.isNotEmpty)
+                  MenuButton<VoidCallback>(
+                    // Material's word for it, which an e2e flow taps.
+                    tooltip: 'Show menu',
+                    onSelected: (onTap) => onTap(),
+                    entries: entries(),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -850,36 +801,63 @@ class _DatabaseTile extends StatelessWidget {
   }
 }
 
+/// A fresh install's Home, termul's own empty home: the page says there is
+/// nothing yet and what Jeansh is for, over the accent block for a first
+/// connection; the add button sits under it along the bottom.
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
     final theme = Theme.of(context);
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.terminal,
-              size: 48,
-              color: theme.colorScheme.onSurfaceVariant,
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'No hosts\nyet',
+            style: theme.textTheme.displayMedium!.copyWith(color: p.accent),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Save a server once and open a shell on it with one tap. Jeansh '
+            'signs in with a password, a private key or Tailscale.',
+            style: theme.textTheme.titleMedium!.copyWith(
+              color: p.text,
+              height: 1.5,
             ),
-            const SizedBox(height: 16),
-            Text('No hosts yet', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              'Add a host to open a shell on it.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+          ),
+          const SizedBox(height: 32),
+          Container(
+            width: double.infinity,
+            color: p.accent,
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'FIRST CONNECTION',
+                  style: theme.textTheme.labelSmall!.copyWith(
+                    color: p.isLight ? p.panel : p.bg,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Tap Add, then Host, and fill in the address, port, '
+                  'username and how you sign in. Your shells run on that '
+                  'machine, and Jeansh keeps them open in tabs.',
+                  style: theme.textTheme.bodyMedium!.copyWith(
+                    color: p.isLight ? p.panel : p.bg,
+                    height: 1.5,
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

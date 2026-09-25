@@ -8,6 +8,7 @@ import 'package:sshbox/src/session/pane_record.dart';
 import 'package:sshbox/src/ui/pane_record_page.dart';
 
 import 'fake_file_browser.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 List<String> _render(String output, {int columns = 20, int rows = 5}) =>
     renderRecord(utf8.encode(output), columns: columns, rows: rows);
@@ -202,7 +203,7 @@ void main() {
       await tester.pump();
       for (
         var i = 0;
-        i < 200 && find.byType(LinearProgressIndicator).evaluate().isNotEmpty;
+        i < 200 && find.byType(TuiProgressBar).evaluate().isNotEmpty;
         i++
       ) {
         await tester.runAsync(
@@ -222,8 +223,8 @@ void main() {
       // Up to the top of what is read, where the button is.
       await tester.drag(find.byType(ListView), const Offset(0, 5000));
       await tester.pump(const Duration(seconds: 2));
-      if (find.text('Load earlier').evaluate().isEmpty) break;
-      await tester.tap(find.text('Load earlier'));
+      if (find.text('LOAD EARLIER').evaluate().isEmpty) break;
+      await tester.tap(find.text('LOAD EARLIER'));
       await settle();
     }
     expect(find.text('line 1'), findsOneWidget);

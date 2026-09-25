@@ -105,6 +105,68 @@ void main() {
     }
   });
 
+  test('the app reads in every theme: termul\'s inks on every layer, a '
+      'button\'s label on its fill, and Material\'s pairs', () {
+    for (final scheme in terminalSchemes) {
+      for (final brightness in Brightness.values) {
+        final p = scheme.palette(brightness);
+        final where = '${scheme.name} ${brightness.name}';
+        for (final (layer, ground) in [
+          ('page', p.bg),
+          ('bar', p.sidebar),
+          ('panel', p.panel),
+          ('toast', p.surface),
+          ('selected', Color.alphaBlend(p.selection, p.panel)),
+        ]) {
+          for (final (name, ink) in [
+            ('text', p.text),
+            ('grey', p.muted),
+            ('dim', p.dim),
+            ('accent', p.accent),
+            ('deep', p.deep),
+            ('red', p.red),
+            ('green', p.green),
+            ('yellow', p.yellow),
+          ]) {
+            expect(
+              _contrast(ink, ground),
+              greaterThanOrEqualTo(4.5),
+              reason: '$where $name on $layer',
+            );
+          }
+        }
+        // termul's buttons: primary's label on the accent, danger's on the
+        // deep accent, and a light theme's primary is the accent on white.
+        for (final (name, ink, ground) in [
+          ('primary button', p.bg, p.accent),
+          ('danger button', p.isLight ? p.panel : p.bg, p.deep),
+          ('enter key', p.bg, p.accent),
+        ]) {
+          if (p.isLight && name == 'primary button') continue;
+          expect(
+            _contrast(ink, ground),
+            greaterThanOrEqualTo(4.5),
+            reason: '$where $name',
+          );
+        }
+        final colors = scheme.colorScheme(brightness);
+        for (final (name, ink, ground) in [
+          ('button', colors.onPrimary, colors.primary),
+          ('danger', colors.onError, colors.error),
+          ('tinted', colors.onPrimaryContainer, colors.primaryContainer),
+          ('error box', colors.onErrorContainer, colors.errorContainer),
+          ('chip', colors.onSecondaryContainer, colors.secondaryContainer),
+        ]) {
+          expect(
+            _contrast(ink, ground),
+            greaterThanOrEqualTo(4.5),
+            reason: '$where $name',
+          );
+        }
+      }
+    }
+  });
+
   test('every theme has its own red, green and blue, and its own accent', () {
     for (final brightness in Brightness.values) {
       for (final (i, a) in terminalSchemes.indexed) {

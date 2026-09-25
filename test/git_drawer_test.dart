@@ -229,9 +229,9 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(800, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-    expect(find.text('Open the git panel as'), findsOneWidget);
+    expect(find.bySemanticsLabel('Open the git panel as'), findsOneWidget);
 
-    await tester.tap(find.text('Drawer'));
+    await tester.tap(find.bySemanticsLabel('Drawer'));
     await tester.pump();
     expect(gitInDrawer.value, isTrue);
 
@@ -240,7 +240,7 @@ void main() {
     await next.load();
     expect(next.value, isTrue);
 
-    await tester.tap(find.text('Tab'));
+    await tester.tap(find.bySemanticsLabel('Tab'));
     await tester.pump();
     await next.load();
     expect(next.value, isFalse);
@@ -272,9 +272,7 @@ void main() {
 
     await _tapBar(tester, 'Browse files');
     expect(treeRow('.bashrc'), findsNothing);
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Show dotfiles'));
+    await tester.tap(find.byTooltip('Show dotfiles'));
     await tester.pumpAndSettle();
     expect(treeRow('.bashrc'), findsOneWidget);
 

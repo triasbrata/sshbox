@@ -11,12 +11,14 @@ import '../models/host_profile.dart';
 import '../notifications/notify_key.dart';
 import '../platform.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// The most a key file may hold. A private key is a few KB, so a larger file
 /// is something else, and is refused before it is read.
 const maxKeyFileBytes = 64 * 1024;
 
-const _keyFileTooBig = 'That file is over 64 KB\n'
+const _keyFileTooBig =
+    'That file is over 64 KB\n'
     'A private key is a few KB. Pick the key file itself.';
 
 /// A private key from BEGIN to its own END: OpenSSH's format, PKCS#1 RSA
@@ -92,35 +94,44 @@ class HostEditPage extends StatefulWidget {
   State<HostEditPage> createState() => _HostEditPageState();
 }
 
-/// Explains why there is nothing to fill in for Tailscale SSH.
+/// Explains why there is nothing to fill in for Tailscale SSH, in termul's
+/// accent block, as its empty home explains a first connection.
 class _TailscaleNotice extends StatelessWidget {
   const _TailscaleNotice();
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
     final theme = Theme.of(context);
+    final ink = p.isLight ? p.panel : p.bg;
 
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.shield_outlined, color: theme.colorScheme.primary),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'No credential is stored. Tailscale decides who you are, and '
-                'the first connection may ask you to sign in through a link. '
-                'After that it stops asking until the check expires.\n\n'
-                'Use the host\'s tailnet address, and make sure Tailscale SSH '
-                'is enabled there (tailscale up --ssh).',
-                style: theme.textTheme.bodySmall,
-              ),
+    return Container(
+      width: double.infinity,
+      color: p.accent,
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'TAILSCALE SSH',
+            style: theme.textTheme.labelSmall!.copyWith(
+              color: ink,
+              letterSpacing: 0.4,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Nothing is stored here: Tailscale checks who you are. The first '
+            'connection may ask you to sign in through a link, and it won\'t '
+            'ask again until that check expires.\n\n'
+            'Use the host\'s tailnet address, and turn on Tailscale SSH there '
+            'with tailscale up --ssh.',
+            style: theme.textTheme.bodyMedium!.copyWith(
+              color: ink,
+              height: 1.5,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -131,16 +142,19 @@ class _TailscaleNotice extends StatelessWidget {
 class _SecretField extends StatefulWidget {
   const _SecretField({
     required this.controller,
+    required this.label,
     required this.what,
-    required this.decoration,
+    this.helper,
+    this.hint,
   });
 
   final TextEditingController controller;
+  final String label;
 
   /// What it holds, as the eye's tooltip names it: "password", "passphrase".
   final String what;
-
-  final InputDecoration decoration;
+  final String? helper;
+  final String? hint;
 
   @override
   State<_SecretField> createState() => _SecretFieldState();
@@ -151,20 +165,23 @@ class _SecretFieldState extends State<_SecretField> {
 
   @override
   Widget build(BuildContext context) {
-    return TextFormField(
+    final p = TermulThemeData.of(context).palette;
+    return TuiField(
+      label: widget.label,
       controller: widget.controller,
-      obscureText: !_shown,
+      hint: widget.hint,
+      helper: widget.helper,
+      obscure: !_shown,
       // Masked, the platform already keeps it from the keyboard; shown, only
       // these do.
       autocorrect: false,
       enableSuggestions: false,
       enableIMEPersonalizedLearning: false,
-      decoration: widget.decoration.copyWith(
-        suffixIcon: IconButton(
-          tooltip: '${_shown ? 'Hide' : 'Show'} ${widget.what}',
-          icon: Icon(_shown ? Icons.visibility_off : Icons.visibility),
-          onPressed: () => setState(() => _shown = !_shown),
-        ),
+      suffix: IconButton(
+        tooltip: '${_shown ? 'Hide' : 'Show'} ${widget.what}',
+        color: p.dim,
+        icon: Icon(_shown ? Icons.visibility_off : Icons.visibility),
+        onPressed: () => setState(() => _shown = !_shown),
       ),
     );
   }
@@ -263,7 +280,7 @@ class _HostEditPageState extends State<HostEditPage> {
         showToast(
           context,
           error is FormatException ? error.message : "Couldn't read that file",
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
           duration: const Duration(seconds: 6),
         );
       }
@@ -287,18 +304,14 @@ class _HostEditPageState extends State<HostEditPage> {
       showToast(
         context,
         'No notification key yet\nThis host gets one when it next connects.',
-        type: ToastificationType.warning,
+        type: TuiToastType.warning,
         duration: const Duration(seconds: 3),
       );
       return;
     }
     await Clipboard.setData(ClipboardData(text: value));
     if (mounted) {
-      showToast(
-        context,
-        'Notification key copied',
-        type: ToastificationType.success,
-      );
+      showToast(context, 'Notification key copied', type: TuiToastType.success);
     }
   }
 
@@ -307,8 +320,8 @@ class _HostEditPageState extends State<HostEditPage> {
 
     setState(() => _saving = true);
 
-    final id = widget.existing?.id ??
-        DateTime.now().microsecondsSinceEpoch.toString();
+    final id =
+        widget.existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString();
 
     final profile = HostProfile(
       id: id,
@@ -347,256 +360,312 @@ class _HostEditPageState extends State<HostEditPage> {
 
   @override
   Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final theme = Theme.of(context);
+    const gap = SizedBox(height: 18);
+    Widget section(String title) => Padding(
+      padding: const EdgeInsets.only(top: 28, bottom: 12),
+      child: TuiSectionLabel(title),
+    );
+
+    // termul's add_connection_screen: back and what the page is along the
+    // top, the page's name large, then its fields; Save as well as its word
+    // at the top, so it is in reach before the form is scrolled.
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_isEditing ? 'Edit host' : 'New host'),
-        actions: [
-          IconButton(
-            tooltip: 'Save',
-            onPressed: _saving ? null : _save,
-            icon: const Icon(Icons.check),
-          ),
-        ],
-      ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextFormField(
-              controller: _label,
-              decoration: const InputDecoration(
-                labelText: 'Label',
-                helperText: 'Optional. Defaults to user@host.',
-              ),
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _host,
-              decoration: const InputDecoration(labelText: 'Host'),
-              autocorrect: false,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.next,
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A hostname or IP is required'
-                  : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _altHost,
-              decoration: const InputDecoration(
-                labelText: 'Alternative address',
-                hintText: '192.168.1.20',
-                helperText: 'Optional. A second address for the same machine, '
-                    'dialled alongside the one above and used if it answers '
-                    'first: the LAN address of a host you normally reach over '
-                    'Tailscale, so a tailnet that is down needs no edit here. '
-                    'Same port, user and credentials.',
-                helperMaxLines: 5,
-              ),
-              autocorrect: false,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _port,
-              decoration: const InputDecoration(labelText: 'Port'),
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.next,
-              validator: (value) {
-                final port = int.tryParse(value?.trim() ?? '');
-                if (port == null || port < 1 || port > 65535) {
-                  return 'Port must be between 1 and 65535';
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _username,
-              decoration: const InputDecoration(labelText: 'Username'),
-              autocorrect: false,
-              textInputAction: TextInputAction.next,
-              validator: (value) => (value == null || value.trim().isEmpty)
-                  ? 'A username is required'
-                  : null,
-            ),
-            const SizedBox(height: 12),
-            if (_jumpHosts case final jumpHosts?) ...[
-              DropdownButtonFormField<String>(
-                initialValue: _jumpHostId,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: 'Jump host',
-                  helperText: jumpHosts.isEmpty
-                      ? 'To connect through another host, like ssh -J, add '
-                            'that host first.'
-                      : 'Optional. Connects through another saved host '
-                            'first, like ssh -J, signing in there with its own '
-                            'login. Host above is then the address that host '
-                            'reaches this one at.',
-                  helperMaxLines: 3,
-                ),
-                items: [
-                  const DropdownMenuItem(
-                    value: '',
-                    child: Text('None, connect directly'),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+              child: Row(
+                children: [
+                  TermulTextAction.back(context),
+                  const Spacer(),
+                  TermulTextAction(
+                    label: 'Save',
+                    text: 'SAVE',
+                    onTap: _saving ? null : _save,
                   ),
-                  for (final host in jumpHosts)
-                    DropdownMenuItem(
-                      value: host.id,
-                      child: Text(
-                        host.displayName,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
                 ],
-                onChanged: (id) => setState(() => _jumpHostId = id ?? ''),
-              ),
-              const SizedBox(height: 12),
-            ],
-            TextFormField(
-              controller: _fileRoot,
-              decoration: const InputDecoration(
-                labelText: 'File tree root',
-                hintText: '~/projects or /var/www',
-                helperText: 'Optional. Where the file tree opens after you '
-                    'connect. Blank is your home directory.',
-                helperMaxLines: 2,
-              ),
-              autocorrect: false,
-              keyboardType: TextInputType.url,
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 12),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _forwardPorts,
-              onChanged: (value) => setState(() => _forwardPorts = value),
-              title: const Text('Forward ports to the tailnet'),
-              subtitle: const Text(
-                'A server you start in a session goes on the tailnet by '
-                'itself: vite on port 3000 shows up at this host\'s MagicDNS '
-                'name on 3001. Needs Tailscale on a Linux host, and leave to '
-                'serve without root there (sudo tailscale set '
-                '--operator=\$USER, once).',
               ),
             ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _useTmux,
-              onChanged: (value) => setState(() => _useTmux = value),
-              title: const Text('Use tmux'),
-              subtitle: Text(
-                'Each tab is a tmux session you can split into panes from '
-                'its ${isDesktop ? 'right-click' : 'long-press'} menu. A '
-                'dropped connection comes back to the same panes with their '
-                'programs still running; closing the tab ends them. Needs '
-                'tmux on the host.',
+            Expanded(
+              // Not a lazy list: a field scrolled off would be let go, and
+              // Save would then check only the ones on screen.
+              child: Form(
+                key: _formKey,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Read out as the page's name was before termul's
+                      // two lines, which the e2e flows look for.
+                      Semantics(
+                        header: true,
+                        container: true,
+                        label: _isEditing ? 'Edit host' : 'New host',
+                        excludeSemantics: true,
+                        child: Text(
+                          _isEditing ? 'Edit\nhost' : 'Add\nhost',
+                          style: theme.textTheme.displayMedium!.copyWith(
+                            color: p.accent,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Address, port, username and how you sign in. The '
+                        'label is optional.',
+                        style: theme.textTheme.bodyMedium!.copyWith(
+                          color: p.muted,
+                          height: 1.5,
+                        ),
+                      ),
+                      section('Connection'),
+                      TuiField(
+                        label: 'Label',
+                        controller: _label,
+                        hint: 'build box · staging',
+                        helper: 'Optional. Blank shows user@host on Home.',
+                        textInputAction: TextInputAction.next,
+                      ),
+                      gap,
+                      TuiField(
+                        label: 'Host',
+                        controller: _host,
+                        hint: '192.168.1.10',
+                        autocorrect: false,
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.next,
+                        validator: (value) =>
+                            (value == null || value.trim().isEmpty)
+                            ? 'A hostname or IP is required'
+                            : null,
+                      ),
+                      gap,
+                      TuiField(
+                        label: 'Port',
+                        controller: _port,
+                        hint: '22',
+                        keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.next,
+                        validator: (value) {
+                          final port = int.tryParse(value?.trim() ?? '');
+                          if (port == null || port < 1 || port > 65535) {
+                            return 'Port must be between 1 and 65535';
+                          }
+                          return null;
+                        },
+                      ),
+                      gap,
+                      TuiField(
+                        label: 'Username',
+                        controller: _username,
+                        hint: 'ubuntu',
+                        autocorrect: false,
+                        textInputAction: TextInputAction.next,
+                        validator: (value) =>
+                            (value == null || value.trim().isEmpty)
+                            ? 'A username is required'
+                            : null,
+                      ),
+                      gap,
+                      // After the three a first host needs, not between Host
+                      // and Port: its help runs to three lines, which on a
+                      // phone with the keyboard up pushed Port off the screen.
+                      TuiField(
+                        label: 'Alternative address',
+                        controller: _altHost,
+                        hint: '192.168.1.20',
+                        helper:
+                            'Optional. Another address for the same machine, '
+                            'such as its LAN IP when you usually reach it over '
+                            'Tailscale. Jeansh tries both and uses whichever '
+                            'answers first, with the same port, user and '
+                            'sign-in.',
+                        autocorrect: false,
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.next,
+                      ),
+                      if (_jumpHosts case final jumpHosts?) ...[
+                        gap,
+                        DropdownField<String>(
+                          label: 'Jump host',
+                          initialValue: _jumpHostId.isEmpty
+                              ? null
+                              : _jumpHostId,
+                          allowClear: true,
+                          emptyLabel: 'None, connect directly',
+                          hint: 'None, connect directly',
+                          helper: jumpHosts.isEmpty
+                              ? 'To go through another host, like ssh -J, '
+                                    'save that one first.'
+                              : 'Optional. Connect through another saved '
+                                    'host first, like ssh -J, using its own '
+                                    'login. The Host field above is then the '
+                                    'address as that host sees it.',
+                          options: [
+                            for (final host in jumpHosts)
+                              TuiDropdownOption(
+                                value: host.id,
+                                label: host.displayName,
+                                subtitle: host.host,
+                              ),
+                          ],
+                          onChanged: (id) =>
+                              setState(() => _jumpHostId = id ?? ''),
+                        ),
+                      ],
+                      section('Session'),
+                      TuiField(
+                        label: 'File tree root',
+                        controller: _fileRoot,
+                        hint: '~/projects or /var/www',
+                        helper:
+                            'Optional. The folder the file tree opens in. '
+                            'Blank means your home folder.',
+                        autocorrect: false,
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.next,
+                      ),
+                      const SizedBox(height: 28),
+                      TuiSwitch(
+                        label: 'Forward ports to the tailnet',
+                        hint:
+                            'A server you start in a session goes on the '
+                            'tailnet by itself: vite on port 3000 shows up at '
+                            'this host\'s MagicDNS name on 3001. Needs '
+                            'Tailscale on a Linux host, and leave to serve '
+                            'without root there (sudo tailscale set '
+                            '--operator=\$USER, once).',
+                        value: _forwardPorts,
+                        onChanged: (value) =>
+                            setState(() => _forwardPorts = value),
+                      ),
+                      const SizedBox(height: 28),
+                      TuiSwitch(
+                        label: 'Use tmux',
+                        hint:
+                            'Each tab runs in its own tmux session. Split it '
+                            'into panes from the tab\'s '
+                            '${isDesktop ? 'right-click' : 'long-press'} menu. '
+                            'If the connection drops, you come back to the '
+                            'same panes with their programs still running. '
+                            'Closing the tab ends the session. Needs tmux on '
+                            'the host.',
+                        value: _useTmux,
+                        onChanged: (value) => setState(() => _useTmux = value),
+                      ),
+                      if (_useTmux) ...[
+                        const SizedBox(height: 28),
+                        TuiSwitch(
+                          label: 'Keep a record of each pane',
+                          hint:
+                              'The host writes all a pane prints to a file '
+                              'under ~/.local/state/jeansh, even with the app '
+                              'closed, so what clear or a full screen wiped '
+                              'can be read from the tab\'s '
+                              '${isDesktop ? 'right-click' : 'long-press'} '
+                              'menu. Up to 16 MB a pane, the newest kept.',
+                          value: _recordPanes,
+                          onChanged: (value) =>
+                              setState(() => _recordPanes = value),
+                        ),
+                      ],
+                      if (_isEditing && widget.notifyKeys != null) ...[
+                        const SizedBox(height: 28),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TuiButton(
+                            label: 'Copy notification key',
+                            prefix: '⧉',
+                            variant: TuiButtonVariant.ghost,
+                            onPressed: _copyNotifyKey,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TuiText(
+                          'Sent to this host by itself, as LC_SSHBOX_KEY. '
+                          'Copy it only for a server that does not accept it.',
+                          tone: TuiTextTone.dim,
+                          size: 11,
+                        ),
+                      ],
+                      section('Sign-in'),
+                      TuiSelect<SshAuthMethod>(
+                        options: const [
+                          (SshAuthMethod.password, 'Password'),
+                          (SshAuthMethod.privateKey, 'Key'),
+                          (SshAuthMethod.tailscale, 'Tailscale'),
+                        ],
+                        value: _authMethod,
+                        onChanged: (method) =>
+                            setState(() => _authMethod = method),
+                      ),
+                      gap,
+                      if (_authMethod == SshAuthMethod.tailscale)
+                        const _TailscaleNotice()
+                      else if (_authMethod == SshAuthMethod.password)
+                        _SecretField(
+                          controller: _password,
+                          label: 'Password',
+                          what: 'password',
+                          hint: '••••••••',
+                          helper: _isEditing
+                              ? 'Leave blank to keep the stored password'
+                              : 'Saved encrypted in the device keystore.',
+                        )
+                      else ...[
+                        TuiField(
+                          label: 'Private key (OpenSSH or PEM)',
+                          controller: _privateKey,
+                          maxLines: 6,
+                          minLines: 3,
+                          // Not obscured, so nothing else tells the keyboard
+                          // to keep a private key out of its suggestions and
+                          // what it learns.
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          enableIMEPersonalizedLearning: false,
+                          helper: _isEditing
+                              ? 'Leave blank to keep the stored key'
+                              : 'Paste the whole key, BEGIN and END lines '
+                                    'included, or choose the file below.',
+                        ),
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TuiButton(
+                            label: 'Choose file',
+                            prefix: '+',
+                            variant: TuiButtonVariant.ghost,
+                            onPressed: _chooseKeyFile,
+                          ),
+                        ),
+                        gap,
+                        _SecretField(
+                          controller: _passphrase,
+                          label: 'Key passphrase',
+                          what: 'passphrase',
+                          helper: 'Only if the key is encrypted',
+                        ),
+                      ],
+                      const SizedBox(height: 32),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TuiButton(
+                          label: 'Save host',
+                          prefix: '▸',
+                          onPressed: _saving ? null : _save,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-            if (_useTmux)
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _recordPanes,
-                onChanged: (value) => setState(() => _recordPanes = value),
-                title: const Text('Keep a record of each pane'),
-                subtitle: Text(
-                  'The host writes all a pane prints to a file under '
-                  '~/.local/state/jeansh, even with the app closed, so what '
-                  'clear or a full screen wiped can be read from the tab\'s '
-                  '${isDesktop ? 'right-click' : 'long-press'} menu. Up to '
-                  '16 MB a pane, the newest kept.',
-                ),
-              ),
-            if (_isEditing && widget.notifyKeys != null)
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.key_outlined),
-                title: const Text('Copy notification key'),
-                subtitle: const Text(
-                  'Sent to this host by itself, as LC_SSHBOX_KEY. Copy it '
-                  'only for a server that does not accept it.',
-                ),
-                onTap: _copyNotifyKey,
-              ),
-            const SizedBox(height: 24),
-            SegmentedButton<SshAuthMethod>(
-              segments: const [
-                ButtonSegment(
-                  value: SshAuthMethod.password,
-                  label: Text('Password'),
-                  icon: Icon(Icons.password),
-                ),
-                ButtonSegment(
-                  value: SshAuthMethod.privateKey,
-                  label: Text('Key'),
-                  icon: Icon(Icons.vpn_key),
-                ),
-                ButtonSegment(
-                  value: SshAuthMethod.tailscale,
-                  label: Text('Tailscale'),
-                  icon: Icon(Icons.shield_outlined),
-                ),
-              ],
-              selected: {_authMethod},
-              onSelectionChanged: (selection) =>
-                  setState(() => _authMethod = selection.first),
-            ),
-            const SizedBox(height: 16),
-            if (_authMethod == SshAuthMethod.tailscale)
-              const _TailscaleNotice()
-            else if (_authMethod == SshAuthMethod.password)
-              _SecretField(
-                controller: _password,
-                what: 'password',
-                decoration: InputDecoration(
-                  labelText: 'Password',
-                  helperText: _isEditing
-                      ? 'Leave blank to keep the stored password'
-                      : 'Stored in the device keystore, never in plain settings',
-                  helperMaxLines: 2,
-                ),
-              )
-            else ...[
-              TextFormField(
-                controller: _privateKey,
-                maxLines: 6,
-                minLines: 3,
-                // Not obscured, so nothing else tells the keyboard to keep a
-                // private key out of its suggestions and what it learns.
-                autocorrect: false,
-                enableSuggestions: false,
-                enableIMEPersonalizedLearning: false,
-                decoration: InputDecoration(
-                  labelText: 'Private key (OpenSSH or PEM)',
-                  alignLabelWithHint: true,
-                  helperText: _isEditing
-                      ? 'Leave blank to keep the stored key'
-                      : 'Paste the full key including its BEGIN/END lines',
-                  helperMaxLines: 2,
-                ),
-              ),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: TextButton.icon(
-                  onPressed: _chooseKeyFile,
-                  icon: const Icon(Icons.file_open_outlined),
-                  label: const Text('Choose file'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _SecretField(
-                controller: _passphrase,
-                what: 'passphrase',
-                decoration: const InputDecoration(
-                  labelText: 'Key passphrase',
-                  helperText: 'Only if the key is encrypted',
-                ),
-              ),
-            ],
           ],
         ),
       ),

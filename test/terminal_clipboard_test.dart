@@ -68,7 +68,7 @@ Finder _toast(String message) => find.ancestor(
   of: find.text(message),
   matching: find.byWidgetPredicate(
     (widget) =>
-        widget is ToastCard && widget.type == ToastificationType.success,
+        widget is TuiToastCard && widget.type == TuiToastType.success,
   ),
 );
 

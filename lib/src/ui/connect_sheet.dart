@@ -9,6 +9,7 @@ import '../session/session_manager.dart';
 import '../session/tmux.dart';
 import '../platform.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
+import 'tui.dart';
 
 /// Another terminal on [host], connected in a sheet and given its tab by
 /// [sessions] once it is up, or once its sign-in has gone to a web tab beside
@@ -88,13 +89,11 @@ Future<bool> connectInSheet(
   required void Function(Uri url) inTab,
   Set<String> taken = const {},
 }) async {
-  final kept = await showModalBottomSheet<bool>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    useSafeArea: true,
-    builder: (_) =>
-        _ConnectSheet(session: session, secrets: secrets, taken: taken),
+  final kept = await showTuiSheet<bool>(
+    context,
+    builder: (_) => Flexible(
+      child: _ConnectSheet(session: session, secrets: secrets, taken: taken),
+    ),
   );
   if (kept != true) {
     session.abandon();
@@ -111,24 +110,22 @@ Future<bool> connectInSheet(
 /// connect sheet on screen. Anything but Trust or Replace key refuses it.
 Future<bool> confirmHostKey(BuildContext context, HostKeyCheck check) async {
   if (!context.mounted) return false;
-  final trusted = await showModalBottomSheet<bool>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    useSafeArea: true,
-    builder: (context) => SingleChildScrollView(
-      padding: _padding,
-      child: _HostKeyPrompt(
-        check: check,
-        onAnswer: (trusted) => Navigator.of(context).pop(trusted),
+  final trusted = await showTuiSheet<bool>(
+    context,
+    builder: (context) => Flexible(
+      child: SingleChildScrollView(
+        child: TuiSheet(
+          title: 'Host key',
+          child: _HostKeyPrompt(
+            check: check,
+            onAnswer: (trusted) => Navigator.of(context).pop(trusted),
+          ),
+        ),
       ),
     ),
   );
   return trusted ?? false;
 }
-
-/// Under a sheet's drag handle, which leaves room enough above.
-const _padding = EdgeInsets.fromLTRB(24, 0, 24, 24);
 
 class _ConnectSheet extends StatefulWidget {
   const _ConnectSheet({
@@ -234,7 +231,6 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final host = _session.host;
     final check = _check;
     final found = _found;
@@ -242,65 +238,53 @@ class _ConnectSheetState extends State<_ConnectSheet> {
     final url = _session.connecting ? _session.authUrl : null;
 
     return SingleChildScrollView(
-      padding: _padding,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(host.displayName, style: theme.textTheme.titleLarge),
-          Text(
-            '${host.username}@${host.host}:${host.port}',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 20),
-          if (check != null)
-            _HostKeyPrompt(check: check, onAnswer: _rule)
-          else if (found != null) ...[
-            TmuxSessionList(
-              sessions: found,
-              taken: widget.taken,
-              onPick: _choose,
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Cancel'),
+      child: TuiSheet(
+        title: 'Connect',
+        message: host.displayName,
+        detail: '${host.username}@${host.host}:${host.port}',
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (check != null)
+              _HostKeyPrompt(check: check, onAnswer: _rule)
+            else if (found != null) ...[
+              TmuxSessionList(
+                sessions: found,
+                taken: widget.taken,
+                onPick: _choose,
               ),
-            ),
-          ] else if (error != null)
-            ConnectionError(
-              message: error,
-              // A tab brought back after its tmux session went: trying again
-              // finds the same, so it offers a new one.
-              retryLabel: _session.tmuxGone ? 'Start a new session' : null,
-              onRetry: () {
-                if (_session.tmuxGone) _session.startNewTmux();
-                unawaited(_connect());
-              },
-              onClose: () => Navigator.of(context).pop(false),
-            )
-          else if (url != null)
-            // Closed with a yes: the connect carries on, and the link opens
-            // beside the session's tab — see [connectInSheet].
-            AuthCheckPrompt(
-              url: url,
-              onOpen: () => Navigator.of(context).pop(true),
-            )
-          else
-            Row(
-              children: [
-                const SizedBox.square(
-                  dimension: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TuiButton(
+                  label: 'Cancel',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: () => Navigator.of(context).pop(false),
                 ),
-                const SizedBox(width: 16),
-                Text('Connecting…', style: theme.textTheme.bodyLarge),
-              ],
-            ),
-        ],
+              ),
+            ] else if (error != null)
+              ConnectionError(
+                message: error,
+                // A tab brought back after its tmux session went: trying again
+                // finds the same, so it offers a new one.
+                retryLabel: _session.tmuxGone ? 'Start a new session' : null,
+                onRetry: () {
+                  if (_session.tmuxGone) _session.startNewTmux();
+                  unawaited(_connect());
+                },
+                onClose: () => Navigator.of(context).pop(false),
+              )
+            else if (url != null)
+              // Closed with a yes: the connect carries on, and the link opens
+              // beside the session's tab — see [connectInSheet].
+              AuthCheckPrompt(
+                url: url,
+                onOpen: () => Navigator.of(context).pop(true),
+              )
+            else
+              const TuiSheetLoading(),
+          ],
+        ),
       ),
     );
   }
@@ -331,7 +315,17 @@ class _HostKeyPrompt extends StatelessWidget {
     final pinned = check.pinned;
     final other = check.otherAddress;
     final error = theme.colorScheme.error;
-    const mono = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    final mono = TextStyle(fontFamily: TermulFonts.mono, fontSize: 13);
+    Widget boxed(String fingerprint) => Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: SelectableText(fingerprint, style: mono),
+    );
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -381,35 +375,33 @@ class _HostKeyPrompt extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text('Pinned for ${other.address}'),
-          SelectableText(other.fingerprint, style: mono),
+          boxed(other.fingerprint),
         ],
         if (pinned != null) ...[
           const SizedBox(height: 12),
           const Text('Pinned'),
-          SelectableText(pinned, style: mono),
+          boxed(pinned),
         ],
         const SizedBox(height: 12),
         Text(pinned == null ? 'Fingerprint' : 'Now'),
-        SelectableText(check.fingerprint, style: mono),
+        boxed(check.fingerprint),
         const SizedBox(height: 16),
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            TextButton(
+            TuiButton(
+              label: 'Cancel',
+              variant: TuiButtonVariant.ghost,
               onPressed: () => onAnswer(false),
-              child: const Text('Cancel'),
             ),
             const SizedBox(width: 8),
-            pinned == null
-                ? FilledButton(
-                    onPressed: () => onAnswer(true),
-                    child: const Text('Trust'),
-                  )
-                : TextButton(
-                    style: TextButton.styleFrom(foregroundColor: error),
-                    onPressed: () => onAnswer(true),
-                    child: const Text('Replace key'),
-                  ),
+            TuiButton(
+              label: pinned == null ? 'Trust' : 'Replace key',
+              variant: pinned == null
+                  ? TuiButtonVariant.primary
+                  : TuiButtonVariant.danger,
+              onPressed: () => onAnswer(true),
+            ),
           ],
         ),
       ],
@@ -463,11 +455,7 @@ class AuthCheckPrompt extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
-        FilledButton.icon(
-          onPressed: onOpen,
-          icon: const Icon(Icons.open_in_new),
-          label: const Text('Open link'),
-        ),
+        TuiButton(label: 'Open link', prefix: '↗', onPressed: onOpen),
         const SizedBox(height: 12),
         SelectableText(
           url.toString(),

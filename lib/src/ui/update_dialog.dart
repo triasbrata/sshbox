@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../files/file_browser.dart' show formatBytes;
 import '../update/updater.dart';
 import 'toast.dart';
+import 'tui.dart';
 
 /// What to show for [error]: the updater's own errors are a line written to
 /// be read, and anything else is said as it is rather than swallowed.
@@ -43,41 +44,56 @@ class _UpdateTileState extends State<UpdateTile> {
   @override
   Widget build(BuildContext context) {
     final enabled = _updater.enabled;
+    // termul's action rows, as Settings' others: a button, its small print
+    // under it.
+    Widget note(String text) => Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 16),
+      child: TuiText(text, tone: TuiTextTone.muted, size: 10),
+    );
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ValueListenableBuilder<Update?>(
           valueListenable: updateAvailable,
           builder: (context, update, _) => update == null
               ? const SizedBox.shrink()
-              : ListTile(
-                  leading: Icon(
-                    Icons.new_releases_outlined,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  title: Text('Jeansh ${update.version} is available'),
-                  subtitle: const Text('Tap to see it and update.'),
-                  onTap: () => showUpdate(context, update, using: _updater),
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TuiButton(
+                      label: 'Jeansh ${update.version} is available',
+                      prefix: '↑',
+                      onPressed: () =>
+                          showUpdate(context, update, using: _updater),
+                    ),
+                    note('Tap to see it and update.'),
+                  ],
                 ),
         ),
-        ListTile(
-          leading: const Icon(Icons.system_update_alt),
-          title: const Text('Check for updates'),
-          subtitle: Text(
-            enabled
-                ? 'This is Jeansh ${_updater.version}. Jeansh also looks once '
-                      'a day while it runs.'
-                : _noUpdates,
-          ),
-          enabled: enabled && !_checking,
-          trailing: _checking
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : null,
-          onTap: enabled && !_checking ? _check : null,
+        Row(
+          children: [
+            TuiButton(
+              label: 'Check for updates',
+              prefix: '↻',
+              variant: TuiButtonVariant.ghost,
+              onPressed: enabled && !_checking ? _check : null,
+            ),
+            if (_checking) ...[
+              const SizedBox(width: 12),
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: TuiSpinner(),
+              ),
+            ],
+          ],
+        ),
+        note(
+          enabled
+              ? 'This is Jeansh ${_updater.version}. Jeansh also looks once '
+                    'a day while it runs.'
+              : _noUpdates,
         ),
       ],
     );
@@ -104,7 +120,7 @@ Future<Update?> _ask(BuildContext context, Updater updater) async {
     showToast(
       context,
       'This build takes no updates',
-      type: ToastificationType.info,
+      type: TuiToastType.info,
     );
     return null;
   }
@@ -115,12 +131,12 @@ Future<Update?> _ask(BuildContext context, Updater updater) async {
     // Everything, not [UpdateException] alone: an error nobody expected
     // would otherwise leave the row spinning and disabled for good.
     if (context.mounted) {
-      showToast(context, _said(error), type: ToastificationType.error);
+      showToast(context, _said(error), type: TuiToastType.error);
     }
     return null;
   }
   if (update == null && context.mounted) {
-    showToast(context, 'Jeansh is up to date', type: ToastificationType.success);
+    showToast(context, 'Jeansh is up to date', type: TuiToastType.success);
   }
   return update;
 }
@@ -144,10 +160,13 @@ class UpdateChip extends StatelessWidget {
     valueListenable: updateAvailable,
     builder: (context, update, _) => update == null
         ? const SizedBox.shrink()
-        : TextButton.icon(
-            onPressed: () => showUpdate(context, update),
-            icon: const Icon(Icons.new_releases_outlined, size: 18),
-            label: Text('Update ${update.version}'),
+        : Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: TuiButton(
+              label: 'Update ${update.version}',
+              prefix: '↑',
+              onPressed: () => showUpdate(context, update),
+            ),
           ),
   );
 }
@@ -242,13 +261,13 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       });
       final refusal = _refusal;
       if (refusal != null) {
-        showToast(context, refusal, type: ToastificationType.warning);
+        showToast(context, refusal, type: TuiToastType.warning);
       }
     } catch (error) {
       // As above: anything at all, or the dialog is stuck on its bar.
       if (!mounted) return;
       Navigator.of(context).pop();
-      showToast(context, _said(error), type: ToastificationType.error);
+      showToast(context, _said(error), type: TuiToastType.error);
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
@@ -270,7 +289,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       showToast(
         context,
         '${_said(error)} It is in your Downloads instead.',
-        type: ToastificationType.error,
+        type: TuiToastType.error,
       );
     }
   }
@@ -300,55 +319,67 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     final update = widget.update;
     final file = _file;
     if (_installing) {
-      return AlertDialog(
-        title: Text('Installing Jeansh ${update.version}'),
-        content: const Row(
+      return TuiDialog(
+        title: 'update',
+        maxWidth: 420,
+        message: 'Installing Jeansh ${update.version}',
+        child: const Row(
           children: [
             SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              child: TuiSpinner(),
             ),
             SizedBox(width: 16),
-            Expanded(child: Text('Jeansh restarts when it is in place.')),
+            Expanded(
+              child: TuiText(
+                'Jeansh restarts when it is in place.',
+                tone: TuiTextTone.muted,
+                size: 11,
+              ),
+            ),
           ],
         ),
       );
     }
     if (file != null && !_handOver) {
-      return AlertDialog(
-        title: Text('Jeansh ${update.version} is ready'),
-        content: Text(
-          'It was checked against the release. Restart to update closes '
-          'this Jeansh — open sessions end, and a tmux session goes on '
-          'running on its host — and starts ${update.version} in its place.',
-        ),
+      return TuiDialog(
+        title: 'update',
+        maxWidth: 420,
+        message: 'Jeansh ${update.version} is ready',
+        detail:
+            'It was checked against the release. Restart to update closes '
+            'this Jeansh — open sessions end, and a tmux session goes on '
+            'running on its host — and starts ${update.version} in its place.',
         actions: [
-          TextButton(
+          TuiButton(
+            label: 'Later',
+            variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Later'),
           ),
-          FilledButton(
+          TuiButton(
+            label: 'Restart to update',
+            prefix: '↻',
             onPressed: () => unawaited(_restart(file)),
-            child: const Text('Restart to update'),
           ),
         ],
       );
     }
     if (file != null) {
-      return AlertDialog(
-        title: Text('Jeansh ${update.version} is in your Downloads'),
-        content: Text('${file.path}\n\n$_howToInstall'),
+      return TuiDialog(
+        title: 'update',
+        maxWidth: 420,
+        message: 'Jeansh ${update.version} is in your Downloads',
+        detail: '${file.path}\n\n$_howToInstall',
         actions: [
-          TextButton(
-            onPressed: () => unawaited(
-              launchUrl(Uri.file(file.parent.path)),
-            ),
-            child: const Text('Open folder'),
+          TuiButton(
+            label: 'Open folder',
+            variant: TuiButtonVariant.ghost,
+            onPressed: () => unawaited(launchUrl(Uri.file(file.parent.path))),
           ),
-          FilledButton(
+          TuiButton(
+            label: 'Done',
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Done'),
           ),
         ],
       );
@@ -356,48 +387,52 @@ class _UpdateDialogState extends State<_UpdateDialog> {
 
     if (_downloading) {
       final progress = _progress ?? 0;
-      return AlertDialog(
-        title: Text('Downloading Jeansh ${update.version}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              '${(progress * 100).floor()}% of ${formatBytes(update.size)}',
-            ),
-            const SizedBox(height: 12),
-            LinearProgressIndicator(value: progress),
-          ],
-        ),
+      return TuiDialog(
+        title: 'update',
+        maxWidth: 420,
+        message: 'Downloading Jeansh ${update.version}',
         actions: [
-          TextButton(
+          TuiButton(
+            label: 'Cancel',
+            variant: TuiButtonVariant.ghost,
             // Cancel stays up until the next chunk arrives, so it can be
             // tapped again in that window; a Completer completed twice
             // throws.
             onPressed: () => _cancelNow(),
-            child: const Text('Cancel'),
           ),
         ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TuiText(
+              '${(progress * 100).floor()}% of ${formatBytes(update.size)}',
+              tone: TuiTextTone.muted,
+              size: 11,
+            ),
+            const SizedBox(height: 12),
+            TuiProgressBar(value: progress),
+          ],
+        ),
       );
     }
 
-    return AlertDialog(
-      title: Text('Jeansh ${update.version} is out'),
-      content: Text(
-        'You have ${widget.updater.version}. The download is '
-        '${formatBytes(update.size)}, and it is checked against the '
-        "release's SHA-256 before Jeansh keeps it.\n\n"
-        '${_refusal == null ? _installs : _handsOver}',
-      ),
+    return TuiDialog(
+      title: 'update',
+      maxWidth: 420,
+      message: 'Jeansh ${update.version} is out',
+      detail:
+          'You have ${widget.updater.version}. The download is '
+          '${formatBytes(update.size)}, and it is checked against the '
+          "release's SHA-256 before Jeansh keeps it.\n\n"
+          '${_refusal == null ? _installs : _handsOver}',
       actions: [
-        TextButton(
+        TuiButton(
+          label: 'Not now',
+          variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Not now'),
         ),
-        FilledButton(
-          onPressed: _download,
-          child: const Text('Download'),
-        ),
+        TuiButton(label: 'Download', prefix: '↓', onPressed: _download),
       ],
     );
   }

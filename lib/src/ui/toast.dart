@@ -1,283 +1,129 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:toastification/toastification.dart';
 
-/// What a toast is about — info, success, warning or error — which picks its
-/// icon, and how long it stays. The package's own, so there is no second list
-/// to keep in step with it.
-export 'package:toastification/toastification.dart' show ToastificationType;
+import 'termul/tui_toast.dart';
+
+/// What a toast is about — info, success, warning or error — shown as
+/// termul's glyph mark, never as a colour.
+export 'termul/tui_toast.dart' show TuiToastType, TuiToastCard;
 
 /// How long a toast stays unless its caller says otherwise: a second, enough
-/// to take in one line in passing.
+/// to take in one line in passing. Jeansh's, shorter than termul's three.
 const toastDuration = Duration(seconds: 1);
 
-/// How long an error stays unless its caller says otherwise: time to read
-/// what went wrong, and to reach for a way round it, like Save with sudo.
-const _errorDuration = Duration(seconds: 5);
+/// Home's Add sits 24 from the bottom and is 30 tall: a toast placed low
+/// leaves it, and a little air, uncovered.
+const _clearOfButtons = 72.0;
 
-/// The package's settings, for the wrapper around the app (`SshboxApp`).
-///
-/// Three toasts at most, so a fourth pushes the oldest out rather than
-/// reaching down over the shell. They stack in the middle four fifths of the
-/// window, which is as wide as a long message gets before it wraps: the
-/// package's own fixed 400 would cut one short on a tablet. What of that
-/// column no toast covers still takes a tap: see [ToastLayer].
-const toastConfig = ToastificationConfig(
-  maxToastLimit: 3,
-  itemWidth: double.infinity,
-  marginBuilder: _column,
-);
+/// The stacks the app's [ToastLayer] paints, at the top and low, while there
+/// is one.
+TuiToastController? _top;
+TuiToastController? _low;
 
-/// A tenth of the window either side, from the window as it is now, so a
-/// tablet turned on its side gets its own.
-EdgeInsetsGeometry _column(BuildContext context, AlignmentGeometry _) {
-  final side = MediaQuery.sizeOf(context).width / 10;
-  return EdgeInsets.fromLTRB(side, 12, side, 0);
-}
-
-/// The overlay a [ToastLayer] draws toasts in, while there is one.
-final _layer = GlobalKey<OverlayState>();
-
-/// Where the app's toasts are drawn: an overlay of their own over [child],
-/// which takes a touch only where it lands on a toast.
-///
-/// The package stacks toasts in a list as wide as the column [toastConfig]
-/// gives it, and that list, like the hover region round each toast, takes
-/// every touch across the whole of it while a toast is up. Over the tab
-/// strip, a short "Copied" would eat the taps meant for most of the tabs.
-/// Here a touch beside a toast, or between two, goes through to what is
-/// underneath; one on a toast still reaches its button, its × and its swipe.
+/// Where the app's toasts are drawn: termul's [TuiToastHost], twice — its own
+/// stack at the top, and a second low one for a word that must not lie over
+/// a page's header — each taking a touch only on a card.
 ///
 /// Laid over the app's navigator by `SshboxApp`. Without one, as in a test of
-/// a single page, toasts go to the root navigator's overlay instead.
-class ToastLayer extends StatelessWidget {
+/// a single page, toasts go to a host of their own in the root navigator's
+/// overlay instead.
+class ToastLayer extends StatefulWidget {
   const ToastLayer({super.key, required this.child});
 
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => Stack(
-    fit: StackFit.expand,
-    children: [
-      child,
-      _ToastsOnly(child: Overlay(key: _layer)),
-    ],
-  );
+  State<ToastLayer> createState() => _ToastLayerState();
 }
 
-/// Takes a touch only where a [ToastCard]'s card is under it, and lets every
-/// other one through to what is beneath.
-class _ToastsOnly extends SingleChildRenderObjectWidget {
-  const _ToastsOnly({required super.child});
+class _ToastLayerState extends State<ToastLayer> {
+  final _topStack = TuiToastController();
+  final _lowStack = TuiToastController();
 
   @override
-  RenderObject createRenderObject(BuildContext context) => _RenderToastsOnly();
-}
-
-class _RenderToastsOnly extends RenderProxyBox {
-  @override
-  bool hitTest(BoxHitTestResult result, {required Offset position}) {
-    // Tried once to see what is under the touch, and for real only if a card
-    // is.
-    final under = BoxHitTestResult();
-    return super.hitTest(under, position: position) &&
-        under.path.any((entry) {
-          final target = entry.target;
-          return target is RenderMetaData && target.metaData == ToastCard;
-        }) &&
-        super.hitTest(result, position: position);
+  void initState() {
+    super.initState();
+    _top = _topStack;
+    _low = _lowStack;
   }
+
+  @override
+  void dispose() {
+    if (identical(_top, _topStack)) _top = null;
+    if (identical(_low, _lowStack)) _low = null;
+    _topStack.dispose();
+    _lowStack.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _hosts(_topStack, _lowStack, widget.child);
 }
 
-/// The toasts still counting down, by what they say.
-final _showing = <String, ToastificationItem>{};
+Widget _hosts(TuiToastController top, TuiToastController low, Widget child) =>
+    TuiToastHost(
+      controller: top,
+      child: TuiToastHost(
+        controller: low,
+        alignment: Alignment.bottomCenter,
+        margin: const EdgeInsets.only(bottom: _clearOfButtons),
+        child: child,
+      ),
+    );
 
-/// Says something in passing: a [ToastCard] that slides in at the top of the
-/// screen, under the status bar, with the time it has left running out along
-/// its bottom. It goes by itself after [duration]: a second, or five for an
-/// error. A touch holds it, and a swipe or its × sends it away sooner.
+/// The hosts put in an overlay with no [ToastLayer] over it, one per overlay.
+final _fallback = Expando<(TuiToastController, TuiToastController)>();
+
+(TuiToastController, TuiToastController) _stacksFor(BuildContext context) {
+  final top = _top, low = _low;
+  if (top != null && low != null) return (top, low);
+  final overlay = Navigator.of(context, rootNavigator: true).overlay!;
+  return _fallback[overlay] ??= () {
+    final stacks = (TuiToastController(), TuiToastController());
+    overlay.insert(
+      OverlayEntry(
+        builder: (_) => _hosts(stacks.$1, stacks.$2, const SizedBox.expand()),
+      ),
+    );
+    return stacks;
+  }();
+}
+
+/// Says something in passing: termul's [TuiToastCard], sliding in at the top
+/// of the screen with the time it has left running out along its bottom. It
+/// goes by itself after [duration]: a second, or termul's five for an error.
+/// A touch holds it, and a swipe or its × sends it away sooner.
 ///
-/// Every message the app shows goes through here, never a snack bar, which
-/// would come up at the other end of the screen. Toasts stack rather than
-/// queue, so a burst of them is on screen at once instead of each waiting its
-/// turn, three at most (see [toastConfig]). One that says the same as a toast
-/// still counting down adds nothing: following, every folder tapped while
-/// `claude` runs is refused in the same words.
+/// Every message the app shows goes through here. Toasts stack rather than
+/// queue, three at most, newest on top; one that says the same as a toast
+/// still up adds nothing.
 ///
-/// [action] puts a button on it, the way a snack bar's does, and pressing it
-/// closes the toast.
+/// [action] puts a button on it, and pressing it closes the toast.
 ///
 /// A [message] of more than one line is a heading and what it is about: the
-/// first line goes on top, and the rest under it in lighter type — tailscale's
-/// own words for a refused forward, say.
+/// first line goes on top, and the rest under it in muted type.
 ///
-/// The one way into the toast package: only the wrapper around the app talks
-/// to it besides.
+/// [low] puts it near the bottom instead, for a long word that must not lie
+/// over a page's header and title.
 void showToast(
   BuildContext context,
   String message, {
-  ToastificationType type = ToastificationType.info,
+  TuiToastType type = TuiToastType.info,
   ({String label, VoidCallback onPressed})? action,
   Duration? duration,
+  bool low = false,
 }) {
-  _showing.removeWhere((_, toast) => !toast.isRunning);
-  if (_showing.containsKey(message)) return;
-
-  _showing[message] = toastification.showCustom(
-    context: context,
-    // The top of the screen, not of whatever overlay the caller sits in: the
-    // toasts' own layer where the app has one, and otherwise the root
-    // navigator's, which the navigator's own context finds too, for a message
-    // that comes from no page.
-    overlayState:
-        _layer.currentState ??
-        Navigator.of(context, rootNavigator: true).overlay,
-    alignment: Alignment.topCenter,
-    autoCloseDuration:
+  final (top, bottom) = _stacksFor(context);
+  final [title, ...rest] = message.split('\n');
+  (low ? bottom : top).show(
+    title: title,
+    body: rest.isEmpty ? null : rest.join('\n'),
+    type: type,
+    action: action == null
+        ? null
+        : TuiToastAction(label: action.label, onPressed: action.onPressed),
+    duration:
         duration ??
-        (type == ToastificationType.error ? _errorDuration : toastDuration),
-    builder: (context, item) =>
-        ToastCard(item: item, message: message, type: type, action: action),
+        (type == TuiToastType.error ? tuiToastErrorDuration : toastDuration),
   );
 }
-
-/// What [showToast] puts on screen: a card in the theme's own surface and
-/// ink, light or dark as the terminal is, whatever it is about. Its [type]
-/// shows only as an icon, in the same ink as the words: never as a colour,
-/// and never as a word of its own.
-///
-/// As wide as what it says, up to the column [toastConfig] gives it; a longer
-/// message wraps there rather than being cut off.
-///
-/// Public so a test can tell a toast, and what it is about, from the rest of
-/// the screen.
-class ToastCard extends StatelessWidget {
-  const ToastCard({
-    super.key,
-    required this.item,
-    required this.message,
-    required this.type,
-    this.action,
-  });
-
-  final ToastificationItem item;
-  final String message;
-  final ToastificationType type;
-  final ({String label, VoidCallback onPressed})? action;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final ink = scheme.onSurface;
-    final [heading, ...rest] = message.split('\n');
-    final action = this.action;
-    void close() => toastification.dismiss(item);
-
-    // The package's own handling around it: a swipe sends it away, and a
-    // pointer resting on it holds it.
-    return BuiltInContainer(
-      item: item,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      closeOnClick: false,
-      pauseOnHover: true,
-      dragToClose: true,
-      callbacks: const ToastificationCallbacks(),
-      child: Center(
-        // What a [ToastLayer] lets a touch land on.
-        child: MetaData(
-          metaData: ToastCard,
-          child: Material(
-            color: scheme.surfaceContainerHigh,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: scheme.outlineVariant),
-            ),
-            clipBehavior: Clip.antiAlias,
-            // As wide as the row of what it says, with the countdown laid
-            // along the bottom of whatever width that came to.
-            child: Stack(
-              children: [
-                Padding(
-                  padding: const EdgeInsetsDirectional.fromSTEB(16, 8, 4, 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(_icon(type), color: ink),
-                      const SizedBox(width: 12),
-                      Flexible(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              heading,
-                              style: theme.textTheme.titleSmall?.copyWith(
-                                color: ink,
-                              ),
-                            ),
-                            if (rest.isNotEmpty)
-                              Text(
-                                rest.join('\n'),
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: ink.withValues(alpha: .8),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      if (action != null)
-                        TextButton(
-                          style: TextButton.styleFrom(foregroundColor: ink),
-                          onPressed: () {
-                            close();
-                            action.onPressed();
-                          },
-                          child: Text(action.label),
-                        ),
-                      IconButton(
-                        tooltip: 'Close',
-                        onPressed: close,
-                        icon: Icon(
-                          Icons.close,
-                          size: 18,
-                          color: ink.withValues(alpha: .6),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: ToastTimerAnimationBuilder(
-                    item: item,
-                    builder: (context, elapsed, child) => FractionallySizedBox(
-                      alignment: AlignmentDirectional.centerStart,
-                      widthFactor: 1 - elapsed,
-                      child: SizedBox(
-                        height: 2,
-                        child: ColoredBox(color: ink.withValues(alpha: .3)),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The icon that says what a toast is about, in place of the package's
-/// colour-coded set.
-IconData _icon(ToastificationType type) => switch (type) {
-  ToastificationType.success => Icons.check_circle_outline,
-  ToastificationType.warning => Icons.warning_amber_rounded,
-  ToastificationType.error => Icons.error_outline,
-  // Info, and any kind the package may yet add.
-  _ => Icons.info_outline,
-};

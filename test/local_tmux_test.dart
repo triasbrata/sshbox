@@ -20,6 +20,8 @@ import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:xterm2/xterm.dart';
 
+import 'tui_finders.dart';
+
 /// The Local shell in tmux: found on this machine the way an SSH host's is,
 /// or as Settings gives it, and brought back after a restart.
 
@@ -422,16 +424,13 @@ void main() {
       await _pumpSettings(tester);
 
       expect(find.text('Use tmux in the Local shell'), findsOneWidget);
-      await tester.enterText(
-        find.widgetWithText(TextField, 'tmux binary'),
-        'tmux',
-      );
+      await tester.enterText(findTuiField('tmux binary'), 'tmux');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pump();
       expect(find.text('Give the whole path, from /.'), findsOneWidget);
       expect(localTmux.value.path, '');
 
-      await tester.tap(find.text('Use tmux in the Local shell'));
+      await tester.tap(findTuiSwitchTrack('Use tmux in the Local shell'));
       await tester.pump();
       expect(localTmux.value.on, isFalse);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
@@ -443,7 +442,7 @@ void main() {
 
       expect(find.text('Use tmux in WSL shells'), findsOneWidget);
       expect(find.text('Use tmux in the Local shell'), findsNothing);
-      expect(find.widgetWithText(TextField, 'tmux binary'), findsNothing);
+      expect(findTuiField('tmux binary'), findsNothing);
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 
     testWidgets('is nowhere on a phone, which has no shell of its own', (
@@ -451,10 +450,14 @@ void main() {
     ) async {
       await _pumpSettings(tester);
 
-      expect(find.text('Privacy'), findsOneWidget, reason: 'all built');
+      expect(
+        find.bySemanticsLabel('Privacy'),
+        findsOneWidget,
+        reason: 'all built',
+      );
       expect(find.text('Local shell'), findsNothing);
       expect(find.textContaining('Use tmux in'), findsNothing);
-      expect(find.widgetWithText(TextField, 'tmux binary'), findsNothing);
+      expect(findTuiField('tmux binary'), findsNothing);
     }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   });
 
@@ -649,7 +652,7 @@ void main() {
 
       expect(machine.attached, isEmpty);
       expect(find.textContaining('sshbox-abc is no longer on'), findsWidgets);
-      expect(find.text('Start a new session'), findsWidgets);
+      expect(find.bySemanticsLabel('Start a new session'), findsWidgets);
       await tester.pump(const Duration(seconds: 10));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 

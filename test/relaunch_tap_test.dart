@@ -10,6 +10,7 @@ import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 
@@ -379,7 +380,7 @@ void main() {
     await tester.tap(
       find.descendant(
         of: find.byType(BottomSheet),
-        matching: find.text('Start a new session'),
+        matching: find.bySemanticsLabel('Start a new session'),
       ),
     );
     await _settle(tester);
@@ -439,4 +440,118 @@ void main() {
     expect(find.text('That host is no longer saved'), findsOneWidget);
     await tester.pump(const Duration(seconds: 10));
   });
+
+  testWidgets('on a tablet, where a host card is a third of its row, a tap '
+      'where Maestro taps the card opens the connect sheet', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'sshbox.hosts.v1': jsonEncode([_host.toJson()]),
+      'sshbox.telemetry.notice': true,
+    });
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    _quietPlatform(tester);
+    final semantics = tester.ensureSemantics();
+    await _start(tester);
+
+    // The flows' selector for the host, and the centre of the node it
+    // finds, which is where Maestro puts its finger.
+    final node = _maestroTap(
+      tester,
+      RegExp(r'^.*WSL via.*\n.*$', dotAll: true),
+    )!;
+    final card = tester.getRect(find.byType(HomeRow));
+    // A node's rect is in its own coordinates; the screen's are its
+    // ancestors' transforms applied in turn, as Android's bridge does.
+    var rect = node.rect;
+    for (SemanticsNode? n = node; n != null; n = n.parent) {
+      if (n.transform case final t?) rect = MatrixUtils.transformRect(t, rect);
+    }
+    expect(rect.width, lessThan(card.width + 1));
+    await tester.tapAt(rect.center);
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(BottomSheet), findsOneWidget);
+
+    tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+    semantics.dispose();
+    await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('in the whole app, the chat button\'s refusal is on screen, and '
+      'in what a screen reader and Maestro read, at 2 s', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'sshbox.hosts.v1': jsonEncode([_host.toJson()]),
+      'sshbox.telemetry.notice': true,
+    });
+    _quietPlatform(tester);
+    // CI's emulator runs with animations off, as does a phone whose owner
+    // turned on Remove animations, and Flutter then plays an animation at
+    // a twentieth of its length. The toast's countdown is one, so its 5 s
+    // went in 250 ms.
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final semantics = tester.ensureSemantics();
+    await _start(tester, over: _ClaudeBox('2.1.100 (Claude Code)'));
+    await _tapCard(tester);
+
+    await tester.tap(find.byTooltip('Chat with Claude'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(
+      find.text(
+        'Claude Code 2.1.100 on this host is too old for chat — it needs '
+        '2.1.259 or newer.',
+      ),
+      findsOneWidget,
+    );
+    // The flow's own selector, against every node's text.
+    final said = RegExp(
+      r'^.*Claude Code 2\.1\.100 on this host is too old for chat.*2\.1\.259.*$',
+      dotAll: true,
+    );
+    final texts = <String>[];
+    void walk(SemanticsNode node) {
+      final data = node.getSemanticsData();
+      texts.add([data.label, data.value, data.tooltip].join());
+      node.visitChildren((child) {
+        walk(child);
+        return true;
+      });
+    }
+
+    walk(
+      tester
+          .binding
+          .renderViews
+          .first
+          .owner!
+          .semanticsOwner!
+          .rootSemanticsNode!,
+    );
+    expect(texts.where(said.hasMatch), isNotEmpty);
+
+    semantics.dispose();
+    await tester.pump(const Duration(seconds: 10));
+  });
+}
+
+/// [_Box], whose Claude Code answers `claude --version` with [version].
+class _ClaudeBox extends _Box {
+  _ClaudeBox(this.version);
+
+  final String version;
+
+  @override
+  Future<CommandChannel> open(String command) async {
+    if (!command.contains('--version')) return super.open(command);
+    return (
+      output: Stream.value(utf8.encode('$version\n')),
+      write: (Uint8List _) {},
+      close: () {},
+    );
+  }
 }

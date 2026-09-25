@@ -12,6 +12,7 @@ import 'code_languages.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
+import 'tui.dart';
 
 /// A conversation with Claude Code running on the host, beside that host's
 /// shell — what the VS Code plugin shows in its side panel: what was asked,
@@ -246,7 +247,7 @@ class _ChatPageState extends State<ChatPage> {
         showToast(
           context,
           'Earlier turns could not be read\n$error',
-          type: ToastificationType.error,
+          type: TuiToastType.error,
         );
       }
     }
@@ -309,7 +310,9 @@ class _ChatPageState extends State<ChatPage> {
               SizedBox(width: 300, child: sessions),
               const VerticalDivider(width: 1),
             ],
-            Expanded(child: _conversation(wide: wide, sidebar: sidebar)),
+            Expanded(
+              child: _conversation(wide: wide, sidebar: sidebar),
+            ),
           ],
         ),
       );
@@ -376,14 +379,7 @@ class _ChatPageState extends State<ChatPage> {
           Row(
             children: [
               const SizedBox(width: 16),
-              SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: theme.colorScheme.primary,
-                ),
-              ),
+              SizedBox(width: 12, height: 12, child: TuiSpinner()),
               const SizedBox(width: 8),
               Text(
                 chat.composing
@@ -466,9 +462,8 @@ class _ChatPageState extends State<ChatPage> {
               icon: const Icon(Icons.view_sidebar_outlined),
               selectedIcon: const Icon(Icons.view_sidebar),
             ),
-            PopupMenuButton<Object>(
+            MenuButton<Object>(
               tooltip: 'Chat settings',
-              icon: const Icon(Icons.more_vert),
               onSelected: (choice) {
                 if (choice is ChatPermission) {
                   unawaited(chat.restart(permission: choice));
@@ -478,24 +473,21 @@ class _ChatPageState extends State<ChatPage> {
                   unawaited(chat.restart());
                 }
               },
-              itemBuilder: (context) => [
-                PopupMenuItem(
+              entries: [
+                TuiMenuItem(
                   value: 'new',
+                  label: 'New chat',
                   enabled: connected,
-                  child: const Text('New chat'),
                 ),
-                const PopupMenuDivider(),
+                const TuiMenuDivider(),
                 for (final mode in ChatPermission.values)
-                  CheckedPopupMenuItem(
+                  TuiMenuItem(
                     value: mode,
+                    label: mode.label,
                     checked: chat.permission == mode,
-                    child: Text(mode.label),
                   ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'restart',
-                  child: Text('Restart Claude'),
-                ),
+                const TuiMenuDivider(),
+                const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
               ],
             ),
             Expanded(
@@ -506,9 +498,16 @@ class _ChatPageState extends State<ChatPage> {
                 maxLines: 5,
                 keyboardType: TextInputType.multiline,
                 textCapitalization: TextCapitalization.sentences,
+                // termul's TuiInput look — its ❯ prompt in the accent — on
+                // a field that takes several lines and can be shut, which
+                // TuiInput does not.
                 decoration: InputDecoration(
                   isDense: true,
-                  border: const OutlineInputBorder(),
+                  prefixText: '❯ ',
+                  prefixStyle: TextStyle(
+                    fontFamily: TermulFonts.mono,
+                    color: TermulThemeData.of(context).palette.accent,
+                  ),
                   hintText: readOnly
                       ? 'Read-only: “${watching.name}” cannot be typed into '
                             'from here'
@@ -531,7 +530,7 @@ class _ChatPageState extends State<ChatPage> {
               onPressed: canSend && _input.text.trim().isNotEmpty
                   ? _send
                   : null,
-              icon: const Icon(Icons.arrow_upward),
+              icon: const Icon(Icons.send),
             ),
           ],
         ),
@@ -590,10 +589,11 @@ class _Empty extends StatelessWidget {
             // the host are offered before anything has been typed.
             if (onPickSession case final show?) ...[
               const SizedBox(height: 20),
-              FilledButton.tonalIcon(
+              TuiButton(
+                label: 'Sessions on this host',
+                prefix: '▸',
+                variant: TuiButtonVariant.ghost,
                 onPressed: show,
-                icon: const Icon(Icons.view_sidebar_outlined),
-                label: const Text('Sessions on this host'),
               ),
             ],
           ],
@@ -619,11 +619,7 @@ class _Earlier extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
       child: Center(
         child: chat.loadingEarlier
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
+            ? const SizedBox(width: 20, height: 20, child: TuiSpinner())
             : chat.canLoadEarlier
             ? TextButton.icon(
                 onPressed: onLoad,
@@ -650,65 +646,18 @@ class _Bubble extends StatelessWidget {
 
   final ChatSaid said;
 
+  /// termul's bubble, with its note while it is not in the session yet.
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final delivery = said.delivery;
-    final failed = delivery == Delivery.failed;
-    final note = switch (delivery) {
-      Delivery.sending => 'Sending…',
-      Delivery.queued => 'Queued: it runs after what the session is doing.',
-      Delivery.failed => said.why ?? 'Not delivered.',
+  Widget build(BuildContext context) => TuiChatBubble(
+    text: said.text,
+    delivery: switch (said.delivery) {
+      Delivery.sending => TuiChatDelivery.sending,
+      Delivery.queued => TuiChatDelivery.queued,
+      Delivery.failed => TuiChatDelivery.failed,
       null => null,
-    };
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Padding(
-        padding: const EdgeInsets.only(top: 8, bottom: 8, left: 48),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Opacity(
-              // Not in the session yet, so not quite said.
-              opacity: delivery == null ? 1 : 0.6,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: failed
-                      ? scheme.errorContainer
-                      : scheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: SelectableText(
-                  said.text,
-                  style: TextStyle(
-                    color: failed
-                        ? scheme.onErrorContainer
-                        : scheme.onPrimaryContainer,
-                  ),
-                ),
-              ),
-            ),
-            if (note != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: SelectableText(
-                  note,
-                  textAlign: TextAlign.end,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: failed ? scheme.error : scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
+    },
+    failureReason: said.why,
+  );
 }
 
 /// What Claude said, as Markdown: it writes lists, headings and code, and
@@ -728,8 +677,8 @@ class _Answer extends StatelessWidget {
     final body = theme.textTheme.bodyMedium!;
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
-      builder: (context, terminal, _) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+      // termul's answer, holding the Markdown renderer the preview uses.
+      builder: (context, terminal, _) => TuiChatAnswer(
         child: SelectionArea(
           child: MarkdownBody(
             data: text,
@@ -753,7 +702,7 @@ class _Answer extends StatelessWidget {
               ),
               codeblockDecoration: BoxDecoration(
                 color: scheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: scheme.outlineVariant),
               ),
             ),
           ),
@@ -763,23 +712,15 @@ class _Answer extends StatelessWidget {
   }
 }
 
-/// One tool Claude reached for: its name and the one line it is about, which
-/// opens to what it was given and what came back.
-class _ToolRow extends StatelessWidget {
+/// One tool Claude reached for, drawn as termul's [TuiToolRow] draws one:
+/// its glyph, its name and the one line it is about, which opens to what it
+/// was given and what came back. termul's row takes plain text; what a tool
+/// was given is drawn here the way the tool reads, so the row is termul's
+/// look around Jeansh's own body.
+class _ToolRow extends StatefulWidget {
   const _ToolRow({required this.run});
 
   final ChatToolRun run;
-
-  static IconData _iconFor(String name) => switch (name) {
-    'Bash' || 'BashOutput' || 'KillShell' => Icons.terminal,
-    'Read' || 'NotebookEdit' => Icons.description_outlined,
-    'Edit' || 'MultiEdit' || 'Write' => Icons.edit_outlined,
-    'Grep' || 'Glob' => Icons.search,
-    'WebFetch' || 'WebSearch' => Icons.public,
-    'Task' => Icons.group_outlined,
-    'TodoWrite' => Icons.checklist,
-    _ => Icons.build_outlined,
-  };
 
   /// A result that came back as a JSON string, quotes and escapes and all,
   /// as the text it holds; anything else as it came.
@@ -798,10 +739,30 @@ class _ToolRow extends StatelessWidget {
   }
 
   @override
+  State<_ToolRow> createState() => _ToolRowState();
+}
+
+class _ToolRowState extends State<_ToolRow> {
+  /// Open or shut, kept in page storage by the run's id, so a row scrolled
+  /// off and built again comes back as it was left.
+  late bool _open =
+      PageStorage.maybeOf(context)?.readState(context, identifier: _slot)
+          as bool? ??
+      false;
+
+  String get _slot => 'tool-open-${widget.run.id}';
+
+  void _toggle() {
+    setState(() => _open = !_open);
+    PageStorage.maybeOf(context)?.writeState(context, _open, identifier: _slot);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final p = TermulThemeData.of(context).palette;
+    final run = widget.run;
     final result = run.result;
+    final theme = Theme.of(context);
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
       builder: (context, terminal, _) {
@@ -809,63 +770,107 @@ class _ToolRow extends StatelessWidget {
           fontFamily: terminal.fontFamily,
           fontFamilyFallback: terminal.fontFamilyFallback,
         );
-        return Card(
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          color: scheme.surfaceContainerHighest,
-          elevation: 0,
-          child: Theme(
-            data: theme.copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              key: PageStorageKey(run.id),
-              dense: true,
-              tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-              childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-              leading: run.done
-                  ? Icon(
-                      _iconFor(run.name),
-                      size: 18,
-                      color: run.failed ? scheme.error : scheme.primary,
-                    )
-                  : const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: p.surface,
+              border: Border.all(color: p.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                InkWell(
+                  onTap: _toggle,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
                     ),
-              title: Row(
-                children: [
-                  Text(run.name, style: theme.textTheme.labelLarge),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      run.summary,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: mono.copyWith(color: scheme.onSurfaceVariant),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 22,
+                          child: run.done
+                              ? Text(
+                                  tuiToolGlyph(run.name),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontFamily: TermulFonts.mono,
+                                    fontSize: 13,
+                                    color: run.failed ? p.red : p.accent,
+                                  ),
+                                )
+                              : const Center(child: TuiSpinner(size: 14)),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          run.name,
+                          style: TextStyle(
+                            fontFamily: TermulFonts.mono,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: p.text,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            run.summary,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: TermulFonts.mono,
+                              fontSize: 11,
+                              color: p.dim,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          _open ? '▾' : '▸',
+                          style: TextStyle(
+                            fontFamily: TermulFonts.mono,
+                            fontSize: 12,
+                            color: p.dim,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-              ),
-              children: [
+                ),
                 // Built only once the row is opened: colouring code is work.
                 // Under a storage key of its own, as every block is: a
                 // SelectableText scrolls, and without one it would read the
-                // tile's bool as its offset.
-                if (run.input.isNotEmpty)
-                  _ToolInput(
-                    key: const PageStorageKey('input'),
-                    run: run,
-                    mono: mono,
-                  ),
-                if (result != null && result.isNotEmpty)
-                  _block(
-                    context,
-                    'result',
-                    SelectableText(
-                      _unquoted(result),
-                      style: mono.copyWith(
-                        color: run.failed ? scheme.error : null,
-                      ),
+                // row's bool as its offset.
+                if (_open)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (run.input.isNotEmpty) ...[
+                          _label(p, 'input'),
+                          _ToolInput(
+                            key: const PageStorageKey('input'),
+                            run: run,
+                            mono: mono,
+                          ),
+                        ],
+                        if (result != null && result.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          _label(p, 'result'),
+                          _block(
+                            context,
+                            'result',
+                            SelectableText(
+                              _ToolRow._unquoted(result),
+                              style: mono.copyWith(
+                                color: run.failed ? p.red : null,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
               ],
@@ -875,6 +880,17 @@ class _ToolRow extends StatelessWidget {
       },
     );
   }
+
+  /// termul's word over a block.
+  Widget _label(TermulPalette p, String text) => Text(
+    text.toUpperCase(),
+    style: TextStyle(
+      fontFamily: TermulFonts.mono,
+      fontSize: 10,
+      letterSpacing: 0.6,
+      color: p.dim,
+    ),
+  );
 }
 
 /// A slab of text that never grows past a screenful — a tool's answer, or a
@@ -889,12 +905,12 @@ class _ToolRow extends StatelessWidget {
 /// user saw.
 Widget _block(BuildContext context, String slot, Widget text) => Container(
   width: double.infinity,
-  margin: const EdgeInsets.only(top: 8),
+  margin: const EdgeInsets.only(top: 4),
   padding: const EdgeInsets.all(8),
   constraints: const BoxConstraints(maxHeight: 240),
   decoration: BoxDecoration(
-    color: Theme.of(context).colorScheme.surface,
-    borderRadius: BorderRadius.circular(6),
+    color: TermulThemeData.of(context).palette.panel,
+    border: Border.all(color: TermulThemeData.of(context).palette.border),
   ),
   child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
 );
@@ -1135,7 +1151,6 @@ class _Notice extends StatelessWidget {
   }
 }
 
-
 /// The sessions `claude agents` can see on the host, to pick one up in this
 /// chat: the sidebar on a wide screen, the drawer on a narrow one. Pinned
 /// ones first, then the ones running, then the finished ones, each under a
@@ -1179,174 +1194,79 @@ class _SessionList extends StatelessWidget {
     return '${since.inDays}d ago';
   }
 
+  static const _hint =
+      'One still running is watched live, and what you send goes into it; '
+      'one open in a terminal is only watched. A finished one is continued '
+      'where it stopped.';
+
+  /// termul's session rail: Pinned, Running and Finished, a mark for each.
+  Widget _list({
+    List<ClaudeAgent> rows = const [],
+    bool loading = false,
+    String? error,
+    String empty = 'No Claude sessions on this host yet.',
+  }) => TuiChatSessionList(
+    title: 'Sessions on this host',
+    hint: _hint,
+    width: null,
+    loading: loading,
+    errorMessage: error,
+    emptyMessage: empty,
+    onNewChat: connected ? onNewChat : null,
+    onRefresh: connected ? onRefresh : null,
+    onSelect: (session) => onPick(rows[int.parse(session.id)]),
+    sessions: [
+      for (final (i, agent) in rows.indexed)
+        TuiChatSession(
+          id: '$i',
+          title: agent.name,
+          subtitle: _where(agent),
+          // The one this chat was picked up from, so which is showing is
+          // never a guess.
+          selected: agent.sessionId == chat.pickedFrom,
+          // Pinned in `claude agents` on the host, and so first here too.
+          kind: agent.pinned
+              ? TuiChatSessionKind.pinned
+              : agent.live
+              ? TuiChatSessionKind.running
+              : TuiChatSessionKind.finished,
+        ),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final agents = this.agents;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 4, 0),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Sessions on this host',
-                  style: theme.textTheme.titleSmall,
-                ),
-              ),
-              IconButton(
-                tooltip: 'New chat',
-                onPressed: connected ? onNewChat : null,
-                icon: const Icon(Icons.add_comment_outlined),
-              ),
-              IconButton(
-                tooltip: 'Refresh',
-                onPressed: connected ? onRefresh : null,
-                icon: const Icon(Icons.refresh),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text(
-            'One still running is watched live, and what you send goes into '
-            'it; one open in a terminal is only watched. A finished one is '
-            'continued where it stopped.',
-            style: theme.textTheme.bodySmall,
-          ),
-        ),
-        const Divider(height: 1),
-        Expanded(
-          child: agents == null
-              ? _say(context, 'Connect this session to see its Claude sessions.')
-              : FutureBuilder<List<ClaudeAgent>>(
-                  future: agents,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState != ConnectionState.done) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                    final error = snapshot.error;
-                    if (error != null) {
-                      // What the host said, as it said it: an old Claude with
-                      // no agents command, or none installed at all.
-                      return _say(context, '$error', failed: true);
-                    }
-                    final rows = snapshot.data ?? const <ClaudeAgent>[];
-                    if (rows.isEmpty) {
-                      return _say(
-                        context,
-                        'No Claude sessions on this host yet.',
-                      );
-                    }
-                    // Already in this order; the headings go where each
-                    // part starts.
-                    final pinned = rows.where((row) => row.pinned);
-                    final running = rows.where(
-                      (row) => !row.pinned && row.live,
-                    );
-                    final finished = rows.where(
-                      (row) => !row.pinned && !row.live,
-                    );
-                    final items = <Object>[
-                      if (pinned.isNotEmpty) ...['Pinned', ...pinned],
-                      if (running.isNotEmpty) ...['Running', ...running],
-                      if (finished.isNotEmpty) ...[
-                        'Finished (${finished.length})',
-                        ...finished,
-                      ],
-                    ];
-                    return ListView.builder(
-                      itemCount: items.length,
-                      itemBuilder: (context, index) => switch (items[index]) {
-                        final ClaudeAgent agent => _row(context, agent),
-                        final Object heading => _heading(context, '$heading'),
-                      },
-                    );
-                  },
-                ),
-        ),
-      ],
+    if (agents == null) {
+      return _list(empty: 'Connect this session to see its Claude sessions.');
+    }
+    return FutureBuilder<List<ClaudeAgent>>(
+      future: agents,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return _list(loading: true);
+        }
+        // What the host said, as it said it: an old Claude with no agents
+        // command, or none installed at all.
+        final error = snapshot.error;
+        if (error != null) return _list(error: '$error');
+        // Already in this order.
+        return _list(rows: snapshot.data ?? const <ClaudeAgent>[]);
+      },
     );
   }
 
-  Widget _heading(BuildContext context, String text) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Text(
-        text,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: theme.colorScheme.primary,
-        ),
-      ),
-    );
-  }
-
-  Widget _say(BuildContext context, String text, {bool failed = false}) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: SelectableText(
-        text,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: failed ? theme.colorScheme.error : null,
-        ),
-      ),
-    );
-  }
-
-  Widget _row(BuildContext context, ClaudeAgent agent) {
-    final theme = Theme.of(context);
-    final where = [
-      if (agent.interactive)
-        'at a terminal'
-      else if (agent.busy)
-        'working'
-      else if (agent.live)
-        'idle'
-      else
-        'finished',
-      if (_ago(agent.startedAt).isNotEmpty) _ago(agent.startedAt),
-      if (agent.cwd.isNotEmpty) agent.cwd,
-    ].join(' · ');
-    return ListTile(
-      // The one this chat was picked up from, so which is showing is never a
-      // guess.
-      selected: agent.sessionId == chat.pickedFrom,
-      leading: agent.busy
-          ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Icon(
-              // Somebody is typing into an interactive one; a background one
-              // is a job that was sent off.
-              agent.interactive ? Icons.keyboard_outlined : Icons.forum_outlined,
-              color: theme.colorScheme.primary,
-            ),
-      title: Text(agent.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        where,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall,
-      ),
-      // Pinned in `claude agents` on the host, and so first here too.
-      trailing: agent.pinned
-          ? Tooltip(
-              message: 'Pinned',
-              child: Icon(
-                Icons.push_pin,
-                size: 16,
-                color: theme.colorScheme.primary,
-              ),
-            )
-          : null,
-      onTap: () => onPick(agent),
-    );
-  }
+  /// Where [agent] is and how long it has been going.
+  static String _where(ClaudeAgent agent) => [
+    if (agent.interactive)
+      'at a terminal'
+    else if (agent.busy)
+      'working'
+    else if (agent.live)
+      'idle'
+    else
+      'finished',
+    if (_ago(agent.startedAt).isNotEmpty) _ago(agent.startedAt),
+    if (agent.cwd.isNotEmpty) agent.cwd,
+  ].join(' · ');
 }

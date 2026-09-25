@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'terminal_page.dart' show openUrl;
+import 'tui.dart';
 
 /// A web page in a tab of its own, drawn by Android System WebView — Chrome's
 /// engine — inside the app, where a Custom Tab would draw it over the app.
@@ -259,7 +260,7 @@ class _WebPageState extends State<WebPage> {
                         vertical: 8,
                       ),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.zero,
                         borderSide: BorderSide.none,
                       ),
                     ),
@@ -279,7 +280,7 @@ class _WebPageState extends State<WebPage> {
         // finishing a load never resizes the view.
         SizedBox(
           height: 2,
-          child: _loading ? LinearProgressIndicator(value: _progress) : null,
+          child: _loading ? TuiProgressBar(value: _progress) : null,
         ),
         Expanded(
           child: Focus(

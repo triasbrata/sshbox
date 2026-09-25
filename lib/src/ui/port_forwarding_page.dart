@@ -12,6 +12,7 @@ import '../session/port_forwards.dart';
 import 'host_edit_page.dart';
 import 'os_icon.dart';
 import 'terminal_page.dart' show openUrl;
+import 'tui.dart';
 
 /// Side padding that keeps a page's column readable on a tablet: 16 dp on a
 /// phone, and a 720 dp column in the middle of anything wider.
@@ -78,16 +79,18 @@ class _PortForwardingPageState extends State<PortForwardingPage> {
     final hosts = _hosts;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Port forwarding')),
+      appBar: TuiAppBar(title: const Text('Port forwarding')),
+      // termul's Add, where Home keeps its own.
+      floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
       floatingActionButton: hosts == null
           ? null
-          : FloatingActionButton(
-              tooltip: 'Add port forward',
+          : TuiButton(
+              label: 'Add port forward',
+              prefix: '+',
               onPressed: () => _edit(hosts),
-              child: const Icon(Icons.add),
             ),
       body: hosts == null
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: TuiSpinner())
           : ListenableBuilder(
               listenable: widget.forwards,
               builder: (context, _) {
@@ -136,54 +139,76 @@ class _ForwardCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final pal = TermulThemeData.of(context).palette;
     final (status, color) = switch (run.status) {
-      ForwardStatus.stopped => ('Stopped', scheme.onSurfaceVariant),
-      ForwardStatus.connecting => ('Connecting…', scheme.onSurfaceVariant),
-      ForwardStatus.running => ('Running', scheme.primary),
-      ForwardStatus.reconnecting => ('Reconnecting…', scheme.tertiary),
-      ForwardStatus.error => ('Error', scheme.error),
+      ForwardStatus.stopped => ('Stopped', pal.dim),
+      ForwardStatus.connecting => ('Connecting…', pal.dim),
+      ForwardStatus.running => ('Running', pal.accent),
+      ForwardStatus.reconnecting => ('Reconnecting…', pal.yellow),
+      ForwardStatus.error => ('Error', pal.red),
     };
     final error = run.error;
     final signIn = run.signIn;
 
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        leading: OsBadge(host?.os),
-        title: Text(
-          run.setting.displayName(host),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+    final p = TermulThemeData.of(context).palette;
+    final text = Theme.of(context).textTheme;
+    // A row as Home's are: its host's badge, its name large, what it does
+    // and how it is going under it, and termul's switch.
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: p.border)),
         ),
-        subtitle: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(run.setting.summary),
-            Text(
-              error == null ? status : '$status — $error',
-              style: TextStyle(color: color),
-            ),
-            for (final MapEntry(key: side, value: problem)
-                in run.problems.entries)
-              Text('$side: $problem', style: TextStyle(color: scheme.error)),
-            if (signIn != null)
-              TextButton.icon(
-                onPressed: () => openUrl(context, signIn),
-                icon: const Icon(Icons.open_in_new),
-                label: const Text('Sign in to continue'),
+            OsBadge(host?.os),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    run.setting.displayName(host),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: text.titleMedium!.copyWith(color: p.accent),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    run.setting.summary,
+                    style: text.bodySmall!.copyWith(color: p.dim),
+                  ),
+                  Text(
+                    error == null ? status : '$status — $error',
+                    style: text.bodySmall!.copyWith(color: color),
+                  ),
+                  for (final MapEntry(key: side, value: problem)
+                      in run.problems.entries)
+                    Text(
+                      '$side: $problem',
+                      style: text.bodySmall!.copyWith(color: p.red),
+                    ),
+                  if (signIn != null)
+                    TermulTextAction(
+                      label: 'Sign in to continue',
+                      text: 'SIGN IN TO CONTINUE ↗',
+                      onTap: () => openUrl(context, signIn),
+                    ),
+                ],
               ),
+            ),
+            TuiSwitch(value: run.on, onChanged: onSwitch),
           ],
         ),
-        trailing: Switch(value: run.on, onChanged: onSwitch),
-        onTap: onTap,
       ),
     );
   }
 }
 
+// TODO(termul): empty state, until termul has one.
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
 
@@ -206,9 +231,8 @@ class _EmptyState extends StatelessWidget {
             Text('No port forwards yet', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
-              'Add one to reach a host\'s port from this tablet, like a '
-              'database app on 127.0.0.1, or to let the host reach a port on '
-              'this tablet.',
+              'Reach a server\'s port from this device, like a database on '
+              '127.0.0.1:5432, or let the server reach a port here.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
@@ -440,24 +464,15 @@ class _ForwardEditorState extends State<_ForwardEditor> {
   }
 
   Future<void> _delete() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete this port forward?'),
-        content: const Text('If it is on, its ports close now.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'delete port forward',
+      message: 'Delete this port forward?',
+      detail: 'If it is on, its ports close now.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     await widget.forwards.delete(widget.existing!.id);
     if (mounted) Navigator.of(context).pop();
   }
@@ -482,36 +497,25 @@ class _ForwardEditorState extends State<_ForwardEditor> {
     final port = int.tryParse(mapping.port.text.trim());
     final sentence = mapping.value?.sentence(_hostName);
 
-    final direction = SegmentedButton<_Direction>(
-      showSelectedIcon: false,
-      segments: const [
-        ButtonSegment(
-          value: _Direction.tabletToRemote,
-          label: Text('Tablet → Remote'),
-        ),
-        ButtonSegment(
-          value: _Direction.remoteToTablet,
-          label: Text('Remote → Tablet'),
-        ),
+    final direction = TuiSelect<_Direction>(
+      options: const [
+        (_Direction.tabletToRemote, 'Tablet → Remote'),
+        (_Direction.remoteToTablet, 'Remote → Tablet'),
       ],
-      selected: {mapping.direction},
-      onSelectionChanged: (picked) => setState(
+      value: mapping.direction,
+      onChanged: (picked) => setState(
         () => mapping
-          ..direction = picked.single
+          ..direction = picked
           ..reset(),
       ),
     );
-    final portField = TextFormField(
+    final portField = TuiField(
+      label: mapping.tablet ? 'Tablet port' : 'Remote port',
       controller: mapping.port,
-      decoration: InputDecoration(
-        labelText: mapping.tablet ? 'Tablet port' : 'Remote port',
-        helperText: !mapping.tablet && port != null && port > 0 && port < 1024
-            ? 'Hosts usually refuse ports below 1024 unless you sign in as '
-                  'root.'
-            : null,
-        helperMaxLines: 2,
-        errorMaxLines: 4,
-      ),
+      helper: !mapping.tablet && port != null && port > 0 && port < 1024
+          ? 'Hosts usually refuse ports below 1024 unless you sign in as '
+                'root.'
+          : null,
       keyboardType: TextInputType.number,
       validator: (_) => _portError(mapping),
       onChanged: (text) => setState(() {
@@ -524,8 +528,8 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         spacing: 8,
         children: [
           for (final snippet in portSnippets)
-            ChoiceChip(
-              label: Text('${snippet.name} ${snippet.port}'),
+            TuiFilterChip(
+              label: '${snippet.name} ${snippet.port}',
               selected: port == snippet.port,
               // Both ports take it; a host typed there stays.
               onSelected: (_) => setState(() {
@@ -539,9 +543,14 @@ class _ForwardEditorState extends State<_ForwardEditor> {
       ),
     );
 
-    return Card.outlined(
+    // termul's box.
+    return Container(
       key: ObjectKey(mapping),
       margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: TermulThemeData.of(context).palette.panel,
+        border: Border.all(color: TermulThemeData.of(context).palette.border),
+      ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         child: Column(
@@ -577,13 +586,11 @@ class _ForwardEditorState extends State<_ForwardEditor> {
             ),
             Row(
               children: [
-                TextButton.icon(
-                  onPressed: () =>
+                TermulTextAction(
+                  label: 'Advanced',
+                  text: mapping.advanced ? 'ADVANCED ▴' : 'ADVANCED ▾',
+                  onTap: () =>
                       setState(() => mapping.advanced = !mapping.advanced),
-                  icon: Icon(
-                    mapping.advanced ? Icons.expand_less : Icons.expand_more,
-                  ),
-                  label: const Text('Advanced'),
                 ),
                 const Spacer(),
                 IconButton(
@@ -605,29 +612,20 @@ class _ForwardEditorState extends State<_ForwardEditor> {
   /// The far end, and for Remote → Tablet the address the host listens on.
   /// Blank is the default each hint shows.
   List<Widget> _advanced(_Mapping mapping) {
-    final scheme = Theme.of(context).colorScheme;
-    InputDecoration decoration(
+    Widget host(
+      TextEditingController field,
       String label,
       String blank, {
       String? helper,
-      Color? helperColor,
-    }) => InputDecoration(
-      labelText: label,
-      hintText: blank,
-      helperText: helper,
-      helperStyle: helperColor == null ? null : TextStyle(color: helperColor),
-      helperMaxLines: 3,
-      errorMaxLines: 2,
-      floatingLabelBehavior: FloatingLabelBehavior.always,
+    }) => TuiField(
+      label: label,
+      controller: field,
+      hint: blank,
+      helper: helper,
+      autocorrect: false,
+      keyboardType: TextInputType.url,
+      onChanged: (_) => setState(() {}),
     );
-    Widget host(TextEditingController field, InputDecoration decoration) =>
-        TextFormField(
-          controller: field,
-          decoration: decoration,
-          autocorrect: false,
-          keyboardType: TextInputType.url,
-          onChanged: (_) => setState(() {}),
-        );
     Widget withPort(Widget host) => Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 8,
@@ -635,12 +633,10 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         Expanded(flex: 3, child: host),
         Expanded(
           flex: 2,
-          child: TextFormField(
+          child: TuiField(
+            label: mapping.tablet ? 'Remote port' : 'Tablet port',
             controller: mapping.otherPort,
-            decoration: decoration(
-              mapping.tablet ? 'Remote port' : 'Tablet port',
-              'Same',
-            ),
+            hint: 'Same',
             keyboardType: TextInputType.number,
             validator: (value) => (value ?? '').trim().isEmpty
                 ? null
@@ -656,11 +652,9 @@ class _ForwardEditorState extends State<_ForwardEditor> {
         withPort(
           host(
             mapping.remoteHost,
-            decoration(
-              'Remote host',
-              'localhost',
-              helper: 'As the host reaches it: localhost is the host itself.',
-            ),
+            'Remote host',
+            'localhost',
+            helper: 'As the host reaches it: localhost is the host itself.',
           ),
         ),
       ];
@@ -670,20 +664,15 @@ class _ForwardEditorState extends State<_ForwardEditor> {
     return [
       host(
         mapping.listenHost,
-        decoration(
-          'Remote listens on',
-          'localhost',
-          helper: exposed
-              ? 'Open to the host\'s network too, and needs GatewayPorts in '
-                    'its sshd_config.'
-              : 'Only programs on the host itself can connect.',
-          helperColor: exposed ? scheme.tertiary : null,
-        ),
+        'Remote listens on',
+        'localhost',
+        helper: exposed
+            ? 'Open to the host\'s network too, and needs GatewayPorts in '
+                  'its sshd_config.'
+            : 'Only programs on the host itself can connect.',
       ),
       const SizedBox(height: 8),
-      withPort(
-        host(mapping.tabletHost, decoration('Tablet host', '127.0.0.1')),
-      ),
+      withPort(host(mapping.tabletHost, 'Tablet host', '127.0.0.1')),
     ];
   }
 
@@ -693,22 +682,22 @@ class _ForwardEditorState extends State<_ForwardEditor> {
     final defaultName = _defaultName;
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: TuiAppBar(
         title: Text(
           widget.existing == null ? 'New port forward' : 'Edit port forward',
         ),
         actions: [
-          if (widget.existing != null)
-            IconButton(
-              tooltip: 'Delete',
-              onPressed: _delete,
-              icon: const Icon(Icons.delete_outline),
+          if (widget.existing != null) ...[
+            TermulTextAction(
+              label: 'Delete',
+              text: 'DELETE',
+              color: TermulThemeData.of(context).palette.deep,
+              onTap: _delete,
             ),
-          IconButton(
-            tooltip: 'Save',
-            onPressed: _save,
-            icon: const Icon(Icons.check),
-          ),
+            const SizedBox(width: 20),
+          ],
+          TermulTextAction(label: 'Save', text: 'SAVE', onTap: _save),
+          const SizedBox(width: 16),
         ],
       ),
       // Not a ListView: a lazy list disposes a field scrolled far enough off,
@@ -723,43 +712,23 @@ class _ForwardEditorState extends State<_ForwardEditor> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
+                DropdownField<String>(
                   key: _hostField,
+                  label: 'Host',
                   initialValue: _hostId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Host',
-                    helperText:
-                        'Reached as a terminal session reaches it, '
-                        'through its jump host too.',
-                    helperMaxLines: 2,
-                  ),
-                  items: [
+                  helper:
+                      'Reached as a terminal session reaches it, '
+                      'through its jump host too.',
+                  options: [
                     for (final host in _hosts)
-                      DropdownMenuItem(
+                      TuiDropdownOption(
                         value: host.id,
-                        child: Row(
-                          children: [
-                            OsBadge(host.os, size: 24),
-                            const SizedBox(width: 12),
-                            Flexible(
-                              child: Text(
-                                host.displayName,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
+                        label: host.displayName,
+                        subtitle: host.host,
                       ),
-                    const DropdownMenuItem(
+                    const TuiDropdownOption(
                       value: _newHost,
-                      child: Row(
-                        children: [
-                          Icon(Icons.add),
-                          SizedBox(width: 12),
-                          Text('New host…'),
-                        ],
-                      ),
+                      label: 'New host…',
                     ),
                   ],
                   validator: (value) =>
@@ -773,18 +742,16 @@ class _ForwardEditorState extends State<_ForwardEditor> {
                   },
                 ),
                 const SizedBox(height: 12),
-                TextFormField(
+                TuiField(
+                  label: 'Name',
                   controller: _name,
-                  decoration: InputDecoration(
-                    labelText: 'Name',
-                    helperText:
-                        'Optional. Defaults to '
-                        '${defaultName.isEmpty ? 'the host\'s name' : defaultName}.',
-                  ),
+                  helper:
+                      'Optional. Defaults to '
+                      '${defaultName.isEmpty ? 'the host\'s name' : defaultName}.',
                   textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 24),
-                Text('Ports', style: theme.textTheme.titleSmall),
+                const TuiSectionLabel('Ports'),
                 const SizedBox(height: 4),
                 Text(
                   'Pick which way each port goes, then the port.',
@@ -797,10 +764,11 @@ class _ForwardEditorState extends State<_ForwardEditor> {
                   _mappingBlock(mapping, wide: constraints.maxWidth >= 600),
                 Align(
                   alignment: AlignmentDirectional.centerStart,
-                  child: TextButton.icon(
+                  child: TuiButton(
+                    label: 'Add port',
+                    prefix: '+',
+                    variant: TuiButtonVariant.ghost,
                     onPressed: () => setState(() => _mappings.add(_Mapping())),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add port'),
                   ),
                 ),
               ],

@@ -6,7 +6,6 @@ import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/db/wire.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
-import 'package:toastification/toastification.dart';
 
 /// A database that keeps every command run and answers with one document,
 /// editable or not as [edit] says.
@@ -52,9 +51,7 @@ Future<_Fake> _open(WidgetTester tester, {DbKind kind = DbKind.mongo, _Fake? db}
   addTearDown(tester.view.reset);
   final session = db ?? _Fake();
   await tester.pumpWidget(
-    ToastificationWrapper(
-      config: toastConfig,
-      child: MaterialApp(
+    MaterialApp(
         builder: (context, child) => ToastLayer(child: child!),
         home: DbBrowserPage(
           db: DbConnection(id: 'db', kind: kind, hostId: 'box', port: 27017),
@@ -62,7 +59,6 @@ Future<_Fake> _open(WidgetTester tester, {DbKind kind = DbKind.mongo, _Fake? db}
           open: (_, {required confirmHostKey, required onSignIn}) async => session,
         ),
       ),
-    ),
   );
   await tester.pumpAndSettle();
   return session;
@@ -205,7 +201,7 @@ void main() {
     expect(db.runs.single, contains('"limit": 50'));
 
     await tester.enterText(find.widgetWithText(TextField, 'Filter'), '{"city": "Bandung"}');
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     expect(jsonDecode(db.runs.last), {
       'find': 'customers',
@@ -223,7 +219,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('No stages yet: add one below.'), findsOneWidget);
 
-    await tester.tap(find.text('Add stage'));
+    await tester.tap(find.bySemanticsLabel('Add stage'));
     await tester.pumpAndSettle();
     await tester.tap(find.text(r'$match').last);
     await tester.pumpAndSettle();
@@ -231,7 +227,7 @@ void main() {
       find.widgetWithText(TextField, 'Stage 1'),
       r'{"$count": "n"}',
     );
-    await tester.tap(find.text('Run'));
+    await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
 
     expect(jsonDecode(db.runs.last), {
@@ -276,7 +272,7 @@ void main() {
     await tester.tap(find.text('ann'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).last, 'bob');
-    await tester.tap(find.text('OK'));
+    await tester.tap(find.bySemanticsLabel('OK'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Aggregate'));
@@ -284,7 +280,7 @@ void main() {
     expect(find.text('Discard 1 change?'), findsOneWidget);
 
     // Kept: the tab does not change behind the question.
-    await tester.tap(find.widgetWithText(TextButton, 'Keep editing'));
+    await tester.tap(find.bySemanticsLabel('Keep editing'));
     await tester.pumpAndSettle();
     expect(find.widgetWithText(TextField, 'Filter'), findsOneWidget);
     expect(db.runs, hasLength(1));

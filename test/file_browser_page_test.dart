@@ -18,6 +18,8 @@ import 'package:sshbox/src/ui/toast.dart';
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 
+import 'tui_finders.dart';
+
 /// The pages, driven by a filesystem that is not SFTP.
 ///
 /// That is the claim `FileBrowser` exists to make, so proving it here is not
@@ -46,9 +48,14 @@ Future<void> _rowAction(WidgetTester tester, String name, String action) async {
 
 /// Picks [path] from the menu behind the root's name.
 Future<void> _climbTo(WidgetTester tester, String path) async {
-  await tester.tap(find.byTooltip('Change root'));
-  await tester.pumpAndSettle();
+  await _openRootMenu(tester);
   await tester.tap(find.text(path));
+  await tester.pumpAndSettle();
+}
+
+/// Opens the menu behind the root's name, termul's root header.
+Future<void> _openRootMenu(WidgetTester tester) async {
+  await tester.tap(find.text(' ▾'));
   await tester.pumpAndSettle();
 }
 
@@ -93,9 +100,7 @@ void main() {
 
     expect(_row('.bashrc'), findsNothing);
 
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Show dotfiles'));
+    await tester.tap(find.byTooltip('Show dotfiles'));
     await tester.pumpAndSettle();
 
     expect(_row('.bashrc'), findsOneWidget);
@@ -112,16 +117,13 @@ void main() {
     // rather than replacing them.
     expect(_row('main.dart'), findsOneWidget);
     expect(_row('notes.txt'), findsOneWidget);
-    expect(find.byIcon(Icons.expand_more), findsOneWidget);
-    // Nested one level in: indented, with a guide line down from its folder.
+    // termul's open folder mark.
+    expect(find.text('▾'), findsOneWidget);
+    // Nested one level in: indented.
     expect(
       tester.getTopLeft(_row('main.dart')).dx,
       greaterThan(tester.getTopLeft(_row('notes.txt')).dx),
     );
-    expect(find.byType(VerticalDivider), findsOneWidget);
-    // Each file carries its type's icon, the way VS Code's theme marks it.
-    expect(find.byIcon(Icons.flutter_dash), findsOneWidget);
-    expect(find.byIcon(Icons.notes), findsOneWidget);
 
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
@@ -181,7 +183,7 @@ void main() {
     await tester.tap(find.byTooltip('New folder'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField), 'src');
-    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.tap(find.bySemanticsLabel('Create'));
     await tester.pumpAndSettle();
 
     expect(browser.madeDirectories, ['/home/me/src']);
@@ -308,7 +310,7 @@ void main() {
 
     expect(
       find.descendant(
-        of: find.byType(ToastCard),
+        of: find.byType(TuiToastCard),
         matching: find.text('Could not list /home/me/dev: permission denied.'),
       ),
       findsOneWidget,
@@ -316,7 +318,7 @@ void main() {
     // The rest of the tree was fine, so it stays rather than turning into the
     // whole-page error.
     expect(_row('notes.txt'), findsOneWidget);
-    expect(find.byIcon(Icons.expand_more), findsNothing);
+    expect(find.text('▾'), findsNothing);
     await tester.pumpAndSettle();
   });
 
@@ -327,7 +329,7 @@ void main() {
 
     await _rowAction(tester, 'dev', 'New folder…');
     await tester.enterText(find.byType(TextFormField), 'lib');
-    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.tap(find.bySemanticsLabel('Create'));
     await tester.pumpAndSettle();
 
     expect(browser.madeDirectories, ['/home/me/dev/lib']);
@@ -351,7 +353,7 @@ void main() {
     expect(_row('notes.txt'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.byType(ToastCard),
+        of: find.byType(TuiToastCard),
         matching: find.text('dangling is a link that points nowhere.'),
       ),
       findsOneWidget,
@@ -403,7 +405,8 @@ void main() {
       find.text('Could not list /root: permission denied.'),
       findsOneWidget,
     );
-    expect(find.text('Try again'), findsOneWidget);
+    // termul's own way to try again.
+    expect(find.text('retry'), findsOneWidget);
   });
 
   testWidgets('deleting asks first, then goes through', (tester) async {
@@ -415,7 +418,7 @@ void main() {
     expect(find.text('Delete notes.txt?'), findsOneWidget);
     expect(browser.deleted, isEmpty, reason: 'not until it is confirmed');
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
 
     expect(browser.deleted, ['/home/me/notes.txt']);
@@ -427,7 +430,7 @@ void main() {
     await _pumpBrowser(tester, browser);
 
     await _rowAction(tester, 'dev', 'Delete');
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.tap(find.bySemanticsLabel('Delete'));
     await tester.pumpAndSettle();
 
     expect(browser.recursiveDeletes, ['/home/me/dev']);
@@ -440,7 +443,7 @@ void main() {
     await _rowAction(tester, 'notes.txt', 'Rename…');
 
     await tester.enterText(find.byType(TextFormField), 'renamed.txt');
-    await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+    await tester.tap(findTuiButton('Rename'));
     await tester.pumpAndSettle();
 
     expect(browser.renames, [('/home/me/notes.txt', '/home/me/renamed.txt')]);
@@ -453,7 +456,7 @@ void main() {
     await _rowAction(tester, 'notes.txt', 'Rename…');
 
     await tester.enterText(find.byType(TextFormField), 'sub/dir.txt');
-    await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+    await tester.tap(findTuiButton('Rename'));
     await tester.pumpAndSettle();
 
     // A slash here would quietly move the file somewhere else, which is never
@@ -465,20 +468,18 @@ void main() {
   testWidgets('hides search when the transport cannot do it', (tester) async {
     // The plain fake is not FileSearchCapable, so the button must not appear.
     await _pumpBrowser(tester, FakeFileBrowser());
-    await tester.tap(find.byTooltip('Filter by name'));
-    await tester.pumpAndSettle();
+    await _openRootMenu(tester);
 
-    expect(find.byTooltip('Search file contents'), findsNothing);
+    expect(find.text('Search file contents…'), findsNothing);
   });
 
   testWidgets('offers search when the transport can do it', (tester) async {
     // Same page, same fake data, one extra interface implemented — this is the
     // probe that keeps the capability honest rather than decorative.
     await _pumpBrowser(tester, SearchingFakeFileBrowser());
-    await tester.tap(find.byTooltip('Filter by name'));
-    await tester.pumpAndSettle();
+    await _openRootMenu(tester);
 
-    expect(find.byTooltip('Search file contents'), findsOneWidget);
+    expect(find.text('Search file contents…'), findsOneWidget);
   });
 
   testWidgets('closes the browser it was handed', (tester) async {
@@ -508,9 +509,8 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Filter by name'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Search file contents'));
+    await _openRootMenu(tester);
+    await tester.tap(find.text('Search file contents…'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.widgetWithText(TextField, 'Text to find'),
@@ -708,8 +708,7 @@ void main() {
     await _rowAction(tester, 'dev', 'Set as root');
 
     Future<void> pickSave() async {
-      await tester.tap(find.byTooltip('More'));
-      await tester.pumpAndSettle();
+      await _openRootMenu(tester);
       await tester.tap(find.text('Save root to host config'));
       await tester.pumpAndSettle();
     }
@@ -718,12 +717,12 @@ void main() {
     // question has to leave the config alone.
     await pickSave();
     expect(find.text('Update SSH config?'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     expect(saved, isEmpty);
 
     await pickSave();
-    await tester.tap(find.widgetWithText(FilledButton, 'Update'));
+    await tester.tap(find.bySemanticsLabel('Update'));
     await tester.pumpAndSettle();
     expect(saved, ['/home/me/dev']);
   });
@@ -731,8 +730,7 @@ void main() {
   testWidgets('offers no config to save to without a host behind it',
       (tester) async {
     await _pumpBrowser(tester, FakeFileBrowser());
-    await tester.tap(find.byTooltip('More'));
-    await tester.pumpAndSettle();
+    await _openRootMenu(tester);
 
     expect(find.text('Save root to host config'), findsNothing);
   });
@@ -743,13 +741,13 @@ void main() {
     await tester.longPress(_row('dev'));
     await tester.pumpAndSettle();
     expect(find.text('Upload here…'), findsOneWidget);
-    expect(find.text('Download'), findsNothing);
+    expect(find.bySemanticsLabel('Download'), findsNothing);
     await tester.tapAt(Offset.zero);
     await tester.pumpAndSettle();
 
     await tester.longPress(_row('notes.txt'));
     await tester.pumpAndSettle();
-    expect(find.text('Download'), findsOneWidget);
+    expect(find.bySemanticsLabel('Download'), findsOneWidget);
     expect(find.text('Upload here…'), findsNothing);
   });
 
@@ -782,7 +780,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('notes.txt is already there'), findsOneWidget);
-      await tester.tap(find.text(answer));
+      await tester.tap(find.bySemanticsLabel(answer));
       await tester.pumpAndSettle();
     }
 
@@ -824,7 +822,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
 
     expect(
-      find.descendant(of: find.byType(ToastCard), matching: find.text(refused)),
+      find.descendant(of: find.byType(TuiToastCard), matching: find.text(refused)),
       findsOneWidget,
     );
     expect(browser.uploads, isEmpty);
@@ -853,7 +851,7 @@ void main() {
     await _rowAction(tester, 'notes.txt', 'Download');
     expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
     expect(File(picker.savedFrom!).existsSync(), isFalse);
-    expect(find.byType(ToastCard), findsNothing);
+    expect(find.byType(TuiToastCard), findsNothing);
 
     // Failed with the bytes in: no dialog, and the copy goes all the same.
     picker.saved = null;
@@ -864,7 +862,7 @@ void main() {
     );
     await tester.longPress(_row('notes.txt'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Download'));
+    await tester.tap(find.bySemanticsLabel('Download'));
     await tester.pump();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
@@ -872,7 +870,7 @@ void main() {
     expect(picker.saved, isNull);
     expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
     expect(
-      find.descendant(of: find.byType(ToastCard), matching: find.text(lost)),
+      find.descendant(of: find.byType(TuiToastCard), matching: find.text(lost)),
       findsOneWidget,
     );
     await tester.pumpAndSettle();
@@ -890,7 +888,7 @@ void main() {
       expect(copied, ['first line\nsecond line\n']);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text('Copied notes.txt'),
         ),
         findsOneWidget,
@@ -931,7 +929,7 @@ void main() {
       await tester.longPress(_row('photo.png'));
       await tester.pumpAndSettle();
       expect(find.text('Copy content'), findsNothing);
-      expect(find.text('Download'), findsOneWidget);
+      expect(find.bySemanticsLabel('Download'), findsOneWidget);
       await tester.tapAt(Offset.zero);
       await tester.pumpAndSettle();
     });
@@ -974,7 +972,7 @@ void main() {
       expect(copied, isEmpty);
       expect(
         find.descendant(
-          of: find.byType(ToastCard),
+          of: find.byType(TuiToastCard),
           matching: find.text(refused),
         ),
         findsOneWidget,

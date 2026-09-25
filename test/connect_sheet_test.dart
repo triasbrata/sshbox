@@ -209,7 +209,7 @@ void main() {
     expect(find.text(_key), findsOneWidget);
     expect(manager.sessions, isEmpty);
 
-    await tester.tap(find.text('Trust'));
+    await tester.tap(find.bySemanticsLabel('Trust'));
     await tester.pumpAndSettle();
 
     final session = (await opening)!;
@@ -235,18 +235,18 @@ void main() {
     expect(find.text('Host key of 10.0.2.2 changed'), findsOneWidget);
     expect(find.text(_key), findsOneWidget);
     expect(find.text('SHA256:rebuilt'), findsOneWidget);
-    await tester.tap(find.text('Replace key'));
+    await tester.tap(find.bySemanticsLabel('Replace key'));
     await tester.pumpAndSettle();
 
     expect(session.isConnected, isTrue);
-    expect(find.text('Replace key'), findsNothing);
+    expect(find.bySemanticsLabel('Replace key'), findsNothing);
     expect(await pinned(), 'SHA256:rebuilt');
   });
 
   testWidgets('Cancel on the key: no tab, and nothing pinned', (tester) async {
     await openBox(tester, _Host(fingerprint: _key));
 
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
 
     expect(await opening, isNull);
@@ -269,7 +269,7 @@ void main() {
     expect(find.text(_signInUrl), findsOneWidget);
     expect(manager.sessions, isEmpty);
 
-    await tester.tap(find.text('Open link'));
+    await tester.tap(find.bySemanticsLabel('Open link'));
     await tester.pumpAndSettle();
 
     final session = (await opening)!;
@@ -306,7 +306,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byTooltip('Reconnect'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Open link'));
+    await tester.tap(find.bySemanticsLabel('Open link'));
     await tester.pumpAndSettle();
 
     expect(find.byType(BottomSheet), findsNothing);
@@ -326,7 +326,7 @@ void main() {
   ) async {
     final signIn = Completer<void>();
     await openBox(tester, _Host(signIn: signIn));
-    await tester.tap(find.text('Open link'));
+    await tester.tap(find.bySemanticsLabel('Open link'));
     await tester.pumpAndSettle();
     final session = (await opening)!;
 
@@ -339,7 +339,7 @@ void main() {
     expect(manager.activeKind, TabKind.terminal);
     expect(find.text('This host wants you to sign in'), findsOneWidget);
 
-    await tester.tap(find.text('Open link'));
+    await tester.tap(find.bySemanticsLabel('Open link'));
     await tester.pumpAndSettle();
     expect(manager.activeWeb, same(session.webTabs.single));
 
@@ -358,7 +358,7 @@ void main() {
     final signIn = Completer<void>();
     final host = _Host(signIn: signIn);
     await openBox(tester, host);
-    await tester.tap(find.text('Open link'));
+    await tester.tap(find.bySemanticsLabel('Open link'));
     await tester.pumpAndSettle();
     final session = (await opening)!;
 
@@ -435,7 +435,7 @@ void main() {
     expect(find.text('Attach to a tmux session'), findsOneWidget);
     expect(find.text('sshbox-abc'), findsOneWidget);
     expect(find.textContaining('attached elsewhere'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     expect(await opening, isNull);
     expect(manager.sessions, isEmpty);
@@ -463,12 +463,12 @@ void main() {
     await openBox(tester, host);
 
     expect(find.text('Connection refused.'), findsOneWidget);
-    await tester.tap(find.text('Try again'));
+    await tester.tap(find.bySemanticsLabel('Try again'));
     await tester.pumpAndSettle();
     expect(host.attempts, 2);
     expect(find.text('Connection refused.'), findsOneWidget);
 
-    await tester.tap(find.text('Close'));
+    await tester.tap(find.bySemanticsLabel('Close'));
     await tester.pumpAndSettle();
     expect(await opening, isNull);
     expect(manager.sessions, isEmpty);
@@ -490,7 +490,7 @@ void main() {
     var trusted = confirmHostKey(context, check);
     await tester.pumpAndSettle();
     expect(find.text(_key), findsOneWidget);
-    await tester.tap(find.text('Trust'));
+    await tester.tap(find.bySemanticsLabel('Trust'));
     await tester.pumpAndSettle();
     expect(await trusted, isTrue);
 
@@ -523,7 +523,7 @@ void main() {
       find.textContaining('at its alternative address, $alternative'),
       findsOneWidget,
     );
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     expect(await trusted, isFalse);
 
@@ -548,7 +548,9 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('SHA256:other'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.ensureVisible(find.bySemanticsLabel('Cancel'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Cancel'));
     await tester.pumpAndSettle();
     expect(await trusted, isFalse);
   });

@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../platform.dart';
+import 'tui.dart';
 
 /// A right-click that opens whatever a long press opens, for a widget's
 /// `onSecondaryTapUp`: a desktop is driven by a mouse, which has no long
@@ -84,8 +85,8 @@ class JeanshBinding extends WidgetsFlutterBinding {
       super.handlePointerEvent(_controlClick.convert(event));
 }
 
-/// Opens a menu with its corner at [at], a global position — the pointer's,
-/// as a context menu opens, or the finger's.
+/// Opens termul's menu ([showTuiMenu]) with its corner at [at], a global
+/// position — the pointer's, as a context menu opens, or the finger's.
 ///
 /// After a frame already asked for: the click that opens it may have moved
 /// focus — a group's pane takes it on the pointer going down — and that
@@ -95,24 +96,23 @@ class JeanshBinding extends WidgetsFlutterBinding {
 Future<T?> showMenuAt<T>(
   BuildContext context,
   Offset at,
-  List<PopupMenuEntry<T>> items,
+  List<TuiMenuEntry<T>> entries,
 ) async {
   if (SchedulerBinding.instance.hasScheduledFrame) {
     await SchedulerBinding.instance.endOfFrame;
   }
   if (!context.mounted) return null;
-  final overlay = Overlay.of(context).context;
-  if (!overlay.mounted) return null;
-  final box = overlay.findRenderObject()! as RenderBox;
-  return showMenu<T>(
-    context: context,
-    position: RelativeRect.fromRect(
-      box.globalToLocal(at) & Size.zero,
-      Offset.zero & box.size,
-    ),
-    items: items,
-  );
+  if (!Overlay.of(context).context.mounted) return null;
+  return showTuiMenu<T>(context, at: at, entries: entries);
 }
+
+/// A menu whose entries each do something: [showMenuAt], and what was
+/// picked done once it has closed.
+Future<void> showActionsAt(
+  BuildContext context,
+  Offset at,
+  List<TuiMenuEntry<VoidCallback>> entries,
+) async => (await showMenuAt(context, at, entries))?.call();
 
 /// A tab's own menu — what a right-click on its chip opens — handed down to
 /// its page, so a right-click inside the page opens it too. [items] is asked
@@ -130,11 +130,16 @@ class TabMenu extends InheritedWidget {
       context.getInheritedWidgetOfExactType<TabMenu>();
 
   /// The menu's entries, as the chip shows them.
-  List<PopupMenuEntry<void>> entries() => [
-    for (final (label, onTap) in items())
-      PopupMenuItem<void>(onTap: onTap, child: Text(label)),
-  ];
+  List<TuiMenuEntry<VoidCallback>> entries() => tabMenuEntries(items());
 
   @override
   bool updateShouldNotify(TabMenu oldWidget) => false;
 }
+
+/// A tab's menu as termul's entries: closing the tab in deep ink.
+List<TuiMenuEntry<VoidCallback>> tabMenuEntries(
+  List<(String, VoidCallback)> items,
+) => [
+  for (final (label, onTap) in items)
+    menuAction(label, onTap, destructive: label == 'Close tab'),
+];

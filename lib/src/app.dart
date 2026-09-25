@@ -5,7 +5,6 @@ import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:toastification/toastification.dart';
 
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
@@ -25,9 +24,11 @@ import 'telemetry/crash_reporting.dart';
 import 'telemetry/telemetry.dart';
 import 'ui/bug_report.dart';
 import 'ui/connect_sheet.dart';
+import 'ui/onboarding_page.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
 import 'ui/title_bar.dart';
+import 'ui/tui.dart';
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
@@ -178,18 +179,44 @@ class _SshboxAppState extends State<SshboxApp> {
   /// switch is on to begin with and a count goes before the user has said
   /// anything. A toast rather than a dialog: it is a thing to know, not a
   /// thing to answer.
+  ///
+  /// A fresh install opens on the first-run slides, and the word waits until
+  /// they are done rather than covering them.
   Future<void> _countThisInstall() async {
     unawaited(telemetry.pingDaily());
+    if (!onboardingDone.value) await _onboarded();
+    await _sayTelemetryOn();
+  }
+
+  /// Completes once the first-run slides are done.
+  Future<void> _onboarded() {
+    final done = Completer<void>();
+    void once() {
+      if (!onboardingDone.value) return;
+      onboardingDone.removeListener(once);
+      done.complete();
+    }
+
+    onboardingDone.addListener(once);
+    return done.future;
+  }
+
+  Future<void> _sayTelemetryOn() async {
     if (!telemetryOn.value) return;
+    await WidgetsBinding.instance.endOfFrame;
     if (!await telemetry.claimFirstRunNotice()) return;
     final context = _navigator.currentContext;
     if (context == null || !context.mounted) return;
     showToast(
       context,
-      'Jeansh counts installs\nIt sends a daily count and any crashes, never '
-      'a hostname, a login, a path or a command. Settings turns it off.',
+      'Jeansh reports crashes\nIt also counts this install once a day. '
+      'Neither report carries a hostname, login, path or command. You can '
+      'turn both off in Settings.',
       duration: const Duration(seconds: 8),
       action: (label: 'Settings', onPressed: _openSettings),
+      // Low, clear of Home's header and title, which it lands on, and of
+      // its Add.
+      low: true,
     );
   }
 
@@ -204,7 +231,7 @@ class _SshboxAppState extends State<SshboxApp> {
     showToast(
       context,
       'Jeansh hit an error',
-      type: ToastificationType.error,
+      type: TuiToastType.error,
       action: (
         label: 'Report',
         onPressed: () => showBugReport(context, about: fault),
@@ -225,7 +252,7 @@ class _SshboxAppState extends State<SshboxApp> {
           context,
           'The last update did not go in, so this is still Jeansh '
           '${updater.version}.',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
         );
       }
     }
@@ -281,7 +308,10 @@ class _SshboxAppState extends State<SshboxApp> {
   /// last changed: see [_localShell].
   final _noTmux = <String>{};
 
+  /// A fresh install waits for the first-run slides to be done: starting
+  /// asks Android for leave to post, and its dialog would lie over them.
   Future<void> _startNotifications() async {
+    if (!onboardingDone.value) await _onboarded();
     // Local notifications first: FCM only delivers messages, the display and
     // tap routing below it are shared.
     await _notifications.initialize();
@@ -392,7 +422,7 @@ class _SshboxAppState extends State<SshboxApp> {
         showToast(
           context,
           'That host is no longer saved',
-          type: ToastificationType.warning,
+          type: TuiToastType.warning,
         );
       }
       return;
@@ -533,64 +563,69 @@ class _SshboxAppState extends State<SshboxApp> {
   @override
   Widget build(BuildContext context) {
     // Toasts (see `showToast`), stacked the way `toastConfig` says.
-    return ToastificationWrapper(
-      config: toastConfig,
-      // The mode and theme picked in Settings. A change rebuilds the app's
-      // theme only: every page keeps its state.
-      child: ValueListenableBuilder(
-        valueListenable: appTheme,
-        builder: (context, look, _) {
-          ThemeData themeOf(Brightness brightness) => ThemeData(
-            useMaterial3: true,
-            colorScheme: look.scheme.colorScheme(brightness),
-          );
+    return ListenableBuilder(
+      listenable: Listenable.merge([appTheme, terminalSettings]),
+      builder: (context, _) {
+        final look = appTheme.value;
+        // termul's look in the theme's own colours: see `jeanshTheme`.
+        ThemeData themeOf(Brightness brightness) =>
+            jeanshTheme(look.scheme.palette(brightness));
 
-          return MaterialApp(
-            title: 'Jeansh',
-            debugShowCheckedModeBanner: false,
-            navigatorKey: _navigator,
-            themeMode: look.mode,
-            theme: themeOf(Brightness.light),
-            darkTheme: themeOf(Brightness.dark),
-            // Under the status bar is the tab strip, with no app bar to set
-            // the bar's icons, so they follow the theme from here: the
-            // system's white ones would vanish on a light theme.
-            builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
-              value: SystemUiOverlayStyle(
-                statusBarIconBrightness:
-                    Theme.of(context).brightness == Brightness.dark
-                    ? Brightness.light
-                    : Brightness.dark,
-              ),
-              // On a Mac, every page and toast clear of the window's buttons.
-              child: TitleBarSpace(
-                covered: () => _navigator.currentState?.canPop() ?? false,
-                // Toasts over every page, taking only the touches that land
-                // on one.
-                child: ToastLayer(child: child!),
-              ),
+        return MaterialApp(
+          title: 'Jeansh',
+          debugShowCheckedModeBanner: false,
+          navigatorKey: _navigator,
+          themeMode: look.mode,
+          theme: themeOf(Brightness.light),
+          darkTheme: themeOf(Brightness.dark),
+          // Under the status bar is the tab strip, with no app bar to set
+          // the bar's icons, so they follow the theme from here: the
+          // system's white ones would vanish on a light theme.
+          builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle(
+              statusBarIconBrightness:
+                  Theme.of(context).brightness == Brightness.dark
+                  ? Brightness.light
+                  : Brightness.dark,
             ),
-            home: TabsShell(
-              repository: _repository,
-              secrets: _secrets,
-              sessions: _sessions,
-              onOpenHost: (hostId) =>
-                  openHost(hostId, newSession: true, restoredFirst: true),
-              onDuplicate: (hostId) => openHost(hostId, newSession: true),
-              // Home draws the Local card on a desktop alone.
-              onOpenLocal: () =>
-                  openHost(localHostId, newSession: true, restoredFirst: true),
-              onOpenWsl: Platform.isWindows
-                  ? (distro) => openHost(
-                      wslHost(distro).id,
+            // On a Mac, every page and toast clear of the window's buttons.
+            child: TitleBarSpace(
+              covered: () => _navigator.currentState?.canPop() ?? false,
+              // Toasts over every page, taking only the touches that land
+              // on one.
+              child: ToastLayer(child: child!),
+            ),
+          ),
+          // termul's onboarding before Home, on a fresh install alone: see
+          // OnboardingDone.
+          home: ValueListenableBuilder(
+            valueListenable: onboardingDone,
+            builder: (context, done, _) => !done
+                ? OnboardingPage(onDone: onboardingDone.complete)
+                : TabsShell(
+                    repository: _repository,
+                    secrets: _secrets,
+                    sessions: _sessions,
+                    onOpenHost: (hostId) =>
+                        openHost(hostId, newSession: true, restoredFirst: true),
+                    onDuplicate: (hostId) => openHost(hostId, newSession: true),
+                    // Home draws the Local card on a desktop alone.
+                    onOpenLocal: () => openHost(
+                      localHostId,
                       newSession: true,
                       restoredFirst: true,
-                    )
-                  : null,
-            ),
-          );
-        },
-      ),
+                    ),
+                    onOpenWsl: Platform.isWindows
+                        ? (distro) => openHost(
+                            wslHost(distro).id,
+                            newSession: true,
+                            restoredFirst: true,
+                          )
+                        : null,
+                  ),
+          ),
+        );
+      },
     );
   }
 }

@@ -5,14 +5,21 @@ import 'src/session/port_forwards.dart';
 import 'src/session/session_log.dart';
 import 'src/telemetry/crash_reporting.dart';
 import 'src/telemetry/telemetry.dart';
+import 'src/ui/onboarding_page.dart';
 import 'src/ui/right_click.dart';
 import 'src/ui/settings_page.dart';
 import 'src/ui/title_bar.dart';
+import 'src/ui/tui.dart';
 
 Future<void> main() async {
   JeanshBinding.ensureInitialized(
     ctrlOpensLinks: () => linkModifier.chosen == LinkModifier.control,
   );
+  // termul's notice, which the licences page shows: see tui.dart.
+  registerTermulLicense();
+  // First, before anything saves a setting: whether this is a fresh install,
+  // which starts on termul's onboarding.
+  await onboardingDone.load();
   // Before the first frame, so a shell opens in the chosen font with the
   // chosen keys and the app in its chosen colours, rather than changing a
   // moment later when they arrive.

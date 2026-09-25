@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/db/redis.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 /// A [kind] of database that keeps each read of its side list, and answers
 /// a filter the way the real ones do. Each name is a table, a collection or
@@ -93,7 +94,12 @@ final _filter = find.byWidgetPredicate(
 );
 
 /// The type chip labelled [label].
-Finder _chip(String label) => find.widgetWithText(FilterChip, label);
+/// termul's chip reading [label]: its name, and its count after it.
+Finder _chip(String label) => find.byWidgetPredicate(
+  (w) =>
+      w is TuiFilterChip &&
+      [w.label, if (w.count case final count?) '$count'].join(' ') == label,
+);
 
 void main() {
   testWidgets('the filter narrows the list read once, and only Refresh reads '
