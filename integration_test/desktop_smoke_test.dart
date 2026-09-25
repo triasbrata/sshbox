@@ -1861,6 +1861,45 @@ touch '${done.path}'
       Future<void> becomes(String button, String what) =>
           _until(tester, () => _named(button).evaluate().isNotEmpty, what);
 
+      if (Platform.isWindows) {
+        await tester.pump(const Duration(seconds: 1));
+        final at = tester.getCenter(_named('Maximize')) * ratio;
+        final dir = Directory.systemTemp.createTempSync('jeansh-dbg-');
+        final script = File('${dir.path}\\dbg.ps1')..writeAsStringSync(r'''
+param([int]$x, [int]$y)
+Add-Type @"
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class D {
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string n);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc p, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  public static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
+}
+"@
+[D]::SetProcessDPIAware() | Out-Null
+$h = [D]::FindWindow('FLUTTER_RUNNER_WIN32_WINDOW', 'Jeansh')
+$pt = New-Object D+POINT; $pt.X = $x; $pt.Y = $y
+[D]::ClientToScreen($h, [ref]$pt) | Out-Null
+$l = [IntPtr](($pt.Y -shl 16) -bor ($pt.X -band 0xFFFF))
+$w = [D]::WindowFromPoint($pt)
+"main $h screen $($pt.X),$($pt.Y) under $w $([D]::Cls($w)) parent $([D]::GetParent($w))"
+"hit under $([D]::SendMessage($w, 0x84, [IntPtr]::Zero, $l))"
+"hit main $([D]::SendMessage($h, 0x84, [IntPtr]::Zero, $l))"
+[D]::EnumChildWindows($h, { param($c, $p) "child $c $([D]::Cls($c)) parent $([D]::GetParent($c))" | Out-Host; $true }, [IntPtr]::Zero) | Out-Null
+''');
+        final out = await Process.run('powershell', [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script.path,
+          '${at.dx.round()}', '${at.dy.round()}',
+        ]);
+        debugPrint('DBGWIN ${out.stdout} ${out.stderr}');
+      }
       // Maximize, and back.
       await click(tester.getCenter(_named('Maximize')));
       await becomes('Restore', 'the maximize button to maximize the window');
