@@ -215,7 +215,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
     case WM_NCLBUTTONUP:
       if (wparam == HTMAXBUTTON) {
-        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+        /* mutation */;
         return 0;
       }
       break;

@@ -88,7 +88,7 @@ static void window_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     if (gtk_window_is_maximized(window)) {
       gtk_window_unmaximize(window);
     } else {
-      gtk_window_maximize(window);
+      /* mutation */;
     }
   } else if (strcmp(method, "close") == 0) {
     gtk_window_close(window);
