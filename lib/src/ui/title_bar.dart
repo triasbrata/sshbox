@@ -295,10 +295,12 @@ class _MaximizeButton extends StatelessWidget {
       final box = context.findRenderObject() as RenderBox?;
       if (box == null || !box.hasSize) return;
       final rect = box.localToGlobal(Offset.zero) & box.size;
-      final sent = [
+      // A Float64List, which the runner reads as a vector of doubles: a
+      // plain list would reach it as a list of values, and be refused.
+      final sent = Float64List.fromList([
         for (final edge in [rect.left, rect.top, rect.right, rect.bottom])
           (edge * ratio).roundToDouble(),
-      ];
+      ]);
       _ask('maximizeButton', sent);
     });
     return child;

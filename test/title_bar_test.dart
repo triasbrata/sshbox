@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -287,6 +288,8 @@ void main() {
 
     final button = tester.getRect(find.bySemanticsLabel('Maximize'));
     final ratio = tester.view.devicePixelRatio;
+    // Doubles in a row, which the runner reads; a plain list it refuses.
+    expect(sent.last, isA<Float64List>());
     expect(sent.last, [
       button.left * ratio,
       button.top * ratio,
