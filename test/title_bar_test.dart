@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -114,25 +115,18 @@ void main() {
     expect(_drags(asked), 2);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets(
-    'elsewhere the window has a title bar of its own: the strip '
-    'leaves no room and never asks the window to move',
-    (tester) async {
-      final asked = _answerAsAMac(tester);
-      await watchTitleBar();
-      // Even with a Mac's measure somehow in hand.
-      titleBar.value = (inset: 78, height: 28);
-      await _pumpStrip(tester);
+  testWidgets('on a phone there is no title bar at all: the strip '
+      'leaves no room and never asks the window to move', (tester) async {
+    final asked = _answerAsAMac(tester);
+    await watchTitleBar();
+    // Even with a Mac's measure somehow in hand.
+    titleBar.value = (inset: 78, height: 28);
+    await _pumpStrip(tester);
 
-      expect(tester.getRect(find.byTooltip('Home')).left, lessThan(20));
-      await _click(tester, const Offset(700, 20));
-      expect(asked, isEmpty);
-    },
-    variant: TargetPlatformVariant({
-      TargetPlatform.android,
-      TargetPlatform.linux,
-    }),
-  );
+    expect(tester.getRect(find.byTooltip('Home')).left, lessThan(20));
+    await _click(tester, const Offset(700, 20));
+    expect(asked, isEmpty);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
   testWidgets('on a Mac the tabs are drawn up into the title bar, and a page '
       'over them keeps clear of it and moves the window from it', (
@@ -189,4 +183,180 @@ void main() {
     await _click(tester, const Offset(400, 10));
     expect(_drags(asked), 1);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  final drawnButtons = TargetPlatformVariant({
+    TargetPlatform.windows,
+    TargetPlatform.linux,
+  });
+
+  testWidgets('on Windows and Linux the app draws the window buttons at the '
+      "strip's right, each asking the window", (tester) async {
+    final asked = _answerAsAMac(tester);
+    await watchTitleBar();
+    await _pumpApp(tester);
+
+    final close = tester.getRect(find.bySemanticsLabel('Close'));
+    expect(close.topRight, const Offset(800, 0));
+    // The tabs keep clear of them.
+    expect(
+      tester.getRect(find.byTooltip('New tab')).right,
+      lessThanOrEqualTo(800 - WindowButtons.width),
+    );
+
+    for (final label in ['Minimize', 'Maximize', 'Close']) {
+      await tester.tap(find.bySemanticsLabel(label));
+    }
+    expect(_windowCalls(asked), ['minimize', 'maximize', 'close']);
+
+    // The runner says the window is maximized: the button restores it.
+    await _tellWindow(tester, 'maximized', true);
+    expect(find.bySemanticsLabel('Restore'), findsOneWidget);
+    expect(find.bySemanticsLabel('Maximize'), findsNothing);
+    await _tellWindow(tester, 'maximized', false);
+    expect(find.bySemanticsLabel('Maximize'), findsOneWidget);
+  }, variant: drawnButtons);
+
+  testWidgets("a double-click on the strip's empty space maximizes or "
+      'restores, where a click moves the window', (tester) async {
+    final asked = _answerAsAMac(tester);
+    await watchTitleBar();
+    await _pumpApp(tester);
+
+    await _click(tester, const Offset(450, 20));
+    expect(_windowCalls(asked), ['drag']);
+    await _click(tester, const Offset(451, 21));
+    expect(_windowCalls(asked), ['drag', 'maximize']);
+    // A third is a click of its own again.
+    await _click(tester, const Offset(451, 21));
+    expect(_windowCalls(asked), ['drag', 'maximize', 'drag']);
+  }, variant: drawnButtons);
+
+  testWidgets('a page over the tabs keeps the window buttons, and its band '
+      'moves the window', (tester) async {
+    final asked = _answerAsAMac(tester);
+    await watchTitleBar();
+    final navigator = await _pumpApp(tester);
+    unawaited(
+      navigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              Scaffold(appBar: AppBar(title: const Text('Settings'))),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getRect(find.byType(BackButton)).top,
+      greaterThanOrEqualTo(windowButtonsHeight),
+    );
+    expect(find.bySemanticsLabel('Close'), findsOneWidget);
+    await _click(tester, const Offset(300, 10));
+    expect(_windowCalls(asked), ['drag']);
+  }, variant: drawnButtons);
+
+  testWidgets(
+    'a Mac and a phone draw no window buttons',
+    (tester) async {
+      _answerAsAMac(tester);
+      await watchTitleBar();
+      await _pumpApp(tester);
+      expect(find.bySemanticsLabel('Close'), findsNothing);
+      expect(find.bySemanticsLabel('Help'), findsNothing);
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.macOS,
+      TargetPlatform.android,
+    }),
+  );
+
+  testWidgets('on Windows the maximize button tells the window where it is, '
+      'for the snap layouts, and lights while the window says the pointer is '
+      'over it', (tester) async {
+    final asked = _answerAsAMac(tester);
+    final sent = <Object?>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(_window, (
+      call,
+    ) async {
+      asked.add(call.method);
+      if (call.method == 'maximizeButton') sent.add(call.arguments);
+      return null;
+    });
+    await watchTitleBar();
+    await _pumpApp(tester);
+    await tester.pump();
+
+    final button = tester.getRect(find.bySemanticsLabel('Maximize'));
+    final ratio = tester.view.devicePixelRatio;
+    // Doubles in a row, which the runner reads; a plain list it refuses.
+    expect(sent.last, isA<Float64List>());
+    expect(sent.last, [
+      button.left * ratio,
+      button.top * ratio,
+      button.right * ratio,
+      button.bottom * ratio,
+    ]);
+
+    Color? fill() => tester
+        .widget<Container>(
+          find.descendant(
+            of: find.bySemanticsLabel('Maximize'),
+            matching: find.byType(Container),
+          ),
+        )
+        .color;
+    final idle = fill();
+    await _tellWindow(tester, 'maximizeHover', true);
+    expect(fill(), isNot(idle));
+    await _tellWindow(tester, 'maximizeHover', false);
+    expect(fill(), idle);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+}
+
+/// The window's channel asked for what moves or sizes the window, in order.
+List<String> _windowCalls(List<String> asked) => [
+  for (final method in asked)
+    if (const {'drag', 'minimize', 'maximize', 'close'}.contains(method))
+      method,
+];
+
+/// The runner telling the app [method] on the window's channel.
+Future<void> _tellWindow(
+  WidgetTester tester,
+  String method,
+  Object? arguments,
+) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    'sshbox/window',
+    const StandardMethodCodec().encodeMethodCall(MethodCall(method, arguments)),
+    (_) {},
+  );
+  await tester.pump();
+}
+
+/// The tab shell under the app's own [TitleBarSpace], and its navigator.
+Future<GlobalKey<NavigatorState>> _pumpApp(WidgetTester tester) async {
+  SharedPreferences.setMockInitialValues({});
+  final navigator = GlobalKey<NavigatorState>();
+  final sessions = SessionManager();
+  addTearDown(sessions.closeAll);
+  addTearDown(() => windowMaximized.value = false);
+  await tester.pumpWidget(
+    MaterialApp(
+      navigatorKey: navigator,
+      builder: (context, child) => TitleBarSpace(
+        navigator: navigator,
+        covered: () => navigator.currentState?.canPop() ?? false,
+        child: child!,
+      ),
+      home: TabsShell(
+        repository: HostRepository(_NoSecrets()),
+        secrets: _NoSecrets(),
+        sessions: sessions,
+        onOpenHost: (_) async {},
+      ),
+    ),
+  );
+  await tester.pump();
+  return navigator;
 }

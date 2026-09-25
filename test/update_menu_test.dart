@@ -140,6 +140,19 @@ void main() {
     expect(_dialog, findsOneWidget);
   }, variant: linux);
 
+  testWidgets('Help at the window\'s top right checks for updates, as the '
+      'native menu did', (tester) async {
+    final feed = _Feed('1.0.63+67');
+    await _start(tester, feed);
+
+    await tester.tap(find.bySemanticsLabel('Help'));
+    await _settle(tester);
+    await tester.tap(find.text('Check for updates…'));
+    await _settle(tester);
+    expect(feed.reads, 1);
+    expect(_dialog, findsOneWidget);
+  }, variant: linux);
+
   testWidgets('the menu\'s Check for updates says so when up to date', (
     tester,
   ) async {
