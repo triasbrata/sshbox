@@ -17,6 +17,7 @@ import 'known_hosts_page.dart';
 import 'logs_page.dart';
 import 'os_icon.dart';
 import 'port_forwarding_page.dart';
+import 'right_click.dart';
 import 'settings_page.dart';
 import 'update_dialog.dart';
 
@@ -614,6 +615,34 @@ class _HostTile extends StatelessWidget {
       SshAuthMethod.tailscale => 'tailscale',
     };
     final muted = theme.colorScheme.onSurfaceVariant;
+    // The ⋮'s menu, which a right-click opens too, at the pointer.
+    void act(String action) => switch (action) {
+      'edit' => onEdit(),
+      'duplicate' => onDuplicate(),
+      'delete' => onDelete(),
+      'close' => onCloseSessions(),
+      'attach' => onAttach?.call(),
+      _ => null,
+    };
+    List<PopupMenuEntry<String>> items() => [
+      if (sessionCount > 0)
+        PopupMenuItem(
+          value: 'close',
+          child: Text(
+            sessionCount == 1
+                ? 'Close session'
+                : 'Close $sessionCount sessions',
+          ),
+        ),
+      if (onAttach != null)
+        const PopupMenuItem(
+          value: 'attach',
+          child: Text('Attach to a tmux session…'),
+        ),
+      const PopupMenuItem(value: 'edit', child: Text('Edit')),
+      const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
+      const PopupMenuItem(value: 'delete', child: Text('Delete')),
+    ];
 
     // By hand rather than a ListTile, whose leading is at most 56 dp tall:
     // too short for the badge with its version under it.
@@ -622,6 +651,10 @@ class _HostTile extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onOpen,
+        onSecondaryTapUp: rightClick((at) async {
+          final action = await showMenuAt(context, at, items());
+          if (action != null) act(action);
+        }),
         child: Padding(
           padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
           child: Row(
@@ -718,36 +751,8 @@ class _HostTile extends StatelessWidget {
                 ),
               ),
               PopupMenuButton<String>(
-                onSelected: (action) => switch (action) {
-                  'edit' => onEdit(),
-                  'duplicate' => onDuplicate(),
-                  'delete' => onDelete(),
-                  'close' => onCloseSessions(),
-                  'attach' => onAttach?.call(),
-                  _ => null,
-                },
-                itemBuilder: (_) => [
-                  if (sessionCount > 0)
-                    PopupMenuItem(
-                      value: 'close',
-                      child: Text(
-                        sessionCount == 1
-                            ? 'Close session'
-                            : 'Close $sessionCount sessions',
-                      ),
-                    ),
-                  if (onAttach != null)
-                    const PopupMenuItem(
-                      value: 'attach',
-                      child: Text('Attach to a tmux session…'),
-                    ),
-                  const PopupMenuItem(value: 'edit', child: Text('Edit')),
-                  const PopupMenuItem(
-                    value: 'duplicate',
-                    child: Text('Duplicate'),
-                  ),
-                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
-                ],
+                onSelected: act,
+                itemBuilder: (_) => items(),
               ),
             ],
           ),
@@ -780,12 +785,26 @@ class _DatabaseTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = theme.colorScheme.onSurfaceVariant;
+    // The ⋮'s menu, which a right-click opens too, at the pointer.
+    void act(String action) => switch (action) {
+      'edit' => onEdit(),
+      'delete' => onDelete(),
+      _ => null,
+    };
+    const items = [
+      PopupMenuItem(value: 'edit', child: Text('Edit')),
+      PopupMenuItem(value: 'delete', child: Text('Delete')),
+    ];
 
     return Card(
       margin: const EdgeInsets.all(6),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onOpen,
+        onSecondaryTapUp: rightClick((at) async {
+          final action = await showMenuAt(context, at, items);
+          if (action != null) act(action);
+        }),
         child: Padding(
           padding: const EdgeInsetsDirectional.fromSTEB(8, 12, 8, 12),
           child: Row(
@@ -820,15 +839,8 @@ class _DatabaseTile extends StatelessWidget {
                 ),
               ),
               PopupMenuButton<String>(
-                onSelected: (action) => switch (action) {
-                  'edit' => onEdit(),
-                  'delete' => onDelete(),
-                  _ => null,
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'edit', child: Text('Edit')),
-                  PopupMenuItem(value: 'delete', child: Text('Delete')),
-                ],
+                onSelected: act,
+                itemBuilder: (_) => items,
               ),
             ],
           ),

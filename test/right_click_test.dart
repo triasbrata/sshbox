@@ -2,6 +2,13 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/data/host_repository.dart';
+import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/db/db_session.dart';
+import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/session/session_manager.dart';
+import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/right_click.dart';
 
 void main() {
@@ -68,4 +75,70 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 
+  group('a right-click on a Home card', () {
+    Future<HostRepository> pumpHome(WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final secrets = InMemorySecretStore();
+      final repository = HostRepository(secrets);
+      await repository.upsert(
+        const HostProfile(
+          id: 'box',
+          label: 'box',
+          host: '10.0.0.1',
+          username: 'me',
+        ),
+      );
+      await saveDatabases(const [
+        DbConnection(
+          id: 'pg',
+          kind: DbKind.postgres,
+          hostId: 'box',
+          name: 'the pg',
+          port: 5432,
+        ),
+      ]);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HostsPage(
+            repository: repository,
+            secrets: secrets,
+            sessions: SessionManager(),
+            onOpenHost: (_) async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return repository;
+    }
+
+    Future<void> rightClickOn(WidgetTester tester, String text) async {
+      await tester.tap(find.text(text), buttons: kSecondaryMouseButton);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('opens its ⋮ menu on a desktop', (tester) async {
+      final repository = await pumpHome(tester);
+
+      await rightClickOn(tester, 'box');
+      expect(find.text('Edit'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+      await tester.tap(find.text('Duplicate'));
+      await tester.pumpAndSettle();
+      expect((await repository.load()).map((h) => h.label), [
+        'box',
+        'box (copy)',
+      ]);
+
+      await rightClickOn(tester, 'the pg');
+      expect(find.text('Edit'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+      expect(find.text('Duplicate'), findsNothing);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('opens nothing on Android', (tester) async {
+      await pumpHome(tester);
+      await rightClickOn(tester, 'box');
+      expect(find.text('Edit'), findsNothing);
+    });
+  });
 }
