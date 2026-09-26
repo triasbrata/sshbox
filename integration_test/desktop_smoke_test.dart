@@ -209,6 +209,16 @@ Future<void> _pick(WidgetTester tester, String item) async {
 /// too, and first in the tree.
 Future<void> _settings(WidgetTester tester) async {
   await tester.tap(find.byTooltip('Settings'));
+  // Waited for, not assumed after a fixed time: on 22.04's runner Settings
+  // was not on screen yet 600 ms after the tap.
+  await _until(
+    tester,
+    () => find
+        .text('LOOK · TERMINAL · KEYBOARD · PRIVACY')
+        .evaluate()
+        .isNotEmpty,
+    'Settings to open',
+  );
   await tester.pump(const Duration(milliseconds: 600));
 }
 
@@ -1054,13 +1064,30 @@ touch '${done.path}'
         () => find.text('Take out of group').evaluate().isEmpty,
         'Escape to close the menu: it did not hold the keys',
       );
-      expect(
-        other.focusNode?.hasFocus,
-        isTrue,
-        reason: 'the menu opened for a pane that did not take focus',
-      );
-      // And a menu opened on the pane, focused by now, stays open.
+      // Given back as the menu's route finishes going, which on a slow
+      // runner is after its items are gone: waited for, and a focus that
+      // never comes back is named.
+      try {
+        await _until(
+          tester,
+          () => other.focusNode?.hasFocus ?? false,
+          'the focus to come back to the pane the menu opened for',
+          timeout: const Duration(seconds: 5),
+        );
+      } on TestFailure {
+        debugPrint('Focus is on ${FocusManager.instance.primaryFocus}');
+        rethrow;
+      }
+      // And a menu opened on the pane, focused by now, stays open: counted
+      // from when it is on screen, which on a slow runner is past the first
+      // 100 ms — showMenuAt waits out a frame, and the route builds in the
+      // next one.
       await rightClick(other);
+      await _until(
+        tester,
+        () => find.text('Take out of group').evaluate().isNotEmpty,
+        'the focused pane\'s menu to open',
+      );
       for (var i = 0; i < 20; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         expect(
