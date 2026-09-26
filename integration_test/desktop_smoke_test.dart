@@ -1059,8 +1059,16 @@ touch '${done.path}'
         isTrue,
         reason: 'the menu opened for a pane that did not take focus',
       );
-      // And a menu opened on the pane, focused by now, stays open.
+      // And a menu opened on the pane, focused by now, stays open: counted
+      // from when it is on screen, which on a slow runner is past the first
+      // 100 ms — showMenuAt waits out a frame, and the route builds in the
+      // next one.
       await rightClick(other);
+      await _until(
+        tester,
+        () => find.text('Take out of group').evaluate().isNotEmpty,
+        'the focused pane\'s menu to open',
+      );
       for (var i = 0; i < 20; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         expect(
