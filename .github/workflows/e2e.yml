@@ -273,7 +273,8 @@ jobs:
   # as every new check here does, and joins the gate only by choice.
   desktop:
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'linux-desktop' }}
-    runs-on: ubuntu-latest
+    # The release's Linux build runs on 22.04 (release.yml), so this does too.
+    runs-on: ubuntu-22.04
     timeout-minutes: 40
     continue-on-error: true
     steps:
