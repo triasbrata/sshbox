@@ -1275,6 +1275,49 @@ touch '${done.path}'
         'two panes side by side',
       );
 
+      // #111: a mouse drags the border between them, and tmux itself, not
+      // only the page, gives the left pane the room.
+      Future<List<int>> widths() async {
+        final listed = await Process.run('tmux', [
+          'list-panes',
+          '-a',
+          '-F',
+          '#{pane_left} #{pane_width}',
+        ]);
+        final panes = '${listed.stdout}'.trim().split('\n').map((line) {
+          final [left, width] = line.split(' ').map(int.parse).toList();
+          return (left, width);
+        }).toList()..sort((a, b) => a.$1.compareTo(b.$1));
+        return [for (final (_, width) in panes) width];
+      }
+
+      final before = await widths();
+      final views =
+          find
+              .byType(TerminalView)
+              .evaluate()
+              .map((e) => tester.getRect(find.byWidget(e.widget)))
+              .toList()
+            ..sort((a, b) => a.left.compareTo(b.left));
+      final gap = Offset(
+        (views[0].right + views[1].left) / 2,
+        views[0].center.dy,
+      );
+      final cell = views[0].width / before[0];
+      final drag = await tester.startGesture(
+        gap,
+        kind: PointerDeviceKind.mouse,
+      );
+      for (var i = 0; i < 10; i++) {
+        await drag.moveBy(Offset(cell, 0));
+        await tester.pump(const Duration(milliseconds: 30));
+      }
+      await drag.up();
+      await _until(tester, () async {
+        final after = await widths();
+        return after.length == 2 && after[0] >= before[0] + 5;
+      }, 'tmux to widen the left pane after its border was dragged');
+
       await _closeTabs(tester);
       await _until(
         tester,

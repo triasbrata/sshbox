@@ -32,6 +32,12 @@ the-desktop-build-loses-what-stands-in-for:
   platforms: linux, windows, macos
   why: "no key bar, no magic key, and a real pty on Home -- only the real desktop embedder shows this; every test under test/ reports Android. A desktop offers a shell on the machine itself, and a right-click Duplicate session opens a second one, green on all three (e2e.yml's desktop, desktop-windows and desktop-macos jobs)"
 
+closing-the-update-dialog-keeps-the-download-going:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart, test/update_background_test.dart
+  platforms: linux
+  why: "the real GTK build dismisses the update dialog mid-download and follows the download in Settings › Updates, green on Linux (run 36193644948) and red under mutation (36193708487)"
+
 # ---------------------------------------------------- real platform: e2e ----
 
 a-backspace-from-the-on-screen-keyboard-no:
