@@ -254,30 +254,6 @@ if ! flow seed_host; then
 fi
 echo "::endgroup::"
 
-# A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
-# which is minutes rather than the half hour of every flow.
-if [ -n "${E2E_ONLY:-}" ]; then
-  echo "::group::$E2E_ONLY (asked for alone)"
-  "$E2E_ONLY"
-  status=$?
-  echo "::endgroup::"
-  [ "$status" -eq 0 ] || echo "::error::$E2E_ONLY failed"
-  exit "$status"
-fi
-
-failed=()
-for name in "${GATING[@]}"; do
-  echo "::group::$name (gating)"
-  flow "$name" || failed+=("$name")
-  echo "::endgroup::"
-done
-
-for name in "${REPORT_ONLY[@]}"; do
-  echo "::group::$name (report only)"
-  flow "$name" || echo "::warning::$name failed -- report only, not gating"
-  echo "::endgroup::"
-done
-
 # "Never two live copies of Jeansh", checked with adb rather than Maestro: it
 # is about Android tasks, which no screen shows. A plain `am start` of a running
 # app only brings it forward and passes with or without the guard, so the
@@ -310,9 +286,6 @@ single_instance() {
   echo "MainActivity records after a forced second launch: $records"
   [ "$records" -eq 1 ]
 }
-echo "::group::single_instance (report only)"
-single_instance || echo "::warning::single_instance failed -- report only, not gating"
-echo "::endgroup::"
 
 # Text shared into the running Jeansh from another app goes to its session,
 # pasted and never run, and makes no second copy. Two UAT-passed features: a
@@ -338,15 +311,12 @@ share_text() {
   echo "the host's file after the share: '$got'; MainActivity records: $records"
   [ "$got" = "$text" ] && [ "$records" -eq 1 ]
 }
-echo "::group::share_text (report only)"
-share_text || echo "::warning::share_text failed -- report only, not gating"
-echo "::endgroup::"
 
 # The chat button's Claude Code check, UAT issue #22: one flow, three hosts, the
 # stand-in swapped between them. Report-only until it has earned the gate. Each
 # expected toast is the app's own wording (ClaudeChat.versionRefusal).
-chat_version() {
-  local label=$1 answer=$2 expect=$3 shot=chat-version-$1 found
+chat_version_case() {
+  local label=$1 answer=$2 expect=$3 shot=chat-version-$1 found status=0
   echo "::group::chat_version: $label (report only)"
   stand_in "$answer"
   # Said here, from the host, so a run that finds no toast shows whether the
@@ -355,8 +325,10 @@ chat_version() {
     'c=$HOME/.local/bin/claude; [ -x "$c" ] && "$c" --version || echo "(no claude)"')"
   # A bare name: Maestro 2.10 refuses a screenshot path that resolves outside its
   # own directory, and this one gets moved into the evidence folder after.
-  flow chat_version -e "EXPECT=$expect" -e "SHOT=$shot" ||
+  flow chat_version -e "EXPECT=$expect" -e "SHOT=$shot" || {
+    status=1
     echo "::warning::chat_version ($label) failed -- report only, not gating"
+  }
   # Where Maestro puts a bare-named screenshot is not documented to be one place:
   # the working directory, the flow's own, or its own results folder. Look in all.
   found=$(find "$ROOT" -maxdepth 2 -name "$shot.png" -print -quit 2>/dev/null)
@@ -367,37 +339,9 @@ chat_version() {
     echo "::warning::no evidence screenshot $shot.png was written"
   fi
   echo "::endgroup::"
+  return "$status"
 }
-chat_version too-old '2.1.100 (Claude Code)' \
-  '(?s).*Claude Code 2\.1\.100 on this host is too old for chat.*2\.1\.259.*'
-chat_version not-a-version 'claude: something went wrong' \
-  '(?s).*Could not tell which Claude Code this host has.*2\.1\.259.*'
-chat_version not-installed '' \
-  '(?s).*Claude Code is not installed on this host.*'
 
-# Chat mode against sessions the stand-in keeps (chat_stand_in): where a
-# conversation comes back to, and how a tool's row reads. Report-only until
-# they have earned the gate.
-chat_stand_in
-for name in chat_scroll chat_tool_rows; do
-  echo "::group::$name (report only)"
-  flow "$name" || echo "::warning::$name failed -- report only, not gating"
-  # Their screenshots are evidence, wherever Maestro put them: see chat_version.
-  # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
-  for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png'
-                   find "$HOME/.maestro" -name 'chat-tool-rows-*.png'; } 2>/dev/null); do
-    mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
-  done
-  echo "::endgroup::"
-done
-
-# Chat typing into a running Claude Code session and showing what is typed at
-# its terminal, both ways (UAT issue #15), against a stand-in interactive
-# session in a tmux pane on the host: tools/e2e_live_claude.py, which keeps
-# the state file, the ❯ input line and the transcript chat's host checks
-# read. The phone's message must be typed into the pane and answered; then a
-# line typed at the pane itself, once the phone's has landed, must show in
-# the chat too.
 LIVE_SID=e2e00004-0000-4000-8000-000000000004
 live_session() {
   local home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H)
@@ -440,6 +384,83 @@ json.dump(rows, open(path, 'w'))
 PY
   echo "live session in tmux pane of pid $pid"
 }
+
+# The three hosts, one after another: a block of its own for E2E_ONLY.
+# Fails if any of them did, for a run asking for it alone.
+chat_version() {
+  local status=0
+  chat_version_case too-old '2.1.100 (Claude Code)' \
+    '(?s).*Claude Code 2\.1\.100 on this host is too old for chat.*2\.1\.259.*' || status=1
+  chat_version_case not-a-version 'claude: something went wrong' \
+    '(?s).*Could not tell which Claude Code this host has.*2\.1\.259.*' || status=1
+  chat_version_case not-installed '' \
+    '(?s).*Claude Code is not installed on this host.*' || status=1
+  return "$status"
+}
+
+# A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
+# which is minutes rather than the half hour of every flow. Here, after every
+# block is defined (#109): a block is one of the functions above, and any
+# other name is a flow of .maestro/ run as it is.
+if [ -n "${E2E_ONLY:-}" ]; then
+  echo "::group::$E2E_ONLY (asked for alone)"
+  if declare -F "$E2E_ONLY" >/dev/null; then
+    "$E2E_ONLY"
+  else
+    flow "$E2E_ONLY"
+  fi
+  status=$?
+  echo "::endgroup::"
+  [ "$status" -eq 0 ] || echo "::error::$E2E_ONLY failed"
+  exit "$status"
+fi
+
+failed=()
+for name in "${GATING[@]}"; do
+  echo "::group::$name (gating)"
+  flow "$name" || failed+=("$name")
+  echo "::endgroup::"
+done
+
+for name in "${REPORT_ONLY[@]}"; do
+  echo "::group::$name (report only)"
+  flow "$name" || echo "::warning::$name failed -- report only, not gating"
+  echo "::endgroup::"
+done
+
+echo "::group::single_instance (report only)"
+single_instance || echo "::warning::single_instance failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::share_text (report only)"
+share_text || echo "::warning::share_text failed -- report only, not gating"
+echo "::endgroup::"
+
+chat_version || true
+
+# Chat mode against sessions the stand-in keeps (chat_stand_in): where a
+# conversation comes back to, and how a tool's row reads. Report-only until
+# they have earned the gate.
+chat_stand_in
+for name in chat_scroll chat_tool_rows; do
+  echo "::group::$name (report only)"
+  flow "$name" || echo "::warning::$name failed -- report only, not gating"
+  # Their screenshots are evidence, wherever Maestro put them: see chat_version.
+  # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
+  for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png'
+                   find "$HOME/.maestro" -name 'chat-tool-rows-*.png'; } 2>/dev/null); do
+    mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
+  done
+  echo "::endgroup::"
+done
+
+# Chat typing into a running Claude Code session and showing what is typed at
+# its terminal, both ways (UAT issue #15), against a stand-in interactive
+# session in a tmux pane on the host: tools/e2e_live_claude.py, which keeps
+# the state file, the ❯ input line and the transcript chat's host checks
+# read. The phone's message must be typed into the pane and answered; then a
+# line typed at the pane itself, once the phone's has landed, must show in
+# the chat too.
 
 echo "::group::chat_two_way (report only)"
 live_session
