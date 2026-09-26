@@ -209,6 +209,16 @@ Future<void> _pick(WidgetTester tester, String item) async {
 /// too, and first in the tree.
 Future<void> _settings(WidgetTester tester) async {
   await tester.tap(find.byTooltip('Settings'));
+  // Waited for, not assumed after a fixed time: on 22.04's runner Settings
+  // was not on screen yet 600 ms after the tap.
+  await _until(
+    tester,
+    () => find
+        .text('LOOK · TERMINAL · KEYBOARD · PRIVACY')
+        .evaluate()
+        .isNotEmpty,
+    'Settings to open',
+  );
   await tester.pump(const Duration(milliseconds: 600));
 }
 
