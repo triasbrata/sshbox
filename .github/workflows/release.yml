@@ -153,7 +153,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: linux, os: ubuntu-latest }
+          # 22.04, not latest: a build links the runner's glibc, and one
+          # built on 24.04 needs 2.38 and will not start on Ubuntu 22.04 or
+          # Debian 12. tools/check_glibc.sh holds it there.
+          - { target: linux, os: ubuntu-22.04 }
           - { target: windows, os: windows-latest }
           - { target: macos, os: macos-latest }
     name: desktop (${{ matrix.target }})
@@ -221,6 +224,12 @@ jobs:
               (cd "$RUNNER_TEMP" && 7z a -tzip -bso0 "$GITHUB_WORKSPACE/dist/$LABEL/$name-windows-x64.zip" "$name")
               (cd "dist/$LABEL" && sha256sum -- * > SHA256SUMS) ;;
           esac
+
+      - name: Check the Linux build runs on glibc 2.35
+        if: matrix.target == 'linux'
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
+        run: tools/check_glibc.sh dist/"$LABEL"/*-linux-*.tar.gz
 
       # Into a private bucket, and nowhere else: no Actions artifact, no GitHub
       # release, and nothing in this public log names the bucket or an object.
