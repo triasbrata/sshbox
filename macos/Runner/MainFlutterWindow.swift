@@ -77,6 +77,9 @@ enum WindowPlace {
 
   /// Before the window is first shown, so it never jumps.
   static func restore(_ window: NSWindow) {
+    // AppKit's own window restoration would put back, after this, the frame
+    // it last encoded: one place that says where the window goes, not two.
+    window.isRestorable = false
     window.setFrameUsingName(name)
     window.setFrameAutosaveName(name)
 

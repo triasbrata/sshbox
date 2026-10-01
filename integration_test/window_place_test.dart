@@ -51,7 +51,11 @@ void main() {
           expect(rect.size, _moved.size, reason: 'the OS resized it to $rect');
           _note(rect);
         case 'restore':
-          expect(await _rect(), _read(), reason: 'where the last run left it');
+          expect(
+            await _rect(),
+            _read(),
+            reason: 'where the last run left it; kept: ${await _kept()}',
+          );
           expect(await _maximized(), isFalse);
           await _maximize(tester, true);
           await _until(tester, _maximized, 'the window to maximize');
@@ -137,6 +141,17 @@ List<double> _numbers(String text) =>
         .allMatches(text)
         .map((m) => double.parse(m[0]!))
         .toList();
+
+/// What the app has kept, for a failure to show: the Mac's defaults, the
+/// file elsewhere.
+Future<String> _kept() async {
+  if (!Platform.isMacOS) return 'see the data folder';
+  final result = await Process.run('defaults', [
+    'read',
+    'dev.triasbrata.sshbox',
+  ]);
+  return '${result.stdout}';
+}
 
 /// Linux: X itself, through xdotool and xwininfo.
 Future<String> _xWindow() async => (await _run('xdotool', [
