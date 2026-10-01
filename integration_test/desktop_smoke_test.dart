@@ -653,6 +653,60 @@ Future<void> _paste(WidgetTester tester) async {
   await tester.sendKeyUpEvent(key);
 }
 
+/// Whether chat's finder would find a Claude Code on this machine: on PATH,
+/// where its installers put it, or on the login shell's PATH.
+bool _claudeInstalled() {
+  final home = Platform.environment['HOME'] ?? '';
+  for (final path in [
+    '$home/.local/bin/claude',
+    '$home/.claude/local/claude',
+    '$home/.bun/bin/claude',
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+  ]) {
+    if (FileSystemEntity.typeSync(path) != FileSystemEntityType.notFound) {
+      return true;
+    }
+  }
+  final found = Process.runSync('/bin/sh', [
+    '-c',
+    'command -v claude || "\${SHELL:-/bin/sh}" -lc "command -v claude" '
+        '</dev/null',
+  ]);
+  return '${found.stdout}'.trim().isNotEmpty;
+}
+
+/// A stand-in for Claude Code, as much of it as a new chat goes through: its
+/// version, `--bg` starting a session whose transcript holds one answer,
+/// `agents --json` listing it, and a `-p` that answers each message after.
+const _standInClaude = r'''#!/bin/sh
+# Jeansh e2e stand-in for Claude Code.
+d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+sid=0e2e0000-0000-4000-8000-00000000c0de
+t="$d/projects/jeansh-e2e/$sid.jsonl"
+answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in"}]}}'
+case "$1" in
+  --version) echo "2.1.300 (Claude Code)" ;;
+  --bg)
+    mkdir -p "$d/projects/jeansh-e2e"
+    printf '%s\n' \
+      '{"type":"user","message":{"role":"user","content":"hello from the e2e"}}' \
+      "$answer" >"$t"
+    echo "backgrounded · e2e0c0de · e2e" ;;
+  agents)
+    if [ -f "$t" ]; then
+      printf '[{"id":"e2e0c0de","sessionId":"%s","name":"e2e","cwd":"%s","kind":"background","state":"done","startedAt":1}]\n' "$sid" "$HOME"
+    else
+      echo '[]'
+    fi ;;
+  -p)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    while IFS= read -r line; do
+      printf '%s\n' "$answer" '{"type":"result","subtype":"success"}'
+    done ;;
+esac
+''';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -1292,6 +1346,102 @@ touch '${done.path}'
         await git(['rev-parse', '--abbrev-ref', 'HEAD']),
         'e2e-other',
         reason: 'the header changed but the checkout did not',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #127: a Local shell's files drawer reads this machine's own disk, rooted
+  // at the login home, as a host's reads it over SFTP.
+  _test(
+    "a Local shell's files drawer shows what is in the home",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, whose Windows paths the tree '
+              'does not hold'
+        : null,
+    (tester) async {
+      // A digit first, so it sorts ahead of every other folder in a home
+      // with many and is drawn without a scroll.
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final name = 'made-by-the-e2e-${dir.path.hashCode}.txt';
+      File('${dir.path}/$name').writeAsStringSync('hello from the e2e\n');
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder in the home",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name).evaluate().isNotEmpty,
+        "the drawer to show the test's file in it",
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #127: chat in a Local shell runs Claude beside it as a process, found and
+  // quoted as over an exec channel. Never this machine's own Claude: a
+  // stand-in is put where the finder looks only where none is installed —
+  // a runner — and taken away after.
+  _test(
+    'chat in a Local shell starts a session and shows its answer',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      final standIn = File('$home/.local/bin/claude');
+      final config = Directory('$home/.claude');
+      final hadConfig = config.existsSync();
+      final hadBin = standIn.parent.existsSync();
+      standIn.parent.createSync(recursive: true);
+      standIn.writeAsStringSync(_standInClaude);
+      Process.runSync('chmod', ['755', standIn.path]);
+      addTearDown(() {
+        if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
+        if (!hadBin) standIn.parent.deleteSync(recursive: true);
+        if (!hadConfig) {
+          config.deleteSync(recursive: true);
+        } else {
+          Directory(
+            '${config.path}/projects/jeansh-e2e',
+          ).deleteSync(recursive: true);
+        }
+      });
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final input = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      );
+      await _until(
+        tester,
+        () => input.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      await tester.enterText(input, 'hello from the e2e');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Send'));
+      await _until(
+        tester,
+        () => find
+            .textContaining('Echo from the stand-in', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
+        "the stand-in's answer in the chat",
+        timeout: const Duration(seconds: 40),
       );
       await _closeTabs(tester);
     },

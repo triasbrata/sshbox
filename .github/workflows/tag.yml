@@ -2,7 +2,9 @@
 # tests have passed on it. Not every push to main is a release: commits that
 # change the app gather until there are ten since the last release, or until
 # one of them is a new feature, marked with a `Release: feature` trailer.
-# A push short of that says how many have gathered and stops.
+# A push short of that says how many have gathered and stops. Started by hand
+# (Actions › Tag › Run workflow, on main) it releases main's head at once,
+# whatever has gathered, through the same rc and e2e gate.
 #
 # The highest release tag, annotated "Jeansh X.Y.Z, build N", gives way to
 # vX.Y.(Z+1) with build N+1, or to X.Y.0 when pubspec.yaml's version line asks
@@ -35,6 +37,9 @@ on:
       - 'third_party/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
+  # A release now, for what changed outside the app's paths (a build runner,
+  # say) or cannot wait for the batch.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -63,6 +68,12 @@ jobs:
           # How many app commits make a release without a feature among them.
           RELEASE_EVERY: 10
         run: |
+          # By hand on main only: a tag anywhere else would number a commit
+          # that never reached main, and could not be released anyway.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::run by hand on main only, not $GITHUB_REF"
+            exit 1
+          fi
           if [ -n "$(git tag --points-at HEAD 'v[0-9]*')" ]; then
             echo "$(git tag --points-at HEAD 'v[0-9]*') is this commit already"
             exit 0
@@ -86,7 +97,9 @@ jobs:
           # Into a variable first: grep -q stopping early would SIGPIPE git
           # log, and under pipefail a match would then read as no match.
           trailers=$(git log --no-merges --format='%(trailers:key=Release,valueonly)' "$last..HEAD" -- "${app[@]}")
-          if grep -qiE '^[[:space:]]*feature[[:space:]]*$' <<< "$trailers"; then
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            why="run by hand, $count app commits since $last"
+          elif grep -qiE '^[[:space:]]*feature[[:space:]]*$' <<< "$trailers"; then
             why="a new feature among $count app commits since $last"
           elif [ "$count" -ge "$RELEASE_EVERY" ]; then
             why="$count app commits since $last"

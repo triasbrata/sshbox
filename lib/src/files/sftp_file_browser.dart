@@ -57,7 +57,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
           }
 
           await _resolveLinkTargets(sftp, entries);
-          _sort(entries);
+          sortEntries(entries);
           return entries;
         },
       );
@@ -111,7 +111,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     }
   }
 
-  static void _sort(List<RemoteEntry> entries) {
+  static void sortEntries(List<RemoteEntry> entries) {
     entries.sort((a, b) {
       final aDir = a.kind == RemoteEntryKind.directory;
       final bDir = b.kind == RemoteEntryKind.directory;
@@ -184,7 +184,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         final file = await sftp.open(path, mode: SftpFileOpenMode.read);
         try {
           final bytes = await file.readBytes();
-          return (text: _decodeText(bytes), stamp: _stampOf(attrs));
+          return (text: decodeText(bytes), stamp: _stampOf(attrs));
         } finally {
           await file.close();
         }
@@ -207,7 +207,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     }
   }
 
-  static String _decodeText(Uint8List bytes) {
+  static String decodeText(Uint8List bytes) {
     // A NUL byte is the same signal `grep -I` uses, and it is right far more
     // often than any charset guess would be.
     if (bytes.contains(0)) {
@@ -607,7 +607,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
 
         // One byte past the limit is enough to know, where stat could not say.
         final bytes = await _sudo(
-          'head -c ${maxBytes + 1} -- ${_shellQuote(path)}',
+          'head -c ${maxBytes + 1} -- ${shellQuote(path)}',
           password,
           'open $path',
         );
@@ -619,7 +619,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
           );
         }
         return (
-          text: _decodeText(bytes),
+          text: decodeText(bytes),
           stamp: attrs == null ? _unknownStamp : _stampOf(attrs),
         );
       });
@@ -667,7 +667,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
           // cp into an existing file writes through it: owner, permissions
           // and inode stay the file's own, and a symlink stays a link.
           await _sudo(
-            'cp -- ${_shellQuote(temp)} ${_shellQuote(path)}',
+            'cp -- ${shellQuote(temp)} ${shellQuote(path)}',
             password,
             'save $path',
           );
@@ -733,7 +733,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
         timeout: const Duration(seconds: 5),
       );
       if (code == 0) return out.takeBytes();
-      throw _sudoFailure(
+      throw sudoFailure(
         code,
         utf8.decode(err.takeBytes(), allowMalformed: true),
         action,
@@ -746,7 +746,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   /// What went wrong under sudo, as faults the editor can act on. Every
   /// refusal by sudo itself is [FileBrowserFault.permissionDenied]: each is
   /// answered the same way, by asking for a password or saying why not.
-  static FileBrowserException _sudoFailure(
+  static FileBrowserException sudoFailure(
     int? code,
     String stderr,
     String action,
@@ -809,7 +809,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     // `.` or `*` must not quietly change what was asked for.
     // -I: skip binaries. Their "matches" are noise a phone screen cannot use.
     final command = 'grep -rnIF --exclude-dir=.git '
-        '-e ${_shellQuote(query)} -- ${_shellQuote(root)} 2>/dev/null';
+        '-e ${shellQuote(query)} -- ${shellQuote(root)} 2>/dev/null';
 
     final SSHSession session;
     try {
@@ -830,12 +830,12 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
       final lines = const LineSplitter().bind(decoder.bind(session.stdout));
 
       await for (final line in lines) {
-        final hit = _parseGrepLine(line);
+        final hit = parseGrepLine(line);
         if (hit == null) continue;
         yield hit;
         // A phone cannot use more than this, and an unbounded search over a
         // home directory will happily produce tens of thousands.
-        if (++hits >= _searchHitLimit) return;
+        if (++hits >= searchHitLimit) return;
       }
 
       final exitCode = await session.waitForExit(
@@ -870,13 +870,13 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
     }
   }
 
-  static const _searchHitLimit = 500;
+  static const searchHitLimit = 500;
 
   /// `path:line:text`, with the path allowed to contain colons of its own —
   /// the digits between the two colons are what actually anchors the split.
   static final _grepLine = RegExp(r'^(.*?):(\d+):(.*)$');
 
-  static SearchHit? _parseGrepLine(String line) {
+  static SearchHit? parseGrepLine(String line) {
     final match = _grepLine.firstMatch(line);
     if (match == null) return null;
     final number = int.tryParse(match.group(2)!);
@@ -894,7 +894,7 @@ class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   /// Single quotes suspend every expansion the shell does; the dance in the
   /// middle is how a single quote itself gets through. Without this a search
   /// for `$(rm -rf ~)` would be a command, not a search.
-  static String _shellQuote(String value) =>
+  static String shellQuote(String value) =>
       "'${value.replaceAll("'", r"'\''")}'";
 
   @override
