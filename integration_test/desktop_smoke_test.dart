@@ -2274,8 +2274,13 @@ touch '${done.path}'
       await _launch(tester);
       // Two tabs, so the tab's menu has a Group with… to offer.
       await _chatAnswered(tester);
-      // The stand-in's own session, as `claude agents` lists it.
+      // The stand-in's own session, as `claude agents` lists it: in the
+      // sidebar on a wide window, in the drawer its button opens otherwise.
       final row = find.text('e2e');
+      if (row.evaluate().isEmpty) {
+        await tester.tap(find.byTooltip('Sessions on this host'));
+        await tester.pumpAndSettle();
+      }
       await _until(
         tester,
         () => row.evaluate().isNotEmpty,
@@ -2286,11 +2291,17 @@ touch '${done.path}'
       await tester.pumpAndSettle();
       expect(find.text('Group with…'), findsNothing);
 
-      await _realRightClick(tester, tester.getCenter(_answer.first));
+      // The tab's menu is still there, from the chat's chip. (The answer's
+      // text takes a right-click for its own Copy, as on main.)
+      await _escape(tester);
+      await _realRightClick(
+        tester,
+        tester.getCenter(find.textContaining('Claude').first),
+      );
       await _until(
         tester,
         () => find.text('Group with…').evaluate().isNotEmpty,
-        "the tab's menu, from the conversation",
+        "the tab's menu, from the chat's chip",
       );
       await _escape(tester);
       binding.shouldPropagateDevicePointerEvents = false;
