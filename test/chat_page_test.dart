@@ -12,6 +12,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/settings_page.dart' show chatEnterSends;
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:sshbox/src/ui/tui.dart';
@@ -1925,6 +1926,104 @@ void main() {
 
         expect(other.hasFocus, isTrue);
         expect(box.controller!.text, isEmpty);
+      });
+    });
+
+    group('the keyboard sends', () {
+      Future<_Shell> typed(WidgetTester tester, String text) async {
+        final shell = _Shell()
+          ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        );
+        await tester.pump();
+        await _continue(tester, 'Notes');
+        await tester.enterText(find.byType(TextField), text);
+        await tester.pump();
+        return shell;
+      }
+
+      Future<void> chord(WidgetTester tester, LogicalKeyboardKey modifier) async {
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(modifier);
+        await tester.pump();
+      }
+
+      String box(WidgetTester tester) =>
+          tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+      testWidgets('by default with Ctrl+Enter, a plain Enter sending nothing', (
+        tester,
+      ) async {
+        final shell = await typed(tester, 'hello');
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, hasLength(1));
+        expect(box(tester), isEmpty);
+      });
+
+      testWidgets('with ⌘+Enter on a Mac', (tester) async {
+        final shell = await typed(tester, 'hello');
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, isEmpty);
+        await chord(tester, LogicalKeyboardKey.metaLeft);
+        expect(shell.written, hasLength(1));
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('with Enter when Settings says so, Shift+Enter making a new '
+          'line and the chord still sending', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, 'one');
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(box(tester), 'one\n');
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'one\ntwo',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, hasLength(1));
+        expect(
+          (((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content'] as List)
+              .single['text'],
+          'one\ntwo',
+        );
+      });
+
+      testWidgets('never with an IME\'s Enter, which confirms what it is '
+          'composing', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, 'nihao');
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'nihao',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 0, end: 5),
+          ),
+        );
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, isEmpty);
       });
     });
 

@@ -27,6 +27,7 @@ Future<void> main() async {
   await keyBarSettings.load();
   await appTheme.load();
   await gitInDrawer.load();
+  await chatEnterSends.load();
   await localTmux.load();
   await showDotfiles.load();
   await copyOnSelect.load();

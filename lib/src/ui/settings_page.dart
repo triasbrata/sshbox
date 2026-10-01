@@ -377,6 +377,38 @@ class GitPanelSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True is the drawer.
 final gitInDrawer = GitPanelSetting();
 
+/// What sends a chat message from the keyboard: ⌘+Enter on Apple's
+/// keyboards and Ctrl+Enter on the rest, a plain Enter making a new line, as
+/// the box always has; or Enter, as in Discord, Shift+Enter then being the
+/// new line. The chord sends either way.
+class ChatEnterSetting extends ValueNotifier<bool> {
+  ChatEnterSetting() : super(false);
+
+  static const _key = 'sshbox.chat.enterSends';
+
+  /// Reads the saved choice. Nothing saved is the chord.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? false;
+  }
+
+  /// Applies at once, and is saved for the next start.
+  Future<void> choose(bool enter) async {
+    value = enter;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, enter);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it. True is Enter.
+final chatEnterSends = ChatEnterSetting();
+
+/// The send chord's name on this platform.
+String get chatSendChord => switch (defaultTargetPlatform) {
+  TargetPlatform.macOS || TargetPlatform.iOS => '⌘+Enter',
+  _ => 'Ctrl+Enter',
+};
+
 /// Whether this machine's own shells run in tmux, and which tmux. The Local
 /// shell is saved nowhere, so its choice cannot live on a host, as a saved
 /// host's `useTmux` does.
@@ -631,6 +663,7 @@ class SettingsPage extends StatelessWidget {
                   if (LinkModifierSetting.offered.length > 1)
                     const _LinkModifierTile(),
                   const _GitSection(),
+                  const _ChatSection(),
                   // Desktop alone: only a desktop has a shell of its own to
                   // run.
                   if (isDesktop) const _LocalShellSection(),
@@ -1923,6 +1956,32 @@ class _GitSection extends StatelessWidget {
       ],
     );
   }
+}
+
+class _ChatSection extends StatelessWidget {
+  const _ChatSection();
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const _SectionHeader('Chat'),
+      const _Label('Send a message with'),
+      ValueListenableBuilder(
+        valueListenable: chatEnterSends,
+        builder: (context, enter, _) => TuiSelect<bool>(
+          options: [(false, chatSendChord), (true, 'Enter')],
+          value: enter,
+          onChanged: chatEnterSends.choose,
+        ),
+      ),
+      _Note(
+        'With $chatSendChord, Enter makes a new line. With Enter, '
+        'Shift+Enter makes a new line, and $chatSendChord sends too. The '
+        'send button works either way.',
+      ),
+    ],
+  );
 }
 
 /// This machine's own shells in tmux: see [localTmux]. On Windows the Local

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -12,7 +13,7 @@ import '../session/session_manager.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart' show CodeBlockBuilder;
 import 'markdown_input.dart';
-import 'settings_page.dart' show terminalSettings;
+import 'settings_page.dart' show chatEnterSends, terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -49,7 +50,12 @@ class _ChatPageState extends State<ChatPage> {
     panel: Colors.black12,
   );
   final _scroll = ScrollController();
-  final _inputFocus = FocusNode();
+  late final _inputFocus = FocusNode(onKeyEvent: _onBoxKey);
+
+  /// Whether the box may send now, as it was last drawn.
+  bool _canSend = false;
+
+  bool get _sendable => _canSend && _input.text.trim().isNotEmpty;
 
   /// Whether the tabs showed this chat when it last looked; null until its
   /// first look.
@@ -148,6 +154,53 @@ class _ChatPageState extends State<ChatPage> {
     _shown = shown;
   }
 
+  /// Enter in the box: ⌘+Enter on Apple's keyboards, Ctrl+Enter on the
+  /// rest, sends; a plain Enter is a new line, or sends where Settings says
+  /// Enter sends, Shift+Enter then being the new line. An IME's Enter, which
+  /// confirms what it is composing, is the IME's.
+  KeyEventResult _onBoxKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent ||
+        (event.logicalKey != LogicalKeyboardKey.enter &&
+            event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+        _input.value.isComposingRangeValid) {
+      return KeyEventResult.ignored;
+    }
+    final keys = HardwareKeyboard.instance;
+    final chord = switch (defaultTargetPlatform) {
+      TargetPlatform.macOS || TargetPlatform.iOS => keys.isMetaPressed,
+      _ => keys.isControlPressed,
+    };
+    if (chord ||
+        (chatEnterSends.value &&
+            !keys.isShiftPressed &&
+            !keys.isControlPressed &&
+            !keys.isMetaPressed &&
+            !keys.isAltPressed)) {
+      if (_sendable) _send();
+      return KeyEventResult.handled;
+    }
+    if (chatEnterSends.value && keys.isShiftPressed) {
+      // Typed here rather than left to the platform, which, with Enter as
+      // the box's send action, need not make it a new line.
+      _type('\n');
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// [text] typed into the box over its selection, or at its end.
+  void _type(String text) {
+    final value = _input.value;
+    final at = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    _input.value = TextEditingValue(
+      text: value.text.replaceRange(at.start, at.end, text),
+      selection: TextSelection.collapsed(offset: at.start + text.length),
+    );
+    setState(() {});
+  }
+
   /// Typing in a chat whose box does not have the focus types into the box,
   /// as Discord does: a hardware key is heard here before the focus chain,
   /// focused or not, as the terminal's pane hears one.
@@ -187,15 +240,7 @@ class _ChatPageState extends State<ChatPage> {
     FocusManager.instance.applyFocusChangesIfNeeded();
     // A box shut, or in a group's pane not focused, cannot take it.
     if (!_inputFocus.hasFocus) return false;
-    final value = _input.value;
-    final at = value.selection.isValid
-        ? value.selection
-        : TextSelection.collapsed(offset: value.text.length);
-    _input.value = TextEditingValue(
-      text: value.text.replaceRange(at.start, at.end, character),
-      selection: TextSelection.collapsed(offset: at.start + character.length),
-    );
-    setState(() {});
+    _type(character);
     return true;
   }
 
@@ -530,6 +575,7 @@ class _ChatPageState extends State<ChatPage> {
     final open = !readOnly && (watching != null || chat.ready || composing);
     final canSend =
         open && (watching != null || ((chat.ready || composing) && !chat.busy));
+    _canSend = canSend;
     final palette = TermulThemeData.of(context).palette;
     _input
       ..mono = terminalSettings.value.fontFamily
@@ -584,6 +630,13 @@ class _ChatPageState extends State<ChatPage> {
               child: TextField(
                 controller: _input,
                 focusNode: _inputFocus,
+                // Gboard's own Enter sends too when Enter is what sends.
+                textInputAction: chatEnterSends.value
+                    ? TextInputAction.send
+                    : null,
+                onSubmitted: (_) {
+                  if (_sendable) _send();
+                },
                 enabled: open,
                 minLines: 1,
                 // Room for a short code block before it scrolls.
@@ -619,9 +672,7 @@ class _ChatPageState extends State<ChatPage> {
             const SizedBox(width: 4),
             IconButton.filled(
               tooltip: 'Send',
-              onPressed: canSend && _input.text.trim().isNotEmpty
-                  ? _send
-                  : null,
+              onPressed: _sendable ? _send : null,
               icon: const Icon(Icons.send),
             ),
           ],
