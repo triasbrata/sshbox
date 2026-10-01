@@ -655,12 +655,15 @@ func post(_ type: CGEventType) {
   e.post(tap: .cghidEventTap)
   usleep(10_000)
 }
-func shift(_ down: Bool) {
-  flags = down ? .maskShift : []
-  let e = CGEvent(keyboardEventSource: nil, virtualKey: 56, keyDown: down)!
+// A modifier is a flags-changed event, as the keyboard makes one: posted as
+// a key down, AppKit hands it to no one.
+func modifier(_ key: CGKeyCode, _ mask: CGEventFlags, _ down: Bool) {
+  flags = down ? mask : []
+  let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)!
+  e.type = .flagsChanged
   e.flags = flags
   e.post(tap: .cghidEventTap)
-  usleep(50_000)
+  usleep(150_000)
 }
 for step in args[3].split(separator: ";") {
   let p = step.split(separator: " ")
@@ -671,16 +674,17 @@ for step in args[3].split(separator: ";") {
     post(pressed ? .leftMouseDragged : .mouseMoved)
   case "down": pressed = true; post(.leftMouseDown)
   case "up": pressed = false; post(.leftMouseUp)
-  case "shiftdown": shift(true)
+  case "shiftdown": modifier(56, .maskShift, true)
   case "cmdc":
-    for (key, down) in [(55, true), (8, true), (8, false), (55, false)] {
-      let e = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key),
-                      keyDown: down)!
-      e.flags = key == 55 && !down ? [] : .maskCommand
+    modifier(55, .maskCommand, true)
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: nil, virtualKey: 8, keyDown: down)!
+      e.flags = .maskCommand
       e.post(tap: .cghidEventTap)
       usleep(150_000)
     }
-  case "shiftup": shift(false)
+    modifier(55, .maskCommand, false)
+  case "shiftup": modifier(56, .maskShift, false)
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
   }
@@ -2520,7 +2524,16 @@ touch '${done.path}'
 
         await Clipboard.setData(const ClipboardData(text: 'untouched'));
         await _hearing(() async {
-          await _osMouse(tester, ['shiftdown', ...drag, 'shiftup']);
+          // Shift held past the release, as a hand holds it: the app may
+        // hear a key before the pointer events sent ahead of it, and xterm2
+        // reads Shift as the drag starts, not at the press.
+        await _osMouse(tester, [
+          'shiftdown',
+          'sleep 200',
+          ...drag,
+          'sleep 500',
+          'shiftup',
+        ]);
           await _until(
             tester,
             () async => await _clipboard() != 'untouched',
