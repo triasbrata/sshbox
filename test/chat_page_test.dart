@@ -604,6 +604,50 @@ void main() {
     );
   });
 
+  testWidgets('at the largest content text size the list\'s rows still fit '
+      'on a phone', (tester) async {
+    addTearDown(() => terminalSettings.value = TerminalSettings.defaultStyle);
+    tester.view
+      ..physicalSize = const Size(320, 568)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')])
+      ..slashListing = '${jsonEncode({
+        'type': 'control_response',
+        'response': {
+          'response': {
+            'commands': [
+              for (final name in ['compact', 'context'])
+                {
+                  'name': name,
+                  'description': 'What /$name does',
+                  'argumentHint': '<instructions>',
+                  'builtin': true,
+                },
+            ],
+          },
+        },
+      })}\n';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+    terminalSettings.value = terminalStyleOf('monospace', 32);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pump();
+
+    // An overflow in a row is an error the test framework fails on.
+    await tester.enterText(find.byType(TextField), '/con');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('/context'), findsOneWidget);
+  });
+
   testWidgets('an unconnected session says so rather than starting anything', (
     tester,
   ) async {
@@ -2360,6 +2404,22 @@ void main() {
               .single['text'],
           '/compact',
         );
+      });
+
+      testWidgets('a list with nothing to pick leaves Enter to the box, so a '
+          'command no one knows is refused there', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, '/xyz');
+        await tester.pump();
+        expect(find.text('No command chat can run starts with /xyz'),
+            findsOneWidget);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(find.textContaining('run it in the terminal'), findsOneWidget);
+        await tester.pump(const Duration(seconds: 6));
       });
 
       testWidgets('never with an IME\'s Enter, which confirms what it is '
