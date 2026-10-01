@@ -68,6 +68,18 @@ void main() {
     }
   });
 
+  // A Mac's web view cannot set its background: asked to, it threw while the
+  // view was built, and every diagram drew as the grey of a widget that threw.
+  testWidgets('builds on a Mac, whose web view takes no background colour', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: MermaidView(source: 'pie\n  "a": 1\n')),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.byType(ErrorWidget), findsNothing);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   group('holdOpenMermaid', () {
     test('leaves a closed fence, and any other open one, as it is', () {
       for (final text in [

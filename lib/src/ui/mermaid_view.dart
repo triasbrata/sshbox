@@ -282,7 +282,13 @@ class _MermaidViewState extends State<MermaidView> {
     if (options == _options) return;
     _options = options;
     _height = _heights[(widget.source, options)] ?? _height;
-    unawaited(_view.setBackgroundColor(background));
+    // On macOS webview_flutter throws "opaque is not implemented" here, and
+    // synchronously: every diagram built as a widget that threw, the grey
+    // a release build draws for one. The page paints the same colour itself
+    // from the options render() takes.
+    if (defaultTargetPlatform != TargetPlatform.macOS) {
+      unawaited(_view.setBackgroundColor(background));
+    }
     _draw();
   }
 

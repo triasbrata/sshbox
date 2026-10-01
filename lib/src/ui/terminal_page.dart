@@ -1346,9 +1346,6 @@ class _PaneViewState extends State<_PaneView> {
         terminal.hyperlinkAt(cell) ??
         (range == null ? null : hyperlinkIn(terminal, range));
     final tabMenu = TabMenu.of(context)?.entries() ?? const [];
-    final diagram = range == null || !hasWebView
-        ? null
-        : mermaidSource(selectedText(terminal.buffer, range));
     void copy(String text, String said) {
       Clipboard.setData(ClipboardData(text: text));
       showToast(context, said, type: TuiToastType.success);
@@ -1363,7 +1360,7 @@ class _PaneViewState extends State<_PaneView> {
       menuAction('Paste', () => unawaited(_paste())),
       if (link != null)
         menuAction('Copy link address', () => copy(link, 'Copied $link')),
-      if (diagram != null)
+      if (_diagramIn(range) case final diagram?)
         menuAction(
           'Show as diagram',
           () => unawaited(showMermaidDialog(context, diagram)),
@@ -1372,6 +1369,12 @@ class _PaneViewState extends State<_PaneView> {
       if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
     ]);
   }
+
+  /// The Mermaid source [range] holds, where a web view can draw it: what
+  /// the menu's Show as diagram opens. See [mermaidSource].
+  String? _diagramIn(BufferRange? range) => range == null || !hasWebView
+      ? null
+      : mermaidSource(selectedText(widget.terminal.buffer, range));
 
   /// Ctrl+Shift+C — ⌘C on an Apple platform — before xterm2's own copy
   /// shortcut, which reads the selection through `Buffer.getText` and so

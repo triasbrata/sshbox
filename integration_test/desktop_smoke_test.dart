@@ -979,7 +979,11 @@ touch '${done.path}'
         kind: PointerDeviceKind.mouse,
         buttons: kSecondaryMouseButton,
       );
-      await _pick(tester, 'Copy');
+      await _until(
+        tester,
+        () => _label('Copy').evaluate().isNotEmpty,
+        'the menu to open',
+      );
       if (!hasWebView) {
         expect(_label('Show as diagram'), findsNothing);
         await _escape(tester);

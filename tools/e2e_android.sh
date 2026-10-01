@@ -185,6 +185,12 @@ with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
 PY
 }
 
+# chat_mermaid alone, for E2E_ONLY: the stand-in's sessions first.
+chat_mermaid() {
+  chat_stand_in
+  flow chat_mermaid
+}
+
 # The code editor from the drawer: an edit saved through its own chrome. Its
 # file goes in the login home, the root of the host's file tree, with the
 # CRLF endings the flow is about, and is gone with the runner.

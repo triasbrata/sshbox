@@ -33,8 +33,9 @@ env:
     visible: "(?s)\\W*E2E diagram.*"
     timeout: 20000
 - tapOn: "(?s)\\W*E2E diagram.*"
+# The reply's paragraphs can reach Maestro as one node, so a regex.
 - extendedWaitUntil:
-    visible: "Diagram above"
+    visible: "(?s).*Diagram above.*"
     timeout: 20000
 
 - extendedWaitUntil:
