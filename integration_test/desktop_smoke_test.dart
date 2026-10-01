@@ -43,6 +43,7 @@ import 'package:sshbox/src/ui/file_download.dart'
     show downloadFile, openDownload;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
+import 'package:sshbox/src/ui/termul/tui_chat.dart' show TuiChatBubble;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart'
@@ -962,9 +963,12 @@ case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
     mkdir -p "$d/projects/jeansh-e2e"
-    printf '%s\n' \
-      '{"type":"user","message":{"role":"user","content":"hello from the e2e"}}' \
-      "$answer" >"$t"
+    # The message, the last argument, as the session's first turn.
+    for last; do :; done
+    python3 -c 'import json, sys
+print(json.dumps({"type": "user", "message": {"role": "user", "content": sys.argv[1]}}))' \
+      "$last" >"$t"
+    printf '%s\n' "$answer" >>"$t"
     echo "backgrounded · e2e0c0de · e2e" ;;
   agents)
     if [ -f "$t" ]; then
@@ -979,6 +983,27 @@ case "$1" in
     done ;;
 esac
 ''';
+
+/// The X display as it is now, as [name].png in E2E_SHOTS, for a person to
+/// look at on CI: evidence, never checked. Nothing where E2E_SHOTS is unset.
+/// Beside [_shot], which renders the layer and settles first, and so stays
+/// off on CI.
+Future<void> _grab(WidgetTester tester, String name) async {
+  final dir = Platform.environment['E2E_SHOTS'];
+  final display = Platform.environment['DISPLAY'];
+  if (dir == null || dir.isEmpty || display == null) return;
+  Directory(dir).createSync(recursive: true);
+  // This binding draws only when pumped, and X shows a frame a moment after
+  // it is drawn: without this the grab was a frame or two behind.
+  for (var i = 0; i < 3; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
+  await Process.run('ffmpeg', [
+    '-loglevel', 'error', '-y', '-f', 'x11grab', '-draw_mouse', '0', //
+    '-i', display, '-frames:v', '1', '$dir/$name.png',
+  ]);
+}
 
 
 /// Answers the desktop's save dialog as a person would, once it is up: saves
@@ -2268,6 +2293,102 @@ touch '${done.path}'
         );
         expect(find.byType(ErrorWidget), findsNothing);
       }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #141: the chat box as Discord's — typing on the keyboard while the box
+  // has no focus types into it, once; Markdown is styled as it is typed and
+  // drawn as Markdown once sent; a plain Enter is a new line and Ctrl+Enter
+  // sends. Real keys, through X and GTK, as a person types them: that the
+  // first key lands once, neither lost nor doubled, is the platform's to
+  // show, which a widget test cannot.
+  _test(
+    'the chat box takes typing, draws Markdown, and sends on Ctrl+Enter',
+    skip: !Platform.isLinux
+        ? 'xdotool drives the Linux build only'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final input = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      );
+      await _until(
+        tester,
+        () => input.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      TextField box() => tester.widget<TextField>(input);
+      // On a desktop, a chat shown has its box focused.
+      await _until(
+        tester,
+        () => box().focusNode!.hasFocus,
+        'the box to take the focus as the chat is shown',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      expect(box().focusNode!.hasFocus, isFalse);
+
+      const typed = '**bold** and `code`';
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['type', '--delay', '60', typed]);
+      await _until(
+        tester,
+        () => box().controller!.text.length >= typed.length,
+        'what was typed to reach the box',
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      // Every key once: the first, which moved the focus, neither lost nor
+      // typed a second time.
+      expect(box().controller!.text, typed);
+      expect(box().focusNode!.hasFocus, isTrue);
+      await _grab(tester, 'chat-composer-typing');
+
+      // A plain Enter is a new line, and sends nothing.
+      await _xdo(['key', 'Return']);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(box().controller!.text, '$typed\n');
+      expect(find.byType(TuiChatBubble), findsNothing);
+
+      await _xdo(['key', 'ctrl+Return']);
+      await _until(
+        tester,
+        () => find
+            .textContaining('Echo from the stand-in', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
+        "the stand-in's answer in the chat",
+        timeout: const Duration(seconds: 40),
+      );
+      expect(box().controller!.text, isEmpty);
+      // Drawn as Markdown: bold is bold, and no marker is left on screen.
+      final spans = <TextSpan>[];
+      for (final text in tester.widgetList<RichText>(
+        find.descendant(
+          of: find.byType(TuiChatBubble),
+          matching: find.byType(RichText),
+        ),
+      )) {
+        text.text.visitChildren((span) {
+          if (span is TextSpan && span.text != null) spans.add(span);
+          return true;
+        });
+      }
+      expect(
+        spans.any(
+          (s) => s.text == 'bold' && s.style?.fontWeight == FontWeight.bold,
+        ),
+        isTrue,
+        reason: 'the bubble draws **bold** bold: ${spans.map((s) => s.text)}',
+      );
+      expect(spans.any((s) => s.text!.contains('**')), isFalse);
+      expect(spans.any((s) => s.text!.contains('`')), isFalse);
+      await _grab(tester, 'chat-composer-sent');
       await _closeTabs(tester);
     },
   );

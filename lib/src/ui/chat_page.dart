@@ -2,15 +2,19 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
+import '../platform.dart';
 import '../session/session_manager.dart';
 import 'code_languages.dart';
+import 'file_editor_page.dart' show CodeBlockBuilder;
+import 'markdown_input.dart';
 import 'mermaid_view.dart';
-import 'settings_page.dart' show terminalSettings;
+import 'settings_page.dart' show chatEnterSends, terminalSettings;
 import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
@@ -39,8 +43,30 @@ class ChatPage extends StatefulWidget {
 }
 
 class _ChatPageState extends State<ChatPage> {
-  final _input = TextEditingController();
+  /// Draws what is typed as Markdown; its colours are set from the theme
+  /// each time the box is built.
+  final _input = MarkdownEditingController(
+    mono: '',
+    dim: Colors.grey,
+    accent: Colors.blue,
+    panel: Colors.black12,
+  );
   final _scroll = ScrollController();
+  late final _inputFocus = FocusNode(onKeyEvent: _onBoxKey);
+
+  /// Whether the box may send now, as it was last drawn.
+  bool _canSend = false;
+
+  bool get _sendable => _canSend && _input.text.trim().isNotEmpty;
+
+  /// True while a menu over the box — a list of slash commands — is open:
+  /// the box then leaves its keys to the menu, which sits above it in the
+  /// focus chain and hears what the box ignores.
+  final _menuOpen = ValueNotifier(false);
+
+  /// Whether the tabs showed this chat when it last looked; null until its
+  /// first look.
+  bool? _shown;
 
   /// Held rather than asked for each time: closing the tab lets the session
   /// go of its chat, and asking again would make a second one to take the
@@ -105,16 +131,142 @@ class _ChatPageState extends State<ChatPage> {
     widget.session.addListener(_onChanged);
     _chat.addListener(_onChanged);
     _scroll.addListener(_onScrolled);
+    HardwareKeyboard.instance.addHandler(_onHardwareKey);
     _onChanged();
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.session.removeListener(_onChanged);
     _chat.removeListener(_onChanged);
     _input.dispose();
+    _inputFocus.dispose();
+    _menuOpen.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // On a desktop, a chat put on screen is typed into: the box takes the
+    // focus. Not on a touch screen, where focus would raise the soft keyboard
+    // by itself; there a hardware key is what moves it, below.
+    final shown = Visibility.of(context);
+    if (isDesktop && shown && _shown != true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && Visibility.of(context)) _inputFocus.requestFocus();
+      });
+    }
+    _shown = shown;
+  }
+
+  /// Enter in the box: ⌘+Enter on Apple's keyboards, Ctrl+Enter on the
+  /// rest, sends; a plain Enter is a new line, or sends where Settings says
+  /// Enter sends, Shift+Enter then being the new line. An IME's Enter, which
+  /// confirms what it is composing, is the IME's.
+  KeyEventResult _onBoxKey(FocusNode node, KeyEvent event) {
+    if (_menuOpen.value ||
+        event is KeyUpEvent ||
+        (event.logicalKey != LogicalKeyboardKey.enter &&
+            event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+        _input.value.isComposingRangeValid) {
+      return KeyEventResult.ignored;
+    }
+    final keys = HardwareKeyboard.instance;
+    final chord = switch (defaultTargetPlatform) {
+      TargetPlatform.macOS || TargetPlatform.iOS => keys.isMetaPressed,
+      _ => keys.isControlPressed,
+    };
+    if (chord ||
+        (chatEnterSends.value &&
+            !keys.isShiftPressed &&
+            !keys.isControlPressed &&
+            !keys.isMetaPressed &&
+            !keys.isAltPressed)) {
+      if (_sendable) _send();
+      return KeyEventResult.handled;
+    }
+    if (chatEnterSends.value && keys.isShiftPressed) {
+      // Typed here rather than left to the platform, which, with Enter as
+      // the box's send action, need not make it a new line.
+      _type('\n');
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// [text] typed into the box over its selection, or at its end.
+  void _type(String text) {
+    final value = _input.value;
+    final at = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    _input.value = TextEditingValue(
+      text: value.text.replaceRange(at.start, at.end, text),
+      selection: TextSelection.collapsed(offset: at.start + text.length),
+    );
+    setState(() {});
+  }
+
+  /// Typing in a chat whose box does not have the focus types into the box,
+  /// as Discord does: a hardware key is heard here before the focus chain,
+  /// focused or not, as the terminal's pane hears one.
+  ///
+  /// The key that moves the focus is typed into the box here and kept from
+  /// going on: the box had no text input connection when the platform read
+  /// it, so where that key's character would land is each platform's own
+  /// affair — dropped on one, typed once the connection opens on another.
+  /// Taken here, it lands once on every one.
+  ///
+  /// Only a key that types something, with no Ctrl, ⌘ or Alt — so shortcuts,
+  /// Ctrl+C on a selection among them, and Tab, arrows, Escape, Enter and the
+  /// F-keys go where they were going — and only while this chat is on screen,
+  /// the page on top, and no text field anywhere has the focus.
+  bool _onHardwareKey(KeyEvent event) {
+    if (event is! KeyDownEvent || _inputFocus.hasFocus || _shown != true) {
+      return false;
+    }
+    final character = event.character;
+    if (character == null ||
+        character.isEmpty ||
+        character.codeUnits.any((u) => u < 0x20 || u == 0x7f)) {
+      return false;
+    }
+    final keys = HardwareKeyboard.instance;
+    if (keys.isControlPressed || keys.isMetaPressed || keys.isAltPressed) {
+      return false;
+    }
+    if (ModalRoute.of(context)?.isCurrent == false) return false;
+    // A drawer open over the chat, its own sessions or a page's around it,
+    // is no route but is where the user is.
+    for (final scaffold in [
+      _scaffoldKey.currentState,
+      Scaffold.maybeOf(context),
+    ]) {
+      if (scaffold != null &&
+          (scaffold.isDrawerOpen || scaffold.isEndDrawerOpen)) {
+        return false;
+      }
+    }
+    // Space on a focused button or row has already pressed it.
+    final primary = FocusManager.instance.primaryFocus;
+    if (character == ' ' && primary != null && primary is! FocusScopeNode) {
+      return false;
+    }
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (focused != null &&
+        (focused.widget is EditableText ||
+            focused.findAncestorWidgetOfExactType<EditableText>() != null)) {
+      return false;
+    }
+    _inputFocus.requestFocus();
+    FocusManager.instance.applyFocusChangesIfNeeded();
+    // A box shut, or in a group's pane not focused, cannot take it.
+    if (!_inputFocus.hasFocus) return false;
+    _type(character);
+    return true;
   }
 
   void _onChanged() {
@@ -404,7 +556,7 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _entry(ChatEntry entry) => switch (entry) {
-    ChatSaid(mine: true) => _Bubble(said: entry),
+    ChatSaid(mine: true) => _Bubble(said: entry, onTapLink: _openLink),
     ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
@@ -454,7 +606,14 @@ class _ChatPageState extends State<ChatPage> {
     final open = !readOnly && (watching != null || chat.ready || composing);
     final canSend =
         open && (watching != null || ((chat.ready || composing) && !chat.busy));
+    _canSend = canSend;
     final palette = TermulThemeData.of(context).palette;
+    _input
+      ..mono = terminalSettings.value.fontFamily
+      ..dim = palette.dim
+      ..accent = palette.accent
+      // The selection colour: the field itself is drawn on the panel.
+      ..panel = palette.selection;
     return SafeArea(
       top: false,
       child: Padding(
@@ -502,9 +661,18 @@ class _ChatPageState extends State<ChatPage> {
             Expanded(
               child: TextField(
                 controller: _input,
+                focusNode: _inputFocus,
+                // Gboard's own Enter sends too when Enter is what sends.
+                textInputAction: chatEnterSends.value
+                    ? TextInputAction.send
+                    : null,
+                onSubmitted: (_) {
+                  if (_sendable) _send();
+                },
                 enabled: open,
                 minLines: 1,
-                maxLines: 5,
+                // Room for a short code block before it scrolls.
+                maxLines: 8,
                 keyboardType: TextInputType.multiline,
                 textCapitalization: TextCapitalization.sentences,
                 // termul's TuiInput look — its ❯ prompt in the accent — on
@@ -548,9 +716,7 @@ class _ChatPageState extends State<ChatPage> {
                     ? Colors.black
                     : Colors.white,
               ),
-              onPressed: canSend && _input.text.trim().isNotEmpty
-                  ? _send
-                  : null,
+              onPressed: _sendable ? _send : null,
               icon: const Icon(Icons.send),
             ),
           ],
@@ -659,13 +825,14 @@ class _Earlier extends StatelessWidget {
   }
 }
 
-/// What the user said: their own bubble, on their own side — and, for a
-/// message typed into a session being watched, where it has got to, until
-/// that session has recorded it.
+/// What the user said: their own bubble, on their own side, drawn as the
+/// Markdown it was typed in — and, for a message typed into a session being
+/// watched, where it has got to, until that session has recorded it.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.said});
+  const _Bubble({required this.said, required this.onTapLink});
 
   final ChatSaid said;
+  final MarkdownTapLinkCallback onTapLink;
 
   /// termul's bubble, with its note while it is not in the session yet.
   @override
@@ -678,64 +845,109 @@ class _Bubble extends StatelessWidget {
       null => null,
     },
     failureReason: said.why,
+    child: SelectionArea(
+      child: _ChatMarkdown(
+        text: said.text,
+        onTapLink: onTapLink,
+        ink: TuiChatBubble.bubbleTextStyle(context),
+      ),
+    ),
   );
 }
 
-/// The builders every Markdown in a chat draws with: a ```mermaid fence as
-/// a diagram, its source copyable beside it.
+/// The builders every Markdown in a chat draws with, what was asked and
+/// what was answered alike: a ```mermaid fence as a diagram, its source
+/// copyable beside it, and any other code block with its copy button.
 final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
-  'code': MermaidBuilder(copyable: true),
+  'code': CodeBlockBuilder(copyable: true),
 };
 
-/// What Claude said, as Markdown: it writes lists, headings and code, and
-/// this is the renderer the Markdown preview already uses.
+/// What Claude said, as Markdown: it writes lists, headings and code.
 class _Answer extends StatelessWidget {
   const _Answer({required this.text, required this.onTapLink});
+
+  final String text;
+  final MarkdownTapLinkCallback onTapLink;
+
+  // termul's answer, holding the Markdown renderer the preview uses.
+  @override
+  Widget build(BuildContext context) => TuiChatAnswer(
+    child: SelectionArea(
+      child: _ChatMarkdown(text: text, onTapLink: onTapLink),
+    ),
+  );
+}
+
+/// The one Markdown setup a chat draws with, what was asked and what was
+/// answered alike: the renderer the Markdown preview uses, its code blocks
+/// with their copy buttons, and every link through the same [onTapLink].
+class _ChatMarkdown extends StatelessWidget {
+  const _ChatMarkdown({required this.text, required this.onTapLink, this.ink});
 
   final String text;
 
   /// Without it the package draws a link and does nothing when it is tapped.
   final MarkdownTapLinkCallback onTapLink;
 
+  /// The text's own style on a bubble's accent, where the theme's colours
+  /// would not show; null on the page's own ground.
+  final TextStyle? ink;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final body = theme.textTheme.bodyMedium!;
+    final ink = this.ink;
+    final body = ink ?? theme.textTheme.bodyMedium!;
+    final link = ink?.color ?? scheme.primary;
+    // On the accent, code sits on a shade of the text's own colour.
+    final panel =
+        ink?.color?.withValues(alpha: 0.14) ?? scheme.surfaceContainerHighest;
+    TextStyle? heading(double size) =>
+        ink?.copyWith(fontSize: size, fontWeight: FontWeight.bold);
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
-      // termul's answer, holding the Markdown renderer the preview uses.
-      builder: (context, terminal, _) => TuiChatAnswer(
-        child: SelectionArea(
-          child: MarkdownBody(
-            // A ```mermaid fence is a diagram, as in the Markdown preview,
-            // once it has closed.
-            data: holdOpenMermaid(text),
-            builders: chatMarkdownBuilders,
-            onTapLink: onTapLink,
-            // A reply is text, and any picture in it lives on a server we do
-            // not fetch from: its alt text says what was meant.
-            imageBuilder: (uri, title, alt) =>
-                Text(alt == null || alt.isEmpty ? '$uri' : alt),
-            styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-              p: body,
-              a: TextStyle(
-                color: scheme.primary,
-                decoration: TextDecoration.underline,
-                decorationColor: scheme.primary,
-              ),
-              code: body.copyWith(
-                fontFamily: terminal.fontFamily,
-                fontFamilyFallback: terminal.fontFamilyFallback,
-                fontSize: body.fontSize! * 0.9,
-                backgroundColor: scheme.surfaceContainerHighest,
-              ),
-              codeblockDecoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest,
-                border: Border.all(color: scheme.outlineVariant),
-              ),
+      builder: (context, terminal, _) => MarkdownBody(
+        // A ```mermaid fence is a diagram, as in the Markdown preview,
+        // once it has closed.
+        data: holdOpenMermaid(text),
+        onTapLink: onTapLink,
+        builders: chatMarkdownBuilders,
+        // A message is text, and any picture in it lives on a server we do
+        // not fetch from: its alt text says what was meant.
+        imageBuilder: (uri, title, alt) =>
+            Text(alt == null || alt.isEmpty ? '$uri' : alt),
+        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+          p: body,
+          h1: heading(20),
+          h2: heading(18),
+          h3: heading(16),
+          listBullet: ink,
+          blockquote: ink,
+          a: TextStyle(
+            color: link,
+            decoration: TextDecoration.underline,
+            decorationColor: link,
+            fontWeight: ink == null ? null : FontWeight.bold,
+          ),
+          code: body.copyWith(
+            fontFamily: terminal.fontFamily,
+            fontFamilyFallback: terminal.fontFamilyFallback,
+            fontSize: body.fontSize! * 0.9,
+            backgroundColor: panel,
+          ),
+          codeblockDecoration: BoxDecoration(
+            color: panel,
+            border: Border.all(
+              color:
+                  ink?.color?.withValues(alpha: 0.3) ?? scheme.outlineVariant,
             ),
           ),
+          blockquoteDecoration: ink == null
+              ? null
+              : BoxDecoration(
+                  border: Border(left: BorderSide(color: ink.color!, width: 3)),
+                ),
         ),
       ),
     );

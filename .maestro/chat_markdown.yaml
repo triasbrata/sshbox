@@ -1,0 +1,57 @@
+# The chat box as Discord's (feature issue #141): "di chatbox untuk input user
+# di buat seperti inputnya discord dimana user bisa langsung lihat preview dari
+# markdown yang dia input". Markdown typed into the box is sent as typed and
+# drawn as Markdown in the user's own bubble: no marker left on screen.
+#
+# The session is the stand-in's from tools/e2e_android.sh's live_session, as
+# chat_two_way's: it answers each line with "Echo: …", itself drawn as
+# Markdown, so neither the bubble nor the answer may show a `**`.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "Message “E2E live session”…"
+    timeout: 20000
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "**markdown bold** stays"
+# The box as it is typed: every marker still there, dimmed.
+- assertVisible: "(?s).*\\*\\*markdown bold\\*\\* stays.*"
+- takeScreenshot: chat-markdown-typing
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "(?i)Echo: markdown bold stays"
+    timeout: 30000
+# The bubble drawn as Markdown, and nothing on screen still showing its stars.
+- assertVisible: "(?i)markdown bold stays"
+- assertNotVisible: "(?s).*\\*\\*markdown bold.*"
+- takeScreenshot: chat-markdown-sent
+
+# No hideKeyboard: with none up it presses Back.
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
