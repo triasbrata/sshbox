@@ -9,7 +9,12 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart'
+    show
+        GestureBinding,
+        PointerDeviceKind,
+        PointerPanZoomStartEvent,
+        PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -940,8 +945,7 @@ class _TerminalPageState extends State<TerminalPage> {
             // page is built again only as it starts and ends.
             child: ListenableBuilder(
               listenable: transfers,
-              builder: (_, _) =>
-                  TuiProgressBar(value: sending.fraction),
+              builder: (_, _) => TuiProgressBar(value: sending.fraction),
             ),
           ),
         // In the body rather than the Scaffold's button slot so it can be
@@ -1273,6 +1277,35 @@ class _PaneViewState extends State<_PaneView> {
     }
   }
 
+  /// A trackpad's scroll, which a Mac sends as a pan and not as a wheel,
+  /// made to land where the pointer is.
+  ///
+  /// For a program that reads the mouse — Claude Code's fullscreen view, vim,
+  /// less, a program in a tmux pane — xterm2 turns the scroll into wheel
+  /// events at the cell it last saw the pointer on, and it looks for that
+  /// only in a press or a wheel. A trackpad's pan is neither, so its wheel
+  /// events went to wherever the last click was: after a click in Claude
+  /// Code's prompt, on the prompt, which does not scroll, so scrolling did
+  /// nothing until the next mouse wheel. Claude Code aims a wheel at the
+  /// element under its cell, as a browser does.
+  ///
+  /// So the pan's start is handed on as a wheel that moves nothing, which
+  /// xterm2 takes the place from and every scroll view ignores.
+  // ponytail: a synthetic event, since the place is private to xterm2's
+  // TerminalScrollGestureHandler; retire this once it listens to
+  // onPointerPanZoomStart itself.
+  void _trackpadDown(PointerPanZoomStartEvent event) {
+    GestureBinding.instance.handlePointerEvent(
+      PointerScrollEvent(
+        viewId: event.viewId,
+        timeStamp: event.timeStamp,
+        kind: event.kind,
+        device: event.device,
+        position: event.position,
+      ),
+    );
+  }
+
   /// On a desktop, what the mouse has just selected — a drag, a double
   /// click's word, a triple click's line — goes to the clipboard as the
   /// button comes up: iTerm2's habit, and what Claude Code does in its own
@@ -1509,6 +1542,7 @@ class _PaneViewState extends State<_PaneView> {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
+          onPointerPanZoomStart: _trackpadDown,
           child: TerminalView(
             widget.terminal,
             key: _viewKey,
