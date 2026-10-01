@@ -32,10 +32,15 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/files/transfers.dart'
+    show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
+import 'package:sshbox/src/ui/file_download.dart'
+    show downloadFile, openDownload;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
@@ -790,6 +795,142 @@ case "$1" in
     done ;;
 esac
 ''';
+
+
+/// Answers the desktop's save dialog as a person would, once it is up: saves
+/// to [path], or cancels it when [path] is null. A Mac's panel saves where it
+/// opens, so [path] there only says to save. Done outside Flutter, which the
+/// dialog is too, and waited on outside the test's own pumping.
+Future<ProcessResult> _answerSaveDialog(String? path) {
+  if (Platform.isMacOS) {
+    final key = path == null ? 'key code 53' : 'keystroke return';
+    return Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh"',
+      '-e',
+      'set frontmost to true',
+      '-e',
+      'repeat 120 times',
+      '-e',
+      'repeat with w in windows',
+      '-e',
+      'if exists sheet 1 of w then',
+      '-e',
+      'delay 1',
+      '-e',
+      key,
+      '-e',
+      'return "answered"',
+      '-e',
+      'end if',
+      '-e',
+      'end repeat',
+      '-e',
+      'delay 0.5',
+      '-e',
+      'end repeat',
+      '-e',
+      'error "no save sheet, windows: " & (name of every window as text)',
+      '-e',
+      'end tell',
+    ]);
+  }
+  if (Platform.isLinux) {
+    // Focused rather than activated: Xvfb has no window manager to ask.
+    // Return in a call of its own: xdotool's type takes every word after it
+    // as text to type.
+    const dialog =
+        r'timeout 60 xdotool search --sync --name "^Save File$" '
+        r'windowfocus --sync %1 sleep 1';
+    return Process.run('sh', [
+      '-c',
+      path == null
+          ? '$dialog && xdotool key Escape'
+          : '$dialog key ctrl+a type "\$1" && xdotool key Return',
+      if (path != null) ...['sh', path],
+    ]);
+  }
+
+  // SendKeys reads +^%~(){}[] as keys of its own: each goes in braces.
+  final keys = path == null
+      ? '{ESC}'
+      : '${path.replaceAllMapped(RegExp(r'[+^%~(){}\[\]]'), (m) => '{${m[0]}}')}'
+            '{ENTER}';
+  return Process.run('powershell', [
+    '-NoProfile',
+    '-Command',
+    r"$ws = New-Object -ComObject WScript.Shell; "
+        r"for ($i = 0; $i -lt 120; $i++) { "
+        r"if ($ws.AppActivate('Save As')) { break }; "
+        r"Start-Sleep -Milliseconds 500 }; "
+        r"if ($i -eq 120) { throw 'no Save As window' }; "
+        r"Start-Sleep -Milliseconds 1000; "
+        "\$ws.SendKeys('${keys.replaceAll("'", "''")}')",
+  ]);
+}
+
+/// Readies this desktop to see a text file opened, and hands back what waits
+/// for it: on Linux a stand-in handler for text/plain in the run's own data
+/// folder, which notes what it is given; on a Mac TextEdit, and on Windows
+/// Notepad, each closed once seen. CI only, as the test is.
+Future<Future<void> Function(String path)> _opener() async {
+  if (Platform.isLinux) {
+    final data = Platform.environment['XDG_DATA_HOME']!;
+    final noted = File('$data/e2e-opened-files');
+    final opener = File('$data/e2e-opener')
+      ..writeAsStringSync(
+        '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${noted.path}\'\n',
+      );
+    Process.runSync('chmod', ['755', opener.path]);
+    Directory('$data/applications').createSync(recursive: true);
+    File('$data/applications/e2e-opener.desktop').writeAsStringSync(
+      '[Desktop Entry]\nType=Application\nName=e2e opener\nNoDisplay=true\n'
+      'Exec=${opener.path} %f\n'
+      'MimeType=text/plain;x-scheme-handler/file;\n',
+    );
+    // Added to, not written over: the link test keeps its browser here.
+    final apps = File('$data/applications/mimeapps.list');
+    apps.writeAsStringSync(
+      '${apps.existsSync() ? apps.readAsStringSync() : '[Default Applications]\n'}'
+      // The file scheme too: GIO asks a scheme's handler before the file's
+      // type, and a desktop may have one, as WSL's wslview is.
+      'text/plain=e2e-opener.desktop\n'
+      'x-scheme-handler/file=e2e-opener.desktop\n',
+    );
+    return (path) async {
+      final end = DateTime.now().add(const Duration(seconds: 20));
+      while (DateTime.now().isBefore(end)) {
+        if (noted.existsSync() && noted.readAsStringSync().contains(path)) {
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      fail('nothing opened $path');
+    };
+  }
+  final (name, look, kill) = Platform.isMacOS
+      ? ('TextEdit', ['pgrep', '-x', 'TextEdit'], ['pkill', '-x', 'TextEdit'])
+      : (
+          'Notepad',
+          ['tasklist', '/FI', 'IMAGENAME eq notepad.exe', '/NH'],
+          ['taskkill', '/IM', 'notepad.exe', '/F'],
+        );
+  return (path) async {
+    final end = DateTime.now().add(const Duration(seconds: 20));
+    while (DateTime.now().isBefore(end)) {
+      final seen = await Process.run(look.first, look.skip(1).toList());
+      final up = Platform.isMacOS
+          ? seen.exitCode == 0
+          : '${seen.stdout}'.toLowerCase().contains('notepad.exe');
+      if (up) {
+        await Process.run(kill.first, kill.skip(1).toList());
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    fail('$name never opened $path');
+  };
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -1626,6 +1767,190 @@ touch '${done.path}'
         () => find.text(name).evaluate().isNotEmpty,
         "the drawer to show the test's file in it",
       );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #136: Download saves through the desktop's own save dialog, and Open
+  // opens what it saved. file_picker's save failed on every desktop: on a Mac
+  // refused for a sandbox entitlement this unsandboxed app lacks, on Linux
+  // the XDG portal or nothing. The dialog is outside Flutter, so it is
+  // answered as a person would: System Events' keys on a Mac, xdotool on
+  // Linux, SendKeys on Windows.
+  //
+  // On a Mac and Linux from a Local shell's files drawer. A Windows Local
+  // shell is PowerShell, whose drawer the tree cannot hold, so there the
+  // drawer's own downloadFile is called over the same LocalFileBrowser.
+  _test(
+    'Download saves through the save dialog, Open opens it, a cancel leaves '
+    'nothing',
+    skip: Platform.environment['CI'] != 'true'
+        ? "off CI the save dialog and the app Open starts are the user's own"
+        : null,
+    (tester) async {
+      // Linux, when tools/e2e_desktop.sh is asked for a bus with no XDG
+      // portal: none offered or running before the save or after it, the
+      // case file_picker, the portal or nothing, could not save in at all.
+      Future<void> noPortal(String when) async {
+        if (!Platform.isLinux) return;
+        if (Platform.environment['JEANSH_E2E_NO_PORTAL'] == null) return;
+        for (final method in ['ListNames', 'ListActivatableNames']) {
+          final names = await Process.run('dbus-send', [
+            '--session',
+            '--print-reply',
+            '--dest=org.freedesktop.DBus',
+            '/org/freedesktop/DBus',
+            'org.freedesktop.DBus.$method',
+          ]);
+          expect(names.exitCode, 0, reason: 'dbus-send: ${names.stderr}');
+          expect(
+            '${names.stdout}',
+            isNot(contains('portal')),
+            reason: '$method names an XDG portal $when',
+          );
+        }
+      }
+
+      await noPortal('before the save');
+      final dir = Directory(
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final name = 'download-by-the-e2e-${dir.path.hashCode}.txt';
+      const body = 'saved through the dialog\n';
+      final source = File('${dir.path}/$name')..writeAsStringSync(body);
+      // Where Linux and Windows are told to save; a Mac saves where its
+      // panel opens, read back from the transfer.
+      final out = _scratch();
+      final target = '${out.path}${Platform.pathSeparator}$name';
+
+      // Before the launch, so the desktop's own idea of who opens text is
+      // read with the stand-in already in it.
+      final opened = await _opener();
+      await _launch(tester);
+      Future<void> download() async {
+        if (Platform.isWindows) {
+          final context = tester.element(find.byTooltip('Settings'));
+          unawaited(
+            downloadFile(
+              context,
+              LocalFileBrowser(
+                process: (command) => Process.start('cmd', ['/c', command]),
+                windows: true,
+              ),
+              source.path.replaceAll(r'\', '/'),
+              host: 'Local shell',
+              onTransfer: (_) {},
+            ),
+          );
+          return;
+        }
+        final file = find.text(name);
+        if (file.evaluate().isEmpty) {
+          await _localShell(tester);
+          await tester.tap(find.byTooltip('Browse files'));
+          final folder = find.text(dir.path.split('/').last);
+          await _until(
+            tester,
+            () => folder.evaluate().isNotEmpty,
+            "the drawer to list the test's folder in the home",
+          );
+          // The drawer slides in: tapped while it does, the folder is still
+          // off the window's edge and the tap lands nowhere.
+          await tester.pump(const Duration(milliseconds: 600));
+          await tester.tap(folder);
+          await _until(
+            tester,
+            () => file.evaluate().isNotEmpty,
+            "the drawer to show the test's file in it",
+          );
+        }
+        await tester.tapAt(
+          tester.getCenter(file),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, 'Download');
+      }
+
+      // Downloads, answers the dialog by [save] or cancelling it, and hands
+      // back the transfer once it has ended.
+      Future<Transfer> run({required bool save}) async {
+        final before = transfers.items.length;
+        await download();
+        ProcessResult? answer;
+        unawaited(
+          _answerSaveDialog(save ? target : null).then((r) => answer = r),
+        );
+        Transfer? transfer() {
+          final mine = transfers.items
+              .take(transfers.items.length - before)
+              .where((t) => t.name == name);
+          return mine.isEmpty ? null : mine.first;
+        }
+
+        await _until(
+          tester,
+          () =>
+              (transfer() != null &&
+                  transfer()!.state != TransferState.running) ||
+              (answer != null && answer!.exitCode != 0),
+          'the download to end',
+          timeout: const Duration(seconds: 90),
+        );
+        // A download that failed says why first: the dialog it never showed
+        // is only the consequence.
+        final ended = transfer();
+        if (ended != null && ended.state == TransferState.failed) {
+          fail('the download failed: ${ended.error}');
+        }
+        await _until(tester, () => answer != null, 'the dialog answered');
+        expect(
+          answer!.exitCode,
+          0,
+          reason: 'the save dialog: ${answer!.stdout} ${answer!.stderr}',
+        );
+        return transfer()!;
+      }
+
+      final saved = await run(save: true);
+      expect(
+        saved.state,
+        TransferState.done,
+        reason: 'the download did not save: ${saved.error}',
+      );
+      final kept = File(Uri.parse(saved.saved!).toFilePath());
+      addTearDown(() {
+        if (kept.existsSync()) kept.deleteSync();
+      });
+      // The same file, not the same spelling: Windows' temp folder may be
+      // named by its 8.3 short name, RUNNER~1 for runneradmin.
+      if (!Platform.isMacOS) {
+        expect(FileSystemEntity.identicalSync(kept.path, target), isTrue);
+      }
+      expect(kept.readAsStringSync(), body);
+      await noPortal('after the save');
+      // Marked as from the internet, as Windows reads it, so a host's .bat
+      // or .exe is not run unwarned.
+      if (Platform.isWindows) {
+        final zone = await Process.run('powershell', [
+          '-NoProfile',
+          '-Command',
+          r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
+        ], environment: {'JEANSH_SAVED': kept.path});
+        expect(zone.stdout, contains('ZoneId=3'), reason: '${zone.stderr}');
+      }
+
+      // Open: the file handed to whatever this desktop opens text with.
+      expect(await openDownload(saved.saved!, name), isTrue);
+      await opened(kept.path);
+
+      // Cancelled: nothing saved, and the transfer says so.
+      kept.deleteSync();
+      final cancelled = await run(save: false);
+      expect(cancelled.state, TransferState.cancelled);
+      expect(kept.existsSync(), isFalse, reason: 'a cancel saved the file');
+      await tester.pump(const Duration(seconds: 2));
       await _closeTabs(tester);
     },
   );

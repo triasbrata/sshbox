@@ -35,6 +35,15 @@ shift $(($# > 0 ? 1 : 0))
 
 tests=integration_test/desktop_smoke_test.dart
 
+# A run narrowed to some tests, or the no-portal one, is that run alone:
+# the window phases follow only a whole run.
+phases=1
+[ -n "${JEANSH_E2E_NO_PORTAL:-}" ] && phases=
+for arg in "$@"; do
+  case "$arg" in --plain-name* | --name* | -n) phases= ;; esac
+done
+export JEANSH_E2E_PHASES=$phases
+
 # integration_test/window_place_test.dart, once a phase, each a fresh start
 # of the app on the same data folder: the window is moved, comes back,
 # maximized comes back, and a rectangle saved off every screen comes back on
@@ -126,8 +135,30 @@ case "$target" in
     # Wayland session — WSLg has one — the app drew on the real desktop and
     # copied to the real clipboard, which WSLg shares with Windows, over
     # whatever the user had copied.
-    exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
-      dbus-run-session -- sh -c '
+    #
+    # JEANSH_E2E_NO_PORTAL=1 leaves every XDG portal off that bus, as on a
+    # desktop that runs none: the bus offers the services the machine has,
+    # less each *portal* one, so nothing can start one.
+    bus=()
+    if [ -n "${JEANSH_E2E_NO_PORTAL:-}" ]; then
+      services=$(mktemp -d)
+      for service in /usr/share/dbus-1/services/*.service; do
+        case "$service" in *portal*) ;; *) ln -s "$service" "$services/" ;; esac
+      done
+      config=$(mktemp)
+      sed "s#<standard_session_servicedirs */>#<servicedir>$services</servicedir>#" \
+        /usr/share/dbus-1/session.conf > "$config"
+      bus=(--config-file="$config")
+    fi
+    # Not exec when a no-portal bus was made, so its files go with the run.
+    if [ -n "${JEANSH_E2E_NO_PORTAL:-}" ]; then
+      trap 'rm -rf "$services" "$config"' EXIT
+      run=
+    else
+      run=exec
+    fi
+    $run xvfb-run -a --server-args="-screen 0 1280x900x24" \
+      dbus-run-session "${bus[@]}" -- sh -c '
         unset WAYLAND_DISPLAY && export GDK_BACKEND=x11
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
         TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR
@@ -138,13 +169,15 @@ case "$target" in
         tests=$1 && shift
         rc=0
         flutter test "$tests" -d linux "$@" || rc=1
-        "$0" window-phases || rc=1
+        # Only after a whole run, as above.
+        [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || rc=1
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
     rc=0
     flutter test "$tests" -d "$target" "$@" || rc=1
-    window_phases "$target" || rc=1
+    # Only after a whole run, as above.
+    [ -z "$JEANSH_E2E_PHASES" ] || window_phases "$target" || rc=1
     exit $rc
     ;;
   *)
