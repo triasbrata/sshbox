@@ -3055,7 +3055,17 @@ touch '${done.path}'
       );
       await _until(tester, () => field.evaluate().isNotEmpty, 'the field');
       await tester.enterText(field, 'hello from the desktop');
+      await tester.pump();
+      debugPrint(
+        'Send buttons: ${find.byTooltip('Send').evaluate().length}; '
+        'field: ${tester.widget<TextField>(field).controller?.text}',
+      );
       await tester.tap(find.byTooltip('Send'));
+      await tester.pump(const Duration(seconds: 1));
+      debugPrint(
+        'After Send: field ${tester.widget<TextField>(field).controller?.text}; '
+        'chat ${said()}',
+      );
       final end = DateTime.now().add(const Duration(seconds: 40));
       while (!transcript.readAsStringSync().contains(
         'hello from the desktop',
