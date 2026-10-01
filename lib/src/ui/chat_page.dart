@@ -672,6 +672,18 @@ class _ChatPageState extends State<ChatPage> {
             const SizedBox(width: 4),
             IconButton.filled(
               tooltip: 'Send',
+              // The app's iconButtonTheme gives every IconButton an accent
+              // foreground, which beats the filled variant's own onPrimary:
+              // an accent arrow on an accent fill. Black or white, whichever
+              // reads on the fill.
+              style: IconButton.styleFrom(
+                backgroundColor: palette.accent,
+                foregroundColor:
+                    tuiContrast(Colors.black, palette.accent) >=
+                        tuiContrast(Colors.white, palette.accent)
+                    ? Colors.black
+                    : Colors.white,
+              ),
               onPressed: _sendable ? _send : null,
               icon: const Icon(Icons.send),
             ),
