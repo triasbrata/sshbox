@@ -1974,6 +1974,59 @@ touch '${done.path}'
     },
   );
 
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan tab
+  // lain padahal ini nga bisa di merge": a chat tab's chip, right-clicked,
+  // grouped with its Local shell, both shown as panes and the chat still
+  // answering.
+  _test(
+    'a chat tab groups with its shell from a right-click, and still answers',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      await _launch(tester);
+      await _chatAnswered(tester);
+      final chip = find.textContaining('Claude').first;
+      await tester.tapAt(
+        tester.getCenter(chip),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the chat tab's menu to offer Group with…",
+      );
+      await tester.tap(find.text('Group with…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Local shell').last);
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () =>
+            find.byTooltip('Tab group').evaluate().isNotEmpty &&
+            find.byType(TerminalView).evaluate().isNotEmpty &&
+            _composer.evaluate().isNotEmpty,
+        'the chat and its shell side by side in one group',
+      );
+
+      await tester.enterText(_composer, 'again, from a pane');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Send'));
+      await _until(
+        tester,
+        () => _answer.evaluate().length >= 2,
+        "the stand-in's second answer, in the grouped chat",
+        timeout: const Duration(seconds: 40),
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // Issue #133: "di chat size fontnya tidak mengikuti dari size font yang ada
   // di settings". The content size raised with Settings' own slider, and a
   // chat's answer and composer drawn at it.
