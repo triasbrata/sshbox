@@ -54,6 +54,23 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
   var _at = 0;
   final _list = ScrollController();
 
+  /// The list is drawn in the overlay, over the conversation and anchored
+  /// to the top of what it wraps, so it never adds to the page's height: a
+  /// phone with its keyboard up, at a large text size, has no height to
+  /// give it.
+  final _portal = OverlayPortalController();
+  final _link = LayerLink();
+  final _anchor = GlobalKey();
+
+  void _showOrHide() {
+    if (!mounted) return;
+    if (_open) {
+      _portal.show();
+    } else {
+      _portal.hide();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -67,6 +84,8 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
       old.controller.removeListener(_onText);
       widget.controller.addListener(_onText);
     }
+    // The commands may have come in, or gone: what there is to pick changed.
+    _tellOpen();
   }
 
   @override
@@ -90,6 +109,7 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
     });
     if (opens) widget.onOpen?.call();
     _tellOpen();
+    _showOrHide();
   }
 
   /// What follows the `/` while a command name is still being typed: the
@@ -102,7 +122,10 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
 
   bool get _open => _query != null && !_dismissed;
 
-  void _tellOpen() => widget.openState?.value = _open;
+  /// Open with something to pick: only then does the list take Enter from
+  /// the box. A list still reading, failed, or matching nothing leaves Enter
+  /// to the box, so a send still sends or is refused there.
+  void _tellOpen() => widget.openState?.value = _open && _matches.isNotEmpty;
 
   List<SlashCommand> get _matches => switch (widget.commands.data) {
     final all? => SlashCommand.matching(all, _query ?? ''),
@@ -124,6 +147,7 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
     if (key == LogicalKeyboardKey.escape) {
       setState(() => _dismissed = true);
       _tellOpen();
+      _showOrHide();
       return KeyEventResult.handled;
     }
     if (matches.isEmpty) return KeyEventResult.ignored;
@@ -143,19 +167,48 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      if (_open) _menu(context),
-      Focus(
+  Widget build(BuildContext context) => OverlayPortal(
+    controller: _portal,
+    // Built here, so it keeps this place's theme and text size, and drawn
+    // in the overlay.
+    overlayChildBuilder: _overlay,
+    child: CompositedTransformTarget(
+      link: _link,
+      child: Focus(
+        key: _anchor,
         canRequestFocus: false,
         skipTraversal: true,
         onKeyEvent: _onKey,
         child: widget.child,
       ),
-    ],
+    ),
   );
+
+  /// The list, as wide as what it wraps, its bottom on that one's top, and
+  /// no taller than the room above it below the status bar.
+  Widget _overlay(BuildContext context) {
+    final box = _anchor.currentContext?.findRenderObject() as RenderBox?;
+    if (!_open || box == null || !box.hasSize) return const SizedBox.shrink();
+    final top = box.localToGlobal(Offset.zero).dy;
+    final room = top - MediaQuery.paddingOf(context).top - 8;
+    if (room < 48) return const SizedBox.shrink();
+    return CompositedTransformFollower(
+      link: _link,
+      showWhenUnlinked: false,
+      targetAnchor: Alignment.topLeft,
+      followerAnchor: Alignment.bottomLeft,
+      child: Align(
+        alignment: Alignment.bottomLeft,
+        child: SizedBox(
+          width: box.size.width,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: room.clamp(48, 300)),
+            child: _menu(context),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _menu(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
@@ -223,14 +276,10 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
       );
       _keepInView(rows.indexOf(highlighted), rows.length);
     }
-    // No taller than a share of what the keyboard leaves, so the box, the
-    // tab strip and some of the conversation stay on screen; the list
-    // scrolls inside it.
+    // Its height is the overlay's to cap; the list scrolls inside it.
     final media = MediaQuery.of(context);
-    final room =
-        media.size.height - media.viewInsets.bottom - media.padding.vertical;
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: (room * 0.4).clamp(96, 300)),
+    return Material(
+      type: MaterialType.transparency,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: p.panel,
@@ -327,13 +376,13 @@ class _Row extends StatelessWidget {
         onTap: onTap,
         child: Container(
           // One height for every row, however narrow the page: each line
-          // is cut rather than wrapped.
-          height: 44,
+          // is cut rather than wrapped, so the row is two lines tall at any
+          // text size, the content size from Settings among it.
           color: highlighted ? p.selection : null,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Row(
                 children: [

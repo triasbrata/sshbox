@@ -736,6 +736,10 @@ class _ChatPageState extends State<ChatPage> {
                 // TuiInput does not.
                 decoration: InputDecoration(
                   isDense: true,
+                  // One line, cut: at a large text size on a phone a hint
+                  // that wraps grows the box past the room the keyboard
+                  // leaves.
+                  hintMaxLines: 1,
                   prefixText: '❯ ',
                   prefixStyle: TextStyle(
                     fontFamily: TermulFonts.mono,
