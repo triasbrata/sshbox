@@ -35,6 +35,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/termul/tui_chat.dart' show TuiChatBubble;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
@@ -689,9 +690,12 @@ case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
     mkdir -p "$d/projects/jeansh-e2e"
-    printf '%s\n' \
-      '{"type":"user","message":{"role":"user","content":"hello from the e2e"}}' \
-      "$answer" >"$t"
+    # The message, the last argument, as the session's first turn.
+    for last; do :; done
+    python3 -c 'import json, sys
+print(json.dumps({"type": "user", "message": {"role": "user", "content": sys.argv[1]}}))' \
+      "$last" >"$t"
+    printf '%s\n' "$answer" >>"$t"
     echo "backgrounded · e2e0c0de · e2e" ;;
   agents)
     if [ -f "$t" ]; then
@@ -706,6 +710,42 @@ case "$1" in
     done ;;
 esac
 ''';
+
+/// Puts [_standInClaude] where chat's finder looks, for this test alone.
+/// Only where no Claude Code is installed: see [_claudeInstalled].
+void _useStandInClaude() {
+  final home = Platform.environment['HOME']!;
+  final standIn = File('$home/.local/bin/claude');
+  final config = Directory('$home/.claude');
+  final hadConfig = config.existsSync();
+  final hadBin = standIn.parent.existsSync();
+  standIn.parent.createSync(recursive: true);
+  standIn.writeAsStringSync(_standInClaude);
+  Process.runSync('chmod', ['755', standIn.path]);
+  addTearDown(() {
+    if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
+    if (!hadBin) standIn.parent.deleteSync(recursive: true);
+    if (!hadConfig) {
+      config.deleteSync(recursive: true);
+    } else {
+      final made = Directory('${config.path}/projects/jeansh-e2e');
+      if (made.existsSync()) made.deleteSync(recursive: true);
+    }
+  });
+}
+
+/// The display as it is now, as [name].png in E2E_SHOTS, for a person to
+/// look at: evidence, never checked. Nothing where E2E_SHOTS is unset.
+Future<void> _shot(String name) async {
+  final dir = Platform.environment['E2E_SHOTS'];
+  final display = Platform.environment['DISPLAY'];
+  if (dir == null || dir.isEmpty || display == null) return;
+  Directory(dir).createSync(recursive: true);
+  await Process.run('ffmpeg', [
+    '-loglevel', 'error', '-y', '-f', 'x11grab', '-draw_mouse', '0', //
+    '-i', display, '-frames:v', '1', '$dir/$name.png',
+  ]);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -1362,9 +1402,8 @@ touch '${done.path}'
     (tester) async {
       // A digit first, so it sorts ahead of every other folder in a home
       // with many and is drawn without a scroll.
-      final dir = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('0-jeansh-e2e-');
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
       addTearDown(() => dir.deleteSync(recursive: true));
       final name = 'made-by-the-e2e-${dir.path.hashCode}.txt';
       File('${dir.path}/$name').writeAsStringSync('hello from the e2e\n');
@@ -1400,25 +1439,7 @@ touch '${done.path}'
         ? 'this machine has a Claude Code of its own, which this would run'
         : null,
     (tester) async {
-      final home = Platform.environment['HOME']!;
-      final standIn = File('$home/.local/bin/claude');
-      final config = Directory('$home/.claude');
-      final hadConfig = config.existsSync();
-      final hadBin = standIn.parent.existsSync();
-      standIn.parent.createSync(recursive: true);
-      standIn.writeAsStringSync(_standInClaude);
-      Process.runSync('chmod', ['755', standIn.path]);
-      addTearDown(() {
-        if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
-        if (!hadBin) standIn.parent.deleteSync(recursive: true);
-        if (!hadConfig) {
-          config.deleteSync(recursive: true);
-        } else {
-          Directory(
-            '${config.path}/projects/jeansh-e2e',
-          ).deleteSync(recursive: true);
-        }
-      });
+      _useStandInClaude();
 
       await _launch(tester);
       await _localShell(tester);
@@ -1443,6 +1464,102 @@ touch '${done.path}'
         "the stand-in's answer in the chat",
         timeout: const Duration(seconds: 40),
       );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #141: the chat box as Discord's — typing on the keyboard while the box
+  // has no focus types into it, once; Markdown is styled as it is typed and
+  // drawn as Markdown once sent; a plain Enter is a new line and Ctrl+Enter
+  // sends. Real keys, through X and GTK, as a person types them: that the
+  // first key lands once, neither lost nor doubled, is the platform's to
+  // show, which a widget test cannot.
+  _test(
+    'the chat box takes typing, draws Markdown, and sends on Ctrl+Enter',
+    skip: !Platform.isLinux
+        ? 'xdotool drives the Linux build only'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _useStandInClaude();
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final input = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      );
+      await _until(
+        tester,
+        () => input.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      TextField box() => tester.widget<TextField>(input);
+      // On a desktop, a chat shown has its box focused.
+      await _until(
+        tester,
+        () => box().focusNode!.hasFocus,
+        'the box to take the focus as the chat is shown',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      expect(box().focusNode!.hasFocus, isFalse);
+
+      const typed = '**bold** and `code`';
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['type', '--delay', '60', typed]);
+      await _until(
+        tester,
+        () => box().controller!.text.length >= typed.length,
+        'what was typed to reach the box',
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      // Every key once: the first, which moved the focus, neither lost nor
+      // typed a second time.
+      expect(box().controller!.text, typed);
+      expect(box().focusNode!.hasFocus, isTrue);
+      await _shot('chat-composer-typing');
+
+      // A plain Enter is a new line, and sends nothing.
+      await _xdo(['key', 'Return']);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(box().controller!.text, '$typed\n');
+      expect(find.byType(TuiChatBubble), findsNothing);
+
+      await _xdo(['key', 'ctrl+Return']);
+      await _until(
+        tester,
+        () => find
+            .textContaining('Echo from the stand-in', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
+        "the stand-in's answer in the chat",
+        timeout: const Duration(seconds: 40),
+      );
+      expect(box().controller!.text, isEmpty);
+      // Drawn as Markdown: bold is bold, and no marker is left on screen.
+      final spans = <TextSpan>[];
+      for (final text in tester.widgetList<RichText>(
+        find.descendant(
+          of: find.byType(TuiChatBubble),
+          matching: find.byType(RichText),
+        ),
+      )) {
+        text.text.visitChildren((span) {
+          if (span is TextSpan && span.text != null) spans.add(span);
+          return true;
+        });
+      }
+      expect(
+        spans.any(
+          (s) => s.text == 'bold' && s.style?.fontWeight == FontWeight.bold,
+        ),
+        isTrue,
+        reason: 'the bubble draws **bold** bold: ${spans.map((s) => s.text)}',
+      );
+      expect(spans.any((s) => s.text!.contains('**')), isFalse);
+      expect(spans.any((s) => s.text!.contains('`')), isFalse);
+      await _shot('chat-composer-sent');
       await _closeTabs(tester);
     },
   );
