@@ -1063,25 +1063,20 @@ void main() {
         expect(shell.sent.join(), contains('pasted'));
       }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
-      testWidgets('goes to a program that reads the mouse, unless Shift is '
-          'held, as in any terminal', (tester) async {
+      testWidgets("is Jeansh's even over a program that reads the mouse, "
+          'which hears none of it', (tester) async {
         await pumpLink(tester);
-        // What vim, less or tmux asks for with its mouse on.
+        // What vim, less or tmux asks for with its mouse on, and Claude Code.
         tester
             .widget<TerminalView>(find.byType(TerminalView))
             .terminal
-            .write('\x1b[?1000h');
+            .write('\x1b[?1000h\x1b[?1002h');
         await tester.pump();
+        shell.sent.clear();
 
         await rightClick(tester, cellAt(tester, 2, 1));
-        expect(find.text('Paste'), findsNothing);
-        // The right button's press, in X10's encoding.
-        expect(shell.sent.join(), contains('\x1b[M"'));
-
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-        await rightClick(tester, cellAt(tester, 2, 1));
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
         expect(find.text('Copy link address'), findsOneWidget);
+        expect(shell.sent.join(), isNot(contains('\x1b[M')));
       }, variant: TargetPlatformVariant.desktop());
 
       testWidgets('on Android opens nothing new', (tester) async {

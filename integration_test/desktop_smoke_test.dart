@@ -1136,13 +1136,13 @@ touch '${done.path}'
   });
 
   // #87: a right-click in a tab's page opens the tab's own menu there. In a
-  // terminal its Paste comes first and the tab's items after a divider; a
-  // program reading the mouse gets a plain right-click, and Shift keeps one
-  // for the menu; and in a group the pane clicked takes focus and opens its
+  // terminal its Paste comes first and the tab's items after a divider; the
+  // right button stays Jeansh's over a program reading the mouse (#126);
+  // and in a group the pane clicked takes focus and opens its
   // own menu, Take out of group among it.
   _test(
-    'a right-click in a terminal opens its tab\'s menu, unless a program '
-    'reads the mouse',
+    'a right-click in a terminal opens its tab\'s menu, even over a program '
+    'that reads the mouse',
     skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
@@ -1201,9 +1201,9 @@ touch '${done.path}'
         'a second Local shell',
       );
 
-      // A program reading the mouse: a plain right-click reaches it as
-      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
-      // menu. It records what it reads until told to stop.
+      // A program reading the mouse: a right-click still opens the menu, and
+      // the program reads nothing of it. It records what it reads until told
+      // to stop.
       final dir = _scratch();
       final got = File('${dir.path}/got');
       final ready = File('${dir.path}/ready');
@@ -1233,23 +1233,12 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 300));
 
       await rightClick(view);
-      await _until(
-        tester,
-        () => got.existsSync() && got.lengthSync() >= 3,
-        'the right-click to reach the program',
-      );
-      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(
-        find.text('Duplicate session'),
-        findsNothing,
-        reason: 'a menu opened over a program that reads the mouse',
-      );
-
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await rightClick(view);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await menuWith('Duplicate session');
+      expect(
+        got.existsSync() ? got.lengthSync() : 0,
+        0,
+        reason: 'the right-click reached the program',
+      );
       // Escape shuts it, and the focus goes back to the terminal.
       await _escape(tester);
       await _until(

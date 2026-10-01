@@ -140,7 +140,7 @@ void main() {
   );
 
   testWidgets(
-    'a program reading the mouse gets the right-click, unless Shift is held',
+    "the right-click stays Jeansh's over a program reading the mouse",
     (tester) async {
       await pump(tester, ['box']);
       tester
@@ -148,17 +148,12 @@ void main() {
           .terminal
           .write('\x1b[?1000h');
       await tester.pump();
-      final at = tester.getCenter(find.byType(TerminalView));
+      shells['box']!.sent.clear();
 
-      await rightClick(tester, at);
-      expect(find.text('Duplicate session'), findsNothing);
-      expect(shells['box']!.sent.join(), contains('\x1b[M"'));
-
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await rightClick(tester, at);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await rightClick(tester, tester.getCenter(find.byType(TerminalView)));
       expect(item('Paste'), findsOneWidget);
       expect(item('Duplicate session'), findsOneWidget);
+      expect(shells['box']!.sent.join(), isNot(contains('\x1b[M')));
     },
     variant: _desktop,
   );

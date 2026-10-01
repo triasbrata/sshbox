@@ -14,7 +14,6 @@ import 'package:flutter/gestures.dart'
         GestureBinding,
         kMiddleMouseButton,
         kPrimaryMouseButton,
-        kSecondaryMouseButton,
         PointerDeviceKind,
         PointerPanZoomStartEvent,
         PointerScrollEvent;
@@ -1282,7 +1281,7 @@ class _PaneViewState extends State<_PaneView> {
     _selectionAtDown = selection.selection;
     final button = switch (event.buttons) {
       kPrimaryMouseButton => TerminalMouseButton.left,
-      kSecondaryMouseButton => TerminalMouseButton.right,
+      // The right button is Jeansh's, for its menu: see [_contextMenu].
       kMiddleMouseButton => TerminalMouseButton.middle,
       _ => null,
     };
@@ -1457,9 +1456,8 @@ class _PaneViewState extends State<_PaneView> {
   /// when nothing took it. Shift keeps it from the program, unless the
   /// program asked for Shift too, as xterm's does.
   void _contextMenu(TapUpDetails details, CellOffset cell) {
-    // A program reading the mouse has the right-click first, as in any
-    // terminal; Shift keeps it for the menu.
-    if (_click(TerminalMouseButton.right, details.globalPosition)) return;
+    // Jeansh's, even over a program that reads the mouse: neither the press
+    // nor the release goes to it.
     final terminal = widget.terminal;
     final range = selection.selection;
     final link =
