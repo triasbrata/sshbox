@@ -472,9 +472,11 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
 
 /// Two fingers on a Mac's trackpad, pushing the content down over [at], a
 /// global position in this window: the phased scroll events a trackpad
-/// makes — began, changed a step at a time, ended — posted to this process
-/// through CoreGraphics, which the Cocoa embedder turns into a pan as it
-/// does a real one. The window is found by this process's pid; its content
+/// makes — began, changed a step at a time, ended — posted through
+/// CoreGraphics at the HID tap, as the hardware's would be, with the pointer
+/// moved over this window first; the Cocoa embedder turns them into a pan as
+/// it does a real one. (Posted to the pid instead, none arrived.) The window
+/// is found by this process's pid; its content
 /// fills its bottom, under whatever title bar there is.
 Future<void> _trackpad(WidgetTester tester, Offset at) async {
   final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
@@ -540,7 +542,7 @@ func scroll(_ dy: Int32, _ phase: Int64) {
   e.location = at
   e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
   e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
-  e.postToPid(pid)
+  e.post(tap: .cghidEventTap)
   usleep(16_000)
 }
 // kCGScrollPhaseBegan, Changed, Ended.
