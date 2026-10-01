@@ -89,6 +89,9 @@ env:
 - extendedWaitUntil:
     visible: "(?i)built-in"
     timeout: 10000
+# On the emulator Gboard is up and takes an Escape to close itself; a real
+# hardware keyboard keeps Gboard down, so the second is the one the list sees.
+- pressKey: Escape
 - pressKey: Escape
 - extendedWaitUntil:
     notVisible: "(?i)built-in"
