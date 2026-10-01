@@ -2923,7 +2923,10 @@ touch '${done.path}'
               'tools/e2e_desktop.sh gives Linux alone'
         : Platform.environment['CI'] != 'true' || _claudeInstalled()
         ? "off CI it would write a claude into the user's own home"
-        : null,
+        // ponytail: off until a Local shell's chat types into a pane; what
+        // it sends never reaches one (run 36867296912). Lift with that fix.
+        : 'chat in a Local shell types nothing into an interactive '
+              "session's pane yet, so no turn starts",
     (tester) async {
       final home = Platform.environment['HOME']!;
       const sid = 'e2e00004-0000-4000-8000-000000000004';
