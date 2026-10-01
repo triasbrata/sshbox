@@ -309,4 +309,50 @@ void main() {
     }
     expect(shell.sent, isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+  testWidgets('a lone ⌘ leaves the selection, so ⌘C copies it, under the '
+      'kitty protocol Claude Code turns on', (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    await pumpPage(tester);
+    session.terminal.write(text * 30);
+    // Flags 1 and 4, Claude Code's.
+    session.terminal.write('\x1b[>5u');
+    await tester.pump();
+    final drag = await heldDrag(tester);
+    await drag.up();
+    await tester.pump(const Duration(milliseconds: 500));
+    shell.sent.clear();
+    copied = null;
+
+    // ⌘ also arms the link key on a Mac.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // xterm2 sent the lone ⌘ as ESC[57444;9u, which counted as typing and
+    // let the selection go before C came.
+    expect(shell.sent, isEmpty);
+    expect(copied, 'llo w');
+    expect(
+      session.terminal.buffer.getText(controller(tester).selection!),
+      'llo w',
+    );
+
+    // A program that asks for every key, flag 8, still gets a lone ⌘.
+    session.terminal.write('\x1b[>13u');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    expect(shell.sent, isNotEmpty);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }

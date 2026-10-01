@@ -476,7 +476,8 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
 /// The real pointer, moved and pressed as a hand would, over this window:
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `sleep ms`, or
-/// `shiftdown` and `shiftup` (Linux and macOS only). On Linux
+/// `shiftdown` and `shiftup` (Linux and macOS only), or `cmdc`, ⌘ held, C
+/// typed and ⌘ let go as three key events (macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
 /// Not pumped while it goes: the app takes the pointer on its own, and a
@@ -575,6 +576,14 @@ for step in args[3].split(separator: ";") {
   case "down": pressed = true; post(.leftMouseDown)
   case "up": pressed = false; post(.leftMouseUp)
   case "shiftdown": shift(true)
+  case "cmdc":
+    for (key, down) in [(55, true), (8, true), (8, false), (55, false)] {
+      let e = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key),
+                      keyDown: down)!
+      e.flags = key == 55 && !down ? [] : .maskCommand
+      e.post(tap: .cghidEventTap)
+      usleep(150_000)
+    }
   case "shiftup": shift(false)
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
@@ -2259,6 +2268,70 @@ touch '${done.path}'
         reason: 'a press where the drag began: $said',
       );
 
+      await _closeTabs(tester);
+      // In the body: the binding checks it is back before any tear-down runs.
+      binding.shouldPropagateDevicePointerEvents = false;
+    },
+  );
+
+  // #126: on a Mac ⌘ is the link key as well as the copy key. Under the
+  // kitty protocol, which Claude Code turns on, xterm2 sent a lone ⌘ to the
+  // program as a key, and a key sent lets the selection go, so ⌘C copied
+  // nothing. Selected with the real pointer and copied with real keys.
+  _test(
+    'on a Mac, ⌘C copies a selection under the kitty keyboard protocol',
+    skip: Platform.isMacOS ? null : '⌘ is the link key on a Mac alone',
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      _run(view, 'echo jeansh select me');
+      final lines = view.terminal.buffer.lines;
+      var row = -1;
+      await _until(tester, () {
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].getText().startsWith('jeansh select me')) row = i;
+        }
+        return row >= 0;
+      }, 'the line to be printed');
+      // Flags 1 and 4, Claude Code's.
+      _run(view, r"printf '\033[>5u'");
+      await _until(
+        tester,
+        () => view.terminal.kittyKeyboardMode == 5,
+        'the kitty protocol to be on',
+      );
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, row)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      await _osMouse(tester, [
+        cell(0),
+        'down',
+        'sleep 300',
+        for (var col = 1; col <= 15; col++) cell(col),
+        'up',
+      ]);
+      // Copy on select has copied it already; ⌘C must copy it again.
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await _osMouse(tester, ['cmdc']);
+      await _until(
+        tester,
+        () async => await _clipboard() != 'untouched',
+        '⌘C to copy',
+      );
+      expect(await _clipboard(), 'jeansh select me');
+
+      _run(view, r"printf '\033[<u'");
       await _closeTabs(tester);
       // In the body: the binding checks it is back before any tear-down runs.
       binding.shouldPropagateDevicePointerEvents = false;
