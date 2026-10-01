@@ -330,6 +330,77 @@ class GitRepo {
     return _git(['commit', '--message', message]);
   }
 
+  /// Checks out [target], a branch from [branches] — the one way the panel
+  /// changes the files on the host, so every guard is here.
+  ///
+  /// Refused while anything is uncommitted, untracked files included, rather
+  /// than carried across or stashed: a switch changes the files under
+  /// whatever runs on the host, and git would quietly carry an edit along to
+  /// the other branch, where it is easy to commit by mistake. Refused too in
+  /// the middle of a merge, rebase, cherry-pick or revert, which a switch
+  /// would leave half done on the wrong branch.
+  ///
+  /// A remote branch gets a local one of the same name tracking it, or the
+  /// local one already there. The name goes after `--`, or in `--create=`,
+  /// so even `--output=x`, which `update-ref` lets a branch be called, is
+  /// never read as an option.
+  Future<void> switchTo(GitBranch target) async {
+    if (target.current) return;
+    final busy = await _inProgress();
+    if (busy != null) {
+      throw GitException(
+        'A $busy is in progress — finish or abort it before switching '
+        'branches.',
+      );
+    }
+    final changes = (await status()).length;
+    if (changes > 0) {
+      throw GitException(
+        '$changes uncommitted ${changes == 1 ? 'change' : 'changes'} — '
+        'commit or discard ${changes == 1 ? 'it' : 'them'} before switching '
+        'branches.',
+      );
+    }
+    if (target.ref.startsWith('refs/heads/')) {
+      await _git(['switch', '--quiet', '--', target.name]);
+      return;
+    }
+    // refs/remotes/<remote>/<name>, and the remote's own name has no slash
+    // in any repository worth guessing about.
+    final local = target.name.substring(target.name.indexOf('/') + 1);
+    final exists = (await branches()).any(
+      (branch) => branch.ref == 'refs/heads/$local',
+    );
+    await _git(
+      exists
+          ? ['switch', '--quiet', '--', local]
+          : ['switch', '--quiet', '--create=$local', '--track', target.ref],
+    );
+  }
+
+  /// What is half done in the repository, as a word for a message, or null.
+  /// Asked of the host's own files: git leaves one of these behind for each,
+  /// and `--git-path` says where, a worktree having its own.
+  Future<String?> _inProgress() async {
+    const marks = {
+      'MERGE_HEAD': 'merge',
+      'rebase-merge': 'rebase',
+      'rebase-apply': 'rebase',
+      'CHERRY_PICK_HEAD': 'cherry-pick',
+      'REVERT_HEAD': 'revert',
+    };
+    final command =
+        'cd ${_quote(root)} && for f in ${marks.keys.join(' ')}; do '
+        r'test -e "$(git rev-parse --git-path "$f")" && printf "%s\n" "$f"; '
+        'done; true';
+    final found = await run(command).toList();
+    for (final line in found) {
+      final what = marks[line.trim()];
+      if (what != null) return what;
+    }
+    return null;
+  }
+
   /// Single quotes suspend every expansion the shell does; the dance in the
   /// middle is how a single quote itself gets through.
   static String _quote(String value) => "'${value.replaceAll("'", r"'\''")}'";

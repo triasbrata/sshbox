@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -6,7 +8,10 @@ import 'package:sshbox/src/git/git_diff.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/git_page.dart';
+import 'package:sshbox/src/ui/terminal_link.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 import 'fake_file_browser.dart';
 
@@ -23,6 +28,10 @@ class _NoSecrets implements SecretStore {
 
 const _main = '/home/me/dev';
 const _agent = '/home/me/dev/.claude/worktrees/agent-x';
+
+/// A folder name whose ^U, typed into readline or zle, wipes `cd '/x` off the
+/// line so the Enter runs `touch pwned`.
+const _hostile = '/home/me/x\u0015touch pwned #';
 
 /// A host with one repository and one worktree of it, the way Claude Code
 /// leaves them: each checkout answers with its own branch and its own
@@ -53,8 +62,20 @@ class _Shell
   @override
   String? get failure => null;
 
+  /// What reached the shell itself, as typed.
+  final sent = <String>[];
+
   @override
-  void send(String data) {}
+  void send(String data) => sent.add(data);
+
+  /// Whether the main checkout has a change, which no switch may carry off.
+  bool dirty = true;
+
+  /// The main checkout's branch, which a switch changes.
+  String branch = 'main';
+
+  /// What the shell is running, as the foreground probe reports it.
+  String probe = 'sshbox\t42\t1\tbash\t/home/me';
 
   @override
   void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
@@ -86,27 +107,43 @@ class _Shell
         'HEAD 2222222',
         'branch refs/heads/agent',
         '',
+        // A worktree whose folder name a clone or a tarball chose.
+        'worktree $_hostile',
+        'HEAD 4444444',
+        'branch refs/heads/hostile',
+        '',
       ]);
     }
+    if (command.startsWith('sh -c ')) return Stream.value(probe);
+    // Nothing half done: no merge, rebase or cherry-pick.
+    if (command.contains('--git-path')) return const Stream.empty();
     final agent = command.contains("-C '$_agent'");
+    if (command.contains("'switch'")) {
+      branch = 'feature';
+      return said([]);
+    }
     if (command.contains("'--abbrev-ref'")) {
-      return said([agent ? 'agent' : 'main']);
+      return said([agent ? 'agent' : branch]);
     }
     if (command.contains("'status'")) {
-      return said([agent ? ' M lib/agent.dart' : ' M lib/main.dart']);
+      return said([
+        if (agent) ' M lib/agent.dart' else if (dirty) ' M lib/main.dart',
+      ]);
     }
     if (command.contains("'for-each-ref'")) {
+      final main = !agent && branch == 'main';
       return said([
-        '${agent ? ' ' : '*'}\trefs/heads/main\t',
+        '${main ? '*' : ' '}\trefs/heads/main\t',
         '${agent ? '*' : ' '}\trefs/heads/agent\t',
-        ' \trefs/heads/feature\t',
+        '${!agent && branch == 'feature' ? '*' : ' '}\trefs/heads/feature\t',
         ' \trefs/remotes/origin/HEAD\trefs/remotes/origin/main',
         ' \trefs/remotes/origin/main\t',
       ]);
     }
     if (command.contains("'log'")) {
       return said([
-        if (command.contains("'refs/heads/feature'"))
+        if (command.contains("'refs/heads/feature'") ||
+            (!agent && branch == 'feature' && !command.contains("'refs/")))
           '3333333\tme\t5 minutes ago\tFeature work'
         else if (agent)
           '2222222\tme\t1 hour ago\tWork in the worktree'
@@ -125,6 +162,13 @@ Future<void> _settle(WidgetTester tester) async {
     await tester.pump(const Duration(milliseconds: 100));
   }
 }
+
+/// A button of the dialog on screen, by the label it was given: termul draws
+/// it in capitals.
+Finder _dialogButton(String label) => find.descendant(
+  of: find.byType(TuiDialog),
+  matching: find.bySemanticsLabel(label),
+);
 
 void main() {
   late _Shell shell;
@@ -213,5 +257,202 @@ void main() {
     await _settle(tester);
     expect(find.text('The first commit'), findsOneWidget);
     expect(find.text('Changes on feature'), findsNothing);
+  });
+
+  /// The commands that would change the checkout.
+  Iterable<String> switches() =>
+      shell.ran.where((command) => command.contains("'switch'"));
+
+  /// Looks at feature in History and taps Switch to feature.
+  Future<void> askToSwitch(WidgetTester tester) async {
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('main (checked out)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('feature').last);
+    await _settle(tester);
+    await tester.tap(find.text('Switch to feature'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('History switches to the branch looked at once the dialog '
+      'naming both is confirmed, and the header follows', (tester) async {
+    await pumpPanel(tester);
+    shell.dirty = false;
+    await askToSwitch(tester);
+
+    expect(find.text('Switch from main to feature?'), findsOneWidget);
+    await tester.tap(_dialogButton('Switch'));
+    await _settle(tester);
+
+    expect(switches().single, contains("'switch' '--quiet' '--' 'feature'"));
+    expect(find.text('feature'), findsOneWidget);
+    expect(find.text('Feature work'), findsOneWidget);
+    // Checked out now, so nothing is left to look at apart from it.
+    expect(find.text('Changes on feature'), findsNothing);
+  });
+
+  testWidgets('a switch not confirmed changes nothing', (tester) async {
+    await pumpPanel(tester);
+    shell.dirty = false;
+    await askToSwitch(tester);
+    await tester.tap(_dialogButton('Cancel'));
+    await _settle(tester);
+
+    expect(switches(), isEmpty);
+    expect(find.text('main'), findsOneWidget);
+  });
+
+  testWidgets('a switch with changes uncommitted is refused with a toast, '
+      'and never reaches git', (tester) async {
+    await pumpPanel(tester);
+    await askToSwitch(tester);
+    await tester.tap(_dialogButton('Switch'));
+    await _settle(tester);
+
+    expect(
+      find.text(
+        '1 uncommitted change — commit or discard it before switching '
+        'branches.',
+      ),
+      findsOneWidget,
+    );
+    expect(switches(), isEmpty);
+    expect(find.text('main'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('the header\'s branch offers every other branch to switch '
+      'to', (tester) async {
+    await pumpPanel(tester);
+    shell.dirty = false;
+    await tester.tap(find.byTooltip('Switch branch'));
+    await tester.pumpAndSettle();
+    expect(find.text('Switch to main'), findsNothing);
+    expect(find.text('Switch to origin/main'), findsOneWidget);
+    await tester.tap(find.text('Switch to feature'));
+    await tester.pumpAndSettle();
+    await tester.tap(_dialogButton('Switch'));
+    await _settle(tester);
+
+    expect(switches().single, contains("'--' 'feature'"));
+    expect(find.text('feature'), findsOneWidget);
+  });
+
+  testWidgets('Open in terminal takes the shell to the worktree picked, and '
+      'is refused while a program holds the shell', (tester) async {
+    await pumpPanel(tester);
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('agent-x').last);
+    await _settle(tester);
+
+    shell.probe = 'sshbox\t42\t0\tclaude\t/home/me';
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await _settle(tester);
+    expect(find.text('claude is running — not moving the shell'), findsOne);
+    expect(shell.sent, isEmpty);
+    // The toast sits over the header until it goes.
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+
+    shell.probe = 'sshbox\t42\t1\tbash\t/home/me';
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await _settle(tester);
+    expect(shell.sent, ['cd $_agent\n']);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('Open in terminal types nothing for a worktree whose name holds '
+      'a control character', (tester) async {
+    await pumpPanel(tester);
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('x\u0015touch pwned #').last);
+    await _settle(tester);
+
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await _settle(tester);
+    expect(find.text(LiveSession.controlRefusal), findsOneWidget);
+    expect(shell.sent, isEmpty);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('the files drawer, following, types nothing for a folder whose '
+      'name holds a control character', (tester) async {
+    final shell = _Shell();
+    final session = LiveSession(
+      host: const HostProfile(
+        id: 'host-1',
+        label: 'box',
+        host: '10.0.2.2',
+        username: 'me',
+      ),
+      transport: (_, _) => shell,
+    );
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    final files = FakeFileBrowser();
+    await files.makeDirectory(_hostile);
+    final refused = <String?>[];
+    // The terminal page's own link, minus its toast: Follow reaches the shell
+    // through the session's changeDirectory and nothing else.
+    final link = TerminalLink(
+      typePath: (_) {},
+      changeDirectory: (path) async =>
+          refused.add(await session.changeDirectory(path)),
+    )..follow = true;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: FileBrowserPage(
+          browser: files,
+          title: 'box',
+          terminal: link,
+          onFileSelected: (_, {line}) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('x\u0015touch pwned #'));
+    await tester.pumpAndSettle();
+    expect(refused, [LiveSession.controlRefusal]);
+    expect(shell.sent, isEmpty);
+
+    // What the old code typed, and what the session types now, each into an
+    // interactive bash on a real terminal: the old line ran the command.
+    Future<bool> ran(String typed) => tester
+        .runAsync(() async {
+          final dir = await Directory.systemTemp.createTemp('cd-pty');
+          try {
+            final bash = await Process.start(
+              'script',
+              ['-qfc', 'bash --norc --noprofile -i', '/dev/null'],
+              workingDirectory: dir.path,
+              environment: {'HOME': dir.path, 'PS1': r'$ ', 'TERM': 'dumb'},
+            );
+            bash.stdout.drain<void>();
+            bash.stderr.drain<void>();
+            bash.stdin.write(typed);
+            await Future<void>.delayed(const Duration(milliseconds: 500));
+            bash.stdin.write('exit\n');
+            await bash.exitCode.timeout(const Duration(seconds: 10));
+            return File('${dir.path}/pwned').existsSync();
+          } finally {
+            await dir.delete(recursive: true);
+          }
+        })
+        .then((value) => value!);
+    // util-linux's script; a Mac's takes other arguments.
+    if (Platform.isLinux) {
+      expect(await ran('cd ${LiveSession.shellQuote(_hostile)}\n'), isTrue);
+      expect(await ran(shell.sent.join()), isFalse);
+    }
+
+    // An ordinary folder still goes.
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    expect(refused.last, isNull);
+    expect(shell.sent, ['cd /home/me/dev\n']);
   });
 }

@@ -434,6 +434,104 @@ void main() {
       expect(planted(), isEmpty);
     });
 
+    test('switches to a local branch and to a remote one, however either is '
+        'named, tracking the remote one', () async {
+      final origin = await repository('${sandbox.path}/$nasty/origin');
+      const evil = r"q'$(touch>pwned)`touch>pwned2`;x";
+      for (final name in ['feature', evil]) {
+        await git(origin, ['branch', name]);
+      }
+      final proj = '${sandbox.path}/$nasty/proj';
+      await git(sandbox.path, ['clone', '--quiet', origin, proj]);
+      await git(proj, ['branch', 'local']);
+      // Named like an option, which `git switch` would read as one if it
+      // came before `--`.
+      await git(proj, ['update-ref', 'refs/heads/--output=pwned3', 'HEAD']);
+
+      final repo = GitRepo(root: proj, run: run);
+      GitBranch named(List<GitBranch> all, String name) =>
+          all.firstWhere((branch) => branch.name == name);
+
+      await repo.switchTo(named(await repo.branches(), 'local'));
+      expect(await repo.branch(), 'local');
+      await repo.switchTo(named(await repo.branches(), '--output=pwned3'));
+      expect(await repo.branch(), '--output=pwned3');
+
+      // A remote branch: a local one tracking it is made the first time, and
+      // is the one switched to the next.
+      for (var i = 0; i < 2; i++) {
+        await repo.switchTo(named(await repo.branches(), 'origin/$evil'));
+        expect(await repo.branch(), evil);
+        await repo.switchTo(named(await repo.branches(), 'main'));
+      }
+      final upstream = await Process.run(
+        'git',
+        ['rev-parse', '--abbrev-ref', '$evil@{upstream}'],
+        workingDirectory: proj,
+        environment: env,
+      );
+      expect((upstream.stdout as String).trim(), 'origin/$evil');
+      await repo.switchTo(named(await repo.branches(), 'origin/feature'));
+      expect(await repo.branch(), 'feature');
+
+      expect(planted(), isEmpty);
+    });
+
+    test('refuses to switch with anything uncommitted, untracked files '
+        'included, or in the middle of a merge', () async {
+      final proj = await repository('${sandbox.path}/$nasty/proj');
+      File('$proj/a.txt').writeAsStringSync('one\n');
+      await git(proj, ['add', 'a.txt']);
+      await git(proj, ['commit', '--quiet', '-m', 'a']);
+      await git(proj, ['branch', 'other']);
+      final repo = GitRepo(root: proj, run: run);
+      Future<GitBranch> other() async => (await repo.branches()).firstWhere(
+        (branch) => branch.name == 'other',
+      );
+
+      Future<void> refused(String reason) async {
+        await expectLater(
+          repo.switchTo(await other()),
+          throwsA(
+            isA<GitException>().having((e) => e.message, 'message', reason),
+          ),
+        );
+        expect(await repo.branch(), 'main');
+      }
+
+      // A change that git would carry across to the other branch untouched.
+      File('$proj/a.txt').writeAsStringSync('two\n');
+      await refused(
+        '1 uncommitted change — commit or discard it before switching '
+        'branches.',
+      );
+      await git(proj, ['checkout', '--', 'a.txt']);
+
+      File('$proj/new.txt').writeAsStringSync('new\n');
+      await refused(
+        '1 uncommitted change — commit or discard it before switching '
+        'branches.',
+      );
+      await File('$proj/new.txt').delete();
+
+      // A merge stopped before its commit with nothing to show in the status:
+      // only MERGE_HEAD says it is under way.
+      await git(proj, ['switch', '--quiet', 'other']);
+      await git(proj, ['commit', '--quiet', '--allow-empty', '-m', 'empty']);
+      await git(proj, ['switch', '--quiet', 'main']);
+      await git(proj, ['merge', '--quiet', '--no-commit', '--no-ff', 'other']);
+      expect(await repo.status(), isEmpty);
+      await refused(
+        'A merge is in progress — finish or abort it before switching '
+        'branches.',
+      );
+
+      await git(proj, ['merge', '--abort']);
+      await repo.switchTo(await other());
+      expect(await repo.branch(), 'other');
+      expect(planted(), isEmpty);
+    });
+
     test('every kind of diff reads as git\'s plain format whatever the host '
         'config says, and its old blob holds the lines around its hunks, '
         'however the file is named', () async {
