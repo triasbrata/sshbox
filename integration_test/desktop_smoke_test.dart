@@ -620,6 +620,7 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
             0,
             reason: 'the mouse: ${ran.stderr}${ran.stdout}',
           );
+          debugPrint('The mouse said: ${ran.stdout}');
           return ran;
         });
   }
@@ -655,15 +656,19 @@ func post(_ type: CGEventType) {
   e.post(tap: .cghidEventTap)
   usleep(10_000)
 }
-// A modifier is a flags-changed event, as the keyboard makes one: posted as
-// a key down, AppKit hands it to no one.
+// Keys from the HID system's own source, so a modifier pressed changes the
+// state the window server stamps on every event after it: from no source,
+// its flags were put back to the real keyboard's, which holds nothing.
+let keys = CGEventSource(stateID: .hidSystemState)
 func modifier(_ key: CGKeyCode, _ mask: CGEventFlags, _ down: Bool) {
   flags = down ? mask : []
-  let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)!
-  e.type = .flagsChanged
+  let e = CGEvent(keyboardEventSource: keys, virtualKey: key, keyDown: down)!
   e.flags = flags
   e.post(tap: .cghidEventTap)
   usleep(150_000)
+  print("after \(key) \(down ? "down" : "up"): hid "
+    + "\(CGEventSource.flagsState(.hidSystemState).rawValue), session "
+    + "\(CGEventSource.flagsState(.combinedSessionState).rawValue)")
 }
 for step in args[3].split(separator: ";") {
   let p = step.split(separator: " ")
@@ -678,7 +683,7 @@ for step in args[3].split(separator: ";") {
   case "cmdc":
     modifier(55, .maskCommand, true)
     for down in [true, false] {
-      let e = CGEvent(keyboardEventSource: nil, virtualKey: 8, keyDown: down)!
+      let e = CGEvent(keyboardEventSource: keys, virtualKey: 8, keyDown: down)!
       e.flags = .maskCommand
       e.post(tap: .cghidEventTap)
       usleep(150_000)
