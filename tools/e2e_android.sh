@@ -413,7 +413,33 @@ chat_markdown() {
   local status=0
   flow chat_markdown || status=1
   keep_shots 'chat-markdown-*.png'
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# The stand-in's pane killed, and the state file it leaves when killed rather
+# than ended: its own only, by its session id, so live_session can start again.
+end_live_session() {
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+
+# #143: the line chat shows while a watched turn runs -- Working… with its
+# seconds, tokens and tool, gone at the turn's end; what a turn stopped at a
+# permission prompt waits for; and a chat hidden while Claude writes coming
+# back still following. Against the stand-in's slow:, wait: and long: turns.
+chat_progress() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_progress || status=1
+  # Its screenshots, pass or fail, into the evidence folder (see chat_version_case).
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-progress-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
   stand_in ''
   return "$status"
 }
@@ -516,9 +542,13 @@ echo "::endgroup::"
 echo "::group::chat_markdown (report only)"
 flow chat_markdown || echo "::warning::chat_markdown failed -- report only, not gating"
 keep_shots 'chat-markdown-*.png'
-sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+end_live_session
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::chat_progress (report only)"
+chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"
 soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
