@@ -1148,6 +1148,7 @@ class _PaneViewState extends State<_PaneView> {
     // from the pane that had it, which autofocus alone would leave alone.
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    FocusManager.instance.addListener(_onFocusMoved);
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
@@ -1167,6 +1168,7 @@ class _PaneViewState extends State<_PaneView> {
   void dispose() {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    FocusManager.instance.removeListener(_onFocusMoved);
     _focusNode.dispose();
     _scrollController.dispose();
     // Takes the underlines with it.
@@ -1203,6 +1205,17 @@ class _PaneViewState extends State<_PaneView> {
       FocusManager.instance.applyFocusChangesIfNeeded();
     }
     return false;
+  }
+
+  /// The same hole, filled as focus falls into it rather than at the next
+  /// key: a tab group's pane given focus hands it to its own scope, which
+  /// gives it to no one, and a menu opened from the pane then gave it back to
+  /// the scope as it closed.
+  void _onFocusMoved() {
+    if (_shown == true &&
+        FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
+      _followFocus(keyboard: false);
+    }
   }
 
   /// Every paste into this pane, however it was asked for: the selection

@@ -208,10 +208,11 @@ void main() {
     // leaves behind whenever a focused node goes away, and what a page is
     // left with when nothing puts the focus back. With the connection shut
     // there is now no input path at all — the terminal types nothing, and the
-    // user's only way out is to leave the app and come back.
+    // user's only way out is to leave the app and come back. The terminal
+    // takes it back as it falls there, before any key.
     terminal(tester).unfocus();
     await tester.pump();
-    expect(terminal(tester).hasFocus, isFalse);
+    expect(terminal(tester).hasFocus, isTrue);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
     expect(shell.sent, ['a', 'b']);
