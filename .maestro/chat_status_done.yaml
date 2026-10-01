@@ -1,0 +1,24 @@
+# #159, last of three: the session has finished, and its row says so, marked
+# as not opened since it did, until it is opened.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- extendedWaitUntil:
+    visible: "Done, idle, not opened since"
+    timeout: 12000
+- takeScreenshot: chat-status-done-unseen
+# Opened, then the list again: done, and no longer unseen.
+- tapOn: "(?s)\\W*E2E status session.*"
+- extendedWaitUntil:
+    visible: "(?s).*Status answer.*"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "Done, idle"
+    timeout: 12000
+- assertNotVisible: "(?s).*not opened since.*"
+- takeScreenshot: chat-status-done-seen
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
