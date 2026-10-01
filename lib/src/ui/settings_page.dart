@@ -1064,6 +1064,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
               valueListenable: uiTextSize,
               // Named, for a screen reader and the e2e flow that sets it.
               builder: (context, scale, _) => Semantics(
+                container: true,
                 label: 'Set the UI text size',
                 child: TuiSlider(
                   value: (scale * 100).roundToDouble(),

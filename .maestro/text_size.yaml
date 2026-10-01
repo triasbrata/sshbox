@@ -20,14 +20,15 @@ env:
 - tapOn: "Settings"
 - scrollUntilVisible:
     element:
-      text: "Set the UI text size"
+      text: "(?s)Set the UI text size.*"
     direction: DOWN
-# From the slider's middle to the screen's edge: past its end, so its largest.
+# From the slider's middle to the screen's edge: past its end, so its
+# largest. Its node reads its name and then its readout, hence the .*.
 - swipe:
     from:
-      text: "Set the UI text size"
+      text: "(?s)Set the UI text size.*"
     direction: RIGHT
-- assertVisible: "160%"
+- assertVisible: "(?s)Set the UI text size.*160%.*"
 - takeScreenshot: text-size-settings-largest
 
 # Settings still scrolls to its end and comes back.
