@@ -3442,25 +3442,24 @@ touch '${done.path}'
           () => field.evaluate().isNotEmpty,
           'the message field',
         );
+        await tester.enterText(field, text);
         // Send turns on a frame after the text is in, and a tap on it while
-        // still off sends nothing; text typed while the box is off for a
-        // moment, as it is between turns, is dropped, so it is typed again.
-        bool on() =>
-            tester
-                .widget<IconButton>(
-                  find.ancestor(
-                    of: find.byTooltip('Send'),
-                    matching: find.byType(IconButton),
-                  ),
-                )
-                .onPressed !=
-            null;
-        await _until(tester, () async {
-          if (on()) return true;
-          await tester.enterText(field, text);
-          await tester.pump();
-          return on();
-        }, 'Send to turn on');
+        // still off sends nothing. The text itself stays: the box is never
+        // shut between turns (run 36883132321 lost it when it was).
+        await _until(
+          tester,
+          () =>
+              tester
+                  .widget<IconButton>(
+                    find.ancestor(
+                      of: find.byTooltip('Send'),
+                      matching: find.byType(IconButton),
+                    ),
+                  )
+                  .onPressed !=
+              null,
+          'Send to turn on, the text still in the box',
+        );
         await tester.tap(find.byTooltip('Send'));
         // In the session's own transcript, typed into its pane, or what the
         // chat said instead: a toast, or its own word after 30 s.
