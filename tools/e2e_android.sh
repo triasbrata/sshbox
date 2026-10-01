@@ -403,6 +403,9 @@ chat_progress() {
   end_live_session
   live_session
   flow chat_progress || status=1
+  # Its screenshots, pass or fail, into the evidence folder (see chat_version_case).
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-progress-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   end_live_session
   stand_in ''
   return "$status"
