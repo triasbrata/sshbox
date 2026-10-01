@@ -6,7 +6,8 @@
 // The label's accessibility text is the label as written, not the
 // upper-cased one drawn, so a finder or a screen reader reads the word;
 // and the button is a node of its own, so that word is not run together
-// with the text beside it.
+// with the text beside it; a label wider than the room it is given, as at
+// a large UI text size, wraps rather than overflows.
 
 import 'package:flutter/material.dart';
 
@@ -101,41 +102,45 @@ class _TuiButtonState extends State<TuiButton> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Padding(
-                  padding: EdgeInsets.only(
-                    left: lightPrimary ? 12 : 12,
-                    right: lightPrimary ? 8 : 12,
-                    top: 6,
-                    bottom: 6,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (widget.prefix != null && !lightPrimary) ...[
-                        Text(
-                          widget.prefix!,
-                          style: TextStyle(
-                            fontFamily: TermulFonts.mono,
-                            color: fg,
-                            fontSize: 11,
-                            height: 1.2,
-                            letterSpacing: 0.4,
+                Flexible(
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                      left: lightPrimary ? 12 : 12,
+                      right: lightPrimary ? 8 : 12,
+                      top: 6,
+                      bottom: 6,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.prefix != null && !lightPrimary) ...[
+                          Text(
+                            widget.prefix!,
+                            style: TextStyle(
+                              fontFamily: TermulFonts.mono,
+                              color: fg,
+                              fontSize: 11,
+                              height: 1.2,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        Flexible(
+                          child: Text(
+                            widget.label.toUpperCase(),
+                            style: TextStyle(
+                              fontFamily: TermulFonts.mono,
+                              color: fg,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              height: 1.2,
+                              letterSpacing: 0.4,
+                            ),
                           ),
                         ),
-                        const SizedBox(width: 6),
                       ],
-                      Text(
-                        widget.label.toUpperCase(),
-                        style: TextStyle(
-                          fontFamily: TermulFonts.mono,
-                          color: fg,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          height: 1.2,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
                 if (lightPrimary)

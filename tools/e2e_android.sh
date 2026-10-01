@@ -505,6 +505,12 @@ echo "::group::file_editor (report only)"
 file_editor || echo "::warning::file_editor failed -- report only, not gating"
 echo "::endgroup::"
 
+# The UI text size at its largest (issue #133). Last of all, as the size it
+# sets is saved and every flow after it would meet the app at 160%.
+echo "::group::text_size (report only)"
+flow text_size || echo "::warning::text_size failed -- report only, not gating"
+echo "::endgroup::"
+
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named
 # one in its own results, under takeScreenshot/, which the upload does not
 # reach. Its failure screenshots stay where they are, uploaded apart.
