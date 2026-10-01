@@ -528,9 +528,163 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
   }
 }
 
+/// The real pointer, moved and pressed as a hand would, over this window:
+/// each step `move x y` to a point in the app (logical pixels, as a finder
+/// gives them), `down`, `up` (the primary button), `rdown`, `rup` (the
+/// secondary, #132's), `sleep ms`, or
+/// `shiftdown` and `shiftup` (Linux and macOS only), or `cmdc`, ⌘ held, C
+/// typed and ⌘ let go as three key events (macOS only). On Linux
+/// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
+/// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
+/// Not pumped while it goes: the app takes the pointer on its own, and a
+/// check failing inside a pump would be lost to it.
+Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
+  final ratio = tester.view.devicePixelRatio;
+  final Future<Object?> run;
+  if (Platform.isWindows) {
+    run = _winMouse([
+      for (final step in steps)
+        if (step.split(' ') case ['move', final x, final y])
+          'move ${(double.parse(x) * ratio).round()} '
+              '${(double.parse(y) * ratio).round()}'
+        else
+          step,
+    ]);
+  } else if (Platform.isLinux) {
+    final window = await _windowRect();
+    final frame = (window.width - tester.view.physicalSize.width) / 2;
+    final origin = window.topLeft + Offset(frame, frame);
+    // Keys go to the focused window, which Xvfb with no window manager
+    // gives nobody: as _escape does.
+    await _xdo(['windowfocus', '--sync', await _window()]);
+    run = _xdo([
+      for (final step in steps)
+        ...switch (step.split(' ')) {
+          ['move', final x, final y] => [
+            'mousemove',
+            '${(origin.dx + double.parse(x) * ratio).round()}',
+            '${(origin.dy + double.parse(y) * ratio).round()}',
+          ],
+          ['down'] => ['mousedown', '1'],
+          ['rdown'] => ['mousedown', '3'],
+          ['rup'] => ['mouseup', '3'],
+          ['shiftdown'] => ['keydown', 'Shift_L'],
+          ['shiftup'] => ['keyup', 'Shift_L'],
+          ['up'] => ['mouseup', '1'],
+          ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
+          _ => throw ArgumentError(step),
+        },
+    ]);
+  } else {
+    final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final script = File('${dir.path}/mouse.swift')
+      ..writeAsStringSync(_macMouseScript);
+    final size = tester.view.physicalSize / ratio;
+    // Frontmost, for its keys: the pointer reaches the window under it
+    // anyway, but keys go to the active app, and a Mac will not let the
+    // script's own activate() take that from another app.
+    final front = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to set frontmost of '
+          '(first process whose unix id is $pid) to true',
+    ]);
+    expect(front.exitCode, 0, reason: 'frontmost: ${front.stderr}');
+    run =
+        Process.run('swift', [
+          script.path, '$pid', '${size.height}', steps.join(';'), //
+        ]).then((ran) {
+          expect(
+            ran.exitCode,
+            0,
+            reason: 'the mouse: ${ran.stderr}${ran.stdout}',
+          );
+          debugPrint('The mouse said: ${ran.stdout}');
+          return ran;
+        });
+  }
+  await run;
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+const _macMouseScript = r"""
+import AppKit
+import CoreGraphics
+
+let args = CommandLine.arguments
+let pid = pid_t(args[1])!
+let viewHeight = Double(args[2])!
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+  as! [[String: Any]]
+guard let window = windows.first(where: {
+  ($0[kCGWindowOwnerPID as String] as? pid_t) == pid
+    && ($0[kCGWindowLayer as String] as? Int) == 0
+}) else { print("no window for \(pid)"); exit(1) }
+let bounds = CGRect(
+  dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+NSRunningApplication(processIdentifier: pid)?.activate()
+usleep(300_000)
+
+var at = CGPoint(x: bounds.midX, y: bounds.midY)
+var pressed = false
+var flags: CGEventFlags = []
+func post(_ type: CGEventType, _ button: CGMouseButton = .left) {
+  let e = CGEvent(mouseEventSource: nil, mouseType: type,
+                  mouseCursorPosition: at, mouseButton: button)!
+  e.flags = flags
+  e.post(tap: .cghidEventTap)
+  usleep(10_000)
+}
+// Keys from the HID system's own source, so a modifier pressed changes the
+// state the window server stamps on every event after it: from no source,
+// its flags were put back to the real keyboard's, which holds nothing.
+let keys = CGEventSource(stateID: .hidSystemState)
+// Each flag with the bit naming its left key, as a keyboard sets it
+// (NX_DEVICELSHIFTKEYMASK, NX_DEVICELCMDKEYMASK): Flutter tells a modifier's
+// press from its release by that bit, and without it heard neither.
+let shiftLeft = CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x2)
+let commandLeft =
+  CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x8)
+func modifier(_ key: CGKeyCode, _ mask: CGEventFlags, _ down: Bool) {
+  flags = down ? mask : []
+  let e = CGEvent(keyboardEventSource: keys, virtualKey: key, keyDown: down)!
+  e.flags = flags
+  e.post(tap: .cghidEventTap)
+  usleep(150_000)
+  print("after \(key) \(down ? "down" : "up"): hid "
+    + "\(CGEventSource.flagsState(.hidSystemState).rawValue), session "
+    + "\(CGEventSource.flagsState(.combinedSessionState).rawValue)")
+}
+for step in args[3].split(separator: ";") {
+  let p = step.split(separator: " ")
+  switch p[0] {
+  case "move":
+    at = CGPoint(x: bounds.minX + Double(p[1])!,
+                 y: bounds.maxY - viewHeight + Double(p[2])!)
+    post(pressed ? .leftMouseDragged : .mouseMoved)
+  case "down": pressed = true; post(.leftMouseDown)
+  case "up": pressed = false; post(.leftMouseUp)
+  case "rdown": post(.rightMouseDown, .right)
+  case "rup": post(.rightMouseUp, .right)
+  case "shiftdown": modifier(56, shiftLeft, true)
+  case "cmdc":
+    modifier(55, commandLeft, true)
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: keys, virtualKey: 8, keyDown: down)!
+      e.flags = commandLeft
+      e.post(tap: .cghidEventTap)
+      usleep(150_000)
+    }
+    modifier(55, commandLeft, false)
+  case "shiftup": modifier(56, shiftLeft, false)
+  case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
+  default: print("unknown step \(step)"); exit(1)
+  }
+}
+""";
+
 /// A right-click with the real pointer at [local], a point in the app, sent
-/// through the OS as a hand sends it: xdotool on Linux, mouse_event on
-/// Windows, CGEvents posted to the window server on macOS.
+/// through the OS as a hand sends it, by [_osMouse].
 ///
 /// [shift] holds Shift down around it, as a hand does: Windows has no test
 /// that asks for it.
@@ -542,103 +696,16 @@ Future<void> _realRightClick(
   Offset local, {
   bool shift = false,
 }) async {
-  final ratio = tester.view.devicePixelRatio;
-  if (Platform.isWindows) {
-    assert(!shift, 'no Shift on Windows here');
-    final at = local * ratio;
-    await _winMouse([
-      'move ${at.dx.round()} ${at.dy.round()}',
-      'rdown',
-      'sleep 40',
-      'rup',
-    ]);
-  } else if (Platform.isMacOS) {
-    // The window's frame, in the screen's points: its content runs up under
-    // the title bar, so the frame's corner is the app's (0, 0).
-    final frame = await Process.run('osascript', [
-      '-e',
-      'tell application "System Events" to tell process "Jeansh"\n'
-          // A key goes to the app in front, Shift's included.
-          'set frontmost to true\n'
-          'get position of window 1\n'
-          'end tell',
-    ]);
-    expect(frame.exitCode, 0, reason: 'the window: ${frame.stderr}');
-    final [x, y] = '${frame.stdout}'
-        .trim()
-        .split(', ')
-        .map(double.parse)
-        .toList();
-    final at = Offset(x, y) + local;
-    Future<void> post(String step) async {
-      final done = await Process.run('osascript', [
-        '-l', 'JavaScript', '-e', _macRightClickScript, //
-        '${at.dx}', '${at.dy}', step, '$pid',
-      ]);
-      expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}');
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-
-    if (shift) {
-      await post('shiftdown');
-      debugPrint(
-        'Shift held, as Flutter hears it: '
-        '${HardwareKeyboard.instance.isShiftPressed}',
-      );
-    }
-    await post(shift ? 'shiftclick' : 'click');
-    if (shift) await post('shiftup');
-  } else {
-    final window = await _windowRect();
-    final frame = (window.width - tester.view.physicalSize.width) / 2;
-    final at = window.topLeft + Offset(frame, frame) + local * ratio;
-    await _xdo(['mousemove', '${at.dx.round()}', '${at.dy.round()}']);
-    if (shift) {
-      // The key reaches the window that has the keyboard.
-      await _xdo(['windowfocus', '--sync', await _window()]);
-      await _xdo(['keydown', 'shift']);
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-    await _xdo(['click', '3']);
-    if (shift) {
-      await tester.pump(const Duration(milliseconds: 100));
-      await _xdo(['keyup', 'shift']);
-    }
-  }
-  await tester.pump(const Duration(milliseconds: 300));
+  assert(!shift || !Platform.isWindows, 'no Shift on Windows here');
+  await _osMouse(tester, [
+    'move ${local.dx} ${local.dy}',
+    if (shift) ...['shiftdown', 'sleep 100'],
+    'rdown',
+    'sleep 40',
+    'rup',
+    if (shift) ...['sleep 100', 'shiftup'],
+  ]);
 }
-
-/// One step of a right-click, posted as CGEvents at a point in the screen's
-/// points: `click` moves the pointer there (kCGEventMouseMoved, 5) and
-/// presses the right button (3, 4); `shiftclick` does so with Shift's flag
-/// (kCGEventFlagMaskShift, 0x20000) on each event; `shiftdown` and `shiftup`
-/// are the left Shift key (key code 56) as a keyboard sends a modifier: a
-/// flagsChanged (12), not a key down, its flag on while held. It goes to the
-/// window server, which keeps the modifiers' state, and to the app's own
-/// process, argv[3], in case another app has the keyboard.
-const _macRightClickScript = r"""
-ObjC.import('CoreGraphics');
-function run(argv) {
-  const p = $.CGPointMake(Number(argv[0]), Number(argv[1]));
-  const step = argv[2];
-  const pid = Number(argv[3]);
-  if (step === 'shiftdown' || step === 'shiftup') {
-    const down = step === 'shiftdown';
-    const e = $.CGEventCreateKeyboardEvent(null, 56, down);
-    $.CGEventSetType(e, 12);
-    $.CGEventSetFlags(e, down ? 0x20000 : 0);
-    $.CGEventPost(0, e);
-    $.CGEventPostToPid(pid, e);
-    return;
-  }
-  for (const [type, button] of [[5, 0], [3, 1], [4, 1]]) {
-    const e = $.CGEventCreateMouseEvent(null, type, p, button);
-    if (step === 'shiftclick') $.CGEventSetFlags(e, 0x20000);
-    $.CGEventPost(0, e);
-    delay(0.05);
-  }
-}
-""";
 
 const _winMouseScript = r'''
 param([string]$steps)
