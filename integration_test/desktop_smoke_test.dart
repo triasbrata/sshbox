@@ -2048,13 +2048,14 @@ touch '${done.path}'
         reason: 'the scrollback, from $from',
       );
 
-      // A program reading the mouse, as Claude Code's fullscreen view does,
-      // writing what it is sent to a file.
+      // writing what it is sent to a file a byte at a time: cat would hold it
+      // in its buffer.
+      // writing what it is sent to a file a byte at a time, as cat would buffer it.
       final got = File('${dir.path}/wheel');
       _run(
         view,
         r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; "
-        'cat -v > ${got.path}',
+        'dd bs=1 of=${got.path} 2>/dev/null',
       );
       await _until(
         tester,
@@ -2068,7 +2069,7 @@ touch '${done.path}'
           .renderTerminal;
       final cell = render.getCellOffset(render.globalToLocal(box.center));
       await _trackpad(tester, box.center);
-      final wheel = RegExp(r'\^\[\[<6[45];(\d+);(\d+)M');
+      final wheel = RegExp(r'\x1b\[<6[45];(\d+);(\d+)M');
       await _until(
         tester,
         () => wheel.hasMatch(got.readAsStringSync()),
