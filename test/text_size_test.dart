@@ -197,6 +197,51 @@ void main() {
     expect(find.text('160%'), findsOneWidget);
   });
 
+  testWidgets('the UI text size slider reads its value as its readout says '
+      'it, 100% rather than 100.00, under the name the e2e flow finds', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await tester.binding.setSurfaceSize(const Size(360, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    expect(find.bySemanticsLabel('Set the UI text size'), findsOneWidget);
+    final slider = find.byWidgetPredicate(
+      (w) => w is Semantics && w.properties.slider == true,
+    );
+    expect(tester.getSemantics(slider.first).value, '100%');
+    semantics.dispose();
+  });
+
+  group('a saved size that cannot be used gives way to the default, and '
+      'never stops the app starting', () {
+    for (final (name, saved) in [
+      ('NaN', double.nan),
+      ('another type', 'large'),
+      ('out of range', 9.0),
+    ]) {
+      test('the UI size, $name', () async {
+        SharedPreferences.setMockInitialValues({'sshbox.ui.textScale': saved});
+        uiTextSize.value = 1.4;
+        await uiTextSize.load();
+        expect(uiTextSize.value, 1);
+      });
+    }
+    for (final (name, saved) in [
+      ('NaN', double.nan),
+      ('another type', 'large'),
+    ]) {
+      test('the content size, $name', () async {
+        SharedPreferences.setMockInitialValues({
+          'sshbox.terminal.fontSize': saved,
+          'sshbox.terminal.fontFamily': 42,
+        });
+        await terminalSettings.load();
+        expect(terminalSettings.value, TerminalSettings.defaultStyle);
+      });
+    }
+  });
+
   testWidgets('ContentText takes the UI size out and the content size in', (
     tester,
   ) async {

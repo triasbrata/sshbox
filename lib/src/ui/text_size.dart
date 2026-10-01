@@ -21,10 +21,16 @@ class UiTextSize extends ValueNotifier<double> {
   static const max = 1.6;
 
   /// Reads the saved choice. Nothing saved, or out of range, is 100%.
+  ///
+  /// Read before the app runs, so nothing saved may stop it starting: a
+  /// value of another type, or NaN, is 100% too.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getDouble(_key) ?? 1;
-    value = saved < min || saved > max ? 1 : saved;
+    double? saved;
+    try {
+      saved = prefs.getDouble(_key);
+    } catch (_) {}
+    value = saved != null && saved >= min && saved <= max ? saved : 1;
   }
 
   /// Applies at once, and is saved for the next start.
