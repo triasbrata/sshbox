@@ -1125,6 +1125,10 @@ class _PaneViewState extends State<_PaneView> {
   /// What xterm2 itself sends a program that reads the mouse: see
   /// [_pointerInputs].
   final selection = TerminalController(pointerInputs: _pointerInputs(false));
+
+  /// A press [_mouseDown] sent and whose release has not gone yet, with where
+  /// the pointer last was: xterm2 sends the moves between them.
+  bool get _holding => (_tracked?.pointer ?? -1) != -1;
   List<TerminalUnderline> _underlines = const [];
 
   @override
@@ -1147,6 +1151,22 @@ class _PaneViewState extends State<_PaneView> {
       widget.terminal.onClipboardStore = _programCopied;
     }
     if (!oldWidget.focused) _followFocus();
+  }
+
+  /// A pane going away mid-drag — its tab closed, its tmux pane gone — still
+  /// lets the button go for the program, or Claude Code would go on dragging.
+  /// Here rather than in [dispose], which runs once the terminal view below
+  /// is gone and nothing can be sent through it; and from where the pointer
+  /// was last, the render object being detached by now.
+  @override
+  void deactivate() {
+    final tracked = _tracked;
+    if (tracked != null && _holding) {
+      _sendAt(tracked.button, TerminalMouseButtonState.up, tracked.at);
+      _tracked = null;
+      selection.setPointerInputs(_pointerInputs(false));
+    }
+    super.deactivate();
   }
 
   @override
@@ -1265,12 +1285,29 @@ class _PaneViewState extends State<_PaneView> {
     };
     if (button == null || !_tracksDrags) return;
     if (_send(button, TerminalMouseButtonState.down, event.position)) {
-      _tracked = (pointer: event.pointer, button: button);
+      _tracked = (
+        pointer: event.pointer,
+        button: button,
+        at: _local(event.position),
+      );
+      selection.setPointerInputs(_pointerInputs(true));
     }
   }
 
-  /// The press a program tracking drags has been sent, until its release.
-  ({int pointer, TerminalMouseButton button})? _tracked;
+  /// The press a program tracking drags has been sent, until its release:
+  /// its pointer, -1 once released, its button, and where it last was, in
+  /// the terminal's own coordinates.
+  ({int pointer, TerminalMouseButton button, Offset at})? _tracked;
+
+  void _trackedMove(PointerMoveEvent event) {
+    final tracked = _tracked;
+    if (tracked == null || tracked.pointer != event.pointer) return;
+    _tracked = (
+      pointer: tracked.pointer,
+      button: tracked.button,
+      at: _local(event.position),
+    );
+  }
 
   /// Whether a program has asked for the mouse's drags — button-event
   /// tracking (1002) or any-event (1003), as Claude Code's fullscreen view,
@@ -1301,6 +1338,15 @@ class _PaneViewState extends State<_PaneView> {
     TerminalMouseButton button,
     TerminalMouseButtonState state,
     Offset global,
+  ) => _sendAt(button, state, _local(global));
+
+  Offset _local(Offset global) =>
+      _viewKey.currentState?.renderTerminal.globalToLocal(global) ?? global;
+
+  bool _sendAt(
+    TerminalMouseButton button,
+    TerminalMouseButtonState state,
+    Offset local,
   ) {
     final render = _viewKey.currentState?.renderTerminal;
     if (render == null) return false;
@@ -1308,7 +1354,7 @@ class _PaneViewState extends State<_PaneView> {
     return render.mouseEvent(
       button,
       state,
-      render.globalToLocal(global),
+      local,
       modifiers: TerminalMouseModifiers(
         shift: keys.isShiftPressed,
         alt: keys.isAltPressed,
@@ -1326,7 +1372,8 @@ class _PaneViewState extends State<_PaneView> {
     _send(tracked.button, TerminalMouseButtonState.up, event.position);
     // Kept until the next press, so the tap this gesture also makes does
     // not send it again: see [_click].
-    _tracked = (pointer: -1, button: tracked.button);
+    _tracked = (pointer: -1, button: tracked.button, at: tracked.at);
+    selection.setPointerInputs(_pointerInputs(false));
   }
 
   /// A trackpad's scroll, which a Mac sends as a pan and not as a wheel,
@@ -1555,7 +1602,7 @@ class _PaneViewState extends State<_PaneView> {
     // is the only way a finger can scroll at all, there being no wheel. So
     // an armed CTRL froze the terminal's content until the app was killed.
     _ctrlArmed = ctrl;
-    selection.setPointerInputs(_pointerInputs(ctrl));
+    selection.setPointerInputs(_pointerInputs(_holding && !ctrl));
     for (final underline in _underlines) {
       underline.dispose();
     }
@@ -1573,15 +1620,21 @@ class _PaneViewState extends State<_PaneView> {
     );
   }
 
-  /// What xterm2 hands a program that reads the mouse: the wheel, and on a
-  /// desktop the moves of a drag the program tracks (see [_tracksDrags]),
-  /// unless Ctrl has claimed the pointer. Never the press or the release:
-  /// xterm2 sends a press once the button has been down 100 ms and its
-  /// release only if the gesture ends as a tap, which left a program a press
-  /// that never ended. [_mouseDown] and [_click] send those instead.
-  static PointerInputs _pointerInputs(bool ctrl) => PointerInputs({
+  /// What xterm2 hands a program that reads the mouse: the wheel, and the
+  /// moves of a drag only while [_mouseDown] has sent its press and the
+  /// release has not gone — [drag]. Never the press or the release: xterm2
+  /// sends a press once the button has been down 100 ms and its release only
+  /// if the gesture ends as a tap, which left a program a press that never
+  /// ended. [_mouseDown] and [_click] send those instead.
+  ///
+  /// The moves are held to the press because xterm2 decides each one alone,
+  /// from Shift and the button held then: a Shift+drag let go of Shift, a
+  /// Ctrl disarmed mid-drag or a right-button drag would otherwise send a
+  /// program moves with a button held that no press began and no release
+  /// ends — the very drag that never ends.
+  static PointerInputs _pointerInputs(bool drag) => PointerInputs({
     PointerInput.scroll,
-    if (isDesktop && !ctrl) PointerInput.drag,
+    if (drag) PointerInput.drag,
   });
 
   /// Whether Ctrl has claimed the tap, for opening a link: see [showLinks].
@@ -1638,6 +1691,7 @@ class _PaneViewState extends State<_PaneView> {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
+          onPointerMove: _trackedMove,
           onPointerCancel: _trackedUp,
           onPointerPanZoomStart: _trackpadDown,
           child: TerminalView(

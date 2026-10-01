@@ -259,7 +259,95 @@ void main() {
         'llo w',
       );
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    // xterm2 decides each move alone, so a drag no press began went on
+    // sending moves with a button held, and no release ever ended it.
+    testWidgets('hears no moves of a drag it was sent no press for: Shift let '
+        'go mid-drag, or the right button', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset at(int col) => render.localToGlobal(
+        render.getOffset(CellOffset(col, 17)) +
+            render.cellSize.center(Offset.zero),
+      );
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      final shifted = await tester.startGesture(
+        at(2),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      await shifted.moveTo(at(4));
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      for (var col = 5; col <= 8; col++) {
+        await shifted.moveTo(at(col));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await shifted.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(shown(shell.sent), '');
+
+      final right = await tester.startGesture(
+        at(2),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      for (var col = 3; col <= 8; col++) {
+        await right.moveTo(at(col));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await right.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(shown(shell.sent), '');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('hears the release of a drag whose pane goes away', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      final drag = await heldDrag(tester);
+      // The tab closed with the button still down.
+      await tester.pumpWidget(const SizedBox());
+      expect(shell.sent.first, '\x1b[<0;3;18M');
+      expect(shell.sent.last, '\x1b[<0;7;18m');
+      await drag.up();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
+
+  testWidgets('on Android a tap reaches a program reading clicks as the press '
+      'and release xterm2 sent', (tester) async {
+    await pumpPage(tester);
+    session.terminal.write(text * 30);
+    session.terminal.write('\x1b[?1000h\x1b[?1006h');
+    await tester.pump();
+    shell.sent.clear();
+
+    final render = tester
+        .state<TerminalViewState>(find.byType(TerminalView))
+        .renderTerminal;
+    await tester.tapAt(
+      render.localToGlobal(
+        render.getOffset(const CellOffset(7, 10)) +
+            render.cellSize.center(Offset.zero),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(shown(shell.sent), 'ESC[<0;8;11M ESC[<0;8;11m');
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
   testWidgets('a program reading clicks alone gets no half a click from a '
       'drag, which selects, and a click whole', (tester) async {
@@ -342,6 +430,9 @@ void main() {
 
     // xterm2 sent the lone ⌘ as ESC[57444;9u, which counted as typing and
     // let the selection go before C came.
+    // Nor a lock key alone.
+    await tester.sendKeyEvent(LogicalKeyboardKey.capsLock);
+    await tester.sendKeyEvent(LogicalKeyboardKey.capsLock);
     expect(shell.sent, isEmpty);
     expect(copied, 'llo w');
     expect(

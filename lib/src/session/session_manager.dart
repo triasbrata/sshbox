@@ -1946,8 +1946,9 @@ class _ShiftEnterInputHandler implements TerminalInputHandler {
 /// lines. The key bar was never affected, since it sends bytes rather than
 /// presses and releases. Every other handler already drops releases.
 ///
-/// And a modifier pressed alone — ⌘, Ctrl, Alt, Shift — goes out only to a
-/// program that asked for every key as an escape code, kitty's flag 8. The
+/// And a modifier pressed alone — ⌘, Ctrl, Alt, Shift, Super, Hyper, or a
+/// lock key, Caps, Num or Scroll Lock — goes out only to a program that
+/// asked for every key as an escape code, kitty's flag 8. The
 /// protocol reports a lone modifier under that flag alone, but xterm2 sent
 /// one under any flag, `ESC [57444;9u` for ⌘ under Claude Code's 1 and 4.
 /// Anything sent counts as typing, which lets a selection go, so on a Mac,
@@ -1974,6 +1975,11 @@ class _ReleaseOnlyIfAsked implements TerminalInputHandler {
     TerminalKey.control,
     TerminalKey.alt,
     TerminalKey.meta,
+    TerminalKey.superKey,
+    TerminalKey.hyper,
+    TerminalKey.capsLock,
+    TerminalKey.numLock,
+    TerminalKey.scrollLock,
   };
 
   @override
