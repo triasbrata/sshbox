@@ -570,11 +570,24 @@ Future<void> _realRightClick(
         .map(double.parse)
         .toList();
     final at = Offset(x, y) + local;
-    final done = await Process.run('osascript', [
-      '-l', 'JavaScript', '-e', _macRightClickScript, //
-      '${at.dx}', '${at.dy}', if (shift) 'shift',
-    ]);
-    expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}');
+    Future<void> post(String step) async {
+      final done = await Process.run('osascript', [
+        '-l', 'JavaScript', '-e', _macRightClickScript, //
+        '${at.dx}', '${at.dy}', step, '$pid',
+      ]);
+      expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}');
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    if (shift) {
+      await post('shiftdown');
+      debugPrint(
+        'Shift held, as Flutter hears it: '
+        '${HardwareKeyboard.instance.isShiftPressed}',
+      );
+    }
+    await post(shift ? 'shiftclick' : 'click');
+    if (shift) await post('shiftup');
   } else {
     final window = await _windowRect();
     final frame = (window.width - tester.view.physicalSize.width) / 2;
@@ -595,31 +608,32 @@ Future<void> _realRightClick(
   await tester.pump(const Duration(milliseconds: 300));
 }
 
-/// A right-click posted to the window server as CGEvents, at a point in the
-/// screen's points: the pointer moved there (kCGEventMouseMoved, 5), then
-/// the right button down (3) and up (4). With `shift`, the left Shift key
-/// (key code 56) goes down before and up after, and the key's own down and
-/// the clicks carry its flag (kCGEventFlagMaskShift, 0x20000), as a
-/// keyboard's do: a modifier's key event with no flag is no flagsChanged,
-/// and Flutter never hears Shift.
+/// One step of a right-click, posted as CGEvents at a point in the screen's
+/// points: `click` moves the pointer there (kCGEventMouseMoved, 5) and
+/// presses the right button (3, 4); `shiftclick` does so with Shift's flag
+/// (kCGEventFlagMaskShift, 0x20000) on each event; `shiftdown` and `shiftup`
+/// are the left Shift key (key code 56), its down carrying the flag, as a
+/// keyboard's does, or it is no flagsChanged. The keys go to the app's own
+/// process, argv[3], so they reach it whichever app has the keyboard.
 const _macRightClickScript = r"""
 ObjC.import('CoreGraphics');
 function run(argv) {
   const p = $.CGPointMake(Number(argv[0]), Number(argv[1]));
-  const shift = argv[2] === 'shift';
-  const post = (e) => { $.CGEventPost(0, e); delay(0.05); };
-  const key = (down) => {
+  const step = argv[2];
+  const pid = Number(argv[3]);
+  if (step === 'shiftdown' || step === 'shiftup') {
+    const down = step === 'shiftdown';
     const e = $.CGEventCreateKeyboardEvent(null, 56, down);
     $.CGEventSetFlags(e, down ? 0x20000 : 0);
-    post(e);
-  };
-  if (shift) key(true);
+    $.CGEventPostToPid(pid, e);
+    return;
+  }
   for (const [type, button] of [[5, 0], [3, 1], [4, 1]]) {
     const e = $.CGEventCreateMouseEvent(null, type, p, button);
-    if (shift) $.CGEventSetFlags(e, 0x20000);
-    post(e);
+    if (step === 'shiftclick') $.CGEventSetFlags(e, 0x20000);
+    $.CGEventPost(0, e);
+    delay(0.05);
   }
-  if (shift) key(false);
 }
 """;
 
