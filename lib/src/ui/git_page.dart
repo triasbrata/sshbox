@@ -52,8 +52,8 @@ class _GitPageState extends State<GitPage> {
   List<GitBranch> _branches = const [];
 
   /// The full ref History shows the commits of; null for the checkout's own.
-  /// Only looked at: nothing is checked out, so the files on the host, and
-  /// whatever is running over them, stay exactly as they are.
+  /// Only looked at: nothing is checked out until Switch to is tapped and
+  /// confirmed, so the files on the host stay exactly as they are.
   String? _viewing;
 
   /// The repository the lists below were read from, so a repository picked in
@@ -182,6 +182,64 @@ class _GitPageState extends State<GitPage> {
     }
   }
 
+  /// Checks [target] out, once the user has said so. [GitRepo.switchTo]
+  /// refuses while anything is uncommitted or half done, and its reason is
+  /// the toast [_act] shows.
+  Future<void> _switch(GitBranch target) async {
+    final confirmed = await showTuiConfirmDialog(
+      context,
+      title: 'switch branch',
+      message: 'Switch from $_branch to ${target.name}?',
+      detail:
+          'The files in ${_repos.selected?.name ?? 'the repository'} change '
+          'to that branch\'s, under anything running over them.',
+      confirmLabel: 'Switch',
+      cancelLabel: 'Cancel',
+      confirmVariant: TuiButtonVariant.primary,
+    );
+    if (!confirmed || !mounted) return;
+    await _act((repo) async {
+      await repo.switchTo(target);
+      // What was being looked at is now the checkout.
+      _viewing = null;
+      if (mounted) showToast(context, 'Switched to ${target.name}');
+    });
+  }
+
+  /// The header's branch, tapped: every other branch, to switch to.
+  Future<void> _pickBranch(BuildContext anchor) async {
+    final others = [
+      for (final b in _branches)
+        if (!b.current) b,
+    ];
+    if (others.isEmpty) {
+      showToast(context, 'No other branch to switch to');
+      return;
+    }
+    final picked = await showTuiMenu<GitBranch>(
+      context,
+      anchor: anchor,
+      entries: [
+        for (final b in others)
+          TuiMenuItem(value: b, label: 'Switch to ${b.name}'),
+      ],
+    );
+    if (picked != null && mounted) await _switch(picked);
+  }
+
+  /// Takes the session's shell to the repository picked, the way the files
+  /// drawer's Open in terminal does — and refused, as there, while a program
+  /// holds the shell.
+  Future<void> _openInTerminal(GitRepo repo) async {
+    final why = await widget.session.changeDirectory(repo.root);
+    if (!mounted) return;
+    if (why != null) {
+      showToast(context, why, type: TuiToastType.warning);
+    } else {
+      widget.onClose?.call();
+    }
+  }
+
   Future<void> _commit() async {
     final message = _message.text;
     await _act((repo) async {
@@ -306,16 +364,42 @@ class _GitPageState extends State<GitPage> {
           // but in the drawer on a phone a long one pushed the buttons beside
           // it off the edge of the screen.
           Flexible(
-            child: Text(
-              _branch,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.primary,
+            child: Builder(
+              builder: (anchor) => InkWell(
+                onTap: _busy ? null : () => unawaited(_pickBranch(anchor)),
+                child: TuiTooltip(
+                  message: 'Switch branch',
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          _branch,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.arrow_drop_down,
+                        size: 16,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
         ],
+        if (repo != null)
+          IconButton(
+            tooltip: 'Open in terminal',
+            onPressed: () => unawaited(_openInTerminal(repo)),
+            icon: const Icon(Icons.terminal),
+          ),
         IconButton(
           tooltip: 'Refresh',
           onPressed: _busy ? null : () => unawaited(_reload()),
@@ -450,6 +534,14 @@ class _GitPageState extends State<GitPage> {
               read: () => repo.compare(viewing.ref),
             ),
           ),
+        if (viewing != null)
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.swap_horiz, size: 20),
+            title: Text('Switch to ${viewing.name}'),
+            enabled: !_busy,
+            onTap: () => unawaited(_switch(viewing)),
+          ),
         Expanded(
           child: _log.isEmpty
               ? const _Message(text: 'No commits yet')
@@ -485,9 +577,8 @@ class _GitPageState extends State<GitPage> {
   /// Which branch's commits History lists. It sits here rather than on the
   /// branch in the header, which is the checkout: Changes and the commit box
   /// act on that one whatever is being looked at, and the header must go on
-  /// saying so. Picking a branch only reads it — a checkout would change the
-  /// files under whatever runs on the host, and refuse or lose work while
-  /// there are changes.
+  /// saying so. Picking a branch only reads it; Switch to, below it, is what
+  /// checks one out.
   Widget _branchPicker() {
     final checkedOut = _branches.where((b) => b.current).firstOrNull;
     // A detached head has no branch to stand for it, so it gets an entry of

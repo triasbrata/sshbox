@@ -7,6 +7,7 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/git_page.dart';
+import 'package:sshbox/src/ui/tui.dart';
 
 import 'fake_file_browser.dart';
 
@@ -53,8 +54,20 @@ class _Shell
   @override
   String? get failure => null;
 
+  /// What reached the shell itself, as typed.
+  final sent = <String>[];
+
   @override
-  void send(String data) {}
+  void send(String data) => sent.add(data);
+
+  /// Whether the main checkout has a change, which no switch may carry off.
+  bool dirty = true;
+
+  /// The main checkout's branch, which a switch changes.
+  String branch = 'main';
+
+  /// What the shell is running, as the foreground probe reports it.
+  String probe = 'sshbox\t42\t1\tbash\t/home/me';
 
   @override
   void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
@@ -88,25 +101,36 @@ class _Shell
         '',
       ]);
     }
+    if (command.startsWith('sh -c ')) return Stream.value(probe);
+    // Nothing half done: no merge, rebase or cherry-pick.
+    if (command.contains('--git-path')) return const Stream.empty();
     final agent = command.contains("-C '$_agent'");
+    if (command.contains("'switch'")) {
+      branch = 'feature';
+      return said([]);
+    }
     if (command.contains("'--abbrev-ref'")) {
-      return said([agent ? 'agent' : 'main']);
+      return said([agent ? 'agent' : branch]);
     }
     if (command.contains("'status'")) {
-      return said([agent ? ' M lib/agent.dart' : ' M lib/main.dart']);
+      return said([
+        if (agent) ' M lib/agent.dart' else if (dirty) ' M lib/main.dart',
+      ]);
     }
     if (command.contains("'for-each-ref'")) {
+      final main = !agent && branch == 'main';
       return said([
-        '${agent ? ' ' : '*'}\trefs/heads/main\t',
+        '${main ? '*' : ' '}\trefs/heads/main\t',
         '${agent ? '*' : ' '}\trefs/heads/agent\t',
-        ' \trefs/heads/feature\t',
+        '${!agent && branch == 'feature' ? '*' : ' '}\trefs/heads/feature\t',
         ' \trefs/remotes/origin/HEAD\trefs/remotes/origin/main',
         ' \trefs/remotes/origin/main\t',
       ]);
     }
     if (command.contains("'log'")) {
       return said([
-        if (command.contains("'refs/heads/feature'"))
+        if (command.contains("'refs/heads/feature'") ||
+            (!agent && branch == 'feature' && !command.contains("'refs/")))
           '3333333\tme\t5 minutes ago\tFeature work'
         else if (agent)
           '2222222\tme\t1 hour ago\tWork in the worktree'
@@ -125,6 +149,13 @@ Future<void> _settle(WidgetTester tester) async {
     await tester.pump(const Duration(milliseconds: 100));
   }
 }
+
+/// A button of the dialog on screen, by the label it was given: termul draws
+/// it in capitals.
+Finder _dialogButton(String label) => find.descendant(
+  of: find.byType(TuiDialog),
+  matching: find.bySemanticsLabel(label),
+);
 
 void main() {
   late _Shell shell;
@@ -213,5 +244,109 @@ void main() {
     await _settle(tester);
     expect(find.text('The first commit'), findsOneWidget);
     expect(find.text('Changes on feature'), findsNothing);
+  });
+
+  /// The commands that would change the checkout.
+  Iterable<String> switches() =>
+      shell.ran.where((command) => command.contains("'switch'"));
+
+  /// Looks at feature in History and taps Switch to feature.
+  Future<void> askToSwitch(WidgetTester tester) async {
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('main (checked out)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('feature').last);
+    await _settle(tester);
+    await tester.tap(find.text('Switch to feature'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('History switches to the branch looked at once the dialog '
+      'naming both is confirmed, and the header follows', (tester) async {
+    await pumpPanel(tester);
+    shell.dirty = false;
+    await askToSwitch(tester);
+
+    expect(find.text('Switch from main to feature?'), findsOneWidget);
+    await tester.tap(_dialogButton('Switch'));
+    await _settle(tester);
+
+    expect(switches().single, contains("'switch' '--quiet' '--' 'feature'"));
+    expect(find.text('feature'), findsOneWidget);
+    expect(find.text('Feature work'), findsOneWidget);
+    // Checked out now, so nothing is left to look at apart from it.
+    expect(find.text('Changes on feature'), findsNothing);
+  });
+
+  testWidgets('a switch not confirmed changes nothing', (tester) async {
+    await pumpPanel(tester);
+    shell.dirty = false;
+    await askToSwitch(tester);
+    await tester.tap(_dialogButton('Cancel'));
+    await _settle(tester);
+
+    expect(switches(), isEmpty);
+    expect(find.text('main'), findsOneWidget);
+  });
+
+  testWidgets('a switch with changes uncommitted is refused with a toast, '
+      'and never reaches git', (tester) async {
+    await pumpPanel(tester);
+    await askToSwitch(tester);
+    await tester.tap(_dialogButton('Switch'));
+    await _settle(tester);
+
+    expect(
+      find.text(
+        '1 uncommitted change — commit or discard it before switching '
+        'branches.',
+      ),
+      findsOneWidget,
+    );
+    expect(switches(), isEmpty);
+    expect(find.text('main'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('the header\'s branch offers every other branch to switch '
+      'to', (tester) async {
+    await pumpPanel(tester);
+    shell.dirty = false;
+    await tester.tap(find.byTooltip('Switch branch'));
+    await tester.pumpAndSettle();
+    expect(find.text('Switch to main'), findsNothing);
+    expect(find.text('Switch to origin/main'), findsOneWidget);
+    await tester.tap(find.text('Switch to feature'));
+    await tester.pumpAndSettle();
+    await tester.tap(_dialogButton('Switch'));
+    await _settle(tester);
+
+    expect(switches().single, contains("'--' 'feature'"));
+    expect(find.text('feature'), findsOneWidget);
+  });
+
+  testWidgets('Open in terminal takes the shell to the worktree picked, and '
+      'is refused while a program holds the shell', (tester) async {
+    await pumpPanel(tester);
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('agent-x').last);
+    await _settle(tester);
+
+    shell.probe = 'sshbox\t42\t0\tclaude\t/home/me';
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await _settle(tester);
+    expect(find.text('claude is running — not moving the shell'), findsOne);
+    expect(shell.sent, isEmpty);
+    // The toast sits over the header until it goes.
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+
+    shell.probe = 'sshbox\t42\t1\tbash\t/home/me';
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await _settle(tester);
+    expect(shell.sent, ['cd $_agent\n']);
+    await tester.pump(const Duration(seconds: 6));
   });
 }
