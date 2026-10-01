@@ -35,6 +35,15 @@ shift $(($# > 0 ? 1 : 0))
 
 tests=integration_test/desktop_smoke_test.dart
 
+# A run narrowed to some tests, or the no-portal one, is that run alone:
+# the window phases follow only a whole run.
+phases=1
+[ -n "${JEANSH_E2E_NO_PORTAL:-}" ] && phases=
+for arg in "$@"; do
+  case "$arg" in --plain-name* | --name* | -n) phases= ;; esac
+done
+export JEANSH_E2E_PHASES=$phases
+
 # integration_test/window_place_test.dart, once a phase, each a fresh start
 # of the app on the same data folder: the window is moved, comes back,
 # maximized comes back, and a rectangle saved off every screen comes back on
@@ -160,15 +169,15 @@ case "$target" in
         tests=$1 && shift
         rc=0
         flutter test "$tests" -d linux "$@" || rc=1
-        # A run narrowed by arguments is that run alone.
-        [ $# -gt 0 ] || "$0" window-phases || rc=1
+        # Only after a whole run, as above.
+        [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || rc=1
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
     rc=0
     flutter test "$tests" -d "$target" "$@" || rc=1
-    # A run narrowed by arguments is that run alone.
-    [ $# -gt 0 ] || window_phases "$target" || rc=1
+    # Only after a whole run, as above.
+    [ -z "$JEANSH_E2E_PHASES" ] || window_phases "$target" || rc=1
     exit $rc
     ;;
   *)
