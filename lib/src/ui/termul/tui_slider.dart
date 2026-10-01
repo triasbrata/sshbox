@@ -7,7 +7,8 @@
 // not merged into whatever is around it: a screen reader, an e2e flow and a
 // finder can each reach it by that word. A [TuiSlider.semanticLabel] names
 // a node of the track's own bounds, so a swipe from that node's middle lands
-// on the track rather than on the readout above it.
+// on the track rather than on the readout above it; and the track's value
+// is read as the readout says it, not as a bare number.
 
 import 'package:flutter/material.dart';
 
@@ -79,6 +80,7 @@ class TuiSlider extends StatelessWidget {
       onChanged: onChanged == null ? null : (v) => onChanged!(_snap(v)),
       onChangeEnd: onChangeEnd == null ? null : (v) => onChangeEnd!(_snap(v)),
       semanticLabel: semanticLabel,
+      semanticValue: valueLabel,
     );
 
     if (label == null && valueLabel == null) return track;
@@ -121,9 +123,14 @@ class _TuiSliderTrack extends StatefulWidget {
     required this.onChanged,
     this.onChangeEnd,
     this.semanticLabel,
+    this.semanticValue,
   });
 
   final String? semanticLabel;
+
+  /// What a screen reader reads as the value: the readout, `100%` rather
+  /// than `100.00`, where there is one.
+  final String? semanticValue;
   final double value;
   final double min;
   final double max;
@@ -168,7 +175,7 @@ class _TuiSliderTrackState extends State<_TuiSliderTrack> {
     final slider = Semantics(
       slider: true,
       enabled: widget.enabled,
-      value: widget.value.toStringAsFixed(2),
+      value: widget.semanticValue ?? widget.value.toStringAsFixed(2),
       increasedValue: (widget.value + 1)
           .clamp(widget.min, widget.max)
           .toString(),

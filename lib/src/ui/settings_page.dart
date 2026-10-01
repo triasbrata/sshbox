@@ -104,11 +104,21 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
   /// rather than to a font that is not there.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final family = prefs.getString(_familyKey);
-    final size = prefs.getDouble(_sizeKey);
+    // Read before the app runs, so a value of another type, or NaN, gives
+    // way to the default rather than stopping it starting.
+    String? family;
+    double? size;
+    try {
+      family = prefs.getString(_familyKey);
+    } catch (_) {}
+    try {
+      size = prefs.getDouble(_sizeKey);
+    } catch (_) {}
     value = terminalStyleOf(
       await _usable(family) ? family! : defaultStyle.fontFamily,
-      (size ?? defaultStyle.fontSize).clamp(minFontSize, maxFontSize),
+      size != null && !size.isNaN
+          ? size.clamp(minFontSize, maxFontSize)
+          : defaultStyle.fontSize,
     );
   }
 
