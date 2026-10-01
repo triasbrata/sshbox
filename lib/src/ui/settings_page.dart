@@ -1063,18 +1063,14 @@ class _TerminalSectionState extends State<_TerminalSection> {
             ValueListenableBuilder(
               valueListenable: uiTextSize,
               // Named, for a screen reader and the e2e flow that sets it.
-              builder: (context, scale, _) => Semantics(
-                container: true,
-                explicitChildNodes: true,
-                label: 'Set the UI text size',
-                child: TuiSlider(
-                  value: (scale * 100).roundToDouble(),
-                  min: UiTextSize.min * 100,
-                  max: UiTextSize.max * 100,
-                  divisions: ((UiTextSize.max - UiTextSize.min) * 10).round(),
-                  valueLabel: '${(scale * 100).round()}%',
-                  onChanged: (percent) => uiTextSize.choose(percent / 100),
-                ),
+              builder: (context, scale, _) => TuiSlider(
+                semanticLabel: 'Set the UI text size',
+                value: (scale * 100).roundToDouble(),
+                min: UiTextSize.min * 100,
+                max: UiTextSize.max * 100,
+                divisions: ((UiTextSize.max - UiTextSize.min) * 10).round(),
+                valueLabel: '${(scale * 100).round()}%',
+                onChanged: (percent) => uiTextSize.choose(percent / 100),
               ),
             ),
             // The terminal's font size, which chat, the editor, diffs, the

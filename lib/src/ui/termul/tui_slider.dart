@@ -5,7 +5,9 @@
 // Changed for Jeansh:
 // A control's Semantics is its own node (container: true), so its word is
 // not merged into whatever is around it: a screen reader, an e2e flow and a
-// finder can each reach it by that word.
+// finder can each reach it by that word. A [TuiSlider.semanticLabel] names
+// the track's own node, so a swipe from that node's middle lands on the
+// track rather than on the readout above it.
 
 import 'package:flutter/material.dart';
 
@@ -27,6 +29,7 @@ class TuiSlider extends StatelessWidget {
     this.label,
     this.valueLabel,
     this.onChangeEnd,
+    this.semanticLabel,
   }) : assert(min < max),
        assert(value >= min && value <= max),
        assert(divisions == null || divisions > 0);
@@ -46,6 +49,9 @@ class TuiSlider extends StatelessWidget {
   /// Trailing readout (e.g. `14px`). Defaults to rounded [value] when null
   /// and [label] is set.
   final String? valueLabel;
+
+  /// What a screen reader, and an e2e flow, call the track.
+  final String? semanticLabel;
 
   String get _display {
     if (valueLabel != null) return valueLabel!;
@@ -72,6 +78,7 @@ class TuiSlider extends StatelessWidget {
       enabled: enabled,
       onChanged: onChanged == null ? null : (v) => onChanged!(_snap(v)),
       onChangeEnd: onChangeEnd == null ? null : (v) => onChangeEnd!(_snap(v)),
+      semanticLabel: semanticLabel,
     );
 
     if (label == null && valueLabel == null) return track;
@@ -113,8 +120,10 @@ class _TuiSliderTrack extends StatefulWidget {
     required this.enabled,
     required this.onChanged,
     this.onChangeEnd,
+    this.semanticLabel,
   });
 
+  final String? semanticLabel;
   final double value;
   final double min;
   final double max;
@@ -158,6 +167,7 @@ class _TuiSliderTrackState extends State<_TuiSliderTrack> {
 
     return Semantics(
       slider: true,
+      label: widget.semanticLabel,
       enabled: widget.enabled,
       value: widget.value.toStringAsFixed(2),
       increasedValue: (widget.value + 1)

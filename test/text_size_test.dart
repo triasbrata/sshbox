@@ -183,6 +183,20 @@ void main() {
     expect(_at13(tester, find.byType(TerminalKeyBar)), 13);
   }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
+  testWidgets('a swipe from the middle of the slider named Set the UI text '
+      'size, as the e2e flow makes, sets the largest UI size', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(360, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    final slider = find.bySemanticsLabel(RegExp('^Set the UI text size'));
+    await tester.ensureVisible(slider);
+    await tester.pumpAndSettle();
+    await tester.dragFrom(tester.getCenter(slider), const Offset(1000, 0));
+    await tester.pumpAndSettle();
+    expect(uiTextSize.value, UiTextSize.max);
+    expect(find.text('160%'), findsOneWidget);
+  });
+
   testWidgets('ContentText takes the UI size out and the content size in', (
     tester,
   ) async {
