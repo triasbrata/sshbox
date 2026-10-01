@@ -736,11 +736,17 @@ void _useStandInClaude() {
 
 /// The display as it is now, as [name].png in E2E_SHOTS, for a person to
 /// look at: evidence, never checked. Nothing where E2E_SHOTS is unset.
-Future<void> _shot(String name) async {
+Future<void> _shot(WidgetTester tester, String name) async {
   final dir = Platform.environment['E2E_SHOTS'];
   final display = Platform.environment['DISPLAY'];
   if (dir == null || dir.isEmpty || display == null) return;
   Directory(dir).createSync(recursive: true);
+  // This binding draws only when pumped, and X shows a frame a moment after
+  // it is drawn: without this the grab was a frame or two behind.
+  for (var i = 0; i < 3; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
   await Process.run('ffmpeg', [
     '-loglevel', 'error', '-y', '-f', 'x11grab', '-draw_mouse', '0', //
     '-i', display, '-frames:v', '1', '$dir/$name.png',
@@ -1518,7 +1524,7 @@ touch '${done.path}'
       // typed a second time.
       expect(box().controller!.text, typed);
       expect(box().focusNode!.hasFocus, isTrue);
-      await _shot('chat-composer-typing');
+      await _shot(tester, 'chat-composer-typing');
 
       // A plain Enter is a new line, and sends nothing.
       await _xdo(['key', 'Return']);
@@ -1559,7 +1565,7 @@ touch '${done.path}'
       );
       expect(spans.any((s) => s.text!.contains('**')), isFalse);
       expect(spans.any((s) => s.text!.contains('`')), isFalse);
-      await _shot('chat-composer-sent');
+      await _shot(tester, 'chat-composer-sent');
       await _closeTabs(tester);
     },
   );

@@ -581,7 +581,8 @@ class _ChatPageState extends State<ChatPage> {
       ..mono = terminalSettings.value.fontFamily
       ..dim = palette.dim
       ..accent = palette.accent
-      ..panel = palette.panel;
+      // The selection colour: the field itself is drawn on the panel.
+      ..panel = palette.selection;
     return SafeArea(
       top: false,
       child: Padding(
