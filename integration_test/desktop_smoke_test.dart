@@ -36,6 +36,7 @@ import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
+import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
@@ -213,10 +214,8 @@ Future<void> _settings(WidgetTester tester) async {
   // was not on screen yet 600 ms after the tap.
   await _until(
     tester,
-    () => find
-        .text('LOOK · TERMINAL · KEYBOARD · PRIVACY')
-        .evaluate()
-        .isNotEmpty,
+    () =>
+        find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY').evaluate().isNotEmpty,
     'Settings to open',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -424,6 +423,43 @@ Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
     await tester.pump(const Duration(milliseconds: 500));
   } finally {
     process.kill();
+  }
+}
+
+/// Opens the Git panel from a Local shell and picks [repo] in it.
+///
+/// On a runner the home holds this repository alone and it is picked
+/// already; on a machine with others it is picked from the list.
+Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
+  await tester.tap(find.byTooltip('Git'));
+  final name = repo.path.split('/').last;
+  bool ours(String? root) => root != null && root.endsWith('/$name');
+  // Material's DropdownButton on main, the redesign's TuiDropdown: both
+  // hold a value, an onChanged and choices that each have a value.
+  final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
+  dynamic shown() => tester.widget(picker.first);
+  Iterable<String?> choices() => [
+    for (final dynamic item
+        in shown() is DropdownButton
+            ? shown().items as List
+            : shown().options as List)
+      item.value as String?,
+  ];
+  await _until(
+    tester,
+    () => picker.evaluate().isNotEmpty && choices().any(ours),
+    "the Git panel to find this test's repository",
+  );
+  if (!ours(shown().value as String?)) {
+    // Picked through the picker's own onChanged, which is what choosing it
+    // from the list calls: a long list in a small menu is its own fight.
+    final root = choices().firstWhere(ours);
+    shown().onChanged!(root);
+    await _until(
+      tester,
+      () => ours(shown().value as String?),
+      "this test's repository to be picked",
+    );
   }
 }
 
@@ -847,6 +883,60 @@ Future<void> _paste(WidgetTester tester) async {
   await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
   await tester.sendKeyUpEvent(key);
 }
+
+/// Whether chat's finder would find a Claude Code on this machine: on PATH,
+/// where its installers put it, or on the login shell's PATH.
+bool _claudeInstalled() {
+  final home = Platform.environment['HOME'] ?? '';
+  for (final path in [
+    '$home/.local/bin/claude',
+    '$home/.claude/local/claude',
+    '$home/.bun/bin/claude',
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+  ]) {
+    if (FileSystemEntity.typeSync(path) != FileSystemEntityType.notFound) {
+      return true;
+    }
+  }
+  final found = Process.runSync('/bin/sh', [
+    '-c',
+    'command -v claude || "\${SHELL:-/bin/sh}" -lc "command -v claude" '
+        '</dev/null',
+  ]);
+  return '${found.stdout}'.trim().isNotEmpty;
+}
+
+/// A stand-in for Claude Code, as much of it as a new chat goes through: its
+/// version, `--bg` starting a session whose transcript holds one answer,
+/// `agents --json` listing it, and a `-p` that answers each message after.
+const _standInClaude = r'''#!/bin/sh
+# Jeansh e2e stand-in for Claude Code.
+d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+sid=0e2e0000-0000-4000-8000-00000000c0de
+t="$d/projects/jeansh-e2e/$sid.jsonl"
+answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in"}]}}'
+case "$1" in
+  --version) echo "2.1.300 (Claude Code)" ;;
+  --bg)
+    mkdir -p "$d/projects/jeansh-e2e"
+    printf '%s\n' \
+      '{"type":"user","message":{"role":"user","content":"hello from the e2e"}}' \
+      "$answer" >"$t"
+    echo "backgrounded · e2e0c0de · e2e" ;;
+  agents)
+    if [ -f "$t" ]; then
+      printf '[{"id":"e2e0c0de","sessionId":"%s","name":"e2e","cwd":"%s","kind":"background","state":"done","startedAt":1}]\n' "$sid" "$HOME"
+    else
+      echo '[]'
+    fi ;;
+  -p)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    while IFS= read -r line; do
+      printf '%s\n' "$answer" '{"type":"result","subtype":"success"}'
+    done ;;
+esac
+''';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -1355,40 +1445,7 @@ touch '${done.path}'
 
       await _launch(tester);
       await _localShell(tester);
-      await tester.tap(find.byTooltip('Git'));
-
-      // On a runner the home holds this repository alone and it is picked
-      // already; on a machine with others it is picked from the list.
-      final name = repo.path.split('/').last;
-      bool ours(String? root) => root != null && root.endsWith('/$name');
-      // Material's DropdownButton on main, the redesign's TuiDropdown: both
-      // hold a value, an onChanged and choices that each have a value.
-      final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
-      dynamic shown() => tester.widget(picker.first);
-      Iterable<String?> choices() => [
-        for (final dynamic item
-            in shown() is DropdownButton
-                ? shown().items as List
-                : shown().options as List)
-          item.value as String?,
-      ];
-      await _until(
-        tester,
-        () => picker.evaluate().isNotEmpty && choices().any(ours),
-        "the Git panel to find this test's repository",
-      );
-      if (!ours(shown().value as String?)) {
-        // Picked through the picker's own onChanged, which is what choosing
-        // it from the list calls: this test is of the diff, and a long list
-        // in a small menu is its own fight.
-        final root = choices().firstWhere(ours);
-        shown().onChanged!(root);
-        await _until(
-          tester,
-          () => ours(shown().value as String?),
-          "this test's repository to be picked",
-        );
-      }
+      await _gitPanelOn(tester, repo);
       await _until(
         tester,
         () => find.textContaining('e2e.txt').evaluate().isNotEmpty,
@@ -1437,6 +1494,175 @@ touch '${done.path}'
           reason: 'the old line is not above the new',
         );
       }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #128: the Git panel switches branch, from the branch in its header,
+  // after a dialog naming both, and the header follows — the files on disk
+  // with it.
+  _test(
+    'the Git panel switches branch from its header, and the header follows',
+    skip: Platform.isWindows
+        ? 'the repository is made under HOME for a POSIX login shell to find; '
+              'a Windows Local shell is PowerShell, with no HOME'
+        : null,
+    (tester) async {
+      final repo = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-repo-');
+      addTearDown(() => repo.deleteSync(recursive: true));
+      Future<String> git(List<String> args) async {
+        final done = await Process.run('git', ['-C', repo.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+        return '${done.stdout}'.trim();
+      }
+
+      await git(['init', '-q']);
+      await git([
+        '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+        'commit', '-q', '--allow-empty', '-m', 'e2e',
+      ]);
+      await git(['branch', 'e2e-other']);
+      final first = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+
+      await _launch(tester);
+      await _localShell(tester);
+      await _gitPanelOn(tester, repo);
+      await _until(
+        tester,
+        () => find.byTooltip('Switch branch').evaluate().isNotEmpty,
+        'the branch in the header',
+      );
+      expect(find.text(first), findsWidgets);
+      // Every toast gone first: toasts sit over every menu, and the header's
+      // opens at the top of the window, where they are.
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
+      );
+      await tester.tap(find.byTooltip('Switch branch'));
+      // Waited out, as every menu here is: a tap while it slides in is lost.
+      await _pick(tester, 'Switch to e2e-other');
+      await _until(
+        tester,
+        () =>
+            find.text('Switch from $first to e2e-other?').evaluate().isNotEmpty,
+        'the dialog naming both branches',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TuiDialog),
+          matching: find.bySemanticsLabel('Switch'),
+        ),
+      );
+      await _until(
+        tester,
+        () => find.text('e2e-other').evaluate().isNotEmpty,
+        'the header to name the branch switched to',
+      );
+      expect(
+        await git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        'e2e-other',
+        reason: 'the header changed but the checkout did not',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #127: a Local shell's files drawer reads this machine's own disk, rooted
+  // at the login home, as a host's reads it over SFTP.
+  _test(
+    "a Local shell's files drawer shows what is in the home",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, whose Windows paths the tree '
+              'does not hold'
+        : null,
+    (tester) async {
+      // A digit first, so it sorts ahead of every other folder in a home
+      // with many and is drawn without a scroll.
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final name = 'made-by-the-e2e-${dir.path.hashCode}.txt';
+      File('${dir.path}/$name').writeAsStringSync('hello from the e2e\n');
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder in the home",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name).evaluate().isNotEmpty,
+        "the drawer to show the test's file in it",
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #127: chat in a Local shell runs Claude beside it as a process, found and
+  // quoted as over an exec channel. Never this machine's own Claude: a
+  // stand-in is put where the finder looks only where none is installed —
+  // a runner — and taken away after.
+  _test(
+    'chat in a Local shell starts a session and shows its answer',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      final standIn = File('$home/.local/bin/claude');
+      final config = Directory('$home/.claude');
+      final hadConfig = config.existsSync();
+      final hadBin = standIn.parent.existsSync();
+      standIn.parent.createSync(recursive: true);
+      standIn.writeAsStringSync(_standInClaude);
+      Process.runSync('chmod', ['755', standIn.path]);
+      addTearDown(() {
+        if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
+        if (!hadBin) standIn.parent.deleteSync(recursive: true);
+        if (!hadConfig) {
+          config.deleteSync(recursive: true);
+        } else {
+          Directory(
+            '${config.path}/projects/jeansh-e2e',
+          ).deleteSync(recursive: true);
+        }
+      });
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final input = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      );
+      await _until(
+        tester,
+        () => input.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      await tester.enterText(input, 'hello from the e2e');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Send'));
+      await _until(
+        tester,
+        () => find
+            .textContaining('Echo from the stand-in', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
+        "the stand-in's answer in the chat",
+        timeout: const Duration(seconds: 40),
+      );
       await _closeTabs(tester);
     },
   );
