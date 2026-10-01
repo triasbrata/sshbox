@@ -25,7 +25,14 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, Icons, InkWell, PopupMenuDivider, TextField, Tooltip;
+    show
+        DropdownButton,
+        IconButton,
+        Icons,
+        InkWell,
+        PopupMenuDivider,
+        TextField,
+        Tooltip;
 import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -2923,10 +2930,7 @@ touch '${done.path}'
               'tools/e2e_desktop.sh gives Linux alone'
         : Platform.environment['CI'] != 'true' || _claudeInstalled()
         ? "off CI it would write a claude into the user's own home"
-        // ponytail: off until a Local shell's chat types into a pane; what
-        // it sends never reaches one (run 36867296912). Lift with that fix.
-        : 'chat in a Local shell types nothing into an interactive '
-              "session's pane yet, so no turn starts",
+        : null,
     (tester) async {
       final home = Platform.environment['HOME']!;
       const sid = 'e2e00004-0000-4000-8000-000000000004';
@@ -3070,6 +3074,22 @@ touch '${done.path}'
           'the message field',
         );
         await tester.enterText(field, text);
+        // Send turns on a frame after the text is in, and a tap on it while
+        // still off sends nothing.
+        await _until(
+          tester,
+          () =>
+              tester
+                  .widget<IconButton>(
+                    find.ancestor(
+                      of: find.byTooltip('Send'),
+                      matching: find.byType(IconButton),
+                    ),
+                  )
+                  .onPressed !=
+              null,
+          'Send to turn on',
+        );
         await tester.tap(find.byTooltip('Send'));
         // In the session's own transcript, typed into its pane, or what the
         // chat said instead: a toast, or its own word after 30 s.
