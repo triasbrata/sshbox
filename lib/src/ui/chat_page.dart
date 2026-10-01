@@ -16,7 +16,8 @@ import '../platform.dart';
 import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
 import 'code_languages.dart';
-import 'file_editor_page.dart' show showPicture;
+import 'file_editor_page.dart'
+    show pictureMaxPixels, pictureSize, showPicture;
 import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'text_size.dart';
@@ -871,38 +872,82 @@ ImageProvider _pictureImage(ChatPicture picture) => picture.path != null
     : MemoryImage(picture.bytes!);
 
 /// A picture's small copy, which a tap opens large.
-class _Thumbnail extends StatelessWidget {
+class _Thumbnail extends StatefulWidget {
   const _Thumbnail({required this.picture, this.width = 112, this.height = 84});
 
   final ChatPicture picture;
   final double width;
   final double height;
 
-  String get _label =>
-      picture.name.isNotEmpty ? picture.name : '[Image #${picture.number}]';
+  @override
+  State<_Thumbnail> createState() => _ThumbnailState();
+}
+
+class _ThumbnailState extends State<_Thumbnail> {
+  late final ImageProvider _image = _pictureImage(widget.picture);
+
+  /// Whether it may be drawn: its size read from its header first, since a
+  /// PNG or GIF is decoded whole before it is scaled down, and a transcript's
+  /// picture can claim a size that whole would not fit in memory. Null while
+  /// that is being read.
+  bool? _drawable;
+
+  @override
+  void initState() {
+    super.initState();
+    pictureSize(_image).then(
+      (size) {
+        if (mounted) {
+          setState(
+            () => _drawable = size.width * size.height <= pictureMaxPixels,
+          );
+        }
+      },
+      onError: (Object _) {
+        if (mounted) setState(() => _drawable = false);
+      },
+    );
+  }
+
+  String get _label => widget.picture.name.isNotEmpty
+      ? widget.picture.name
+      : '[Image #${widget.picture.number}]';
 
   @override
   Widget build(BuildContext context) {
     final palette = TermulThemeData.of(context).palette;
-    final image = _pictureImage(picture);
+    final width = widget.width;
+    final height = widget.height;
+    final unshown = SizedBox(
+      width: width,
+      height: height,
+      child: _drawable == false
+          ? Icon(Icons.broken_image_outlined, color: palette.dim)
+          : null,
+    );
     return Semantics(
       container: true,
       button: true,
       label: 'View $_label',
       child: GestureDetector(
-        onTap: () => unawaited(showPicture(context, image, _label)),
-        child: Image(
-          // Decoded small: a thumbnail of a 20 MB photo need not hold it all.
-          image: ResizeImage(image, width: (width * 2).round()),
-          width: width,
-          height: height,
-          fit: BoxFit.cover,
-          errorBuilder: (context, _, _) => SizedBox(
-            width: width,
-            height: height,
-            child: Icon(Icons.broken_image_outlined, color: palette.dim),
-          ),
-        ),
+        // The whole of it, drawn yet or not.
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(showPicture(context, _image, _label)),
+        child: _drawable != true
+            ? unshown
+            : Image(
+                // Decoded small: a thumbnail of a 20 MB photo need not hold
+                // it all.
+                image: ResizeImage(_image, width: (width * 2).round()),
+                width: width,
+                height: height,
+                fit: BoxFit.cover,
+                errorBuilder: (context, _, _) => SizedBox(
+                  width: width,
+                  height: height,
+                  child: Icon(Icons.broken_image_outlined, color: palette.dim),
+                ),
+              ),
       ),
     );
   }

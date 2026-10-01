@@ -1986,9 +1986,10 @@ void main() {
     String box(WidgetTester tester) =>
         tester.widget<TextField>(find.byType(TextField)).controller!.text;
 
-    Future<_Shell> continued(WidgetTester tester) async {
+    Future<_Shell> continued(WidgetTester tester, {String? history}) async {
       final shell = _Shell()
         ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      if (history != null) shell.history = history;
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
@@ -2112,6 +2113,54 @@ void main() {
       await tester.pump();
       expect(box(tester), '[Image #1] ');
       expect(find.text('[Image #1] shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a transcript\'s picture that claims too many pixels is not '
+        'drawn in its bubble, and one that does not is, decoded small', (
+      tester,
+    ) async {
+      // 68 bytes of PNG that say they are 30000 × 30000.
+      final huge = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAdTAAAHUwCAYAAABmJ/i6AAAAC0lEQVR4nGNgQAUAABAA'
+        'ATm9j2UAAAAASUVORK5CYII=',
+      );
+      Map<String, Object?> said(String text, List<int> bytes) => {
+        'type': 'user',
+        'imagePasteIds': [1],
+        'message': {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': text},
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode(bytes)},
+            },
+          ],
+        },
+      };
+      await continued(
+        tester,
+        history: _history([
+          said('[Image #1] the bomb', huge),
+          said('[Image #1] a pixel', pixel),
+        ]),
+      );
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+
+      expect(find.text('[Image #1] the bomb'), findsOneWidget);
+      final drawn = tester
+          .widgetList<Image>(find.byType(Image))
+          .map((image) => image.image)
+          .whereType<ResizeImage>()
+          .map((resized) => (resized.imageProvider as MemoryImage).bytes)
+          .toList();
+      expect(drawn, [pixel]);
+      expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
     });
 
     testWidgets('a file that is not a picture is refused, saying why', (
