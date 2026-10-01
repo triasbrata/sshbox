@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/session/clipboard_terminal.dart';
@@ -564,5 +565,85 @@ void main() {
     );
     await tester.pump();
     expect(sent(), isEmpty);
+  });
+
+  testWidgets('a trackpad scroll after a border drag scrolls the pane and '
+      'leaves the border alone', (tester) async {
+    const style = TerminalStyle(fontSize: 8);
+    final fake = _FakeTmux('b25d,80x24,0,0{40x24,0,0,1,39x24,41,0,2}');
+    late StateSetter rebuild;
+    final tmux = TmuxSession(
+      name: 'sshbox-test',
+      channel: fake.channel,
+      newTerminal: Terminal.new,
+      transform: (data) => data,
+      onChanged: () => rebuild(() {}),
+      onEnded: () {},
+    );
+    addTearDown(tmux.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return TmuxPaneLayout(
+              tmux: tmux,
+              textStyle: style,
+              padding: EdgeInsets.zero,
+              pane: (pane, focused) => TerminalView(
+                pane.terminal,
+                key: ValueKey('pane ${pane.id}'),
+                autoResize: false,
+                textStyle: style,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    fake.say('%session-changed \$1 sshbox-test');
+    await tester.pump();
+    await tester.pump();
+    for (var i = 0; i < 200; i++) {
+      tmux.panes.first.terminal.write('line $i\r\n');
+    }
+    await tester.pump();
+    final cell = terminalCellSize(style, TextScaler.noScaling);
+    final origin = tester.getTopLeft(find.byType(TmuxPaneLayout));
+    final scroll = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('pane 1')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+
+    // The border dragged with the mouse, two cells right.
+    final mouse = await tester.startGesture(
+      origin + Offset(40.5 * cell.width, 100),
+      kind: PointerDeviceKind.mouse,
+    );
+    await mouse.moveBy(Offset(2 * cell.width, 0));
+    await mouse.up();
+    await tester.pump();
+    fake.commands.clear();
+
+    // Then two fingers on the trackpad in the left pane, in the small steps
+    // a Mac sends, under the pane's own scroll slop at first.
+    final at = origin + Offset(10 * cell.width, 100);
+    final bottom = scroll.position.pixels;
+    final pan = await tester.startGesture(at, kind: PointerDeviceKind.trackpad);
+    for (var i = 1; i <= 60; i++) {
+      await pan.panZoomUpdate(at, pan: Offset(0, 2.0 * i));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await pan.panZoomEnd();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // The border used to take the pan, decided by the drag before it: it
+    // jumped to the pointer and the pane never scrolled.
+    expect(fake.commands.where((c) => c.startsWith('resize-pane')), isEmpty);
+    expect(scroll.position.pixels, lessThan(bottom));
   });
 }
