@@ -2399,6 +2399,74 @@ void main() {
       expect(find.byIcon(Icons.pause), findsOneWidget);
     });
 
+
+    Future<_Shell> watchingOnScreen(WidgetTester tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([row()]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    /// A reply of 25 lines, about 650 px: taller than the 240 px within which
+    /// the reader counts as following.
+    Future<void> longReply(WidgetTester tester, _Shell shell, int n) async {
+      shell.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'msg_long_$n',
+          'content': [
+            {
+              'type': 'text',
+              'text': [
+                for (var line = 1; line <= 25; line++)
+                  'Long answer $n, line $line',
+              ].join('\n\n'),
+            },
+          ],
+        },
+      });
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+    }
+
+    testWidgets('at the end, a reply taller than a screen is followed to '
+        'its own end, one after another', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 6; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent, greaterThan(3000));
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('scrolled up, a long reply leaves the reader where they are',
+        (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      // Up well past where a new entry would still be followed.
+      position.jumpTo(position.maxScrollExtent - 900);
+      await tester.pump();
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      expect(position.pixels, kept);
+      expect(position.maxScrollExtent - position.pixels, greaterThan(1000));
+    });
+
     testWidgets('hidden while following, the chat is at its end when shown '
         'again, however much was written meanwhile', (tester) async {
       final shell = _Shell()
