@@ -68,7 +68,7 @@ List<TuiMenuEntry<VoidCallback>> paneMenuEntries(
   final single = words != null && !words.contains(RegExp(r'\s'));
   final email = single && _email.hasMatch(words) ? words : null;
   final path = single && _path.hasMatch(words) ? words : null;
-  final found = words == null ? const <LinkCandidate>[] : findLinks(words);
+  final found = single ? findLinks(words) : const <LinkCandidate>[];
   final target = found.length == 1 ? found.single : null;
 
   TuiMenuItem<VoidCallback> item(String label, VoidCallback? onTap) =>
