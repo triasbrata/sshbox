@@ -36,7 +36,59 @@ class SlashCommand {
   /// Whether chat offers it: anything but a built-in is a prompt Claude is
   /// given — a skill, a command file, a plugin's — and a built-in only when
   /// it is one of [_runs].
-  bool get offered => group != SlashGroup.builtIn || _runs.contains(name);
+  bool get offered =>
+      !_dialogs.contains(name) &&
+      (group != SlashGroup.builtIn || _runs.contains(name));
+
+  /// Built-ins, and their aliases, that open a dialog or may: measured, or
+  /// terminal-only. Never offered or sent, whatever the row says, since a
+  /// command file of the same name may still reach the built-in.
+  static const _dialogs = {
+    'model',
+    'config',
+    'settings',
+    'mcp',
+    'memory',
+    'resume',
+    'continue',
+    'usage',
+    'cost',
+    'stats',
+    'rewind',
+    'checkpoint',
+    'permissions',
+    'allowed-tools',
+    'agents',
+    'hooks',
+    'plugin',
+    'plugins',
+    'theme',
+    'login',
+    'logout',
+    'status',
+    'help',
+    'ide',
+    'export',
+    'add-dir',
+    'statusline',
+    'privacy-settings',
+    'terminal-setup',
+    'vim',
+    'upgrade',
+    'feedback',
+    'bug',
+    'tasks',
+    'todos',
+    'skills',
+    'output-style',
+    'effort',
+    'fast',
+    'sandbox',
+    'keybindings',
+    'doctor',
+    'exit',
+    'quit',
+  };
 
   /// The built-ins that run and print, or hand Claude a prompt, and never
   /// open a dialog. Chat types into a terminal it cannot see, where a dialog
@@ -175,7 +227,9 @@ class SlashCommand {
         : all
               .where((c) => c.name == name || c.aliases.contains(name))
               .firstOrNull;
-    if (command != null && command.offered) return null;
+    if (command != null && command.offered && !_dialogs.contains(name)) {
+      return null;
+    }
     return '/$name opens a dialog chat cannot answer, or is not one chat '
         'knows — run it in the terminal instead.';
   }
@@ -185,21 +239,35 @@ class SlashCommand {
 ///
 /// Claude Code writes the command a user ran as tags, in a `user` line or a
 /// `system` one of subtype `local_command`:
-/// `<command-name>/color</command-name>`, `<command-message>color
-/// </command-message>`, `<command-args>cyan</command-args>`; and what a
+/// `<command-name>/color</command-name>`,
+/// `<command-message>color</command-message>`,
+/// `<command-args>cyan</command-args>`; and what a
 /// command that runs in the CLI printed as
 /// `<local-command-stdout>Session color set to: cyan</local-command-stdout>`,
 /// with the terminal's colours in it. Measured on 2.1.286.
+///
+/// Each record opens with its tag, and an output record is nothing else,
+/// so only those are read as such: a message that merely mentions the tags
+/// mid-text stays a message.
 abstract final class CommandTags {
+  static final _starts = RegExp(r'^\s*<command-(?:name|message)>');
   static final _name = RegExp(r'<command-name>/?([^<\s]*)</command-name>');
   static final _args = RegExp(r'<command-args>([\s\S]*?)</command-args>');
   static final _out = RegExp(
-    r'<local-command-(?:stdout|stderr)>([\s\S]*?)</local-command-(?:stdout|stderr)>',
+    r'^<local-command-(stdout|stderr)>([\s\S]*)</local-command-\1>$',
   );
-  static final _ansi = RegExp(r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07');
+
+  /// Terminal escapes and stray control bytes, tab and newline kept: CSI,
+  /// OSC ended by BEL or ST, charset selects and C1 CSI.
+  static final _ansi = RegExp(
+    r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x9b[0-9;?]*[ -/]*[@-~]'
+    r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]'
+    r'|[\x00-\x08\x0b-\x1f\x7f-\x9f]',
+  );
 
   /// The command [text] records, or null when it records none.
   static ({String name, String args})? command(String text) {
+    if (!_starts.hasMatch(text)) return null;
     final name = _name.firstMatch(text)?[1];
     if (name == null || name.isEmpty) return null;
     return (name: name, args: (_args.firstMatch(text)?[1] ?? '').trim());
@@ -210,6 +278,6 @@ abstract final class CommandTags {
   static String? output(String text) {
     final match = _out.firstMatch(text.trim());
     if (match == null) return null;
-    return match[1]!.replaceAll(_ansi, '').trimRight();
+    return match[2]!.replaceAll(_ansi, '').trimRight();
   }
 }

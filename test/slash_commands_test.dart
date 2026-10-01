@@ -204,6 +204,27 @@ void main() {
       expect(SlashCommand.refusal('/compact', null), isNull);
       expect(SlashCommand.refusal('/humanizer', null), isNotNull);
     });
+
+    test('a command file named after a dialog built-in is neither offered '
+        'nor sent', () {
+      final shadowed = SlashCommand.parse(
+        _output(
+          rows: [
+            {'name': 'model', 'description': 'mine'},
+            {'name': 'config', 'description': 'mine'},
+            {'name': 'deploy', 'description': 'Ship it'},
+          ],
+          yours: '.claude/commands/model.md\n.claude/commands/config.md\n',
+        ),
+      )!;
+      expect(
+        [for (final c in SlashCommand.matching(shadowed, '')) c.name],
+        ['deploy'],
+      );
+      expect(SlashCommand.refusal('/model', shadowed), isNotNull);
+      expect(SlashCommand.refusal('/config x=y', shadowed), isNotNull);
+      expect(SlashCommand.refusal('/deploy prod', shadowed), isNull);
+    });
   });
 
   group('the transcript', () {
@@ -221,6 +242,31 @@ void main() {
         'Set',
       );
       expect(CommandTags.output('<command-name>/x</command-name>'), isNull);
+    });
+
+    test('a message that only mentions the tags is not a record', () {
+      const said =
+          'why does the transcript hold <command-name>/model</command-name> '
+          'and <local-command-stdout>Kept model</local-command-stdout>?';
+      expect(CommandTags.command(said), isNull);
+      expect(CommandTags.output(said), isNull);
+      expect(
+        CommandTags.output(
+          '<local-command-stdout>a</local-command-stdout> and then more',
+        ),
+        isNull,
+      );
+    });
+
+    test('every terminal escape and stray control byte leaves the output, '
+        'tabs and newlines kept', () {
+      expect(
+        CommandTags.output(
+          '<local-command-stdout>\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\'
+          '\x1b(Bplain\x9b31mred\x07\x00\ta\nb</local-command-stdout>',
+        ),
+        'linkplainred\ta\nb',
+      );
     });
   });
 
