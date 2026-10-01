@@ -756,7 +756,11 @@ class _ChatPageState extends State<ChatPage> {
                 onSubmitted: (_) {
                   if (_sendable) _send();
                 },
-                enabled: open,
+                // Shut only for a session that cannot be typed into at all. A
+                // box shut for a moment between turns drops keys and loses
+                // the focus, so what is typed then went nowhere; the text
+                // waits instead, and [open] gates only Send.
+                enabled: !readOnly,
                 minLines: 1,
                 // Room for a short code block before it scrolls.
                 maxLines: 8,

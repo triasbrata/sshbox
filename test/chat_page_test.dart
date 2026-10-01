@@ -512,6 +512,42 @@ void main() {
     expect(find.text('Connect this session first'), findsOneWidget);
   });
 
+  testWidgets('what is typed while the chat is not ready is kept, Send waiting '
+      'until it is', (tester) async {
+    final shell = _Shell();
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+
+    bool sendOn() =>
+        tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.send))
+            .onPressed !=
+        null;
+    // Not ready, as between turns or before the connection is up: the box
+    // still takes the text, and Send waits.
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    await tester.enterText(find.byType(TextField), 'next question');
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'next question',
+    );
+    expect(sendOn(), isFalse);
+
+    // Ready again: the same text, and Send on.
+    await session.connect(secrets: _NoSecrets());
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'next question',
+    );
+    expect(sendOn(), isTrue);
+  });
+
   testWidgets('the sessions on the host are offered, and one still running '
       'is watched live, updating by itself', (tester) async {
     final shell = _Shell()
