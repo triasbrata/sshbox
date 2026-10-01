@@ -28,7 +28,12 @@ env:
     from:
       text: "Set the UI text size"
     direction: RIGHT
-- assertVisible: "160%"
+# Scrolled to, not asserted where it was: at 160% the page above it grows
+# and pushes the readout down past the screen's edge.
+- scrollUntilVisible:
+    element:
+      text: "160%"
+    direction: DOWN
 - takeScreenshot: text-size-settings-largest
 
 # Settings still scrolls to its end and comes back.
