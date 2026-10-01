@@ -43,7 +43,11 @@ env:
 
 - tapOn: "Message “E2E live session”…"
 - inputText: "slow: run it"
-- tapOn: "Send"
+# Maestro waits for the screen to settle after a tap, and a ticking Working…
+# never does: kept short, or the slow turn is over before it is looked at.
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
 
 # The line comes as the prompt lands, before anything else does.
 - extendedWaitUntil:
@@ -74,7 +78,9 @@ env:
 # A turn stopped at a permission prompt: what for and where, no Working….
 - tapOn: "Message “E2E live session”…"
 - inputText: "wait: approve it"
-- tapOn: "Send"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
 - extendedWaitUntil:
     visible: "(?s).*Waiting for permission prompt at its terminal\\. Answer it there\\..*"
     timeout: 15000
@@ -93,7 +99,9 @@ env:
 # well over a screen, while the terminal's tab is on show.
 - tapOn: "Message “E2E live session”…"
 - inputText: "long: go"
-- tapOn: "Send"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
 - takeScreenshot: chat-progress-before-hide
 - tapOn: "${HOST_LABEL} tailnet"
 - takeScreenshot: chat-progress-hidden
@@ -102,13 +110,9 @@ env:
     start: 50%, 40%
     end: 50%, 41%
     duration: 15000
-# Back to the chat: shown, the terminal's chip scrolled the strip, leaving
-# the chat's off its right edge on a phone, so the strip is dragged first.
-- swipe:
-    start: 85%, 7%
-    end: 15%, 7%
-    duration: 400
-- tapOn: "(?s)(?!Close ).*· Claude.*"
+# Back to the chat the way a user goes back on a phone, whose strip shows the
+# tab on show alone: the key bar's chat button, which returns to the tab open.
+- tapOn: "Chat with Claude"
 - extendedWaitUntil:
     visible: "(?s).*Long answer 6 end.*"
     timeout: 5000
