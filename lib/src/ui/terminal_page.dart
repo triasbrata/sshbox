@@ -1280,6 +1280,9 @@ class _PaneViewState extends State<_PaneView> {
   BufferRange? _selectionAtDown;
 
   void _mouseDown(PointerDownEvent event) {
+    // A second pointer — a touchscreen, a pen — must not lose the held
+    // press its release: the program would drag for ever.
+    if (_holding) return;
     _tracked = null;
     if (event.kind != PointerDeviceKind.mouse) return;
     _selectionAtDown = selection.selection;

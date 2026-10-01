@@ -310,6 +310,32 @@ void main() {
       expect(shown(shell.sent), '');
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    testWidgets('keeps a held drag\'s release through a second pointer', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      final drag = await heldDrag(tester);
+      // A tap on a desktop's touchscreen while the mouse is held.
+      final touch = await tester.startGesture(
+        tester.getCenter(find.byType(TerminalView)),
+        pointer: 9,
+      );
+      await touch.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      final sent = shell.sent.join();
+      expect(RegExp(r'\x1b\[<0;\d+;\d+M').allMatches(sent).length, 1);
+      expect(RegExp(r'\x1b\[<0;\d+;\d+m').allMatches(sent).length, 1);
+      expect(shell.sent.last, '\x1b[<0;7;18m');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets('hears the release of a drag whose pane goes away', (
       tester,
     ) async {
