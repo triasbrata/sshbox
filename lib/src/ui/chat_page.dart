@@ -11,7 +11,7 @@ import '../chat/claude_chat.dart';
 import '../platform.dart';
 import '../session/session_manager.dart';
 import 'code_languages.dart';
-import 'file_editor_page.dart' show CodeBlockBuilder;
+import 'file_editor_page.dart' show CodeBlockBuilder, copyAndSay;
 import 'markdown_input.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
@@ -1110,6 +1110,7 @@ class _ToolRowState extends State<_ToolRow> {
                                 color: run.failed ? p.red : null,
                               ),
                             ),
+                            copy: _ToolRow._unquoted(result),
                           ),
                         ],
                       ],
@@ -1145,7 +1146,16 @@ class _ToolRowState extends State<_ToolRow> {
 /// its open-or-shut bool, so an opened row read a bool as a double and threw
 /// — which a release build draws as nothing, the "expanded and empty" the
 /// user saw.
-Widget _block(BuildContext context, String slot, Widget text) => Container(
+///
+/// [copy] is the block's plain text, which its Copy code button puts on the
+/// clipboard. The button sits beside the text, as CodeBlockBuilder's does, so
+/// it never covers the first line or takes the drag that scrolls the block.
+Widget _block(
+  BuildContext context,
+  String slot,
+  Widget text, {
+  required String copy,
+}) => Container(
   width: double.infinity,
   margin: const EdgeInsets.only(top: 4),
   padding: const EdgeInsets.all(8),
@@ -1154,7 +1164,27 @@ Widget _block(BuildContext context, String slot, Widget text) => Container(
     color: TermulThemeData.of(context).palette.panel,
     border: Border.all(color: TermulThemeData.of(context).palette.border),
   ),
-  child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
+  child: Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(
+        child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
+      ),
+      IconButton(
+        tooltip: 'Copy code',
+        onPressed: () => copyAndSay(
+          context,
+          'code block',
+          () => Clipboard.setData(ClipboardData(text: copy)),
+        ),
+        icon: const Icon(Icons.content_copy, size: 18),
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+      ),
+    ],
+  ),
 );
 
 /// What a tool was given, drawn the way the VS Code plugin draws it rather
@@ -1214,6 +1244,7 @@ class _ToolInput extends StatelessWidget {
                 : null) ??
             TextSpan(text: text, style: mono),
       ),
+      copy: text,
     );
 
     final parts = <Widget>[];
@@ -1250,7 +1281,14 @@ class _ToolInput extends StatelessWidget {
             ..remove('old_string')
             ..remove('new_string');
           if (run.name == 'MultiEdit') rest.remove('edits');
-          parts.add(_block(context, 'diff', _diff(pairs, brightness)));
+          parts.add(
+            _block(
+              context,
+              'diff',
+              _diff(pairs, brightness),
+              copy: _diffText(pairs),
+            ),
+          );
         }
       case 'Read':
         final path = take('file_path');
@@ -1293,6 +1331,15 @@ class _ToolInput extends StatelessWidget {
       children: parts,
     );
   }
+
+  /// [_diff]'s text as shown, for the clipboard.
+  static String _diffText(List<(String, String)> pairs) => [
+    for (final (index, (old, now)) in pairs.indexed) ...[
+      if (index > 0) '',
+      for (final line in const LineSplitter().convert(old)) '- $line',
+      for (final line in const LineSplitter().convert(now)) '+ $line',
+    ],
+  ].join('\n');
 
   /// Each edit as the lines it took out, in the editor's red for a diff, and
   /// the lines it put in, in its green.
