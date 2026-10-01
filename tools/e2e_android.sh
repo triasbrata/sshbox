@@ -385,6 +385,29 @@ PY
   echo "live session in tmux pane of pid $pid"
 }
 
+# The stand-in's pane killed, and the state file it leaves when killed rather
+# than ended: its own only, by its session id, so live_session can start again.
+end_live_session() {
+  sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+
+# #143: the line chat shows while a watched turn runs -- Working… with its
+# seconds, tokens and tool, gone at the turn's end; what a turn stopped at a
+# permission prompt waits for; and a chat hidden while Claude writes coming
+# back still following. Against the stand-in's slow:, wait: and long: turns.
+chat_progress() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_progress || status=1
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
 # The three hosts, one after another: a block of its own for E2E_ONLY.
 # Fails if any of them did, for a run asking for it alone.
 chat_version() {
@@ -479,9 +502,13 @@ transcript=/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl
 terminal_side=$!
 flow chat_two_way || echo "::warning::chat_two_way failed -- report only, not gating"
 kill "$terminal_side" 2>/dev/null
-sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+end_live_session
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::chat_progress (report only)"
+chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"
 soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
