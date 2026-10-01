@@ -561,7 +561,7 @@ void main() {
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   test(
-    'a Local shell carrying a channel for tmux offers no chat yet',
+    'a Local shell or WSL tab carrying a channel offers chat, as a host does',
     () async {
       Future<bool> canChat(HostProfile host) async {
         final session = LiveSession(
@@ -572,8 +572,8 @@ void main() {
         return session.canChat;
       }
 
-      expect(await canChat(localHost()), isFalse);
-      expect(await canChat(wslHost('Ubuntu')), isFalse);
+      expect(await canChat(localHost()), isTrue);
+      expect(await canChat(wslHost('Ubuntu')), isTrue);
       expect(
         await canChat(
           const HostProfile(
