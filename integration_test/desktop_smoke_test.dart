@@ -30,6 +30,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:sshbox/src/files/transfers.dart'
+    show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
@@ -1308,6 +1310,95 @@ touch '${done.path}'
         () => find.text(name).evaluate().isNotEmpty,
         "the drawer to show the test's file in it",
       );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #136: Download in a Local shell's files drawer opens the Mac's own save
+  // panel and saves there. Unsandboxed, file_picker refused every save panel
+  // with ENTITLEMENT_REQUIRED_WRITE before it opened, until main() told it to
+  // skip that check. The panel is a sheet outside Flutter, clicked through
+  // System Events as the Jeansh menu is.
+  _test(
+    "Download from a Local shell's files drawer saves through the save panel",
+    skip: !Platform.isMacOS
+        ? "the save panel is the Mac's own, clicked through System Events"
+        : null,
+    (tester) async {
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final name = 'download-by-the-e2e-${dir.path.hashCode}.txt';
+      const body = 'saved through the panel\n';
+      File('${dir.path}/$name').writeAsStringSync(body);
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder in the home",
+      );
+      await tester.tap(folder);
+      final file = find.text(name);
+      await _until(
+        tester,
+        () => file.evaluate().isNotEmpty,
+        "the drawer to show the test's file in it",
+      );
+      await tester.tapAt(
+        tester.getCenter(file),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _pick(tester, 'Download');
+
+      // Waits for the sheet and presses its Save, while the test goes on
+      // pumping: the app is waiting on the panel, not on this.
+      final clicked = Process.run('osascript', [
+        '-e',
+        'tell application "System Events" to tell process "Jeansh"',
+        '-e',
+        'set frontmost to true',
+        '-e',
+        'repeat 60 times',
+        '-e',
+        'if exists sheet 1 of window 1 then exit repeat',
+        '-e',
+        'delay 0.5',
+        '-e',
+        'end repeat',
+        '-e',
+        'click button "Save" of sheet 1 of window 1',
+        '-e',
+        'end tell',
+      ]);
+      Transfer? transfer() =>
+          transfers.items.where((t) => t.name == name).lastOrNull;
+      await _until(
+        tester,
+        () =>
+            (transfer()?.state ?? TransferState.running) !=
+            TransferState.running,
+        'the download to end',
+        timeout: const Duration(seconds: 60),
+      );
+      final ended = transfer()!;
+      expect(
+        ended.state,
+        TransferState.done,
+        reason: 'the download did not save: ${ended.error}',
+      );
+      final done = await clicked;
+      expect(done.exitCode, 0, reason: 'the save panel: ${done.stderr}');
+      final saved = File(Uri.parse(ended.saved!).toFilePath());
+      addTearDown(() {
+        if (saved.existsSync()) saved.deleteSync();
+      });
+      expect(saved.readAsStringSync(), body);
       await _closeTabs(tester);
     },
   );

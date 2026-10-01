@@ -26,6 +26,12 @@ class FakeFilePicker extends FilePickerPlatform {
   /// and the name it goes on the clipboard under.
   ({String path, String name})? copiedImage;
 
+  /// How many times the macOS entitlement checks were turned off.
+  int skippedEntitlementChecks = 0;
+
+  @override
+  Future<void> skipEntitlementsChecks() async => skippedEntitlementChecks++;
+
   @override
   Future<List<PlatformFile>> pickFiles({
     String? dialogTitle,

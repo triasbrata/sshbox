@@ -22,6 +22,16 @@ const _android = MethodChannel('sshbox/share');
 /// dialog is up at a time, and only for as long as it takes to pick a folder.
 bool _saving = false;
 
+/// Lets file_picker open its panels on a Mac at all. Before every panel it
+/// checks for the sandbox's user-selected file entitlements and refuses with
+/// ENTITLEMENT_REQUIRED_WRITE when a save lacks read-write; this app runs
+/// unsandboxed (see Release.entitlements), so those entitlements mean nothing
+/// and the check only blocks Download. Called once in main(), before any pick.
+Future<void> allowFilePanels() async {
+  if (defaultTargetPlatform != TargetPlatform.macOS) return;
+  await FilePicker.skipEntitlementsChecks();
+}
+
 /// Brings [path] down from [browser], byte for byte as [host] has it, and
 /// hands it to the system's save dialog under its own name, as a transfer
 /// the Transfers tab lists. The files drawer and a file tab both download

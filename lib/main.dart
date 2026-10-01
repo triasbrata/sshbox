@@ -5,6 +5,7 @@ import 'src/session/port_forwards.dart';
 import 'src/session/session_log.dart';
 import 'src/telemetry/crash_reporting.dart';
 import 'src/telemetry/telemetry.dart';
+import 'src/ui/file_download.dart';
 import 'src/ui/onboarding_page.dart';
 import 'src/ui/right_click.dart';
 import 'src/ui/settings_page.dart';
@@ -31,6 +32,8 @@ Future<void> main() async {
   await showDotfiles.load();
   await copyOnSelect.load();
   await linkModifier.load();
+  // Before any file panel: a Mac's save panel is refused without it.
+  await allowFilePanels();
   // Likewise, so the first tab is never drawn under the Mac's window buttons.
   await watchTitleBar();
   // Before any session can connect, so its entry joins the saved log rather
