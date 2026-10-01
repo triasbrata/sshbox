@@ -100,7 +100,13 @@ env:
     start: 50%, 40%
     end: 50%, 41%
     duration: 15000
-- tapOn: "(?!Close )[^\\n]*· Claude"
+# Back to the chat: shown, the terminal's chip scrolled the strip, leaving
+# the chat's off its right edge on a phone, so the strip is dragged first.
+- swipe:
+    start: 85%, 7%
+    end: 15%, 7%
+    duration: 400
+- tapOn: "(?s)(?!Close ).*· Claude.*"
 - extendedWaitUntil:
     visible: "(?s).*Long answer 6 end.*"
     timeout: 5000
