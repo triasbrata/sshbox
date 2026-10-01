@@ -4,7 +4,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
-#include <cstdio>
+#include <fstream>
 #include <optional>
 #include <string>
 
@@ -41,8 +41,9 @@ int FrameHeight(HWND hwnd) {
 // path_provider names for Dart — as one line: left top right bottom
 // maximized. Minimized is never kept.
 std::wstring PlacementPath() {
-  const wchar_t* appdata = _wgetenv(L"APPDATA");
-  if (appdata == nullptr) return L"";
+  wchar_t appdata[MAX_PATH];
+  DWORD length = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) return L"";
   std::wstring dir = std::wstring(appdata) + L"\\cloud.brata";
   CreateDirectoryW(dir.c_str(), nullptr);
   dir += L"\\Jeansh";
@@ -117,15 +118,15 @@ void FlutterWindow::OnDestroy() {
 }
 
 void FlutterWindow::RestorePlacement() {
-  FILE* file = _wfopen(PlacementPath().c_str(), L"r");
-  if (file == nullptr) return;
+  std::ifstream file(PlacementPath());
   RECT rect;
   int maximized = 0;
-  int read = fscanf(file, "%ld %ld %ld %ld %d", &rect.left, &rect.top,
-                    &rect.right, &rect.bottom, &maximized);
-  fclose(file);
+  if (!(file >> rect.left >> rect.top >> rect.right >> rect.bottom >>
+        maximized)) {
+    return;
+  }
   LONG width = rect.right - rect.left, height = rect.bottom - rect.top;
-  if (read != 5 || width < 200 || height < 150) return;
+  if (width < 200 || height < 150) return;
   // On a monitor that is there, which is where its top strip, the part that
   // moves it, is: otherwise — a laptop undocked, a screen unplugged — whole
   // and centred on the main one.
@@ -155,11 +156,9 @@ void FlutterWindow::RestorePlacement() {
 void FlutterWindow::SavePlacement() {
   HWND hwnd = GetHandle();
   if (hwnd == nullptr || IsRectEmpty(&normal_)) return;
-  FILE* file = _wfopen(PlacementPath().c_str(), L"w");
-  if (file == nullptr) return;
-  fprintf(file, "%ld %ld %ld %ld %d\n", normal_.left, normal_.top,
-          normal_.right, normal_.bottom, IsZoomed(hwnd) ? 1 : 0);
-  fclose(file);
+  std::ofstream(PlacementPath())
+      << normal_.left << ' ' << normal_.top << ' ' << normal_.right << ' '
+      << normal_.bottom << ' ' << (IsZoomed(hwnd) ? 1 : 0) << '\n';
 }
 
 void FlutterWindow::OnWindowCall(
