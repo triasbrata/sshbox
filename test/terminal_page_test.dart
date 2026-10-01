@@ -1094,8 +1094,9 @@ void main() {
         tester
             .widget<TerminalView>(find.byType(TerminalView))
             .terminal
-            .write('\x1b[?1000h');
+            .write('\x1b[?1000h\x1b[?1002h');
         await tester.pump();
+        shell.sent.clear();
 
         await rightClick(tester, cellAt(tester, 2, 1));
         expect(find.text('Copy link address'), findsOneWidget);

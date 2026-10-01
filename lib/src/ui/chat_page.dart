@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
+
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,10 +19,16 @@ import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
 import 'code_languages.dart';
 import 'file_editor_page.dart'
-    show CodeBlockBuilder, pictureMaxPixels, pictureSize, showPicture;
+    show
+        CodeBlockBuilder,
+        copyAndSay,
+        pictureMaxPixels,
+        pictureSize,
+        showPicture;
 import 'markdown_input.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
+import 'slash_command_menu.dart';
 import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'terminal_paste.dart'
@@ -124,6 +131,37 @@ class _ChatPageState extends State<ChatPage> {
     _agents = _chat.agents(all: true)..ignore();
   }
 
+  /// The slash commands the host's Claude Code takes, read the first time
+  /// the list opens on a connection, and again by its ↻. What came back, or
+  /// why not, is kept for [_send] and the list: see [SlashCommandMenu].
+  AsyncSnapshot<List<SlashCommand>> _commands = const AsyncSnapshot.nothing();
+
+  void _wantCommands() {
+    if (_commands.connectionState == ConnectionState.none) {
+      setState(_listCommands);
+    }
+  }
+
+  void _listCommands() {
+    _commands = const AsyncSnapshot.waiting();
+    final asked = _chat.slashCommands();
+    unawaited(
+      asked
+          .then(
+            (commands) =>
+                AsyncSnapshot.withData(ConnectionState.done, commands),
+            onError: (Object error) =>
+                AsyncSnapshot<List<SlashCommand>>.withError(
+                  ConnectionState.done,
+                  error,
+                ),
+          )
+          .then((snapshot) {
+            if (mounted) setState(() => _commands = snapshot);
+          }),
+    );
+  }
+
   /// Nearer the end than this, the reader is following: a new entry scrolls
   /// into view.
   static const _nearEnd = 240.0;
@@ -185,7 +223,10 @@ class _ChatPageState extends State<ChatPage> {
   /// Claude can read, no bigger than a paste into the terminal may be.
   /// Anything else is refused, saying why.
   Future<void> _addPicture(({String path, String name}) file) async {
-    if (!_canWrite) return;
+    final why = _readOnlyWhy;
+    if (why != null) {
+      return _refuse('Not added: this session is read-only from here — $why');
+    }
     if (!_pictureNames.hasMatch(file.name)) {
       return _refuse(
         'Not a picture Claude can read: ${file.name}. A PNG, '
@@ -244,7 +285,7 @@ class _ChatPageState extends State<ChatPage> {
     );
     if (at >= 0) {
       items[at] = paste;
-    } else if (_canWrite) {
+    } else if (_attachable) {
       items.add(paste);
     }
     return AdaptiveTextSelectionToolbar.buttonItems(
@@ -329,22 +370,20 @@ class _ChatPageState extends State<ChatPage> {
     ),
   );
 
-  /// Whether what is written can be sent anywhere: not to a session that is
-  /// read-only from here, nor before Claude or a connection is there.
-  bool get _canWrite {
-    final chat = _chat;
-    final watching = chat.watching;
-    final composing = chat.composing && widget.session.isConnected;
-    final readOnly = watching != null && chat.readOnly != null;
-    return !readOnly && (watching != null || chat.ready || composing);
-  }
+  /// Why nothing can be sent to this chat, or null: only a session that is
+  /// read-only from here. A picture is taken whenever that is null, ready
+  /// yet or not — the box may be up before Claude is, and a picture pasted
+  /// then is a card, sent when Send turns on. Only Send is gated.
+  String? get _readOnlyWhy => _chat.watching != null ? _chat.readOnly : null;
+
+  bool get _attachable => _readOnlyWhy == null;
 
   /// On a desktop, files dropped on the chat: see [_dropped]. Only while this
   /// tab is the one showing and nothing covers it, as the terminal's.
   Widget _dropTarget(Widget child) {
     if (!isDesktop) return child;
     final enable =
-        _canWrite &&
+        _attachable &&
         Visibility.of(context) &&
         (ModalRoute.of(context)?.isCurrent ?? true);
     final theme = Theme.of(context);
@@ -395,8 +434,7 @@ class _ChatPageState extends State<ChatPage> {
   /// Enter sends, Shift+Enter then being the new line. An IME's Enter, which
   /// confirms what it is composing, is the IME's.
   KeyEventResult _onBoxKey(FocusNode node, KeyEvent event) {
-    if (_menuOpen.value ||
-        event is KeyUpEvent ||
+    if (event is KeyUpEvent ||
         (event.logicalKey != LogicalKeyboardKey.enter &&
             event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
         _input.value.isComposingRangeValid) {
@@ -407,6 +445,8 @@ class _ChatPageState extends State<ChatPage> {
       TargetPlatform.macOS || TargetPlatform.iOS => keys.isMetaPressed,
       _ => keys.isControlPressed,
     };
+    // An open menu takes every other Enter, to pick; the chord still sends.
+    if (_menuOpen.value && !chord) return KeyEventResult.ignored;
     if (chord ||
         (chatEnterSends.value &&
             !keys.isShiftPressed &&
@@ -503,6 +543,7 @@ class _ChatPageState extends State<ChatPage> {
     if (connected && !_wasConnected) {
       _wasConnected = true;
       _listAgents();
+      _commands = const AsyncSnapshot.nothing();
       // After a reconnect the old process, or the follow of a session being
       // watched, went with the old connection: it is picked up again on the
       // new one, the same conversation either way.
@@ -644,10 +685,21 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _send() {
-    if (_input.text.trim().isEmpty && _draft.isEmpty) return;
-    final starts = _chat.composing;
     // Numbered as Claude will number them, now that it is going.
     final text = _draft.sync(_input.value, _chat.nextPicture).text;
+    if (text.trim().isEmpty && _draft.isEmpty) return;
+    // A dialog in a terminal chat cannot see takes the next Enter as a
+    // choice, so a command that may open one is not typed at all.
+    if (SlashCommand.refusal(text, _commands.data) case final why?) {
+      showToast(
+        context,
+        why,
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
+    final starts = _chat.composing;
     final sent = _chat.send(
       text,
       pictures: _draft.pictures,
@@ -797,6 +849,7 @@ class _ChatPageState extends State<ChatPage> {
     ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
+    final ChatCommand command => _CommandRow(command: command),
   };
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
@@ -876,141 +929,160 @@ class _ChatPageState extends State<ChatPage> {
       ..panel = palette.selection
       // Its pictures' tokens drawn as chips.
       ..pictures = {for (final picture in _draft.pictures) picture.number};
+    // The list of commands goes above the whole row, as wide as the page:
+    // the box alone is too narrow for it on a phone.
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            IconButton(
-              tooltip: sidebar
-                  ? 'Hide the sessions on this host'
-                  : 'Sessions on this host',
-              isSelected: sidebar,
-              onPressed: () => _toggleSessions(wide),
-              icon: const Icon(Icons.view_sidebar_outlined),
-              selectedIcon: const Icon(Icons.view_sidebar),
-            ),
-            IconButton(
-              tooltip: 'Add a picture',
-              onPressed: open ? _pickPictures : null,
-              icon: const Icon(Icons.add_photo_alternate_outlined),
-            ),
-            MenuButton<Object>(
-              tooltip: 'Chat settings',
-              onSelected: (choice) {
-                if (choice is ChatPermission) {
-                  unawaited(chat.restart(permission: choice));
-                } else if (choice == 'new') {
-                  unawaited(_newChat());
-                } else {
-                  unawaited(chat.restart());
-                }
-              },
-              entries: [
-                TuiMenuItem(
-                  value: 'new',
-                  label: 'New chat',
-                  enabled: connected,
-                ),
-                const TuiMenuDivider(),
-                for (final mode in ChatPermission.values)
+      child: SlashCommandMenu(
+        controller: _input,
+        commands: _commands,
+        onOpen: _wantCommands,
+        openState: _menuOpen,
+        onRefresh: () => setState(_listCommands),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              IconButton(
+                tooltip: sidebar
+                    ? 'Hide the sessions on this host'
+                    : 'Sessions on this host',
+                isSelected: sidebar,
+                onPressed: () => _toggleSessions(wide),
+                icon: const Icon(Icons.view_sidebar_outlined),
+                selectedIcon: const Icon(Icons.view_sidebar),
+              ),
+              IconButton(
+                tooltip: 'Add a picture',
+                onPressed: readOnly ? null : _pickPictures,
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+              ),
+              MenuButton<Object>(
+                tooltip: 'Chat settings',
+                onSelected: (choice) {
+                  if (choice is ChatPermission) {
+                    unawaited(chat.restart(permission: choice));
+                  } else if (choice == 'new') {
+                    unawaited(_newChat());
+                  } else {
+                    unawaited(chat.restart());
+                  }
+                },
+                entries: [
                   TuiMenuItem(
-                    value: mode,
-                    label: mode.label,
-                    checked: chat.permission == mode,
+                    value: 'new',
+                    label: 'New chat',
+                    enabled: connected,
                   ),
-                const TuiMenuDivider(),
-                const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
-              ],
-            ),
-            Expanded(
-              // A picture pasted goes in as a card rather than as nothing:
-              // see [_pastePicture]. The field's own menu Paste is offered
-              // only for text, and takes text — so it is replaced by one
-              // that takes a picture first, offered with a picture alone.
-              // Enter and the slash menu stay [_onBoxKey]'s: only a paste is
-              // taken here.
-              child: Actions(
-                actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
-                child: TextField(
-                  contextMenuBuilder: _contextMenu,
-                  contentInsertionConfiguration: ContentInsertionConfiguration(
-                    allowedMimeTypes: const [
-                      'image/png',
-                      'image/jpeg',
-                      'image/gif',
-                      'image/webp',
-                    ],
-                    onContentInserted: (content) =>
-                        unawaited(_inserted(content)),
-                  ),
-                  controller: _input,
-                  focusNode: _inputFocus,
-                  // Gboard's own Enter sends too when Enter is what sends.
-                  textInputAction: chatEnterSends.value
-                      ? TextInputAction.send
-                      : null,
-                  onSubmitted: (_) {
-                    if (_sendable) _send();
-                  },
-                  enabled: open,
-                  minLines: 1,
-                  // Room for a short code block before it scrolls.
-                  maxLines: 8,
-                  keyboardType: TextInputType.multiline,
-                  textCapitalization: TextCapitalization.sentences,
-                  // termul's TuiInput look — its ❯ prompt in the accent — on
-                  // a field that takes several lines and can be shut, which
-                  // TuiInput does not.
-                  decoration: InputDecoration(
-                    isDense: true,
-                    prefixText: '❯ ',
-                    prefixStyle: TextStyle(
-                      fontFamily: TermulFonts.mono,
-                      color: TermulThemeData.of(context).palette.accent,
+                  const TuiMenuDivider(),
+                  for (final mode in ChatPermission.values)
+                    TuiMenuItem(
+                      value: mode,
+                      label: mode.label,
+                      checked: chat.permission == mode,
                     ),
-                    hintText: readOnly
-                        ? 'Read-only: “${watching.name}” cannot be typed into '
-                              'from here'
-                        : watching != null
-                        ? 'Message “${watching.name}”…'
-                        : composing
-                        ? 'Start a new chat…'
-                        : chat.ready
-                        ? 'Ask Claude…'
-                        : connected
-                        ? 'Starting Claude on the host…'
-                        : 'Connect this session first',
+                  const TuiMenuDivider(),
+                  const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
+                ],
+              ),
+              Expanded(
+                // A picture pasted goes in as a card rather than as nothing:
+                // see [_pastePicture]. The field's own menu Paste is offered
+                // only for text, and takes text — so it is replaced by one
+                // that takes a picture first, offered with a picture alone.
+                // Enter and the slash menu stay [_onBoxKey]'s: only a paste is
+                // taken here.
+                child: Actions(
+                  actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
+                  child: TextField(
+                    contextMenuBuilder: _contextMenu,
+                    contentInsertionConfiguration:
+                        ContentInsertionConfiguration(
+                          allowedMimeTypes: const [
+                            'image/png',
+                            'image/jpeg',
+                            'image/gif',
+                            'image/webp',
+                          ],
+                          onContentInserted: (content) =>
+                              unawaited(_inserted(content)),
+                        ),
+                    controller: _input,
+                    focusNode: _inputFocus,
+                    // Gboard's own Enter sends too when Enter is what sends.
+                    textInputAction: chatEnterSends.value
+                        ? TextInputAction.send
+                        : null,
+                    onSubmitted: (_) {
+                      // Not while the list of commands is open: a half-typed
+                      // /com is a pick still being made.
+                      if (_sendable && !_menuOpen.value) _send();
+                    },
+                    enabled: open,
+                    minLines: 1,
+                    // Room for a short code block before it scrolls.
+                    maxLines: 8,
+                    keyboardType: TextInputType.multiline,
+                    textCapitalization: TextCapitalization.sentences,
+                    // termul's TuiInput look — its ❯ prompt in the accent — on
+                    // a field that takes several lines and can be shut, which
+                    // TuiInput does not.
+                    decoration: InputDecoration(
+                      isDense: true,
+                      // One line, cut: at a large text size on a phone a hint
+                      // that wraps grows the box past the room the keyboard
+                      // leaves.
+                      hintMaxLines: 1,
+                      prefixText: '❯ ',
+                      prefixStyle: TextStyle(
+                        fontFamily: TermulFonts.mono,
+                        color: TermulThemeData.of(context).palette.accent,
+                      ),
+                      hintText: readOnly
+                          ? 'Read-only: “${watching.name}” cannot be typed into '
+                                'from here'
+                          : watching != null
+                          ? 'Message “${watching.name}”…'
+                          : composing
+                          ? 'Start a new chat…'
+                          : chat.ready
+                          ? 'Ask Claude…'
+                          : connected
+                          ? 'Starting Claude on the host…'
+                          : 'Connect this session first',
+                    ),
+                    // A token deleted takes its card with it.
+                    onChanged: (_) => setState(() {
+                      final synced = _draft.sync(
+                        _input.value,
+                        _chat.nextPicture,
+                      );
+                      if (synced != _input.value) _input.value = synced;
+                    }),
                   ),
-                  // A token deleted takes its card with it.
-                  onChanged: (_) => setState(() {
-                    final synced = _draft.sync(_input.value, _chat.nextPicture);
-                    if (synced != _input.value) _input.value = synced;
-                  }),
                 ),
               ),
-            ),
-            const SizedBox(width: 4),
-            IconButton.filled(
-              tooltip: 'Send',
-              // The app's iconButtonTheme gives every IconButton an accent
-              // foreground, which beats the filled variant's own onPrimary:
-              // an accent arrow on an accent fill. Black or white, whichever
-              // reads on the fill.
-              style: IconButton.styleFrom(
-                backgroundColor: palette.accent,
-                foregroundColor:
-                    tuiContrast(Colors.black, palette.accent) >=
-                        tuiContrast(Colors.white, palette.accent)
-                    ? Colors.black
-                    : Colors.white,
+              const SizedBox(width: 4),
+              IconButton.filled(
+                tooltip: 'Send',
+                // The app's iconButtonTheme gives every IconButton an accent
+                // foreground, which beats the filled variant's own onPrimary:
+                // an accent arrow on an accent fill. Black or white, whichever
+                // reads on the fill.
+                style: IconButton.styleFrom(
+                  backgroundColor: palette.accent,
+                  foregroundColor:
+                      tuiContrast(Colors.black, palette.accent) >=
+                          tuiContrast(Colors.white, palette.accent)
+                      ? Colors.black
+                      : Colors.white,
+                ),
+                onPressed: _sendable ? _send : null,
+                icon: const Icon(Icons.send),
               ),
-              onPressed: _sendable ? _send : null,
-              icon: const Icon(Icons.send),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1199,8 +1271,9 @@ class _Empty extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final root = session.host.fileRoot.trim();
+    // Scrolls when a phone's keyboard leaves it less height than it needs.
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1236,11 +1309,15 @@ class _Empty extends StatelessWidget {
             // the host are offered before anything has been typed.
             if (onPickSession case final show?) ...[
               const SizedBox(height: 20),
-              TuiButton(
-                label: 'Sessions on this host',
-                prefix: '▸',
-                variant: TuiButtonVariant.ghost,
-                onPressed: show,
+              // Shrunk rather than cut where a phone is too narrow for it.
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: TuiButton(
+                  label: 'Sessions on this host',
+                  prefix: '▸',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: show,
+                ),
               ),
             ],
           ],
@@ -1594,6 +1671,7 @@ class _ToolRowState extends State<_ToolRow> {
                                 color: run.failed ? p.red : null,
                               ),
                             ),
+                            copy: _ToolRow._unquoted(result),
                           ),
                         ],
                       ],
@@ -1629,7 +1707,16 @@ class _ToolRowState extends State<_ToolRow> {
 /// its open-or-shut bool, so an opened row read a bool as a double and threw
 /// — which a release build draws as nothing, the "expanded and empty" the
 /// user saw.
-Widget _block(BuildContext context, String slot, Widget text) => Container(
+///
+/// [copy] is the block's plain text, which its Copy code button puts on the
+/// clipboard. The button sits beside the text, as CodeBlockBuilder's does, so
+/// it never covers the first line or takes the drag that scrolls the block.
+Widget _block(
+  BuildContext context,
+  String slot,
+  Widget text, {
+  required String copy,
+}) => Container(
   width: double.infinity,
   margin: const EdgeInsets.only(top: 4),
   padding: const EdgeInsets.all(8),
@@ -1638,7 +1725,27 @@ Widget _block(BuildContext context, String slot, Widget text) => Container(
     color: TermulThemeData.of(context).palette.panel,
     border: Border.all(color: TermulThemeData.of(context).palette.border),
   ),
-  child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
+  child: Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(
+        child: SingleChildScrollView(key: PageStorageKey(slot), child: text),
+      ),
+      IconButton(
+        tooltip: 'Copy code',
+        onPressed: () => copyAndSay(
+          context,
+          'code block',
+          () => Clipboard.setData(ClipboardData(text: copy)),
+        ),
+        icon: const Icon(Icons.content_copy, size: 18),
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+      ),
+    ],
+  ),
 );
 
 /// What a tool was given, drawn the way the VS Code plugin draws it rather
@@ -1698,6 +1805,7 @@ class _ToolInput extends StatelessWidget {
                 : null) ??
             TextSpan(text: text, style: mono),
       ),
+      copy: text,
     );
 
     final parts = <Widget>[];
@@ -1734,7 +1842,14 @@ class _ToolInput extends StatelessWidget {
             ..remove('old_string')
             ..remove('new_string');
           if (run.name == 'MultiEdit') rest.remove('edits');
-          parts.add(_block(context, 'diff', _diff(pairs, brightness)));
+          parts.add(
+            _block(
+              context,
+              'diff',
+              _diff(pairs, brightness),
+              copy: _diffText(pairs),
+            ),
+          );
         }
       case 'Read':
         final path = take('file_path');
@@ -1777,6 +1892,15 @@ class _ToolInput extends StatelessWidget {
       children: parts,
     );
   }
+
+  /// [_diff]'s text as shown, for the clipboard.
+  static String _diffText(List<(String, String)> pairs) => [
+    for (final (index, (old, now)) in pairs.indexed) ...[
+      if (index > 0) '',
+      for (final line in const LineSplitter().convert(old)) '- $line',
+      for (final line in const LineSplitter().convert(now)) '+ $line',
+    ],
+  ].join('\n');
 
   /// Each edit as the lines it took out, in the editor's red for a diff, and
   /// the lines it put in, in its green.
@@ -1850,6 +1974,51 @@ class _ToolInput extends StatelessWidget {
         _ => '$key: ${const JsonEncoder.withIndent('  ').convert(value)}',
       },
   ].join('\n');
+}
+
+/// A slash command run in the session: the command as a chip on the user's
+/// side, and under it, when it ran in the CLI, what it printed, in the
+/// terminal's font as it printed it.
+class _CommandRow extends StatelessWidget {
+  const _CommandRow({required this.command});
+
+  final ChatCommand command;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final output = command.output;
+    final typed = '/${command.name} ${command.args}'.trim();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          TuiBadge(label: typed, tone: TuiTextTone.accent),
+          if (output != null && output.trim().isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: p.surface,
+                border: Border.all(color: p.border),
+              ),
+              child: SelectableText(
+                output,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 12,
+                  color: p.text,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 /// The run's own asides: it ended, it was refused, the host had nothing to
