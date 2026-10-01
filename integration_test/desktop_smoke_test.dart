@@ -2319,6 +2319,19 @@ touch '${done.path}'
       expect(agents.existsSync(), isFalse, reason: '${agents.path} is there');
       final hadConfig = config.existsSync();
       addTearDown(() {
+        // What the session saw, for a run that went red.
+        final shown = Process.runSync('tmux', ['capture-pane', '-p', '-t', 'e2e-live']);
+        debugPrint('Pane: ${shown.stdout}${shown.stderr}');
+        final env = Process.runSync('tmux', ['show-environment', '-g']);
+        debugPrint('tmux env: ${'${env.stdout}'.split('\n').where((l) => l.startsWith('HOME') || l.startsWith('CLAUDE') || l.startsWith('LANG')).join(' ')}');
+        for (final f in config.existsSync()
+            ? config.listSync(recursive: true).whereType<File>()
+            : const <File>[]) {
+          final text = f.readAsStringSync();
+          final tail = text.length > 1500 ? text.substring(text.length - 1500) : text;
+          debugPrint('${f.path}: $tail');
+        }
+        if (agents.existsSync()) debugPrint('Listing: ${agents.readAsStringSync()}');
         Process.runSync('tmux', ['kill-session', '-t', 'e2e-live']);
         if (claude.existsSync()) claude.deleteSync();
         if (agents.existsSync()) agents.deleteSync();
