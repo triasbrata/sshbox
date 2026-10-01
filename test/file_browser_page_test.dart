@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show File;
+import 'dart:io' show Directory, File;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
@@ -874,6 +874,99 @@ void main() {
       findsOneWidget,
     );
     await tester.pumpAndSettle();
+  });
+
+  // #136: on a desktop file_picker's save failed outright — refused on a Mac
+  // for an entitlement, the XDG portal or nothing on Linux. The dialog is
+  // file_selector's, and the file is copied to the path it names.
+  group('on a desktop', () {
+    final desktops = TargetPlatformVariant({
+      TargetPlatform.linux,
+      TargetPlatform.macOS,
+      TargetPlatform.windows,
+    });
+
+    Future<void> download(WidgetTester tester) async {
+      await tester.longPress(_row('notes.txt'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Download'));
+      // The copy is real file IO, which fake time never finishes.
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 200)),
+      );
+      // Not settled: that would outlast the toast.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    testWidgets('saves where the dialog says, byte for byte', (tester) async {
+      final dir = Directory.systemTemp.createTempSync('save');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final dialog = useFakeSaveDialog('${dir.path}/kept.txt');
+      final browser = FakeFileBrowser();
+      await _pumpBrowser(tester, browser);
+
+      await download(tester);
+
+      expect(dialog.suggested, 'notes.txt');
+      expect(
+        File('${dir.path}/kept.txt').readAsStringSync(),
+        'first line\nsecond line\n',
+      );
+      expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
+      expect(find.text('Saved notes.txt'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktops);
+
+    testWidgets('leaves nothing behind when the dialog is dismissed', (
+      tester,
+    ) async {
+      useFakeSaveDialog(null);
+      final browser = FakeFileBrowser();
+      await _pumpBrowser(tester, browser);
+
+      await download(tester);
+
+      expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
+      expect(find.byType(TuiToastCard), findsNothing);
+    }, variant: desktops);
+
+    testWidgets('asks on Linux before a file already there is replaced', (
+      tester,
+    ) async {
+      final dir = Directory.systemTemp.createTempSync('save');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final there = File('${dir.path}/kept.txt')..writeAsStringSync('mine\n');
+      useFakeSaveDialog(there.path);
+      await _pumpBrowser(tester, FakeFileBrowser());
+
+      await download(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.text('Replace kept.txt?'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Cancel'));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(there.readAsStringSync(), 'mine\n');
+
+      await download(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(find.bySemanticsLabel('Replace'));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 200)),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(there.readAsStringSync(), 'first line\nsecond line\n');
+      await tester.pump(const Duration(seconds: 5));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('says why when the dialog itself fails', (tester) async {
+      useFakeSaveDialog(null, fails: true);
+      await _pumpBrowser(tester, FakeFileBrowser());
+
+      await download(tester);
+
+      expect(find.textContaining('Could not save notes.txt'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktops);
   });
 
   group('Copy content', () {

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,12 +26,6 @@ class FakeFilePicker extends FilePickerPlatform {
   /// What Copy image last handed Android: the app's own copy of the picture,
   /// and the name it goes on the clipboard under.
   ({String path, String name})? copiedImage;
-
-  /// How many times the macOS entitlement checks were turned off.
-  int skippedEntitlementChecks = 0;
-
-  @override
-  Future<void> skipEntitlementsChecks() async => skippedEntitlementChecks++;
 
   @override
   Future<List<PlatformFile>> pickFiles({
@@ -99,4 +94,36 @@ FakeFilePicker useFakePicker() {
   });
   addTearDown(() => messenger.setMockMethodCallHandler(android, null));
   return picker;
+}
+
+/// file_selector's save dialog on a desktop, answering [path] — null for the
+/// dialog dismissed — or throwing as a broken D-Bus would when [fails].
+class FakeSaveDialog extends FileSelectorPlatform {
+  FakeSaveDialog(this.path, {this.fails = false});
+
+  final String? path;
+  final bool fails;
+
+  /// The name the dialog was offered.
+  String? suggested;
+
+  @override
+  Future<FileSaveLocation?> getSaveLocation({
+    List<XTypeGroup>? acceptedTypeGroups,
+    SaveDialogOptions options = const SaveDialogOptions(),
+  }) async {
+    suggested = options.suggestedName;
+    if (fails) throw StateError('org.freedesktop.DBus.Error.ServiceUnknown');
+    final path = this.path;
+    return path == null ? null : FileSaveLocation(path);
+  }
+}
+
+/// A [FakeSaveDialog] in place of the desktop's own until the test ends.
+FakeSaveDialog useFakeSaveDialog(String? path, {bool fails = false}) {
+  final dialog = FakeSaveDialog(path, fails: fails);
+  final real = FileSelectorPlatform.instance;
+  FileSelectorPlatform.instance = dialog;
+  addTearDown(() => FileSelectorPlatform.instance = real);
+  return dialog;
 }

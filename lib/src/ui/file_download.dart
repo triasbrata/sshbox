@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart' show FilePicker;
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../files/file_browser.dart';
 import '../files/transfers.dart';
@@ -22,15 +24,13 @@ const _android = MethodChannel('sshbox/share');
 /// dialog is up at a time, and only for as long as it takes to pick a folder.
 bool _saving = false;
 
-/// Lets file_picker open its panels on a Mac at all. Before every panel it
-/// checks for the sandbox's user-selected file entitlements and refuses with
-/// ENTITLEMENT_REQUIRED_WRITE when a save lacks read-write; this app runs
-/// unsandboxed (see Release.entitlements), so those entitlements mean nothing
-/// and the check only blocks Download. Called once in main(), before any pick.
-Future<void> allowFilePanels() async {
-  if (defaultTargetPlatform != TargetPlatform.macOS) return;
-  await FilePicker.skipEntitlementsChecks();
-}
+/// Where a download is saved through file_selector's dialog and copied by the
+/// OS, rather than through Android's channel or file_picker's.
+bool get _desktop => switch (defaultTargetPlatform) {
+  TargetPlatform.linux || TargetPlatform.macOS || TargetPlatform.windows =>
+    true,
+  _ => false,
+};
 
 /// Brings [path] down from [browser], byte for byte as [host] has it, and
 /// hands it to the system's save dialog under its own name, as a transfer
@@ -64,6 +64,18 @@ Future<void> downloadFile(
     if (app.mounted) showToast(app, message, type: type);
   }
 
+  Future<bool> replace(String path) async {
+    if (!app.mounted) return false;
+    return showTuiConfirmDialog(
+      app,
+      title: 'replace file',
+      message: 'Replace ${RemotePath.basename(path)}?',
+      detail: '$path is there already.',
+      confirmLabel: 'Replace',
+      cancelLabel: 'Cancel',
+    );
+  }
+
   final name = RemotePath.basename(path);
   try {
     await transfers.run(
@@ -85,7 +97,8 @@ Future<void> downloadFile(
           onTransfer(null);
           // Not saved is the dialog dismissed, as good as Cancel.
           transfer.saved =
-              await _saveAs(copy, name) ?? (throw FileBrowserException.cancelled);
+              await _saveAs(copy, name, replace) ??
+              (throw FileBrowserException.cancelled);
         } finally {
           onTransfer(null);
           temp.deleteSync(recursive: true);
@@ -105,13 +118,26 @@ Future<void> downloadFile(
       'Could not save $name: ${error.message ?? error.code}',
       TuiToastType.error,
     );
+  } on FileSystemException catch (error) {
+    say(
+      'Could not save $name: ${error.osError?.message ?? error.message}',
+      TuiToastType.error,
+    );
+  } catch (error) {
+    // Whatever else a save dialog throws, a D-Bus error among them: said
+    // rather than lost, as the Transfers row says it.
+    say('Could not save $name: $error', TuiToastType.error);
   }
 }
 
 /// Hands the app's [copy] to the save dialog as [name], in its turn: what it
 /// was saved as, which [openDownload] opens, or null when the dialog was
 /// dismissed.
-Future<String?> _saveAs(String copy, String name) async {
+Future<String?> _saveAs(
+  String copy,
+  String name,
+  Future<bool> Function(String path) replace,
+) async {
   while (_saving) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   }
@@ -123,8 +149,26 @@ Future<String?> _saveAs(String copy, String name) async {
         'name': name,
       });
     }
-    // ponytail: elsewhere file_picker still takes the whole file as bytes.
-    // A native save like Android's lifts that.
+    if (_desktop) {
+      // The dialog only names a path; the copy is the OS's, file to file, so
+      // no download is ever held in memory.
+      // ponytail: a copy that fails halfway leaves what it wrote there, since
+      // the path may hold the user's own file the copy never reached.
+      final location = await FileSelectorPlatform.instance.getSaveLocation(
+        options: SaveDialogOptions(suggestedName: name),
+      );
+      if (location == null) return null;
+      // GTK's dialog, as file_selector opens it, never asks before a name
+      // already there is taken; macOS's and Windows' do.
+      if (defaultTargetPlatform == TargetPlatform.linux &&
+          File(location.path).existsSync() &&
+          !await replace(location.path)) {
+        return null;
+      }
+      await File(copy).copy(location.path);
+      return Uri.file(location.path).toString();
+    }
+    // ponytail: iOS still hands file_picker the whole file as bytes.
     final saved = await FilePicker.saveFile(
       fileName: name,
       bytes: await File(copy).readAsBytes(),
@@ -148,6 +192,13 @@ Future<void> copyImageToClipboard(String path, String name) =>
 /// Opens a finished download, [saved] as [name], in whatever app the phone
 /// has for its kind. False when none will.
 Future<bool> openDownload(String saved, String name) async {
+  if (_desktop) {
+    try {
+      return await launchUrl(Uri.parse(saved));
+    } on PlatformException {
+      return false;
+    }
+  }
   try {
     return await _android.invokeMethod<bool>('open', {
           'uri': saved,

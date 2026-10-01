@@ -62,8 +62,23 @@ case "$target" in
     # Wayland session — WSLg has one — the app drew on the real desktop and
     # copied to the real clipboard, which WSLg shares with Windows, over
     # whatever the user had copied.
+    #
+    # JEANSH_E2E_NO_PORTAL=1 leaves every XDG portal off that bus, as on a
+    # desktop that runs none: the bus offers the services the machine has,
+    # less each *portal* one, so nothing can start one.
+    bus=()
+    if [ -n "${JEANSH_E2E_NO_PORTAL:-}" ]; then
+      services=$(mktemp -d)
+      for service in /usr/share/dbus-1/services/*.service; do
+        case "$service" in *portal*) ;; *) ln -s "$service" "$services/" ;; esac
+      done
+      config=$(mktemp)
+      sed "s#<standard_session_servicedirs */>#<servicedir>$services</servicedir>#" \
+        /usr/share/dbus-1/session.conf > "$config"
+      bus=(--config-file="$config")
+    fi
     exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
-      dbus-run-session -- sh -c '
+      dbus-run-session "${bus[@]}" -- sh -c '
         unset WAYLAND_DISPLAY && export GDK_BACKEND=x11
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
         TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR

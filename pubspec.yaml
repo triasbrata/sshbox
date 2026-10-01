@@ -92,6 +92,15 @@ dependencies:
   # activity's content view — see third_party/desktop_drop/JEANSH.md.
   desktop_drop:
     path: third_party/desktop_drop
+  # A download's save dialog on the desktops (#136), in place of file_picker's:
+  # file_picker's Linux half is the XDG portal or nothing, and its macOS half
+  # refuses a save without a sandbox entitlement this unsandboxed app lacks.
+  # Its three desktop halves rather than file_selector itself, which would put
+  # a plugin of its own into the APK and the iOS build as well.
+  file_selector_platform_interface: ^2.7.0
+  file_selector_linux: ^0.9.4+1
+  file_selector_macos: ^0.9.5+1
+  file_selector_windows: ^0.9.3+6
 
 dev_dependencies:
   flutter_test:
