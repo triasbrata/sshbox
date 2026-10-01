@@ -281,15 +281,40 @@ class _LiveHost {
         () => screen.add(Uint8List.fromList(utf8.encode('\x1b[2J ❯ '))),
       );
     }
+    var chips = 0;
+    var drawn = 0;
     return (
       output: screen.stream,
-      write: (Uint8List data) => typed.add(utf8.decode(data)),
+      write: (Uint8List data) {
+        final keys = utf8.decode(data);
+        typed.add(keys);
+        chipsWhenTyped.add(drawn);
+        // A path pasted becomes its chip a moment later, as Claude Code
+        // draws one once it has read the file.
+        if (drawChips && keys.startsWith('\x1b[200~/')) {
+          chips++;
+          Timer(const Duration(milliseconds: 50), () {
+            drawn++;
+            screen.add(
+              Uint8List.fromList(
+                utf8.encode('\r\n❯ ${'[Image #9] ' * chips}'),
+              ),
+            );
+          });
+        }
+      },
       close: () {
         closed[0] = true;
         unawaited(screen.close());
       },
     );
   }
+
+  /// Whether a terminal draws a chip for each path pasted into it.
+  var drawChips = false;
+
+  /// How many chips each terminal had drawn when each of its writes came.
+  final chipsWhenTyped = <int>[];
 
   Future<CommandChannel> open(String command) async {
     commands.add(command);
@@ -1643,7 +1668,7 @@ void main() {
         // and the host told exactly how many bytes to take.
         final typing = host.paneTyping.single;
         expect(typing.stdin, [' !is the build green?']);
-        expect(typing.command, contains('head -c 21 '));
+        expect(typing.command, contains('dd bs=1 count=21 '));
         expect(host.terminals, isEmpty);
         final said = chat.entries.whereType<ChatSaid>().single;
         expect(said.delivery, Delivery.sending);
@@ -1950,6 +1975,55 @@ void main() {
         follow.add(Uint8List.fromList(utf8.encode('$recorded\n')));
         await Future<void>.delayed(const Duration(milliseconds: 100));
         expect(chat.entries.whereType<ChatSaid>().single.delivery, isNull);
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+
+    test(
+      'a picture\'s path goes in as a paste of its own between the text, '
+      'from stdin, and nothing in it runs',
+      () async {
+        await tmux([
+          'new-session', '-d', '-s', 'sshbox-chat-pic', '-x', '80', '-y', '20',
+          recorder('claude'),
+        ]);
+        final pid = await started('sshbox-chat-pic');
+        final pwned = '${dir.path}/pwned';
+        final parts = ClaudeChat.segments('look [Image #1] here', {
+          1: "/tmp/it's \$(touch $pwned-sub)\n`touch $pwned-tick`; x.png",
+        });
+        final bytes = [for (final part in parts) utf8.encode(part.keys)];
+        final watch = Stopwatch()..start();
+        final answer = await host(
+          ClaudeChat.paneCommand(
+            _live.sessionId,
+            pid: pid,
+            parts: [
+              for (final (index, part) in parts.indexed)
+                (length: bytes[index].length, picture: part.picture),
+            ],
+            chipWait: const Duration(seconds: 2),
+          ),
+          utf8.decode([for (final piece in bytes) ...piece]),
+        );
+        expect(answer, contains('sshbox:typed'));
+        // The recorder draws no chip: the host waited for one as long as it
+        // was told to, and no longer.
+        expect(watch.elapsed, greaterThan(const Duration(seconds: 2)));
+        expect(watch.elapsed, lessThan(const Duration(seconds: 6)));
+        // One line: the newline taken out of the path, the rest as it is.
+        expect(
+          got('claude'),
+          'look \x1b[200~/tmp/it\'s \$(touch $pwned-sub)`touch $pwned-tick`; '
+          'x.png\x1b[201~ here\r',
+        );
+        expect(
+          dir
+              .listSync()
+              .map((entry) => entry.path)
+              .where((path) => path.startsWith(pwned)),
+          isEmpty,
+        );
       },
       skip: hasTmux ? false : 'tmux is not installed here',
     );
@@ -2639,6 +2713,249 @@ void main() {
         chat.entries.whereType<ChatSaid>().map((e) => e.text),
         [...said, 'live 1', 'live 2'],
       );
+    });
+  });
+
+  group('pictures', () {
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('sshbox-pictures'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    ChatPicture picture(String name, int number, [List<int>? bytes]) {
+      final file = File('${dir.path}/$name')
+        ..writeAsBytesSync(bytes ?? [0x89, 0x50, 0x4e, 0x47, number]);
+      return ChatPicture(path: file.path, name: name, number: number);
+    }
+
+    test('to this chat\'s own Claude they go as image blocks after the text, '
+        'read from here', () async {
+      final claude = _FakeClaude();
+      final chat = ClaudeChat(open: (_) async => claude.channel);
+      addTearDown(chat.dispose);
+      await chat.start();
+
+      final shot = picture('shot.jpg', 1, [1, 2, 3]);
+      await chat.send('what is [Image #1]?', pictures: [shot]);
+
+      final content =
+          (claude.sent.single['message'] as Map)['content'] as List<Object?>;
+      expect(content, [
+        {'type': 'text', 'text': 'what is [Image #1]?'},
+        {
+          'type': 'image',
+          'source': {
+            'type': 'base64',
+            'media_type': 'image/jpeg',
+            'data': base64Encode([1, 2, 3]),
+          },
+        },
+      ]);
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.pictures.single.path, shot.path);
+      expect(chat.nextPicture, 2);
+    });
+
+    test('into a running session each is uploaded and pasted as a path of '
+        'its own where its [Image #N] is, the text typed around it once its '
+        'chip is in, and it is sent once the session records it', () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final uploaded = <String>[];
+      final watch = Stopwatch()..start();
+      await chat.send(
+        'compare [Image #1] with [Image #2], and [Image #7] stays text',
+        pictures: [picture('a.png', 1), picture('b.png', 2)],
+        upload: (picture) async {
+          uploaded.add(picture.name);
+          return '/tmp/${picture.name}';
+        },
+      );
+      while (host.terminals.isEmpty ||
+          !host.terminals.single.typed.contains('\r')) {
+        if (watch.elapsed > const Duration(seconds: 8)) fail('never sent');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+
+      expect(uploaded, ['a.png', 'b.png']);
+      expect(host.terminals.single.typed, [
+        'compare ',
+        '\x1b[200~/tmp/a.png\x1b[201~',
+        ' with ',
+        '\x1b[200~/tmp/b.png\x1b[201~',
+        ', and [Image #7] stays text',
+        '\r',
+      ]);
+      // What follows a picture waited for its chip, and not the whole
+      // timeout.
+      expect(host.chipsWhenTyped, [0, 0, 1, 1, 2, 2]);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+
+      // Claude numbers the chips itself, and the message is still its own.
+      host.adds({
+        'type': 'user',
+        'imagePasteIds': [4, 5],
+        'message': {
+          'role': 'user',
+          'content': [
+            {
+              'type': 'text',
+              'text': 'compare [Image #4] with [Image #5], and [Image #7] '
+                  'stays text',
+            },
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode([9])},
+            },
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode([8])},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final mine = chat.entries.whereType<ChatSaid>().single;
+      expect(mine.delivery, isNull);
+      expect([for (final p in mine.pictures) p.bytes], [
+        [9],
+        [8],
+      ]);
+      expect([for (final p in mine.pictures) p.number], [4, 5]);
+      expect(chat.nextPicture, 6);
+    });
+
+    test('a picture that cannot go up says so, and nothing is typed', () async {
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open, openTerminal: host.openTerminal);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      await chat.send(
+        'see [Image #1]',
+        pictures: [picture('a.png', 1)],
+        upload: (_) async => throw const FileSystemException('disk full'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      var said = chat.entries.whereType<ChatSaid>().last;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('a.png could not be put on the host'));
+
+      // A connection that cannot put a file there at all.
+      await chat.send('see [Image #1]', pictures: [picture('a.png', 1)]);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      said = chat.entries.whereType<ChatSaid>().last;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('cannot put a picture on the host'));
+      expect(host.terminals, isEmpty);
+    });
+
+    test('a new chat with pictures starts with no prompt, and the message is '
+        'pasted into it', () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains(' --bg ')) {
+            return (
+              output: Stream.value(
+                Uint8List.fromList(
+                  utf8.encode('backgrounded · 9e1f2a3b (idle — send a '
+                      'prompt to start)\n'),
+                ),
+              ),
+              write: (Uint8List data) {},
+              close: () {},
+            );
+          }
+          return host.open(command);
+        },
+        openTerminal: host.openTerminal,
+      );
+      addTearDown(chat.dispose);
+      host.listed = {
+        'pid': 7,
+        'id': '9e1f2a3b',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'sessionId': '9e1f2a3b-0000-4000-8000-000000000000',
+        'name': '9e1f2a3b',
+        'status': 'idle',
+        'state': 'blocked',
+      };
+
+      await chat.send(
+        '[Image #1] what is this?',
+        pictures: [picture('a.png', 1)],
+        upload: (picture) async => '/tmp/${picture.name}',
+      );
+
+      final start = commands.firstWhere((c) => c.contains(' --bg '));
+      expect(start, isNot(contains(' -- ')));
+      expect(start, isNot(contains('what is this')));
+      expect(host.terminals.single.typed, [
+        '\x1b[200~/tmp/a.png\x1b[201~',
+        ' what is this?',
+        '\r',
+      ]);
+      expect(chat.watching?.id, '9e1f2a3b');
+    });
+
+    test('a transcript\'s pictures are kept to draw, numbered as it numbered '
+        'them, and one too big is left out', () async {
+      final big = 'A' * (ClaudeChat.pictureLimit * 2);
+      // Live: a line this long is past what the history's first read takes.
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open, openTerminal: host.openTerminal);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'user',
+        'imagePasteIds': [2, 3],
+        'message': {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': '[Image #2] [Image #3] which?'},
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': big},
+            },
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode([7])},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.pictures.single.bytes, [7]);
+      expect(said.pictures.single.number, 3);
+      expect(chat.nextPicture, 4);
+    });
+
+    test('the chips counted are the input line\'s, not the turns above it', () {
+      expect(
+        ClaudeChat.chipsIn([
+          '❯ [Image #1] an earlier one',
+          '● Red',
+          '────',
+          '❯ [Image #2] [Image #3]',
+          '  [Image #4]',
+          '────',
+          '  Opus 5.5',
+        ]),
+        3,
+      );
+      expect(ClaudeChat.chipsIn(['no prompt here [Image #1]']), 0);
     });
   });
 }

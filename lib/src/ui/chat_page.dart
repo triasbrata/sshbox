@@ -1,17 +1,27 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
+import '../chat/picture_draft.dart';
+import '../files/transfers.dart';
+import '../platform.dart';
 import '../session/session_manager.dart';
+import '../session/terminal_session.dart' show uploadName;
 import 'code_languages.dart';
+import 'file_editor_page.dart' show showPicture;
 import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
+import 'terminal_paste.dart'
+    show clipboardImage, insertedImage, pasteImageLimit;
 import 'toast.dart';
 import 'tui.dart';
 
@@ -39,6 +49,19 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
+
+  /// The pictures the message being written carries: a card each above the
+  /// box, and an `[Image #N]` each in its text.
+  final _draft = PictureDraft();
+
+  /// Where each picture added is copied, under a name of its own: the
+  /// clipboard's and the keyboard's copies are emptied at the next paste,
+  /// and two pictures of one name would be one file on the host. Gone with
+  /// the page; a bubble whose copy has gone shows that it has.
+  Directory? _picturesDir;
+
+  /// True while files are dragged over the page on a desktop.
+  bool _dropping = false;
   final _scroll = ScrollController();
 
   /// Held rather than asked for each time: closing the tab lets the session
@@ -113,7 +136,181 @@ class _ChatPageState extends State<ChatPage> {
     _chat.removeListener(_onChanged);
     _input.dispose();
     _scroll.dispose();
+    try {
+      _picturesDir?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Already gone.
+    }
     super.dispose();
+  }
+
+  /// The kinds of picture Claude's API reads.
+  static final _pictureNames = RegExp(
+    r'\.(png|jpe?g|gif|webp)$',
+    caseSensitive: false,
+  );
+
+  /// Adds [file] to the message being written, at the caret: a picture
+  /// Claude can read, no bigger than a paste into the terminal may be.
+  /// Anything else is refused, saying why.
+  Future<void> _addPicture(({String path, String name}) file) async {
+    if (!_canWrite) return;
+    if (!_pictureNames.hasMatch(file.name)) {
+      return _refuse(
+        'Not a picture Claude can read: ${file.name}. A PNG, '
+        'JPEG, GIF or WebP is.',
+      );
+    }
+    final source = File(file.path);
+    final File copy;
+    try {
+      if (await source.length() > pasteImageLimit) {
+        return _refuse(
+          '${file.name} is bigger than '
+          '${pasteImageLimit ~/ (1024 * 1024)} MB, the most a picture may '
+          'be.',
+        );
+      }
+      final dir = _picturesDir ??= Directory.systemTemp.createTempSync(
+        'chat-pictures',
+      );
+      copy = await source.copy(
+        '${dir.path}/${DateTime.now().microsecondsSinceEpoch}-'
+        '${uploadName(file.name)}',
+      );
+    } on FileSystemException catch (error) {
+      return _refuse('${file.name} could not be read: ${error.message}');
+    }
+    if (!mounted) return;
+    setState(() {
+      _input.value = _draft.add(
+        _input.value,
+        ChatPicture(path: copy.path, name: file.name),
+        _chat.nextPicture,
+      );
+    });
+  }
+
+  void _refuse(String why) {
+    if (mounted) showToast(context, why, type: TuiToastType.warning);
+  }
+
+  /// A paste into the box: a picture on the clipboard becomes a card, and
+  /// anything else is pasted as text, as it always was. True when the
+  /// clipboard held a picture, taken or not.
+  Future<bool> _pastePicture() async {
+    try {
+      final image = await clipboardImage();
+      if (image == null) return false;
+      await _addPicture(image);
+    } on PlatformException catch (error) {
+      _refuse(
+        error.message ??
+            'The picture on the clipboard could not be '
+                'taken.',
+      );
+    }
+    return true;
+  }
+
+  /// A picture Gboard's clipboard strip put in.
+  Future<void> _inserted(KeyboardInsertedContent content) async {
+    try {
+      final image = await insertedImage(content);
+      if (image == null) {
+        return _refuse('Only a picture can go into a chat this way.');
+      }
+      await _addPicture(image);
+    } on PlatformException catch (error) {
+      _refuse(error.message ?? 'That picture could not be taken.');
+    }
+  }
+
+  Future<void> _pickPictures() async {
+    for (final file in await FilePicker.pickFiles(type: FileType.image)) {
+      // Something picked from a cloud provider has no path to read.
+      final path = file.path;
+      if (path == null) {
+        _refuse('${file.name} is not on this device to send.');
+        continue;
+      }
+      await _addPicture((path: path, name: file.name));
+    }
+  }
+
+  /// Files dropped from the OS file manager on a desktop, in order.
+  Future<void> _dropped(DropDoneDetails details) async {
+    setState(() => _dropping = false);
+    for (final item in details.files) {
+      if (FileSystemEntity.isDirectorySync(item.path)) {
+        _refuse('A folder is not a picture: ${item.name}');
+        continue;
+      }
+      await _addPicture((path: item.path, name: item.name));
+      if (!mounted) return;
+    }
+  }
+
+  /// Puts [picture] on the host for a session there, through the upload the
+  /// terminal's paste uses: in the Transfers tab, made 0600 and named by
+  /// [uploadName] — here after the copy's own name, which is unique — or
+  /// copied on this machine for a Local shell.
+  Future<String> _upload(ChatPicture picture) => transfers.run(
+    name: picture.name,
+    host: widget.session.host.displayName,
+    direction: TransferDirection.upload,
+    work: (transfer) => widget.session.uploadToTmp(
+      localPath: picture.path!,
+      fileName: picture.path!,
+      onProgress: transfer.report,
+      cancel: transfer.cancelled,
+    ),
+  );
+
+  /// Whether what is written can be sent anywhere: not to a session that is
+  /// read-only from here, nor before Claude or a connection is there.
+  bool get _canWrite {
+    final chat = _chat;
+    final watching = chat.watching;
+    final composing = chat.composing && widget.session.isConnected;
+    final readOnly = watching != null && chat.readOnly != null;
+    return !readOnly && (watching != null || chat.ready || composing);
+  }
+
+  /// On a desktop, files dropped on the chat: see [_dropped]. Only while this
+  /// tab is the one showing and nothing covers it, as the terminal's.
+  Widget _dropTarget(Widget child) {
+    if (!isDesktop) return child;
+    final enable =
+        _canWrite &&
+        Visibility.of(context) &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
+    final theme = Theme.of(context);
+    return DropTarget(
+      enable: enable,
+      onDragEntered: (_) => setState(() => _dropping = true),
+      onDragExited: (_) => setState(() => _dropping = false),
+      onDragDone: _dropped,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          if (_dropping && enable)
+            IgnorePointer(
+              child: DecoratedBox(
+                key: const ValueKey('drop-highlight'),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                  border: Border.all(
+                    color: theme.colorScheme.primary,
+                    width: 2,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   void _onChanged() {
@@ -263,10 +460,16 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _send() {
-    final text = _input.text;
-    if (text.trim().isEmpty) return;
+    if (_input.text.trim().isEmpty && _draft.isEmpty) return;
     final starts = _chat.composing;
-    final sent = _chat.send(text);
+    // Numbered as Claude will number them, now that it is going.
+    final text = _draft.sync(_input.value, _chat.nextPicture).text;
+    final sent = _chat.send(
+      text,
+      pictures: _draft.pictures,
+      upload: widget.session.canUploadFiles ? _upload : null,
+    );
+    _draft.clear();
     _input.clear();
     // Whatever was said, the reader wants to be at the bottom again.
     _drawn = -1;
@@ -312,7 +515,7 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: _conversation(wide: wide, sidebar: sidebar),
+              child: _dropTarget(_conversation(wide: wide, sidebar: sidebar)),
             ),
           ],
         ),
@@ -444,110 +647,284 @@ class _ChatPageState extends State<ChatPage> {
     // Into a session being watched, what is typed goes to that session and
     // queues behind whatever it is doing; to this chat's own Claude, only
     // between its turns.
-    final open = !readOnly && (watching != null || chat.ready || composing);
+    final open = _canWrite;
     final canSend =
         open && (watching != null || ((chat.ready || composing) && !chat.busy));
     final palette = TermulThemeData.of(context).palette;
+    final row = Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        IconButton(
+          tooltip: sidebar
+              ? 'Hide the sessions on this host'
+              : 'Sessions on this host',
+          isSelected: sidebar,
+          onPressed: () => _toggleSessions(wide),
+          icon: const Icon(Icons.view_sidebar_outlined),
+          selectedIcon: const Icon(Icons.view_sidebar),
+        ),
+        IconButton(
+          tooltip: 'Add a picture',
+          onPressed: open ? _pickPictures : null,
+          icon: const Icon(Icons.add_photo_alternate_outlined),
+        ),
+        MenuButton<Object>(
+          tooltip: 'Chat settings',
+          onSelected: (choice) {
+            if (choice is ChatPermission) {
+              unawaited(chat.restart(permission: choice));
+            } else if (choice == 'new') {
+              unawaited(_newChat());
+            } else {
+              unawaited(chat.restart());
+            }
+          },
+          entries: [
+            TuiMenuItem(value: 'new', label: 'New chat', enabled: connected),
+            const TuiMenuDivider(),
+            for (final mode in ChatPermission.values)
+              TuiMenuItem(
+                value: mode,
+                label: mode.label,
+                checked: chat.permission == mode,
+              ),
+            const TuiMenuDivider(),
+            const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
+          ],
+        ),
+        Expanded(
+          // A picture pasted goes in as a card rather than as nothing:
+          // see [_pastePicture]. The menu's own Paste is offered only for
+          // text, and takes text.
+          child: Actions(
+            actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
+            child: TextField(
+              contentInsertionConfiguration: ContentInsertionConfiguration(
+                allowedMimeTypes: const [
+                  'image/png',
+                  'image/jpeg',
+                  'image/gif',
+                  'image/webp',
+                ],
+                onContentInserted: (content) => unawaited(_inserted(content)),
+              ),
+              controller: _input,
+              enabled: open,
+              minLines: 1,
+              maxLines: 5,
+              keyboardType: TextInputType.multiline,
+              textCapitalization: TextCapitalization.sentences,
+              // termul's TuiInput look — its ❯ prompt in the accent — on
+              // a field that takes several lines and can be shut, which
+              // TuiInput does not.
+              decoration: InputDecoration(
+                isDense: true,
+                prefixText: '❯ ',
+                prefixStyle: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  color: TermulThemeData.of(context).palette.accent,
+                ),
+                hintText: readOnly
+                    ? 'Read-only: “${watching.name}” cannot be typed into '
+                          'from here'
+                    : watching != null
+                    ? 'Message “${watching.name}”…'
+                    : composing
+                    ? 'Start a new chat…'
+                    : chat.ready
+                    ? 'Ask Claude…'
+                    : connected
+                    ? 'Starting Claude on the host…'
+                    : 'Connect this session first',
+              ),
+              // A token deleted takes its card with it.
+              onChanged: (_) => setState(() {
+                final synced = _draft.sync(_input.value, _chat.nextPicture);
+                if (synced != _input.value) _input.value = synced;
+              }),
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+        IconButton.filled(
+          tooltip: 'Send',
+          // The app's iconButtonTheme gives every IconButton an accent
+          // foreground, which beats the filled variant's own onPrimary:
+          // an accent arrow on an accent fill. Black or white, whichever
+          // reads on the fill.
+          style: IconButton.styleFrom(
+            backgroundColor: palette.accent,
+            foregroundColor:
+                tuiContrast(Colors.black, palette.accent) >=
+                    tuiContrast(Colors.white, palette.accent)
+                ? Colors.black
+                : Colors.white,
+          ),
+          onPressed:
+              canSend && (_input.text.trim().isNotEmpty || !_draft.isEmpty)
+              ? _send
+              : null,
+          icon: const Icon(Icons.send),
+        ),
+      ],
+    );
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            IconButton(
-              tooltip: sidebar
-                  ? 'Hide the sessions on this host'
-                  : 'Sessions on this host',
-              isSelected: sidebar,
-              onPressed: () => _toggleSessions(wide),
-              icon: const Icon(Icons.view_sidebar_outlined),
-              selectedIcon: const Icon(Icons.view_sidebar),
-            ),
-            MenuButton<Object>(
-              tooltip: 'Chat settings',
-              onSelected: (choice) {
-                if (choice is ChatPermission) {
-                  unawaited(chat.restart(permission: choice));
-                } else if (choice == 'new') {
-                  unawaited(_newChat());
-                } else {
-                  unawaited(chat.restart());
-                }
-              },
-              entries: [
-                TuiMenuItem(
-                  value: 'new',
-                  label: 'New chat',
-                  enabled: connected,
+            if (!_draft.isEmpty)
+              SizedBox(
+                height: 132,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.fromLTRB(8, 0, 0, 6),
+                  children: [
+                    for (final picture in _draft.pictures)
+                      _PictureCard(
+                        picture: picture,
+                        onRemove: () => setState(() {
+                          _input.value = _draft.remove(
+                            _input.value,
+                            picture,
+                            _chat.nextPicture,
+                          );
+                        }),
+                      ),
+                  ],
                 ),
-                const TuiMenuDivider(),
-                for (final mode in ChatPermission.values)
-                  TuiMenuItem(
-                    value: mode,
-                    label: mode.label,
-                    checked: chat.permission == mode,
-                  ),
-                const TuiMenuDivider(),
-                const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
-              ],
-            ),
-            Expanded(
-              child: TextField(
-                controller: _input,
-                enabled: open,
-                minLines: 1,
-                maxLines: 5,
-                keyboardType: TextInputType.multiline,
-                textCapitalization: TextCapitalization.sentences,
-                // termul's TuiInput look — its ❯ prompt in the accent — on
-                // a field that takes several lines and can be shut, which
-                // TuiInput does not.
-                decoration: InputDecoration(
-                  isDense: true,
-                  prefixText: '❯ ',
-                  prefixStyle: TextStyle(
-                    fontFamily: TermulFonts.mono,
-                    color: TermulThemeData.of(context).palette.accent,
-                  ),
-                  hintText: readOnly
-                      ? 'Read-only: “${watching.name}” cannot be typed into '
-                            'from here'
-                      : watching != null
-                      ? 'Message “${watching.name}”…'
-                      : composing
-                      ? 'Start a new chat…'
-                      : chat.ready
-                      ? 'Ask Claude…'
-                      : connected
-                      ? 'Starting Claude on the host…'
-                      : 'Connect this session first',
-                ),
-                onChanged: (_) => setState(() {}),
               ),
-            ),
-            const SizedBox(width: 4),
-            IconButton.filled(
-              tooltip: 'Send',
-              // The app's iconButtonTheme gives every IconButton an accent
-              // foreground, which beats the filled variant's own onPrimary:
-              // an accent arrow on an accent fill. Black or white, whichever
-              // reads on the fill.
-              style: IconButton.styleFrom(
-                backgroundColor: palette.accent,
-                foregroundColor:
-                    tuiContrast(Colors.black, palette.accent) >=
-                        tuiContrast(Colors.white, palette.accent)
-                    ? Colors.black
-                    : Colors.white,
-              ),
-              onPressed: canSend && _input.text.trim().isNotEmpty
-                  ? _send
-                  : null,
-              icon: const Icon(Icons.send),
-            ),
+            row,
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Paste in the box: [take] first, which takes a picture from the clipboard,
+/// and the field's own text paste only when there was none.
+class _PictureOrText extends Action<PasteTextIntent> {
+  _PictureOrText(this.take);
+
+  final Future<bool> Function() take;
+
+  @override
+  Object? invoke(PasteTextIntent intent) {
+    final text = callingAction;
+    unawaited(
+      take().then((took) {
+        if (!took) text?.invoke(intent);
+      }),
+    );
+    return null;
+  }
+}
+
+/// What a picture is drawn from: the copy sent from here, or the bytes the
+/// transcript holds.
+ImageProvider _pictureImage(ChatPicture picture) => picture.path != null
+    ? FileImage(File(picture.path!))
+    : MemoryImage(picture.bytes!);
+
+/// A picture's small copy, which a tap opens large.
+class _Thumbnail extends StatelessWidget {
+  const _Thumbnail({required this.picture, this.width = 112, this.height = 84});
+
+  final ChatPicture picture;
+  final double width;
+  final double height;
+
+  String get _label =>
+      picture.name.isNotEmpty ? picture.name : '[Image #${picture.number}]';
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = TermulThemeData.of(context).palette;
+    final image = _pictureImage(picture);
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'View $_label',
+      child: GestureDetector(
+        onTap: () => unawaited(showPicture(context, image, _label)),
+        child: Image(
+          // Decoded small: a thumbnail of a 20 MB photo need not hold it all.
+          image: ResizeImage(image, width: (width * 2).round()),
+          width: width,
+          height: height,
+          fit: BoxFit.cover,
+          errorBuilder: (context, _, _) => SizedBox(
+            width: width,
+            height: height,
+            child: Icon(Icons.broken_image_outlined, color: palette.dim),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A picture going with the message being written: its thumbnail, which a
+/// tap opens, its token and name, and a button to take it out.
+///
+/// TODO(termul): termul has no attachment card; this is its panel, border
+/// and mono caption around a thumbnail.
+class _PictureCard extends StatelessWidget {
+  const _PictureCard({required this.picture, required this.onRemove});
+
+  final ChatPicture picture;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = TermulThemeData.of(context).palette;
+    return Container(
+      width: 114,
+      margin: const EdgeInsets.only(right: 8),
+      decoration: BoxDecoration(
+        color: palette.panel,
+        border: Border.all(color: palette.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Stack(
+            children: [
+              _Thumbnail(picture: picture),
+              Positioned(
+                top: 0,
+                right: 0,
+                child: Material(
+                  color: palette.panel.withValues(alpha: 0.85),
+                  child: IconButton(
+                    tooltip: 'Remove ${picture.name}',
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 16,
+                    onPressed: onRemove,
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
+            child: Text(
+              '[Image #${picture.number}] ${picture.name}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: TermulFonts.mono,
+                fontSize: 11,
+                color: palette.dim,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -660,9 +1037,33 @@ class _Bubble extends StatelessWidget {
 
   final ChatSaid said;
 
-  /// termul's bubble, with its note while it is not in the session yet.
+  /// termul's bubble, with its note while it is not in the session yet, and
+  /// over it the pictures it carries.
   @override
-  Widget build(BuildContext context) => TuiChatBubble(
+  Widget build(BuildContext context) {
+    final bubble = _bubble();
+    if (said.pictures.isEmpty) return bubble;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 8, left: 48),
+          child: Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final picture in said.pictures)
+                _Thumbnail(picture: picture, width: 160, height: 120),
+            ],
+          ),
+        ),
+        bubble,
+      ],
+    );
+  }
+
+  Widget _bubble() => TuiChatBubble(
     text: said.text,
     delivery: switch (said.delivery) {
       Delivery.sending => TuiChatDelivery.sending,

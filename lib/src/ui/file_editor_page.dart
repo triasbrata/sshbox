@@ -1217,11 +1217,6 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   /// The download under way from the ⋮ menu, which its bar follows.
   Transfer? _transfer;
 
-  final _view = TransformationController();
-
-  /// Where the last double-tap landed, which the zoom keeps under the finger.
-  Offset _tapped = Offset.zero;
-
   bool get _embedded => widget.onClose != null;
 
   @override
@@ -1233,7 +1228,6 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   @override
   void dispose() {
     if (!_stop.isCompleted) _stop.complete();
-    _view.dispose();
     // The decoded pixels are cached under the copy's path, and that path goes
     // with the copy.
     final image = _image;
@@ -1281,7 +1275,7 @@ class _ImageFileTabState extends State<_ImageFileTab> {
       if (_tooLarge || _bytes > _imageLimit) return _refuse();
 
       final image = FileImage(File(copy));
-      final size = await _sizeOf(image);
+      final size = await pictureSize(image);
       if (!mounted) return;
       setState(() {
         _image = image;
@@ -1326,28 +1320,6 @@ class _ImageFileTabState extends State<_ImageFileTab> {
   /// The image's own pixel size, which is also its decode: a failure here is a
   /// file that is not an image, and what is drawn comes back from the same
   /// cached decode rather than a second one.
-  Future<Size> _sizeOf(ImageProvider provider) {
-    final done = Completer<Size>();
-    final stream = provider.resolve(ImageConfiguration.empty);
-    late final ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (info, _) {
-        stream.removeListener(listener);
-        final size = Size(
-          info.image.width.toDouble(),
-          info.image.height.toDouble(),
-        );
-        info.dispose();
-        if (!done.isCompleted) done.complete(size);
-      },
-      onError: (error, _) {
-        stream.removeListener(listener);
-        if (!done.isCompleted) done.completeError(error);
-      },
-    );
-    stream.addListener(listener);
-    return done.future;
-  }
 
   void _leave() {
     final close = widget.onClose;
@@ -1385,36 +1357,6 @@ class _ImageFileTabState extends State<_ImageFileTab> {
       name,
       () => copyImageToClipboard(image.file.path, name),
     );
-  }
-
-  /// Double-tap: every pixel, at the point tapped, or back to the whole image.
-  void _toggleZoom(Size viewport) {
-    if (_view.value.getMaxScaleOnAxis() > 1.01) {
-      _view.value = Matrix4.identity();
-      return;
-    }
-    final width = _width;
-    if (width == null || _height == null) return;
-    // 1 is the image fitted to the tab, so 100% is however much larger than
-    // that its own pixels are on this screen's.
-    final fitted = applyBoxFit(
-      BoxFit.contain,
-      Size(width.toDouble(), _height!.toDouble()),
-      viewport,
-    ).destination;
-    final full =
-        width / (fitted.width * MediaQuery.devicePixelRatioOf(context));
-    // Already showing every pixel, or more: there is nothing to zoom to.
-    if (full <= 1.01) return;
-    final scale = math.min(full, 8.0);
-    _view.value = Matrix4.identity()
-      ..translateByDouble(
-        -_tapped.dx * (scale - 1),
-        -_tapped.dy * (scale - 1),
-        0,
-        1,
-      )
-      ..scaleByDouble(scale, scale, scale, 1);
   }
 
   @override
@@ -1479,6 +1421,89 @@ class _ImageFileTabState extends State<_ImageFileTab> {
     final error = _error;
     if (error != null) return _EditorError(message: error, fault: _fault);
 
+    return PictureView(image: _image!, width: _width, height: _height);
+  }
+}
+
+/// A picture to look at: fitted to the space, pinch to zoom and pan, and a
+/// double-tap between the whole of it and its own pixels, where it was
+/// tapped. The image tab's viewer, and the chat's.
+class PictureView extends StatefulWidget {
+  const PictureView({super.key, required this.image, this.width, this.height});
+
+  final ImageProvider image;
+
+  /// Its size in pixels, found by decoding it when not given.
+  final int? width;
+  final int? height;
+
+  @override
+  State<PictureView> createState() => _PictureViewState();
+}
+
+class _PictureViewState extends State<PictureView> {
+  final _view = TransformationController();
+
+  /// Where the last double-tap landed, which the zoom keeps under the finger.
+  Offset _tapped = Offset.zero;
+
+  int? _width;
+  int? _height;
+
+  @override
+  void initState() {
+    super.initState();
+    _width = widget.width;
+    _height = widget.height;
+    if (_width == null) {
+      pictureSize(widget.image).then((size) {
+        if (!mounted) return;
+        setState(() {
+          _width = size.width.round();
+          _height = size.height.round();
+        });
+      }, onError: (Object _) {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _view.dispose();
+    super.dispose();
+  }
+
+  /// Double-tap: every pixel, at the point tapped, or back to the whole image.
+  void _toggleZoom(Size viewport) {
+    if (_view.value.getMaxScaleOnAxis() > 1.01) {
+      _view.value = Matrix4.identity();
+      return;
+    }
+    final width = _width;
+    if (width == null || _height == null) return;
+    // 1 is the image fitted to the tab, so 100% is however much larger than
+    // that its own pixels are on this screen's.
+    final fitted = applyBoxFit(
+      BoxFit.contain,
+      Size(width.toDouble(), _height!.toDouble()),
+      viewport,
+    ).destination;
+    final full =
+        width / (fitted.width * MediaQuery.devicePixelRatioOf(context));
+    // Already showing every pixel, or more: there is nothing to zoom to.
+    if (full <= 1.01) return;
+    final scale = math.min(full, 8.0);
+    _view.value = Matrix4.identity()
+      ..translateByDouble(
+        -_tapped.dx * (scale - 1),
+        -_tapped.dy * (scale - 1),
+        0,
+        1,
+      )
+      ..scaleByDouble(scale, scale, scale, 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     // A mid grey behind it: what a transparent PNG leaves showing is as often
     // white as black, and this is the one ground neither disappears into,
     // light theme or dark.
@@ -1492,10 +1517,10 @@ class _ImageFileTabState extends State<_ImageFileTab> {
             transformationController: _view,
             maxScale: 8,
             child: Image(
-              image: _image!,
+              image: widget.image,
               fit: BoxFit.contain,
-              // The decode already worked once, so this is a copy that went
-              // away under us rather than a file that was never an image.
+              // A copy that went away under us, or a file that was never a
+              // picture after all.
               errorBuilder: (context, _, _) => const Center(
                 child: Icon(Icons.broken_image_outlined, size: 40),
               ),
@@ -1505,6 +1530,52 @@ class _ImageFileTabState extends State<_ImageFileTab> {
       ),
     );
   }
+}
+
+/// Opens [image], called [name], over the page in [PictureView].
+Future<void> showPicture(
+  BuildContext context,
+  ImageProvider image,
+  String name,
+) => Navigator.of(context).push(
+  MaterialPageRoute<void>(
+    builder: (context) => Scaffold(
+      appBar: TuiAppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          tooltip: 'Close',
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: Text(name, overflow: TextOverflow.ellipsis),
+      ),
+      body: PictureView(image: image),
+    ),
+  ),
+);
+
+/// The size [provider] decodes to, in pixels.
+Future<Size> pictureSize(ImageProvider provider) {
+  final done = Completer<Size>();
+  final stream = provider.resolve(ImageConfiguration.empty);
+  late final ImageStreamListener listener;
+  listener = ImageStreamListener(
+    (info, _) {
+      stream.removeListener(listener);
+      final size = Size(
+        info.image.width.toDouble(),
+        info.image.height.toDouble(),
+      );
+      info.dispose();
+      if (!done.isCompleted) done.complete(size);
+    },
+    onError: (error, _) {
+      stream.removeListener(listener);
+      if (!done.isCompleted) done.completeError(error);
+    },
+  );
+  stream.addListener(listener);
+  return done.future;
 }
 
 class _EditorError extends StatelessWidget {

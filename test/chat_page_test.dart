@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/file_editor_page.dart' show PictureView;
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:url_launcher_platform_interface/link.dart';
@@ -19,6 +21,7 @@ import 'package:url_launcher_platform_interface/url_launcher_platform_interface.
 import 'package:sshbox/src/ui/tui.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
+import 'fake_drop.dart';
 import 'fake_web_view.dart';
 
 /// Takes every link it is handed and remembers it: what would have gone to
@@ -1845,5 +1848,187 @@ void main() {
       }
     }
     expect(failures, isEmpty);
+  });
+
+  group('pictures', () {
+    /// A real picture, one pixel, so it decodes as one.
+    final pixel = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA'
+      '60e6kgAAAABJRU5ErkJggg==',
+    );
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('chat-pictures-test'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    /// What the clipboard holds next, as MainActivity hands a picture over:
+    /// a file of the app's own, and its name. Null holds none.
+    List<String?> clipboard(WidgetTester tester) {
+      final next = <String?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('sshbox/share'),
+        (call) async {
+          if (call.method != 'clipboardImage' || next.isEmpty) return null;
+          final name = next.removeAt(0);
+          if (name == null) return null;
+          final file = File('${dir.path}/$name')..writeAsBytesSync(pixel);
+          return {'path': file.path, 'name': name};
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/share'),
+          null,
+        ),
+      );
+      return next;
+    }
+
+    /// Ctrl+V in the box, its file work let run.
+    Future<void> paste(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    Future<_Shell> continued(WidgetTester tester) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      return shell;
+    }
+
+    testWidgets('a picture pasted becomes a card and an [Image #N] at the '
+        'caret, and goes with the message as a picture', (tester) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.byIcon(Icons.send));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] what is it?'});
+      expect((content.last as Map)['source'], {
+        'type': 'base64',
+        'media_type': 'image/png',
+        'data': base64Encode(pixel),
+      });
+      // The card went with it, and the bubble holds the picture.
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+      expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('removing a card takes its token out, and deleting a token '
+        'takes its card', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.addAll(['a.png', 'b.png']);
+      await paste(tester);
+      await paste(tester);
+      expect(box(tester), '[Image #1] [Image #2] ');
+
+      await tester.tap(find.byTooltip('Remove a.png'));
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] b.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'no picture now');
+      await tester.pump();
+      expect(find.textContaining('b.png'), findsNothing);
+    });
+
+    testWidgets('a card opens its picture large, and text on the clipboard is '
+        'pasted as text', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.tap(find.bySemanticsLabel('View shot.png'));
+      await tester.pumpAndSettle();
+      expect(find.byType(PictureView), findsOneWidget);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      // No picture: the field's own paste, which asks for text.
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') return {'text': 'plain words'};
+        if (call.method == 'Clipboard.hasStrings') return {'value': true};
+        return null;
+      });
+      await paste(tester);
+      await tester.pump();
+      expect(box(tester), '[Image #1] plain words');
+    });
+
+    testWidgets('a file that is not a picture is refused, saying why', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('notes.txt');
+      await paste(tester);
+      await tester.pump();
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      expect(box(tester), isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('files dropped on a desktop chat become cards, a folder '
+        'refused', (tester) async {
+      await continued(tester);
+      final shot = File('${dir.path}/drop.png')..writeAsBytesSync(pixel);
+      final folder = Directory('${dir.path}/pics')..createSync();
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [
+          shot.path,
+          folder.path,
+        ], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] drop.png'), findsOneWidget);
+      expect(
+        find.textContaining('A folder is not a picture: pics'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 }
