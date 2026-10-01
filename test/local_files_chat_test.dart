@@ -487,4 +487,150 @@ void main() {
       r'\\wsl.localhost\Ubuntu\home\me\a b.txt',
     );
   });
+
+  // #137: typing into an interactive Claude in a tmux pane, from a Local
+  // shell's chat, as an SSH host's chat does. The session is
+  // tools/e2e_live_claude.py in a pane of this test's own tmux server.
+  group('a Local shell\'s chat types into a pane', () {
+    final hasTmux =
+        Process.runSync('sh', ['-c', 'command -v tmux']).exitCode == 0;
+    const sid = 'e2e00004-0000-4000-8000-000000000004';
+    late Map<String, String> env;
+
+    Future<String> tmux(List<String> args) async {
+      final result = await Process.run(
+        'tmux',
+        args,
+        environment: env,
+        includeParentEnvironment: false,
+      );
+      return '${result.stdout}'.trim();
+    }
+
+    setUp(() {
+      final bin = Directory('${temp.path}/bin')..createSync();
+      final claude = File('${bin.path}/claude')
+        ..writeAsStringSync(
+          '#!/bin/sh\ncase "\$1" in\n'
+          "  --version) echo '2.1.300 (Claude Code)' ;;\n"
+          '  agents) cat "\$HOME/.e2e-agents.json" ;;\n'
+          '  *) exec cat >/dev/null ;;\nesac\n',
+        );
+      Process.runSync('chmod', ['755', claude.path]);
+      env = {
+        'HOME': home.path,
+        'SHELL': '/bin/sh',
+        'PATH': '${bin.path}:/usr/bin:/bin',
+        'TMUX_TMPDIR': temp.path,
+        'LANG': 'C.UTF-8',
+      };
+    });
+    tearDown(() async {
+      if (hasTmux) await tmux(['kill-server']);
+    });
+
+    test(
+      'and the line reaches it, recorded as the session\'s turn',
+      () async {
+        // Where the stand-in, run in home, files its transcript, as the CLI
+        // does: its directory with / and . made -.
+        final projects = Directory(
+          '${home.path}/.claude/projects/'
+          '${home.path.replaceAll(RegExp('[/.]'), '-')}',
+        )..createSync(recursive: true);
+        final transcript = File('${projects.path}/$sid.jsonl')
+          ..writeAsStringSync(
+            '{"type":"user","message":{"role":"user","content":"Earlier '
+            'question"}}\n{"type":"assistant","message":{"role":"assistant",'
+            '"content":[{"type":"text","text":"Earlier answer"}]}}\n',
+          );
+        final script = File('tools/e2e_live_claude.py').absolute.path;
+        await tmux([
+          'new-session', '-d', '-s', 'e2e-live', '-x', '120', '-y', '30', //
+          '-c', home.path, 'env PYTHONIOENCODING=utf-8 python3 $script $sid',
+        ]);
+        final drawn = DateTime.now().add(const Duration(seconds: 5));
+        while (!(await tmux(['capture-pane', '-p', '-t', 'e2e-live']))
+            .contains('❯')) {
+          if (DateTime.now().isAfter(drawn)) fail('the pane never drew');
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        // The stand-in's own pid, as `claude agents` gives Claude's: the
+        // pane's shell may not have exec'd it.
+        final pid = int.parse(
+          Directory('${home.path}/.claude/sessions')
+              .listSync()
+              .single
+              .path
+              .split('/')
+              .last
+              .replaceAll('.json', ''),
+        );
+        File('${home.path}/.e2e-agents.json').writeAsStringSync(
+          '[{"kind":"interactive","pid":$pid,"sessionId":"$sid",'
+          '"name":"E2E live session","cwd":"${home.path}","status":"idle"}]',
+        );
+
+        final session = LiveSession(
+          host: localHost(),
+          transport: (_, _) => LocalTransport(
+            environment: env,
+            startPty: (
+              executable, {
+              arguments = const [],
+              workingDirectory,
+              environment,
+              rows = 25,
+              columns = 80,
+              ackRead = false,
+            }) => _Pty(executable, arguments, workingDirectory, environment),
+          ),
+        );
+        addTearDown(session.dispose);
+        await session.connect(secrets: InMemorySecretStore());
+        final chat = session.chat;
+        final agent = (await chat.agents()).single;
+        await chat.continueFrom(agent);
+        // Picked again — as a reconnect, or a tap on its row, picks it — its
+        // follow stopped and started afresh.
+        await chat
+            .continueFrom(agent)
+            .timeout(
+              const Duration(seconds: 10),
+              onTimeout: () => fail('picking it again never finished'),
+            );
+        expect(chat.readOnly, isNull);
+        expect(
+          chat.entries.whereType<ChatSaid>().map((e) => e.text),
+          contains('Earlier answer'),
+        );
+
+        String said() => chat.entries
+            .map((e) => e is ChatSaid ? '${e.text} ${e.why ?? ''}' : '$e')
+            .join(' | ');
+        unawaited(chat.send('hello from the chat'));
+        final typed = DateTime.now().add(const Duration(seconds: 40));
+        while (!transcript.readAsStringSync().contains('hello from the chat')) {
+          if (DateTime.now().isAfter(typed)) {
+            final pane = await tmux(['capture-pane', '-p', '-t', 'e2e-live']);
+            fail('never typed; chat: ${said()}; pane: $pane');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        // And its answer comes back through the follow.
+        final answered = DateTime.now().add(const Duration(seconds: 10));
+        while (!chat.entries.whereType<ChatSaid>().any(
+          (e) => e.text == 'Echo: hello from the chat',
+        )) {
+          if (DateTime.now().isAfter(answered)) {
+            fail('no answer followed; chat: ${said()}');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        session.closeChat();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+  });
 }
