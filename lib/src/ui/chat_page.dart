@@ -493,9 +493,16 @@ class _ChatPageState extends State<ChatPage> {
     final canSend =
         open && (watching != null || ((chat.ready || composing) && !chat.busy));
     final palette = TermulThemeData.of(context).palette;
+    // The list of commands goes above the whole row, as wide as the page:
+    // the box alone is too narrow for it on a phone.
     return SafeArea(
       top: false,
-      child: Padding(
+      child: SlashCommandMenu(
+        controller: _input,
+        commands: _commands,
+        onOpen: _wantCommands,
+        onRefresh: () => setState(_listCommands),
+        child: Padding(
         padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -538,12 +545,7 @@ class _ChatPageState extends State<ChatPage> {
               ],
             ),
             Expanded(
-              child: SlashCommandMenu(
-                controller: _input,
-                commands: _commands,
-                onOpen: _wantCommands,
-                onRefresh: () => setState(_listCommands),
-                child: TextField(
+              child: TextField(
                   controller: _input,
                   enabled: open,
                   minLines: 1,
@@ -575,7 +577,6 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                   onChanged: (_) => setState(() {}),
                 ),
-              ),
             ),
             const SizedBox(width: 4),
             IconButton.filled(
@@ -600,6 +601,7 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
       ),
+      ),
     );
   }
 }
@@ -617,8 +619,9 @@ class _Empty extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final root = session.host.fileRoot.trim();
+    // Scrolls when a phone's keyboard leaves it less height than it needs.
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -654,11 +657,15 @@ class _Empty extends StatelessWidget {
             // the host are offered before anything has been typed.
             if (onPickSession case final show?) ...[
               const SizedBox(height: 20),
-              TuiButton(
-                label: 'Sessions on this host',
-                prefix: '▸',
-                variant: TuiButtonVariant.ghost,
-                onPressed: show,
+              // Shrunk rather than cut where a phone is too narrow for it.
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: TuiButton(
+                  label: 'Sessions on this host',
+                  prefix: '▸',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: show,
+                ),
               ),
             ],
           ],

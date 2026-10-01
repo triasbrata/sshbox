@@ -253,14 +253,19 @@ abstract final class CommandTags {
   static final _starts = RegExp(r'^\s*<command-(?:name|message)>');
   static final _name = RegExp(r'<command-name>/?([^<\s]*)</command-name>');
   static final _args = RegExp(r'<command-args>([\s\S]*?)</command-args>');
-  static final _out = RegExp(
-    r'^<local-command-(stdout|stderr)>([\s\S]*)</local-command-\1>$',
+  static final _record = RegExp(
+    r'<local-command-(stdout|stderr)>([\s\S]*?)</local-command-\1>',
+  );
+
+  /// Content that is nothing but such records: a stdout, a stderr, or both.
+  static final _records = RegExp(
+    r'^(?:\s*<local-command-(stdout|stderr)>[\s\S]*?</local-command-\1>)+\s*$',
   );
 
   /// Terminal escapes and stray control bytes, tab and newline kept: CSI,
   /// OSC ended by BEL or ST, charset selects and C1 CSI.
   static final _ansi = RegExp(
-    r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x9b[0-9;?]*[ -/]*[@-~]'
+    r'\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]'
     r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]'
     r'|[\x00-\x08\x0b-\x1f\x7f-\x9f]',
   );
@@ -276,8 +281,10 @@ abstract final class CommandTags {
   /// What a command printed, its terminal colours taken out, or null when
   /// [text] is not that.
   static String? output(String text) {
-    final match = _out.firstMatch(text.trim());
-    if (match == null) return null;
-    return match[2]!.replaceAll(_ansi, '').trimRight();
+    if (!_records.hasMatch(text)) return null;
+    return [
+      for (final record in _record.allMatches(text))
+        record[2]!.replaceAll(_ansi, '').trimRight(),
+    ].where((part) => part.isNotEmpty).join('\n');
   }
 }
