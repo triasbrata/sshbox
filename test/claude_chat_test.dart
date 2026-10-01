@@ -3013,6 +3013,18 @@ void main() {
       );
     });
 
+    test('a token whose number no int holds is typed as text, and counted on '
+        'the screen as Claude draws it', () {
+      final parts = ClaudeChat.segments('[Image #99999999999999999999] hi [Image #1]', {
+        1: '/tmp/a.png',
+      });
+      expect([for (final part in parts) part.keys], [
+        '[Image #99999999999999999999] hi ',
+        '\x1b[200~/tmp/a.png\x1b[201~',
+      ]);
+      expect(ClaudeChat.chipsIn(['❯ [Image #99999999999999999999] [Image #1]']), 2);
+    });
+
     test('the chips counted are the input line\'s, not the turns above it', () {
       expect(
         ClaudeChat.chipsIn([

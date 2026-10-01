@@ -18,6 +18,7 @@ import 'package:sshbox/src/ui/text_size.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart' show PictureView;
 import 'package:sshbox/src/ui/mermaid_view.dart';
+import 'package:sshbox/src/ui/settings_page.dart' show chatEnterSends;
 import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
@@ -1889,6 +1890,364 @@ void main() {
     });
   });
 
+  group('what the user types', () {
+    /// A finished session continued here, [typed] sent into it. Returns the
+    /// host, what went to a web tab and what went to the phone.
+    Future<({_Shell shell, List<Uri> inTab, List<String> launched})> send(
+      WidgetTester tester,
+      String typed,
+    ) async {
+      final launcher = _Launcher();
+      UrlLauncherPlatform.instance = launcher;
+      final inTab = <Uri>[];
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatPage(session: session, onOpenWeb: inTab.add),
+          ),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Notes');
+      await tester.enterText(find.byType(TextField), typed);
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.pump();
+      return (shell: shell, inTab: inTab, launched: launcher.opened);
+    }
+
+    /// Every span drawn in the bubble, as (text, style).
+    List<(String, TextStyle?)> bubbleSpans(WidgetTester tester) {
+      final out = <(String, TextStyle?)>[];
+      for (final text in tester.widgetList<RichText>(
+        find.descendant(
+          of: find.byType(TuiChatBubble),
+          matching: find.byType(RichText),
+        ),
+      )) {
+        text.text.visitChildren((span) {
+          if (span is TextSpan && span.text != null) {
+            out.add((span.text!, span.style));
+          }
+          return true;
+        });
+      }
+      return out;
+    }
+
+    const typed =
+        'Run **this** and see [the ticket](https://example.com/t/1):\n'
+        '\n'
+        '```sh\n'
+        'make test\n'
+        '```';
+
+    testWidgets('goes to Claude byte for byte as typed', (tester) async {
+      final (:shell, inTab: _, launched: _) = await send(tester, typed);
+      final sent = jsonDecode(shell.written.single.trim()) as Map;
+      expect(((sent['message'] as Map)['content'] as List).single, {
+        'type': 'text',
+        'text': typed,
+      });
+    });
+
+    testWidgets('is drawn in its bubble as Markdown: bold, a code block with '
+        'its copy button, and a link', (tester) async {
+      await send(tester, typed);
+      final spans = bubbleSpans(tester);
+
+      expect(
+        spans.singleWhere((s) => s.$1 == 'this').$2!.fontWeight,
+        FontWeight.bold,
+      );
+      // No markers left on screen: drawn, not shown as source.
+      expect(spans.any((s) => s.$1.contains('**')), isFalse);
+      expect(spans.any((s) => s.$1.contains('```')), isFalse);
+      expect(spans.any((s) => s.$1.contains('make test')), isTrue);
+      expect(
+        find.descendant(
+          of: find.byType(TuiChatBubble),
+          matching: find.byTooltip('Copy code'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        spans.singleWhere((s) => s.$1 == 'the ticket').$2!.decoration,
+        TextDecoration.underline,
+      );
+    });
+
+    testWidgets('a link in it goes through the same allowlist as a reply\'s', (
+      tester,
+    ) async {
+      final (:shell, :inTab, :launched) = await send(
+        tester,
+        'see [the ticket](https://example.com/t/1) or [refused](javascript:x)',
+      );
+      // The turn over, so nothing is left spinning to settle.
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.tapOnText(find.textRange.ofSubstring('the ticket'));
+      await tester.pumpAndSettle();
+      expect(inTab, [Uri.parse('https://example.com/t/1')]);
+
+      await tester.tapOnText(find.textRange.ofSubstring('refused'));
+      await tester.pumpAndSettle();
+      expect(inTab, hasLength(1));
+      expect(launched, isEmpty);
+    });
+
+    group('a key typed while the box has no focus', () {
+      Future<TextField> pumpChat(WidgetTester tester) async {
+        final shell = _Shell()
+          ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        await _continue(tester, 'Notes');
+        return tester.widget<TextField>(find.byType(TextField));
+      }
+
+      testWidgets('moves the focus to the box and lands there once', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+        expect(box.focusNode!.hasFocus, isFalse);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isTrue);
+        expect(box.controller!.text, 'h');
+        expect(
+          box.controller!.selection,
+          const TextSelection.collapsed(offset: 1),
+        );
+      });
+
+      testWidgets('leaves shortcuts, Enter, Tab, arrows and Escape alone', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        for (final key in [
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.tab,
+          LogicalKeyboardKey.arrowUp,
+          LogicalKeyboardKey.escape,
+          LogicalKeyboardKey.f5,
+        ]) {
+          await tester.sendKeyEvent(key);
+        }
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves Space to a focused button, which it presses', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+        Focus.of(
+          tester.element(find.byIcon(Icons.view_sidebar_outlined)),
+        ).requestFocus();
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves its keys to an open drawer', (tester) async {
+        final box = await pumpChat(tester);
+        await tester.tap(find.byTooltip('Sessions on this host'));
+        await tester.pumpAndSettle();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves another text field its keys', (tester) async {
+        final box = await pumpChat(tester);
+        final other = FocusNode();
+        addTearDown(other.dispose);
+        // A dialog's field, over the chat.
+        unawaited(
+          showDialog<void>(
+            context: tester.element(find.byType(ChatPage)),
+            builder: (_) =>
+                Dialog(child: TextField(focusNode: other, autofocus: true)),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(other.hasFocus, isTrue);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(other.hasFocus, isTrue);
+        expect(box.controller!.text, isEmpty);
+      });
+    });
+
+    group('the keyboard sends', () {
+      Future<_Shell> typed(WidgetTester tester, String text) async {
+        final shell = _Shell()
+          ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        );
+        await tester.pump();
+        await _continue(tester, 'Notes');
+        await tester.enterText(find.byType(TextField), text);
+        await tester.pump();
+        return shell;
+      }
+
+      Future<void> chord(WidgetTester tester, LogicalKeyboardKey modifier) async {
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(modifier);
+        await tester.pump();
+      }
+
+      String box(WidgetTester tester) =>
+          tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+      testWidgets('by default with Ctrl+Enter, a plain Enter sending nothing', (
+        tester,
+      ) async {
+        final shell = await typed(tester, 'hello');
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, hasLength(1));
+        expect(box(tester), isEmpty);
+      });
+
+      testWidgets('with ⌘+Enter on a Mac', (tester) async {
+        final shell = await typed(tester, 'hello');
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, isEmpty);
+        await chord(tester, LogicalKeyboardKey.metaLeft);
+        expect(shell.written, hasLength(1));
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('with Enter when Settings says so, Shift+Enter making a new '
+          'line and the chord still sending', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, 'one');
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(box(tester), 'one\n');
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'one\ntwo',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, hasLength(1));
+        expect(
+          (((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content'] as List)
+              .single['text'],
+          'one\ntwo',
+        );
+      });
+
+      testWidgets('never with an IME\'s Enter, which confirms what it is '
+          'composing', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, 'nihao');
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'nihao',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 0, end: 5),
+          ),
+        );
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, isEmpty);
+      });
+    });
+
+    testWidgets('on a desktop the box has the focus once the chat is shown', (
+      tester,
+    ) async {
+      final shell = _Shell();
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+        isTrue,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a mermaid fence in it is drawn as a diagram, as in a reply', (
+      tester,
+    ) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await send(tester, 'Like this:\n\n```mermaid\ngraph TD\n  A --> B\n```');
+
+      final diagram = find.descendant(
+        of: find.byType(TuiChatBubble),
+        matching: find.byType(MermaidView),
+      );
+      expect(tester.widget<MermaidView>(diagram).source, 'graph TD\n  A --> B\n');
+    });
+
+    testWidgets('stray stars and underscores read as written', (tester) async {
+      await send(tester, '2 * 3 * 4 is snake_case_name');
+      expect(find.text('2 * 3 * 4 is snake_case_name'), findsOneWidget);
+    });
+  });
+
   testWidgets('the Send button reads in every theme, light and dark: its '
       'arrow on its fill, and its fill on the composer', (tester) async {
     final shell = _Shell();
@@ -2034,6 +2393,52 @@ void main() {
       // The card went with it, and the bubble holds the picture.
       expect(find.text('[Image #1] shot.png'), findsNothing);
       expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+Enter in the box sends the message with its pictures', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.enterText(find.byType(TextField), '[Image #1] look');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] look'});
+      expect((content.last as Map)['type'], 'image');
+      expect(box(tester), isEmpty);
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+    });
+
+    testWidgets('an [Image #N] whose number no int holds draws, and is sent, '
+        'as text', (tester) async {
+      final shell = await continued(tester);
+      await tester.enterText(find.byType(TextField), 'see [Image #99999999999999999999]');
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(box(tester), 'see [Image #99999999999999999999]');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content, [
+        {'type': 'text', 'text': 'see [Image #99999999999999999999]'},
+      ]);
     });
 
     testWidgets('removing a card takes its token out, and deleting a token '
