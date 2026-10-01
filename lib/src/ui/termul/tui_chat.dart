@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 
 import 'termul_theme.dart';
 import 'tui_chrome.dart';
+import 'tui_progress.dart';
 import 'tui_text.dart';
 
 /// Delivery state for a user [TuiChatBubble].
@@ -21,6 +22,9 @@ enum TuiToolStatus { running, done, failed }
 
 /// Session row kind for [TuiChatSessionList].
 enum TuiChatSessionKind { pinned, running, finished }
+
+/// What a session in [TuiChatSessionList] is doing, drawn as its row's mark.
+enum TuiChatSessionStatus { working, waiting, done, stopped }
 
 /// User message bubble — right-aligned, sharp panel.
 ///
@@ -404,6 +408,9 @@ class TuiChatSession {
     required this.kind,
     this.subtitle,
     this.selected = false,
+    this.status,
+    this.statusLabel,
+    this.unseen = false,
   });
 
   final String id;
@@ -411,6 +418,16 @@ class TuiChatSession {
   final TuiChatSessionKind kind;
   final String? subtitle;
   final bool selected;
+
+  /// What it is doing, for a mark that moves while it works; null keeps the
+  /// [kind]'s own mark alone.
+  final TuiChatSessionStatus? status;
+
+  /// [status] in words, for its tooltip and for screen readers.
+  final String? statusLabel;
+
+  /// Finished since it was last opened: a dot until it is.
+  final bool unseen;
 }
 
 /// Session rail — pinned / running / finished sections.
@@ -599,19 +616,29 @@ class _SessionRow extends StatelessWidget {
         color: sel ? p.selection : Colors.transparent,
         child: Row(
           children: [
-            Text(
-              mark,
-              style: TextStyle(
-                fontFamily: TermulFonts.mono,
-                fontSize: 11,
-                color: session.kind == TuiChatSessionKind.running
-                    ? p.green
-                    : sel
-                    ? p.accent
-                    : p.dim,
+            if (session.status == null || session.kind == TuiChatSessionKind.pinned) ...[
+              Text(
+                mark,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 11,
+                  color: session.kind == TuiChatSessionKind.running
+                      ? p.green
+                      : sel
+                      ? p.accent
+                      : p.dim,
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
+              const SizedBox(width: 6),
+            ],
+            if (session.status case final status?) ...[
+              _StatusMark(
+                status: status,
+                label: session.statusLabel ?? status.name,
+                unseen: session.unseen,
+              ),
+              const SizedBox(width: 6),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -636,6 +663,76 @@ class _SessionRow extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A row's live mark: moving while it works, `!` while it waits for the
+/// user, `✓` once done, `■` once stopped — and a dot beside a finish the
+/// user has not looked at yet.
+class _StatusMark extends StatelessWidget {
+  const _StatusMark({
+    required this.status,
+    required this.label,
+    required this.unseen,
+  });
+
+  final TuiChatSessionStatus status;
+  final String label;
+  final bool unseen;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    Widget glyph(String text, Color color) => Text(
+      text,
+      style: TextStyle(
+        fontFamily: TermulFonts.mono,
+        fontSize: 11,
+        height: 1,
+        fontWeight: FontWeight.w700,
+        color: color,
+      ),
+    );
+    final mark = switch (status) {
+      TuiChatSessionStatus.working => const TuiSpinner(size: 11),
+      TuiChatSessionStatus.waiting => glyph('!', p.yellow),
+      TuiChatSessionStatus.done => glyph('✓', p.green),
+      TuiChatSessionStatus.stopped => glyph('■', p.dim),
+    };
+    final text = unseen ? '$label, not opened since' : label;
+    return Tooltip(
+      message: text,
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        label: text,
+        child: ExcludeSemantics(
+          child: SizedBox(
+            width: 18,
+            height: 14,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Center(child: mark),
+                if (unseen)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: Container(
+                      width: 5,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: p.accent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );

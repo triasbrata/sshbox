@@ -779,12 +779,19 @@ void main() {
 
       if (!wide) await show();
       expect(find.text('the nightly build'), findsOneWidget);
-      final asked = shell.commands.where((c) => c.contains('agents')).length;
 
       await hide();
       expect(find.text('the nightly build'), findsNothing);
-      await show();
+      // Hidden, the list is not asked for, however long it stays hidden.
+      final asked = shell.commands.where((c) => c.contains('agents')).length;
+      await _settlePickUp(tester);
+      expect(shell.commands.where((c) => c.contains('agents')).length, asked);
 
+      // Shown, its rows are there at once, not after asking the host: it
+      // only goes on to ask while on show, to keep each row's mark current.
+      await tester.tap(find.byTooltip('Sessions on this host').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('the nightly build'), findsOneWidget);
       expect(shell.commands.where((c) => c.contains('agents')).length, asked);
     });
@@ -2139,5 +2146,146 @@ void main() {
       }
     }
     expect(failures, isEmpty);
+  });
+
+  group('each session\'s mark in the sidebar', () {
+    // A pinned background session, as `claude agents --json --all` lists it
+    // at each point of a turn: working, at a permission prompt, then done.
+    String listed({
+      required String status,
+      required String state,
+      String? waitingFor,
+    }) =>
+        '${jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': status,
+            'state': state,
+            'waitingFor': ?waitingFor,
+          },
+          {
+            'pid': 4079549,
+            'id': 'cccc3333',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': 'cccc3333-0000-4000-8000-000000000000',
+            'name': 'the other one',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ])}\n--- pins\n["81badf4a"]\n';
+
+    Finder mark(String label) => find.bySemanticsLabel(label);
+
+    testWidgets('moves while it works, asks for attention while it waits, '
+        'and is checked with a dot once done until it is opened', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final semantics = tester.ensureSemantics();
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = listed(status: 'busy', state: 'working');
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+
+      // Pinned, and working: the pin kept, and a mark that moves.
+      expect(find.text('★'), findsOneWidget);
+      expect(mark('Working'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(TuiChatSessionList),
+          matching: find.byType(TuiSpinner),
+        ),
+        findsOneWidget,
+      );
+
+      // At a permission prompt, by the next look, with nothing tapped.
+      shell.listing = listed(
+        status: 'waiting',
+        state: 'blocked',
+        waitingFor: 'permission prompt',
+      );
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(mark('Waiting for permission prompt'), findsOneWidget);
+      expect(mark('Working'), findsNothing);
+
+      // Done while nobody had it open: checked, with the dot.
+      shell.listing = listed(status: 'idle', state: 'done');
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(mark('Done, idle, not opened since'), findsOneWidget);
+      // The other one was never seen working: no dot.
+      expect(mark('Done, idle'), findsOneWidget);
+
+      // Opened: the dot goes.
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(mark('Done, idle, not opened since'), findsNothing);
+      expect(mark('Done, idle'), findsNWidgets(2));      semantics.dispose();
+    });
+
+    testWidgets('nothing is asked for while the tab is hidden', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()..listing = listed(status: 'busy', state: 'working');
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: shown,
+              builder: (context, on, child) =>
+                  TickerMode(enabled: on, child: child!),
+              child: ChatPage(session: session),
+            ),
+          ),
+        ),
+      );
+      await _frames(tester);
+      int asked() =>
+          shell.commands.where((c) => c.contains('agents --json')).length;
+
+      // On show, asked again every few seconds.
+      final before = asked();
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(asked(), greaterThan(before));
+
+      // Hidden: not once, however long.
+      shown.value = false;
+      await _frames(tester);
+      final hidden = asked();
+      for (var look = 0; look < 4; look++) {
+        await tester.pump(const Duration(seconds: 6));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(asked(), hidden);
+    });
   });
 }

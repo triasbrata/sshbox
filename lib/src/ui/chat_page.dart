@@ -69,10 +69,59 @@ class _ChatPageState extends State<ChatPage> {
   /// and again only by Refresh or when this chat starts a session of its own.
   Future<List<ClaudeAgent>>? _agents;
 
+  /// Sessions, by host and session id, seen working since last opened here,
+  /// and those that have finished since: the dot on their row. Kept for as
+  /// long as the app runs, as [_leftAt] is, and never written anywhere.
+  static final _sawWorking = <String>{};
+  static final _unseen = <String>{};
+
+  /// What the list says of [agent] now, against what it said before.
+  void _note(ClaudeAgent agent) {
+    final place = _placeOf(agent.sessionId)!;
+    final status = _SessionList.statusOf(agent);
+    if (status == TuiChatSessionStatus.working ||
+        status == TuiChatSessionStatus.waiting) {
+      _sawWorking.add(place);
+    } else if (_sawWorking.remove(place) &&
+        agent.sessionId != _chat.pickedFrom) {
+      // Finished while the user was elsewhere.
+      _unseen.add(place);
+    }
+  }
+
   // A block, not an arrow: an arrow would hand setState the future. Its
   // error is the list's to show, and it may not be showing yet.
   void _listAgents() {
-    _agents = _chat.agents(all: true)..ignore();
+    final agents = _chat.agents(all: true);
+    _agents = agents..ignore();
+    _asking = true;
+    unawaited(
+      agents.whenComplete(() => _asking = false).then((rows) {
+        if (!mounted) return;
+        rows.forEach(_note);
+        setState(() {});
+      }, onError: (Object _) {}),
+    );
+  }
+
+  /// Asks for the list again every [_look] while it is on screen — the
+  /// sidebar open, or the drawer — and the tab is showing, so each row's
+  /// mark follows what its session is doing. Nothing is asked otherwise.
+  static const _look = Duration(seconds: 5);
+  Timer? _looking;
+
+  /// A list asked for and not back yet: no second one goes after it.
+  bool _asking = false;
+  /// Whether the last layout had the sidebar beside the chat, not a drawer.
+  bool _sidebarWide = false;
+
+  void _onLook() {
+    if (!mounted || !widget.session.isConnected) return;
+    if (!TickerMode.valuesOf(context).enabled) return;
+    final shown = _sidebarWide
+        ? _sidebarOpen
+        : _scaffoldKey.currentState?.isDrawerOpen ?? false;
+    if (shown && !_asking) setState(_listAgents);
   }
 
   /// Nearer the end than this, the reader is following: a new entry scrolls
@@ -105,11 +154,13 @@ class _ChatPageState extends State<ChatPage> {
     widget.session.addListener(_onChanged);
     _chat.addListener(_onChanged);
     _scroll.addListener(_onScrolled);
+    _looking = Timer.periodic(_look, (_) => _onLook());
     _onChanged();
   }
 
   @override
   void dispose() {
+    _looking?.cancel();
     widget.session.removeListener(_onChanged);
     _chat.removeListener(_onChanged);
     _input.dispose();
@@ -221,7 +272,7 @@ class _ChatPageState extends State<ChatPage> {
   /// sidebar; below it they slide in over it, as the files drawer does beside
   /// a terminal. Material's expanded breakpoint: a tablet held either way,
   /// and not a phone.
-  static const _wide = 840.0;
+  static const _wideFrom = 840.0;
 
   /// Whether the sidebar is showing on a wide screen. It starts showing —
   /// that is where the sessions were asked to be — and the button beside the
@@ -250,6 +301,8 @@ class _ChatPageState extends State<ChatPage> {
   /// screen, gets the drawer out of the way of what it brought.
   Future<void> _pick(ClaudeAgent agent) async {
     _scaffoldKey.currentState?.closeDrawer();
+    _sawWorking.remove(_placeOf(agent.sessionId));
+    setState(() => _unseen.remove(_placeOf(agent.sessionId)));
     final at = _leftAt[_placeOf(agent.sessionId)];
     _switching = true;
     await _chat.continueFrom(agent);
@@ -303,7 +356,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
-      final wide = box.maxWidth >= _wide;
+      final wide = box.maxWidth >= _wideFrom;
+      _sidebarWide = wide;
       final sidebar = wide && _sidebarOpen;
       // Chat at the content size, its sessions, messages, tool rows, code
       // and composer alike: see ContentText.
@@ -315,6 +369,7 @@ class _ChatPageState extends State<ChatPage> {
           onPick: _pick,
           onRefresh: () => setState(_listAgents),
           onNewChat: _newChat,
+          unseen: (agent) => _unseen.contains(_placeOf(agent.sessionId)),
         ),
       );
       return Scaffold(
@@ -1321,9 +1376,41 @@ class _SessionList extends StatelessWidget {
     required this.onPick,
     required this.onRefresh,
     required this.onNewChat,
+    required this.unseen,
   });
 
   final ClaudeChat chat;
+
+  /// Whether [agent] finished since it was last opened here.
+  final bool Function(ClaudeAgent agent) unseen;
+
+  /// What [agent]'s mark says, from the listing alone: a `waitingFor` is the
+  /// session asking the user something — `permission prompt`, measured —
+  /// `working` or `busy` its turn, and a session whose process has gone is
+  /// finished, or `stopped` when the CLI says so.
+  static TuiChatSessionStatus statusOf(ClaudeAgent agent) {
+    if (!agent.live) {
+      return agent.state == 'stopped'
+          ? TuiChatSessionStatus.stopped
+          : TuiChatSessionStatus.done;
+    }
+    if (agent.waitingFor != null || agent.status == 'waiting') {
+      return TuiChatSessionStatus.waiting;
+    }
+    if (agent.busy || agent.state == 'working') {
+      return TuiChatSessionStatus.working;
+    }
+    return TuiChatSessionStatus.done;
+  }
+
+  static String _statusLabel(ClaudeAgent agent) =>
+      switch (statusOf(agent)) {
+        TuiChatSessionStatus.working => 'Working',
+        TuiChatSessionStatus.waiting =>
+          'Waiting for ${agent.waitingFor ?? 'you'}',
+        TuiChatSessionStatus.done => agent.live ? 'Done, idle' : 'Finished',
+        TuiChatSessionStatus.stopped => 'Stopped',
+      };
 
   /// As the page last asked for them; null before the session first came
   /// up.
@@ -1381,6 +1468,9 @@ class _SessionList extends StatelessWidget {
               : agent.live
               ? TuiChatSessionKind.running
               : TuiChatSessionKind.finished,
+          status: statusOf(agent),
+          statusLabel: _statusLabel(agent),
+          unseen: unseen(agent),
         ),
     ],
   );
@@ -1395,7 +1485,10 @@ class _SessionList extends StatelessWidget {
       future: agents,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          return _list(loading: true);
+          // Asked again while on show: the rows it had stay meanwhile,
+          // rather than flashing loading every few seconds.
+          final had = snapshot.data;
+          return had == null ? _list(loading: true) : _list(rows: had);
         }
         // What the host said, as it said it: an old Claude with no agents
         // command, or none installed at all.
