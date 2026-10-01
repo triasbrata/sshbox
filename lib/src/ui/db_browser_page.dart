@@ -13,6 +13,7 @@ import 'right_click.dart';
 import 'terminal_page.dart' show ConnectionError, openUrl;
 import 'toast.dart';
 import 'tui.dart';
+import 'text_size.dart';
 
 /// Opens [db], asking about a host key through [confirmHostKey] and
 /// telling of a sign-in to finish through [onSignIn]: [DbSession.open], or
@@ -932,11 +933,14 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                 : result == null
                 ? const SizedBox()
                 : _asJson
-                ? _ResultJson(result)
-                : _ResultGrid(
-                    result,
-                    changes: _changes,
-                    update: _running ? null : setState,
+                // What the rows say, at the content size.
+                ? ContentText(child: _ResultJson(result))
+                : ContentText(
+                    child: _ResultGrid(
+                      result,
+                      changes: _changes,
+                      update: _running ? null : setState,
+                    ),
                   ),
           ),
         ],
