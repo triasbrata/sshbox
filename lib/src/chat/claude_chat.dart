@@ -1563,8 +1563,21 @@ class ClaudeChat extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     unawaited(_stop());
     super.dispose();
+  }
+
+  bool _disposed = false;
+
+  /// Nothing once the tab has closed. What was under way when it did — a
+  /// new chat's start, a line Claude was still writing, a message's
+  /// delivery — finishes on the host's time, not the tab's, and telling a
+  /// disposed notifier threw: on a Mac it leaked past the test that closed
+  /// the tab and failed the ones after it (run 36879651063).
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
   }
 
   /// What the host runs.

@@ -384,6 +384,36 @@ Map<String, Object?> _said(String text) => {
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  // What a Mac's e2e hit closing a chat tab: a "used after being disposed"
+  // thrown after the test, failing the tests that came next.
+  test('a chat closed while a new session starts and Claude still writes '
+      'tells no one', () async {
+    final started = StreamController<Uint8List>();
+    final chat = ClaudeChat(
+      open: (_) async =>
+          (output: started.stream, write: (Uint8List _) {}, close: () {}),
+    );
+    final sent = chat.send('hello');
+    await _settle();
+    chat.dispose();
+    // `claude --bg` answers after the tab has gone.
+    started.add(Uint8List.fromList(utf8.encode('no session\n')));
+    await started.close();
+    await sent;
+
+    final claude = _FakeClaude();
+    final running = ClaudeChat(open: (_) async => claude.channel);
+    await running.start();
+    running.dispose();
+    // A line Claude was writing as the tab closed.
+    claude.event({
+      'type': 'system',
+      'subtype': 'init',
+      'session_id': 'f44e6c8b-7c64-4ef9-8f88-aeb262622b73',
+    });
+    await _settle();
+  });
+
   test('a turn becomes bubbles, and its tools fold their results in', () async {
     final claude = _FakeClaude();
     final chat = ClaudeChat(open: (_) async => claude.channel);
