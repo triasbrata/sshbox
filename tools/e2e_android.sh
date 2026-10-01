@@ -351,7 +351,9 @@ chat_version_case() {
   return "$status"
 }
 
-LIVE_SID=e2e00004-0000-4000-8000-000000000004
+# Its own id, past the ones chat_stand_in numbers from 1: the fourth of those
+# once took 4 too, and chat then picked the finished copy and not the pane.
+LIVE_SID=e2e00009-0000-4000-8000-000000000009
 live_session() {
   local home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H)
   # Only where nothing of anyone's is: no tmux session of this name, and no
