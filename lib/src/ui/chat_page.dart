@@ -357,12 +357,22 @@ class _ChatPageState extends State<ChatPage> {
     if (entries == _drawn) return;
     _drawn = entries;
     if (_switching) return;
+    // Whether the reader is following is decided now, before the new entry
+    // is laid out, against the end as it was: measured after, one reply
+    // taller than [_nearEnd] put the end that far off and read as the reader
+    // having scrolled up, so a long answer stopped the following. Measured
+    // from where a scroll still in flight is going, too: on a hidden tab it
+    // is paused short of the end.
+    // A list not laid out yet has no end to measure: it is measured once it
+    // is, as it always was.
+    bool near(ScrollPosition position) =>
+        position.maxScrollExtent - (_following ?? position.pixels) <= _nearEnd;
+    final before = _scroll.hasClients ? near(_scroll.position) : null;
+    if (before == false) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
+      if (before == null && !near(_scroll.position)) return;
       final end = _scroll.position.maxScrollExtent;
-      // Measured from where a scroll still in flight is going: on a hidden
-      // tab it is paused short, and would read as the reader scrolled up.
-      if (end - (_following ?? _scroll.offset) > _nearEnd) return;
       // Hidden, the tab's tickers are off and an animation would stand
       // still: it goes to the end at once, and is there when shown.
       if (!TickerMode.valuesOf(context).enabled) {
