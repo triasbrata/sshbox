@@ -97,7 +97,7 @@ class _TransferRow extends StatelessWidget {
     if (await openDownload(saved, transfer.name) || !context.mounted) return;
     showToast(
       context,
-      'No app on this phone opens ${transfer.name}',
+      'No app here opens ${transfer.name}',
       type: TuiToastType.warning,
     );
   }

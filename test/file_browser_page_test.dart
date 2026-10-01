@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show File;
+import 'dart:io' show Directory, File, FileSystemException;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
@@ -8,8 +8,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher_platform_interface/link.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:sshbox/src/files/file_browser.dart';
+import 'package:sshbox/src/files/transfers.dart' show transfers;
 import 'package:sshbox/src/ui/file_browser_page.dart';
+import 'package:sshbox/src/ui/file_download.dart'
+    show copyDownload, openDownload;
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart' show showDotfiles;
 import 'package:sshbox/src/ui/terminal_link.dart';
@@ -876,6 +881,167 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  // #136: on a desktop file_picker's save failed outright — refused on a Mac
+  // for an entitlement, the XDG portal or nothing on Linux. The dialog is
+  // file_selector's, and the file is copied to the path it names.
+  group('on a desktop', () {
+    final desktops = TargetPlatformVariant({
+      TargetPlatform.linux,
+      TargetPlatform.macOS,
+      TargetPlatform.windows,
+    });
+
+    // The copy is real file IO, which fake time never finishes: real time
+    // until the transfer ends, or, unless [past] a Replace? already
+    // answered, a dialog it waits on is up.
+    Future<void> settle(WidgetTester tester, {bool past = false}) async {
+      for (var i = 0; i < 30 && transfers.anyRunning; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+        if (!past && find.bySemanticsLabel('Replace').evaluate().isNotEmpty) {
+          break;
+        }
+      }
+      // Not settled: that would outlast the toast.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    Future<void> download(WidgetTester tester) async {
+      await tester.longPress(_row('notes.txt'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Download'));
+      await settle(tester);
+    }
+
+    testWidgets('saves where the dialog says, byte for byte', (tester) async {
+      final dir = Directory.systemTemp.createTempSync('save');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final dialog = useFakeSaveDialog('${dir.path}/kept.txt');
+      final browser = FakeFileBrowser();
+      await _pumpBrowser(tester, browser);
+
+      await download(tester);
+
+      expect(dialog.suggested, 'notes.txt');
+      expect(
+        File('${dir.path}/kept.txt').readAsStringSync(),
+        'first line\nsecond line\n',
+      );
+      expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
+      expect(find.text('Saved notes.txt'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktops);
+
+    testWidgets('leaves nothing behind when the dialog is dismissed', (
+      tester,
+    ) async {
+      useFakeSaveDialog(null);
+      final browser = FakeFileBrowser();
+      await _pumpBrowser(tester, browser);
+
+      await download(tester);
+
+      expect(File(browser.downloads.last.to).parent.existsSync(), isFalse);
+      expect(find.byType(TuiToastCard), findsNothing);
+    }, variant: desktops);
+
+    testWidgets('a copy failing halfway leaves the file already there', (
+      tester,
+    ) async {
+      final dir = Directory.systemTemp.createTempSync('save');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final there = File('${dir.path}/kept.txt')..writeAsStringSync('mine\n');
+      useFakeSaveDialog(there.path);
+      final real = copyDownload;
+      copyDownload = (from, to) async {
+        File(to).writeAsStringSync('first li');
+        throw const FileSystemException('No space left on device');
+      };
+      addTearDown(() => copyDownload = real);
+      await _pumpBrowser(tester, FakeFileBrowser());
+
+      // Past Linux's own Replace?, which macOS's and Windows' dialogs ask.
+      await download(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      if (find.bySemanticsLabel('Replace').evaluate().isNotEmpty) {
+        await tester.tap(find.bySemanticsLabel('Replace'));
+        await settle(tester, past: true);
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      expect(there.readAsStringSync(), 'mine\n');
+      expect(
+        dir.listSync().map((e) => e.path.split('/').last),
+        ['kept.txt'],
+        reason: 'a part of the copy was left behind',
+      );
+      expect(find.textContaining('Could not save notes.txt'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    }, variant: desktops);
+
+    testWidgets('asks on Linux before a file already there is replaced', (
+      tester,
+    ) async {
+      final dir = Directory.systemTemp.createTempSync('save');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final there = File('${dir.path}/kept.txt')..writeAsStringSync('mine\n');
+      useFakeSaveDialog(there.path);
+      await _pumpBrowser(tester, FakeFileBrowser());
+
+      await download(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.text('Replace kept.txt?'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Cancel'));
+      // The cancelled save ends in real time too, or the next one waits on it.
+      await settle(tester, past: true);
+      expect(there.readAsStringSync(), 'mine\n');
+
+      await download(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(find.bySemanticsLabel('Replace'));
+      await settle(tester, past: true);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(there.readAsStringSync(), 'first line\nsecond line\n');
+      await tester.pump(const Duration(seconds: 5));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('says why when the dialog itself fails', (tester) async {
+      useFakeSaveDialog(null, fails: true);
+      await _pumpBrowser(tester, FakeFileBrowser());
+
+      await download(tester);
+
+      expect(find.textContaining('Could not save notes.txt'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktops);
+
+    testWidgets('on Windows, a file not marked as from the internet only '
+        'has its folder opened', (tester) async {
+      final launcher = _Launcher();
+      final real = UrlLauncherPlatform.instance;
+      UrlLauncherPlatform.instance = launcher;
+      addTearDown(() => UrlLauncherPlatform.instance = real);
+      final dir = Directory.systemTemp.createTempSync('open');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      // A comma and no space: what explorer's /select, would have split.
+      final file = File('${dir.path}/report,payload.bat')
+        ..writeAsStringSync('x');
+      final saved = Uri.file(file.path).toString();
+
+      await tester.runAsync(() => openDownload(saved, 'report,payload.bat'));
+      expect(launcher.opened, [Uri.directory(dir.path).toString()]);
+
+      // Marked: Windows warns before running it, so the file itself opens.
+      File('${file.path}:Zone.Identifier').writeAsStringSync('ZoneId=3');
+      launcher.opened.clear();
+      await tester.runAsync(() => openDownload(saved, 'report,payload.bat'));
+      expect(launcher.opened, [saved]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+  });
+
   group('Copy content', () {
     testWidgets('puts the file on the clipboard without opening it',
         (tester) async {
@@ -1051,4 +1217,18 @@ final class _PhoneFile extends PlatformFile {
 
   @override
   Stream<Uint8List> readAsByteStream() => const Stream.empty();
+}
+
+/// Opens everything, and remembers what it was handed.
+class _Launcher extends UrlLauncherPlatform {
+  final opened = <String>[];
+
+  @override
+  LinkDelegate? get linkDelegate => null;
+
+  @override
+  Future<bool> launchUrl(String url, LaunchOptions options) async {
+    opened.add(url);
+    return true;
+  }
 }
