@@ -106,7 +106,7 @@ final _inline = RegExp(
   r'|~~(?=\S)(.+?)(?<=\S)~~' // 7: strike
   r'|\*(?=[^\s*])(.+?)(?<=[^\s*])\*' // 8: italic
   r'|(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])' // 9: italic
-  r'|\[Image #(\d+)\]', // 10: a picture
+  r'|\[Image #(\d{1,9})\]', // 10: a picture, as pictureToken bounds one
 );
 
 /// [text] as runs of (start, end, style) that cover it end to end, in order.

@@ -2423,6 +2423,24 @@ void main() {
       expect(find.text('[Image #1] shot.png'), findsNothing);
     });
 
+    testWidgets('an [Image #N] whose number no int holds draws, and is sent, '
+        'as text', (tester) async {
+      final shell = await continued(tester);
+      await tester.enterText(find.byType(TextField), 'see [Image #99999999999999999999]');
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(box(tester), 'see [Image #99999999999999999999]');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content, [
+        {'type': 'text', 'text': 'see [Image #99999999999999999999]'},
+      ]);
+    });
+
     testWidgets('removing a card takes its token out, and deleting a token '
         'takes its card', (tester) async {
       final next = clipboard(tester);

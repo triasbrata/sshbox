@@ -196,4 +196,15 @@ void main() {
     // Every character is still there.
     expect(runs.map(of).join(), text);
   });
+
+  testWidgets('an [Image #N] whose number no int holds is drawn as text, '
+      'never thrown on', (tester) async {
+    final c = _controller()..pictures = {1};
+    c.text = '[Image #99999999999999999999] and [Image #1]';
+    final spans = await _spans(tester, c);
+    expect(tester.takeException(), isNull);
+    expect(spans.map((span) => span.$1).join(), c.text);
+    final long = spans.where((span) => span.$1.contains('9999'));
+    expect(long.map((span) => span.$2?.backgroundColor), everyElement(isNull));
+  });
 }

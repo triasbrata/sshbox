@@ -61,4 +61,16 @@ void main() {
     expect(value.text, '[Image #1] then [Image #2]');
     expect([for (final p in draft.pictures) p.name], ['b.png', 'a.png']);
   });
+
+  test('a token whose number no int holds is text, and syncing it throws '
+      'nothing', () {
+    final draft = PictureDraft();
+    var value = draft.add(_at(''), _pic('a.png'), 1);
+    value = _at('[Image #99999999999999999999] ${value.text}');
+    expect(
+      draft.sync(value, 1).text,
+      '[Image #99999999999999999999] [Image #1] ',
+    );
+    expect(draft.pictures.single.name, 'a.png');
+  });
 }

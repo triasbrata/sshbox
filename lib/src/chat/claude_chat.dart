@@ -47,7 +47,15 @@ class ChatPicture {
 
 /// `[Image #N]`, as Claude Code writes a picture into a message, and as a
 /// message written here marks where each of its pictures goes.
-final pictureToken = RegExp(r'\[Image #(\d+)\]');
+///
+/// At most nine digits, so its number is always an int: a longer one, which
+/// no picture has, is text, and parsing it can never throw.
+final pictureToken = RegExp(r'\[Image #(\d{1,9})\]');
+
+/// Any `[Image #N]`, however long its number: what a screen is counted by,
+/// as the pane's awk counts it, since Claude draws text as it was typed.
+/// Counted only, never parsed.
+final _anyChip = RegExp(r'\[Image #\d+\]');
 
 /// Puts [picture] on the host and hands back its path there.
 typedef PictureUpload = Future<String> Function(ChatPicture picture);
@@ -1103,7 +1111,7 @@ class ClaudeChat extends ChangeNotifier {
         if (part.picture) {
           await _chipShown(shown, ++chips);
         } else {
-          chips += pictureToken.allMatches(part.keys).length;
+          chips += _anyChip.allMatches(part.keys).length;
         }
       }
       await Future<void>.delayed(const Duration(milliseconds: 500));
@@ -1170,7 +1178,7 @@ class ClaudeChat extends ChangeNotifier {
           picture: part.picture,
           tokens: part.picture
               ? 0
-              : pictureToken.allMatches(part.keys).length,
+              : _anyChip.allMatches(part.keys).length,
         ),
     ];
     final keys = Uint8List.fromList([for (final part in parts) ...part.keys]);
@@ -1342,7 +1350,7 @@ class ClaudeChat extends ChangeNotifier {
     if (at < 0) return 0;
     return lines
         .skip(at)
-        .fold(0, (count, line) => count + pictureToken.allMatches(line).length);
+        .fold(0, (count, line) => count + _anyChip.allMatches(line).length);
   }
 
   /// Text as it may go into a paste: no escape, and no control but a newline
