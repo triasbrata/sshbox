@@ -25,7 +25,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, Icons, InkWell, PopupMenuDivider, TextField, Tooltip;
+    show DropdownButton, IconButton, Icons, InkWell, PopupMenuDivider, TextField, Tooltip;
 import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -3055,17 +3055,26 @@ touch '${done.path}'
       );
       await _until(tester, () => field.evaluate().isNotEmpty, 'the field');
       await tester.enterText(field, 'hello from the desktop');
-      await tester.pump();
-      debugPrint(
-        'Send buttons: ${find.byTooltip('Send').evaluate().length}; '
-        'field: ${tester.widget<TextField>(field).controller?.text}',
+      // Send turns on in the frame after the text goes in. Tapped sooner it
+      // is still off and sends nothing — which, with no frame waited for,
+      // read as a chat that never typed into the pane (run 36875853136).
+      await _until(
+        tester,
+        () =>
+            tester
+                .widget<IconButton>(
+                  find
+                      .ancestor(
+                        of: find.byTooltip('Send'),
+                        matching: find.byType(IconButton),
+                      )
+                      .first,
+                )
+                .onPressed !=
+            null,
+        'Send to turn on',
       );
       await tester.tap(find.byTooltip('Send'));
-      await tester.pump(const Duration(seconds: 1));
-      debugPrint(
-        'After Send: field ${tester.widget<TextField>(field).controller?.text}; '
-        'chat ${said()}',
-      );
       final end = DateTime.now().add(const Duration(seconds: 40));
       while (!transcript.readAsStringSync().contains(
         'hello from the desktop',
