@@ -1,0 +1,224 @@
+# Pictures in chat (#146): pasted into the box as a card and an [Image #N],
+# sent to this chat's own Claude as image blocks, and into a running session
+# as a path pasted on its own, the CLI's chip awaited before the text after it.
+#
+# One file, a section a STEP, since a picture reaches the box only by a Ctrl+V
+# Maestro cannot press: tools/e2e_android.sh's chat_images runs a section,
+# presses Ctrl+V on the emulator with adb, and runs the next. Only `open`
+# launches the app; every other section goes on from where the last stopped.
+#
+# STEP, SESSION and SHOT come from -e alone: Maestro 2.10 lets a flow's own
+# env: block win over -e (see tools/e2e_android.sh), so they have no default.
+#
+# The host's Claude is the stand-in, tools/e2e_image_claude.py: its `-p`
+# answers "The picture is <colour>" from the image block, and its input line
+# turns a pasted picture's path into [Image #N] about a second later, as
+# Claude Code 2.1.286 does. What reached the host is checked by the script.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+# open: a host's terminal, e2e-red.png copied as a picture from its image tab
+# (the file tab's Copy image), and the chat on SESSION, its box focused.
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "(?s).*e2e-red\\.png.*"
+          timeout: 20000
+      - tapOn: "(?s).*e2e-red\\.png.*"
+      - extendedWaitUntil:
+          visible: "More"
+          timeout: 20000
+      - tapOn: "More"
+      - tapOn: "Copy image"
+      - tapOn: "(?s)Close .*e2e-red.*"
+      - extendedWaitUntil:
+          visible: "Chat with Claude"
+          timeout: 10000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*${SESSION}.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*${SESSION}.*"
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 30000
+      - tapOn: "Ask Claude…"
+
+# own: after one Ctrl+V. Step 1, the card and the box's token; step 5, the
+# card opens large and Close comes back; step 4, a Backspace into the token
+# takes the card away. The box is emptied after.
+- runFlow:
+    when:
+      true: ${STEP == 'own'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - assertVisible: "\\[Image #1\\] "
+      - takeScreenshot: chat-images-card
+      - tapOn: "View .*"
+      - extendedWaitUntil:
+          visible: "Close"
+          timeout: 10000
+      - takeScreenshot: chat-images-viewer
+      - tapOn: "Close"
+      - assertVisible: "\\[Image #1\\] "
+      - tapOn: "\\[Image #1\\] "
+      - eraseText: 2
+      - extendedWaitUntil:
+          notVisible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 5000
+      - assertNotVisible: "View .*"
+      - eraseText: 20
+
+# remove: after a second Ctrl+V. Step 4, the card's own button takes its
+# token out of the box.
+- runFlow:
+    when:
+      true: ${STEP == 'remove'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - tapOn: "Remove .*"
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 5000
+      - assertNotVisible: "(?s).*\\[Image #1\\].*"
+      - tapOn: "Ask Claude…"
+
+# send: after a third Ctrl+V. Step 1, sent to this chat's own Claude: the
+# bubble draws the picture and the answer names its colour.
+- runFlow:
+    when:
+      true: ${STEP == 'send'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - inputText: "what colour?"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*The picture is red.*"
+          timeout: 30000
+      - assertVisible: "View .*"
+      - takeScreenshot: chat-images-own-answer
+
+# watch: step 2's start, the running session SESSION picked and its box
+# focused, for two Ctrl+Vs with text between them.
+- runFlow:
+    when:
+      true: ${STEP == 'watch'}
+    commands:
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*${SESSION}.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*${SESSION}.*"
+      - extendedWaitUntil:
+          visible: "Message “${SESSION}”…"
+          timeout: 30000
+      - tapOn: "Message “${SESSION}”…"
+
+# between: after a Ctrl+V, the text before the next picture.
+- runFlow:
+    when:
+      true: ${STEP == 'between'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #\\d+\\] .*\\.png"
+          timeout: 10000
+      - inputText: "between "
+
+# deliver: after the second Ctrl+V, the text after it, sent; the session's
+# own answer saying it saw two pictures.
+- runFlow:
+    when:
+      true: ${STEP == 'deliver'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s).*between \\[Image #\\d+\\].*"
+          timeout: 10000
+      - inputText: "after"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*Seen 2: red, red.*"
+          timeout: 60000
+      - takeScreenshot: chat-images-${SHOT}
+
+# new: step 3, a new chat, its box focused for a Ctrl+V.
+- runFlow:
+    when:
+      true: ${STEP == 'new'}
+    commands:
+      - tapOn: "Chat settings"
+      - tapOn: "New chat"
+      - extendedWaitUntil:
+          visible: "Start a new chat…"
+          timeout: 10000
+      - tapOn: "Start a new chat…"
+
+# started: after the Ctrl+V, sent as a new chat's first message.
+- runFlow:
+    when:
+      true: ${STEP == 'started'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - inputText: "new one"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*The picture is red. Echo: .*new one.*"
+          timeout: 60000
+      - takeScreenshot: chat-images-new-chat
+
+# refuse: step 6, a file the + button's picker offers that Claude cannot read.
+# Android's picker for pictures offers pictures alone, so a .txt never shows
+# there; a BMP is a picture to Android and not to Claude.
+- runFlow:
+    when:
+      true: ${STEP == 'refuse'}
+    commands:
+      - tapOn: "Add a picture"
+      - runFlow:
+          when:
+            notVisible: "e2e-old.bmp"
+          commands:
+            - tapOn:
+                text: "Show roots"
+                optional: true
+            - tapOn:
+                text: "Downloads"
+                optional: true
+      - extendedWaitUntil:
+          visible: "e2e-old.bmp"
+          timeout: 15000
+      - tapOn: "e2e-old.bmp"
+      - extendedWaitUntil:
+          visible: "(?s).*Not a picture Claude can read: e2e-old\\.bmp.*"
+          timeout: 10000
+      - takeScreenshot: chat-images-refused
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
