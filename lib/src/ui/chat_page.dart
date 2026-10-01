@@ -10,6 +10,7 @@ import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
 import 'code_languages.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'slash_command_menu.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -73,6 +74,37 @@ class _ChatPageState extends State<ChatPage> {
     _agents = _chat.agents(all: true)..ignore();
   }
 
+  /// The slash commands the host's Claude Code takes, read the first time
+  /// the list opens on a connection, and again by its ↻. What came back, or
+  /// why not, is kept for [_send] and the list: see [SlashCommandMenu].
+  AsyncSnapshot<List<SlashCommand>> _commands = const AsyncSnapshot.nothing();
+
+  void _wantCommands() {
+    if (_commands.connectionState == ConnectionState.none) {
+      setState(_listCommands);
+    }
+  }
+
+  void _listCommands() {
+    _commands = const AsyncSnapshot.waiting();
+    final asked = _chat.slashCommands();
+    unawaited(
+      asked
+          .then(
+            (commands) =>
+                AsyncSnapshot.withData(ConnectionState.done, commands),
+            onError: (Object error) =>
+                AsyncSnapshot<List<SlashCommand>>.withError(
+                  ConnectionState.done,
+                  error,
+                ),
+          )
+          .then((snapshot) {
+            if (mounted) setState(() => _commands = snapshot);
+          }),
+    );
+  }
+
   /// Nearer the end than this, the reader is following: a new entry scrolls
   /// into view.
   static const _nearEnd = 240.0;
@@ -121,6 +153,7 @@ class _ChatPageState extends State<ChatPage> {
     if (connected && !_wasConnected) {
       _wasConnected = true;
       _listAgents();
+      _commands = const AsyncSnapshot.nothing();
       // After a reconnect the old process, or the follow of a session being
       // watched, went with the old connection: it is picked up again on the
       // new one, the same conversation either way.
@@ -264,6 +297,17 @@ class _ChatPageState extends State<ChatPage> {
   void _send() {
     final text = _input.text;
     if (text.trim().isEmpty) return;
+    // A dialog in a terminal chat cannot see takes the next Enter as a
+    // choice, so a command that may open one is not typed at all.
+    if (SlashCommand.refusal(text, _commands.data) case final why?) {
+      showToast(
+        context,
+        why,
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
     final starts = _chat.composing;
     final sent = _chat.send(text);
     _input.clear();
@@ -400,6 +444,7 @@ class _ChatPageState extends State<ChatPage> {
     ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
+    final ChatCommand command => _CommandRow(command: command),
   };
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
@@ -492,37 +537,43 @@ class _ChatPageState extends State<ChatPage> {
               ],
             ),
             Expanded(
-              child: TextField(
+              child: SlashCommandMenu(
                 controller: _input,
-                enabled: open,
-                minLines: 1,
-                maxLines: 5,
-                keyboardType: TextInputType.multiline,
-                textCapitalization: TextCapitalization.sentences,
-                // termul's TuiInput look — its ❯ prompt in the accent — on
-                // a field that takes several lines and can be shut, which
-                // TuiInput does not.
-                decoration: InputDecoration(
-                  isDense: true,
-                  prefixText: '❯ ',
-                  prefixStyle: TextStyle(
-                    fontFamily: TermulFonts.mono,
-                    color: TermulThemeData.of(context).palette.accent,
+                commands: _commands,
+                onOpen: _wantCommands,
+                onRefresh: () => setState(_listCommands),
+                child: TextField(
+                  controller: _input,
+                  enabled: open,
+                  minLines: 1,
+                  maxLines: 5,
+                  keyboardType: TextInputType.multiline,
+                  textCapitalization: TextCapitalization.sentences,
+                  // termul's TuiInput look — its ❯ prompt in the accent — on
+                  // a field that takes several lines and can be shut, which
+                  // TuiInput does not.
+                  decoration: InputDecoration(
+                    isDense: true,
+                    prefixText: '❯ ',
+                    prefixStyle: TextStyle(
+                      fontFamily: TermulFonts.mono,
+                      color: TermulThemeData.of(context).palette.accent,
+                    ),
+                    hintText: readOnly
+                        ? 'Read-only: “${watching.name}” cannot be typed into '
+                              'from here'
+                        : watching != null
+                        ? 'Message “${watching.name}”…'
+                        : composing
+                        ? 'Start a new chat…'
+                        : chat.ready
+                        ? 'Ask Claude…'
+                        : connected
+                        ? 'Starting Claude on the host…'
+                        : 'Connect this session first',
                   ),
-                  hintText: readOnly
-                      ? 'Read-only: “${watching.name}” cannot be typed into '
-                            'from here'
-                      : watching != null
-                      ? 'Message “${watching.name}”…'
-                      : composing
-                      ? 'Start a new chat…'
-                      : chat.ready
-                      ? 'Ask Claude…'
-                      : connected
-                      ? 'Starting Claude on the host…'
-                      : 'Connect this session first',
+                  onChanged: (_) => setState(() {}),
                 ),
-                onChanged: (_) => setState(() {}),
               ),
             ),
             const SizedBox(width: 4),
@@ -1137,6 +1188,51 @@ class _ToolInput extends StatelessWidget {
         _ => '$key: ${const JsonEncoder.withIndent('  ').convert(value)}',
       },
   ].join('\n');
+}
+
+/// A slash command run in the session: the command as a chip on the user's
+/// side, and under it, when it ran in the CLI, what it printed, in the
+/// terminal's font as it printed it.
+class _CommandRow extends StatelessWidget {
+  const _CommandRow({required this.command});
+
+  final ChatCommand command;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final output = command.output;
+    final typed = '/${command.name} ${command.args}'.trim();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          TuiBadge(label: typed, tone: TuiTextTone.accent),
+          if (output != null && output.trim().isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: p.surface,
+                border: Border.all(color: p.border),
+              ),
+              child: SelectableText(
+                output,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 12,
+                  color: p.text,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 /// The run's own asides: it ended, it was refused, the host had nothing to

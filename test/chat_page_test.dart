@@ -114,6 +114,27 @@ class _Shell
   /// What `claude agents --json` answers, when a test sets one.
   String? listing;
 
+  /// What the CLI answers `initialize` with: its slash commands.
+  String slashListing = '${jsonEncode({
+    'type': 'control_response',
+    'response': {
+      'response': {
+        'commands': [
+          {
+            'name': 'model',
+            'description': 'Set the AI model for Claude Code',
+            'builtin': true,
+          },
+          {
+            'name': 'compact',
+            'description': 'Free up context by summarizing the conversation',
+            'builtin': true,
+          },
+        ],
+      },
+    },
+  })}\n';
+
   /// What finding an interactive session's tmux pane answers: none, unless a
   /// test puts it in one.
   String pane = 'sshbox:no pane\n';
@@ -178,6 +199,13 @@ class _Shell
           ),
         ),
         write: (Uint8List data) => paneTyped.add(utf8.decode(data)),
+        close: () {},
+      );
+    }
+    if (command.contains('control_request')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(slashListing))),
+        write: (Uint8List data) {},
         close: () {},
       );
     }
@@ -459,6 +487,48 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.text('Claude is working…'), findsNothing);
+  });
+
+  testWidgets('a / lists the host\'s commands, and one that opens a dialog '
+      'is neither offered nor sent', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    // Read from the host the first time the list opens, and only then.
+    expect(shell.commands.where((c) => c.contains('initialize')), isEmpty);
+    await tester.enterText(find.byType(TextField), '/');
+    await tester.pump();
+    await tester.pump();
+    expect(shell.commands.where((c) => c.contains('initialize')), hasLength(1));
+    expect(find.text('/compact'), findsOneWidget);
+    expect(find.text('/model'), findsNothing);
+
+    // Typed whole and sent anyway, it is refused, and nothing reaches Claude.
+    await tester.enterText(find.byType(TextField), '/model opus');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    expect(shell.written, isEmpty);
+    expect(find.textContaining('run it in the terminal'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '/model opus',
+    );
+
+    await tester.enterText(find.byType(TextField), '/compact');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    expect(shell.written, hasLength(1));
+    await tester.pump(const Duration(seconds: 6));
   });
 
   testWidgets('an unconnected session says so rather than starting anything', (
