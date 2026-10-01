@@ -281,26 +281,28 @@ class _LiveHost {
         () => screen.add(Uint8List.fromList(utf8.encode('\x1b[2J ❯ '))),
       );
     }
-    var chips = 0;
     var drawn = 0;
+    // The input line as Claude Code draws it: what is typed as it comes, and
+    // each path pasted as its chip a moment later, once it has read the file.
+    var line = '';
+    void redraw() =>
+        screen.add(Uint8List.fromList(utf8.encode('\r\n❯ $line')));
     return (
       output: screen.stream,
       write: (Uint8List data) {
         final keys = utf8.decode(data);
         typed.add(keys);
         chipsWhenTyped.add(drawn);
-        // A path pasted becomes its chip a moment later, as Claude Code
-        // draws one once it has read the file.
-        if (drawChips && keys.startsWith('\x1b[200~/')) {
-          chips++;
-          Timer(const Duration(milliseconds: 50), () {
+        if (!drawChips) return;
+        if (keys.startsWith('\x1b[200~/')) {
+          Timer(chipDelay, () {
             drawn++;
-            screen.add(
-              Uint8List.fromList(
-                utf8.encode('\r\n❯ ${'[Image #9] ' * chips}'),
-              ),
-            );
+            line += '[Image #9] ';
+            redraw();
           });
+        } else if (keys != '\r') {
+          line += keys;
+          redraw();
         }
       },
       close: () {
@@ -312,6 +314,9 @@ class _LiveHost {
 
   /// Whether a terminal draws a chip for each path pasted into it.
   var drawChips = false;
+
+  /// How long a pasted path takes to become its chip.
+  var chipDelay = const Duration(milliseconds: 50);
 
   /// How many chips each terminal had drawn when each of its writes came.
   final chipsWhenTyped = <int>[];
@@ -2000,7 +2005,11 @@ void main() {
             pid: pid,
             parts: [
               for (final (index, part) in parts.indexed)
-                (length: bytes[index].length, picture: part.picture),
+                (
+                  length: bytes[index].length,
+                  picture: part.picture,
+                  tokens: 0,
+                ),
             ],
             chipWait: const Duration(seconds: 2),
           ),
@@ -2829,6 +2838,42 @@ void main() {
       ]);
       expect([for (final p in mine.pictures) p.number], [4, 5]);
       expect(chat.nextPicture, 6);
+    });
+
+    test('an [Image #N] typed as text does not stand for a chip: what '
+        'follows a picture still waits for that picture\'s own', () async {
+      // Slow enough that the text's own [Image #1] is on the line first.
+      final host = _LiveHost('0\n')
+        ..drawChips = true
+        ..chipDelay = const Duration(milliseconds: 400);
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      await chat.send(
+        '[Image #1] is text, [Image #2] is the picture',
+        pictures: [picture('b.png', 2)],
+        upload: (picture) async => '/tmp/${picture.name}',
+      );
+      final watch = Stopwatch()..start();
+      while (host.terminals.isEmpty ||
+          !host.terminals.single.typed.contains('\r')) {
+        if (watch.elapsed > const Duration(seconds: 8)) fail('never sent');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(host.terminals.single.typed, [
+        '[Image #1] is text, ',
+        '\x1b[200~/tmp/b.png\x1b[201~',
+        ' is the picture',
+        '\r',
+      ]);
+      // The text after the picture came once its chip was drawn, though the
+      // line already held an [Image #1] of the user's own.
+      expect(host.chipsWhenTyped, [0, 0, 1, 1]);
     });
 
     test('a picture that cannot go up says so, and nothing is typed', () async {

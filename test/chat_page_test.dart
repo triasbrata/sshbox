@@ -2063,8 +2063,18 @@ void main() {
       next.add('shot.png');
       await paste(tester);
       await tester.tap(find.bySemanticsLabel('View shot.png'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      // Its size read from the file before anything is drawn.
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
       await tester.pumpAndSettle();
       expect(find.byType(PictureView), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
       await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
 
