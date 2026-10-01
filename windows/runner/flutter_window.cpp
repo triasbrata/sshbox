@@ -3,7 +3,10 @@
 #include <flutter/standard_method_codec.h>
 #include <windowsx.h>
 
+#include <algorithm>
+#include <fstream>
 #include <optional>
+#include <string>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -34,6 +37,22 @@ int FrameHeight(HWND hwnd) {
          GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
 }
 
+// Where the window is kept, in the app's own data folder — the one
+// path_provider names for Dart — as one line: left top right bottom
+// maximized. Minimized is never kept.
+std::wstring PlacementPath() {
+  wchar_t appdata[MAX_PATH];
+  DWORD length = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) return L"";
+  std::wstring dir = std::wstring(appdata) + L"\\cloud.brata";
+  CreateDirectoryW(dir.c_str(), nullptr);
+  dir += L"\\Jeansh";
+  CreateDirectoryW(dir.c_str(), nullptr);
+  return dir + L"\\window.txt";
+}
+
+constexpr UINT_PTR kSaveTimer = 1;
+
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -50,6 +69,8 @@ bool FlutterWindow::OnCreate() {
   SetWindowPos(GetHandle(), nullptr, 0, 0, 0, 0,
                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
                    SWP_NOACTIVATE);
+  // Still hidden: it shows at the first frame, already in place.
+  RestorePlacement();
 
   RECT frame = GetClientArea();
 
@@ -94,6 +115,68 @@ void FlutterWindow::OnDestroy() {
   }
 
   Win32Window::OnDestroy();
+}
+
+void FlutterWindow::RestorePlacement() {
+  std::ifstream file(PlacementPath());
+  long v[5];
+  for (long& value : v) {
+    // Each within ±100000: a file cut short, written by hand or out of
+    // range leaves the window where it would have been.
+    if (!(file >> value) || value < -100000 || value > 100000) return;
+  }
+  RECT rect = {v[0], v[1], v[2], v[3]};
+  bool maximized = v[4] != 0;
+  LONG width = rect.right - rect.left, height = rect.bottom - rect.top;
+  if (width < 200 || height < 150) return;
+  // The monitor its top strip, the part that moves it, is on; when that is
+  // on none — a laptop undocked, a screen unplugged — the main one, centred.
+  // Either way it comes back no bigger than that monitor's work area and
+  // wholly on it, so a window sized for a bigger screen keeps its buttons in
+  // reach.
+  RECT strip = {rect.left, rect.top, rect.right, rect.top + 40};
+  HMONITOR monitor = MonitorFromRect(&strip, MONITOR_DEFAULTTONULL);
+  bool seen = monitor != nullptr;
+  if (!seen) monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO info{sizeof(info)};
+  GetMonitorInfo(monitor, &info);
+  const RECT& work = info.rcWork;
+  width = std::min(width, work.right - work.left);
+  height = std::min(height, work.bottom - work.top);
+  if (seen) {
+    rect.left = std::clamp(rect.left, work.left, work.right - width);
+    rect.top = std::clamp(rect.top, work.top, work.bottom - height);
+  } else {
+    rect.left = work.left + (work.right - work.left - width) / 2;
+    rect.top = work.top + (work.bottom - work.top - height) / 2;
+  }
+  rect.right = rect.left + width;
+  rect.bottom = rect.top + height;
+  // Twice: a move onto a monitor of another DPI scales the window to suit
+  // it (WM_DPICHANGED), and the second, at that DPI already, puts it back
+  // at the size it was.
+  for (int i = 0; i < 2; i++) {
+    SetWindowPos(GetHandle(), nullptr, rect.left, rect.top, width, height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+  normal_ = rect;
+  if (maximized) show_command_ = SW_SHOWMAXIMIZED;
+}
+
+void FlutterWindow::SavePlacement() {
+  HWND hwnd = GetHandle();
+  if (hwnd == nullptr || IsRectEmpty(&normal_)) return;
+  // Minimized, IsZoomed says no: whether it goes back to maximized is the
+  // placement's to say.
+  bool maximized = IsZoomed(hwnd);
+  if (IsIconic(hwnd)) {
+    WINDOWPLACEMENT placement{sizeof(placement)};
+    maximized = GetWindowPlacement(hwnd, &placement) &&
+                (placement.flags & WPF_RESTORETOMAXIMIZED);
+  }
+  std::ofstream(PlacementPath())
+      << normal_.left << ' ' << normal_.top << ' ' << normal_.right << ' '
+      << normal_.bottom << ' ' << (maximized ? 1 : 0) << '\n';
 }
 
 void FlutterWindow::OnWindowCall(
@@ -218,6 +301,26 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
         return 0;
       }
+      break;
+    // Kept as it changes rather than at close: an update restarts the app
+    // with exit(), which closes nothing. Half a second after the last
+    // change, so a drag writes once. A minimized window keeps what it had.
+    case WM_WINDOWPOSCHANGED:
+      if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
+        if (!IsZoomed(hwnd)) GetWindowRect(hwnd, &normal_);
+        SetTimer(hwnd, kSaveTimer, 500, nullptr);
+      }
+      break;
+    case WM_TIMER:
+      if (wparam == kSaveTimer) {
+        KillTimer(hwnd, kSaveTimer);
+        SavePlacement();
+        return 0;
+      }
+      break;
+    case WM_CLOSE:
+      KillTimer(hwnd, kSaveTimer);
+      SavePlacement();
       break;
     case WM_SIZE:
       if (wparam != SIZE_MINIMIZED && window_channel_) {

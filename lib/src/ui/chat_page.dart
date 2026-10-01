@@ -9,7 +9,9 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
 import 'code_languages.dart';
+import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -285,13 +287,17 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, box) {
       final wide = box.maxWidth >= _wide;
       final sidebar = wide && _sidebarOpen;
-      final sessions = _SessionList(
-        chat: _chat,
-        agents: _agents,
-        connected: widget.session.isConnected,
-        onPick: _pick,
-        onRefresh: () => setState(_listAgents),
-        onNewChat: _newChat,
+      // Chat at the content size, its sessions, messages, tool rows, code
+      // and composer alike: see ContentText.
+      final sessions = ContentText(
+        child: _SessionList(
+          chat: _chat,
+          agents: _agents,
+          connected: widget.session.isConnected,
+          onPick: _pick,
+          onRefresh: () => setState(_listAgents),
+          onNewChat: _newChat,
+        ),
       );
       return Scaffold(
         key: _scaffoldKey,
@@ -311,7 +317,9 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: _conversation(wide: wide, sidebar: sidebar),
+              child: ContentText(
+                child: _conversation(wide: wide, sidebar: sidebar),
+              ),
             ),
           ],
         ),
@@ -446,6 +454,7 @@ class _ChatPageState extends State<ChatPage> {
     final open = !readOnly && (watching != null || chat.ready || composing);
     final canSend =
         open && (watching != null || ((chat.ready || composing) && !chat.busy));
+    final palette = TermulThemeData.of(context).palette;
     return SafeArea(
       top: false,
       child: Padding(
@@ -527,6 +536,18 @@ class _ChatPageState extends State<ChatPage> {
             const SizedBox(width: 4),
             IconButton.filled(
               tooltip: 'Send',
+              // The app's iconButtonTheme gives every IconButton an accent
+              // foreground, which beats the filled variant's own onPrimary:
+              // an accent arrow on an accent fill. Black or white, whichever
+              // reads on the fill.
+              style: IconButton.styleFrom(
+                backgroundColor: palette.accent,
+                foregroundColor:
+                    tuiContrast(Colors.black, palette.accent) >=
+                        tuiContrast(Colors.white, palette.accent)
+                    ? Colors.black
+                    : Colors.white,
+              ),
               onPressed: canSend && _input.text.trim().isNotEmpty
                   ? _send
                   : null,
@@ -660,6 +681,12 @@ class _Bubble extends StatelessWidget {
   );
 }
 
+/// The builders every Markdown in a chat draws with: a ```mermaid fence as
+/// a diagram, its source copyable beside it.
+final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
+  'code': MermaidBuilder(copyable: true),
+};
+
 /// What Claude said, as Markdown: it writes lists, headings and code, and
 /// this is the renderer the Markdown preview already uses.
 class _Answer extends StatelessWidget {
@@ -681,7 +708,10 @@ class _Answer extends StatelessWidget {
       builder: (context, terminal, _) => TuiChatAnswer(
         child: SelectionArea(
           child: MarkdownBody(
-            data: text,
+            // A ```mermaid fence is a diagram, as in the Markdown preview,
+            // once it has closed.
+            data: holdOpenMermaid(text),
+            builders: chatMarkdownBuilders,
             onTapLink: onTapLink,
             // A reply is text, and any picture in it lives on a server we do
             // not fetch from: its alt text says what was meant.

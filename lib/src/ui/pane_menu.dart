@@ -18,6 +18,7 @@ class PaneMenu {
     required this.openUrl,
     required this.open,
     required this.download,
+    this.showDiagram,
     required this.selectAll,
     required this.clearBuffer,
     required this.reset,
@@ -40,6 +41,10 @@ class PaneMenu {
   /// Brings a file on the host down, as the files drawer's Download does;
   /// null where the session has no files to reach.
   final void Function(String path)? download;
+
+  /// Draws the selection as the Mermaid diagram it holds (#131); null where
+  /// it holds none, or nothing here can draw one.
+  final VoidCallback? showDiagram;
   final VoidCallback selectAll;
   final VoidCallback clearBuffer;
   final VoidCallback reset;
@@ -113,7 +118,7 @@ List<TuiMenuEntry<VoidCallback>> paneMenuEntries(
       'Open selection',
       target == null || open == null ? null : () => open(target),
     ),
-    // #131's Show as diagram goes here, with the selection's other items.
+    if (menu.showDiagram != null) item('Show as diagram', menu.showDiagram),
     const TuiMenuDivider(),
     item('Split pane vertically', tab?.splitSideBySide),
     item('Split pane horizontally', tab?.splitStacked),

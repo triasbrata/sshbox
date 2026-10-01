@@ -168,6 +168,9 @@ sessions = {
                             {'file_path': '/tmp/e2e-tool-rows/notes.txt',
                              'content': 'first line\nsecond line'}, 'ok'),
                       said('Tools done')],
+    # #131: a mermaid fence in a reply is drawn as a diagram, not its source.
+    'E2E diagram': [user('draw it'),
+                    said('Diagram below\n\n```mermaid\ngraph TD\n  E2EA --> E2EB\n```\n\nDiagram above')],
 }
 rows = []
 for n, (name, events) in enumerate(sessions.items(), start=1):
@@ -180,6 +183,12 @@ for n, (name, events) in enumerate(sessions.items(), start=1):
 with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
     json.dump(rows, f)
 PY
+}
+
+# chat_mermaid alone, for E2E_ONLY: the stand-in's sessions first.
+chat_mermaid() {
+  chat_stand_in
+  flow chat_mermaid
 }
 
 # The code editor from the drawer: an edit saved through its own chrome. Its
@@ -442,13 +451,13 @@ chat_version || true
 # conversation comes back to, and how a tool's row reads. Report-only until
 # they have earned the gate.
 chat_stand_in
-for name in chat_scroll chat_tool_rows; do
+for name in chat_scroll chat_tool_rows chat_mermaid; do
   echo "::group::$name (report only)"
   flow "$name" || echo "::warning::$name failed -- report only, not gating"
   # Their screenshots are evidence, wherever Maestro put them: see chat_version.
   # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
-  for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png'
-                   find "$HOME/.maestro" -name 'chat-tool-rows-*.png'; } 2>/dev/null); do
+  for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png' -o -name 'chat-mermaid-*.png'
+                   find "$HOME/.maestro" -name 'chat-tool-rows-*.png' -o -name 'chat-mermaid-*.png'; } 2>/dev/null); do
     mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
   done
   echo "::endgroup::"
@@ -494,6 +503,12 @@ echo "::endgroup::"
 # land, on main or in the redesign. It wants its checks moved to this host.
 echo "::group::file_editor (report only)"
 file_editor || echo "::warning::file_editor failed -- report only, not gating"
+echo "::endgroup::"
+
+# The UI text size at its largest (issue #133). Last of all, as the size it
+# sets is saved and every flow after it would meet the app at 160%.
+echo "::group::text_size (report only)"
+flow text_size || echo "::warning::text_size failed -- report only, not gating"
 echo "::endgroup::"
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named

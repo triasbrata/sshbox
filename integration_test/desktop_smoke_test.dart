@@ -19,12 +19,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, InkWell, TextField, Tooltip;
+    show DropdownButton, Icons, InkWell, TextField, Tooltip;
+import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,9 +37,84 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
-import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
+import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
+import 'package:sshbox/src/ui/settings_page.dart'
+    show SettingsPage, localTmux, maxFontSize, terminalFonts, terminalSettings;
+import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
+import 'package:sshbox/src/ui/text_size.dart';
 import 'package:xterm2/xterm.dart';
+
+/// Where [_shot] writes, from `--dart-define=JEANSH_SHOTS=folder`; empty, as
+/// on CI, writes nothing.
+const _shots = String.fromEnvironment('JEANSH_SHOTS');
+
+/// The window as drawn, as [name].png in [_shots], for a person to look at.
+Future<void> _shot(WidgetTester tester, String name) async {
+  if (_shots.isEmpty) return;
+  await tester.pumpAndSettle();
+  final view = tester.binding.renderViews.first;
+  final layer = view.debugLayer! as OffsetLayer;
+  final image = await layer.toImage(Offset.zero & view.paintBounds.size);
+  final png = await image.toByteData(format: ui.ImageByteFormat.png);
+  await Directory(_shots).create(recursive: true);
+  await File('$_shots/$name.png').writeAsBytes(png!.buffer.asUint8List());
+}
+
+/// The stand-in Claude where the chat's finder looks, taken away after: see
+/// the chat tests, which skip where this machine has a Claude of its own.
+void _standInClaudeFor() {
+  final home = Platform.environment['HOME']!;
+  final standIn = File('$home/.local/bin/claude');
+  final config = Directory('$home/.claude');
+  final hadConfig = config.existsSync();
+  final hadBin = standIn.parent.existsSync();
+  standIn.parent.createSync(recursive: true);
+  standIn.writeAsStringSync(_standInClaude);
+  Process.runSync('chmod', ['755', standIn.path]);
+  addTearDown(() {
+    if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
+    if (!hadBin) standIn.parent.deleteSync(recursive: true);
+    if (!hadConfig) {
+      config.deleteSync(recursive: true);
+    } else {
+      Directory('${config.path}/projects/jeansh-e2e')
+          .deleteSync(recursive: true);
+    }
+  });
+}
+
+/// The chat's composer.
+final _composer = find.byWidgetPredicate(
+  (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+);
+
+/// The stand-in's answer.
+final _answer = find.textContaining(
+  'Echo from the stand-in',
+  findRichText: true,
+);
+
+/// A Local shell's chat opened, a message sent, and the stand-in's answer in.
+Future<void> _chatAnswered(WidgetTester tester) async {
+  await _localShell(tester);
+  await tester.tap(find.byTooltip('Chat with Claude'));
+  await _until(
+    tester,
+    () => _composer.evaluate().isNotEmpty,
+    'the chat tab to open, its version check passed',
+  );
+  await tester.enterText(_composer, 'hello from the e2e');
+  await tester.pump();
+  await tester.tap(find.byTooltip('Send'));
+  await _until(
+    tester,
+    () => _answer.evaluate().isNotEmpty,
+    "the stand-in's answer in the chat",
+    timeout: const Duration(seconds: 40),
+  );
+}
 
 /// Home, from a cold start, settled.
 ///
@@ -422,6 +499,43 @@ Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
     await tester.pump(const Duration(milliseconds: 500));
   } finally {
     process.kill();
+  }
+}
+
+/// Opens the Git panel from a Local shell and picks [repo] in it.
+///
+/// On a runner the home holds this repository alone and it is picked
+/// already; on a machine with others it is picked from the list.
+Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
+  await tester.tap(find.byTooltip('Git'));
+  final name = repo.path.split('/').last;
+  bool ours(String? root) => root != null && root.endsWith('/$name');
+  // Material's DropdownButton on main, the redesign's TuiDropdown: both
+  // hold a value, an onChanged and choices that each have a value.
+  final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
+  dynamic shown() => tester.widget(picker.first);
+  Iterable<String?> choices() => [
+    for (final dynamic item
+        in shown() is DropdownButton
+            ? shown().items as List
+            : shown().options as List)
+      item.value as String?,
+  ];
+  await _until(
+    tester,
+    () => picker.evaluate().isNotEmpty && choices().any(ours),
+    "the Git panel to find this test's repository",
+  );
+  if (!ours(shown().value as String?)) {
+    // Picked through the picker's own onChanged, which is what choosing it
+    // from the list calls: a long list in a small menu is its own fight.
+    final root = choices().firstWhere(ours);
+    shown().onChanged!(root);
+    await _until(
+      tester,
+      () => ours(shown().value as String?),
+      "this test's repository to be picked",
+    );
   }
 }
 
@@ -830,7 +944,15 @@ const _standInClaude = r'''#!/bin/sh
 d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 sid=0e2e0000-0000-4000-8000-00000000c0de
 t="$d/projects/jeansh-e2e/$sid.jsonl"
-answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in"}]}}'
+# Thirty diagrams after it (#131): a long reply's worth, past the 27 a Mac
+# preview once drew as one grey area.
+fences=''
+i=1
+while [ $i -le 30 ]; do
+  fences="$fences\\n\\n\`\`\`mermaid\\ngraph LR\\n  E2E$i --> Done$i\\n\`\`\`"
+  i=$((i + 1))
+done
+answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in'"$fences"'"}]}}'
 case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
@@ -865,6 +987,72 @@ void main() {
       anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
     );
     expect(isDesktop, isTrue);
+  });
+
+  // Issue #133: the UI text size at its largest, set as a person sets it, by
+  // a drag on Settings' own slider, and the app still usable on the real
+  // embedder: Settings to its end, Home, and a Local shell whose terminal
+  // keeps the columns and rows it had. Any overflow on the way fails it.
+  _test('the UI text size at its largest leaves Home, Settings and a '
+      'terminal usable, the terminal at its own size', (tester) async {
+    addTearDown(() => uiTextSize.choose(1));
+    await uiTextSize.choose(1);
+    await _launch(tester);
+    await _shot(tester, 'desktop-home-default');
+    final before = await _localShell(tester);
+    final columns = before.terminal.viewWidth;
+    final rows = before.terminal.viewHeight;
+    await _shot(tester, 'desktop-terminal-default');
+    await _closeTabs(tester);
+
+    await _settings(tester);
+    await _shot(tester, 'desktop-settings-default');
+    // Settings' own list: Home's tab strip under it is a list too.
+    final page = find
+        .descendant(
+          of: find.byType(SettingsPage),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      _label('UI text size'),
+      300,
+      scrollable: page,
+    );
+    await tester.scrollUntilVisible(
+      find.byType(TuiSlider).first,
+      100,
+      scrollable: page,
+    );
+    final slider = find.byType(TuiSlider).first;
+    await tester.pumpAndSettle();
+    await tester.drag(slider, const Offset(3000, 0));
+    await tester.pumpAndSettle();
+    expect(uiTextSize.value, UiTextSize.max);
+    expect(find.text('160%'), findsOneWidget);
+    await _shot(tester, 'desktop-settings-largest');
+
+    // Settings to its end at that size.
+    await tester.scrollUntilVisible(_label('About'), 300, scrollable: page);
+    await tester.pumpAndSettle();
+    await _backHome(tester);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.byTooltip('Settings')))
+          .scale(13),
+      closeTo(13 * UiTextSize.max, 0.01),
+    );
+    await _shot(tester, 'desktop-home-largest');
+
+    final after = await _localShell(tester);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.byWidget(after))).scale(13),
+      13,
+      reason: 'a terminal takes the content size alone',
+    );
+    expect(after.terminal.viewWidth, columns);
+    expect(after.terminal.viewHeight, rows);
+    await _shot(tester, 'desktop-terminal-largest');
+    await _closeTabs(tester);
   });
 
   _test('the app boots and draws Home', (tester) async {
@@ -1093,6 +1281,99 @@ touch '${done.path}'
         reason: 'the right-click menu copied the selection without its gaps',
       );
 
+      await _closeTabs(tester);
+    },
+  );
+
+  // #131: a terminal selection holding Mermaid is shown as a diagram, where
+  // a web view draws one — the Mac — from the right-click menu, and not
+  // offered at all where none does.
+  _test(
+    'a selection holding Mermaid is shown as a diagram',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final script = File('${_scratch().path}/diagram.sh')
+        ..writeAsStringSync(
+          "printf '  \\140\\140\\140mermaid\\n  graph TD\\n    A --> B\\n"
+          "  \\140\\140\\140\\n'\n",
+        );
+      _run(view, 'sh ${script.path}');
+
+      final lines = view.terminal.buffer.lines;
+      var open = -1;
+      await _until(tester, () {
+        for (var i = 0; i + 3 < lines.length; i++) {
+          if (lines[i].getText().trim() == '```mermaid' &&
+              lines[i + 3].getText().trim() == '```') {
+            open = i;
+          }
+        }
+        return open >= 0;
+      }, 'the mermaid block to be drawn');
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col, int row) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      final mouse = await tester.startGesture(
+        cell(0, open),
+        kind: PointerDeviceKind.mouse,
+      );
+      for (final (col, row) in [(6, open + 1), (10, open + 2), (5, open + 3)]) {
+        await mouse.moveTo(cell(col, row));
+        await tester.pump();
+      }
+      await mouse.up();
+      await tester.pump(const Duration(milliseconds: 300));
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
+      );
+      await tester.tapAt(
+        cell(4, open + 1),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _until(
+        tester,
+        () => _label('Copy').evaluate().isNotEmpty,
+        'the menu to open',
+      );
+      if (!hasWebView) {
+        expect(_label('Show as diagram'), findsNothing);
+        await _escape(tester);
+      } else {
+        await _pick(tester, 'Show as diagram');
+        await _until(
+          tester,
+          () => find.byType(MermaidView).evaluate().isNotEmpty,
+          'the diagram dialog',
+        );
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          'graph TD\n  A --> B\n',
+        );
+        await _until(
+          tester,
+          () => find
+              .descendant(
+                of: find.byType(MermaidView),
+                matching: find.byIcon(Icons.account_tree_outlined),
+              )
+              .evaluate()
+              .isEmpty,
+          'the diagram to be drawn',
+          timeout: const Duration(seconds: 30),
+        );
+        await tester.tap(_label('Close'));
+        await tester.pump(const Duration(milliseconds: 600));
+      }
       await _closeTabs(tester);
     },
   );
@@ -1395,40 +1676,7 @@ touch '${done.path}'
 
       await _launch(tester);
       await _localShell(tester);
-      await tester.tap(find.byTooltip('Git'));
-
-      // On a runner the home holds this repository alone and it is picked
-      // already; on a machine with others it is picked from the list.
-      final name = repo.path.split('/').last;
-      bool ours(String? root) => root != null && root.endsWith('/$name');
-      // Material's DropdownButton on main, the redesign's TuiDropdown: both
-      // hold a value, an onChanged and choices that each have a value.
-      final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
-      dynamic shown() => tester.widget(picker.first);
-      Iterable<String?> choices() => [
-        for (final dynamic item
-            in shown() is DropdownButton
-                ? shown().items as List
-                : shown().options as List)
-          item.value as String?,
-      ];
-      await _until(
-        tester,
-        () => picker.evaluate().isNotEmpty && choices().any(ours),
-        "the Git panel to find this test's repository",
-      );
-      if (!ours(shown().value as String?)) {
-        // Picked through the picker's own onChanged, which is what choosing
-        // it from the list calls: this test is of the diff, and a long list
-        // in a small menu is its own fight.
-        final root = choices().firstWhere(ours);
-        shown().onChanged!(root);
-        await _until(
-          tester,
-          () => ours(shown().value as String?),
-          "this test's repository to be picked",
-        );
-      }
+      await _gitPanelOn(tester, repo);
       await _until(
         tester,
         () => find.textContaining('e2e.txt').evaluate().isNotEmpty,
@@ -1481,6 +1729,79 @@ touch '${done.path}'
     },
   );
 
+  // #128: the Git panel switches branch, from the branch in its header,
+  // after a dialog naming both, and the header follows — the files on disk
+  // with it.
+  _test(
+    'the Git panel switches branch from its header, and the header follows',
+    skip: Platform.isWindows
+        ? 'the repository is made under HOME for a POSIX login shell to find; '
+              'a Windows Local shell is PowerShell, with no HOME'
+        : null,
+    (tester) async {
+      final repo = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-repo-');
+      addTearDown(() => repo.deleteSync(recursive: true));
+      Future<String> git(List<String> args) async {
+        final done = await Process.run('git', ['-C', repo.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+        return '${done.stdout}'.trim();
+      }
+
+      await git(['init', '-q']);
+      await git([
+        '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+        'commit', '-q', '--allow-empty', '-m', 'e2e',
+      ]);
+      await git(['branch', 'e2e-other']);
+      final first = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+
+      await _launch(tester);
+      await _localShell(tester);
+      await _gitPanelOn(tester, repo);
+      await _until(
+        tester,
+        () => find.byTooltip('Switch branch').evaluate().isNotEmpty,
+        'the branch in the header',
+      );
+      expect(find.text(first), findsWidgets);
+      // Every toast gone first: toasts sit over every menu, and the header's
+      // opens at the top of the window, where they are.
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
+      );
+      await tester.tap(find.byTooltip('Switch branch'));
+      // Waited out, as every menu here is: a tap while it slides in is lost.
+      await _pick(tester, 'Switch to e2e-other');
+      await _until(
+        tester,
+        () =>
+            find.text('Switch from $first to e2e-other?').evaluate().isNotEmpty,
+        'the dialog naming both branches',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TuiDialog),
+          matching: find.bySemanticsLabel('Switch'),
+        ),
+      );
+      await _until(
+        tester,
+        () => find.text('e2e-other').evaluate().isNotEmpty,
+        'the header to name the branch switched to',
+      );
+      expect(
+        await git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        'e2e-other',
+        reason: 'the header changed but the checkout did not',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #127: a Local shell's files drawer reads this machine's own disk, rooted
   // at the login home, as a host's reads it over SFTP.
   _test(
@@ -1529,48 +1850,99 @@ touch '${done.path}'
         ? 'this machine has a Claude Code of its own, which this would run'
         : null,
     (tester) async {
-      final home = Platform.environment['HOME']!;
-      final standIn = File('$home/.local/bin/claude');
-      final config = Directory('$home/.claude');
-      final hadConfig = config.existsSync();
-      final hadBin = standIn.parent.existsSync();
-      standIn.parent.createSync(recursive: true);
-      standIn.writeAsStringSync(_standInClaude);
-      Process.runSync('chmod', ['755', standIn.path]);
-      addTearDown(() {
-        if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
-        if (!hadBin) standIn.parent.deleteSync(recursive: true);
-        if (!hadConfig) {
-          config.deleteSync(recursive: true);
-        } else {
-          Directory('${config.path}/projects/jeansh-e2e')
-              .deleteSync(recursive: true);
-        }
-      });
-
+      _standInClaudeFor();
       await _launch(tester);
-      await _localShell(tester);
-      await tester.tap(find.byTooltip('Chat with Claude'));
-      final input = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // Issue #133: "di chat size fontnya tidak mengikuti dari size font yang ada
+  // di settings". The content size raised with Settings' own slider, and a
+  // chat's answer and composer drawn at it.
+  _test(
+    'chat draws at the content size Settings sets',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      addTearDown(() => terminalSettings.choose(size: 13));
+      await terminalSettings.choose(size: 13);
+      await _launch(tester);
+
+      await _settings(tester);
+      final page = find
+          .descendant(
+            of: find.byType(SettingsPage),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        _label('Content text size'),
+        300,
+        scrollable: page,
       );
-      await _until(
-        tester,
-        () => input.evaluate().isNotEmpty,
-        'the chat tab to open, its version check passed',
+      await tester.scrollUntilVisible(
+        find.byType(TuiSlider).last,
+        100,
+        scrollable: page,
       );
-      await tester.enterText(input, 'hello from the e2e');
-      await tester.pump();
-      await tester.tap(find.byTooltip('Send'));
-      await _until(
-        tester,
-        () => find
-            .textContaining('Echo from the stand-in', findRichText: true)
-            .evaluate()
-            .isNotEmpty,
-        "the stand-in's answer in the chat",
-        timeout: const Duration(seconds: 40),
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(TuiSlider).last, const Offset(3000, 0));
+      await tester.pumpAndSettle();
+      expect(terminalSettings.value.fontSize, maxFontSize);
+      await _backHome(tester);
+
+      await _chatAnswered(tester);
+      await _shot(tester, 'desktop-chat-content-largest');
+      double at13(Finder finder) =>
+          MediaQuery.textScalerOf(tester.element(finder.first)).scale(13);
+      expect(at13(_answer), closeTo(maxFontSize, 0.01), reason: 'the answer');
+      expect(
+        at13(_composer),
+        closeTo(maxFontSize, 0.01),
+        reason: 'the composer',
       );
+
+      // #131: its mermaid fences are diagrams where a web view draws them,
+      // the Mac, and their source as code where none does.
+      final diagrams = find.byType(MermaidView);
+      if (!hasWebView) {
+        expect(diagrams, findsNothing);
+        expect(
+          find.textContaining('E2E1 --> Done1', findRichText: true),
+          findsWidgets,
+        );
+      } else {
+        // Drawn: the placeholder a view shows until the page says its height.
+        Finder waiting() => find.descendant(
+          of: diagrams,
+          matching: find.byIcon(Icons.account_tree_outlined),
+        );
+        expect(diagrams, findsWidgets);
+        expect(
+          find.textContaining('E2E1 --> Done1', findRichText: true),
+          findsNothing,
+          reason: 'a diagram shown as its source',
+        );
+        await _until(
+          tester,
+          () => waiting().evaluate().length < diagrams.evaluate().length,
+          'a diagram in the reply to be drawn',
+          timeout: const Duration(seconds: 60),
+        );
+        // Given the time, how many of those built came to be drawn, and none
+        // as the grey of a widget that threw.
+        await tester.pump(const Duration(seconds: 5));
+        debugPrint(
+          'Diagrams built ${diagrams.evaluate().length}, '
+          'still waiting ${waiting().evaluate().length}',
+        );
+        expect(find.byType(ErrorWidget), findsNothing);
+      }
       await _closeTabs(tester);
     },
   );

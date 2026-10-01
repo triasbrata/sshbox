@@ -32,12 +32,14 @@ import 'file_download.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
 import 'pane_menu.dart';
 import 'right_click.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
 import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
+import 'text_size.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
 import 'tui.dart';
@@ -580,6 +582,10 @@ class _TerminalPageState extends State<TerminalPage> {
     final tmux = _session.tmux;
     final pane = tmux?.panes.where((p) => p.terminal == terminal).firstOrNull;
     final buffer = terminal.buffer;
+    // The Mermaid source the selection holds, where a web view can draw it.
+    final diagram = selected == null || !hasWebView
+        ? null
+        : mermaidSource(selected);
     showActionsAt(
       context,
       at,
@@ -597,6 +603,9 @@ class _TerminalPageState extends State<TerminalPage> {
               unawaited(openUrl(context, url, inTab: widget.onOpenWeb)),
           open: (link) => unawaited(_openLink(link)),
           download: files ? (path) => unawaited(_download(path)) : null,
+          showDiagram: diagram == null
+              ? null
+              : () => unawaited(showMermaidDialog(context, diagram)),
           selectAll: () => view.selection.setSelection(
             buffer.createAnchor(0, 0),
             buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
@@ -637,13 +646,22 @@ class _TerminalPageState extends State<TerminalPage> {
   ///
   /// A path picked out of a listing can hold spaces, or anything else the
   /// shell would act on rather than pass along.
-  static String _shellQuote(String path) =>
-      RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
-      ? path
-      : "'${path.replaceAll("'", r"'\''")}'";
+  static String _shellQuote(String path) => LiveSession.shellQuote(path);
 
   /// Puts a path at the prompt, ready for a command to be written around it.
-  void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
+  /// Never one holding a control character, which the shell would act on as
+  /// a key: see [LiveSession.hasControl].
+  void _typePath(String path) {
+    if (LiveSession.hasControl(path)) {
+      showToast(
+        context,
+        LiveSession.controlRefusal,
+        type: TuiToastType.warning,
+      );
+      return;
+    }
+    _session.sendRaw('${_shellQuote(path)} ');
+  }
 
   /// Puts a file's path at the prompt the way a drop in iTerm2 does, with a
   /// trailing space so it is ready to be followed by arguments.
@@ -711,47 +729,16 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
-  /// Sends the shell to a directory — the one way anything does, so every
-  /// `cd` is checked here.
+  /// Sends the shell to a directory through [LiveSession.changeDirectory],
+  /// which types nothing unless the shell is at its prompt, and says why.
   ///
-  /// The newline is what separates this from [_typePath]: it runs something.
-  /// With a program in the foreground, that something is the program's input
-  /// — `cd` sent to Claude Code is a message to it — so the host is asked
-  /// first, and anything short of "the shell is at its prompt" types nothing
-  /// and says why. A shell already there types nothing either: opening a
-  /// folder and shutting it again is two taps on one place.
-  ///
-  /// In a tab set to use tmux, tmux answers for the focused pane, and the
-  /// `cd` goes there.
-  ///
-  /// ponytail: inside a tmux started by hand the probe sees tmux, not the
-  /// pane's shell, so every `cd` is refused as "tmux is running".
+  /// A toast, which stacks rather than queues: following, every folder
+  /// tapped on the way down to a file can be refused, and as snack bars each
+  /// would wait its turn.
   Future<void> _cdTo(String path) async {
-    // A toast, which stacks rather than queues: following, every folder
-    // tapped on the way down to a file can be refused, and as snack bars each
-    // would wait its turn.
-    void refuse(String why) {
-      if (mounted) showToast(context, why, type: TuiToastType.warning);
-    }
-
-    var slow = false;
-    final now = await _session.foreground().timeout(
-      const Duration(milliseconds: 1500),
-      onTimeout: () {
-        slow = true;
-        return null;
-      },
-    );
-    if (now == null) {
-      refuse(
-        slow
-            ? 'No answer from the host in time — not moving the shell'
-            : 'The host cannot say what the shell is running — not moving it',
-      );
-    } else if (!now.shellInForeground) {
-      refuse('${now.program} is running — not moving the shell');
-    } else if (now.cwd != path) {
-      _session.sendRaw('cd ${_shellQuote(path)}\n');
+    final why = await _session.changeDirectory(path);
+    if (why != null && mounted) {
+      showToast(context, why, type: TuiToastType.warning);
     }
   }
 
@@ -971,29 +958,33 @@ class _TerminalPageState extends State<TerminalPage> {
     return Stack(
       children: [
         // Both kinds of terminal take their size from here, the soft
-        // keyboard's slide included: see _SettledHeight.
-        _SettledHeight(
-          child: tmux == null
-              ? _paneView(
-                  _session.terminal,
-                  style,
-                  focused: true,
-                  padding: _padding,
-                )
-              : TmuxPaneLayout(
-                  tmux: tmux,
-                  textStyle: style,
-                  padding: _padding,
-                  // Touching a pane is what focuses it, and the session sends
-                  // the bar's keys to the focused pane, so every pane sends
-                  // through it.
-                  pane: (pane, focused) => _paneView(
-                    pane.terminal,
+        // keyboard's slide included: see _SettledHeight. At the content
+        // size alone, so the UI size never changes a cell: see ContentText.
+        ContentText(
+          scale: false,
+          child: _SettledHeight(
+            child: tmux == null
+                ? _paneView(
+                    _session.terminal,
                     style,
-                    focused: focused,
-                    autoResize: false,
+                    focused: true,
+                    padding: _padding,
+                  )
+                : TmuxPaneLayout(
+                    tmux: tmux,
+                    textStyle: style,
+                    padding: _padding,
+                    // Touching a pane is what focuses it, and the session sends
+                    // the bar's keys to the focused pane, so every pane sends
+                    // through it.
+                    pane: (pane, focused) => _paneView(
+                      pane.terminal,
+                      style,
+                      focused: focused,
+                      autoResize: false,
+                    ),
                   ),
-                ),
+          ),
         ),
         // Still at a sign-in once the connect sheet has sent it to a web
         // tab: the way back to that tab, rather than a blank terminal. Not
@@ -1028,8 +1019,7 @@ class _TerminalPageState extends State<TerminalPage> {
             // page is built again only as it starts and ends.
             child: ListenableBuilder(
               listenable: transfers,
-              builder: (_, _) =>
-                  TuiProgressBar(value: sending.fraction),
+              builder: (_, _) => TuiProgressBar(value: sending.fraction),
             ),
           ),
         // In the body rather than the Scaffold's button slot so it can be

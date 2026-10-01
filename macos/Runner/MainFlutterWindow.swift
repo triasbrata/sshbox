@@ -18,6 +18,7 @@ class MainFlutterWindow: NSWindow {
       with: flutterViewController.registrar(forPlugin: "NativeCrashes"))
 
     titleBar = TitleBar(window: self, controller: flutterViewController)
+    WindowPlace.restore(self)
 
     // The same channel and method Android's MainActivity answers, so the Dart
     // side has one path: the copy is taken here and only its path crosses.
@@ -62,6 +63,63 @@ class MainFlutterWindow: NSWindow {
     }
 
     super.awakeFromNib()
+  }
+}
+
+/// The window where it was when it last closed, at the size it was, and in
+/// full screen if it was. AppKit keeps the frame in the app's own defaults
+/// (~/Library/Preferences/<bundle id>.plist, "NSWindow Frame Jeansh") as the
+/// window moves and resizes, so a restart into an update, which quits with
+/// exit(), keeps it too; full screen is a flag beside it.
+enum WindowPlace {
+  private static let name = "Jeansh"
+  private static let fullScreen = "JeanshWindowFullScreen"
+
+  /// Before the window is first shown, so it never jumps.
+  static func restore(_ window: NSWindow) {
+    // AppKit's own window restoration would put back, after this, the frame
+    // it last encoded: one place that says where the window goes, not two.
+    window.isRestorable = false
+    window.setFrameUsingName(name)
+    window.setFrameAutosaveName(name)
+
+    // The screen its top strip, the part that moves it, is on; when that is
+    // on none — a laptop undocked, a screen unplugged — the main one,
+    // centred. Either way it comes back no bigger than that screen and
+    // wholly on it. setFrameUsingName moves a frame saved on another screen
+    // relative to it, but is not relied on to shrink one, so this decides.
+    let frame = window.frame
+    let strip = NSRect(x: frame.minX, y: frame.maxY - 40, width: frame.width, height: 40)
+    let on = NSScreen.screens.first { $0.visibleFrame.intersects(strip) }
+    if let area = (on ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
+      let width = min(frame.width, area.width)
+      let height = min(frame.height, area.height)
+      let x = on == nil
+        ? area.midX - width / 2 : min(max(frame.minX, area.minX), area.maxX - width)
+      let y = on == nil
+        ? area.midY - height / 2 : min(max(frame.minY, area.minY), area.maxY - height)
+      let fitted = NSRect(x: x, y: y, width: width, height: height)
+      if fitted != frame { window.setFrame(fitted, display: false) }
+    }
+
+    let defaults = UserDefaults.standard
+    let center = NotificationCenter.default
+    _ = center.addObserver(
+      forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main
+    ) { _ in defaults.set(true, forKey: fullScreen) }
+    _ = center.addObserver(
+      forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main
+    ) { _ in defaults.set(false, forKey: fullScreen) }
+    // Full screen once the window is up, which it has to be to go there.
+    if defaults.bool(forKey: fullScreen) {
+      var launched: NSObjectProtocol?
+      launched = center.addObserver(
+        forName: NSApplication.didFinishLaunchingNotification, object: nil, queue: .main
+      ) { _ in
+        if let launched { center.removeObserver(launched) }
+        if !window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+      }
+    }
   }
 }
 

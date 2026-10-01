@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
@@ -46,8 +47,15 @@ class FakeWebView extends PlatformWebViewController {
   Future<void> addJavaScriptChannel(JavaScriptChannelParams params) async =>
       channels[params.name] = params;
 
+  /// Throws, before any future, on macOS, as webview_flutter_wkwebview's
+  /// does there: "opaque is not implemented on macOS".
   @override
-  Future<void> setBackgroundColor(Color color) async {}
+  Future<void> setBackgroundColor(Color color) {
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      throw UnimplementedError('opaque is not implemented on macOS');
+    }
+    return Future.value();
+  }
 
   @override
   Future<void> setPlatformNavigationDelegate(
