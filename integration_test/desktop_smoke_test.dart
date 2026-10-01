@@ -1580,6 +1580,12 @@ touch '${done.path}'
           'the download to end',
           timeout: const Duration(seconds: 90),
         );
+        // A download that failed says why first: the dialog it never showed
+        // is only the consequence.
+        final ended = transfer();
+        if (ended != null && ended.state == TransferState.failed) {
+          fail('the download failed: ${ended.error}');
+        }
         await _until(tester, () => answer != null, 'the dialog answered');
         expect(
           answer!.exitCode,
@@ -1599,7 +1605,11 @@ touch '${done.path}'
       addTearDown(() {
         if (kept.existsSync()) kept.deleteSync();
       });
-      if (!Platform.isMacOS) expect(kept.path, target);
+      // The same file, not the same spelling: Windows' temp folder may be
+      // named by its 8.3 short name, RUNNER~1 for runneradmin.
+      if (!Platform.isMacOS) {
+        expect(FileSystemEntity.identicalSync(kept.path, target), isTrue);
+      }
       expect(kept.readAsStringSync(), body);
       await noPortal('after the save');
 
