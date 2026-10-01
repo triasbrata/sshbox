@@ -160,13 +160,15 @@ case "$target" in
         tests=$1 && shift
         rc=0
         flutter test "$tests" -d linux "$@" || rc=1
-        "$0" window-phases || rc=1
+        # A run narrowed by arguments is that run alone.
+        [ $# -gt 0 ] || "$0" window-phases || rc=1
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
     rc=0
     flutter test "$tests" -d "$target" "$@" || rc=1
-    window_phases "$target" || rc=1
+    # A run narrowed by arguments is that run alone.
+    [ $# -gt 0 ] || window_phases "$target" || rc=1
     exit $rc
     ;;
   *)

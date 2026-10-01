@@ -236,13 +236,12 @@ Future<bool> openDownload(String saved, String name) async {
     try {
       final uri = Uri.parse(saved);
       // A file Windows could not mark as from the internet would run
-      // unwarned, a host's .bat or .exe among them: shown in its folder
-      // instead.
-      if (Platform.isWindows) {
-        final path = uri.toFilePath(windows: true);
-        if (!File('$path:Zone.Identifier').existsSync()) {
-          await Process.run('explorer', ['/select,$path']);
-          return true;
+      // unwarned, a host's .bat or .exe among them: its folder is opened
+      // instead, never the file, and no name goes on a command line.
+      if (defaultTargetPlatform == TargetPlatform.windows) {
+        final file = File(uri.toFilePath());
+        if (!File('${file.path}:Zone.Identifier').existsSync()) {
+          return await launchUrl(Uri.directory(file.parent.path));
         }
       }
       return await launchUrl(uri);

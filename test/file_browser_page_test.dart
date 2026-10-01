@@ -8,10 +8,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher_platform_interface/link.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/files/transfers.dart' show transfers;
 import 'package:sshbox/src/ui/file_browser_page.dart';
-import 'package:sshbox/src/ui/file_download.dart' show copyDownload;
+import 'package:sshbox/src/ui/file_download.dart'
+    show copyDownload, openDownload;
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart' show showDotfiles;
 import 'package:sshbox/src/ui/terminal_link.dart';
@@ -1014,6 +1017,29 @@ void main() {
       expect(find.textContaining('Could not save notes.txt'), findsOneWidget);
       await tester.pumpAndSettle(const Duration(seconds: 5));
     }, variant: desktops);
+
+    testWidgets('on Windows, a file not marked as from the internet only '
+        'has its folder opened', (tester) async {
+      final launcher = _Launcher();
+      final real = UrlLauncherPlatform.instance;
+      UrlLauncherPlatform.instance = launcher;
+      addTearDown(() => UrlLauncherPlatform.instance = real);
+      final dir = Directory.systemTemp.createTempSync('open');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      // A comma and no space: what explorer's /select, would have split.
+      final file = File('${dir.path}/report,payload.bat')
+        ..writeAsStringSync('x');
+      final saved = Uri.file(file.path).toString();
+
+      await tester.runAsync(() => openDownload(saved, 'report,payload.bat'));
+      expect(launcher.opened, [Uri.directory(dir.path).toString()]);
+
+      // Marked: Windows warns before running it, so the file itself opens.
+      File('${file.path}:Zone.Identifier').writeAsStringSync('ZoneId=3');
+      launcher.opened.clear();
+      await tester.runAsync(() => openDownload(saved, 'report,payload.bat'));
+      expect(launcher.opened, [saved]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
   });
 
   group('Copy content', () {
@@ -1191,4 +1217,18 @@ final class _PhoneFile extends PlatformFile {
 
   @override
   Stream<Uint8List> readAsByteStream() => const Stream.empty();
+}
+
+/// Opens everything, and remembers what it was handed.
+class _Launcher extends UrlLauncherPlatform {
+  final opened = <String>[];
+
+  @override
+  LinkDelegate? get linkDelegate => null;
+
+  @override
+  Future<bool> launchUrl(String url, LaunchOptions options) async {
+    opened.add(url);
+    return true;
+  }
 }
