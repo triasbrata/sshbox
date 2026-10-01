@@ -169,8 +169,12 @@ env:
           timeout: 10000
       - inputText: "after"
       - tapOn: "Send"
-      - extendedWaitUntil:
-          visible: "(?s).*Seen 2: red, blue.*"
+      # Two pictures make a tall bubble, which leaves the answer under the
+      # keyboard; the keyboard goes, and the answer is scrolled to.
+      - hideKeyboard
+      - scrollUntilVisible:
+          element: "(?s).*Seen 2: red, blue.*"
+          direction: DOWN
           timeout: 60000
       - takeScreenshot: chat-images-${SHOT}
 

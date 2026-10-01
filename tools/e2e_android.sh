@@ -614,8 +614,8 @@ pics_probe() {
   sleep 3
   adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
   echo "probe $1: fields now hold:"
-  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'class="android.widget.EditText"[^>]*' |
-    grep -o 'text="[^"]*"'
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o '<node [^>]*EditText[^>]*>' |
+    grep -o ' text="[^"]*"'
   echo "probe $1: cards: $(adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'View [^"]*' | wc -l)"
   echo "probe $1: JeanshPaste said:"
   adb logcat -d -s JeanshPaste 2>/dev/null | grep -v '^-' | tail -5
@@ -656,8 +656,12 @@ if not ok:
     print('::error::step 3: --bg', bg and bg[0]['argv'], 'then', enter)
 sys.exit(0 if ok else 1)
 PY
-  # Step 6: + offers a file Claude cannot read, which is refused.
+  # Step 6: + offers a file Claude cannot read, which is refused. With the
+  # emulator's animations off a toast is gone at once, so they are on for
+  # this one.
+  adb shell settings put global animator_duration_scale 1
   pics refuse || status=1
+  adb shell settings put global animator_duration_scale 0
   # Where a hardware Ctrl+V goes: into the box with a picture on the
   # clipboard, with text, and into the terminal. Report only.
   pics probe-picture && pics_probe picture
