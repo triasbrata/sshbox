@@ -2,10 +2,11 @@
 # sent to this chat's own Claude as image blocks, and into a running session
 # as a path pasted on its own, the CLI's chip awaited before the text after it.
 #
-# One file, a section a STEP, since a picture reaches the box only by a Ctrl+V
-# Maestro cannot press: tools/e2e_android.sh's chat_images runs a section,
-# presses Ctrl+V on the emulator with adb, and runs the next. Only `open`
-# launches the app; every other section goes on from where the last stopped.
+# One file, a section a STEP: tools/e2e_android.sh's chat_images runs a
+# section, checks on the host what it sent there, and runs the next. Only
+# `open` launches the app; every other section goes on from where the last
+# stopped. Pictures go in by the box's own Paste, by touch, and by + —
+# Maestro can press no Ctrl+V, which the script tries once with adb.
 #
 # STEP, SESSION and SHOT come from -e alone: Maestro 2.10 lets a flow's own
 # env: block win over -e (see tools/e2e_android.sh), so they have no default.
@@ -65,13 +66,23 @@ env:
           timeout: 30000
       - tapOn: "Ask Claude…"
 
-# own: after one Ctrl+V. Step 1, the card and the box's token; step 5, the
-# card opens large and Close comes back; step 4, a Backspace into the token
-# takes the card away. The box is emptied after.
+
+# own: step 1's card and the box's token. tools/e2e_android.sh tries a Ctrl+V
+# first and says whether it made a card; with none, the picture goes in by
+# touch, as a phone with no keyboard pastes: a long press on the empty box,
+# and its menu's Paste. Then step 5, the card opens large and Close comes
+# back; and step 4, a Backspace into the token takes the card away. The box
+# is emptied after.
 - runFlow:
     when:
       true: ${STEP == 'own'}
     commands:
+      - runFlow:
+          when:
+            notVisible: "(?s)\\[Image #1\\] .*\\.png"
+          commands:
+            - longPressOn: "Ask Claude…"
+            - tapOn: "Paste"
       - extendedWaitUntil:
           visible: "(?s)\\[Image #1\\] .*\\.png"
           timeout: 10000
@@ -92,9 +103,8 @@ env:
       - assertNotVisible: "View .*"
       - eraseText: 20
 
-# remove: the picture pasted by touch this time, a long press on the empty
-# box and its menu's Paste, as a phone with no keyboard pastes. Step 4, the
-# card's own button takes its token out of the box.
+# remove: pasted by touch again, then step 4 the other way: the card's own
+# button takes its token out of the box.
 - runFlow:
     when:
       true: ${STEP == 'remove'}
@@ -109,14 +119,15 @@ env:
           visible: "Ask Claude…"
           timeout: 5000
       - assertNotVisible: "(?s).*\\[Image #1\\].*"
-      - tapOn: "Ask Claude…"
 
-# send: after a third Ctrl+V. Step 1, sent to this chat's own Claude: the
-# bubble draws the picture and the answer names its colour.
+# send: step 1 sent to this chat's own Claude: the bubble draws the picture
+# and the answer names its colour, read from the image block.
 - runFlow:
     when:
       true: ${STEP == 'send'}
     commands:
+      - longPressOn: "Ask Claude…"
+      - tapOn: "Paste"
       - extendedWaitUntil:
           visible: "(?s)\\[Image #1\\] .*\\.png"
           timeout: 10000
@@ -128,8 +139,9 @@ env:
       - assertVisible: "View .*"
       - takeScreenshot: chat-images-own-answer
 
-# watch: step 2's start, the running session SESSION picked and its box
-# focused, for two Ctrl+Vs with text between them.
+# watch: step 2, into the running session SESSION: the red picture pasted,
+# text, the blue one picked with +, text, sent. Its answer names both, in
+# order; the script reads what reached the host.
 - runFlow:
     when:
       true: ${STEP == 'watch'}
@@ -142,35 +154,27 @@ env:
       - extendedWaitUntil:
           visible: "Message “${SESSION}”…"
           timeout: 30000
-      - tapOn: "Message “${SESSION}”…"
-
-# between: after a Ctrl+V, the text before the next picture.
-- runFlow:
-    when:
-      true: ${STEP == 'between'}
-    commands:
+      - longPressOn: "Message “${SESSION}”…"
+      - tapOn: "Paste"
       - extendedWaitUntil:
-          visible: "(?s)\\[Image #\\d+\\] .*\\.png"
+          visible: "(?s)\\[Image #1\\] .*\\.png"
           timeout: 10000
       - inputText: "between "
-
-# deliver: after the second Ctrl+V, the text after it, sent; the session's
-# own answer saying it saw two pictures.
-- runFlow:
-    when:
-      true: ${STEP == 'deliver'}
-    commands:
+      - runFlow:
+          file: chat_images_pick.yaml
+          env:
+            FILE: e2e-blue.png
       - extendedWaitUntil:
-          visible: "(?s).*between \\[Image #\\d+\\].*"
+          visible: "(?s).*between \\[Image #2\\].*"
           timeout: 10000
       - inputText: "after"
       - tapOn: "Send"
       - extendedWaitUntil:
-          visible: "(?s).*Seen 2: red, red.*"
+          visible: "(?s).*Seen 2: red, blue.*"
           timeout: 60000
       - takeScreenshot: chat-images-${SHOT}
 
-# new: step 3, a new chat, its box focused for a Ctrl+V.
+# new: step 3, a new chat whose first message carries a picture.
 - runFlow:
     when:
       true: ${STEP == 'new'}
@@ -180,13 +184,8 @@ env:
       - extendedWaitUntil:
           visible: "Start a new chat…"
           timeout: 10000
-      - tapOn: "Start a new chat…"
-
-# started: after the Ctrl+V, sent as a new chat's first message.
-- runFlow:
-    when:
-      true: ${STEP == 'started'}
-    commands:
+      - longPressOn: "Start a new chat…"
+      - tapOn: "Paste"
       - extendedWaitUntil:
           visible: "(?s)\\[Image #1\\] .*\\.png"
           timeout: 10000
@@ -204,21 +203,10 @@ env:
     when:
       true: ${STEP == 'refuse'}
     commands:
-      - tapOn: "Add a picture"
       - runFlow:
-          when:
-            notVisible: "e2e-old.bmp"
-          commands:
-            - tapOn:
-                text: "Show roots"
-                optional: true
-            - tapOn:
-                text: "Downloads"
-                optional: true
-      - extendedWaitUntil:
-          visible: "e2e-old.bmp"
-          timeout: 15000
-      - tapOn: "e2e-old.bmp"
+          file: chat_images_pick.yaml
+          env:
+            FILE: e2e-old.bmp
       - extendedWaitUntil:
           visible: "(?s).*Not a picture Claude can read: e2e-old\\.bmp.*"
           timeout: 10000

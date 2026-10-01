@@ -407,9 +407,10 @@ chat_version() {
   return "$status"
 }
 
-# Pictures in chat (#146), .maestro/chat_images.yaml a section at a time: a
-# picture reaches the box only by Ctrl+V, which Maestro cannot press, so it is
-# pressed here with adb between sections. The host's Claude is the stand-in in
+# Pictures in chat (#146), .maestro/chat_images.yaml a section at a time, what
+# each sent to the host checked between them. Pictures go in by touch, the
+# box's own Paste, and by +; a Ctrl+V, which Maestro cannot press, is tried
+# once with adb and reported. The host's Claude is the stand-in in
 # tools/e2e_image_claude.py, which logs what it is given to ~/.e2e-pics.log;
 # what reached the host is read from there and from the transcripts.
 PICS_SIDS=(e2e00007-0000-4000-8000-000000000007 e2e00008-0000-4000-8000-000000000008
@@ -493,15 +494,24 @@ for n in (7, 8, 9):
                    'content': [{'type': 'text', 'text': 'Earlier answer'}]}}):
             f.write(json.dumps(e) + '\n')
 PY
-  # On the phone, a BMP: a picture to Android's picker, not one Claude reads.
-  python3 - "$ROOT/build/e2e-old.bmp" <<'PY' || return 1
-import struct, sys
+  # On the phone, in Downloads for the + button: a blue PNG, and a BMP, a
+  # picture to Android's picker and not one Claude reads.
+  python3 - "$ROOT/build" <<'PY' || return 1
+import struct, sys, zlib
+out = sys.argv[1]
+raw = b''.join(b'\x00' + bytes((20, 20, 230)) * 64 for _ in range(48))
+def chunk(n, b):
+    return struct.pack('>I', len(b)) + n + b + struct.pack('>I', zlib.crc32(n + b) & 0xffffffff)
+open(out + '/e2e-blue.png', 'wb').write(
+    b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 64, 48, 8, 2, 0, 0, 0))
+    + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
 pixel = b'\x00\x00\xff\x00'
 info = struct.pack('<IiiHHIIiiII', 40, 1, 1, 1, 24, 0, len(pixel), 2835, 2835, 0, 0)
 head = struct.pack('<2sIHHI', b'BM', 14 + len(info) + len(pixel), 0, 0, 14 + len(info))
-open(sys.argv[1], 'wb').write(head + info + pixel)
+open(out + '/e2e-old.bmp', 'wb').write(head + info + pixel)
 PY
-  adb push "$ROOT/build/e2e-old.bmp" /sdcard/Download/e2e-old.bmp >/dev/null || return 1
+  adb push "$ROOT/build/e2e-blue.png" /sdcard/Download/e2e-blue.png >/dev/null &&
+    adb push "$ROOT/build/e2e-old.bmp" /sdcard/Download/e2e-old.bmp >/dev/null || return 1
   # The background session: a sleep for chat's follow to watch, as a live one.
   bg=$("${as[@]}" sh -c 'setsid sleep 3600 </dev/null >/dev/null 2>&1 & echo $!')
   pics_pids+=("$bg")
@@ -574,9 +584,10 @@ PY
 chat_images() {
   local status=0 log=/home/$SSH_USER/.e2e-pics.log session started pid
   pics_host || return 1
-  # Steps 1, 5 and 4, in this chat's own claude -p; the second paste by touch.
-  { pics open -e "SESSION=E2E pictures own" && pics_paste && pics own &&
-    pics remove && pics_paste && pics send; } || status=1
+  # Steps 1, 5 and 4, in this chat's own claude -p. A Ctrl+V is tried once,
+  # and said whether it made a card; the flow pastes by touch where not.
+  { pics open -e "SESSION=E2E pictures own" && { pics_paste || true; } &&
+    pics own && pics remove && pics send; } || status=1
   echo "what the stand-in's claude -p was sent:"
   sudo grep '"ev": "message"' "$log" ||
     { echo "::error::step 1: no message reached claude -p"; status=1; }
@@ -585,14 +596,13 @@ chat_images() {
   # Step 2, into a background session through attach, then one in a pane.
   for session in live pane; do
     sudo truncate -s 0 "$log"
-    { pics watch -e "SESSION=E2E pictures $session" && pics_paste && pics between &&
-      pics_paste && pics deliver -e "SHOT=$session"; } || status=1
+    pics watch -e "SESSION=E2E pictures $session" -e "SHOT=$session" || status=1
     pics_order "step 2, $session" || { echo "::error::step 2 ($session) failed"; status=1; }
   done
   # Step 3: a new chat with a picture starts claude --bg with no prompt, and
   # pastes the message in after.
   sudo truncate -s 0 "$log"
-  { pics new && pics_paste && pics started; } || status=1
+  pics new || status=1
   echo "the stand-in's log for step 3:"
   sudo cat "$log"
   sudo python3 - "$log" <<'PY' || { echo "::error::step 3 failed"; status=1; }

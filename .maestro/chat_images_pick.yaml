@@ -1,0 +1,31 @@
+# The chat's + button, picking FILE from the phone's Downloads: run from
+# chat_images.yaml. Android 14 answers a request for pictures with its Photo
+# Picker, which lists only what the media store has scanned and names
+# nothing, so its ⋮ → Browse… opens the file browser, where Downloads holds
+# what tools/e2e_android.sh pushed.
+appId: cloud.brata.terminal
+---
+- tapOn: "Add a picture"
+- extendedWaitUntil:
+    visible: "(Photos|Recent|Downloads|${FILE})"
+    timeout: 15000
+- runFlow:
+    when:
+      visible: "Photos"
+    commands:
+      - tapOn: "More options"
+      - tapOn: "Browse.*"
+- runFlow:
+    when:
+      notVisible: "${FILE}"
+    commands:
+      - tapOn:
+          text: "Show roots"
+          optional: true
+      - tapOn:
+          text: "Downloads"
+          optional: true
+- extendedWaitUntil:
+    visible: "${FILE}"
+    timeout: 15000
+- tapOn: "${FILE}"
