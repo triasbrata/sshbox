@@ -192,6 +192,37 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  /// The box's selection menu, its Paste taking a picture first — the only
+  /// paste a touch screen with no keyboard has. Offered even when the
+  /// clipboard holds no text, which is when the field's own leaves it out:
+  /// a picture alone is exactly that.
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final paste = ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
+      onPressed: () {
+        editable.hideToolbar();
+        unawaited(
+          _pastePicture().then((took) {
+            if (!took) editable.pasteText(SelectionChangedCause.toolbar);
+          }),
+        );
+      },
+    );
+    final items = [...editable.contextMenuButtonItems];
+    final at = items.indexWhere(
+      (item) => item.type == ContextMenuButtonType.paste,
+    );
+    if (at >= 0) {
+      items[at] = paste;
+    } else if (_canWrite) {
+      items.add(paste);
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: editable.contextMenuAnchors,
+      buttonItems: items,
+    );
+  }
+
   void _refuse(String why) {
     if (mounted) showToast(context, why, type: TuiToastType.warning);
   }
@@ -702,10 +733,12 @@ class _ChatPageState extends State<ChatPage> {
         Expanded(
           // A picture pasted goes in as a card rather than as nothing:
           // see [_pastePicture]. The menu's own Paste is offered only for
-          // text, and takes text.
+          // text, and takes text — so it is replaced, below, by one that
+          // takes a picture first, and offered with a picture alone there.
           child: Actions(
             actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
             child: TextField(
+              contextMenuBuilder: _contextMenu,
               contentInsertionConfiguration: ContentInsertionConfiguration(
                 allowedMimeTypes: const [
                   'image/png',
