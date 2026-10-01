@@ -177,7 +177,7 @@ void main() {
       );
       expect(sample.style?.fontFamily, font.family);
     }
-    expect(find.bySemanticsLabel('Font size'), findsOneWidget);
+    expect(find.bySemanticsLabel('Content text size'), findsOneWidget);
     // The preview is a terminal of its own, in the chosen style.
     expect(
       tester.widget<TerminalView>(find.byType(TerminalView)).textStyle,
@@ -192,8 +192,9 @@ void main() {
       terminalStyleOf('JetBrains Mono', 13),
     );
 
-    // termul's slider, dragged to its end, is the largest.
-    final slider = find.byType(TuiSlider);
+    // termul's slider, dragged to its end, is the largest. The content
+    // size's, after the UI's.
+    final slider = find.byType(TuiSlider).last;
     await tester.ensureVisible(slider);
     await tester.drag(slider, const Offset(2000, 0));
     await tester.pump();
@@ -206,7 +207,7 @@ void main() {
     // And it is what the next start reads.
     terminalSettings.value = TerminalSettings.defaultStyle;
     await terminalSettings.load();
-    expect(terminalSettings.value, terminalStyleOf('JetBrains Mono', 24));
+    expect(terminalSettings.value, terminalStyleOf('JetBrains Mono', maxFontSize));
   });
 
   test('a font no longer bundled gives way to the default', () async {

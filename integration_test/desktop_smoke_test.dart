@@ -19,12 +19,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show DropdownButton, InkWell, PopupMenuDivider, TextField, Tooltip;
+import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,8 +38,27 @@ import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
-import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
+import 'package:sshbox/src/ui/settings_page.dart'
+    show SettingsPage, localTmux, terminalFonts;
+import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
+import 'package:sshbox/src/ui/text_size.dart';
 import 'package:xterm2/xterm.dart';
+
+/// Where [_shot] writes, from `--dart-define=JEANSH_SHOTS=folder`; empty, as
+/// on CI, writes nothing.
+const _shots = String.fromEnvironment('JEANSH_SHOTS');
+
+/// The window as drawn, as [name].png in [_shots], for a person to look at.
+Future<void> _shot(WidgetTester tester, String name) async {
+  if (_shots.isEmpty) return;
+  await tester.pumpAndSettle();
+  final view = tester.binding.renderViews.first;
+  final layer = view.debugLayer! as OffsetLayer;
+  final image = await layer.toImage(Offset.zero & view.paintBounds.size);
+  final png = await image.toByteData(format: ui.ImageByteFormat.png);
+  await Directory(_shots).create(recursive: true);
+  await File('$_shots/$name.png').writeAsBytes(png!.buffer.asUint8List());
+}
 
 /// Home, from a cold start, settled.
 ///
@@ -213,10 +234,8 @@ Future<void> _settings(WidgetTester tester) async {
   // was not on screen yet 600 ms after the tap.
   await _until(
     tester,
-    () => find
-        .text('LOOK · TERMINAL · KEYBOARD · PRIVACY')
-        .evaluate()
-        .isNotEmpty,
+    () =>
+        find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY').evaluate().isNotEmpty,
     'Settings to open',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -683,6 +702,72 @@ void main() {
       anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
     );
     expect(isDesktop, isTrue);
+  });
+
+  // Issue #133: the UI text size at its largest, set as a person sets it, by
+  // a drag on Settings' own slider, and the app still usable on the real
+  // embedder: Settings to its end, Home, and a Local shell whose terminal
+  // keeps the columns and rows it had. Any overflow on the way fails it.
+  _test('the UI text size at its largest leaves Home, Settings and a '
+      'terminal usable, the terminal at its own size', (tester) async {
+    addTearDown(() => uiTextSize.choose(1));
+    await uiTextSize.choose(1);
+    await _launch(tester);
+    await _shot(tester, 'desktop-home-default');
+    final before = await _localShell(tester);
+    final columns = before.terminal.viewWidth;
+    final rows = before.terminal.viewHeight;
+    await _shot(tester, 'desktop-terminal-default');
+    await _closeTabs(tester);
+
+    await _settings(tester);
+    await _shot(tester, 'desktop-settings-default');
+    // Settings' own list: Home's tab strip under it is a list too.
+    final page = find
+        .descendant(
+          of: find.byType(SettingsPage),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      _label('UI text size'),
+      300,
+      scrollable: page,
+    );
+    await tester.scrollUntilVisible(
+      find.byType(TuiSlider).first,
+      100,
+      scrollable: page,
+    );
+    final slider = find.byType(TuiSlider).first;
+    await tester.pumpAndSettle();
+    await tester.drag(slider, const Offset(3000, 0));
+    await tester.pumpAndSettle();
+    expect(uiTextSize.value, UiTextSize.max);
+    expect(find.text('160%'), findsOneWidget);
+    await _shot(tester, 'desktop-settings-largest');
+
+    // Settings to its end at that size.
+    await tester.scrollUntilVisible(_label('About'), 300, scrollable: page);
+    await tester.pumpAndSettle();
+    await _backHome(tester);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.byTooltip('Settings')))
+          .scale(13),
+      closeTo(13 * UiTextSize.max, 0.01),
+    );
+    await _shot(tester, 'desktop-home-largest');
+
+    final after = await _localShell(tester);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.byWidget(after))).scale(13),
+      13,
+      reason: 'a terminal takes the content size alone',
+    );
+    expect(after.terminal.viewWidth, columns);
+    expect(after.terminal.viewHeight, rows);
+    await _shot(tester, 'desktop-terminal-largest');
+    await _closeTabs(tester);
   });
 
   _test('the app boots and draws Home', (tester) async {
@@ -1286,9 +1371,8 @@ touch '${done.path}'
     (tester) async {
       // A digit first, so it sorts ahead of every other folder in a home
       // with many and is drawn without a scroll.
-      final dir = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('0-jeansh-e2e-');
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
       addTearDown(() => dir.deleteSync(recursive: true));
       final name = 'made-by-the-e2e-${dir.path.hashCode}.txt';
       File('${dir.path}/$name').writeAsStringSync('hello from the e2e\n');
@@ -1338,9 +1422,8 @@ touch '${done.path}'
         if (!hadConfig) {
           config.deleteSync(recursive: true);
         } else {
-          Directory(
-            '${config.path}/projects/jeansh-e2e',
-          ).deleteSync(recursive: true);
+          Directory('${config.path}/projects/jeansh-e2e')
+              .deleteSync(recursive: true);
         }
       });
 

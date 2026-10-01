@@ -35,6 +35,7 @@ import 'settings_page.dart';
 import 'terminal_link.dart';
 import 'terminal_paste.dart';
 import 'terminal_text_input.dart';
+import 'text_size.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
 import 'tui.dart';
@@ -883,29 +884,33 @@ class _TerminalPageState extends State<TerminalPage> {
     return Stack(
       children: [
         // Both kinds of terminal take their size from here, the soft
-        // keyboard's slide included: see _SettledHeight.
-        _SettledHeight(
-          child: tmux == null
-              ? _paneView(
-                  _session.terminal,
-                  style,
-                  focused: true,
-                  padding: _padding,
-                )
-              : TmuxPaneLayout(
-                  tmux: tmux,
-                  textStyle: style,
-                  padding: _padding,
-                  // Touching a pane is what focuses it, and the session sends
-                  // the bar's keys to the focused pane, so every pane sends
-                  // through it.
-                  pane: (pane, focused) => _paneView(
-                    pane.terminal,
+        // keyboard's slide included: see _SettledHeight. At the content
+        // size alone, so the UI size never changes a cell: see ContentText.
+        ContentText(
+          scale: false,
+          child: _SettledHeight(
+            child: tmux == null
+                ? _paneView(
+                    _session.terminal,
                     style,
-                    focused: focused,
-                    autoResize: false,
+                    focused: true,
+                    padding: _padding,
+                  )
+                : TmuxPaneLayout(
+                    tmux: tmux,
+                    textStyle: style,
+                    padding: _padding,
+                    // Touching a pane is what focuses it, and the session sends
+                    // the bar's keys to the focused pane, so every pane sends
+                    // through it.
+                    pane: (pane, focused) => _paneView(
+                      pane.terminal,
+                      style,
+                      focused: focused,
+                      autoResize: false,
+                    ),
                   ),
-                ),
+          ),
         ),
         // Still at a sign-in once the connect sheet has sent it to a web
         // tab: the way back to that tab, rather than a blank terminal. Not
@@ -940,8 +945,7 @@ class _TerminalPageState extends State<TerminalPage> {
             // page is built again only as it starts and ends.
             child: ListenableBuilder(
               listenable: transfers,
-              builder: (_, _) =>
-                  TuiProgressBar(value: sending.fraction),
+              builder: (_, _) => TuiProgressBar(value: sending.fraction),
             ),
           ),
         // In the body rather than the Scaffold's button slot so it can be

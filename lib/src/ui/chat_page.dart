@@ -10,6 +10,7 @@ import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
 import 'code_languages.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -334,45 +335,48 @@ class _ChatPageState extends State<ChatPage> {
                   // them would do nothing.
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
-              : CustomScrollView(
-                  // A list of its own for each session picked. The rows a
-                  // lazy list has built keep where they were laid out, and
-                  // another session's rows, of other heights, drawn into
-                  // them put what a session was left at somewhere else.
-                  key: ValueKey(chat.pickedFrom),
-                  controller: _scroll,
-                  center: _opened,
-                  slivers: [
-                    // Above [_opened], slivers grow upwards: the nearest to it
-                    // is the list of earlier turns, newest of them first, and
-                    // over them what says there are more.
-                    if (chat.hasEarlier)
-                      SliverToBoxAdapter(
-                        child: _Earlier(chat: chat, onLoad: _loadEarlier),
+              // Prose and code at the content size.
+              : ContentText(
+                  child: CustomScrollView(
+                    // A list of its own for each session picked. The rows a
+                    // lazy list has built keep where they were laid out, and
+                    // another session's rows, of other heights, drawn into
+                    // them put what a session was left at somewhere else.
+                    key: ValueKey(chat.pickedFrom),
+                    controller: _scroll,
+                    center: _opened,
+                    slivers: [
+                      // Above [_opened], slivers grow upwards: the nearest to it
+                      // is the list of earlier turns, newest of them first, and
+                      // over them what says there are more.
+                      if (chat.hasEarlier)
+                        SliverToBoxAdapter(
+                          child: _Earlier(chat: chat, onLoad: _loadEarlier),
+                        ),
+                      SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        sliver: SliverList.builder(
+                          itemCount: chat.earlier,
+                          itemBuilder: (context, index) =>
+                              _entry(entries[chat.earlier - 1 - index]),
+                        ),
                       ),
-                    SliverPadding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      sliver: SliverList.builder(
-                        itemCount: chat.earlier,
-                        itemBuilder: (context, index) =>
-                            _entry(entries[chat.earlier - 1 - index]),
+                      SliverPadding(
+                        key: _opened,
+                        padding: EdgeInsets.fromLTRB(
+                          12,
+                          chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
+                          12,
+                          4,
+                        ),
+                        sliver: SliverList.builder(
+                          itemCount: entries.length - chat.earlier,
+                          itemBuilder: (context, index) =>
+                              _entry(entries[chat.earlier + index]),
+                        ),
                       ),
-                    ),
-                    SliverPadding(
-                      key: _opened,
-                      padding: EdgeInsets.fromLTRB(
-                        12,
-                        chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
-                        12,
-                        4,
-                      ),
-                      sliver: SliverList.builder(
-                        itemCount: entries.length - chat.earlier,
-                        itemBuilder: (context, index) =>
-                            _entry(entries[chat.earlier + index]),
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
         ),
         if (chat.busy)

@@ -17,6 +17,7 @@ import 'key_bar.dart';
 import 'terminal_page.dart' show openUrl;
 import 'update_dialog.dart';
 import 'terminal_schemes.dart';
+import 'text_size.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
 import 'tui.dart';
@@ -59,7 +60,7 @@ const terminalFonts = <({String family, String label, String? note})>[
 ];
 
 const minFontSize = 9.0;
-const maxFontSize = 24.0;
+const maxFontSize = 32.0;
 
 /// What a terminal draws with in [family] at [size]. The Nerd Font comes
 /// first and the symbols font behind it, with xterm2's own fallbacks last, so
@@ -1033,7 +1034,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
       builder: (context, style, _) {
-        final cell = terminalCellSize(style, MediaQuery.textScalerOf(context));
+        final cell = terminalCellSize(style, systemTextScaler(context));
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1043,16 +1044,40 @@ class _TerminalSectionState extends State<_TerminalSection> {
               // Only to look at: a tap would take focus for a terminal that
               // has nothing behind it.
               child: IgnorePointer(
-                child: TerminalView(
-                  _preview,
-                  textStyle: style,
-                  theme: terminalThemeOf(context),
-                  padding: _previewPadding,
-                  readOnly: true,
+                // At the content size, as every terminal is: see ContentText.
+                child: ContentText(
+                  scale: false,
+                  child: TerminalView(
+                    _preview,
+                    textStyle: style,
+                    theme: terminalThemeOf(context),
+                    padding: _previewPadding,
+                    readOnly: true,
+                  ),
                 ),
               ),
             ),
-            const _Label('Font size'),
+            // The app's chrome — tabs, the key bar, menus, dialogs, Settings
+            // and Home — apart from what is read in a tab: see text_size.dart.
+            const _Label('UI text size'),
+            ValueListenableBuilder(
+              valueListenable: uiTextSize,
+              // Named, for a screen reader and the e2e flow that sets it.
+              builder: (context, scale, _) => Semantics(
+                label: 'Set the UI text size',
+                child: TuiSlider(
+                  value: (scale * 100).roundToDouble(),
+                  min: UiTextSize.min * 100,
+                  max: UiTextSize.max * 100,
+                  divisions: ((UiTextSize.max - UiTextSize.min) * 10).round(),
+                  valueLabel: '${(scale * 100).round()}%',
+                  onChanged: (percent) => uiTextSize.choose(percent / 100),
+                ),
+              ),
+            ),
+            // The terminal's font size, which chat, the editor, diffs, the
+            // Markdown preview and the database grid follow too.
+            const _Label('Content text size'),
             TuiSlider(
               value: style.fontSize.roundToDouble(),
               min: minFontSize.roundToDouble(),
