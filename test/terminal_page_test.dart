@@ -2134,6 +2134,30 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
     }
 
+    // The other half of issue #127: what was off on the Mac was a Local
+    // shell's; a saved host's files and chat never were.
+    testWidgets('and the files drawer are on for a saved host on a Mac', (
+      tester,
+    ) async {
+      final (:opened, host: _) = await pumpChat(
+        tester,
+        '2.1.300 (Claude Code)',
+      );
+      for (final tooltip in ['Chat with Claude', 'Browse files']) {
+        final button = tester.widget<IconButton>(
+          find
+              .ancestor(
+                of: find.byTooltip(tooltip),
+                matching: find.byType(IconButton),
+              )
+              .first,
+        );
+        expect(button.onPressed, isNotNull, reason: tooltip);
+      }
+      await tapChat(tester);
+      expect(opened, hasLength(1));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
     testWidgets('on a host whose Claude Code is too old it says so, with both '
         'versions, and opens nothing', (tester) async {
       final (:opened, :host) = await pumpChat(tester, '2.0.14 (Claude Code)');

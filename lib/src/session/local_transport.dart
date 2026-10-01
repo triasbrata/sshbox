@@ -7,6 +7,7 @@ import 'package:flutter_pty/flutter_pty.dart';
 
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
+import '../files/local_file_browser.dart';
 import '../files/sftp_file_browser.dart' show SftpFileBrowser;
 import '../models/host_profile.dart';
 import 'terminal_session.dart';
@@ -167,11 +168,14 @@ String wslEnv(String? current, Iterable<String> names) {
 ///
 /// It is a [SessionTransport] like the SSH one, so every tab, terminal and
 /// keystroke path above it is unchanged. What it does not implement is as
-/// important as what it does: no [FileBrowseCapable] or [ForwardCapable], so
-/// the files drawer and the tailnet forwarding switch themselves off for it
-/// rather than failing at a use. [CommandCapable] it does have, which is what
-/// the git tab runs through, [ChannelCapable], which is what tmux's control
-/// mode runs through — see [connect]'s `shell` — and [FileUploadCapable],
+/// important as what it does: no [ForwardCapable], so the tailnet forwarding
+/// switches itself off for it rather than failing at a use, and no
+/// [FileBrowseCapable] in PowerShell, whose Windows paths the tree cannot
+/// hold. [CommandCapable] it does have, which is what the git tab runs
+/// through, [ChannelCapable], which is what tmux's control mode and the chat's
+/// Claude run through — see [connect]'s `shell` — [TerminalChannelCapable],
+/// which `claude attach` wants, [FileBrowseCapable] on a Mac, Linux or in a
+/// WSL distro, which the files drawer reads through, and [FileUploadCapable],
 /// which is what a pasted picture, the upload button and a share go through.
 class LocalTransport implements SessionTransport {
   /// [windows] and [environment] stand in for [Platform.isWindows] and
@@ -313,9 +317,46 @@ class LocalTransport implements SessionTransport {
   /// picture either way — tmux's panes are pasted into as the shell is: on a
   /// Mac or Linux kept on this machine, on Windows put where the distro or
   /// PowerShell can open it, see [_upload].
-  _LocalSession _session(Pty? pty) => _windows
-      ? _WindowsLocalSession(pty, _process, _upload)
-      : _UnixLocalSession(pty, _process);
+  _LocalSession _session(Pty? pty) {
+    final distro = wslDistro;
+    if (!_windows) {
+      return _UnixLocalSession(pty, _process, _terminal, _env['HOME']);
+    }
+    if (distro == null) {
+      return _WindowsLocalSession(pty, _process, _terminal, _upload);
+    }
+    return _WslLocalSession(pty, _process, _terminal, _upload, distro);
+  }
+
+  /// [command] on a pty of its own beside the shell, as [_commandLine] runs
+  /// it and in [_process]'s environment: what `claude attach` runs in.
+  Pty _terminal(String command, int columns, int rows) {
+    final line = _commandLine(command);
+    if (line == null) {
+      throw const SshSessionException(
+        'This needs a Unix shell. On Windows, open a WSL shell from Home.',
+      );
+    }
+    return startPty(
+      line.first,
+      arguments: line.sublist(1),
+      workingDirectory: _windows ? null : _env['HOME'],
+      environment: _commandEnv(),
+      rows: rows,
+      columns: columns,
+    );
+  }
+
+  /// The app's environment, but for where tmux says it is running inside one
+  /// of the user's own sessions, and plus the tmux binary Settings gives.
+  Map<String, String> _commandEnv() {
+    final tmux = this.tmux;
+    return {
+      for (final MapEntry(:key, :value) in _env.entries)
+        if (key != 'TMUX' && key != 'TMUX_PANE') key: value,
+      'SSHBOX_TMUX': ?tmux,
+    };
+  }
 
   /// Starts [command] beside the shell, as [_commandLine] runs it.
   ///
@@ -332,16 +373,11 @@ class LocalTransport implements SessionTransport {
         'This needs a Unix shell. On Windows, open a WSL shell from Home.',
       );
     }
-    final tmux = this.tmux;
     return Process.start(
       line.first,
       line.sublist(1),
       workingDirectory: _windows ? null : _env['HOME'],
-      environment: {
-        for (final MapEntry(:key, :value) in _env.entries)
-          if (key != 'TMUX' && key != 'TMUX_PANE') key: value,
-        'SSHBOX_TMUX': ?tmux,
-      },
+      environment: _commandEnv(),
       includeParentEnvironment: false,
     );
   }
@@ -511,8 +547,13 @@ String typedWindowsPath(String path) => path.contains(' ') ? '"$path"' : path;
 
 /// A local shell, or with no [_pty] the session a tmux tab holds, which has
 /// no terminal of its own: its panes come through [open].
-class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
-  _LocalSession(this._pty, this._process) {
+class _LocalSession
+    implements
+        TerminalSession,
+        CommandCapable,
+        ChannelCapable,
+        TerminalChannelCapable {
+  _LocalSession(this._pty, this._process, this._terminal) {
     final pty = _pty;
     if (pty == null) return;
     // Chunked rather than a decode per event: a character the shell writes in
@@ -528,6 +569,7 @@ class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
 
   final Pty? _pty;
   final Future<Process> Function(String command) _process;
+  final Pty Function(String command, int columns, int rows) _terminal;
   final _output = StreamController<String>.broadcast();
   final _status = ValueNotifier(SessionStatus.connected);
   StreamSubscription<String>? _subscription;
@@ -635,6 +677,42 @@ class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
     );
   }
 
+  /// A command beside the shell with a terminal of its own, as an SSH exec
+  /// channel with a pty: what `claude attach` will not run without. Closing
+  /// it kills it, as hanging up a pty does.
+  @override
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  }) async {
+    if (_disposed) {
+      throw const SshSessionException('This shell has ended.');
+    }
+    final pty = _terminal(command, columns, rows);
+    var closed = false;
+    void close() {
+      if (closed) return;
+      closed = true;
+      _channels.remove(close);
+      try {
+        pty.kill();
+      } catch (_) {
+        // Already gone.
+      }
+    }
+
+    _channels.add(close);
+    unawaited(pty.exitCode.then((_) => _channels.remove(close)));
+    return (
+      output: pty.output,
+      write: (Uint8List data) {
+        if (!closed) pty.write(data);
+      },
+      close: close,
+    );
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;
@@ -658,7 +736,12 @@ class _LocalSession implements TerminalSession, CommandCapable, ChannelCapable {
 /// into the distro's own `/tmp` through `sh` running there, or into the
 /// user's `%TEMP%` — see [LocalTransport._upload].
 class _WindowsLocalSession extends _LocalSession implements FileUploadCapable {
-  _WindowsLocalSession(super._pty, super._process, this._upload);
+  _WindowsLocalSession(
+    super._pty,
+    super._process,
+    super._terminal,
+    this._upload,
+  );
 
   final Future<String> Function(
     String localPath,
@@ -680,14 +763,50 @@ class _WindowsLocalSession extends _LocalSession implements FileUploadCapable {
   }
 }
 
+/// A WSL distro's shell, whose files the drawer reads through Windows' own
+/// share of the distro, `\\wsl.localhost\<distro>`: plain file access, the
+/// distro's own permissions and owner applying. Search and sudo run inside
+/// the distro, as its commands do.
+class _WslLocalSession extends _WindowsLocalSession
+    implements FileBrowseCapable {
+  _WslLocalSession(
+    super._pty,
+    super._process,
+    super._terminal,
+    super._upload,
+    this._distro,
+  );
+
+  final String _distro;
+
+  @override
+  FileBrowser openFileBrowser() => LocalFileBrowser(
+    process: _process,
+    native: (path) => LocalFileBrowser.wslPath(_distro, path),
+    home: () async {
+      final lines = await run(r'printf "%s\n" "$HOME"').toList();
+      return lines.isEmpty ? '/' : lines.last;
+    },
+    windows: true,
+  );
+}
+
 /// A local shell on a Mac or Linux, which can be handed a file as well: a
 /// picture pasted at its prompt is kept where the shell can read it and its
 /// path typed, as one pasted into a host's shell is uploaded to its `/tmp`.
 ///
 /// Windows has its own, [_WindowsLocalSession], a Windows path meaning
 /// nothing inside a distro.
-class _UnixLocalSession extends _LocalSession implements FileUploadCapable {
-  _UnixLocalSession(super._pty, super._process);
+class _UnixLocalSession extends _LocalSession
+    implements FileUploadCapable, FileBrowseCapable {
+  _UnixLocalSession(super._pty, super._process, super._terminal, this._home);
+
+  final String? _home;
+
+  /// This machine's own files, rooted at the login home.
+  @override
+  FileBrowser openFileBrowser() =>
+      LocalFileBrowser(process: _process, home: () async => _home ?? '/');
 
   /// Where the files go: a folder made new under a name nobody had, and 0700
   /// before anything goes in, so nobody else can reach into it or plant a

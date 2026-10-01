@@ -399,10 +399,10 @@ class LiveSession extends ChangeNotifier {
   /// Whether Claude can be run beside the shell at all — a transport that
   /// carries only a terminal, as mosh does, cannot.
   ///
-  /// Not this machine's own shells yet, though they carry a channel for
-  /// tmux: typing into a running session goes through a terminal channel,
-  /// which they do not have, and chat mode was never tried there.
-  bool get canChat => _session is ChannelCapable && !isLocalHostId(host.id);
+  /// This machine's own shells can too: Claude runs beside them as a process
+  /// of its own, as it does on an exec channel — but for PowerShell, where
+  /// [chatRefusal] says to open a WSL shell.
+  bool get canChat => _session is ChannelCapable;
 
   /// The connection whose Claude Code passed [chatRefusal]. Asked once a
   /// connection, since a version does not change under a session unless it
