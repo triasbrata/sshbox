@@ -59,12 +59,6 @@ class _Shell implements SessionTransport, TerminalSession, FileBrowseCapable {
   FileBrowser openFileBrowser() => FakeFileBrowser();
 }
 
-List<String?> _texts(WidgetTester tester) => tester
-    .widgetList<Text>(find.byType(Text))
-    .map((text) => text.data)
-    .whereType<String>()
-    .toList();
-
 void main() {
   testWidgets('a chat tab groups with a terminal tab', (tester) async {
     tester.view.physicalSize = const Size(1600, 1000);
@@ -94,7 +88,6 @@ void main() {
     await tester.pumpAndSettle();
     manager.openChat(session.id);
     await tester.pumpAndSettle();
-    debugPrint('strip: ${_texts(tester)}');
 
     await tester.tapAt(
       tester.getCenter(find.textContaining('Claude').first),
@@ -102,13 +95,10 @@ void main() {
       kind: PointerDeviceKind.mouse,
     );
     await tester.pumpAndSettle();
-    debugPrint('menu: ${_texts(tester)}');
     await tester.tap(find.text('Group with…'));
     await tester.pumpAndSettle();
-    debugPrint('dialog: ${_texts(tester)}');
     await tester.tap(find.text('box').last);
     await tester.pumpAndSettle();
-    debugPrint('after: ${_texts(tester)}');
 
     expect(tester.takeException(), isNull);
     expect(find.byTooltip('Tab group'), findsOneWidget);
@@ -157,25 +147,19 @@ void main() {
         kind: PointerDeviceKind.mouse,
       );
       await tester.pumpAndSettle();
-      debugPrint('menu($target): ${_texts(tester).skip(10).toList()}');
       await tester.tap(find.text('Group with…'));
       await tester.pumpAndSettle();
-      debugPrint(
-        'dialog($target): '
-        '${_texts(tester).skipWhile((t) => t != 'TAB GROUP').toList()}',
-      );
       await tester.tap(find.text(target).last);
       await tester.pumpAndSettle();
-      debugPrint(
-        'after($target): ${_texts(tester).take(8).toList()} '
-        'chat=${find.byType(ChatPage).evaluate().length} '
-        'terms=${find.byType(TerminalView).evaluate().length} '
-        'groups=${find.byTooltip('Tab group').evaluate().length}',
-      );
       expect(tester.takeException(), isNull);
+      expect(find.byTooltip('Tab group'), findsOneWidget);
+      expect(find.byType(ChatPage), findsOneWidget);
     }
 
     await group('other');
+    expect(find.byType(TerminalView), findsOneWidget);
     await group('box · notes.txt');
+    // The chat left the shell's group for the file's.
+    expect(find.byType(TerminalView), findsNothing);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 }
