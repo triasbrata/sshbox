@@ -11,6 +11,7 @@ import '../session/session_manager.dart';
 import 'code_languages.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -286,13 +287,17 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, box) {
       final wide = box.maxWidth >= _wide;
       final sidebar = wide && _sidebarOpen;
-      final sessions = _SessionList(
-        chat: _chat,
-        agents: _agents,
-        connected: widget.session.isConnected,
-        onPick: _pick,
-        onRefresh: () => setState(_listAgents),
-        onNewChat: _newChat,
+      // Chat at the content size, its sessions, messages, tool rows, code
+      // and composer alike: see ContentText.
+      final sessions = ContentText(
+        child: _SessionList(
+          chat: _chat,
+          agents: _agents,
+          connected: widget.session.isConnected,
+          onPick: _pick,
+          onRefresh: () => setState(_listAgents),
+          onNewChat: _newChat,
+        ),
       );
       return Scaffold(
         key: _scaffoldKey,
@@ -312,7 +317,9 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: _conversation(wide: wide, sidebar: sidebar),
+              child: ContentText(
+                child: _conversation(wide: wide, sidebar: sidebar),
+              ),
             ),
           ],
         ),
