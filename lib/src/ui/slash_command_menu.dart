@@ -213,8 +213,14 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
       );
       _keepInView(rows.indexOf(highlighted), rows.length);
     }
+    // No taller than a share of what the keyboard leaves, so the box, the
+    // tab strip and some of the conversation stay on screen; the list
+    // scrolls inside it.
+    final media = MediaQuery.of(context);
+    final room =
+        media.size.height - media.viewInsets.bottom - media.padding.vertical;
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: 300),
+      constraints: BoxConstraints(maxHeight: (room * 0.4).clamp(96, 300)),
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: p.panel,
@@ -233,13 +239,18 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
                     tone: TuiTextTone.muted,
                     size: 11,
                     bold: true,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const TuiKeyHint(keys: '↑↓', label: 'move'),
-                const SizedBox(width: 8),
-                const TuiKeyHint(keys: '⏎', label: 'pick'),
-                const SizedBox(width: 8),
-                const TuiKeyHint(keys: 'esc', label: 'close'),
+                // Keys are for a keyboard, and only where they fit.
+                if (media.size.width >= _hintsFrom) ...const [
+                  TuiKeyHint(keys: '↑↓', label: 'move'),
+                  SizedBox(width: 8),
+                  TuiKeyHint(keys: '⏎', label: 'pick'),
+                  SizedBox(width: 8),
+                  TuiKeyHint(keys: 'esc', label: 'close'),
+                ],
                 IconButton(
                   tooltip: 'Read the commands again',
                   visualDensity: VisualDensity.compact,
@@ -256,6 +267,9 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
       ),
     );
   }
+
+  /// From this width the heading has room for its key hints.
+  static const _hintsFrom = 600.0;
 
   /// Scrolls the list so the highlighted row stays on screen as the arrows
   /// move it. ponytail: by the row's share of the list, rows being near one
@@ -302,22 +316,32 @@ class _Row extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
+          // One height for every row, however narrow the page: each line
+          // is cut rather than wrapped.
+          height: 44,
           color: highlighted ? p.selection : null,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Row(
                 children: [
-                  TuiText(
-                    '/${command.name}',
-                    tone: TuiTextTone.accent,
-                    size: 13,
-                    bold: true,
+                  Flexible(
+                    flex: 3,
+                    child: TuiText(
+                      '/${command.name}',
+                      tone: TuiTextTone.accent,
+                      size: 13,
+                      bold: true,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                   if (command.argumentHint.isNotEmpty) ...[
                     const SizedBox(width: 8),
                     Flexible(
+                      flex: 2,
                       child: TuiText(
                         command.argumentHint,
                         tone: TuiTextTone.dim,

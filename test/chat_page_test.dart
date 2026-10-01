@@ -535,6 +535,73 @@ void main() {
     await tester.pump(const Duration(seconds: 6));
   });
 
+  testWidgets('on a phone with the keyboard up the list fits, and /con '
+      'still shows /context', (tester) async {
+    // The CI emulator's screen: 320 by 568, with Gboard over the bottom.
+    tester.view
+      ..physicalSize = const Size(320, 568)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')])
+      ..slashListing = '${jsonEncode({
+        'type': 'control_response',
+        'response': {
+          'response': {
+            'commands': [
+              for (final name in ['compact', 'context', 'code-review'])
+                {
+                  'name': name,
+                  'description': 'What /$name does, said at some length so '
+                      'it cannot fit a phone',
+                  'argumentHint': '<optional custom summarization '
+                      'instructions>',
+                  'builtin': true,
+                },
+              {
+                'name': 'a-skill-whose-name-is-much-too-long-for-a-phone',
+                'description': 'A skill',
+              },
+            ],
+          },
+        },
+      })}\n';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    // A chat with nothing in it yet, the keyboard up: what it says scrolls
+    // rather than overflowing, as its button shrinks rather than overflowing.
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pump();
+    tester.view.resetViewInsets();
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    // The keyboard comes up as the box is typed into. An overflow is an
+    // error the test framework fails on by itself.
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), '/');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('/compact').hitTestable(), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '/con');
+    await tester.pump();
+    expect(find.text('/context').hitTestable(), findsOneWidget);
+    // The list sits above the box and inside the room the keyboard leaves.
+    final list = tester.getRect(find.text('/context'));
+    expect(list.bottom, lessThanOrEqualTo(568 - 260));
+    expect(
+      list.bottom,
+      lessThanOrEqualTo(tester.getRect(find.byType(TextField)).top),
+    );
+  });
+
   testWidgets('an unconnected session says so rather than starting anything', (
     tester,
   ) async {

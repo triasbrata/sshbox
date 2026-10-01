@@ -244,6 +244,16 @@ void main() {
       expect(CommandTags.output('<command-name>/x</command-name>'), isNull);
     });
 
+    test('a stdout and a stderr in one record both show', () {
+      expect(
+        CommandTags.output(
+          '<local-command-stdout>done</local-command-stdout>\n'
+          '<local-command-stderr>warning: x</local-command-stderr>',
+        ),
+        'done\nwarning: x',
+      );
+    });
+
     test('a message that only mentions the tags is not a record', () {
       const said =
           'why does the transcript hold <command-name>/model</command-name> '
@@ -367,6 +377,9 @@ void main() {
     testWidgets('a tap picks', (tester) async {
       final controller = await pump(tester);
       await tester.enterText(find.byType(TextField), '/');
+      await tester.pump();
+      // The list scrolls inside its capped height.
+      await tester.ensureVisible(find.text('/humanizer'));
       await tester.pump();
       await tester.tap(find.text('/humanizer'));
       await tester.pump();
