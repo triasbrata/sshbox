@@ -1,5 +1,6 @@
 #include "my_application.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include <flutter_linux/flutter_linux.h>
@@ -17,6 +18,10 @@ struct _MyApplication {
   // and hear on it when the window is maximized or restored.
   FlMethodChannel* window_channel;
   GtkWindow* window;
+  // Where the window was and how big, while neither maximized nor full
+  // screen: what comes back at the next start (see restore_geometry).
+  gint x, y, width, height;
+  guint save_source;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -99,9 +104,117 @@ static void window_call_cb(FlMethodChannel* channel, FlMethodCall* call,
   fl_method_call_respond_success(call, nullptr, nullptr);
 }
 
+// The window's place, size and state, in the app's own data folder — the
+// one path_provider names for Dart — as one line: x y width height
+// maximized fullscreen. Minimized is never kept.
+static gchar* geometry_path() {
+  return g_build_filename(g_get_user_data_dir(), APPLICATION_ID, "window.txt",
+                          nullptr);
+}
+
+static gboolean save_geometry(gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  self->save_source = 0;
+  GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(self->window));
+  if (gdk_window == nullptr || self->width <= 0) return G_SOURCE_REMOVE;
+  GdkWindowState state = gdk_window_get_state(gdk_window);
+  g_autofree gchar* path = geometry_path();
+  g_autofree gchar* dir = g_path_get_dirname(path);
+  g_mkdir_with_parents(dir, 0700);
+  g_autofree gchar* line = g_strdup_printf(
+      "%d %d %d %d %d %d\n", self->x, self->y, self->width, self->height,
+      (state & GDK_WINDOW_STATE_MAXIMIZED) != 0,
+      (state & GDK_WINDOW_STATE_FULLSCREEN) != 0);
+  g_file_set_contents(path, line, -1, nullptr);
+  return G_SOURCE_REMOVE;
+}
+
+// Kept as it changes rather than at close: an update restarts the app with
+// exit(), which closes nothing. Half a second after the last change, so a
+// drag writes once.
+static void schedule_save(MyApplication* self) {
+  if (self->save_source != 0) g_source_remove(self->save_source);
+  self->save_source = g_timeout_add(500, save_geometry, self);
+}
+
+static gboolean configure_cb(GtkWidget* widget, GdkEventConfigure* event,
+                             gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  GdkWindowState state = gdk_window_get_state(gtk_widget_get_window(widget));
+  if (!(state & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN |
+                 GDK_WINDOW_STATE_ICONIFIED))) {
+    gtk_window_get_position(self->window, &self->x, &self->y);
+    gtk_window_get_size(self->window, &self->width, &self->height);
+  }
+  schedule_save(self);
+  return FALSE;
+}
+
+static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
+                          gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->save_source != 0) {
+    g_source_remove(self->save_source);
+    save_geometry(self);
+  }
+  return FALSE;
+}
+
+// The window as it was last time, set before it is first shown so it never
+// jumps. Under Wayland a client cannot place its own window, so there the
+// size and the state come back and the compositor picks where.
+static void restore_geometry(MyApplication* self) {
+  g_autofree gchar* path = geometry_path();
+  g_autofree gchar* text = nullptr;
+  if (!g_file_get_contents(path, &text, nullptr, nullptr)) return;
+  gint x, y, width, height, maximized, fullscreen;
+  if (sscanf(text, "%d %d %d %d %d %d", &x, &y, &width, &height, &maximized,
+             &fullscreen) != 6 ||
+      width < 200 || height < 150) {
+    return;
+  }
+#ifdef GDK_WINDOWING_X11
+  GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(self->window));
+  if (GDK_IS_X11_DISPLAY(display)) {
+    // On a monitor that is there, which is where its top strip, the part
+    // that moves it, is: otherwise — a laptop undocked, a screen unplugged
+    // — whole and centred on the main one.
+    GdkRectangle strip = {x, y, width, MIN(height, 40)};
+    gboolean seen = FALSE;
+    for (int i = 0; i < gdk_display_get_n_monitors(display) && !seen; i++) {
+      GdkRectangle area;
+      gdk_monitor_get_workarea(gdk_display_get_monitor(display, i), &area);
+      seen = gdk_rectangle_intersect(&strip, &area, nullptr);
+    }
+    GdkMonitor* main = gdk_display_get_primary_monitor(display);
+    if (main == nullptr) main = gdk_display_get_monitor(display, 0);
+    if (!seen && main != nullptr) {
+      GdkRectangle area;
+      gdk_monitor_get_workarea(main, &area);
+      width = MIN(width, area.width);
+      height = MIN(height, area.height);
+      x = area.x + (area.width - width) / 2;
+      y = area.y + (area.height - height) / 2;
+    }
+    gtk_window_move(self->window, x, y);
+  }
+#endif
+  self->x = x;
+  self->y = y;
+  self->width = width;
+  self->height = height;
+  gtk_window_set_default_size(self->window, width, height);
+  if (maximized) gtk_window_maximize(self->window);
+  if (fullscreen) gtk_window_fullscreen(self->window);
+}
+
 static gboolean window_state_cb(GtkWidget* widget, GdkEventWindowState* event,
                                 gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
+  if (event->changed_mask &
+      (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN)) {
+    schedule_save(self);
+  }
   if ((event->changed_mask & GDK_WINDOW_STATE_MAXIMIZED) &&
       self->window_channel != nullptr) {
     g_autoptr(FlValue) maximized = fl_value_new_bool(
@@ -172,6 +285,9 @@ static void my_application_activate(GApplication* application) {
                    G_CALLBACK(window_state_cb), self);
 
   gtk_window_set_default_size(window, 1280, 720);
+  restore_geometry(self);
+  g_signal_connect(window, "configure-event", G_CALLBACK(configure_cb), self);
+  g_signal_connect(window, "delete-event", G_CALLBACK(delete_cb), self);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
@@ -247,6 +363,10 @@ static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   g_clear_object(&self->window_channel);
+  if (self->save_source != 0) {
+    g_source_remove(self->save_source);
+    self->save_source = 0;
+  }
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

@@ -38,6 +38,11 @@ class FlutterWindow : public Win32Window {
   // Tells the app the pointer is over its maximize button, or has left it.
   void SetMaximizeHover(bool hover);
 
+  // The window where it was last time, at the size it was; and kept as it
+  // changes. See flutter_window.cpp.
+  void RestorePlacement();
+  void SavePlacement();
+
   // The project to run.
   flutter::DartProject project_;
 
@@ -55,6 +60,10 @@ class FlutterWindow : public Win32Window {
   RECT maximize_button_{};
   bool maximize_hover_ = false;
   bool maximized_ = false;
+
+  // The window's rectangle while neither maximized nor minimized, a snapped
+  // one included, in physical pixels on the screen.
+  RECT normal_{};
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
