@@ -20,5 +20,10 @@ env:
 - assertNotVisible: "(?s).*not opened since.*"
 - takeScreenshot: chat-status-done-seen
 
-- tapOn: "(?s)Close .*Claude.*"
-- tapOn: "Close ${HOST_LABEL}.*"
+# Tidying only: the sessions drawer may still be over the strip.
+- tapOn:
+    text: "(?s)Close .*Claude.*"
+    optional: true
+- tapOn:
+    text: "Close ${HOST_LABEL}.*"
+    optional: true
