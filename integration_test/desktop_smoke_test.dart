@@ -479,7 +479,8 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
 /// `shiftdown` and `shiftup` (Linux and macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
-/// The app is pumped while it goes.
+/// Not pumped while it goes: the app takes the pointer on its own, and a
+/// check failing inside a pump would be lost to it.
 Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
   final ratio = tester.view.devicePixelRatio;
   final Future<Object?> run;
@@ -525,13 +526,7 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
       return ran;
     });
   }
-  var done = false;
-  final going = run.whenComplete(() => done = true);
-  while (!done) {
-    await tester.pump(const Duration(milliseconds: 16));
-    await Future<void>.delayed(const Duration(milliseconds: 16));
-  }
-  await going;
+  await run;
   await tester.pump(const Duration(milliseconds: 300));
 }
 
@@ -2129,7 +2124,8 @@ touch '${done.path}'
     binding.shouldPropagateDevicePointerEvents = true;
     await _launch(tester);
     final view = await _localShell(tester);
-    _run(view, 'echo jeansh select me please; echo second line here');
+    // Quoted: PowerShell's echo puts each word on a line of its own.
+    _run(view, "echo 'jeansh select me please'; echo 'second line here'");
     final lines = view.terminal.buffer.lines;
     int row(String text) {
       for (var i = lines.length - 1; i >= 0; i--) {
