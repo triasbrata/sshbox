@@ -375,16 +375,16 @@ class _ChatPageState extends State<ChatPage> {
                   ],
                 ),
         ),
-        if (chat.busy)
+        if (chat.progress case final progress?)
+          _Progress(chat: chat, progress: progress)
+        else if (chat.busy)
           Row(
             children: [
               const SizedBox(width: 16),
               SizedBox(width: 12, height: 12, child: TuiSpinner()),
               const SizedBox(width: 8),
               Text(
-                chat.composing
-                    ? 'Starting a new session on the host…'
-                    : 'Claude is working…',
+                'Starting a new session on the host…',
                 style: theme.textTheme.bodySmall,
               ),
             ],
@@ -1146,6 +1146,105 @@ class _Notice extends StatelessWidget {
               ? theme.colorScheme.error
               : theme.colorScheme.onSurfaceVariant,
         ),
+      ),
+    );
+  }
+}
+
+/// The line under the chat while a turn runs, shaped on Claude Code's own:
+/// `⠋ Working… (33s · ↓ 1.4k tokens) · Bash: npm test` — or, when the session
+/// waits at its terminal, what for and where to answer it, with no spinner.
+///
+/// The seconds tick here, once a second, with no round trip; the host is
+/// asked what the session is doing every [_look] while a watched turn is
+/// open. Both stop while the tab is hidden, the tab strip turning a hidden
+/// page's [TickerMode] off.
+class _Progress extends StatefulWidget {
+  const _Progress({required this.chat, required this.progress});
+
+  final ClaudeChat chat;
+  final ChatProgress progress;
+
+  @override
+  State<_Progress> createState() => _ProgressState();
+}
+
+class _ProgressState extends State<_Progress> {
+  static const _look = Duration(seconds: 5);
+
+  late final Timer _tick;
+  DateTime? _looked;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) => _onTick());
+    // First look at once: a session picked up at a prompt says so now.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onTick());
+  }
+
+  void _onTick() {
+    if (!mounted || !TickerMode.valuesOf(context).enabled) return;
+    final now = DateTime.now();
+    final looked = _looked;
+    if (looked == null || now.difference(looked) >= _look) {
+      _looked = now;
+      unawaited(widget.chat.checkState());
+    }
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _tick.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.bodySmall;
+    final p = widget.progress;
+    final waiting = p.waitingFor;
+    final String text;
+    if (waiting != null) {
+      final agent = widget.chat.watching;
+      text = agent == null || agent.interactive
+          ? 'Waiting for $waiting at its terminal. Answer it there.'
+          : 'Waiting for $waiting on the host. Open it in a terminal with '
+                '`claude attach ${agent.id ?? ''}` to answer it.';
+    } else {
+      final time = ChatProgress.elapsed(DateTime.now().difference(p.started));
+      final tokens = p.tokens > 0
+          ? ' · ↓ ${ChatProgress.count(p.tokens)} tokens'
+          : '';
+      final tool = p.tool;
+      final doing = tool == null
+          ? ''
+          : ' · ${tool.name}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
+      text = 'Working… ($time$tokens)$doing';
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: waiting == null
+                ? const TuiSpinner(size: 12)
+                : Icon(Icons.pause, size: 12, color: style?.color),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: waiting == null ? 1 : 3,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+        ],
       ),
     );
   }

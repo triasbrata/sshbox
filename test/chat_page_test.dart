@@ -280,6 +280,8 @@ final _nightlyHistory = _history([
       ],
     },
   },
+  // The turn is over, as a real transcript says once it is.
+  {'type': 'system', 'subtype': 'turn_duration', 'durationMs': 9120},
 ]);
 
 /// Where the conversation is scrolled to: its list, not the sidebar's.
@@ -291,13 +293,22 @@ ScrollPosition _conversationAt(WidgetTester tester) =>
 /// Lets a pick-up run out. Closing the drawer, reading the history and
 /// starting Claude are futures, not frames, so settling the frames alone
 /// returns while they are in flight; this takes turns between the two until
-/// both are quiet.
+/// both are quiet. Frames are pumped for a while rather than settled: a
+/// session mid-turn spins its progress line for as long as the turn runs.
 Future<void> _settlePickUp(WidgetTester tester) async {
   for (var turn = 0; turn < 8; turn++) {
-    await tester.pumpAndSettle();
+    await _frames(tester);
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
   }
   await tester.pump();
+}
+
+/// What [WidgetTester.pumpAndSettle] does, less the wait for every animation
+/// to stop: a second of frames, enough for a drawer or a scroll to finish.
+Future<void> _frames(WidgetTester tester) async {
+  for (var frame = 0; frame < 60; frame++) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
 }
 
 /// A session on the host whose process has finished, as `--all` lists it.
@@ -431,7 +442,7 @@ void main() {
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
         isEmpty);
     // A turn is running: nothing else may be sent until it ends.
-    expect(find.text('Claude is working…'), findsOneWidget);
+    expect(find.textContaining('Working… (0s)'), findsOneWidget);
 
     shell.event({
       'type': 'assistant',
@@ -457,7 +468,7 @@ void main() {
     shell.event({'type': 'result', 'subtype': 'success'});
     await tester.pump();
     await tester.pump();
-    expect(find.text('Claude is working…'), findsNothing);
+    expect(find.textContaining('Working…'), findsNothing);
   });
 
   testWidgets('an unconnected session says so rather than starting anything', (
@@ -1732,6 +1743,127 @@ void main() {
       await tester.tapOnText(find.textRange.ofSubstring('here'));
       await copyFromToast(tester);
       expect(copied.last, 'javascript:alert(1)');
+    });
+  });
+
+  group('the line under a turn in flight', () {
+    const sessionId = '81badf4a-7e9f-4f01-b098-6968dbe5f070';
+    Map<String, Object?> row({String? waitingFor}) => {
+      'pid': 4079548,
+      'id': '81badf4a',
+      'cwd': '/srv/app',
+      'kind': 'background',
+      'sessionId': sessionId,
+      'name': 'the nightly build',
+      'status': waitingFor == null ? 'busy' : 'waiting',
+      'state': waitingFor == null ? 'working' : 'blocked',
+      'waitingFor': ?waitingFor,
+    };
+
+    Future<_Shell> watching(WidgetTester tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([row()]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    String line(WidgetTester tester) =>
+        tester.widgetList<Text>(find.textContaining('Working…')).single.data!;
+
+    testWidgets('ticks its seconds here, counts tokens, names the tool, and '
+        'goes when the turn ends', (tester) async {
+      final shell = await watching(tester);
+      // Between turns: nothing.
+      expect(find.textContaining('Working…'), findsNothing);
+
+      // A turn typed at the terminal, 3 s before now by the host's clock.
+      final started = DateTime.now().toUtc().subtract(
+        const Duration(seconds: 3),
+      );
+      shell.adds({
+        'type': 'user',
+        'timestamp': started.toIso8601String(),
+        'message': {'role': 'user', 'content': 'run the tests'},
+      });
+      shell.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'msg_1',
+          'stop_reason': 'tool_use',
+          'usage': {'output_tokens': 1400},
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_1',
+              'name': 'Bash',
+              'input': {'command': 'npm test'},
+            },
+          ],
+        },
+      });
+      await _settlePickUp(tester);
+      // From the prompt's own time: 3 s at least, whatever the test took.
+      int seconds() => int.parse(
+        RegExp(r'^Working… \((\d+)s ').firstMatch(line(tester))!.group(1)!,
+      );
+      final first = seconds();
+      expect(first, inInclusiveRange(3, 10));
+      expect(line(tester), contains('s · ↓ 1.4k tokens) · Bash: npm test'));
+
+      // A second later by the device's own clock, with nothing from the host.
+      final before = shell.commands.length;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 1100)),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(seconds(), greaterThan(first));
+      // The host is asked at most every few seconds, not every tick.
+      expect(
+        shell.commands
+            .skip(before)
+            .where((command) => command.contains('agents --json')),
+        hasLength(lessThanOrEqualTo(1)),
+      );
+
+      shell.adds({
+        'type': 'system',
+        'subtype': 'turn_duration',
+        'durationMs': 5000,
+      });
+      await _settlePickUp(tester);
+      expect(find.textContaining('Working…'), findsNothing);
+    });
+
+    testWidgets('waiting at a prompt says what for and where to answer, and '
+        'does not spin', (tester) async {
+      final shell = await watching(tester);
+      shell.listing = jsonEncode([row(waitingFor: 'permission prompt')]);
+      shell.adds({
+        'type': 'user',
+        'message': {'role': 'user', 'content': 'touch a file'},
+      });
+      await _settlePickUp(tester);
+      // The first look goes at once, not after the first few seconds.
+      expect(
+        find.textContaining('Waiting for permission prompt on the host.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('81badf4a'), findsOneWidget);
+      expect(find.textContaining('Working…'), findsNothing);
+      expect(find.byIcon(Icons.pause), findsOneWidget);
     });
   });
 }

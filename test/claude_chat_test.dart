@@ -2641,4 +2641,266 @@ void main() {
       );
     });
   });
+
+  group('the turn in flight', () {
+    // A turn as 2.1.286 wrote it, measured on a throwaway background
+    // session: the prompt, a message calling Bash, its result, and a
+    // message of two blocks — thinking, then text — each block on a line of
+    // its own repeating the message's usage, then the turn's duration.
+    Map<String, Object?> prompt() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:10.643Z',
+      'isSidechain': false,
+      'message': {'role': 'user', 'content': 'run the tests'},
+    };
+    Map<String, Object?> callsBash() => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:19.547Z',
+      'message': {
+        'id': 'msg_01ma8teqDx',
+        'role': 'assistant',
+        'stop_reason': 'tool_use',
+        'usage': {'input_tokens': 2, 'output_tokens': 87},
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_t1',
+            'name': 'Bash',
+            'input': {'command': 'npm test', 'description': 'Run the tests'},
+          },
+        ],
+      },
+    };
+    Map<String, Object?> bashResult() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:28.899Z',
+      'message': {
+        'role': 'user',
+        'content': [
+          {'type': 'tool_result', 'tool_use_id': 'toolu_t1', 'content': 'ok'},
+        ],
+      },
+    };
+    Map<String, Object?> answers(String type, {String? stop = 'end_turn'}) => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:37.713Z',
+      'message': {
+        'id': 'msg_01ofPoDr74',
+        'role': 'assistant',
+        'stop_reason': stop,
+        'usage': {'input_tokens': 2, 'output_tokens': 1313},
+        'content': [
+          type == 'text'
+              ? {'type': 'text', 'text': 'All green.'}
+              : {'type': 'thinking', 'thinking': '', 'signature': 'CAQS'},
+        ],
+      },
+    };
+    const turnDuration = {
+      'type': 'system',
+      'subtype': 'turn_duration',
+      'durationMs': 29623,
+      'isMeta': false,
+    };
+
+    Future<(ClaudeChat, _LiveHost)> watch({
+      String? waitingFor,
+      String state = 'working',
+    }) async {
+      final host = _LiveHost(
+        '0\n',
+        state: state,
+        status: waitingFor == null ? null : 'waiting',
+        waitingFor: waitingFor,
+      );
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      return (chat, host);
+    }
+
+    test('starts at the prompt\'s own time, names the tool running, and '
+        'counts each message once', () async {
+      final (chat, host) = await watch();
+      expect(chat.progress, isNull);
+
+      host.adds(prompt());
+      await _settle();
+      expect(chat.progress?.started, DateTime.utc(2026, 10, 1, 12, 6, 10, 643));
+      expect(chat.progress?.tokens, 0);
+      expect(chat.progress?.tool, isNull);
+
+      host.adds(callsBash());
+      await _settle();
+      expect(chat.progress?.tool?.name, 'Bash');
+      expect(chat.progress?.tool?.summary, 'npm test');
+      expect(chat.progress?.tokens, 87);
+
+      host.adds(bashResult());
+      await _settle();
+      expect(chat.progress?.tool, isNull);
+      expect(chat.progress?.tokens, 87);
+
+      // Two lines of one message: its usage counted once, not twice. The
+      // first block of the last message says the turn is over, too, so
+      // here the message is still open: written with no stop yet.
+      host.adds(answers('thinking', stop: null));
+      host.adds(answers('text', stop: null));
+      await _settle();
+      expect(chat.progress?.tokens, 87 + 1313);
+      expect(ChatProgress.count(chat.progress!.tokens), '1.4k');
+
+      host.adds(turnDuration);
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('a message that ends the turn clears the line at once', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash())
+        ..adds(bashResult())
+        ..adds(answers('thinking'));
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a session picked up mid-turn shows the turn from its real start',
+      () async {
+        final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+        final size = utf8.encode('$text\n').length;
+        final host = _LiveHost('$size\n$text\n', state: 'working');
+        final chat = ClaudeChat(open: host.open);
+        addTearDown(chat.dispose);
+        await chat.continueFrom(_live);
+        expect(
+          chat.progress?.started,
+          DateTime.utc(2026, 10, 1, 12, 6, 10, 643),
+        );
+        expect(chat.progress?.tool?.summary, 'npm test');
+      },
+    );
+
+    test('a finished session\'s history leaves no turn open', () async {
+      final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      expect(chat.progress, isNull);
+    });
+
+    test('at a permission prompt it says what it waits for, from the '
+        'listing', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash());
+      await _settle();
+      expect(chat.progress?.waitingFor, isNull);
+
+      host
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, 'permission prompt');
+
+      // Answered at the terminal: working again.
+      host
+        ..state = 'working'
+        ..status = null
+        ..waitingFor = null;
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, isNull);
+      expect(chat.progress, isNotNull);
+    });
+
+    test('idle at two looks running, a turn whose end was missed stops '
+        'spinning', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+      await chat.checkState();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'idle shows nothing, and a turn that ends goes from the line',
+      () async {
+        final (chat, host) = await watch(state: 'done');
+        expect(chat.progress, isNull);
+        host.adds(prompt());
+        await _settle();
+        final started = chat.progress?.started;
+        expect(started, isNotNull);
+        host.adds(turnDuration);
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('an interrupted turn clears the line', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': '[Request interrupted by user]'},
+            ],
+          },
+        });
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('the session going clears the line', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.adds('sshbox:ended\n');
+      await host.follow!.close();
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a turn of this chat\'s own runs from the send to the result',
+      () async {
+        final claude = _FakeClaude();
+        final chat = ClaudeChat(open: (_) async => claude.channel);
+        addTearDown(chat.dispose);
+        await chat.start();
+        final before = DateTime.now();
+        await chat.send('hello');
+        expect(chat.progress!.started.isBefore(before), isFalse);
+        claude.event(callsBash());
+        await _settle();
+        expect(chat.progress?.tokens, 87);
+        claude.event({'type': 'result', 'subtype': 'success'});
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('times and counts read as Claude Code writes them', () {
+      expect(ChatProgress.elapsed(const Duration(seconds: 33)), '33s');
+      expect(ChatProgress.elapsed(const Duration(seconds: 125)), '2m 5s');
+      expect(ChatProgress.elapsed(const Duration(minutes: 64)), '1h 4m');
+      expect(ChatProgress.elapsed(const Duration(seconds: -3)), '0s');
+      expect(ChatProgress.count(87), '87');
+      expect(ChatProgress.count(1000), '1k');
+      expect(ChatProgress.count(1400), '1.4k');
+      expect(ChatProgress.count(12345), '12k');
+    });
+  });
 }
