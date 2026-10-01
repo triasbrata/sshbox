@@ -1023,6 +1023,49 @@ void main() {
       }
     }
 
+    testWidgets('every code box has a Copy code button holding exactly its '
+        'text: a command, a file written and a result', (tester) async {
+      final copied = _useFakeClipboard();
+      const command = "grep -n 'error' app.log\ntail -n 5 app.log";
+      await opened(tester, 'Bash', {'command': command}, result: 'a\nb');
+      final buttons = find.byTooltip('Copy code');
+      expect(buttons, findsNWidgets(2));
+      await tester.tap(buttons.at(0));
+      await tester.pump();
+      await tester.tap(buttons.at(1));
+      await tester.pump();
+      expect(copied, [command, 'a\nb']);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('Write and Edit copy the file and the diff as shown', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      const content = 'import os\n\ndef main():\n    pass\n';
+      await opened(tester, 'Write', {
+        'file_path': '/srv/a.py',
+        'content': content,
+      });
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied, [content]);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('Edit copies its diff with the - and + lines', (tester) async {
+      final copied = _useFakeClipboard();
+      await opened(tester, 'Edit', {
+        'file_path': '/srv/n.conf',
+        'old_string': 'listen 80;',
+        'new_string': 'listen 8080;',
+      });
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied, ['- listen 80;\n+ listen 8080;']);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
     testWidgets('Bash: the command as a command, what it is for above it', (
       tester,
     ) async {
