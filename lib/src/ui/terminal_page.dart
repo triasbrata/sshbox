@@ -1142,7 +1142,9 @@ class _PaneViewState extends State<_PaneView> {
   /// Shared by the terminal view, which paints the selection, and the pad,
   /// which makes it by touch. It also carries the underlines Ctrl puts under
   /// every link, and keeps a Ctrl+tap from a program that reads the mouse.
-  final selection = TerminalController();
+  /// Scrolling alone goes to a program through xterm2: a click goes through
+  /// [_click], whole.
+  final selection = TerminalController(pointerInputs: _pointerInputs);
   List<TerminalUnderline> _underlines = const [];
 
   @override
@@ -1372,6 +1374,9 @@ class _PaneViewState extends State<_PaneView> {
   /// when nothing took it. Shift keeps it from the program, unless the
   /// program asked for Shift too, as xterm's does.
   void _contextMenu(TapUpDetails details, CellOffset cell) {
+    // A program reading the mouse has the right-click first, as in any
+    // terminal; Shift keeps it for the menu.
+    if (_click(TerminalMouseButton.right, details.localPosition)) return;
     final terminal = widget.terminal;
     final range = selection.selection;
     final link =
@@ -1485,14 +1490,12 @@ class _PaneViewState extends State<_PaneView> {
   void showLinks({required bool ctrl, required Color color}) {
     // The tap is held back, because a program reading the mouse would
     // otherwise take a Ctrl+tap as a click and the link would never open.
-    // The scroll is not: suspending every pointer input, as this used to,
+    // The scroll is not: suspending every pointer input, as this once did,
     // took scrolling away too, and on the alternate screen or under a
     // program that reads the mouse — Claude Code, vim, less, tmux — a drag
     // is the only way a finger can scroll at all, there being no wheel. So
     // an armed CTRL froze the terminal's content until the app was killed.
-    selection.setPointerInputs(
-      ctrl ? _ctrlPointerInputs : _defaultPointerInputs,
-    );
+    _ctrlArmed = ctrl;
     for (final underline in _underlines) {
       underline.dispose();
     }
@@ -1510,14 +1513,57 @@ class _PaneViewState extends State<_PaneView> {
     );
   }
 
-  /// What a terminal normally takes: xterm2's own default.
-  static const _defaultPointerInputs = PointerInputs({
-    PointerInput.tap,
-    PointerInput.scroll,
-  });
+  /// What xterm2 hands a program that reads the mouse: the wheel. Never the
+  /// tap, which [_click] sends instead, and never a drag, which selects.
+  static const _pointerInputs = PointerInputs({PointerInput.scroll});
 
-  /// The same without the tap, which Ctrl has claimed for opening links.
-  static const _ctrlPointerInputs = PointerInputs({PointerInput.scroll});
+  /// Whether Ctrl has claimed the tap, for opening a link: see [showLinks].
+  bool _ctrlArmed = false;
+
+  /// A click for a program that reads the mouse — Claude Code's fullscreen
+  /// view, vim, less, a program in a tmux pane — sent whole once the button
+  /// is up: the press and its release together. Answers whether the program
+  /// took it.
+  ///
+  /// xterm2 sends the press as soon as the button has been down 100 ms and
+  /// the release only if the gesture ends as a tap, while a drag is its own
+  /// selection and the program never hears of it. So a drag begun after a
+  /// short hold left the program a press that never ended: Claude Code took
+  /// it as a selection of its own being dragged, for ever, and its selection
+  /// and copy broke until it next heard a release. A drag now reaches the
+  /// program not at all, and a click always as both halves.
+  ///
+  /// Shift keeps the click for the terminal, as it always has, unless the
+  /// program asked for Shift too.
+  bool _click(TerminalMouseButton button, Offset at) {
+    final keys = HardwareKeyboard.instance;
+    if (_ctrlArmed && button == TerminalMouseButton.left) return false;
+    if (keys.isShiftPressed && !widget.terminal.mouseShiftCaptureMode) {
+      return false;
+    }
+    final render = _viewKey.currentState?.renderTerminal;
+    if (render == null) return false;
+    final modifiers = TerminalMouseModifiers(
+      shift: keys.isShiftPressed,
+      alt: keys.isAltPressed,
+      control: keys.isControlPressed,
+    );
+    if (!render.mouseEvent(
+      button,
+      TerminalMouseButtonState.down,
+      at,
+      modifiers: modifiers,
+    )) {
+      return false;
+    }
+    render.mouseEvent(
+      button,
+      TerminalMouseButtonState.up,
+      at,
+      modifiers: modifiers,
+    );
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1559,7 +1605,10 @@ class _PaneViewState extends State<_PaneView> {
             onKeyEvent: _onCopyChord,
             // Tapping a terminal that already has focus is how you ask for the
             // keyboard back, and focus alone will not raise it.
-            onTapUp: (_, cell) => widget.onTap(this, cell),
+            onTapUp: (details, cell) {
+              _click(TerminalMouseButton.left, details.localPosition);
+              widget.onTap(this, cell);
+            },
             onSecondaryTapUp: isDesktop ? _contextMenu : null,
             padding: widget.padding,
             textStyle: widget.textStyle,

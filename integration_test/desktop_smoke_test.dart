@@ -267,6 +267,7 @@ Future<_Recording> _record(
   WidgetTester tester,
   TerminalView view, {
   required bool bracketed,
+  bool mouse = false,
 }) async {
   final dir = _scratch();
   final got = File('${dir.path}/got');
@@ -276,6 +277,8 @@ Future<_Recording> _record(
   final script = File('${dir.path}/record.sh')
     ..writeAsStringSync(
       "printf '\\033[?2004${bracketed ? 'h' : 'l'}'\n"
+      // Every mouse mode, in SGR, as Claude Code's fullscreen view asks.
+      "${mouse ? r"printf '\033[?1000h\033[?1002h\033[?1003h\033[?1006h'" : ':'}\n"
       'stty raw -echo\n'
       'touch ${ready.path}\n'
       // From the terminal by name: a background job of a non-interactive sh
@@ -284,7 +287,7 @@ Future<_Recording> _record(
       'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
       'kill \$! 2>/dev/null\n'
       'stty sane\n'
-      "printf '\\033[?2004l'\n"
+      "printf '\\033[?1006l\\033[?1003l\\033[?1002l\\033[?1000l\\033[?2004l'\n"
       'echo $done\n',
     );
   _run(view, 'sh ${script.path}');
@@ -469,6 +472,105 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
   ]);
   expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
 }
+
+/// The real pointer, moved and pressed as a hand would, over this window:
+/// each step `move x y` to a point in the app (logical pixels, as a finder
+/// gives them), `down`, `up` (the primary button) or `sleep ms`. On Linux
+/// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
+/// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
+/// The app is pumped while it goes.
+Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
+  final ratio = tester.view.devicePixelRatio;
+  final Future<Object?> run;
+  if (Platform.isWindows) {
+    run = _winMouse([
+      for (final step in steps)
+        if (step.split(' ') case ['move', final x, final y])
+          'move ${(double.parse(x) * ratio).round()} '
+              '${(double.parse(y) * ratio).round()}'
+        else
+          step,
+    ]);
+  } else if (Platform.isLinux) {
+    final window = await _windowRect();
+    final frame = (window.width - tester.view.physicalSize.width) / 2;
+    final origin = window.topLeft + Offset(frame, frame);
+    run = _xdo([
+      for (final step in steps)
+        ...switch (step.split(' ')) {
+          ['move', final x, final y] => [
+            'mousemove',
+            '${(origin.dx + double.parse(x) * ratio).round()}',
+            '${(origin.dy + double.parse(y) * ratio).round()}',
+          ],
+          ['down'] => ['mousedown', '1'],
+          ['up'] => ['mouseup', '1'],
+          ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
+          _ => throw ArgumentError(step),
+        },
+    ]);
+  } else {
+    final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final script = File('${dir.path}/mouse.swift')
+      ..writeAsStringSync(_macMouseScript);
+    final size = tester.view.physicalSize / ratio;
+    run = Process.run('swift', [
+      script.path, '$pid', '${size.height}', steps.join(';'), //
+    ]).then((ran) {
+      expect(ran.exitCode, 0, reason: 'the mouse: ${ran.stderr}${ran.stdout}');
+      return ran;
+    });
+  }
+  var done = false;
+  final going = run.whenComplete(() => done = true);
+  while (!done) {
+    await tester.pump(const Duration(milliseconds: 16));
+    await Future<void>.delayed(const Duration(milliseconds: 16));
+  }
+  await going;
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+const _macMouseScript = r"""
+import AppKit
+import CoreGraphics
+
+let args = CommandLine.arguments
+let pid = pid_t(args[1])!
+let viewHeight = Double(args[2])!
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+  as! [[String: Any]]
+guard let window = windows.first(where: {
+  ($0[kCGWindowOwnerPID as String] as? pid_t) == pid
+    && ($0[kCGWindowLayer as String] as? Int) == 0
+}) else { print("no window for \(pid)"); exit(1) }
+let bounds = CGRect(
+  dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+NSRunningApplication(processIdentifier: pid)?.activate()
+usleep(300_000)
+
+var at = CGPoint(x: bounds.midX, y: bounds.midY)
+var pressed = false
+func post(_ type: CGEventType) {
+  CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at,
+          mouseButton: .left)!.post(tap: .cghidEventTap)
+  usleep(10_000)
+}
+for step in args[3].split(separator: ";") {
+  let p = step.split(separator: " ")
+  switch p[0] {
+  case "move":
+    at = CGPoint(x: bounds.minX + Double(p[1])!,
+                 y: bounds.maxY - viewHeight + Double(p[2])!)
+    post(pressed ? .leftMouseDragged : .mouseMoved)
+  case "down": pressed = true; post(.leftMouseDown)
+  case "up": pressed = false; post(.leftMouseUp)
+  case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
+  default: print("unknown step \(step)"); exit(1)
+  }
+}
+""";
 
 /// Two fingers on a Mac's trackpad, pushing the content down over [at], a
 /// global position in this window: the phased scroll events a trackpad
@@ -1999,6 +2101,94 @@ touch '${done.path}'
         'Alt+click to hand the link to the browser',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // #126: selecting broke on every desktop under a program that reads the
+  // mouse. xterm2 sent such a program the press once the button had been
+  // down 100 ms, and its release only if the gesture ended as a tap, while
+  // a drag was xterm2's own selection: so a drag begun after a short hold
+  // left the program a press that never ended, and Claude Code, which keeps
+  // a drag of its own until it hears the release, was left dragging. Here
+  // with the real pointer: a line held and dragged copies it, the program
+  // under it — every mouse mode on, as Claude Code's fullscreen view has
+  // them — hears no half a click, a click after it reaches the program
+  // whole, and a drag after that still copies.
+  _test(
+    'a held mouse drag copies the line and leaves a program that reads the '
+    'mouse no press without its release',
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      _run(view, 'echo jeansh select me');
+      final lines = view.terminal.buffer.lines;
+      var row = -1;
+      await _until(tester, () {
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].getText().startsWith('jeansh select me')) row = i;
+        }
+        return row >= 0;
+      }, 'the line to be printed');
+      // Not under PowerShell, which this cannot record with: there the
+      // drags alone.
+      final got = Platform.isWindows
+          ? null
+          : await _record(tester, view, bracketed: false, mouse: true);
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, row)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      Future<void> dragAcross() async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, [
+          cell(0),
+          'down',
+          // Held, as a hand does before it moves: past the 100 ms after
+          // which the press used to go out on its own.
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ]);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'the drag to copy',
+        );
+        expect(await _clipboard(), 'jeansh select me');
+      }
+
+      await dragAcross();
+      await _osMouse(tester, [cell(3), 'down', 'sleep 40', 'up']);
+      await dragAcross();
+
+      if (got == null) {
+        await _closeTabs(tester);
+        binding.shouldPropagateDevicePointerEvents = false;
+        return;
+      }
+      final bytes = await got.bytes('the clicks');
+      final presses = RegExp(r'\x1b\[<0;\d+;\d+M').allMatches(bytes).length;
+      final releases = RegExp(r'\x1b\[<0;\d+;\d+m').allMatches(bytes).length;
+      expect(
+        (presses, releases),
+        (1, 1),
+        reason: 'the click whole, and nothing of the drags: '
+            '${bytes.replaceAll('\x1b', 'ESC')}',
+      );
+
+      await _closeTabs(tester);
+      // In the body: the binding checks it is back before any tear-down runs.
+      binding.shouldPropagateDevicePointerEvents = false;
     },
   );
 

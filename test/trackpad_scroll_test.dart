@@ -141,4 +141,46 @@ void main() {
     expect(shell.sent, everyElement('\x1b[<64;${cellOf(box.center)}M'));
     expect(cellOf(box.center), isNot(cellOf(prompt)));
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('a drag selects and leaves a program that reads the mouse no '
+      'half a click, and a click reaches it whole', (tester) async {
+    await pumpPage(tester);
+    session.terminal.write('hello world this is a line of text here\r\n' * 30);
+    // Claude Code's fullscreen view asks for every mouse mode, in SGR.
+    session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h');
+    await tester.pump();
+    shell.sent.clear();
+
+    // Held a moment before it moves, as a hand does.
+    final box = tester.getRect(find.byType(TerminalView));
+    final drag = await tester.startGesture(
+      box.center - const Offset(100, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 200));
+    for (var i = 0; i < 10; i++) {
+      await drag.moveBy(const Offset(20, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await drag.up();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final controller = tester
+        .widget<TerminalView>(find.byType(TerminalView))
+        .controller!;
+    expect(controller.selection, isNotNull);
+    // The press went out 100 ms in and its release never did, so Claude Code
+    // took a drag of its own as going on for ever.
+    expect(shell.sent, isEmpty);
+
+    // A click, away from the selection: both halves, at its cell.
+    await tester.tapAt(
+      box.topLeft + const Offset(40, 20),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(shell.sent, hasLength(2));
+    expect(shell.sent.first, matches(RegExp(r'^\x1b\[<0;\d+;\d+M$')));
+    expect(shell.sent.last, shell.sent.first.replaceFirst(RegExp(r'M$'), 'm'));
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 }
