@@ -414,6 +414,108 @@ Map<String, Object?> _said(String text) => {
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  // A chat closed while a host call is in flight must not go on to open
+  // channels nobody will close: a tail -f or a claude -p held on the SSH
+  // session for a tab that no longer exists.
+  group('a chat closed mid-call opens nothing more', () {
+    test('after `claude --bg` answers: no listing, no history, no tail', () async {
+      final gate = Completer<void>();
+      final opened = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          opened.add(command);
+          if (command.contains(' --bg ')) {
+            await gate.future;
+            return (
+              output: Stream.value(
+                Uint8List.fromList(utf8.encode('backgrounded · e2e0c0de · x\n')),
+              ),
+              write: (Uint8List _) {},
+              close: () {},
+            );
+          }
+          // Anything later: a live session listed, a history, a tail.
+          return _noHistory();
+        },
+      );
+      final sent = chat.send('hello');
+      await _settle();
+      expect(opened.single, contains(' --bg '));
+      chat.dispose();
+      gate.complete();
+      await sent;
+      expect(opened, hasLength(1), reason: 'opened after dispose: $opened');
+    });
+
+    test('a claude -p whose open lands after dispose is closed', () async {
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => gate.future);
+      final started = chat.start();
+      await _settle();
+      chat.dispose();
+      final claude = _FakeClaude();
+      gate.complete(claude.channel);
+      await started;
+      expect(claude.closed, isTrue);
+    });
+
+    test('a tail whose open lands after dispose is closed', () async {
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(
+        open: (command) =>
+            command.contains(' -f ') ? gate.future : Future.value(_noHistory()),
+      );
+      final picked = chat.continueFrom(
+        const ClaudeAgent(
+          sessionId: 'f44e6c8b-7c64-4ef9-8f88-aeb262622b73',
+          name: 'x',
+          cwd: '/srv',
+          kind: 'background',
+          id: 'e2e0c0de',
+          state: 'done',
+          pid: 4242,
+        ),
+      );
+      await _settle();
+      await _settle();
+      chat.dispose();
+      final tail = _FakeClaude();
+      gate.complete(tail.channel);
+      await picked;
+      expect(tail.closed, isTrue);
+    });
+  });
+
+  // What a Mac's e2e hit closing a chat tab: a "used after being disposed"
+  // thrown after the test, failing the tests that came next.
+  test('a chat closed while a new session starts and Claude still writes '
+      'tells no one', () async {
+    final started = StreamController<Uint8List>();
+    final chat = ClaudeChat(
+      open: (_) async =>
+          (output: started.stream, write: (Uint8List _) {}, close: () {}),
+    );
+    final sent = chat.send('hello');
+    await _settle();
+    chat.dispose();
+    // `claude --bg` answers after the tab has gone.
+    started.add(Uint8List.fromList(utf8.encode('no session\n')));
+    await started.close();
+    await sent;
+
+    final claude = _FakeClaude();
+    final running = ClaudeChat(open: (_) async => claude.channel);
+    await running.start();
+    running.dispose();
+    // A line Claude was writing as the tab closed.
+    claude.event({
+      'type': 'system',
+      'subtype': 'init',
+      'session_id': 'f44e6c8b-7c64-4ef9-8f88-aeb262622b73',
+    });
+    await _settle();
+  });
+
   test('a turn becomes bubbles, and its tools fold their results in', () async {
     final claude = _FakeClaude();
     final chat = ClaudeChat(open: (_) async => claude.channel);
