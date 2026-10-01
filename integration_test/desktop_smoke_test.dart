@@ -3443,6 +3443,17 @@ touch '${done.path}'
           'the message field',
         );
         await tester.enterText(field, text);
+        await tester.pump();
+        // What the box holds right after typing, for a run where Send stays
+        // off: the text, whether it takes input, and whether it has focus.
+        final box = tester.widget<TextField>(field);
+        final editable = tester.state<EditableTextState>(
+          find.descendant(of: field, matching: find.byType(EditableText)),
+        );
+        debugPrint(
+          'Typed "$text": box holds "${box.controller?.text}", '
+          'enabled ${box.enabled}, focused ${editable.widget.focusNode.hasFocus}',
+        );
         // Send turns on a frame after the text is in, and a tap on it while
         // still off sends nothing. The text itself stays: the box is never
         // shut between turns (run 36883132321 lost it when it was).
