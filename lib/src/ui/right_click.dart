@@ -122,9 +122,18 @@ Future<void> showActionsAt(
 /// page with a context menu of its own, the terminal's, puts it below its
 /// own items.
 class TabMenu extends InheritedWidget {
-  const TabMenu({super.key, required this.items, required super.child});
+  const TabMenu({
+    super.key,
+    required this.items,
+    this.actions,
+    required super.child,
+  });
 
   final List<(String, VoidCallback)> Function() items;
+
+  /// The same tab's actions one by one, for a menu that lays them out in an
+  /// order of its own: a terminal pane's, which follows iTerm2's.
+  final TabActions? Function()? actions;
 
   static TabMenu? of(BuildContext context) =>
       context.getInheritedWidgetOfExactType<TabMenu>();
@@ -134,6 +143,42 @@ class TabMenu extends InheritedWidget {
 
   @override
   bool updateShouldNotify(TabMenu oldWidget) => false;
+}
+
+/// What a terminal tab can do, each null where it cannot: what its chip's
+/// menu offers, and the rest a pane's right-click menu wants from the tab.
+class TabActions {
+  const TabActions({
+    this.newTab,
+    this.splitSideBySide,
+    this.splitStacked,
+    this.groupWith,
+    this.takeOutOfGroup,
+    this.swap,
+    this.editSession,
+    required this.close,
+    this.restart,
+    this.duplicate,
+    this.detach,
+    this.attach,
+    this.record,
+  });
+
+  /// Where a new tab can go — the Local shell, each WSL distro, each saved
+  /// host — asked for when it is wanted, the saved hosts being read then.
+  final Future<List<(String, VoidCallback)>> Function()? newTab;
+  final VoidCallback? splitSideBySide;
+  final VoidCallback? splitStacked;
+  final VoidCallback? groupWith;
+  final VoidCallback? takeOutOfGroup;
+  final VoidCallback? swap;
+  final VoidCallback? editSession;
+  final VoidCallback close;
+  final VoidCallback? restart;
+  final VoidCallback? duplicate;
+  final VoidCallback? detach;
+  final VoidCallback? attach;
+  final VoidCallback? record;
 }
 
 /// A tab's menu as termul's entries: closing the tab in deep ink.

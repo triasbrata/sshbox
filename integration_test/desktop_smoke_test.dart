@@ -25,7 +25,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, Icons, InkWell, PopupMenuDivider, TextField, Tooltip;
+    show DropdownButton, Icons, InkWell, TextField, Tooltip;
 import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -283,6 +283,9 @@ Future<void> _pick(WidgetTester tester, String item) async {
     'the menu to offer $item',
   );
   await tester.pump(const Duration(milliseconds: 600));
+  // A pane's menu is taller than a small window, and scrolls.
+  await tester.ensureVisible(_label(item));
+  await tester.pump();
   await tester.tap(_label(item));
 }
 
@@ -644,6 +647,185 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
   }
 }
 
+/// The real pointer, moved and pressed as a hand would, over this window:
+/// each step `move x y` to a point in the app (logical pixels, as a finder
+/// gives them), `down`, `up` (the primary button), `rdown`, `rup` (the
+/// secondary, #132's), `sleep ms`, or
+/// `shiftdown` and `shiftup` (Linux and macOS only), or `cmdc`, ⌘ held, C
+/// typed and ⌘ let go as three key events (macOS only). On Linux
+/// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
+/// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
+/// Not pumped while it goes: the app takes the pointer on its own, and a
+/// check failing inside a pump would be lost to it.
+Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
+  final ratio = tester.view.devicePixelRatio;
+  final Future<Object?> run;
+  if (Platform.isWindows) {
+    run = _winMouse([
+      for (final step in steps)
+        if (step.split(' ') case ['move', final x, final y])
+          'move ${(double.parse(x) * ratio).round()} '
+              '${(double.parse(y) * ratio).round()}'
+        else
+          step,
+    ]);
+  } else if (Platform.isLinux) {
+    final window = await _windowRect();
+    final frame = (window.width - tester.view.physicalSize.width) / 2;
+    final origin = window.topLeft + Offset(frame, frame);
+    // Keys go to the focused window, which Xvfb with no window manager
+    // gives nobody: as _escape does.
+    await _xdo(['windowfocus', '--sync', await _window()]);
+    run = _xdo([
+      for (final step in steps)
+        ...switch (step.split(' ')) {
+          ['move', final x, final y] => [
+            'mousemove',
+            '${(origin.dx + double.parse(x) * ratio).round()}',
+            '${(origin.dy + double.parse(y) * ratio).round()}',
+          ],
+          ['down'] => ['mousedown', '1'],
+          ['rdown'] => ['mousedown', '3'],
+          ['rup'] => ['mouseup', '3'],
+          ['shiftdown'] => ['keydown', 'Shift_L'],
+          ['shiftup'] => ['keyup', 'Shift_L'],
+          ['up'] => ['mouseup', '1'],
+          ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
+          _ => throw ArgumentError(step),
+        },
+    ]);
+  } else {
+    final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final script = File('${dir.path}/mouse.swift')
+      ..writeAsStringSync(_macMouseScript);
+    final size = tester.view.physicalSize / ratio;
+    // Frontmost, for its keys: the pointer reaches the window under it
+    // anyway, but keys go to the active app, and a Mac will not let the
+    // script's own activate() take that from another app.
+    final front = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to set frontmost of '
+          '(first process whose unix id is $pid) to true',
+    ]);
+    expect(front.exitCode, 0, reason: 'frontmost: ${front.stderr}');
+    run =
+        Process.run('swift', [
+          script.path, '$pid', '${size.height}', steps.join(';'), //
+        ]).then((ran) {
+          expect(
+            ran.exitCode,
+            0,
+            reason: 'the mouse: ${ran.stderr}${ran.stdout}',
+          );
+          debugPrint('The mouse said: ${ran.stdout}');
+          return ran;
+        });
+  }
+  await run;
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+const _macMouseScript = r"""
+import AppKit
+import CoreGraphics
+
+let args = CommandLine.arguments
+let pid = pid_t(args[1])!
+let viewHeight = Double(args[2])!
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+  as! [[String: Any]]
+guard let window = windows.first(where: {
+  ($0[kCGWindowOwnerPID as String] as? pid_t) == pid
+    && ($0[kCGWindowLayer as String] as? Int) == 0
+}) else { print("no window for \(pid)"); exit(1) }
+let bounds = CGRect(
+  dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+NSRunningApplication(processIdentifier: pid)?.activate()
+usleep(300_000)
+
+var at = CGPoint(x: bounds.midX, y: bounds.midY)
+var pressed = false
+var flags: CGEventFlags = []
+func post(_ type: CGEventType, _ button: CGMouseButton = .left) {
+  let e = CGEvent(mouseEventSource: nil, mouseType: type,
+                  mouseCursorPosition: at, mouseButton: button)!
+  e.flags = flags
+  e.post(tap: .cghidEventTap)
+  usleep(10_000)
+}
+// Keys from the HID system's own source, so a modifier pressed changes the
+// state the window server stamps on every event after it: from no source,
+// its flags were put back to the real keyboard's, which holds nothing.
+let keys = CGEventSource(stateID: .hidSystemState)
+// Each flag with the bit naming its left key, as a keyboard sets it
+// (NX_DEVICELSHIFTKEYMASK, NX_DEVICELCMDKEYMASK): Flutter tells a modifier's
+// press from its release by that bit, and without it heard neither.
+let shiftLeft = CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x2)
+let commandLeft =
+  CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x8)
+func modifier(_ key: CGKeyCode, _ mask: CGEventFlags, _ down: Bool) {
+  flags = down ? mask : []
+  let e = CGEvent(keyboardEventSource: keys, virtualKey: key, keyDown: down)!
+  e.flags = flags
+  e.post(tap: .cghidEventTap)
+  usleep(150_000)
+  print("after \(key) \(down ? "down" : "up"): hid "
+    + "\(CGEventSource.flagsState(.hidSystemState).rawValue), session "
+    + "\(CGEventSource.flagsState(.combinedSessionState).rawValue)")
+}
+for step in args[3].split(separator: ";") {
+  let p = step.split(separator: " ")
+  switch p[0] {
+  case "move":
+    at = CGPoint(x: bounds.minX + Double(p[1])!,
+                 y: bounds.maxY - viewHeight + Double(p[2])!)
+    post(pressed ? .leftMouseDragged : .mouseMoved)
+  case "down": pressed = true; post(.leftMouseDown)
+  case "up": pressed = false; post(.leftMouseUp)
+  case "rdown": post(.rightMouseDown, .right)
+  case "rup": post(.rightMouseUp, .right)
+  case "shiftdown": modifier(56, shiftLeft, true)
+  case "cmdc":
+    modifier(55, commandLeft, true)
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: keys, virtualKey: 8, keyDown: down)!
+      e.flags = commandLeft
+      e.post(tap: .cghidEventTap)
+      usleep(150_000)
+    }
+    modifier(55, commandLeft, false)
+  case "shiftup": modifier(56, shiftLeft, false)
+  case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
+  default: print("unknown step \(step)"); exit(1)
+  }
+}
+""";
+
+/// A right-click with the real pointer at [local], a point in the app, sent
+/// through the OS as a hand sends it, by [_osMouse].
+///
+/// [shift] holds Shift down around it, as a hand does: Windows has no test
+/// that asks for it.
+///
+/// Wants the binding's shouldPropagateDevicePointerEvents on, or the
+/// integration binding drops what the device sends.
+Future<void> _realRightClick(
+  WidgetTester tester,
+  Offset local, {
+  bool shift = false,
+}) async {
+  assert(!shift || !Platform.isWindows, 'no Shift on Windows here');
+  await _osMouse(tester, [
+    'move ${local.dx} ${local.dy}',
+    if (shift) ...['shiftdown', 'sleep 100'],
+    'rdown',
+    'sleep 40',
+    'rup',
+    if (shift) ...['sleep 100', 'shiftup'],
+  ]);
+}
+
 const _winMouseScript = r'''
 param([string]$steps)
 $ErrorActionPreference = 'Stop'
@@ -689,6 +871,8 @@ if ($steps) {
       'restore' { [W]::ShowWindow($h, 9) | Out-Null }
       'down' { [W]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero) }
       'up' { [W]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+      'rdown' { [W]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero) }
+      'rup' { [W]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero) }
       'sleep' { Start-Sleep -Milliseconds ([int]$p[1]) }
     }
   }
@@ -1378,14 +1562,14 @@ touch '${done.path}'
     await _closeTabs(tester);
   });
 
-  // #87: a right-click in a tab's page opens the tab's own menu there. In a
-  // terminal its Paste comes first and the tab's items after a divider; a
-  // program reading the mouse gets a plain right-click, and Shift keeps one
-  // for the menu; and in a group the pane clicked takes focus and opens its
-  // own menu, Take out of group among it.
+  // #87 and #132: a right-click in a tab's page opens the tab's own menu
+  // there, in a terminal iTerm2's pane menu with the tab's items in it. It
+  // opens even over a program reading the mouse, which hears nothing of it;
+  // Shift+right-click is the program's. In a group the pane clicked takes
+  // focus and opens its own menu, Take out of group among it.
   _test(
-    'a right-click in a terminal opens its tab\'s menu, unless a program '
-    'reads the mouse',
+    'a right-click in a terminal opens its menu, even over a program that '
+    'reads the mouse, and Shift+right-click reaches the program',
     skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
@@ -1426,27 +1610,45 @@ touch '${done.path}'
         await tester.pump(const Duration(milliseconds: 600));
       }
 
-      // Paste, a divider, then what the tab's chip offers.
-      await rightClick(focused());
-      await menuWith('Duplicate session');
+      // #132: the same click as the OS sends it, Shift and all.
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      // A failure here must not leave it on for the next test.
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
+      Future<void> realClick(TerminalView view, {bool shift = false}) =>
+          _realRightClick(
+            tester,
+            tester.getCenter(
+              find.byWidgetPredicate(
+                (w) => w is TerminalView && w.focusNode == view.focusNode,
+              ),
+            ),
+            shift: shift,
+          );
+
+      // iTerm2's pane menu, in its order: New tab first, the clipboard,
+      // then the session's own.
+      await realClick(focused());
+      await menuWith('Paste');
+      final newTab = tester.getTopLeft(find.text('New tab…')).dy;
       final paste = tester.getTopLeft(find.text('Paste')).dy;
-      final divider = tester.getTopLeft(find.byType(PopupMenuDivider)).dy;
       final duplicate = tester.getTopLeft(find.text('Duplicate session')).dy;
       expect(
-        paste < divider && divider < duplicate,
+        newTab < paste && paste < duplicate,
         isTrue,
-        reason: 'Paste, a divider and the tab\'s items, in that order',
+        reason: 'New tab…, Paste and Duplicate session, in that order',
       );
-      await tester.tap(find.text('Duplicate session'));
+      await _pick(tester, 'Duplicate session');
       await _until(
         tester,
         () => tabs.evaluate().length == before + 1,
         'a second Local shell',
       );
 
-      // A program reading the mouse: a plain right-click reaches it as
-      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
-      // menu. It records what it reads until told to stop.
+      // A program reading the mouse: a plain right-click still opens the
+      // menu and the program hears nothing of it; Shift+right-click is the
+      // program's, reaching it as xterm's ESC [ M. It records what it reads
+      // until told to stop.
       final dir = _scratch();
       final got = File('${dir.path}/got');
       final ready = File('${dir.path}/ready');
@@ -1475,30 +1677,34 @@ touch '${done.path}'
       }
       await tester.pump(const Duration(milliseconds: 300));
 
-      await rightClick(view);
-      await _until(
-        tester,
-        () => got.existsSync() && got.lengthSync() >= 3,
-        'the right-click to reach the program',
-      );
-      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
+      await realClick(view);
+      await menuWith('Paste');
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        find.text('Duplicate session'),
-        findsNothing,
-        reason: 'a menu opened over a program that reads the mouse',
+        got.existsSync() ? got.readAsBytesSync() : const <int>[],
+        isEmpty,
+        reason: 'the program heard the right-click that opened the menu',
       );
-
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await rightClick(view);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-      await menuWith('Duplicate session');
       // Escape shuts it, and the focus goes back to the terminal.
       await _escape(tester);
       await _until(
         tester,
-        () => find.text('Duplicate session').evaluate().isEmpty,
+        () => find.text('Paste').evaluate().isEmpty,
         'Escape to close the terminal\'s menu',
+      );
+
+      await realClick(view, shift: true);
+      await _until(
+        tester,
+        () => got.existsSync() && got.lengthSync() >= 3,
+        'Shift+right-click to reach the program',
+      );
+      expect(got.readAsBytesSync().take(4), [0x1b, 0x5b, 0x4d, 0x22]);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Paste'),
+        findsNothing,
+        reason: 'a menu opened for a Shift+right-click meant for the program',
       );
 
       stop.createSync();
@@ -1511,7 +1717,7 @@ touch '${done.path}'
       // The two in a group: the pane that is not focused, right-clicked,
       // takes focus and opens its own menu.
       await rightClick(focused());
-      await _pick(tester, 'Group with…');
+      await _pick(tester, 'Move into a group…');
       await _until(
         tester,
         () =>
@@ -1573,6 +1779,8 @@ touch '${done.path}'
       await _escape(tester);
 
       await _closeTabs(tester);
+      // In the body: the binding checks it is back before any tear-down runs.
+      binding.shouldPropagateDevicePointerEvents = false;
     },
   );
 
@@ -2906,4 +3114,51 @@ touch '${done.path}'
       binding.shouldPropagateDevicePointerEvents = false;
     },
   );
+
+  // #132. A tab's menu from a right-click the OS itself sends, not one the
+  // test makes up inside Flutter: on a desktop the strip is the window's
+  // title bar, and what the runner, the window manager or AppKit does with a
+  // press there comes before any widget. Not a Mac's Ctrl+click: the
+  // binding that makes it a right-click (JeanshBinding) is the app's, and
+  // integration_test's is made first; right_click_test.dart holds that one.
+  // On Linux under openbox, where there is one, since a
+  // window manager is what turns a right-click on a title bar into its
+  // window menu; after the window-buttons test, as it may move the window.
+  _test('a real right-click on a tab opens its menu', (tester) async {
+    final binding = IntegrationTestWidgetsFlutterBinding.instance;
+    binding.shouldPropagateDevicePointerEvents = true;
+    addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
+    await _launch(tester);
+    if (Platform.isLinux &&
+        Process.runSync('sh', ['-c', 'command -v openbox']).exitCode == 0) {
+      await _window();
+      final wm = await Process.start('openbox', []);
+      addTearDown(wm.kill);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await tester.pump();
+    }
+    await _localShell(tester);
+    final close = find.byWidgetPredicate(
+      (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+    );
+    final tabs = find.byWidgetPredicate(
+      (w) =>
+          w is Tooltip &&
+          ((w.message ?? '').startsWith('Close ') || w.message == 'Reconnect'),
+    );
+    // Left of its close button, on the chip's title: where a hand aims.
+    Offset chip() => tester.getCenter(close.first) - const Offset(40, 0);
+
+    final before = tabs.evaluate().length;
+    await _realRightClick(tester, chip());
+    await _pick(tester, 'Duplicate session');
+    await _until(
+      tester,
+      () => tabs.evaluate().length == before + 1,
+      'a second Local shell',
+    );
+    await _closeTabs(tester);
+    // In the body: the binding checks it is back before any tear-down runs.
+    binding.shouldPropagateDevicePointerEvents = false;
+  });
 }
