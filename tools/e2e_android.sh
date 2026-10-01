@@ -351,7 +351,9 @@ chat_version_case() {
   return "$status"
 }
 
-LIVE_SID=e2e00004-0000-4000-8000-000000000004
+# Its own id, past the ones chat_stand_in numbers from 1: the fourth of those
+# once took 4 too, and chat then picked the finished copy and not the pane.
+LIVE_SID=e2e00009-0000-4000-8000-000000000009
 live_session() {
   local home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H)
   # Only where nothing of anyone's is: no tmux session of this name, and no
@@ -392,6 +394,28 @@ rows.append({'kind': 'interactive', 'pid': pid, 'sessionId': sid,
 json.dump(rows, open(path, 'w'))
 PY
   echo "live session in tmux pane of pid $pid"
+}
+
+# Its screenshots are evidence, wherever Maestro put them: see chat_version.
+keep_shots() {
+  for shot in $( { find "$ROOT" -maxdepth 2 -name "$1"
+                   find "$HOME/.maestro" -name "$1"; } 2>/dev/null); do
+    mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
+  done
+}
+
+# Markdown typed into the chat and drawn as Markdown (#141), against the live
+# session chat_two_way uses: a block of its own for E2E_ONLY, which sets the
+# host up itself. The whole run calls the flow inside chat_two_way's group.
+chat_markdown() {
+  chat_stand_in
+  live_session
+  local status=0
+  flow chat_markdown || status=1
+  keep_shots 'chat-markdown-*.png'
+  sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  stand_in ''
+  return "$status"
 }
 
 # The three hosts, one after another: a block of its own for E2E_ONLY.
@@ -488,6 +512,10 @@ transcript=/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl
 terminal_side=$!
 flow chat_two_way || echo "::warning::chat_two_way failed -- report only, not gating"
 kill "$terminal_side" 2>/dev/null
+echo "::endgroup::"
+echo "::group::chat_markdown (report only)"
+flow chat_markdown || echo "::warning::chat_markdown failed -- report only, not gating"
+keep_shots 'chat-markdown-*.png'
 sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
 echo "::endgroup::"
 stand_in ''

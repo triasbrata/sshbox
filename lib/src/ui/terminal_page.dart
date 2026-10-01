@@ -14,6 +14,7 @@ import 'package:flutter/gestures.dart'
         GestureBinding,
         kMiddleMouseButton,
         kPrimaryMouseButton,
+        kSecondaryMouseButton,
         PointerDeviceKind,
         PointerPanZoomStartEvent,
         PointerScrollEvent;
@@ -34,10 +35,12 @@ import '../session/tailnet_forwarder.dart';
 import 'connect_sheet.dart';
 import 'ctrl_click.dart';
 import 'file_browser_page.dart';
+import 'file_download.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
 import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
+import 'pane_menu.dart';
 import 'right_click.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
@@ -511,15 +514,7 @@ class _TerminalPageState extends State<TerminalPage> {
     final browser = _session.fileBrowser;
     final relative = !target.startsWith('/') && !target.startsWith('~');
     try {
-      final cwd = relative ? (await _session.foreground())?.cwd : null;
-      final path = RemotePath.normalize(
-        cwd != null
-            ? RemotePath.join(cwd, target)
-            : RemotePath.resolve(
-                target,
-                target.startsWith('/') ? '/' : await browser.resolveHome(),
-              ),
-      );
+      final (:path, :cwd) = await _hostPath(target);
       final kind = await browser.stat(path);
       if (!mounted) return;
       switch (kind) {
@@ -551,6 +546,106 @@ class _TerminalPageState extends State<TerminalPage> {
       if (mounted) {
         showToast(context, error.message, type: TuiToastType.error);
       }
+    }
+  }
+
+  /// Where [target], a path as the terminal shows it, is on the host. A
+  /// relative one starts from the program that printed it, the terminal's
+  /// foreground process, and from home when the host cannot say; [cwd] is
+  /// where it started, or null when it did not start from there.
+  Future<({String path, String? cwd})> _hostPath(String target) async {
+    final relative = !target.startsWith('/') && !target.startsWith('~');
+    final cwd = relative ? (await _session.foreground())?.cwd : null;
+    final path = RemotePath.normalize(
+      cwd != null
+          ? RemotePath.join(cwd, target)
+          : RemotePath.resolve(
+              target,
+              target.startsWith('/')
+                  ? '/'
+                  : await _session.fileBrowser.resolveHome(),
+            ),
+    );
+    return (path: path, cwd: cwd);
+  }
+
+  /// A desktop's right-click in [view]: iTerm2's pane menu, as far as Jeansh
+  /// has its items (see [paneMenuEntries]), the tab's own among them.
+  void _paneMenu(_PaneViewState view, Offset at, CellOffset cell) {
+    final terminal = view.widget.terminal;
+    final range = view.selection.selection;
+    final link =
+        terminal.hyperlinkAt(cell) ??
+        (range == null ? null : hyperlinkIn(terminal, range));
+    final selected = range == null
+        ? null
+        : selectedText(terminal.buffer, range);
+    void copy(String text, String said) {
+      Clipboard.setData(ClipboardData(text: text));
+      showToast(context, said, type: TuiToastType.success);
+    }
+
+    final files = _session.isConnected && _session.canBrowseFiles;
+    final tmux = _session.tmux;
+    final pane = tmux?.panes.where((p) => p.terminal == terminal).firstOrNull;
+    final buffer = terminal.buffer;
+    // The Mermaid source the selection holds, where a web view can draw it.
+    final diagram = selected == null || !hasWebView
+        ? null
+        : mermaidSource(selected);
+    showActionsAt(
+      context,
+      at,
+      paneMenuEntries(
+        context,
+        at,
+        PaneMenu(
+          selected: selected,
+          link: link,
+          tab: TabMenu.of(context)?.actions?.call(),
+          copy: selected == null ? null : () => copy(selected, 'Copied'),
+          paste: () => unawaited(view._paste()),
+          copyLink: link == null ? null : () => copy(link, 'Copied $link'),
+          openUrl: (url) =>
+              unawaited(openUrl(context, url, inTab: widget.onOpenWeb)),
+          open: (link) => unawaited(_openLink(link)),
+          download: files ? (path) => unawaited(_download(path)) : null,
+          showDiagram: diagram == null
+              ? null
+              : () => unawaited(showMermaidDialog(context, diagram)),
+          selectAll: () => view.selection.setSelection(
+            buffer.createAnchor(0, 0),
+            buffer.createAnchor(terminal.viewWidth, buffer.height - 1),
+          ),
+          // What has scrolled off, here and, in a tmux pane, tmux's own:
+          // CSI 3 J, as `clear` sends it.
+          clearBuffer: () {
+            terminal.write('\x1b[3J');
+            if (pane != null) tmux!.clearHistory(pane).ignore();
+          },
+          // RIS, as `reset` sends it: on this side only, the program on the
+          // host left as it is.
+          reset: () => terminal.write('\x1bc'),
+        ),
+      ),
+    );
+  }
+
+  /// [target], a path on the host as the terminal shows it, down to this
+  /// device, as the files drawer's Download brings one.
+  Future<void> _download(String target) async {
+    try {
+      final (:path, cwd: _) = await _hostPath(target);
+      if (!mounted) return;
+      await downloadFile(
+        context,
+        _session.fileBrowser,
+        path,
+        host: _session.fileTabHost,
+        onTransfer: (_) {},
+      );
+    } on FileBrowserException catch (error) {
+      if (mounted) showToast(context, error.message, type: TuiToastType.error);
     }
   }
 
@@ -958,6 +1053,7 @@ class _TerminalPageState extends State<TerminalPage> {
     textStyle: style,
     onEmit: _send,
     onTap: _onTerminalTap,
+    onContextMenu: _paneMenu,
     onImage: _upload,
     focused: focused,
     autoResize: autoResize,
@@ -1090,6 +1186,7 @@ class _PaneView extends StatefulWidget {
     required this.textStyle,
     required this.onEmit,
     required this.onTap,
+    required this.onContextMenu,
     required this.onImage,
     required this.focused,
     this.autoResize = true,
@@ -1100,6 +1197,11 @@ class _PaneView extends StatefulWidget {
   final TerminalStyle textStyle;
   final void Function(String data) onEmit;
   final void Function(_PaneViewState view, CellOffset cell) onTap;
+
+  /// A desktop's right-click on the pane: the page's own menu, see
+  /// [_TerminalPageState._paneMenu].
+  final void Function(_PaneViewState view, Offset at, CellOffset cell)
+  onContextMenu;
 
   /// Sends a pasted picture to the host and types its path at the prompt: the
   /// page's own upload, the paperclip's and the share sheet's.
@@ -1144,6 +1246,7 @@ class _PaneViewState extends State<_PaneView> {
     // from the pane that had it, which autofocus alone would leave alone.
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    FocusManager.instance.addListener(_onFocusMoved);
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
@@ -1179,6 +1282,7 @@ class _PaneViewState extends State<_PaneView> {
   void dispose() {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    FocusManager.instance.removeListener(_onFocusMoved);
     _focusNode.dispose();
     _scrollController.dispose();
     // Takes the underlines with it.
@@ -1215,6 +1319,17 @@ class _PaneViewState extends State<_PaneView> {
       FocusManager.instance.applyFocusChangesIfNeeded();
     }
     return false;
+  }
+
+  /// The same hole, filled as focus falls into it rather than at the next
+  /// key: a tab group's pane given focus hands it to its own scope, which
+  /// gives it to no one, and a menu opened from the pane then gave it back to
+  /// the scope as it closed.
+  void _onFocusMoved() {
+    if (_shown == true &&
+        FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
+      _followFocus(keyboard: false);
+    }
   }
 
   /// Every paste into this pane, however it was asked for: the selection
@@ -1280,6 +1395,7 @@ class _PaneViewState extends State<_PaneView> {
   BufferRange? _selectionAtDown;
 
   void _mouseDown(PointerDownEvent event) {
+    _rightDown(event);
     // A second pointer — a touchscreen, a pen — must not lose the held
     // press its release: the program would drag for ever.
     if (_holding) return;
@@ -1425,6 +1541,7 @@ class _PaneViewState extends State<_PaneView> {
   /// selects a double click's word in the same up, after this has heard it.
   /// The text is what every other copy takes: see [selectedText].
   void _mouseUp(PointerUpEvent event) {
+    _rightUp(event);
     _trackedUp(event);
     if (_tracked != null) {
       // The program selects: a double or triple click's word or line, which
@@ -1480,53 +1597,58 @@ class _PaneViewState extends State<_PaneView> {
     return KeyEventResult.handled;
   }
 
-  /// A desktop's right-click, where a phone would long-press: the menu a
-  /// desktop terminal gives it — Copy for a selection, Paste, and Copy link
-  /// address on an OSC 8 hyperlink, the one clicked or the one selected —
-  /// then the tab's own menu, as its chip's right-click opens it.
-  ///
-  /// A program reading the mouse gets the click instead, as in any other
-  /// terminal: xterm2 offers it to the program first and calls this only
-  /// when nothing took it. Shift keeps it from the program, unless the
-  /// program asked for Shift too, as xterm's does.
-  void _contextMenu(TapUpDetails details, CellOffset cell) {
-    // Jeansh's, even over a program that reads the mouse: neither the press
-    // nor the release goes to it.
-    final terminal = widget.terminal;
-    final range = selection.selection;
-    final link =
-        terminal.hyperlinkAt(cell) ??
-        (range == null ? null : hyperlinkIn(terminal, range));
-    final tabMenu = TabMenu.of(context)?.entries() ?? const [];
-    void copy(String text, String said) {
-      Clipboard.setData(ClipboardData(text: text));
-      showToast(context, said, type: TuiToastType.success);
-    }
+  /// Whether the right button's press now under way is being kept from a
+  /// program that reads the mouse, and what the controller said before.
+  bool? _heldRight;
 
-    showActionsAt(context, details.globalPosition, [
-      if (range != null)
-        menuAction(
-          'Copy',
-          () => copy(selectedText(terminal.buffer, range), 'Copied'),
-        ),
-      menuAction('Paste', () => unawaited(_paste())),
-      if (link != null)
-        menuAction('Copy link address', () => copy(link, 'Copied $link')),
-      if (_diagramIn(range) case final diagram?)
-        menuAction(
-          'Show as diagram',
-          () => unawaited(showMermaidDialog(context, diagram)),
-        ),
-      // The tab's own, as its chip offers them.
-      if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
-    ]);
+  /// A desktop's right-click, where a phone would long-press, opens the
+  /// pane's menu (see [_TerminalPageState._paneMenu]) whatever the program
+  /// asked for, as iTerm2's does: Claude Code reads the mouse, and its users
+  /// want the menu. So a plain right press is kept from the program here,
+  /// before xterm2 offers it one.
+  ///
+  /// Shift+right-click is the program's instead, when it reads the mouse.
+  /// xterm2 already keeps a shifted click from the program, so it lands here,
+  /// and is handed over as the plain click it was meant to be.
+  void _rightDown(PointerDownEvent event) {
+    if (!isDesktop ||
+        event.kind != PointerDeviceKind.mouse ||
+        event.buttons != kSecondaryMouseButton ||
+        HardwareKeyboard.instance.isShiftPressed) {
+      return;
+    }
+    _heldRight ??= selection.suspendedPointerInputs;
+    selection.setSuspendPointerInput(true);
   }
 
-  /// The Mermaid source [range] holds, where a web view can draw it: what
-  /// the menu's Show as diagram opens. See [mermaidSource].
-  String? _diagramIn(BufferRange? range) => range == null || !hasWebView
-      ? null
-      : mermaidSource(selectedText(widget.terminal.buffer, range));
+  /// Gives the program the mouse back once the click has gone where it was
+  /// going: the tap's own callback runs as the gesture arena sweeps, after
+  /// this pointer's Listeners have heard the button come up.
+  void _rightUp(PointerEvent event) {
+    final held = _heldRight;
+    if (held == null) return;
+    scheduleMicrotask(() {
+      if (_heldRight == null) return;
+      _heldRight = null;
+      selection.setSuspendPointerInput(held);
+    });
+  }
+
+  void _contextMenu(TapUpDetails details, CellOffset cell) {
+    // A plain right-click; Shift+right goes to the program.
+    final terminal = widget.terminal;
+    if (HardwareKeyboard.instance.isShiftPressed &&
+        terminal.mouseMode != MouseMode.none) {
+      for (final state in [
+        TerminalMouseButtonState.down,
+        TerminalMouseButtonState.up,
+      ]) {
+        terminal.mouseInput(TerminalMouseButton.right, state, cell);
+      }
+      return;
+    }
+    widget.onContextMenu(this, details.globalPosition, cell);
+  }
 
   /// Ctrl+Shift+C — ⌘C on an Apple platform — before xterm2's own copy
   /// shortcut, which reads the selection through `Buffer.getText` and so
@@ -1712,7 +1834,10 @@ class _PaneViewState extends State<_PaneView> {
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
           onPointerMove: _trackedMove,
-          onPointerCancel: _trackedUp,
+          onPointerCancel: (event) {
+            _trackedUp(event);
+            _rightUp(event);
+          },
           onPointerPanZoomStart: _trackpadDown,
           child: TerminalView(
             widget.terminal,

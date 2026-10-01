@@ -13,6 +13,7 @@ import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_file_browser.dart';
+
 import 'package:sshbox/src/ui/tui.dart';
 
 class _NoSecrets implements SecretStore {
@@ -74,8 +75,13 @@ void main() {
   late Map<String, _Shell> shells;
   late List<String> duplicated;
 
-  /// The shell with a connected tab for each of [ids], the last one showing.
+  /// The shell with a connected tab for each of [ids], the last one showing,
+  /// in a window tall enough for a pane's whole menu, which a shorter one
+  /// scrolls, building only the rows on screen.
   Future<void> pump(WidgetTester tester, List<String> ids) async {
+    tester.view.physicalSize = const Size(1200, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     SharedPreferences.setMockInitialValues({});
     manager = SessionManager();
     addTearDown(manager.closeAll);
@@ -115,18 +121,18 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Finder item(String text) => find.widgetWithText(PopupMenuItem<VoidCallback>, text);
+  Finder item(String text) =>
+      find.widgetWithText(PopupMenuItem<VoidCallback>, text);
 
   testWidgets(
-    "a right-click in a terminal gives its own items, then the tab's",
+    "a right-click in a terminal opens the pane's menu, the tab's items in it",
     (tester) async {
       await pump(tester, ['box']);
       await rightClick(tester, tester.getCenter(find.byType(TerminalView)));
 
       expect(item('Paste'), findsOneWidget);
       expect(item('Duplicate session'), findsOneWidget);
-      expect(find.byType(PopupMenuDivider), findsOneWidget);
-      // The terminal's own come first.
+      // In iTerm2's order: the clipboard before the session's own.
       expect(
         tester.getTopLeft(item('Paste')).dy,
         lessThan(tester.getTopLeft(item('Duplicate session')).dy),
@@ -140,7 +146,8 @@ void main() {
   );
 
   testWidgets(
-    "the right-click stays Jeansh's over a program reading the mouse",
+    "the menu opens over a program reading the mouse, Shift+right-click "
+    "being the program's",
     (tester) async {
       await pump(tester, ['box']);
       tester
@@ -149,11 +156,22 @@ void main() {
           .write('\x1b[?1000h');
       await tester.pump();
       shells['box']!.sent.clear();
+      final at = tester.getCenter(find.byType(TerminalView));
 
-      await rightClick(tester, tester.getCenter(find.byType(TerminalView)));
+      await rightClick(tester, at);
       expect(item('Paste'), findsOneWidget);
       expect(item('Duplicate session'), findsOneWidget);
-      expect(shells['box']!.sent.join(), isNot(contains('\x1b[M')));
+      expect(shells['box']!.sent, isEmpty);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await rightClick(tester, at);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      expect(find.text('Duplicate session'), findsNothing);
+      // The right button's press and release, in X10's encoding.
+      expect(shells['box']!.sent.join(), startsWith('\x1b[M"'));
+      expect(shells['box']!.sent.join(), contains('\x1b[M#'));
     },
     variant: _desktop,
   );
@@ -258,6 +276,83 @@ void main() {
       expect(shells['two']!.sent, isNot(contains('b')));
     },
     variant: _desktop,
+  );
+
+  // #132: a pane's split where there is no tmux, its swap, and New tab's
+  // second menu, each through the shell.
+  testWidgets(
+    'a plain shell splits into a group, swaps its panes, and opens a new tab '
+    'from its menu',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      SharedPreferences.setMockInitialValues({});
+      manager = SessionManager();
+      addTearDown(manager.closeAll);
+      final repository = HostRepository(_NoSecrets());
+      const host = HostProfile(
+        id: 'box',
+        label: 'box',
+        host: '10.0.2.2',
+        username: 'me',
+      );
+      await repository.upsert(host);
+      final opened = <String>[];
+      Future<void> open(String id) async {
+        opened.add(id);
+        await manager
+            .open(host, transport: (_, _) => _Shell())
+            .connect(secrets: _NoSecrets());
+      }
+
+      await open('box');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TabsShell(
+            repository: repository,
+            secrets: _NoSecrets(),
+            sessions: manager,
+            onOpenHost: open,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      Future<void> pick(String label, {int pane = 0}) async {
+        await rightClick(
+          tester,
+          tester.getCenter(find.byType(TerminalView).at(pane)),
+        );
+        await tester.tap(item(label));
+        await tester.pumpAndSettle();
+      }
+
+      // Stacked, the new shell under the first.
+      await pick('Split pane horizontally');
+      expect(find.byType(TerminalView), findsNWidgets(2));
+      expect(find.byTooltip('Tab group'), findsOneWidget);
+      final views = tester.widgetList<TerminalView>(find.byType(TerminalView));
+      final [top, bottom] = views.map((view) => view.terminal).toList();
+      expect(
+        tester.getTopLeft(find.byType(TerminalView).last).dy,
+        greaterThan(tester.getTopLeft(find.byType(TerminalView).first).dy),
+      );
+
+      await pick('Swap with the next pane');
+      expect(
+        tester
+            .widgetList<TerminalView>(find.byType(TerminalView))
+            .map((view) => view.terminal),
+        [bottom, top],
+      );
+
+      // New tab… asks where, the saved hosts among it.
+      await pick('New tab…');
+      await tester.tap(item('box'));
+      await tester.pumpAndSettle();
+      expect(opened, ['box', 'box', 'box']);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.linux),
   );
 
   testWidgets('on Android a right-click in a tab opens nothing new', (

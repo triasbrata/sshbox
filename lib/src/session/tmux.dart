@@ -805,6 +805,10 @@ class TmuxSession {
     );
   }
 
+  /// Drops what tmux keeps of [pane] above its screen.
+  Future<void> clearHistory(TmuxPane pane) =>
+      _client.command('clear-history -t %${pane.id}');
+
   Future<void> closePane() async {
     final pane = focused;
     if (pane != null) await _client.command('kill-pane -t %${pane.id}');
