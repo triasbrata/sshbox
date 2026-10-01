@@ -6,7 +6,10 @@ import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../files/transfers.dart';
+import '../models/host_profile.dart';
 import '../session/isolate_transport.dart';
+import '../session/local_transport.dart'
+    show isLocalHostId, localHostId, wslDistros, wslHost;
 import '../session/pane_record.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
@@ -18,6 +21,7 @@ import 'db_editor_page.dart' show DbBadge;
 import 'file_editor_page.dart';
 import 'git_diff_page.dart';
 import 'git_page.dart';
+import 'host_edit_page.dart';
 import 'hosts_page.dart';
 import 'pane_record_page.dart';
 import 'right_click.dart';
@@ -219,6 +223,70 @@ class _TabsShellState extends State<TabsShell> {
   /// all load their pages, or open their connections, as the app starts.
   final Set<String> _shown = {};
 
+  /// Another shell on [tab]'s host, opened as Duplicate session opens one and
+  /// put in a pane beside [tab]: a split, where there is no tmux to split.
+  Future<void> _splitIntoGroup(TabRef tab, {required bool stacked}) async {
+    final host = tab.session.host.id;
+    final before = {for (final s in widget.sessions.sessions) s.id};
+    await (widget.onDuplicate ?? widget.onOpenHost)(host);
+    final opened = widget.sessions.sessions
+        .where((s) => s.host.id == host && !before.contains(s.id))
+        .firstOrNull;
+    if (opened == null || !mounted) return;
+    final id = _idOf(tab);
+    _groups.join(
+      _idOf((session: opened, kind: TabKind.terminal, path: null, web: null)),
+      id,
+    );
+    final group = _groups.of(id)!;
+    if (group.stacked != stacked) _groups.flip(group);
+  }
+
+  /// Where a pane's New tab can open one: the Local shell, each WSL distro
+  /// and each saved host, always as a new shell rather than back to one
+  /// already open.
+  Future<List<(String, VoidCallback)>> _newTabTargets() async {
+    final open = widget.onDuplicate ?? widget.onOpenHost;
+    final hosts = await widget.repository.load();
+    final distros = widget.onOpenWsl == null
+        ? const <String>[]
+        : await wslDistros();
+    return [
+      if (widget.onOpenLocal != null)
+        ('Local shell', () => unawaited(open(localHostId))),
+      for (final distro in distros)
+        (distro, () => unawaited(open(wslHost(distro).id))),
+      for (final host in hosts) (host.label, () => unawaited(open(host.id))),
+    ];
+  }
+
+  /// [session]'s saved host in its editor, as Home's card opens it; an open
+  /// tab takes what was saved, as there.
+  Future<void> _editHost(LiveSession session) async {
+    final hosts = await widget.repository.load();
+    final existing = hosts.where((h) => h.id == session.host.id).firstOrNull;
+    if (!mounted) return;
+    if (existing == null) {
+      showToast(
+        context,
+        'That host is no longer saved',
+        type: TuiToastType.warning,
+      );
+      return;
+    }
+    final saved = await Navigator.of(context).push<HostProfile>(
+      MaterialPageRoute(
+        builder: (_) => HostEditPage(
+          repository: widget.repository,
+          secrets: widget.secrets,
+          existing: existing,
+          notifyKeys: widget.sessions.notifyKeys,
+        ),
+      ),
+    );
+    if (saved != null) widget.sessions.updateHost(saved);
+  }
+
   final _stripKey = GlobalKey<_TabStripState>();
   final Map<String, GlobalKey> _menuKeys = {};
 
@@ -229,6 +297,7 @@ class _TabsShellState extends State<TabsShell> {
   Widget _withTabMenu(String id, Widget page) {
     final menu = TabMenu(
       items: () => _stripKey.currentState?.menus[id] ?? const [],
+      actions: () => _stripKey.currentState?.actions[id],
       child: page,
     );
     return GestureDetector(
@@ -520,6 +589,9 @@ class _TabsShellState extends State<TabsShell> {
               onDuplicate: widget.onDuplicate ?? widget.onOpenHost,
               onAttach: _attachTmux,
               onDetach: _detachTmux,
+              onSplit: _splitIntoGroup,
+              onNewTab: _newTabTargets,
+              onEditHost: _editHost,
               groups: _groups,
             ),
             Expanded(
@@ -590,6 +662,9 @@ class TabStrip extends StatefulWidget {
     required this.onDuplicate,
     this.onAttach,
     this.onDetach,
+    this.onSplit,
+    this.onNewTab,
+    this.onEditHost,
     this.showTransfers = false,
     this.onSelectTransfers,
     this.onCloseTransfers,
@@ -627,6 +702,17 @@ class TabStrip extends StatefulWidget {
   /// out of the menu.
   final Future<void> Function(LiveSession session)? onDetach;
 
+  /// Another shell on [tab]'s host, put in a pane beside it: what a pane's
+  /// Split does where there is no tmux to split. Null offers none.
+  final Future<void> Function(TabRef tab, {required bool stacked})? onSplit;
+
+  /// Where a new tab can go, for a pane's New tab.
+  final Future<List<(String, VoidCallback)>> Function()? onNewTab;
+
+  /// Opens [session]'s saved host in its editor. Null, or a host that is
+  /// not saved — the Local shell, WSL — offers none.
+  final void Function(LiveSession session)? onEditHost;
+
   @override
   State<TabStrip> createState() => _TabStripState();
 }
@@ -645,6 +731,9 @@ class _TabStripState extends State<TabStrip> {
   /// Each tab's menu, by id, as this strip last drew it: a right-click inside
   /// the tab's page opens the same one (see [TabMenu]).
   final Map<String, List<(String, VoidCallback)>> menus = {};
+
+  /// Each terminal tab's actions, by id, for its pane's own menu.
+  final Map<String, TabActions> actions = {};
 
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
@@ -743,6 +832,52 @@ class _TabStripState extends State<TabStrip> {
           ('Pane record', () => _openRecord(session, tmux)),
       ],
     ];
+  }
+
+  /// The same as [_menuFor] and [_groupMenu], one action at a time, for a
+  /// pane's right-click menu, with what it has besides: a new tab, a split
+  /// where there is no tmux, swapping panes, the host's editor, restarting.
+  TabActions _actionsFor(
+    TabRef tab,
+    String id,
+    List<Object> slots,
+    Map<String, String> names,
+    Map<String, VoidCallback> selects,
+  ) {
+    final session = tab.session;
+    final tmux = session.isConnected ? session.tmux : null;
+    final groups = widget.groups;
+    final grouped = groups?.of(id) != null;
+    VoidCallback? split(bool stacked) => tmux != null
+        ? () => _tmux(() => tmux.split(sideBySide: !stacked))
+        : widget.onSplit == null || groups == null
+        ? null
+        : () => unawaited(widget.onSplit!(tab, stacked: stacked));
+    return TabActions(
+      newTab: widget.onNewTab,
+      splitSideBySide: split(false),
+      splitStacked: split(true),
+      groupWith: groups != null && slots.length > 1
+          ? () => _groupWith(id, slots, names, selects)
+          : null,
+      takeOutOfGroup: grouped ? () => groups!.leave(id) : null,
+      swap: grouped ? () => groups!.swap(id) : null,
+      editSession: widget.onEditHost == null || isLocalHostId(session.host.id)
+          ? null
+          : () => widget.onEditHost!(session),
+      close: () => widget.onClose(tab),
+      restart: session.ended ? () => widget.onReconnect(session) : null,
+      duplicate: () => widget.onDuplicate(session.host.id),
+      detach: tmux != null && widget.onDetach != null
+          ? () => unawaited(widget.onDetach!(session))
+          : null,
+      attach: tmux != null && widget.onAttach != null
+          ? () => unawaited(widget.onAttach!(session))
+          : null,
+      record: tmux != null && tmux.record != null && session.canBrowseFiles
+          ? () => _openRecord(session, tmux)
+          : null,
+    );
   }
 
   /// Opens the focused pane's record, as the host has kept it.
@@ -897,6 +1032,7 @@ class _TabStripState extends State<TabStrip> {
     List<(String, VoidCallback)> grouping(String id) =>
         _groupMenu(id, slots, names, selects);
     menus.clear();
+    actions.clear();
 
     for (final tab in tabs) {
       final id = _idOf(tab);
@@ -949,6 +1085,9 @@ class _TabStripState extends State<TabStrip> {
           ...grouping(id),
         ],
       );
+      if (tab.kind == TabKind.terminal) {
+        actions[id] = _actionsFor(tab, id, slots, names, selects);
+      }
     }
     for (final tab in databases) {
       final id = _dbIdOf(tab);

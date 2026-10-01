@@ -71,6 +71,17 @@ class TabGroups extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Trades [id]'s pane for the one after it, or the one before for the last.
+  void swap(String id) {
+    final ids = of(id)?.ids;
+    if (ids == null) return;
+    final at = ids.indexOf(id);
+    final other = at + 1 < ids.length ? at + 1 : at - 1;
+    ids[at] = ids[other];
+    ids[other] = id;
+    notifyListeners();
+  }
+
   /// Side by side becomes stacked, and stacked side by side.
   void flip(TabGroup group) {
     group.stacked = !group.stacked;

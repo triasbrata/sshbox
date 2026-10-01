@@ -24,7 +24,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, InkWell, PopupMenuDivider, TextField, Tooltip;
+    show DropdownButton, InkWell, TextField, Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -201,6 +201,9 @@ Future<void> _pick(WidgetTester tester, String item) async {
     'the menu to offer $item',
   );
   await tester.pump(const Duration(milliseconds: 600));
+  // A pane's menu is taller than a small window, and scrolls.
+  await tester.ensureVisible(_label(item));
+  await tester.pump();
   await tester.tap(_label(item));
 }
 
@@ -529,11 +532,19 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
 /// through the OS as a hand sends it: xdotool on Linux, mouse_event on
 /// Windows, CGEvents posted to the window server on macOS.
 ///
+/// [shift] holds Shift down around it, as a hand does: Windows has no test
+/// that asks for it.
+///
 /// Wants the binding's shouldPropagateDevicePointerEvents on, or the
 /// integration binding drops what the device sends.
-Future<void> _realRightClick(WidgetTester tester, Offset local) async {
+Future<void> _realRightClick(
+  WidgetTester tester,
+  Offset local, {
+  bool shift = false,
+}) async {
   final ratio = tester.view.devicePixelRatio;
   if (Platform.isWindows) {
+    assert(!shift, 'no Shift on Windows here');
     final at = local * ratio;
     await _winMouse([
       'move ${at.dx.round()} ${at.dy.round()}',
@@ -558,7 +569,7 @@ Future<void> _realRightClick(WidgetTester tester, Offset local) async {
     final at = Offset(x, y) + local;
     final done = await Process.run('osascript', [
       '-l', 'JavaScript', '-e', _macRightClickScript, //
-      '${at.dx}', '${at.dy}',
+      '${at.dx}', '${at.dy}', if (shift) 'shift',
     ]);
     expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}');
   } else {
@@ -566,22 +577,39 @@ Future<void> _realRightClick(WidgetTester tester, Offset local) async {
     final frame = (window.width - tester.view.physicalSize.width) / 2;
     final at = window.topLeft + Offset(frame, frame) + local * ratio;
     await _xdo(['mousemove', '${at.dx.round()}', '${at.dy.round()}']);
+    if (shift) {
+      // The key reaches the window that has the keyboard.
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['keydown', 'shift']);
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     await _xdo(['click', '3']);
+    if (shift) {
+      await tester.pump(const Duration(milliseconds: 100));
+      await _xdo(['keyup', 'shift']);
+    }
   }
   await tester.pump(const Duration(milliseconds: 300));
 }
 
 /// A right-click posted to the window server as CGEvents, at a point in the
 /// screen's points: the pointer moved there (kCGEventMouseMoved, 5), then
-/// the right button down (3) and up (4).
+/// the right button down (3) and up (4). With `shift`, the left Shift key
+/// (key code 56) goes down before and up after, and the clicks carry its
+/// flag (kCGEventFlagMaskShift, 0x20000), as a keyboard's do.
 const _macRightClickScript = r"""
 ObjC.import('CoreGraphics');
 function run(argv) {
   const p = $.CGPointMake(Number(argv[0]), Number(argv[1]));
+  const shift = argv[2] === 'shift';
+  const post = (e) => { $.CGEventPost(0, e); delay(0.05); };
+  if (shift) post($.CGEventCreateKeyboardEvent(null, 56, true));
   for (const [type, button] of [[5, 0], [3, 1], [4, 1]]) {
-    $.CGEventPost(0, $.CGEventCreateMouseEvent(null, type, p, button));
-    delay(0.05);
+    const e = $.CGEventCreateMouseEvent(null, type, p, button);
+    if (shift) $.CGEventSetFlags(e, 0x20000);
+    post(e);
   }
+  if (shift) post($.CGEventCreateKeyboardEvent(null, 56, false));
 }
 """;
 
@@ -1018,14 +1046,14 @@ touch '${done.path}'
     await _closeTabs(tester);
   });
 
-  // #87: a right-click in a tab's page opens the tab's own menu there. In a
-  // terminal its Paste comes first and the tab's items after a divider; a
-  // program reading the mouse gets a plain right-click, and Shift keeps one
-  // for the menu; and in a group the pane clicked takes focus and opens its
-  // own menu, Take out of group among it.
+  // #87 and #132: a right-click in a tab's page opens the tab's own menu
+  // there, in a terminal iTerm2's pane menu with the tab's items in it. It
+  // opens even over a program reading the mouse, which hears nothing of it;
+  // Shift+right-click is the program's. In a group the pane clicked takes
+  // focus and opens its own menu, Take out of group among it.
   _test(
-    'a right-click in a terminal opens its tab\'s menu, unless a program '
-    'reads the mouse',
+    'a right-click in a terminal opens its menu, even over a program that '
+    'reads the mouse, and Shift+right-click reaches the program',
     skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
@@ -1066,27 +1094,43 @@ touch '${done.path}'
         await tester.pump(const Duration(milliseconds: 600));
       }
 
-      // Paste, a divider, then what the tab's chip offers.
-      await rightClick(focused());
-      await menuWith('Duplicate session');
+      // #132: the same click as the OS sends it, Shift and all.
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      Future<void> realClick(TerminalView view, {bool shift = false}) =>
+          _realRightClick(
+            tester,
+            tester.getCenter(
+              find.byWidgetPredicate(
+                (w) => w is TerminalView && w.focusNode == view.focusNode,
+              ),
+            ),
+            shift: shift,
+          );
+
+      // iTerm2's pane menu, in its order: New tab first, the clipboard,
+      // then the session's own.
+      await realClick(focused());
+      await menuWith('Paste');
+      final newTab = tester.getTopLeft(find.text('New tab…')).dy;
       final paste = tester.getTopLeft(find.text('Paste')).dy;
-      final divider = tester.getTopLeft(find.byType(PopupMenuDivider)).dy;
       final duplicate = tester.getTopLeft(find.text('Duplicate session')).dy;
       expect(
-        paste < divider && divider < duplicate,
+        newTab < paste && paste < duplicate,
         isTrue,
-        reason: 'Paste, a divider and the tab\'s items, in that order',
+        reason: 'New tab…, Paste and Duplicate session, in that order',
       );
-      await tester.tap(find.text('Duplicate session'));
+      await _pick(tester, 'Duplicate session');
       await _until(
         tester,
         () => tabs.evaluate().length == before + 1,
         'a second Local shell',
       );
 
-      // A program reading the mouse: a plain right-click reaches it as
-      // xterm's ESC [ M, and no menu opens; Shift keeps the click for the
-      // menu. It records what it reads until told to stop.
+      // A program reading the mouse: a plain right-click still opens the
+      // menu and the program hears nothing of it; Shift+right-click is the
+      // program's, reaching it as xterm's ESC [ M. It records what it reads
+      // until told to stop.
       final dir = _scratch();
       final got = File('${dir.path}/got');
       final ready = File('${dir.path}/ready');
@@ -1115,30 +1159,34 @@ touch '${done.path}'
       }
       await tester.pump(const Duration(milliseconds: 300));
 
-      await rightClick(view);
-      await _until(
-        tester,
-        () => got.existsSync() && got.lengthSync() >= 3,
-        'the right-click to reach the program',
-      );
-      expect(got.readAsBytesSync().take(3), [0x1b, 0x5b, 0x4d]);
+      await realClick(view);
+      await menuWith('Paste');
       await tester.pump(const Duration(milliseconds: 600));
       expect(
-        find.text('Duplicate session'),
-        findsNothing,
-        reason: 'a menu opened over a program that reads the mouse',
+        got.existsSync() ? got.readAsBytesSync() : const <int>[],
+        isEmpty,
+        reason: 'the program heard the right-click that opened the menu',
       );
-
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await rightClick(view);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-      await menuWith('Duplicate session');
       // Escape shuts it, and the focus goes back to the terminal.
       await _escape(tester);
       await _until(
         tester,
-        () => find.text('Duplicate session').evaluate().isEmpty,
+        () => find.text('Paste').evaluate().isEmpty,
         'Escape to close the terminal\'s menu',
+      );
+
+      await realClick(view, shift: true);
+      await _until(
+        tester,
+        () => got.existsSync() && got.lengthSync() >= 3,
+        'Shift+right-click to reach the program',
+      );
+      expect(got.readAsBytesSync().take(4), [0x1b, 0x5b, 0x4d, 0x22]);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        find.text('Paste'),
+        findsNothing,
+        reason: 'a menu opened for a Shift+right-click meant for the program',
       );
 
       stop.createSync();
@@ -1151,7 +1199,7 @@ touch '${done.path}'
       // The two in a group: the pane that is not focused, right-clicked,
       // takes focus and opens its own menu.
       await rightClick(focused());
-      await _pick(tester, 'Group with…');
+      await _pick(tester, 'Move into a group…');
       await _until(
         tester,
         () =>
@@ -1213,6 +1261,8 @@ touch '${done.path}'
       await _escape(tester);
 
       await _closeTabs(tester);
+      // In the body: the binding checks it is back before any tear-down runs.
+      binding.shouldPropagateDevicePointerEvents = false;
     },
   );
 
