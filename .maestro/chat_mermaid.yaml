@@ -1,0 +1,51 @@
+# Chat draws a ```mermaid fence in Claude's reply as a diagram (#131), as the
+# Markdown preview does, with a button to copy its source.
+#
+# The session is a stand-in's, from tools/e2e_android.sh's chat_stand_in:
+# "E2E diagram" answered with a fence between two lines of text. Drawn, the
+# reply shows the text around it and the copy button, and not the source,
+# which is all a fence left as code would show.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E diagram.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E diagram.*"
+# The reply's paragraphs can reach Maestro as one node, so a regex.
+- extendedWaitUntil:
+    visible: "(?s).*Diagram above.*"
+    timeout: 20000
+
+- extendedWaitUntil:
+    visible: "Copy diagram source"
+    timeout: 5000
+- assertNotVisible: '(?s).*E2EA --> E2EB.*'
+# Time for the web view to draw it, for the screenshot.
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: chat-mermaid-diagram
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

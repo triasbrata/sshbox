@@ -7,6 +7,7 @@ import '../files/file_browser.dart';
 import '../session/pane_record.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'tui.dart';
+import 'text_size.dart';
 
 /// A tmux pane's record, as the host kept it: the text the pane showed, in
 /// order, the newest at the bottom — see [PaneRecord].
@@ -126,28 +127,35 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
       color: theme.colorScheme.onSurface,
     );
     final more = widget.reader.start > 0;
-    return SelectionArea(
-      child: ListView.builder(
-        // Newest at the bottom, where the list opens.
-        reverse: true,
-        padding: const EdgeInsets.all(8),
-        itemCount: _lines.length + 1,
-        itemBuilder: (context, index) {
-          if (index < _lines.length) {
-            return Text(_lines[_lines.length - 1 - index], style: style);
-          }
-          if (_lines.isEmpty) return const SizedBox.shrink();
-          return Center(
-            child: more
-                ? TuiButton(
-                    label: 'Load earlier',
-                    prefix: '↑',
-                    variant: TuiButtonVariant.ghost,
-                    onPressed: _loading ? null : _earlier,
-                  )
-                : Text('Start of the record', style: theme.textTheme.bodySmall),
-          );
-        },
+    // Drawn in the terminal's font size, which is the content size already.
+    return ContentText(
+      scale: false,
+      child: SelectionArea(
+        child: ListView.builder(
+          // Newest at the bottom, where the list opens.
+          reverse: true,
+          padding: const EdgeInsets.all(8),
+          itemCount: _lines.length + 1,
+          itemBuilder: (context, index) {
+            if (index < _lines.length) {
+              return Text(_lines[_lines.length - 1 - index], style: style);
+            }
+            if (_lines.isEmpty) return const SizedBox.shrink();
+            return Center(
+              child: more
+                  ? TuiButton(
+                      label: 'Load earlier',
+                      prefix: '↑',
+                      variant: TuiButtonVariant.ghost,
+                      onPressed: _loading ? null : _earlier,
+                    )
+                  : Text(
+                      'Start of the record',
+                      style: theme.textTheme.bodySmall,
+                    ),
+            );
+          },
+        ),
       ),
     );
   }

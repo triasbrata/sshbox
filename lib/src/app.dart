@@ -27,6 +27,7 @@ import 'ui/connect_sheet.dart';
 import 'ui/onboarding_page.dart';
 import 'ui/settings_page.dart';
 import 'ui/tabs_shell.dart';
+import 'ui/text_size.dart';
 import 'ui/title_bar.dart';
 import 'ui/tui.dart';
 import 'ui/toast.dart';
@@ -565,7 +566,7 @@ class _SshboxAppState extends State<SshboxApp> {
   Widget build(BuildContext context) {
     // Toasts (see `showToast`), stacked the way `toastConfig` says.
     return ListenableBuilder(
-      listenable: Listenable.merge([appTheme, terminalSettings]),
+      listenable: Listenable.merge([appTheme, terminalSettings, uiTextSize]),
       builder: (context, _) {
         final look = appTheme.value;
         // termul's look in the theme's own colours: see `jeanshTheme`.
@@ -582,23 +583,35 @@ class _SshboxAppState extends State<SshboxApp> {
           // Under the status bar is the tab strip, with no app bar to set
           // the bar's icons, so they follow the theme from here: the
           // system's white ones would vanish on a light theme.
-          builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
-            value: SystemUiOverlayStyle(
-              statusBarIconBrightness:
-                  Theme.of(context).brightness == Brightness.dark
-                  ? Brightness.light
-                  : Brightness.dark,
+          //
+          // Every text in the app at the UI size Settings picked, on top of
+          // the system's own: a tab's content takes it back out, see
+          // ContentText.
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: UiTextScaler(
+                MediaQuery.textScalerOf(context),
+                uiTextSize.value,
+              ),
             ),
-            // On a desktop, every page and toast clear of the window's
-            // buttons; onboarding, before the tabs, covers them too.
-            child: TitleBarSpace(
-              navigator: _navigator,
-              covered: () =>
-                  !onboardingDone.value ||
-                  (_navigator.currentState?.canPop() ?? false),
-              // Toasts over every page, taking only the touches that land
-              // on one.
-              child: ToastLayer(child: child!),
+            child: AnnotatedRegion<SystemUiOverlayStyle>(
+              value: SystemUiOverlayStyle(
+                statusBarIconBrightness:
+                    Theme.of(context).brightness == Brightness.dark
+                    ? Brightness.light
+                    : Brightness.dark,
+              ),
+              // On a desktop, every page and toast clear of the window's
+              // buttons; onboarding, before the tabs, covers them too.
+              child: TitleBarSpace(
+                navigator: _navigator,
+                covered: () =>
+                    !onboardingDone.value ||
+                    (_navigator.currentState?.canPop() ?? false),
+                // Toasts over every page, taking only the touches that land
+                // on one.
+                child: ToastLayer(child: child!),
+              ),
             ),
           ),
           // termul's onboarding before Home, on a fresh install alone: see

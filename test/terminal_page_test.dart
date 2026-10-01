@@ -17,6 +17,8 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
+import 'package:sshbox/src/ui/right_click.dart' show TabActions, TabMenu;
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
@@ -27,11 +29,13 @@ import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_drop.dart';
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
+import 'fake_web_view.dart';
 
 /// The phone's url_launcher, able to open links only the [ways] it is given,
 /// and failing the rest the way Android does: by throwing.
@@ -530,7 +534,7 @@ void main() {
     // Columns: the URL 0–15, dev/ 17–20, notes.txt 22–30, missing/x 32–40.
     const line = 'https://dart.dev dev/ notes.txt missing/x';
 
-    Future<void> pumpPage(WidgetTester tester) async {
+    Future<void> pumpPage(WidgetTester tester, {TabActions? tab}) async {
       shell = _Shell();
       UrlLauncherPlatform.instance = launcher = _Launcher({
         PreferredLaunchMode.inAppBrowserView,
@@ -550,15 +554,19 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-          home: TerminalPage(
-            session: session,
-            secrets: _NoSecrets(),
-            onOpenFile: (path, {line}) => opened.add(path),
-            onOpenWeb: openedWeb.add,
-            onOpenChat: () {},
-            onOpenGit: () {},
-            onOpenDiff: (_) {},
-            onSaveFileRoot: (_) async {},
+          home: TabMenu(
+            items: () => const [],
+            actions: () => tab,
+            child: TerminalPage(
+              session: session,
+              secrets: _NoSecrets(),
+              onOpenFile: (path, {line}) => opened.add(path),
+              onOpenWeb: openedWeb.add,
+              onOpenChat: () {},
+              onOpenGit: () {},
+              onOpenDiff: (_) {},
+              onSaveFileRoot: (_) async {},
+            ),
           ),
         ),
       );
@@ -980,7 +988,13 @@ void main() {
 
       /// The page, with an OSC 8 hyperlink to [_address] labelled COR-6025
       /// on the second row, and every copy kept in [copied].
-      Future<void> pumpLink(WidgetTester tester) async {
+      ///
+      /// In a window tall enough for the whole pane menu, which a shorter one
+      /// scrolls, building only the rows on screen.
+      Future<void> pumpLink(WidgetTester tester, {TabActions? tab}) async {
+        tester.view.physicalSize = const Size(1200, 1400);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
         copied = [];
         final platform = tester.binding.defaultBinaryMessenger;
         platform.setMockMethodCallHandler(SystemChannels.platform, (
@@ -994,13 +1008,20 @@ void main() {
           () =>
               platform.setMockMethodCallHandler(SystemChannels.platform, null),
         );
-        await pumpPage(tester);
+        await pumpPage(tester, tab: tab);
         tester
             .widget<TerminalView>(find.byType(TerminalView))
             .terminal
             .write('\r\n\x1b]8;;$_address\x07COR-6025\x1b]8;;\x07 after');
         await tester.pump();
       }
+
+      /// Whether the open menu's row [label] can be picked.
+      bool enabled(WidgetTester tester, String label) => tester
+          .widget<PopupMenuItem<VoidCallback>>(
+            find.widgetWithText(PopupMenuItem<VoidCallback>, label),
+          )
+          .enabled;
 
       Future<void> rightClick(WidgetTester tester, Offset at) async {
         await tester.tapAt(
@@ -1017,14 +1038,17 @@ void main() {
         (tester) async {
           await pumpLink(tester);
 
-          // Plain text, nothing selected: no Copy, and no address.
+          // Plain text, nothing selected: Copy greyed out, and no address.
           final at = cellAt(tester, 18);
           await rightClick(tester, at);
-          final paste = find.widgetWithText(PopupMenuItem<VoidCallback>, 'Paste');
-          expect(tester.getTopLeft(paste).dx, moreOrLessEquals(at.dx));
-          expect(find.text('Copy'), findsNothing);
+          final menu = tester.getTopLeft(
+            find.widgetWithText(PopupMenuItem<VoidCallback>, 'New tab…'),
+          );
+          expect(menu.dx, moreOrLessEquals(at.dx));
+          expect(enabled(tester, 'Copy'), isFalse);
+          expect(enabled(tester, 'Paste'), isTrue);
           expect(find.text('Copy link address'), findsNothing);
-          await tester.tapAt(cellAt(tester, 30, 8));
+          await tester.tapAt(const Offset(1190, 1390));
           await tester.pumpAndSettle();
 
           // "https" selected, as a mouse drag would.
@@ -1063,10 +1087,10 @@ void main() {
         expect(shell.sent.join(), contains('pasted'));
       }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
-      testWidgets('goes to a program that reads the mouse, unless Shift is '
-          'held, as in any terminal', (tester) async {
+      testWidgets('opens the menu even under a program that reads the mouse, '
+          'Shift+right-click being the program\'s', (tester) async {
         await pumpLink(tester);
-        // What vim, less or tmux asks for with its mouse on.
+        // What vim, less, tmux or Claude Code asks for with its mouse on.
         tester
             .widget<TerminalView>(find.byType(TerminalView))
             .terminal
@@ -1074,15 +1098,234 @@ void main() {
         await tester.pump();
 
         await rightClick(tester, cellAt(tester, 2, 1));
-        expect(find.text('Paste'), findsNothing);
-        // The right button's press, in X10's encoding.
-        expect(shell.sent.join(), contains('\x1b[M"'));
+        expect(find.text('Copy link address'), findsOneWidget);
+        expect(shell.sent, isEmpty);
+        await tester.tapAt(const Offset(1190, 1390));
+        await tester.pumpAndSettle();
 
         await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
         await rightClick(tester, cellAt(tester, 2, 1));
         await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-        expect(find.text('Copy link address'), findsOneWidget);
+        expect(find.text('Paste'), findsNothing);
+        // The right button's press and its release, in X10's encoding, at
+        // column 3 of row 2, with no Shift in them.
+        expect(shell.sent.join(), '\x1b[M"#"\x1b[M##"');
+
+        // And the mouse is the program's again after the menu: a plain
+        // left click reaches it.
+        await tester.tapAt(cellAt(tester, 2, 1), kind: PointerDeviceKind.mouse);
+        await tester.pumpAndSettle();
+        expect(shell.sent.join(), contains('\x1b[M #"'));
       }, variant: TargetPlatformVariant.desktop());
+
+      // #132: iTerm2's pane menu, each item doing what it says, and greyed
+      // out where it cannot.
+      group('the pane menu', () {
+        final linux = TargetPlatformVariant.only(TargetPlatform.linux);
+
+        /// Selects [text] where the terminal shows it on [row].
+        void select(WidgetTester tester, String text, {int row = 0}) {
+          final terminal = tester
+              .widget<TerminalView>(find.byType(TerminalView))
+              .terminal;
+          final at = terminal.buffer.lines[row].getText().indexOf(text);
+          expect(at, isNot(-1), reason: '$text is not on row $row');
+          links(tester).setSelection(
+            terminal.buffer.createAnchor(at, row),
+            terminal.buffer.createAnchor(at + text.length, row),
+          );
+        }
+
+        Future<void> pick(WidgetTester tester, String label) async {
+          await rightClick(tester, tester.getCenter(find.byType(TerminalView)));
+          await tester.tap(find.text(label));
+          await tester.pumpAndSettle();
+        }
+
+        List<String> launched() => [
+          ...openedWeb.map((url) => '$url'),
+          ...launcher.tried.map((tried) => tried.$1),
+        ];
+
+        testWidgets('hands each of the tab\'s items to the tab', (
+          tester,
+        ) async {
+          final did = <String>[];
+          VoidCallback log(String what) =>
+              () => did.add(what);
+          await pumpLink(
+            tester,
+            tab: TabActions(
+              newTab: () async => [('Local shell', log('local'))],
+              splitSideBySide: log('vertically'),
+              splitStacked: log('horizontally'),
+              groupWith: log('group'),
+              takeOutOfGroup: log('out'),
+              swap: log('swap'),
+              editSession: log('edit'),
+              close: log('close'),
+              restart: log('restart'),
+              duplicate: log('duplicate'),
+              detach: log('detach'),
+              attach: log('attach'),
+              record: log('record'),
+            ),
+          );
+          for (final label in [
+            'Split pane vertically',
+            'Split pane horizontally',
+            'Move into a group…',
+            'Take out of group',
+            'Swap with the next pane',
+            'Edit session…',
+            'Close',
+            'Restart',
+            'Duplicate session',
+            'Detach',
+            'Attach to a session…',
+            'Pane record',
+          ]) {
+            await pick(tester, label);
+          }
+          // New tab… is a second menu, where the first was.
+          await pick(tester, 'New tab…');
+          await tester.tap(find.text('Local shell'));
+          await tester.pumpAndSettle();
+
+          expect(did, [
+            'vertically',
+            'horizontally',
+            'group',
+            'out',
+            'swap',
+            'edit',
+            'close',
+            'restart',
+            'duplicate',
+            'detach',
+            'attach',
+            'record',
+            'local',
+          ]);
+          expect(shell.sent, isEmpty);
+        }, variant: linux);
+
+        testWidgets('greys out what the tab cannot do, and what wants a '
+            'selection', (tester) async {
+          await pumpLink(tester, tab: const TabActions(close: _nothing));
+          await rightClick(tester, cellAt(tester, 2));
+          for (final label in [
+            'New tab…',
+            'Search the web for selection',
+            'Send email to selected address',
+            'Download with scp',
+            'Open selection',
+            'Split pane vertically',
+            'Split pane horizontally',
+            'Move into a group…',
+            'Take out of group',
+            'Swap with the next pane',
+            'Copy',
+            'Edit session…',
+            'Restart',
+            'Duplicate session',
+            'Detach',
+            'Attach to a session…',
+            'Pane record',
+          ]) {
+            expect(enabled(tester, label), isFalse, reason: label);
+          }
+          for (final label in [
+            'Paste',
+            'Select all',
+            'Clear buffer',
+            'Close',
+            'Reset terminal',
+          ]) {
+            expect(enabled(tester, label), isTrue, reason: label);
+          }
+        }, variant: linux);
+
+        testWidgets('searches the web for the selection, and opens a link '
+            'selected', (tester) async {
+          await pumpLink(tester);
+          select(tester, 'https://dart.dev');
+          await pick(tester, 'Search the web for selection');
+          select(tester, 'https://dart.dev');
+          await pick(tester, 'Open selection');
+
+          expect(launched(), [
+            'https://www.google.com/search?q=https%3A%2F%2Fdart.dev',
+            'https://dart.dev',
+          ]);
+        }, variant: linux);
+
+        testWidgets('mails a selected address', (tester) async {
+          await pumpLink(tester);
+          tester
+              .widget<TerminalView>(find.byType(TerminalView))
+              .terminal
+              .write('\r\nmail me@example.com');
+          await tester.pump();
+          select(tester, 'me@example.com', row: 2);
+          await pick(tester, 'Send email to selected address');
+
+          expect(launched(), ['mailto:me@example.com']);
+        }, variant: linux);
+
+        testWidgets('names a selected path for Download', (tester) async {
+          await pumpLink(tester);
+          tester
+              .widget<TerminalView>(find.byType(TerminalView))
+              .terminal
+              .write('\r\nsee /etc/hosts');
+          await tester.pump();
+          select(tester, '/etc/hosts', row: 2);
+          await rightClick(tester, cellAt(tester, 2));
+
+          expect(enabled(tester, 'Download /etc/hosts'), isTrue);
+          expect(find.text('Download with scp'), findsNothing);
+        }, variant: linux);
+
+        testWidgets('selects all, which Copy then takes', (tester) async {
+          await pumpLink(tester);
+          await pick(tester, 'Select all');
+          await pick(tester, 'Copy');
+
+          expect(copied, hasLength(1));
+          final text = (copied.single as Map)['text'] as String;
+          expect(text, startsWith(line));
+          expect(text, contains('COR-6025 after'));
+        }, variant: linux);
+
+        testWidgets('clears what has scrolled off', (tester) async {
+          await pumpLink(tester);
+          final terminal = tester
+              .widget<TerminalView>(find.byType(TerminalView))
+              .terminal;
+          terminal.write('\r\n' * 200);
+          await tester.pump();
+          expect(terminal.buffer.height, greaterThan(terminal.viewHeight));
+
+          await pick(tester, 'Clear buffer');
+          expect(terminal.buffer.height, terminal.viewHeight);
+          expect(shell.sent, isEmpty);
+        }, variant: linux);
+
+        testWidgets('resets the terminal on this side', (tester) async {
+          await pumpLink(tester);
+          final terminal = tester
+              .widget<TerminalView>(find.byType(TerminalView))
+              .terminal;
+          terminal.write('\x1b[?1000h');
+          await tester.pump();
+          expect(terminal.mouseMode, isNot(MouseMode.none));
+
+          await pick(tester, 'Reset terminal');
+          expect(terminal.mouseMode, MouseMode.none);
+          expect(shell.sent, isEmpty);
+        }, variant: linux);
+      });
 
       testWidgets('on Android opens nothing new', (tester) async {
         await pumpLink(tester);
@@ -1091,6 +1334,110 @@ void main() {
         expect(find.text('Paste'), findsNothing);
         expect(find.text('Copy link address'), findsNothing);
       }, variant: _android);
+    });
+
+    group('Show as diagram', () {
+      late List<Object?> copied;
+
+      /// The page with a mermaid block below the link line, drawn indented
+      /// as Claude Code draws a code block, on rows 1 to 3.
+      Future<void> pumpDiagram(WidgetTester tester) async {
+        WebViewPlatform.instance = FakeWebViewPlatform();
+        copied = [];
+        final platform = tester.binding.defaultBinaryMessenger;
+        platform.setMockMethodCallHandler(SystemChannels.platform, (
+          call,
+        ) async {
+          if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+          return null;
+        });
+        addTearDown(
+          () =>
+              platform.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        await pumpPage(tester);
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            // The gap a cursor move, as Claude Code draws one.
+            .write('\r\n  graph TD\r\n    A\x1b[1C-->\x1b[1CB\r\n');
+        await tester.pump();
+      }
+
+      void selectDiagram(WidgetTester tester) {
+        final buffer = tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .buffer;
+        links(
+          tester,
+        ).setSelection(buffer.createAnchor(0, 1), buffer.createAnchor(12, 2));
+      }
+
+      testWidgets('a long press over Mermaid offers it, and it draws the '
+          'diagram with its source to copy', (tester) async {
+        await pumpDiagram(tester);
+        final hold = await tester.startGesture(cellAt(tester, 4, 1));
+        await tester.pump(kLongPressTimeout);
+        await hold.up();
+        await tester.pump();
+        selectDiagram(tester);
+        await tester.pump();
+
+        await tester.tap(find.text('Show as diagram'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          'graph TD\n  A --> B\n',
+        );
+        await tester.tap(find.text('COPY SOURCE'));
+        await tester.pumpAndSettle();
+        expect(copied, [
+          {'text': 'graph TD\n  A --> B\n'},
+        ]);
+      }, variant: _android);
+
+      testWidgets('a long press over anything else does not', (tester) async {
+        await pumpDiagram(tester);
+        final hold = await tester.startGesture(cellAt(tester, 18));
+        await tester.pump(kLongPressTimeout);
+        await hold.up();
+        await tester.pump();
+
+        expect(find.text('Copy'), findsOneWidget);
+        expect(find.text('Show as diagram'), findsNothing);
+      }, variant: _android);
+
+      testWidgets('a right-click on a Mac offers it beside Copy', (
+        tester,
+      ) async {
+        await pumpDiagram(tester);
+        selectDiagram(tester);
+        await tester.tapAt(
+          cellAt(tester, 4, 1),
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Show as diagram'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MermaidView), findsOneWidget);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('where no web view draws one, it is not offered', (
+        tester,
+      ) async {
+        await pumpDiagram(tester);
+        selectDiagram(tester);
+        await tester.tapAt(
+          cellAt(tester, 4, 1),
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Copy'), findsOneWidget);
+        expect(find.text('Show as diagram'), findsNothing);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
     });
   });
 
@@ -1314,14 +1661,14 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-            builder: (context, child) => ToastLayer(child: child!),
-            home: TabsShell(
-              repository: HostRepository(_NoSecrets()),
-              secrets: _NoSecrets(),
-              sessions: manager,
-              onOpenHost: (_) async {},
-            ),
+          builder: (context, child) => ToastLayer(child: child!),
+          home: TabsShell(
+            repository: HostRepository(_NoSecrets()),
+            secrets: _NoSecrets(),
+            sessions: manager,
+            onOpenHost: (_) async {},
           ),
+        ),
       );
       await manager.sessions.single.connect(secrets: _NoSecrets());
       await tester.pump();
@@ -1413,10 +1760,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
-      expect(
-        _toast('Port 3000 closed', TuiToastType.info),
-        findsOneWidget,
-      );
+      expect(_toast('Port 3000 closed', TuiToastType.info), findsOneWidget);
       await tester.pumpAndSettle();
     });
 
@@ -1843,10 +2187,7 @@ void main() {
 
       expect(shell.uploaded, isEmpty);
       expect(
-        _toast(
-          'A folder cannot be uploaded: photos',
-          TuiToastType.warning,
-        ),
+        _toast('A folder cannot be uploaded: photos', TuiToastType.warning),
         findsOneWidget,
       );
       await tester.pumpAndSettle();
@@ -2306,3 +2647,6 @@ final class _Picked extends PlatformFile {
   Stream<Uint8List> readAsByteStream() =>
       file.openRead().map(Uint8List.fromList);
 }
+
+/// A tab action that does nothing.
+void _nothing() {}

@@ -1,0 +1,69 @@
+# The UI text size (issue #133): set to its largest in Settings, Home and
+# Settings stay usable on the gate's 320 dp phone — the host card still taps
+# into a session, the key bar still shows its keys, and Settings still reaches
+# its end and back.
+#
+# The size is saved, so this runs LAST in tools/e2e_android.sh: a flow after
+# it would meet the app at 160%. A fresh emulator install starts at 100%.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- takeScreenshot: text-size-home-default
+
+- tapOn: "Settings"
+- scrollUntilVisible:
+    element:
+      text: "Set the UI text size"
+    direction: DOWN
+# From the slider's middle to the screen's edge: past its end, so its
+# largest.
+- swipe:
+    from:
+      text: "Set the UI text size"
+    direction: RIGHT
+# Scrolled to, not asserted where it was: at 160% the page above it grows
+# and pushes the readout down past the screen's edge. The readout is read as
+# part of a larger node, so this matches any node holding it, and asks for
+# only a sliver of that node on screen. The mutation that does nothing never
+# shows 160% anywhere.
+- scrollUntilVisible:
+    element:
+      text: "(?s).*160%.*"
+    direction: DOWN
+    visibilityPercentage: 1
+- takeScreenshot: text-size-settings-largest
+
+# Settings still scrolls to its end and comes back.
+- scrollUntilVisible:
+    element:
+      text: "(?i)about.*"
+    direction: DOWN
+    timeout: 30000
+- back
+
+# Home at the largest size: the card still there, and still a way in.
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- takeScreenshot: text-size-home-largest
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "ESC"
+    timeout: 30000
+- assertVisible: "Upload a file to /tmp"
+- takeScreenshot: text-size-terminal-largest
+
+# Close the session, so a run after this one relaunches into no tab.
+- tapOn:
+    text: "Close ${HOST_LABEL}.*"
+    optional: true

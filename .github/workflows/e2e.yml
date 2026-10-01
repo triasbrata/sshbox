@@ -326,6 +326,14 @@ jobs:
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
 
+      # #136: Download once more on a session bus with no XDG portal at all,
+      # as on a desktop that runs none, where file_picker could not save.
+      - name: Download with no XDG portal
+        if: always()
+        run: |
+          JEANSH_E2E_NO_PORTAL=1 tools/e2e_desktop.sh linux \
+            --plain-name 'Download saves through the save dialog'
+
   # macOS: the Cocoa embedder in the runner's own login session -- a window
   # nobody looks at, which is as headless as a Mac gets. Report-only, as the
   # Linux job is, and on every release: tag.yml waits on it, but at about ten

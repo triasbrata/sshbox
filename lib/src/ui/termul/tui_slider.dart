@@ -5,7 +5,10 @@
 // Changed for Jeansh:
 // A control's Semantics is its own node (container: true), so its word is
 // not merged into whatever is around it: a screen reader, an e2e flow and a
-// finder can each reach it by that word.
+// finder can each reach it by that word. A [TuiSlider.semanticLabel] names
+// a node of the track's own bounds, so a swipe from that node's middle lands
+// on the track rather than on the readout above it; and the track's value
+// is read as the readout says it, not as a bare number.
 
 import 'package:flutter/material.dart';
 
@@ -27,6 +30,7 @@ class TuiSlider extends StatelessWidget {
     this.label,
     this.valueLabel,
     this.onChangeEnd,
+    this.semanticLabel,
   }) : assert(min < max),
        assert(value >= min && value <= max),
        assert(divisions == null || divisions > 0);
@@ -46,6 +50,9 @@ class TuiSlider extends StatelessWidget {
   /// Trailing readout (e.g. `14px`). Defaults to rounded [value] when null
   /// and [label] is set.
   final String? valueLabel;
+
+  /// What a screen reader, and an e2e flow, call the track.
+  final String? semanticLabel;
 
   String get _display {
     if (valueLabel != null) return valueLabel!;
@@ -72,6 +79,8 @@ class TuiSlider extends StatelessWidget {
       enabled: enabled,
       onChanged: onChanged == null ? null : (v) => onChanged!(_snap(v)),
       onChangeEnd: onChangeEnd == null ? null : (v) => onChangeEnd!(_snap(v)),
+      semanticLabel: semanticLabel,
+      semanticValue: valueLabel,
     );
 
     if (label == null && valueLabel == null) return track;
@@ -113,8 +122,15 @@ class _TuiSliderTrack extends StatefulWidget {
     required this.enabled,
     required this.onChanged,
     this.onChangeEnd,
+    this.semanticLabel,
+    this.semanticValue,
   });
 
+  final String? semanticLabel;
+
+  /// What a screen reader reads as the value: the readout, `100%` rather
+  /// than `100.00`, where there is one.
+  final String? semanticValue;
   final double value;
   final double min;
   final double max;
@@ -156,10 +172,10 @@ class _TuiSliderTrackState extends State<_TuiSliderTrack> {
     final thumbFill = widget.enabled ? (p.isLight ? p.panel : p.bg) : p.surface;
     final thumbBorder = widget.enabled ? p.accent : p.border;
 
-    return Semantics(
+    final slider = Semantics(
       slider: true,
       enabled: widget.enabled,
-      value: widget.value.toStringAsFixed(2),
+      value: widget.semanticValue ?? widget.value.toStringAsFixed(2),
       increasedValue: (widget.value + 1)
           .clamp(widget.min, widget.max)
           .toString(),
@@ -255,6 +271,17 @@ class _TuiSliderTrackState extends State<_TuiSliderTrack> {
           );
         },
       ),
+    );
+    final name = widget.semanticLabel;
+    if (name == null) return slider;
+    // A plain node of the track's own bounds, holding its name: a slider's
+    // node does not hand its label to Maestro, and one round the readout
+    // too would put a swipe from its middle off the track.
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      label: name,
+      child: slider,
     );
   }
 }
