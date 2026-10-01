@@ -211,5 +211,37 @@ env:
           visible: "(?s).*Not a picture Claude can read: e2e-old\\.bmp.*"
           timeout: 10000
       - takeScreenshot: chat-images-refused
+
+# probe-*: where a hardware Ctrl+V goes, the script pressing it with adb after
+# each and reading the box and the clipboard reader's log. probe-picture: the
+# box focused, a picture still on the clipboard. probe-text: text on it
+# instead. probe-terminal: the terminal tab focused, which shuts its IME
+# connection at a hardware key, as the chat's box does not.
+- runFlow:
+    when:
+      true: ${STEP == 'probe-picture'}
+    commands:
+      - tapOn: "(Message .*|Ask Claude…|Start a new chat…)"
+- runFlow:
+    when:
+      true: ${STEP == 'probe-text'}
+    commands:
+      - eraseText: 40
+      - setClipboard: "e2e clip text"
+      - tapOn: "(Message .*|Ask Claude…|Start a new chat…)"
+- runFlow:
+    when:
+      true: ${STEP == 'probe-terminal'}
+    commands:
+      - eraseText: 40
       - tapOn: "(?s)Close .*Claude.*"
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 10000
+      - tapOn:
+          point: "50%,35%"
+- runFlow:
+    when:
+      true: ${STEP == 'done'}
+    commands:
       - tapOn: "Close ${HOST_LABEL}.*"

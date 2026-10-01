@@ -25,6 +25,10 @@ appId: cloud.brata.terminal
       - tapOn:
           text: "Downloads"
           optional: true
+# Pictures show as a grid of thumbnails with no names; the list names them.
+- tapOn:
+    text: "List view"
+    optional: true
 - extendedWaitUntil:
     visible: "${FILE}"
     timeout: 15000

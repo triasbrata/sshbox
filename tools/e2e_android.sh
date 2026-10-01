@@ -581,6 +581,22 @@ sys.exit(1 if problems else 0)
 PY
 }
 
+# One adb Ctrl+V, and what came of it: the box's text, as Android's view tree
+# has it, and the clipboard reader's log, which says whether the app's own
+# paste ran. Report only.
+pics_probe() {
+  adb logcat -c 2>/dev/null
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_V
+  sleep 3
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  echo "probe $1: fields now hold:"
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'class="android.widget.EditText"[^>]*' |
+    grep -o 'text="[^"]*"'
+  echo "probe $1: cards: $(adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'View [^"]*' | wc -l)"
+  echo "probe $1: JeanshPaste said:"
+  adb logcat -d -s JeanshPaste 2>/dev/null | grep -v '^-' | tail -5
+}
+
 chat_images() {
   local status=0 log=/home/$SSH_USER/.e2e-pics.log session started pid
   pics_host || return 1
@@ -618,6 +634,12 @@ sys.exit(0 if ok else 1)
 PY
   # Step 6: + offers a file Claude cannot read, which is refused.
   pics refuse || status=1
+  # Where a hardware Ctrl+V goes: into the box with a picture on the
+  # clipboard, with text, and into the terminal. Report only.
+  pics probe-picture && pics_probe picture
+  pics probe-text && pics_probe text
+  pics probe-terminal && pics_probe terminal
+  pics done
   # Only what this started: the tmux session, the sleeps, the stand-in.
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-pics 2>/dev/null
   started=$(sudo python3 -c 'import json, sys
