@@ -549,13 +549,22 @@ class _TerminalPageState extends State<TerminalPage> {
   ///
   /// A path picked out of a listing can hold spaces, or anything else the
   /// shell would act on rather than pass along.
-  static String _shellQuote(String path) =>
-      RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
-      ? path
-      : "'${path.replaceAll("'", r"'\''")}'";
+  static String _shellQuote(String path) => LiveSession.shellQuote(path);
 
   /// Puts a path at the prompt, ready for a command to be written around it.
-  void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
+  /// Never one holding a control character, which the shell would act on as
+  /// a key: see [LiveSession.hasControl].
+  void _typePath(String path) {
+    if (LiveSession.hasControl(path)) {
+      showToast(
+        context,
+        LiveSession.controlRefusal,
+        type: TuiToastType.warning,
+      );
+      return;
+    }
+    _session.sendRaw('${_shellQuote(path)} ');
+  }
 
   /// Puts a file's path at the prompt the way a drop in iTerm2 does, with a
   /// trailing space so it is ready to be followed by arguments.
@@ -623,47 +632,16 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
-  /// Sends the shell to a directory — the one way anything does, so every
-  /// `cd` is checked here.
+  /// Sends the shell to a directory through [LiveSession.changeDirectory],
+  /// which types nothing unless the shell is at its prompt, and says why.
   ///
-  /// The newline is what separates this from [_typePath]: it runs something.
-  /// With a program in the foreground, that something is the program's input
-  /// — `cd` sent to Claude Code is a message to it — so the host is asked
-  /// first, and anything short of "the shell is at its prompt" types nothing
-  /// and says why. A shell already there types nothing either: opening a
-  /// folder and shutting it again is two taps on one place.
-  ///
-  /// In a tab set to use tmux, tmux answers for the focused pane, and the
-  /// `cd` goes there.
-  ///
-  /// ponytail: inside a tmux started by hand the probe sees tmux, not the
-  /// pane's shell, so every `cd` is refused as "tmux is running".
+  /// A toast, which stacks rather than queues: following, every folder
+  /// tapped on the way down to a file can be refused, and as snack bars each
+  /// would wait its turn.
   Future<void> _cdTo(String path) async {
-    // A toast, which stacks rather than queues: following, every folder
-    // tapped on the way down to a file can be refused, and as snack bars each
-    // would wait its turn.
-    void refuse(String why) {
-      if (mounted) showToast(context, why, type: TuiToastType.warning);
-    }
-
-    var slow = false;
-    final now = await _session.foreground().timeout(
-      const Duration(milliseconds: 1500),
-      onTimeout: () {
-        slow = true;
-        return null;
-      },
-    );
-    if (now == null) {
-      refuse(
-        slow
-            ? 'No answer from the host in time — not moving the shell'
-            : 'The host cannot say what the shell is running — not moving it',
-      );
-    } else if (!now.shellInForeground) {
-      refuse('${now.program} is running — not moving the shell');
-    } else if (now.cwd != path) {
-      _session.sendRaw('cd ${_shellQuote(path)}\n');
+    final why = await _session.changeDirectory(path);
+    if (why != null && mounted) {
+      showToast(context, why, type: TuiToastType.warning);
     }
   }
 
@@ -940,8 +918,7 @@ class _TerminalPageState extends State<TerminalPage> {
             // page is built again only as it starts and ends.
             child: ListenableBuilder(
               listenable: transfers,
-              builder: (_, _) =>
-                  TuiProgressBar(value: sending.fraction),
+              builder: (_, _) => TuiProgressBar(value: sending.fraction),
             ),
           ),
         // In the body rather than the Scaffold's button slot so it can be
