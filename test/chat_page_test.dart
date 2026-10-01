@@ -11,8 +11,12 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
+import 'package:sshbox/src/ui/settings_page.dart'
+    show TerminalSettings, terminalSettings, terminalStyleOf;
+import 'package:sshbox/src/ui/text_size.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
+import 'package:sshbox/src/ui/settings_page.dart' show chatEnterSends;
 import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
@@ -86,9 +90,7 @@ class _Shell
     typed.add(keys);
     final screen = StreamController<Uint8List>();
     // `claude attach` drawing its input line.
-    scheduleMicrotask(
-      () => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))),
-    );
+    scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))));
     return (
       output: screen.stream,
       write: (Uint8List data) => keys.add(utf8.decode(data)),
@@ -184,9 +186,8 @@ class _Shell
   StreamController<Uint8List>? follow;
 
   /// The session writing one more line to its transcript.
-  void adds(Map<String, Object?> line) => follow!.add(
-    Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')),
-  );
+  void adds(Map<String, Object?> line) =>
+      follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
   @override
   Future<CommandChannel> open(String command) async {
@@ -197,9 +198,7 @@ class _Shell
       return (
         output: Stream.value(
           Uint8List.fromList(
-            utf8.encode(
-              typing ? 'sshbox:pasted\nsshbox:typed %4\n' : pane,
-            ),
+            utf8.encode(typing ? 'sshbox:pasted\nsshbox:typed %4\n' : pane),
           ),
         ),
         write: (Uint8List data) => paneTyped.add(utf8.decode(data)),
@@ -316,10 +315,10 @@ final _nightlyHistory = _history([
 ]);
 
 /// Where the conversation is scrolled to: its list, not the sidebar's.
-ScrollPosition _conversationAt(WidgetTester tester) =>
-    tester.widget<CustomScrollView>(find.byType(CustomScrollView))
-        .controller!
-        .position;
+ScrollPosition _conversationAt(WidgetTester tester) => tester
+    .widget<CustomScrollView>(find.byType(CustomScrollView))
+    .controller!
+    .position;
 
 /// Lets a pick-up run out. Closing the drawer, reading the history and
 /// starting Claude are futures, not frames, so settling the frames alone
@@ -390,15 +389,14 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await _settlePickUp(tester);
 
     // Only the list is asked for: no Claude of its own, no session.
-    expect(
-      shell.commands.where((c) => !c.contains('agents --json')),
-      isEmpty,
-    );
+    expect(shell.commands.where((c) => !c.contains('agents --json')), isEmpty);
     // Nothing said yet, so the tab says where Claude will run, and how.
     expect(find.textContaining('/srv/app'), findsOneWidget);
     expect(find.textContaining('starts a new session'), findsOneWidget);
@@ -443,7 +441,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -461,8 +461,10 @@ void main() {
     );
     // The user's own words, on screen, and the field cleared for the next.
     expect(find.text('check the nginx log'), findsOneWidget);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        isEmpty);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
     // A turn is running: nothing else may be sent until it ends.
     expect(find.text('Claude is working…'), findsOneWidget);
 
@@ -610,7 +612,9 @@ void main() {
     addTearDown(session.dispose);
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
 
@@ -650,7 +654,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
 
@@ -694,15 +700,18 @@ void main() {
     expect(find.text('Lint fixed, build running again.'), findsOneWidget);
   });
 
-  testWidgets('a host that cannot list its sessions says what it said',
-      (tester) async {
+  testWidgets('a host that cannot list its sessions says what it said', (
+    tester,
+  ) async {
     final shell = _Shell()..listing = "error: unknown command 'agents'";
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
 
@@ -737,15 +746,16 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pumpAndSettle();
 
     // In view without asking: no sheet, no drawer, and no button in the empty
     // tab to show what is already showing.
     expect(find.text('the nightly build'), findsOneWidget);
-    expect(find.text('SESSIONS ON THIS HOST'),
-        findsNothing);
+    expect(find.text('SESSIONS ON THIS HOST'), findsNothing);
 
     await tester.tap(find.text('the nightly build'));
     await _settlePickUp(tester);
@@ -794,7 +804,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text('the nightly build'));
@@ -816,8 +828,7 @@ void main() {
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     }
     // Into the running session itself, through its attach.
-    expect(shell.commands.any((command) => command.contains('attach')),
-        isTrue);
+    expect(shell.commands.any((command) => command.contains('attach')), isTrue);
     expect(shell.typed.single.first, 'run it once more');
     expect(find.text('Sending…'), findsOneWidget);
 
@@ -856,7 +867,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
 
@@ -884,10 +897,7 @@ void main() {
       await show();
 
       expect(find.text('the nightly build'), findsOneWidget);
-      expect(
-        shell.commands.where((c) => c.contains('agents')).length,
-        asked,
-      );
+      expect(shell.commands.where((c) => c.contains('agents')).length, asked);
     });
   }
 
@@ -916,7 +926,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -937,7 +949,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -992,6 +1006,77 @@ void main() {
     expect(find.text('3 upstream timeouts'), findsOneWidget);
   });
 
+  testWidgets('all of chat follows the content size and not the UI size: '
+      'the sessions, a message, a tool row, a code block and the composer', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    terminalSettings.value = terminalStyleOf('monospace', 26);
+    addTearDown(() => terminalSettings.value = TerminalSettings.defaultStyle);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+
+    // The app's root as it is, at the largest UI size.
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const UiTextScaler(TextScaler.noScaling, 1.6)),
+          child: child!,
+        ),
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Zsh config fix'));
+    await _settlePickUp(tester);
+    await tester.enterText(find.byType(TextField), 'check the nginx log');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {'type': 'text', 'text': 'Here it is:\n\n```sh\ntail error.log\n```'},
+          {
+            'type': 'tool_use',
+            'id': 'toolu_09',
+            'name': 'Bash',
+            'input': {'command': 'tail -n 50 error.log'},
+          },
+        ],
+      },
+    });
+    shell.event({'type': 'result', 'subtype': 'success'});
+    await tester.pump();
+    await tester.pump();
+
+    double at13(Finder finder) =>
+        MediaQuery.textScalerOf(tester.element(finder.first)).scale(13);
+    // 26 against the default 13: twice, whatever the UI's 160% says.
+    expect(at13(find.text('Zsh config fix')), 26, reason: 'the sessions');
+    expect(
+      at13(find.textContaining('check the nginx log', findRichText: true)),
+      26,
+      reason: 'a message',
+    );
+    expect(at13(find.text('Bash')), 26, reason: 'a tool row');
+    expect(
+      at13(find.textContaining('tail error.log', findRichText: true)),
+      26,
+      reason: 'a code block',
+    );
+    expect(at13(find.byType(TextField)), 26, reason: 'the composer');
+  });
+
   group('an opened tool row', () {
     /// Picks a finished session up, has Claude call [name] with [input] and
     /// get [result] back, and opens the row.
@@ -1007,7 +1092,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await tester.pump();
       await _continue(tester, 'Zsh config fix');
@@ -1185,8 +1272,10 @@ void main() {
       expect(shown('Read the log'), findsOneWidget);
       expect(shown('Reload nginx'), findsOneWidget);
       expect(find.byIcon(Icons.check_box), findsOneWidget);
-      expect(find.byIcon(Icons.indeterminate_check_box_outlined),
-          findsOneWidget);
+      expect(
+        find.byIcon(Icons.indeterminate_check_box_outlined),
+        findsOneWidget,
+      );
       expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
     });
 
@@ -1225,12 +1314,9 @@ void main() {
     testWidgets('a result that came back as a JSON string reads as its text', (
       tester,
     ) async {
-      await opened(
-        tester,
-        'Bash',
-        {'command': 'cat notes'},
-        result: jsonEncode('first line\nsecond line'),
-      );
+      await opened(tester, 'Bash', {
+        'command': 'cat notes',
+      }, result: jsonEncode('first line\nsecond line'));
       expect(shown('first line\nsecond line'), findsOneWidget);
     });
   });
@@ -1245,17 +1331,7 @@ void main() {
       ..listing =
           '${jsonEncode([
             _finished('aaaa0001', 'finished long ago', started: 100),
-            {
-              'pid': 1,
-              'id': 'bbbb0002',
-              'cwd': '/srv',
-              'kind': 'background',
-              'startedAt': 200,
-              'sessionId': 'bbbb0002-0000-4000-8000-000000000000',
-              'name': 'running',
-              'status': 'idle',
-              'state': 'done',
-            },
+            {'pid': 1, 'id': 'bbbb0002', 'cwd': '/srv', 'kind': 'background', 'startedAt': 200, 'sessionId': 'bbbb0002-0000-4000-8000-000000000000', 'name': 'running', 'status': 'idle', 'state': 'done'},
             _finished('cccc0003', 'finished lately', started: 300),
             _finished('dddd0004', 'pinned and finished', started: 50),
           ])}'
@@ -1265,17 +1341,16 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await _settlePickUp(tester);
 
     expect(shell.commands.first, contains('agents --json --all'));
     final order = [
       for (final text in tester.widgetList<Text>(
-        find.descendant(
-          of: find.byType(ListView),
-          matching: find.byType(Text),
-        ),
+        find.descendant(of: find.byType(ListView), matching: find.byType(Text)),
       ))
         // The headings are termul's section labels, drawn in capitals.
         if (const {
@@ -1313,7 +1388,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await _settlePickUp(tester);
 
@@ -1348,7 +1425,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await _settlePickUp(tester);
     await tester.tap(find.text('the nightly build'));
@@ -1393,7 +1472,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'dev-e0');
@@ -1403,8 +1484,10 @@ void main() {
     expect(find.text('It failed at the lint step.'), findsOneWidget);
     // Said to be read-only, why, and nowhere said to take what is sent.
     expect(
-      find.textContaining('live, read-only: it runs in a terminal outside '
-          'tmux'),
+      find.textContaining(
+        'live, read-only: it runs in a terminal outside '
+        'tmux',
+      ),
       findsOneWidget,
     );
     expect(find.textContaining('what you send'), findsNothing);
@@ -1425,8 +1508,9 @@ void main() {
   });
 
   testWidgets('a session started at a terminal in a tmux pane takes what is '
-      'sent, typed into that pane, and shows it sent once recorded',
-      (tester) async {
+      'sent, typed into that pane, and shows it sent once recorded', (
+    tester,
+  ) async {
     final shell = _Shell()
       ..history = _nightlyHistory
       ..pane = 'sshbox:pane %4\n'
@@ -1445,7 +1529,9 @@ void main() {
     await session.connect(secrets: _NoSecrets());
 
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'dev-e0');
@@ -1515,7 +1601,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await _settlePickUp(tester);
     await tester.tap(find.text('long one'));
@@ -1537,10 +1625,7 @@ void main() {
     expect(tester.getTopLeft(find.text('turn $first')).dy, y);
     expect(at.pixels, pixels);
     expect(find.text('Load earlier turns'), findsNothing);
-    expect(
-      tester.getTopLeft(find.text('turn ${first - 1}')).dy,
-      lessThan(y),
-    );
+    expect(tester.getTopLeft(find.text('turn ${first - 1}')).dy, lessThan(y));
     at.jumpTo(at.minScrollExtent);
     await tester.pump();
     expect(find.text('turn 0'), findsOneWidget);
@@ -1580,7 +1665,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
       // The conversation's list, not the sidebar's: the one with a
@@ -1589,8 +1676,12 @@ void main() {
       return (shell: shell, at: at);
     }
 
-    Future<void> pick(WidgetTester tester, _Shell shell, String name,
-        String history) async {
+    Future<void> pick(
+      WidgetTester tester,
+      _Shell shell,
+      String name,
+      String history,
+    ) async {
       shell.history = history;
       await tester.tap(find.text(name));
       await _settlePickUp(tester);
@@ -1619,10 +1710,7 @@ void main() {
       await pick(tester, shell, 'first', long('first', 60));
       // A few lines up from the newest, by a finger, as the user did: well
       // inside the distance at which new output is still followed.
-      await tester.drag(
-        find.byType(CustomScrollView),
-        const Offset(0, 120),
-      );
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, 120));
       await tester.pumpAndSettle();
       final place = at().pixels;
       expect(at().maxScrollExtent - place, inInclusiveRange(60, 200));
@@ -1697,7 +1785,9 @@ void main() {
       await session.connect(secrets: _NoSecrets());
       Future<void> openTab() async {
         await tester.pumpWidget(
-          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
         );
         await _settlePickUp(tester);
         await tester.tap(find.text('first'));
@@ -1931,6 +2021,402 @@ void main() {
       await tester.tapOnText(find.textRange.ofSubstring('here'));
       await copyFromToast(tester);
       expect(copied.last, 'javascript:alert(1)');
+    });
+  });
+
+  group('what the user types', () {
+    /// A finished session continued here, [typed] sent into it. Returns the
+    /// host, what went to a web tab and what went to the phone.
+    Future<({_Shell shell, List<Uri> inTab, List<String> launched})> send(
+      WidgetTester tester,
+      String typed,
+    ) async {
+      final launcher = _Launcher();
+      UrlLauncherPlatform.instance = launcher;
+      final inTab = <Uri>[];
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatPage(session: session, onOpenWeb: inTab.add),
+          ),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Notes');
+      await tester.enterText(find.byType(TextField), typed);
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.pump();
+      return (shell: shell, inTab: inTab, launched: launcher.opened);
+    }
+
+    /// Every span drawn in the bubble, as (text, style).
+    List<(String, TextStyle?)> bubbleSpans(WidgetTester tester) {
+      final out = <(String, TextStyle?)>[];
+      for (final text in tester.widgetList<RichText>(
+        find.descendant(
+          of: find.byType(TuiChatBubble),
+          matching: find.byType(RichText),
+        ),
+      )) {
+        text.text.visitChildren((span) {
+          if (span is TextSpan && span.text != null) {
+            out.add((span.text!, span.style));
+          }
+          return true;
+        });
+      }
+      return out;
+    }
+
+    const typed =
+        'Run **this** and see [the ticket](https://example.com/t/1):\n'
+        '\n'
+        '```sh\n'
+        'make test\n'
+        '```';
+
+    testWidgets('goes to Claude byte for byte as typed', (tester) async {
+      final (:shell, inTab: _, launched: _) = await send(tester, typed);
+      final sent = jsonDecode(shell.written.single.trim()) as Map;
+      expect(((sent['message'] as Map)['content'] as List).single, {
+        'type': 'text',
+        'text': typed,
+      });
+    });
+
+    testWidgets('is drawn in its bubble as Markdown: bold, a code block with '
+        'its copy button, and a link', (tester) async {
+      await send(tester, typed);
+      final spans = bubbleSpans(tester);
+
+      expect(
+        spans.singleWhere((s) => s.$1 == 'this').$2!.fontWeight,
+        FontWeight.bold,
+      );
+      // No markers left on screen: drawn, not shown as source.
+      expect(spans.any((s) => s.$1.contains('**')), isFalse);
+      expect(spans.any((s) => s.$1.contains('```')), isFalse);
+      expect(spans.any((s) => s.$1.contains('make test')), isTrue);
+      expect(
+        find.descendant(
+          of: find.byType(TuiChatBubble),
+          matching: find.byTooltip('Copy code'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        spans.singleWhere((s) => s.$1 == 'the ticket').$2!.decoration,
+        TextDecoration.underline,
+      );
+    });
+
+    testWidgets('a link in it goes through the same allowlist as a reply\'s', (
+      tester,
+    ) async {
+      final (:shell, :inTab, :launched) = await send(
+        tester,
+        'see [the ticket](https://example.com/t/1) or [refused](javascript:x)',
+      );
+      // The turn over, so nothing is left spinning to settle.
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.tapOnText(find.textRange.ofSubstring('the ticket'));
+      await tester.pumpAndSettle();
+      expect(inTab, [Uri.parse('https://example.com/t/1')]);
+
+      await tester.tapOnText(find.textRange.ofSubstring('refused'));
+      await tester.pumpAndSettle();
+      expect(inTab, hasLength(1));
+      expect(launched, isEmpty);
+    });
+
+    group('a key typed while the box has no focus', () {
+      Future<TextField> pumpChat(WidgetTester tester) async {
+        final shell = _Shell()
+          ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        await _continue(tester, 'Notes');
+        return tester.widget<TextField>(find.byType(TextField));
+      }
+
+      testWidgets('moves the focus to the box and lands there once', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+        expect(box.focusNode!.hasFocus, isFalse);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isTrue);
+        expect(box.controller!.text, 'h');
+        expect(
+          box.controller!.selection,
+          const TextSelection.collapsed(offset: 1),
+        );
+      });
+
+      testWidgets('leaves shortcuts, Enter, Tab, arrows and Escape alone', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        for (final key in [
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.tab,
+          LogicalKeyboardKey.arrowUp,
+          LogicalKeyboardKey.escape,
+          LogicalKeyboardKey.f5,
+        ]) {
+          await tester.sendKeyEvent(key);
+        }
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves Space to a focused button, which it presses', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+        Focus.of(
+          tester.element(find.byIcon(Icons.view_sidebar_outlined)),
+        ).requestFocus();
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves its keys to an open drawer', (tester) async {
+        final box = await pumpChat(tester);
+        await tester.tap(find.byTooltip('Sessions on this host'));
+        await tester.pumpAndSettle();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves another text field its keys', (tester) async {
+        final box = await pumpChat(tester);
+        final other = FocusNode();
+        addTearDown(other.dispose);
+        // A dialog's field, over the chat.
+        unawaited(
+          showDialog<void>(
+            context: tester.element(find.byType(ChatPage)),
+            builder: (_) =>
+                Dialog(child: TextField(focusNode: other, autofocus: true)),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(other.hasFocus, isTrue);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(other.hasFocus, isTrue);
+        expect(box.controller!.text, isEmpty);
+      });
+    });
+
+    group('the keyboard sends', () {
+      Future<_Shell> typed(WidgetTester tester, String text) async {
+        final shell = _Shell()
+          ..listing = jsonEncode([_finished('cf58d27a', 'Notes')]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        );
+        await tester.pump();
+        await _continue(tester, 'Notes');
+        await tester.enterText(find.byType(TextField), text);
+        await tester.pump();
+        return shell;
+      }
+
+      Future<void> chord(WidgetTester tester, LogicalKeyboardKey modifier) async {
+        await tester.sendKeyDownEvent(modifier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(modifier);
+        await tester.pump();
+      }
+
+      String box(WidgetTester tester) =>
+          tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+      testWidgets('by default with Ctrl+Enter, a plain Enter sending nothing', (
+        tester,
+      ) async {
+        final shell = await typed(tester, 'hello');
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, hasLength(1));
+        expect(box(tester), isEmpty);
+      });
+
+      testWidgets('with ⌘+Enter on a Mac', (tester) async {
+        final shell = await typed(tester, 'hello');
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, isEmpty);
+        await chord(tester, LogicalKeyboardKey.metaLeft);
+        expect(shell.written, hasLength(1));
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('with Enter when Settings says so, Shift+Enter making a new '
+          'line and the chord still sending', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, 'one');
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(box(tester), 'one\n');
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'one\ntwo',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, hasLength(1));
+        expect(
+          (((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content'] as List)
+              .single['text'],
+          'one\ntwo',
+        );
+      });
+
+      testWidgets('not while the list of commands is open: Enter picks, and '
+          'only the chord sends', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, '/com');
+        await tester.pump();
+        expect(find.text('/compact'), findsOneWidget);
+
+        // Enter picks the command rather than sending a half-typed /com.
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(box(tester), '/compact ');
+        expect(find.text('/compact'), findsNothing);
+
+        // Gboard's own send action, the list open again, sends nothing, even
+        // with a whole command in the box.
+        await tester.enterText(find.byType(TextField), '/compact');
+        await tester.pump();
+        expect(find.text('/compact'), findsWidgets);
+        await tester.testTextInput.receiveAction(TextInputAction.send);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+
+        // The chord sends what is in the box, list open or not.
+        await tester.enterText(find.byType(TextField), '/compact');
+        await tester.pump();
+        expect(find.text('/compact'), findsWidgets);
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, hasLength(1));
+        expect(
+          (((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content'] as List)
+              .single['text'],
+          '/compact',
+        );
+      });
+
+      testWidgets('never with an IME\'s Enter, which confirms what it is '
+          'composing', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, 'nihao');
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'nihao',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 0, end: 5),
+          ),
+        );
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, isEmpty);
+      });
+    });
+
+    testWidgets('on a desktop the box has the focus once the chat is shown', (
+      tester,
+    ) async {
+      final shell = _Shell();
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+        isTrue,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a mermaid fence in it is drawn as a diagram, as in a reply', (
+      tester,
+    ) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await send(tester, 'Like this:\n\n```mermaid\ngraph TD\n  A --> B\n```');
+
+      final diagram = find.descendant(
+        of: find.byType(TuiChatBubble),
+        matching: find.byType(MermaidView),
+      );
+      expect(tester.widget<MermaidView>(diagram).source, 'graph TD\n  A --> B\n');
+    });
+
+    testWidgets('stray stars and underscores read as written', (tester) async {
+      await send(tester, '2 * 3 * 4 is snake_case_name');
+      expect(find.text('2 * 3 * 4 is snake_case_name'), findsOneWidget);
     });
   });
 

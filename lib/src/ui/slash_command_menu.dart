@@ -23,7 +23,12 @@ class SlashCommandMenu extends StatefulWidget {
     required this.child,
     this.onRefresh,
     this.onOpen,
+    this.openState,
   });
+
+  /// Set to whether the list is open, for the box under it to leave Enter
+  /// and Tab to the list meanwhile.
+  final ValueNotifier<bool>? openState;
 
   /// Called as the list opens, for the host's commands to be read the first
   /// time they are wanted rather than with every connection.
@@ -66,6 +71,7 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
 
   @override
   void dispose() {
+    widget.openState?.value = false;
     widget.controller.removeListener(_onText);
     _list.dispose();
     super.dispose();
@@ -83,6 +89,7 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
       _at = 0;
     });
     if (opens) widget.onOpen?.call();
+    _tellOpen();
   }
 
   /// What follows the `/` while a command name is still being typed: the
@@ -94,6 +101,8 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
   }
 
   bool get _open => _query != null && !_dismissed;
+
+  void _tellOpen() => widget.openState?.value = _open;
 
   List<SlashCommand> get _matches => switch (widget.commands.data) {
     final all? => SlashCommand.matching(all, _query ?? ''),
@@ -114,6 +123,7 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
     final matches = _matches;
     if (key == LogicalKeyboardKey.escape) {
       setState(() => _dismissed = true);
+      _tellOpen();
       return KeyEventResult.handled;
     }
     if (matches.isEmpty) return KeyEventResult.ignored;

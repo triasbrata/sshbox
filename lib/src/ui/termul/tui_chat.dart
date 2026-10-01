@@ -6,6 +6,8 @@
 // A control's Semantics is its own node (container: true), so its word is
 // not merged into whatever is around it: a screen reader, an e2e flow and a
 // finder can each reach it by that word.
+// TuiChatBubble takes a child, as TuiChatAnswer does, so the user's own
+// message can be drawn as Markdown; bubbleTextStyle names its text style.
 
 import 'package:flutter/material.dart';
 
@@ -29,12 +31,28 @@ class TuiChatBubble extends StatelessWidget {
   const TuiChatBubble({
     super.key,
     required this.text,
+    this.child,
     this.delivery,
     this.failureReason,
     this.selectable = true,
   });
 
   final String text;
+
+  /// Drawn in place of [text] when given, in [bubbleTextStyle].
+  final Widget? child;
+
+  /// The style a bubble's text is drawn in, for a [child] to draw in too.
+  static TextStyle bubbleTextStyle(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    return TextStyle(
+      fontFamily: TermulFonts.display,
+      fontSize: 14,
+      height: 1.45,
+      color: p.isLight ? p.panel : p.bg,
+    );
+  }
+
   final TuiChatDelivery? delivery;
   final String? failureReason;
   final bool selectable;
@@ -52,14 +70,7 @@ class TuiChatBubble extends StatelessWidget {
       null => null,
     };
 
-    final bodyStyle = TextStyle(
-      fontFamily: TermulFonts.display,
-      fontSize: 14,
-      height: 1.45,
-      color: failed
-          ? (p.isLight ? p.panel : p.bg)
-          : (p.isLight ? p.panel : p.bg),
-    );
+    final bodyStyle = bubbleTextStyle(context);
 
     final bubble = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -67,7 +78,9 @@ class TuiChatBubble extends StatelessWidget {
         color: failed ? p.deep : p.accent,
         border: Border.all(color: failed ? p.deep : p.accent),
       ),
-      child: selectable
+      child: child != null
+          ? DefaultTextStyle.merge(style: bodyStyle, child: child!)
+          : selectable
           ? SelectableText(text, style: bodyStyle)
           : Text(text, style: bodyStyle),
     );

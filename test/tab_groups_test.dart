@@ -147,4 +147,60 @@ void main() {
     expect(find.byType(TerminalView), findsOneWidget);
     expect(find.byTooltip('Tab group'), findsNothing);
   });
+
+  // The focus a pane is given lands on its terminal, not on the pane's own
+  // scope: a key would put it right (the terminal takes it back from its
+  // scope), so this asks before any key. Parked on the scope, focus went
+  // back there when a menu opened from the pane closed — the desktop e2e's
+  // flake on the group's right-click menu.
+  testWidgets('a pane given focus gives it to its terminal, before any key', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = SessionManager();
+    addTearDown(manager.closeAll);
+    for (final id in ['one', 'two']) {
+      final host = HostProfile(
+        id: id,
+        label: id,
+        host: '10.0.2.2',
+        username: 'me',
+      );
+      await manager
+          .open(host, transport: (_, _) => _Shell())
+          .connect(secrets: _NoSecrets());
+    }
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TabsShell(
+          repository: HostRepository(_NoSecrets()),
+          secrets: _NoSecrets(),
+          sessions: manager,
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('two'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Group with…'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('one').last);
+    await tester.pumpAndSettle();
+
+    FocusNode? terminal(int pane) => tester
+        .widgetList<TerminalView>(find.byType(TerminalView))
+        .elementAt(pane)
+        .focusNode;
+    for (final (chip, pane) in [('one', 0), ('two', 1), ('one', 0)]) {
+      await tester.tap(find.text(chip));
+      await tester.pumpAndSettle();
+      expect(
+        FocusManager.instance.primaryFocus,
+        terminal(pane),
+        reason: 'the $chip pane gave focus to '
+            '${FocusManager.instance.primaryFocus}',
+      );
+    }
+  });
 }

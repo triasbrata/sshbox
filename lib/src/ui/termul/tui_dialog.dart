@@ -5,8 +5,9 @@
 // Changed for Jeansh:
 // The title is named to a screen reader as written, not in capitals, as a
 // node of its own, and
-// the actions after the first wrap to a second line rather than overflow a
-// phone's width.
+// the actions after the first go to a line of their own rather than overflow
+// a phone's width, and the message and detail scroll rather than overflow a
+// short window, as a large UI text size makes them.
 
 import 'package:flutter/material.dart';
 
@@ -91,22 +92,34 @@ class TuiDialog extends StatelessWidget {
                       .copyWith(color: p.accent, letterSpacing: 0.4),
                 ),
               ),
-              if (message != null) ...[
-                const SizedBox(height: 12),
-                Text(
-                  message!,
-                  style: Theme.of(context).textTheme.headlineMedium!
-                      .copyWith(color: p.text, fontSize: 22),
+              // Scrolling, so a large text size on a short window gives
+              // way rather than overflowing the dialog.
+              if (message != null || detail != null)
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (message != null) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            message!,
+                            style: Theme.of(context).textTheme.headlineMedium!
+                                .copyWith(color: p.text, fontSize: 22),
+                          ),
+                        ],
+                        if (detail != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            detail!,
+                            style: Theme.of(context).textTheme.bodySmall!
+                                .copyWith(color: p.muted, height: 1.45),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 ),
-              ],
-              if (detail != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  detail!,
-                  style: Theme.of(context).textTheme.bodySmall!
-                      .copyWith(color: p.muted, height: 1.45),
-                ),
-              ],
               // Flexible, so a child taller than a short window — the font
               // list's 420 — gives way rather than overflowing the dialog.
               if (child != null) ...[
@@ -115,21 +128,22 @@ class TuiDialog extends StatelessWidget {
               ],
               if (actions.isNotEmpty) ...[
                 const SizedBox(height: 20),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                // The first at the left and the rest at the right while they
+                // fit; past that, a line each.
+                OverflowBar(
+                  alignment: MainAxisAlignment.spaceBetween,
+                  spacing: 8,
+                  overflowSpacing: 8,
+                  overflowAlignment: OverflowBarAlignment.end,
                   children: [
                     actions.first,
-                    if (actions.length > 1) ...[
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Wrap(
-                          alignment: WrapAlignment.end,
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [...actions.skip(1)],
-                        ),
+                    if (actions.length > 1)
+                      OverflowBar(
+                        spacing: 8,
+                        overflowSpacing: 8,
+                        overflowAlignment: OverflowBarAlignment.end,
+                        children: [...actions.skip(1)],
                       ),
-                    ],
                   ],
                 ),
               ],
