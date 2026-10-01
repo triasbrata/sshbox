@@ -72,7 +72,11 @@ env:
 - extendedWaitUntil:
     visible: "(?i)Slow answer: done"
     timeout: 20000
-- assertNotVisible: "(?s).*Working….*"
+# Gone with the turn's own end, not the 5 s look at the listing that would end
+# it later anyway: in under 3 s.
+- extendedWaitUntil:
+    notVisible: "(?s).*Working….*"
+    timeout: 3000
 - takeScreenshot: chat-progress-done
 
 # A turn stopped at a permission prompt: what for and where, no Working….
@@ -90,8 +94,12 @@ env:
 - extendedWaitUntil:
     visible: "(?i)Waited answer: done"
     timeout: 40000
-- assertNotVisible: "(?s).*Waiting for permission prompt.*"
-- assertNotVisible: "(?s).*Working….*"
+- extendedWaitUntil:
+    notVisible: "(?s).*Waiting for permission prompt.*"
+    timeout: 3000
+- extendedWaitUntil:
+    notVisible: "(?s).*Working….*"
+    timeout: 3000
 
 # Hidden while Claude writes, the chat comes back still following: tabs_shell
 # turns a hidden page's TickerMode off, which pauses a scroll animating to
@@ -103,6 +111,12 @@ env:
     text: "Send"
     waitToSettleTimeoutMs: 500
 - takeScreenshot: chat-progress-before-hide
+# The shell's chip is off the strip's left edge while the chat is on show on a
+# phone: dragged back into view before it is tapped.
+- swipe:
+    start: 30%, 7%
+    end: 95%, 7%
+    duration: 400
 - tapOn: "${HOST_LABEL} tailnet"
 - takeScreenshot: chat-progress-hidden
 # Fifteen seconds behind the terminal: a slow, tiny drag is the wait.
@@ -110,8 +124,8 @@ env:
     start: 50%, 40%
     end: 50%, 41%
     duration: 15000
-# Back to the chat the way a user goes back on a phone, whose strip shows the
-# tab on show alone: the key bar's chat button, which returns to the tab open.
+# Back to the chat as a user would on a phone, where its chip may be off the
+# strip: the key bar's chat button, which returns to the tab already open.
 - tapOn: "Chat with Claude"
 - extendedWaitUntil:
     visible: "(?s).*Long answer 6 end.*"
