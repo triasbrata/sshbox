@@ -2987,6 +2987,32 @@ void main() {
       expect(chat.nextPicture, 4);
     });
 
+    test('the pane waits for chips counted from what its line held, with '
+        'each [Image #N] typed as text on the way', () {
+      final command = ClaudeChat.paneCommand(
+        _live.sessionId,
+        pid: 1,
+        parts: [
+          (length: 20, picture: false, tokens: 1),
+          (length: 30, picture: true, tokens: 0),
+          (length: 9, picture: false, tokens: 2),
+          (length: 30, picture: true, tokens: 0),
+        ],
+      );
+      // From c0, read before anything is typed: one typed token, then the
+      // picture's chip; two more typed, then the second picture's.
+      expect(command, contains('c0=\$(chips); '));
+      expect(command, contains(r'-lt $((c0 + $1))'));
+      expect(
+        RegExp(r'chip (\d+);').allMatches(command).map((m) => m[1]),
+        ['2', '5'],
+      );
+      expect(
+        command.indexOf('c0=\$(chips); '),
+        lessThan(command.indexOf('dd bs=1 count=20 ')),
+      );
+    });
+
     test('the chips counted are the input line\'s, not the turns above it', () {
       expect(
         ClaudeChat.chipsIn([
