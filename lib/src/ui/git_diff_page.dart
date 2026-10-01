@@ -15,6 +15,7 @@ import 'file_editor_page.dart'
 import 'settings_page.dart' show terminalSettings;
 import 'toast.dart';
 import 'tui.dart';
+import 'text_size.dart';
 
 /// A diff drawn the way GitHub draws one, in a tab of its own: each file under
 /// a header of its own, the old version beside the new with a line number on
@@ -694,7 +695,10 @@ class _GitDiffPageState extends State<GitDiffPage> {
             ),
           ],
         ),
-        body: _body(context, split: split),
+        // The diff at the content size; _Look measures under it.
+        body: ContentText(
+          child: Builder(builder: (context) => _body(context, split: split)),
+        ),
       );
     },
   );

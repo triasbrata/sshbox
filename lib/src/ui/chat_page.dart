@@ -9,7 +9,9 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../chat/claude_chat.dart';
 import '../session/session_manager.dart';
 import 'code_languages.dart';
+import 'mermaid_view.dart';
 import 'settings_page.dart' show terminalSettings;
+import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -303,13 +305,17 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, box) {
       final wide = box.maxWidth >= _wide;
       final sidebar = wide && _sidebarOpen;
-      final sessions = _SessionList(
-        chat: _chat,
-        agents: _agents,
-        connected: widget.session.isConnected,
-        onPick: _pick,
-        onRefresh: () => setState(_listAgents),
-        onNewChat: _newChat,
+      // Chat at the content size, its sessions, messages, tool rows, code
+      // and composer alike: see ContentText.
+      final sessions = ContentText(
+        child: _SessionList(
+          chat: _chat,
+          agents: _agents,
+          connected: widget.session.isConnected,
+          onPick: _pick,
+          onRefresh: () => setState(_listAgents),
+          onNewChat: _newChat,
+        ),
       );
       return Scaffold(
         key: _scaffoldKey,
@@ -329,7 +335,9 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: _conversation(wide: wide, sidebar: sidebar),
+              child: ContentText(
+                child: _conversation(wide: wide, sidebar: sidebar),
+              ),
             ),
           ],
         ),
@@ -695,6 +703,12 @@ class _Bubble extends StatelessWidget {
   );
 }
 
+/// The builders every Markdown in a chat draws with: a ```mermaid fence as
+/// a diagram, its source copyable beside it.
+final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
+  'code': MermaidBuilder(copyable: true),
+};
+
 /// What Claude said, as Markdown: it writes lists, headings and code, and
 /// this is the renderer the Markdown preview already uses.
 class _Answer extends StatelessWidget {
@@ -716,7 +730,10 @@ class _Answer extends StatelessWidget {
       builder: (context, terminal, _) => TuiChatAnswer(
         child: SelectionArea(
           child: MarkdownBody(
-            data: text,
+            // A ```mermaid fence is a diagram, as in the Markdown preview,
+            // once it has closed.
+            data: holdOpenMermaid(text),
+            builders: chatMarkdownBuilders,
             onTapLink: onTapLink,
             // A reply is text, and any picture in it lives on a server we do
             // not fetch from: its alt text says what was meant.
