@@ -470,6 +470,74 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
   expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
 }
 
+/// Two fingers on a Mac's trackpad, pushing the content down over [at], a
+/// global position in this window: the phased scroll events a trackpad
+/// makes — began, changed a step at a time, ended — posted to this process
+/// through CoreGraphics, which the Cocoa embedder turns into a pan as it
+/// does a real one. The window is found by this process's pid; its content
+/// fills its bottom, under whatever title bar there is.
+Future<void> _trackpad(WidgetTester tester, Offset at) async {
+  final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+  try {
+    final script = File('${dir.path}/trackpad.swift')
+      ..writeAsStringSync(_trackpadScript);
+    final size = tester.view.physicalSize / tester.view.devicePixelRatio;
+    var done = false;
+    final run = Process.run('swift', [
+      script.path, '$pid', '${at.dx}', '${at.dy}', '${size.height}', //
+    ]).whenComplete(() => done = true);
+    // Pumped while it runs, so the pan is drawn as it comes.
+    while (!done) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+    final ran = await run;
+    expect(ran.exitCode, 0, reason: 'the trackpad: ${ran.stderr}${ran.stdout}');
+    await tester.pump(const Duration(seconds: 1));
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+}
+
+const _trackpadScript = r"""
+import AppKit
+import CoreGraphics
+
+let args = CommandLine.arguments
+let pid = pid_t(args[1])!
+let x = Double(args[2])!, y = Double(args[3])!, viewHeight = Double(args[4])!
+
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+  as! [[String: Any]]
+guard let window = windows.first(where: {
+  ($0[kCGWindowOwnerPID as String] as? pid_t) == pid
+    && ($0[kCGWindowLayer as String] as? Int) == 0
+}) else { print("no window for \(pid)"); exit(1) }
+let bounds = CGRect(
+  dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+let at = CGPoint(x: bounds.minX + x, y: bounds.maxY - viewHeight + y)
+
+NSRunningApplication(processIdentifier: pid)?.activate()
+usleep(300_000)
+CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: at,
+        mouseButton: .left)!.post(tap: .cghidEventTap)
+usleep(100_000)
+
+func scroll(_ dy: Int32, _ phase: Int64) {
+  let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                  wheel1: dy, wheel2: 0, wheel3: 0)!
+  e.location = at
+  e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+  e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+  e.postToPid(pid)
+  usleep(16_000)
+}
+// kCGScrollPhaseBegan, Changed, Ended.
+scroll(0, 1)
+for _ in 0..<40 { scroll(4, 2) }
+scroll(0, 4)
+""";
+
 /// A widget by the name it gives a screen reader, with no semantics tree
 /// asked for: the window's buttons have no text or tooltip to find them by.
 Finder _named(String label) => find.byWidgetPredicate(
@@ -1918,6 +1986,88 @@ touch '${done.path}'
         'Alt+click to hand the link to the browser',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // #126: on a Mac a trackpad's two-finger scroll reaches Flutter as a pan,
+  // never a wheel, and only the Cocoa embedder makes one from the system's
+  // own phased scroll events. So the scroll is posted to this process as
+  // AppKit would get it from a trackpad (see [_trackpad]): over a plain
+  // shell's scrollback, and over a program reading the mouse after a click
+  // on its bottom row, where Claude Code's prompt is — a pan's wheel events
+  // went to that click's cell rather than the pointer's.
+  _test(
+    'a trackpad scroll moves the scrollback and reaches a program that reads '
+    'the mouse at the pointer',
+    skip: Platform.isMacOS
+        ? null
+        : "a phased trackpad scroll is posted through a Mac's CoreGraphics",
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      await _launch(tester);
+      final dir = _scratch();
+
+      final view = await _localShell(tester);
+      _run(view, 'seq 1 400');
+      await _until(
+        tester,
+        () => _text(view).any((line) => line.trim() == '400'),
+        'seq to print 400 lines',
+      );
+      final scroll = tester.state<ScrollableState>(
+        find
+            .descendant(
+              of: find.byType(TerminalView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      final bottom = scroll.position.pixels;
+      final box = tester.getRect(find.byType(TerminalView));
+      await _trackpad(tester, box.center);
+      expect(
+        scroll.position.pixels,
+        lessThan(bottom),
+        reason: 'the scrollback, from ${scroll.position.maxScrollExtent}',
+      );
+
+      // A program reading the mouse, as Claude Code's fullscreen view does,
+      // writing what it is sent to a file.
+      final got = File('${dir.path}/wheel');
+      _run(
+        view,
+        r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; "
+        'cat -v > ${got.path}',
+      );
+      await _until(
+        tester,
+        () => view.terminal.isUsingAltBuffer && got.existsSync(),
+        'the program to take the mouse',
+      );
+      await tester.tapAt(Offset(box.center.dx, box.bottom - 12));
+      await tester.pump(const Duration(milliseconds: 500));
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      final cell = render.getCellOffset(render.globalToLocal(box.center));
+      await _trackpad(tester, box.center);
+      final wheel = RegExp(r'\^\[\[<6[45];(\d+);(\d+)M');
+      await _until(
+        tester,
+        () => wheel.hasMatch(got.readAsStringSync()),
+        'a wheel event to reach the program',
+      );
+      final at = {
+        for (final m in wheel.allMatches(got.readAsStringSync()))
+          '${m[1]};${m[2]}',
+      };
+      expect(at, {'${cell.x + 1};${cell.y + 1}'}, reason: 'the pointer cell');
+
+      view.terminal.keyInput(TerminalKey.keyC, ctrl: true);
+      await _closeTabs(tester);
+      // In the body: the binding checks it is back before any tear-down runs.
+      binding.shouldPropagateDevicePointerEvents = false;
     },
   );
 
