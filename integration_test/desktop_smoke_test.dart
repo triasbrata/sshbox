@@ -1260,19 +1260,23 @@ touch '${done.path}'
         'the branch in the header',
       );
       expect(find.text(first), findsWidgets);
-      await tester.tap(find.byTooltip('Switch branch'));
+      // Every toast gone first: toasts sit over every menu, and the header's
+      // opens at the top of the window, where they are.
       await _until(
         tester,
-        () => find.text('Switch to e2e-other').evaluate().isNotEmpty,
-        'the branches to switch to',
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
       );
-      await tester.tap(find.text('Switch to e2e-other'));
+      await tester.tap(find.byTooltip('Switch branch'));
+      // Waited out, as every menu here is: a tap while it slides in is lost.
+      await _pick(tester, 'Switch to e2e-other');
       await _until(
         tester,
         () =>
             find.text('Switch from $first to e2e-other?').evaluate().isNotEmpty,
         'the dialog naming both branches',
       );
+      await tester.pump(const Duration(milliseconds: 600));
       await tester.tap(
         find.descendant(
           of: find.byType(TuiDialog),
