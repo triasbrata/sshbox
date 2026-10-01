@@ -178,7 +178,7 @@ void main() {
       expect(sample.style?.fontFamily, font.family);
     }
     expect(find.bySemanticsLabel('Content text size'), findsOneWidget);
-    expect(find.bySemanticsLabel(RegExp('^Set the UI text size')), findsOneWidget);
+    expect(find.bySemanticsLabel('Set the UI text size'), findsOneWidget);
     // The preview is a terminal of its own, in the chosen style.
     expect(
       tester.widget<TerminalView>(find.byType(TerminalView)).textStyle,

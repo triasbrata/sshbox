@@ -6,8 +6,8 @@
 // A control's Semantics is its own node (container: true), so its word is
 // not merged into whatever is around it: a screen reader, an e2e flow and a
 // finder can each reach it by that word. A [TuiSlider.semanticLabel] names
-// the track's own node, so a swipe from that node's middle lands on the
-// track rather than on the readout above it.
+// a node of the track's own bounds, so a swipe from that node's middle lands
+// on the track rather than on the readout above it.
 
 import 'package:flutter/material.dart';
 
@@ -165,9 +165,8 @@ class _TuiSliderTrackState extends State<_TuiSliderTrack> {
     final thumbFill = widget.enabled ? (p.isLight ? p.panel : p.bg) : p.surface;
     final thumbBorder = widget.enabled ? p.accent : p.border;
 
-    return Semantics(
+    final slider = Semantics(
       slider: true,
-      label: widget.semanticLabel,
       enabled: widget.enabled,
       value: widget.value.toStringAsFixed(2),
       increasedValue: (widget.value + 1)
@@ -265,6 +264,17 @@ class _TuiSliderTrackState extends State<_TuiSliderTrack> {
           );
         },
       ),
+    );
+    final name = widget.semanticLabel;
+    if (name == null) return slider;
+    // A plain node of the track's own bounds, holding its name: a slider's
+    // node does not hand its label to Maestro, and one round the readout
+    // too would put a swipe from its middle off the track.
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      label: name,
+      child: slider,
     );
   }
 }

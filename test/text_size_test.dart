@@ -188,7 +188,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(360, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
-    final slider = find.bySemanticsLabel(RegExp('^Set the UI text size'));
+    final slider = find.bySemanticsLabel('Set the UI text size');
     await tester.ensureVisible(slider);
     await tester.pumpAndSettle();
     await tester.dragFrom(tester.getCenter(slider), const Offset(1000, 0));
