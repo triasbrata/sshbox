@@ -30,6 +30,7 @@ import 'file_browser_page.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
 import 'right_click.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
@@ -1341,10 +1342,21 @@ class _PaneViewState extends State<_PaneView> {
       menuAction('Paste', () => unawaited(_paste())),
       if (link != null)
         menuAction('Copy link address', () => copy(link, 'Copied $link')),
+      if (_diagramIn(range) case final diagram?)
+        menuAction(
+          'Show as diagram',
+          () => unawaited(showMermaidDialog(context, diagram)),
+        ),
       // The tab's own, as its chip offers them.
       if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
     ]);
   }
+
+  /// The Mermaid source [range] holds, where a web view can draw it: what
+  /// the menu's Show as diagram opens. See [mermaidSource].
+  String? _diagramIn(BufferRange? range) => range == null || !hasWebView
+      ? null
+      : mermaidSource(selectedText(widget.terminal.buffer, range));
 
   /// Ctrl+Shift+C — ⌘C on an Apple platform — before xterm2's own copy
   /// shortcut, which reads the selection through `Buffer.getText` and so

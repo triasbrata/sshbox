@@ -9,6 +9,7 @@ import 'package:xterm2/xterm.dart';
 
 import '../platform.dart';
 import 'ctrl_click.dart' show hyperlinkIn, selectedText;
+import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
 import 'toast.dart';
 import 'tui.dart' show TermulFonts, TermulThemeData;
 
@@ -1245,6 +1246,14 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
     return range == null ? null : hyperlinkIn(widget.terminal, range);
   }
 
+  /// The Mermaid source the selection holds, where a diagram can be drawn:
+  /// see [mermaidSource].
+  String? get _selectedDiagram {
+    final range = widget.controller.selection;
+    if (!hasWebView || range == null) return null;
+    return mermaidSource(selectedText(widget.terminal.buffer, range));
+  }
+
   /// A hyperlink's label hides its address, and copying the label gives only
   /// the label, so this is how a user finds out where a link goes before a
   /// Ctrl+tap opens it — the toast says it in full, and it can be pasted
@@ -1558,6 +1567,14 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
                     ContextMenuButtonItem(
                       label: 'Copy link address',
                       onPressed: () => _copyLink(address),
+                    ),
+                  if (_selectedDiagram case final source?)
+                    ContextMenuButtonItem(
+                      label: 'Show as diagram',
+                      onPressed: () {
+                        widget.controller.clearSelection();
+                        unawaited(showMermaidDialog(context, source));
+                      },
                     ),
                 ],
               ),
