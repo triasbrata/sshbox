@@ -94,7 +94,9 @@ env:
 - tapOn: "Message “E2E live session”…"
 - inputText: "long: go"
 - tapOn: "Send"
+- takeScreenshot: chat-progress-before-hide
 - tapOn: "${HOST_LABEL} tailnet"
+- takeScreenshot: chat-progress-hidden
 # Fifteen seconds behind the terminal: a slow, tiny drag is the wait.
 - swipe:
     start: 50%, 40%
