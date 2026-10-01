@@ -612,9 +612,10 @@ Future<void> _realRightClick(
 /// points: `click` moves the pointer there (kCGEventMouseMoved, 5) and
 /// presses the right button (3, 4); `shiftclick` does so with Shift's flag
 /// (kCGEventFlagMaskShift, 0x20000) on each event; `shiftdown` and `shiftup`
-/// are the left Shift key (key code 56), its down carrying the flag, as a
-/// keyboard's does, or it is no flagsChanged. The keys go to the app's own
-/// process, argv[3], so they reach it whichever app has the keyboard.
+/// are the left Shift key (key code 56) as a keyboard sends a modifier: a
+/// flagsChanged (12), not a key down, its flag on while held. It goes to the
+/// window server, which keeps the modifiers' state, and to the app's own
+/// process, argv[3], in case another app has the keyboard.
 const _macRightClickScript = r"""
 ObjC.import('CoreGraphics');
 function run(argv) {
@@ -624,7 +625,9 @@ function run(argv) {
   if (step === 'shiftdown' || step === 'shiftup') {
     const down = step === 'shiftdown';
     const e = $.CGEventCreateKeyboardEvent(null, 56, down);
+    $.CGEventSetType(e, 12);
     $.CGEventSetFlags(e, down ? 0x20000 : 0);
+    $.CGEventPost(0, e);
     $.CGEventPostToPid(pid, e);
     return;
   }
