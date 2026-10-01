@@ -388,6 +388,11 @@ class ClaudeChat extends ChangeNotifier {
       final channel = await open(
         command(cwd: cwd, permission: _permission, resume: _sessionId),
       );
+      // The tab closed while the host answered: nothing is left to hold it.
+      if (_disposed) {
+        channel.close();
+        return;
+      }
       _channel = channel;
       _ready = true;
       _lines = utf8.decoder
@@ -570,11 +575,13 @@ class ClaudeChat extends ChangeNotifier {
       keepRunning: pid != null,
       wait: waitForTranscript,
     );
+    if (_disposed) return;
     if (pid != null) {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
       if (read == null) return;
       final pane = agent.interactive ? await _findPane(agent, pid) : null;
+      if (_disposed) return;
       _watching = agent;
       _say(
         ChatNotice(
@@ -693,6 +700,9 @@ class ClaudeChat extends ChangeNotifier {
           why.isEmpty ? 'The host started no session.' : why,
         );
       }
+      // The tab closed while `--bg` answered: the session carries on, listed
+      // on the host, and nothing more is asked of it from here.
+      if (_disposed) return;
       // Listed the moment `--bg` returns, measured; a slow host gets a few
       // more looks.
       ClaudeAgent? agent;
@@ -706,9 +716,10 @@ class ClaudeChat extends ChangeNotifier {
           'in a terminal with `claude attach $id`.',
         );
       }
-      // Something else was picked meanwhile: the new session stays on the
-      // host, in the list, and this chat shows what was picked.
-      if (!_composing) return;
+      // Something else was picked meanwhile, or the tab closed: the new
+      // session stays on the host, in the list, and this chat shows what was
+      // picked, if anything.
+      if (!_composing || _disposed) return;
       _busy = false;
       await continueFrom(agent, waitForTranscript: true);
     } catch (error) {
@@ -741,6 +752,7 @@ class ClaudeChat extends ChangeNotifier {
     required int from,
     required List<int> carry,
   }) async {
+    if (_disposed) return;
     final CommandChannel channel;
     try {
       channel = await open(
@@ -748,6 +760,11 @@ class ClaudeChat extends ChangeNotifier {
       );
     } catch (error) {
       _say(ChatNotice('It could not be followed live: $error', failed: true));
+      return;
+    }
+    // The tab closed while the host answered: the tail is ended at once.
+    if (_disposed) {
+      channel.close();
       return;
     }
     _follower = channel;
