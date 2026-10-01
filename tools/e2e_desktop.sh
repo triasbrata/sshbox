@@ -33,7 +33,80 @@ if [ -z "$target" ]; then
 fi
 shift $(($# > 0 ? 1 : 0))
 
-tests=integration_test
+tests=integration_test/desktop_smoke_test.dart
+
+# A run narrowed to some tests, or the no-portal one, is that run alone:
+# the window phases follow only a whole run.
+phases=1
+[ -n "${JEANSH_E2E_NO_PORTAL:-}" ] && phases=
+for arg in "$@"; do
+  case "$arg" in --plain-name* | --name* | -n) phases= ;; esac
+done
+export JEANSH_E2E_PHASES=$phases
+
+# integration_test/window_place_test.dart, once a phase, each a fresh start
+# of the app on the same data folder: the window is moved, comes back,
+# maximized comes back, and a rectangle saved off every screen comes back on
+# the one there is — that last one written here, between runs, where the app
+# keeps it. Nothing of a Jeansh used on this machine is touched: Linux runs in
+# the run's own data folder (below), Windows in a throwaway %APPDATA%, and on
+# a Mac the two keys the window keeps are put back as they were. The
+# arguments given to this script are the smoke tests' alone.
+window_phases() {
+  local target=$1 rc=0 data=""
+  if [ "$target" = windows ]; then
+    data=$(mktemp -d)
+    mkdir -p "$data/cloud.brata/Jeansh"
+  fi
+  local domain=dev.triasbrata.sshbox frame='NSWindow Frame Jeansh'
+  local full=JeanshWindowFullScreen kept_frame="" kept_full=""
+  if [ "$target" = macos ]; then
+    kept_frame=$(defaults read "$domain" "$frame" 2>/dev/null) || kept_frame=""
+    kept_full=$(defaults read "$domain" "$full" 2>/dev/null) || kept_full=""
+    defaults delete "$domain" "$frame" 2>/dev/null || true
+    defaults delete "$domain" "$full" 2>/dev/null || true
+  fi
+  for phase in move restore maximized offscreen; do
+    if [ "$phase" = offscreen ]; then
+      case "$target" in
+        linux) printf '%s\n' '-5000 -5000 760 520 0 0' \
+                 >"$XDG_DATA_HOME/cloud.brata.terminal/window.txt" ;;
+        windows) printf '%s\n' '-6000 -6000 -5240 -5480 0' \
+                   >"$data/cloud.brata/Jeansh/window.txt" ;;
+        macos) defaults write "$domain" "$frame" \
+                 '-6000 -6000 760 520 0 0 1440 900 ' ;;
+      esac
+    fi
+    if [ "$target" = windows ]; then
+      APPDATA=$(cygpath -w "$data") flutter test \
+        integration_test/window_place_test.dart -d windows \
+        --dart-define=JEANSH_E2E_WINDOW=$phase || { rc=1; break; }
+    else
+      flutter test integration_test/window_place_test.dart -d "$target" \
+        --dart-define=JEANSH_E2E_WINDOW=$phase || { rc=1; break; }
+    fi
+  done
+  if [ "$target" = macos ]; then
+    defaults delete "$domain" "$frame" 2>/dev/null || true
+    defaults delete "$domain" "$full" 2>/dev/null || true
+    [ -n "$kept_frame" ] && defaults write "$domain" "$frame" "$kept_frame"
+    [ -n "$kept_full" ] && defaults write "$domain" "$full" -bool "$kept_full"
+  fi
+  [ -n "$data" ] && rm -rf "$data"
+  return $rc
+}
+
+# The Linux run's second half, inside its Xvfb (below), with a window
+# manager to maximize under, there from the start as on a desktop.
+if [ "$target" = window-phases ]; then
+  openbox >/dev/null 2>&1 &
+  wm=$!
+  sleep 1
+  rc=0
+  window_phases linux || rc=1
+  kill $wm
+  exit $rc
+fi
 
 case "$target" in
   linux)
@@ -62,8 +135,30 @@ case "$target" in
     # Wayland session — WSLg has one — the app drew on the real desktop and
     # copied to the real clipboard, which WSLg shares with Windows, over
     # whatever the user had copied.
-    exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
-      dbus-run-session -- sh -c '
+    #
+    # JEANSH_E2E_NO_PORTAL=1 leaves every XDG portal off that bus, as on a
+    # desktop that runs none: the bus offers the services the machine has,
+    # less each *portal* one, so nothing can start one.
+    bus=()
+    if [ -n "${JEANSH_E2E_NO_PORTAL:-}" ]; then
+      services=$(mktemp -d)
+      for service in /usr/share/dbus-1/services/*.service; do
+        case "$service" in *portal*) ;; *) ln -s "$service" "$services/" ;; esac
+      done
+      config=$(mktemp)
+      sed "s#<standard_session_servicedirs */>#<servicedir>$services</servicedir>#" \
+        /usr/share/dbus-1/session.conf > "$config"
+      bus=(--config-file="$config")
+    fi
+    # Not exec when a no-portal bus was made, so its files go with the run.
+    if [ -n "${JEANSH_E2E_NO_PORTAL:-}" ]; then
+      trap 'rm -rf "$services" "$config"' EXIT
+      run=
+    else
+      run=exec
+    fi
+    $run xvfb-run -a --server-args="-screen 0 1280x900x24" \
+      dbus-run-session "${bus[@]}" -- sh -c '
         unset WAYLAND_DISPLAY && export GDK_BACKEND=x11
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME
         TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR
@@ -72,13 +167,18 @@ case "$target" in
         printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
         dunst >/dev/null 2>&1 & notifier=$!
         tests=$1 && shift
-        flutter test "$tests" -d linux "$@"' sh "$tests" "$@"
+        rc=0
+        flutter test "$tests" -d linux "$@" || rc=1
+        # Only after a whole run, as above.
+        [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || rc=1
+        exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
-  windows)
-    exec flutter test "$tests" -d windows "$@"
-    ;;
-  macos)
-    exec flutter test "$tests" -d macos "$@"
+  windows | macos)
+    rc=0
+    flutter test "$tests" -d "$target" "$@" || rc=1
+    # Only after a whole run, as above.
+    [ -z "$JEANSH_E2E_PHASES" ] || window_phases "$target" || rc=1
+    exit $rc
     ;;
   *)
     echo "Unknown target '$target'; expected linux, windows or macos" >&2

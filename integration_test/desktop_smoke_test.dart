@@ -19,26 +19,107 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, InkWell, PopupMenuDivider, TextField, Tooltip;
+    show DropdownButton, Icons, InkWell, PopupMenuDivider, TextField, Tooltip;
+import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/files/transfers.dart'
+    show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
+import 'package:sshbox/src/ui/file_download.dart'
+    show downloadFile, openDownload;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
-import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
+import 'package:sshbox/src/ui/settings_page.dart'
+    show SettingsPage, localTmux, maxFontSize, terminalFonts, terminalSettings;
+import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
+import 'package:sshbox/src/ui/text_size.dart';
 import 'package:xterm2/xterm.dart';
+
+/// Where [_shot] writes, from `--dart-define=JEANSH_SHOTS=folder`; empty, as
+/// on CI, writes nothing.
+const _shots = String.fromEnvironment('JEANSH_SHOTS');
+
+/// The window as drawn, as [name].png in [_shots], for a person to look at.
+Future<void> _shot(WidgetTester tester, String name) async {
+  if (_shots.isEmpty) return;
+  await tester.pumpAndSettle();
+  final view = tester.binding.renderViews.first;
+  final layer = view.debugLayer! as OffsetLayer;
+  final image = await layer.toImage(Offset.zero & view.paintBounds.size);
+  final png = await image.toByteData(format: ui.ImageByteFormat.png);
+  await Directory(_shots).create(recursive: true);
+  await File('$_shots/$name.png').writeAsBytes(png!.buffer.asUint8List());
+}
+
+/// The stand-in Claude where the chat's finder looks, taken away after: see
+/// the chat tests, which skip where this machine has a Claude of its own.
+void _standInClaudeFor() {
+  final home = Platform.environment['HOME']!;
+  final standIn = File('$home/.local/bin/claude');
+  final config = Directory('$home/.claude');
+  final hadConfig = config.existsSync();
+  final hadBin = standIn.parent.existsSync();
+  standIn.parent.createSync(recursive: true);
+  standIn.writeAsStringSync(_standInClaude);
+  Process.runSync('chmod', ['755', standIn.path]);
+  addTearDown(() {
+    if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
+    if (!hadBin) standIn.parent.deleteSync(recursive: true);
+    if (!hadConfig) {
+      config.deleteSync(recursive: true);
+    } else {
+      Directory('${config.path}/projects/jeansh-e2e')
+          .deleteSync(recursive: true);
+    }
+  });
+}
+
+/// The chat's composer.
+final _composer = find.byWidgetPredicate(
+  (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+);
+
+/// The stand-in's answer.
+final _answer = find.textContaining(
+  'Echo from the stand-in',
+  findRichText: true,
+);
+
+/// A Local shell's chat opened, a message sent, and the stand-in's answer in.
+Future<void> _chatAnswered(WidgetTester tester) async {
+  await _localShell(tester);
+  await tester.tap(find.byTooltip('Chat with Claude'));
+  await _until(
+    tester,
+    () => _composer.evaluate().isNotEmpty,
+    'the chat tab to open, its version check passed',
+  );
+  await tester.enterText(_composer, 'hello from the e2e');
+  await tester.pump();
+  await tester.tap(find.byTooltip('Send'));
+  await _until(
+    tester,
+    () => _answer.evaluate().isNotEmpty,
+    "the stand-in's answer in the chat",
+    timeout: const Duration(seconds: 40),
+  );
+}
 
 /// Home, from a cold start, settled.
 ///
@@ -961,7 +1042,15 @@ const _standInClaude = r'''#!/bin/sh
 d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 sid=0e2e0000-0000-4000-8000-00000000c0de
 t="$d/projects/jeansh-e2e/$sid.jsonl"
-answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in"}]}}'
+# Thirty diagrams after it (#131): a long reply's worth, past the 27 a Mac
+# preview once drew as one grey area.
+fences=''
+i=1
+while [ $i -le 30 ]; do
+  fences="$fences\\n\\n\`\`\`mermaid\\ngraph LR\\n  E2E$i --> Done$i\\n\`\`\`"
+  i=$((i + 1))
+done
+answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in'"$fences"'"}]}}'
 case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
@@ -984,6 +1073,142 @@ case "$1" in
 esac
 ''';
 
+
+/// Answers the desktop's save dialog as a person would, once it is up: saves
+/// to [path], or cancels it when [path] is null. A Mac's panel saves where it
+/// opens, so [path] there only says to save. Done outside Flutter, which the
+/// dialog is too, and waited on outside the test's own pumping.
+Future<ProcessResult> _answerSaveDialog(String? path) {
+  if (Platform.isMacOS) {
+    final key = path == null ? 'key code 53' : 'keystroke return';
+    return Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh"',
+      '-e',
+      'set frontmost to true',
+      '-e',
+      'repeat 120 times',
+      '-e',
+      'repeat with w in windows',
+      '-e',
+      'if exists sheet 1 of w then',
+      '-e',
+      'delay 1',
+      '-e',
+      key,
+      '-e',
+      'return "answered"',
+      '-e',
+      'end if',
+      '-e',
+      'end repeat',
+      '-e',
+      'delay 0.5',
+      '-e',
+      'end repeat',
+      '-e',
+      'error "no save sheet, windows: " & (name of every window as text)',
+      '-e',
+      'end tell',
+    ]);
+  }
+  if (Platform.isLinux) {
+    // Focused rather than activated: Xvfb has no window manager to ask.
+    // Return in a call of its own: xdotool's type takes every word after it
+    // as text to type.
+    const dialog =
+        r'timeout 60 xdotool search --sync --name "^Save File$" '
+        r'windowfocus --sync %1 sleep 1';
+    return Process.run('sh', [
+      '-c',
+      path == null
+          ? '$dialog && xdotool key Escape'
+          : '$dialog key ctrl+a type "\$1" && xdotool key Return',
+      if (path != null) ...['sh', path],
+    ]);
+  }
+
+  // SendKeys reads +^%~(){}[] as keys of its own: each goes in braces.
+  final keys = path == null
+      ? '{ESC}'
+      : '${path.replaceAllMapped(RegExp(r'[+^%~(){}\[\]]'), (m) => '{${m[0]}}')}'
+            '{ENTER}';
+  return Process.run('powershell', [
+    '-NoProfile',
+    '-Command',
+    r"$ws = New-Object -ComObject WScript.Shell; "
+        r"for ($i = 0; $i -lt 120; $i++) { "
+        r"if ($ws.AppActivate('Save As')) { break }; "
+        r"Start-Sleep -Milliseconds 500 }; "
+        r"if ($i -eq 120) { throw 'no Save As window' }; "
+        r"Start-Sleep -Milliseconds 1000; "
+        "\$ws.SendKeys('${keys.replaceAll("'", "''")}')",
+  ]);
+}
+
+/// Readies this desktop to see a text file opened, and hands back what waits
+/// for it: on Linux a stand-in handler for text/plain in the run's own data
+/// folder, which notes what it is given; on a Mac TextEdit, and on Windows
+/// Notepad, each closed once seen. CI only, as the test is.
+Future<Future<void> Function(String path)> _opener() async {
+  if (Platform.isLinux) {
+    final data = Platform.environment['XDG_DATA_HOME']!;
+    final noted = File('$data/e2e-opened-files');
+    final opener = File('$data/e2e-opener')
+      ..writeAsStringSync(
+        '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${noted.path}\'\n',
+      );
+    Process.runSync('chmod', ['755', opener.path]);
+    Directory('$data/applications').createSync(recursive: true);
+    File('$data/applications/e2e-opener.desktop').writeAsStringSync(
+      '[Desktop Entry]\nType=Application\nName=e2e opener\nNoDisplay=true\n'
+      'Exec=${opener.path} %f\n'
+      'MimeType=text/plain;x-scheme-handler/file;\n',
+    );
+    // Added to, not written over: the link test keeps its browser here.
+    final apps = File('$data/applications/mimeapps.list');
+    apps.writeAsStringSync(
+      '${apps.existsSync() ? apps.readAsStringSync() : '[Default Applications]\n'}'
+      // The file scheme too: GIO asks a scheme's handler before the file's
+      // type, and a desktop may have one, as WSL's wslview is.
+      'text/plain=e2e-opener.desktop\n'
+      'x-scheme-handler/file=e2e-opener.desktop\n',
+    );
+    return (path) async {
+      final end = DateTime.now().add(const Duration(seconds: 20));
+      while (DateTime.now().isBefore(end)) {
+        if (noted.existsSync() && noted.readAsStringSync().contains(path)) {
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      fail('nothing opened $path');
+    };
+  }
+  final (name, look, kill) = Platform.isMacOS
+      ? ('TextEdit', ['pgrep', '-x', 'TextEdit'], ['pkill', '-x', 'TextEdit'])
+      : (
+          'Notepad',
+          ['tasklist', '/FI', 'IMAGENAME eq notepad.exe', '/NH'],
+          ['taskkill', '/IM', 'notepad.exe', '/F'],
+        );
+  return (path) async {
+    final end = DateTime.now().add(const Duration(seconds: 20));
+    while (DateTime.now().isBefore(end)) {
+      final seen = await Process.run(look.first, look.skip(1).toList());
+      final up = Platform.isMacOS
+          ? seen.exitCode == 0
+          : '${seen.stdout}'.toLowerCase().contains('notepad.exe');
+      if (up) {
+        await Process.run(kill.first, kill.skip(1).toList());
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    fail('$name never opened $path');
+  };
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -996,6 +1221,72 @@ void main() {
       anyOf(TargetPlatform.linux, TargetPlatform.windows, TargetPlatform.macOS),
     );
     expect(isDesktop, isTrue);
+  });
+
+  // Issue #133: the UI text size at its largest, set as a person sets it, by
+  // a drag on Settings' own slider, and the app still usable on the real
+  // embedder: Settings to its end, Home, and a Local shell whose terminal
+  // keeps the columns and rows it had. Any overflow on the way fails it.
+  _test('the UI text size at its largest leaves Home, Settings and a '
+      'terminal usable, the terminal at its own size', (tester) async {
+    addTearDown(() => uiTextSize.choose(1));
+    await uiTextSize.choose(1);
+    await _launch(tester);
+    await _shot(tester, 'desktop-home-default');
+    final before = await _localShell(tester);
+    final columns = before.terminal.viewWidth;
+    final rows = before.terminal.viewHeight;
+    await _shot(tester, 'desktop-terminal-default');
+    await _closeTabs(tester);
+
+    await _settings(tester);
+    await _shot(tester, 'desktop-settings-default');
+    // Settings' own list: Home's tab strip under it is a list too.
+    final page = find
+        .descendant(
+          of: find.byType(SettingsPage),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      _label('UI text size'),
+      300,
+      scrollable: page,
+    );
+    await tester.scrollUntilVisible(
+      find.byType(TuiSlider).first,
+      100,
+      scrollable: page,
+    );
+    final slider = find.byType(TuiSlider).first;
+    await tester.pumpAndSettle();
+    await tester.drag(slider, const Offset(3000, 0));
+    await tester.pumpAndSettle();
+    expect(uiTextSize.value, UiTextSize.max);
+    expect(find.text('160%'), findsOneWidget);
+    await _shot(tester, 'desktop-settings-largest');
+
+    // Settings to its end at that size.
+    await tester.scrollUntilVisible(_label('About'), 300, scrollable: page);
+    await tester.pumpAndSettle();
+    await _backHome(tester);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.byTooltip('Settings')))
+          .scale(13),
+      closeTo(13 * UiTextSize.max, 0.01),
+    );
+    await _shot(tester, 'desktop-home-largest');
+
+    final after = await _localShell(tester);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.byWidget(after))).scale(13),
+      13,
+      reason: 'a terminal takes the content size alone',
+    );
+    expect(after.terminal.viewWidth, columns);
+    expect(after.terminal.viewHeight, rows);
+    await _shot(tester, 'desktop-terminal-largest');
+    await _closeTabs(tester);
   });
 
   _test('the app boots and draws Home', (tester) async {
@@ -1224,6 +1515,99 @@ touch '${done.path}'
         reason: 'the right-click menu copied the selection without its gaps',
       );
 
+      await _closeTabs(tester);
+    },
+  );
+
+  // #131: a terminal selection holding Mermaid is shown as a diagram, where
+  // a web view draws one — the Mac — from the right-click menu, and not
+  // offered at all where none does.
+  _test(
+    'a selection holding Mermaid is shown as a diagram',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final script = File('${_scratch().path}/diagram.sh')
+        ..writeAsStringSync(
+          "printf '  \\140\\140\\140mermaid\\n  graph TD\\n    A --> B\\n"
+          "  \\140\\140\\140\\n'\n",
+        );
+      _run(view, 'sh ${script.path}');
+
+      final lines = view.terminal.buffer.lines;
+      var open = -1;
+      await _until(tester, () {
+        for (var i = 0; i + 3 < lines.length; i++) {
+          if (lines[i].getText().trim() == '```mermaid' &&
+              lines[i + 3].getText().trim() == '```') {
+            open = i;
+          }
+        }
+        return open >= 0;
+      }, 'the mermaid block to be drawn');
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col, int row) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      final mouse = await tester.startGesture(
+        cell(0, open),
+        kind: PointerDeviceKind.mouse,
+      );
+      for (final (col, row) in [(6, open + 1), (10, open + 2), (5, open + 3)]) {
+        await mouse.moveTo(cell(col, row));
+        await tester.pump();
+      }
+      await mouse.up();
+      await tester.pump(const Duration(milliseconds: 300));
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
+      );
+      await tester.tapAt(
+        cell(4, open + 1),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _until(
+        tester,
+        () => _label('Copy').evaluate().isNotEmpty,
+        'the menu to open',
+      );
+      if (!hasWebView) {
+        expect(_label('Show as diagram'), findsNothing);
+        await _escape(tester);
+      } else {
+        await _pick(tester, 'Show as diagram');
+        await _until(
+          tester,
+          () => find.byType(MermaidView).evaluate().isNotEmpty,
+          'the diagram dialog',
+        );
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          'graph TD\n  A --> B\n',
+        );
+        await _until(
+          tester,
+          () => find
+              .descendant(
+                of: find.byType(MermaidView),
+                matching: find.byIcon(Icons.account_tree_outlined),
+              )
+              .evaluate()
+              .isEmpty,
+          'the diagram to be drawn',
+          timeout: const Duration(seconds: 30),
+        );
+        await tester.tap(_label('Close'));
+        await tester.pump(const Duration(milliseconds: 600));
+      }
       await _closeTabs(tester);
     },
   );
@@ -1628,9 +2012,8 @@ touch '${done.path}'
     (tester) async {
       // A digit first, so it sorts ahead of every other folder in a home
       // with many and is drawn without a scroll.
-      final dir = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('0-jeansh-e2e-');
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
       addTearDown(() => dir.deleteSync(recursive: true));
       final name = 'made-by-the-e2e-${dir.path.hashCode}.txt';
       File('${dir.path}/$name').writeAsStringSync('hello from the e2e\n');
@@ -1654,6 +2037,190 @@ touch '${done.path}'
     },
   );
 
+  // #136: Download saves through the desktop's own save dialog, and Open
+  // opens what it saved. file_picker's save failed on every desktop: on a Mac
+  // refused for a sandbox entitlement this unsandboxed app lacks, on Linux
+  // the XDG portal or nothing. The dialog is outside Flutter, so it is
+  // answered as a person would: System Events' keys on a Mac, xdotool on
+  // Linux, SendKeys on Windows.
+  //
+  // On a Mac and Linux from a Local shell's files drawer. A Windows Local
+  // shell is PowerShell, whose drawer the tree cannot hold, so there the
+  // drawer's own downloadFile is called over the same LocalFileBrowser.
+  _test(
+    'Download saves through the save dialog, Open opens it, a cancel leaves '
+    'nothing',
+    skip: Platform.environment['CI'] != 'true'
+        ? "off CI the save dialog and the app Open starts are the user's own"
+        : null,
+    (tester) async {
+      // Linux, when tools/e2e_desktop.sh is asked for a bus with no XDG
+      // portal: none offered or running before the save or after it, the
+      // case file_picker, the portal or nothing, could not save in at all.
+      Future<void> noPortal(String when) async {
+        if (!Platform.isLinux) return;
+        if (Platform.environment['JEANSH_E2E_NO_PORTAL'] == null) return;
+        for (final method in ['ListNames', 'ListActivatableNames']) {
+          final names = await Process.run('dbus-send', [
+            '--session',
+            '--print-reply',
+            '--dest=org.freedesktop.DBus',
+            '/org/freedesktop/DBus',
+            'org.freedesktop.DBus.$method',
+          ]);
+          expect(names.exitCode, 0, reason: 'dbus-send: ${names.stderr}');
+          expect(
+            '${names.stdout}',
+            isNot(contains('portal')),
+            reason: '$method names an XDG portal $when',
+          );
+        }
+      }
+
+      await noPortal('before the save');
+      final dir = Directory(
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final name = 'download-by-the-e2e-${dir.path.hashCode}.txt';
+      const body = 'saved through the dialog\n';
+      final source = File('${dir.path}/$name')..writeAsStringSync(body);
+      // Where Linux and Windows are told to save; a Mac saves where its
+      // panel opens, read back from the transfer.
+      final out = _scratch();
+      final target = '${out.path}${Platform.pathSeparator}$name';
+
+      // Before the launch, so the desktop's own idea of who opens text is
+      // read with the stand-in already in it.
+      final opened = await _opener();
+      await _launch(tester);
+      Future<void> download() async {
+        if (Platform.isWindows) {
+          final context = tester.element(find.byTooltip('Settings'));
+          unawaited(
+            downloadFile(
+              context,
+              LocalFileBrowser(
+                process: (command) => Process.start('cmd', ['/c', command]),
+                windows: true,
+              ),
+              source.path.replaceAll(r'\', '/'),
+              host: 'Local shell',
+              onTransfer: (_) {},
+            ),
+          );
+          return;
+        }
+        final file = find.text(name);
+        if (file.evaluate().isEmpty) {
+          await _localShell(tester);
+          await tester.tap(find.byTooltip('Browse files'));
+          final folder = find.text(dir.path.split('/').last);
+          await _until(
+            tester,
+            () => folder.evaluate().isNotEmpty,
+            "the drawer to list the test's folder in the home",
+          );
+          // The drawer slides in: tapped while it does, the folder is still
+          // off the window's edge and the tap lands nowhere.
+          await tester.pump(const Duration(milliseconds: 600));
+          await tester.tap(folder);
+          await _until(
+            tester,
+            () => file.evaluate().isNotEmpty,
+            "the drawer to show the test's file in it",
+          );
+        }
+        await tester.tapAt(
+          tester.getCenter(file),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, 'Download');
+      }
+
+      // Downloads, answers the dialog by [save] or cancelling it, and hands
+      // back the transfer once it has ended.
+      Future<Transfer> run({required bool save}) async {
+        final before = transfers.items.length;
+        await download();
+        ProcessResult? answer;
+        unawaited(
+          _answerSaveDialog(save ? target : null).then((r) => answer = r),
+        );
+        Transfer? transfer() {
+          final mine = transfers.items
+              .take(transfers.items.length - before)
+              .where((t) => t.name == name);
+          return mine.isEmpty ? null : mine.first;
+        }
+
+        await _until(
+          tester,
+          () =>
+              (transfer() != null &&
+                  transfer()!.state != TransferState.running) ||
+              (answer != null && answer!.exitCode != 0),
+          'the download to end',
+          timeout: const Duration(seconds: 90),
+        );
+        // A download that failed says why first: the dialog it never showed
+        // is only the consequence.
+        final ended = transfer();
+        if (ended != null && ended.state == TransferState.failed) {
+          fail('the download failed: ${ended.error}');
+        }
+        await _until(tester, () => answer != null, 'the dialog answered');
+        expect(
+          answer!.exitCode,
+          0,
+          reason: 'the save dialog: ${answer!.stdout} ${answer!.stderr}',
+        );
+        return transfer()!;
+      }
+
+      final saved = await run(save: true);
+      expect(
+        saved.state,
+        TransferState.done,
+        reason: 'the download did not save: ${saved.error}',
+      );
+      final kept = File(Uri.parse(saved.saved!).toFilePath());
+      addTearDown(() {
+        if (kept.existsSync()) kept.deleteSync();
+      });
+      // The same file, not the same spelling: Windows' temp folder may be
+      // named by its 8.3 short name, RUNNER~1 for runneradmin.
+      if (!Platform.isMacOS) {
+        expect(FileSystemEntity.identicalSync(kept.path, target), isTrue);
+      }
+      expect(kept.readAsStringSync(), body);
+      await noPortal('after the save');
+      // Marked as from the internet, as Windows reads it, so a host's .bat
+      // or .exe is not run unwarned.
+      if (Platform.isWindows) {
+        final zone = await Process.run('powershell', [
+          '-NoProfile',
+          '-Command',
+          r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
+        ], environment: {'JEANSH_SAVED': kept.path});
+        expect(zone.stdout, contains('ZoneId=3'), reason: '${zone.stderr}');
+      }
+
+      // Open: the file handed to whatever this desktop opens text with.
+      expect(await openDownload(saved.saved!, name), isTrue);
+      await opened(kept.path);
+
+      // Cancelled: nothing saved, and the transfer says so.
+      kept.deleteSync();
+      final cancelled = await run(save: false);
+      expect(cancelled.state, TransferState.cancelled);
+      expect(kept.existsSync(), isFalse, reason: 'a cancel saved the file');
+      await tester.pump(const Duration(seconds: 2));
+      await _closeTabs(tester);
+    },
+  );
+
   // #127: chat in a Local shell runs Claude beside it as a process, found and
   // quoted as over an exec channel. Never this machine's own Claude: a
   // stand-in is put where the finder looks only where none is installed —
@@ -1666,49 +2233,99 @@ touch '${done.path}'
         ? 'this machine has a Claude Code of its own, which this would run'
         : null,
     (tester) async {
-      final home = Platform.environment['HOME']!;
-      final standIn = File('$home/.local/bin/claude');
-      final config = Directory('$home/.claude');
-      final hadConfig = config.existsSync();
-      final hadBin = standIn.parent.existsSync();
-      standIn.parent.createSync(recursive: true);
-      standIn.writeAsStringSync(_standInClaude);
-      Process.runSync('chmod', ['755', standIn.path]);
-      addTearDown(() {
-        if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
-        if (!hadBin) standIn.parent.deleteSync(recursive: true);
-        if (!hadConfig) {
-          config.deleteSync(recursive: true);
-        } else {
-          Directory(
-            '${config.path}/projects/jeansh-e2e',
-          ).deleteSync(recursive: true);
-        }
-      });
-
+      _standInClaudeFor();
       await _launch(tester);
-      await _localShell(tester);
-      await tester.tap(find.byTooltip('Chat with Claude'));
-      final input = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // Issue #133: "di chat size fontnya tidak mengikuti dari size font yang ada
+  // di settings". The content size raised with Settings' own slider, and a
+  // chat's answer and composer drawn at it.
+  _test(
+    'chat draws at the content size Settings sets',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      addTearDown(() => terminalSettings.choose(size: 13));
+      await terminalSettings.choose(size: 13);
+      await _launch(tester);
+
+      await _settings(tester);
+      final page = find
+          .descendant(
+            of: find.byType(SettingsPage),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        _label('Content text size'),
+        300,
+        scrollable: page,
       );
-      await _until(
-        tester,
-        () => input.evaluate().isNotEmpty,
-        'the chat tab to open, its version check passed',
+      await tester.scrollUntilVisible(
+        find.byType(TuiSlider).last,
+        100,
+        scrollable: page,
       );
-      await tester.enterText(input, 'hello from the e2e');
-      await tester.pump();
-      await tester.tap(find.byTooltip('Send'));
-      await _until(
-        tester,
-        () => find
-            .textContaining('Echo from the stand-in', findRichText: true)
-            .evaluate()
-            .isNotEmpty,
-        "the stand-in's answer in the chat",
-        timeout: const Duration(seconds: 40),
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(TuiSlider).last, const Offset(3000, 0));
+      await tester.pumpAndSettle();
+      expect(terminalSettings.value.fontSize, maxFontSize);
+      await _backHome(tester);
+
+      await _chatAnswered(tester);
+      await _shot(tester, 'desktop-chat-content-largest');
+      double at13(Finder finder) =>
+          MediaQuery.textScalerOf(tester.element(finder.first)).scale(13);
+      expect(at13(_answer), closeTo(maxFontSize, 0.01), reason: 'the answer');
+      expect(
+        at13(_composer),
+        closeTo(maxFontSize, 0.01),
+        reason: 'the composer',
       );
+
+      // #131: its mermaid fences are diagrams where a web view draws them,
+      // the Mac, and their source as code where none does.
+      final diagrams = find.byType(MermaidView);
+      if (!hasWebView) {
+        expect(diagrams, findsNothing);
+        expect(
+          find.textContaining('E2E1 --> Done1', findRichText: true),
+          findsWidgets,
+        );
+      } else {
+        // Drawn: the placeholder a view shows until the page says its height.
+        Finder waiting() => find.descendant(
+          of: diagrams,
+          matching: find.byIcon(Icons.account_tree_outlined),
+        );
+        expect(diagrams, findsWidgets);
+        expect(
+          find.textContaining('E2E1 --> Done1', findRichText: true),
+          findsNothing,
+          reason: 'a diagram shown as its source',
+        );
+        await _until(
+          tester,
+          () => waiting().evaluate().length < diagrams.evaluate().length,
+          'a diagram in the reply to be drawn',
+          timeout: const Duration(seconds: 60),
+        );
+        // Given the time, how many of those built came to be drawn, and none
+        // as the grey of a widget that threw.
+        await tester.pump(const Duration(seconds: 5));
+        debugPrint(
+          'Diagrams built ${diagrams.evaluate().length}, '
+          'still waiting ${waiting().evaluate().length}',
+        );
+        expect(find.byType(ErrorWidget), findsNothing);
+      }
       await _closeTabs(tester);
     },
   );

@@ -17,6 +17,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
@@ -27,11 +28,13 @@ import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'fake_drop.dart';
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
+import 'fake_web_view.dart';
 
 /// The phone's url_launcher, able to open links only the [ways] it is given,
 /// and failing the rest the way Android does: by throwing.
@@ -1086,6 +1089,110 @@ void main() {
         expect(find.text('Paste'), findsNothing);
         expect(find.text('Copy link address'), findsNothing);
       }, variant: _android);
+    });
+
+    group('Show as diagram', () {
+      late List<Object?> copied;
+
+      /// The page with a mermaid block below the link line, drawn indented
+      /// as Claude Code draws a code block, on rows 1 to 3.
+      Future<void> pumpDiagram(WidgetTester tester) async {
+        WebViewPlatform.instance = FakeWebViewPlatform();
+        copied = [];
+        final platform = tester.binding.defaultBinaryMessenger;
+        platform.setMockMethodCallHandler(SystemChannels.platform, (
+          call,
+        ) async {
+          if (call.method == 'Clipboard.setData') copied.add(call.arguments);
+          return null;
+        });
+        addTearDown(
+          () =>
+              platform.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        await pumpPage(tester);
+        tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            // The gap a cursor move, as Claude Code draws one.
+            .write('\r\n  graph TD\r\n    A\x1b[1C-->\x1b[1CB\r\n');
+        await tester.pump();
+      }
+
+      void selectDiagram(WidgetTester tester) {
+        final buffer = tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .buffer;
+        links(
+          tester,
+        ).setSelection(buffer.createAnchor(0, 1), buffer.createAnchor(12, 2));
+      }
+
+      testWidgets('a long press over Mermaid offers it, and it draws the '
+          'diagram with its source to copy', (tester) async {
+        await pumpDiagram(tester);
+        final hold = await tester.startGesture(cellAt(tester, 4, 1));
+        await tester.pump(kLongPressTimeout);
+        await hold.up();
+        await tester.pump();
+        selectDiagram(tester);
+        await tester.pump();
+
+        await tester.tap(find.text('Show as diagram'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          'graph TD\n  A --> B\n',
+        );
+        await tester.tap(find.text('COPY SOURCE'));
+        await tester.pumpAndSettle();
+        expect(copied, [
+          {'text': 'graph TD\n  A --> B\n'},
+        ]);
+      }, variant: _android);
+
+      testWidgets('a long press over anything else does not', (tester) async {
+        await pumpDiagram(tester);
+        final hold = await tester.startGesture(cellAt(tester, 18));
+        await tester.pump(kLongPressTimeout);
+        await hold.up();
+        await tester.pump();
+
+        expect(find.text('Copy'), findsOneWidget);
+        expect(find.text('Show as diagram'), findsNothing);
+      }, variant: _android);
+
+      testWidgets('a right-click on a Mac offers it beside Copy', (
+        tester,
+      ) async {
+        await pumpDiagram(tester);
+        selectDiagram(tester);
+        await tester.tapAt(
+          cellAt(tester, 4, 1),
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Show as diagram'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MermaidView), findsOneWidget);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+      testWidgets('where no web view draws one, it is not offered', (
+        tester,
+      ) async {
+        await pumpDiagram(tester);
+        selectDiagram(tester);
+        await tester.tapAt(
+          cellAt(tester, 4, 1),
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Copy'), findsOneWidget);
+        expect(find.text('Show as diagram'), findsNothing);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
     });
   });
 
