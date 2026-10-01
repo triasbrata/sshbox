@@ -77,7 +77,14 @@ case "$target" in
         /usr/share/dbus-1/session.conf > "$config"
       bus=(--config-file="$config")
     fi
-    exec xvfb-run -a --server-args="-screen 0 1280x900x24" \
+    # Not exec when a no-portal bus was made, so its files go with the run.
+    if [ -n "${JEANSH_E2E_NO_PORTAL:-}" ]; then
+      trap 'rm -rf "$services" "$config"' EXIT
+      run=
+    else
+      run=exec
+    fi
+    $run xvfb-run -a --server-args="-screen 0 1280x900x24" \
       dbus-run-session "${bus[@]}" -- sh -c '
         unset WAYLAND_DISPLAY && export GDK_BACKEND=x11
         XDG_DATA_HOME=$(mktemp -d) && export XDG_DATA_HOME

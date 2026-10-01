@@ -152,8 +152,6 @@ Future<String?> _saveAs(
     if (_desktop) {
       // The dialog only names a path; the copy is the OS's, file to file, so
       // no download is ever held in memory.
-      // ponytail: a copy that fails halfway leaves what it wrote there, since
-      // the path may hold the user's own file the copy never reached.
       final location = await FileSelectorPlatform.instance.getSaveLocation(
         options: SaveDialogOptions(suggestedName: name),
       );
@@ -165,7 +163,7 @@ Future<String?> _saveAs(
           !await replace(location.path)) {
         return null;
       }
-      await File(copy).copy(location.path);
+      await _saveInPlace(copy, location.path);
       return Uri.file(location.path).toString();
     }
     // ponytail: iOS still hands file_picker the whole file as bytes.
@@ -176,6 +174,48 @@ Future<String?> _saveAs(
     return saved?.toString();
   } finally {
     _saving = false;
+  }
+}
+
+/// Copies a file, as [_saveInPlace] does: swapped out by a test for a copy
+/// that fails halfway.
+@visibleForTesting
+Future<void> Function(String from, String to) copyDownload = (from, to) =>
+    File(from).copy(to);
+
+/// Puts [copy] at [target] whole or not at all. A copy straight onto
+/// [target] removes a file already there before it writes, so one failing
+/// halfway would leave a part and no original; the copy goes into a folder
+/// of its own beside [target] instead, on the same disk, and is renamed over
+/// it only once complete. On Windows the file is then marked as from the
+/// internet, as a browser marks a download, so Windows warns before running
+/// what a host sent.
+Future<void> _saveInPlace(String copy, String target) async {
+  final part = Directory(File(target).parent.path).createTempSync(
+    '.jeansh-part-',
+  );
+  try {
+    final staged = '${part.path}${Platform.pathSeparator}file';
+    await copyDownload(copy, staged);
+    await File(staged).rename(target);
+  } finally {
+    try {
+      part.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Left behind rather than failing a save that went in.
+    }
+  }
+  if (Platform.isWindows) {
+    try {
+      // Zone 3, the internet, and nothing else: no referrer, so the host's
+      // name does not travel with the file.
+      File(
+        '$target:Zone.Identifier',
+      ).writeAsStringSync('[ZoneTransfer]\r\nZoneId=3\r\n');
+    } on FileSystemException {
+      // A drive with no streams, FAT among them: openDownload will not
+      // launch this file, only show it.
+    }
   }
 }
 
@@ -194,7 +234,18 @@ Future<void> copyImageToClipboard(String path, String name) =>
 Future<bool> openDownload(String saved, String name) async {
   if (_desktop) {
     try {
-      return await launchUrl(Uri.parse(saved));
+      final uri = Uri.parse(saved);
+      // A file Windows could not mark as from the internet would run
+      // unwarned, a host's .bat or .exe among them: shown in its folder
+      // instead.
+      if (Platform.isWindows) {
+        final path = uri.toFilePath(windows: true);
+        if (!File('$path:Zone.Identifier').existsSync()) {
+          await Process.run('explorer', ['/select,$path']);
+          return true;
+        }
+      }
+      return await launchUrl(uri);
     } on PlatformException {
       return false;
     }

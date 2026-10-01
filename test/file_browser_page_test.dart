@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, File;
+import 'dart:io' show Directory, File, FileSystemException;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
@@ -9,7 +9,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart';
+import 'package:sshbox/src/files/transfers.dart' show transfers;
 import 'package:sshbox/src/ui/file_browser_page.dart';
+import 'package:sshbox/src/ui/file_download.dart' show copyDownload;
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart' show showDotfiles;
 import 'package:sshbox/src/ui/terminal_link.dart';
@@ -886,17 +888,29 @@ void main() {
       TargetPlatform.windows,
     });
 
+    // The copy is real file IO, which fake time never finishes: real time
+    // until the transfer ends, or, unless [past] a Replace? already
+    // answered, a dialog it waits on is up.
+    Future<void> settle(WidgetTester tester, {bool past = false}) async {
+      for (var i = 0; i < 30 && transfers.anyRunning; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+        if (!past && find.bySemanticsLabel('Replace').evaluate().isNotEmpty) {
+          break;
+        }
+      }
+      // Not settled: that would outlast the toast.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
     Future<void> download(WidgetTester tester) async {
       await tester.longPress(_row('notes.txt'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Download'));
-      // The copy is real file IO, which fake time never finishes.
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 200)),
-      );
-      // Not settled: that would outlast the toast.
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await settle(tester);
     }
 
     testWidgets('saves where the dialog says, byte for byte', (tester) async {
@@ -931,6 +945,40 @@ void main() {
       expect(find.byType(TuiToastCard), findsNothing);
     }, variant: desktops);
 
+    testWidgets('a copy failing halfway leaves the file already there', (
+      tester,
+    ) async {
+      final dir = Directory.systemTemp.createTempSync('save');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final there = File('${dir.path}/kept.txt')..writeAsStringSync('mine\n');
+      useFakeSaveDialog(there.path);
+      final real = copyDownload;
+      copyDownload = (from, to) async {
+        File(to).writeAsStringSync('first li');
+        throw const FileSystemException('No space left on device');
+      };
+      addTearDown(() => copyDownload = real);
+      await _pumpBrowser(tester, FakeFileBrowser());
+
+      // Past Linux's own Replace?, which macOS's and Windows' dialogs ask.
+      await download(tester);
+      await tester.pump(const Duration(milliseconds: 600));
+      if (find.bySemanticsLabel('Replace').evaluate().isNotEmpty) {
+        await tester.tap(find.bySemanticsLabel('Replace'));
+        await settle(tester, past: true);
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      expect(there.readAsStringSync(), 'mine\n');
+      expect(
+        dir.listSync().map((e) => e.path.split('/').last),
+        ['kept.txt'],
+        reason: 'a part of the copy was left behind',
+      );
+      expect(find.textContaining('Could not save notes.txt'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    }, variant: desktops);
+
     testWidgets('asks on Linux before a file already there is replaced', (
       tester,
     ) async {
@@ -944,15 +992,14 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
       expect(find.text('Replace kept.txt?'), findsOneWidget);
       await tester.tap(find.bySemanticsLabel('Cancel'));
-      await tester.pump(const Duration(milliseconds: 600));
+      // The cancelled save ends in real time too, or the next one waits on it.
+      await settle(tester, past: true);
       expect(there.readAsStringSync(), 'mine\n');
 
       await download(tester);
       await tester.pump(const Duration(milliseconds: 600));
       await tester.tap(find.bySemanticsLabel('Replace'));
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 200)),
-      );
+      await settle(tester, past: true);
       await tester.pump(const Duration(milliseconds: 600));
       expect(there.readAsStringSync(), 'first line\nsecond line\n');
       await tester.pump(const Duration(seconds: 5));

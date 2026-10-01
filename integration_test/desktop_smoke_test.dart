@@ -1688,6 +1688,16 @@ touch '${done.path}'
       }
       expect(kept.readAsStringSync(), body);
       await noPortal('after the save');
+      // Marked as from the internet, as Windows reads it, so a host's .bat
+      // or .exe is not run unwarned.
+      if (Platform.isWindows) {
+        final zone = await Process.run('powershell', [
+          '-NoProfile',
+          '-Command',
+          r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
+        ], environment: {'JEANSH_SAVED': kept.path});
+        expect(zone.stdout, contains('ZoneId=3'), reason: '${zone.stderr}');
+      }
 
       // Open: the file handed to whatever this desktop opens text with.
       expect(await openDownload(saved.saved!, name), isTrue);
