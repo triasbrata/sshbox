@@ -37,6 +37,7 @@ import 'package:sshbox/src/update/updater.dart'
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
+import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
 import 'package:xterm2/xterm.dart';
 
@@ -214,10 +215,8 @@ Future<void> _settings(WidgetTester tester) async {
   // was not on screen yet 600 ms after the tap.
   await _until(
     tester,
-    () => find
-        .text('LOOK · TERMINAL · KEYBOARD · PRIVACY')
-        .evaluate()
-        .isNotEmpty,
+    () =>
+        find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY').evaluate().isNotEmpty,
     'Settings to open',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -422,6 +421,43 @@ Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
     await tester.pump(const Duration(milliseconds: 500));
   } finally {
     process.kill();
+  }
+}
+
+/// Opens the Git panel from a Local shell and picks [repo] in it.
+///
+/// On a runner the home holds this repository alone and it is picked
+/// already; on a machine with others it is picked from the list.
+Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
+  await tester.tap(find.byTooltip('Git'));
+  final name = repo.path.split('/').last;
+  bool ours(String? root) => root != null && root.endsWith('/$name');
+  // Material's DropdownButton on main, the redesign's TuiDropdown: both
+  // hold a value, an onChanged and choices that each have a value.
+  final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
+  dynamic shown() => tester.widget(picker.first);
+  Iterable<String?> choices() => [
+    for (final dynamic item
+        in shown() is DropdownButton
+            ? shown().items as List
+            : shown().options as List)
+      item.value as String?,
+  ];
+  await _until(
+    tester,
+    () => picker.evaluate().isNotEmpty && choices().any(ours),
+    "the Git panel to find this test's repository",
+  );
+  if (!ours(shown().value as String?)) {
+    // Picked through the picker's own onChanged, which is what choosing it
+    // from the list calls: a long list in a small menu is its own fight.
+    final root = choices().firstWhere(ours);
+    shown().onChanged!(root);
+    await _until(
+      tester,
+      () => ours(shown().value as String?),
+      "this test's repository to be picked",
+    );
   }
 }
 
@@ -1291,40 +1327,7 @@ touch '${done.path}'
 
       await _launch(tester);
       await _localShell(tester);
-      await tester.tap(find.byTooltip('Git'));
-
-      // On a runner the home holds this repository alone and it is picked
-      // already; on a machine with others it is picked from the list.
-      final name = repo.path.split('/').last;
-      bool ours(String? root) => root != null && root.endsWith('/$name');
-      // Material's DropdownButton on main, the redesign's TuiDropdown: both
-      // hold a value, an onChanged and choices that each have a value.
-      final picker = _kind('DropdownButton<String>', 'TuiDropdown<String>');
-      dynamic shown() => tester.widget(picker.first);
-      Iterable<String?> choices() => [
-        for (final dynamic item
-            in shown() is DropdownButton
-                ? shown().items as List
-                : shown().options as List)
-          item.value as String?,
-      ];
-      await _until(
-        tester,
-        () => picker.evaluate().isNotEmpty && choices().any(ours),
-        "the Git panel to find this test's repository",
-      );
-      if (!ours(shown().value as String?)) {
-        // Picked through the picker's own onChanged, which is what choosing
-        // it from the list calls: this test is of the diff, and a long list
-        // in a small menu is its own fight.
-        final root = choices().firstWhere(ours);
-        shown().onChanged!(root);
-        await _until(
-          tester,
-          () => ours(shown().value as String?),
-          "this test's repository to be picked",
-        );
-      }
+      await _gitPanelOn(tester, repo);
       await _until(
         tester,
         () => find.textContaining('e2e.txt').evaluate().isNotEmpty,
@@ -1373,6 +1376,79 @@ touch '${done.path}'
           reason: 'the old line is not above the new',
         );
       }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #128: the Git panel switches branch, from the branch in its header,
+  // after a dialog naming both, and the header follows — the files on disk
+  // with it.
+  _test(
+    'the Git panel switches branch from its header, and the header follows',
+    skip: Platform.isWindows
+        ? 'the repository is made under HOME for a POSIX login shell to find; '
+              'a Windows Local shell is PowerShell, with no HOME'
+        : null,
+    (tester) async {
+      final repo = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-repo-');
+      addTearDown(() => repo.deleteSync(recursive: true));
+      Future<String> git(List<String> args) async {
+        final done = await Process.run('git', ['-C', repo.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+        return '${done.stdout}'.trim();
+      }
+
+      await git(['init', '-q']);
+      await git([
+        '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+        'commit', '-q', '--allow-empty', '-m', 'e2e',
+      ]);
+      await git(['branch', 'e2e-other']);
+      final first = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+
+      await _launch(tester);
+      await _localShell(tester);
+      await _gitPanelOn(tester, repo);
+      await _until(
+        tester,
+        () => find.byTooltip('Switch branch').evaluate().isNotEmpty,
+        'the branch in the header',
+      );
+      expect(find.text(first), findsWidgets);
+      // Every toast gone first: toasts sit over every menu, and the header's
+      // opens at the top of the window, where they are.
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
+      );
+      await tester.tap(find.byTooltip('Switch branch'));
+      // Waited out, as every menu here is: a tap while it slides in is lost.
+      await _pick(tester, 'Switch to e2e-other');
+      await _until(
+        tester,
+        () =>
+            find.text('Switch from $first to e2e-other?').evaluate().isNotEmpty,
+        'the dialog naming both branches',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TuiDialog),
+          matching: find.bySemanticsLabel('Switch'),
+        ),
+      );
+      await _until(
+        tester,
+        () => find.text('e2e-other').evaluate().isNotEmpty,
+        'the header to name the branch switched to',
+      );
+      expect(
+        await git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        'e2e-other',
+        reason: 'the header changed but the checkout did not',
+      );
       await _closeTabs(tester);
     },
   );

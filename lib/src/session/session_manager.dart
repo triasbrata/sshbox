@@ -976,6 +976,65 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
+  /// Sends the shell to a directory — the one way anything does, so every
+  /// `cd` is checked here: the files drawer's Open in terminal and Follow,
+  /// and the git panel's Open in terminal. Returns why it did not, or null.
+  ///
+  /// The newline is what makes it run something. With a program in the
+  /// foreground, that something is the program's input — `cd` sent to Claude
+  /// Code is a message to it — so the host is asked first, and anything short
+  /// of "the shell is at its prompt" types nothing. A shell already there
+  /// types nothing either: opening a folder and shutting it again is two taps
+  /// on one place.
+  ///
+  /// In a tab set to use tmux, tmux answers for the focused pane, and the
+  /// `cd` goes there.
+  ///
+  /// ponytail: inside a tmux started by hand the probe sees tmux, not the
+  /// pane's shell, so every `cd` is refused as "tmux is running".
+  Future<String?> changeDirectory(String path) async {
+    if (hasControl(path)) return controlRefusal;
+    var slow = false;
+    final now = await foreground().timeout(
+      const Duration(milliseconds: 1500),
+      onTimeout: () {
+        slow = true;
+        return null;
+      },
+    );
+    if (now == null) {
+      return slow
+          ? 'No answer from the host in time — not moving the shell'
+          : 'The host cannot say what the shell is running — not moving it';
+    }
+    if (!now.shellInForeground) {
+      return '${now.program} is running — not moving the shell';
+    }
+    if (now.cwd != path) sendRaw('cd ${shellQuote(path)}\n');
+    return null;
+  }
+
+  /// Whether [path] holds a C0 control, DEL or a C1 control. A path typed
+  /// into a shell arrives as keystrokes, and readline and zle act on those
+  /// even inside single quotes: in a folder named `/x^Utouch pwned #`, ^U
+  /// wipes `cd '/x` and the Enter runs `touch pwned`. Such names come from
+  /// the host — a listing, `git worktree list` — so a cloned repository or
+  /// a tarball can hold one, and nothing with one in it is ever typed.
+  static bool hasControl(String path) =>
+      RegExp('[\u0000-\u001f\u007f-\u009f]').hasMatch(path);
+
+  /// What is said when [hasControl] keeps a path from the shell.
+  static const controlRefusal =
+      "That folder's name holds a control character — not typing it into "
+      'the shell';
+
+  /// Wraps a path so the shell sees exactly these characters: bare when
+  /// nothing in it is special, so what lands at the prompt reads as typed.
+  static String shellQuote(String path) =>
+      RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path)
+      ? path
+      : "'${path.replaceAll("'", r"'\''")}'";
+
   /// Whether this session's transport can move files at all.
   bool get canUploadFiles => _session is FileUploadCapable;
 
