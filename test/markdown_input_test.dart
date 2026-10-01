@@ -163,4 +163,21 @@ void main() {
     final spans = await _spans(tester, c);
     expect(spans.every((s) => s.$2?.fontWeight != FontWeight.bold), isTrue);
   });
+
+  test('a long line of openers with no closers is drawn plain, and fast', () {
+    // Each opener's lazy scan ran to the line's end: seconds a keystroke.
+    for (final opener in ['**a ', '*a ', '_a ', '~~a ', '[a ']) {
+      final line = opener * (19 * 1024 ~/ opener.length);
+      final watch = Stopwatch()..start();
+      final runs = markdownRuns('**ok** $line', _controller());
+      watch.stop();
+      expect(runs, hasLength(1), reason: opener);
+      expect(runs.single.$3, isNull, reason: opener);
+      // Generous for CI: it was 1.2–2.4 s, and is now a few milliseconds.
+      expect(watch.elapsedMilliseconds, lessThan(200), reason: opener);
+    }
+    // Short lines beside it are still styled.
+    final runs = markdownRuns('**ok**\n${'*a ' * 1000}', _controller());
+    expect(runs.any((r) => r.$3?.fontWeight == FontWeight.bold), isTrue);
+  });
 }

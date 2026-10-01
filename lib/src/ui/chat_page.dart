@@ -230,6 +230,22 @@ class _ChatPageState extends State<ChatPage> {
       return false;
     }
     if (ModalRoute.of(context)?.isCurrent == false) return false;
+    // A drawer open over the chat, its own sessions or a page's around it,
+    // is no route but is where the user is.
+    for (final scaffold in [
+      _scaffoldKey.currentState,
+      Scaffold.maybeOf(context),
+    ]) {
+      if (scaffold != null &&
+          (scaffold.isDrawerOpen || scaffold.isEndDrawerOpen)) {
+        return false;
+      }
+    }
+    // Space on a focused button or row has already pressed it.
+    final primary = FocusManager.instance.primaryFocus;
+    if (character == ' ' && primary != null && primary is! FocusScopeNode) {
+      return false;
+    }
     final focused = FocusManager.instance.primaryFocus?.context;
     if (focused != null &&
         (focused.widget is EditableText ||

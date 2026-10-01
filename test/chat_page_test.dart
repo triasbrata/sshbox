@@ -1907,6 +1907,34 @@ void main() {
         expect(box.controller!.text, isEmpty);
       });
 
+      testWidgets('leaves Space to a focused button, which it presses', (
+        tester,
+      ) async {
+        final box = await pumpChat(tester);
+        Focus.of(
+          tester.element(find.byIcon(Icons.view_sidebar_outlined)),
+        ).requestFocus();
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
+      testWidgets('leaves its keys to an open drawer', (tester) async {
+        final box = await pumpChat(tester);
+        await tester.tap(find.byTooltip('Sessions on this host'));
+        await tester.pumpAndSettle();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+        await tester.pump();
+
+        expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+      });
+
       testWidgets('leaves another text field its keys', (tester) async {
         final box = await pumpChat(tester);
         final other = FocusNode();

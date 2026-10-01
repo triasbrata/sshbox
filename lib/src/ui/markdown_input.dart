@@ -81,6 +81,10 @@ class MarkdownEditingController extends TextEditingController {
   }
 }
 
+/// Past this many characters a line outside a fence is drawn plain: see
+/// [_line].
+const plainLinePast = 1024;
+
 final _fence = RegExp(r'^ {0,3}(`{3,}|~{3,})');
 final _heading = RegExp(r'^ {0,3}(#{1,6})( +|$)');
 final _quote = RegExp(r'^ {0,3}(>+ ?)');
@@ -149,6 +153,13 @@ void _line(
   TextStyle code,
   void Function(int, int, TextStyle?) add,
 ) {
+  // An opener with no closer scans to the line's end, at every opener, on
+  // every keystroke: on a long line, a pasted log's, that is seconds. Nobody
+  // reads a line this long as Markdown being typed.
+  if (line.length > plainLinePast) {
+    add(at, at + line.length, null);
+    return;
+  }
   TextStyle? base;
   var from = 0;
   if (_heading.firstMatch(line) case final m?) {
