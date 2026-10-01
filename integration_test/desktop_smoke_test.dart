@@ -1342,6 +1342,9 @@ touch '${done.path}'
         () => folder.evaluate().isNotEmpty,
         "the drawer to list the test's folder in the home",
       );
+      // The drawer slides in: tapped while it does, the folder is still off
+      // the window's edge and the tap lands nowhere.
+      await tester.pump(const Duration(milliseconds: 600));
       await tester.tap(folder);
       final file = find.text(name);
       await _until(
