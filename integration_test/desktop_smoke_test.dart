@@ -81,12 +81,11 @@ void _standInClaudeFor() {
   addTearDown(() {
     if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
     if (!hadBin) standIn.parent.deleteSync(recursive: true);
-    if (!hadConfig) {
-      config.deleteSync(recursive: true);
-    } else {
-      Directory('${config.path}/projects/jeansh-e2e')
-          .deleteSync(recursive: true);
-    }
+    // A chat that never started a session wrote nothing there.
+    final ours = hadConfig
+        ? Directory('${config.path}/projects/jeansh-e2e')
+        : config;
+    if (ours.existsSync()) ours.deleteSync(recursive: true);
   });
 }
 

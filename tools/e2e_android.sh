@@ -416,11 +416,30 @@ PICS_SIDS=(e2e00007-0000-4000-8000-000000000007 e2e00008-0000-4000-8000-00000000
   e2e00009-0000-4000-8000-000000000009)
 pics_pids=()
 
+# How many picture cards the screen shows, read off Android's own view tree.
+pics_cards() {
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'View [^"]*' | wc -l | tr -d ' '
+}
+
 # A Ctrl+V on the emulator, into whatever has focus: the chat's box, which
-# takes a picture on that chord.
+# takes a picture on that chord. Said, with what the app's clipboard reader
+# logged, whether it made one more card; with none, a chord held longer.
 pics_paste() {
-  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_V
-  sleep 2
+  local before after
+  before=$(pics_cards)
+  adb logcat -c 2>/dev/null
+  for hold in '' '-t 300'; do
+    # shellcheck disable=SC2086
+    adb shell input keycombination $hold KEYCODE_CTRL_LEFT KEYCODE_V
+    sleep 3
+    after=$(pics_cards)
+    echo "Ctrl+V${hold:+ held ($hold)}: cards $before -> $after"
+    adb logcat -d -s JeanshPaste 2>/dev/null | tail -5
+    [ "$after" -gt "$before" ] && return 0
+  done
+  echo "::warning::Ctrl+V made no card"
+  return 1
 }
 
 # chat_images' sections, one by one: pics STEP [-e ...].
@@ -502,7 +521,7 @@ except (OSError, ValueError):
     rows = []
 rows = [r for r in rows if r.get('sessionId') not in (own, live, inpane)]
 rows += [
-    {'id': 'e2e00007', 'sessionId': own, 'name': 'E2E pictures', 'cwd': home,
+    {'id': 'e2e00007', 'sessionId': own, 'name': 'E2E pictures own', 'cwd': home,
      'kind': 'background', 'state': 'done', 'startedAt': 1790000000200},
     {'id': 'e2e00008', 'sessionId': live, 'pid': bg, 'name': 'E2E pictures live',
      'cwd': home, 'kind': 'background', 'state': 'done', 'status': 'idle',
@@ -555,9 +574,9 @@ PY
 chat_images() {
   local status=0 log=/home/$SSH_USER/.e2e-pics.log session started pid
   pics_host || return 1
-  # Steps 1, 5 and 4, in this chat's own claude -p.
-  { pics open -e "SESSION=E2E pictures" && pics_paste && pics own &&
-    pics_paste && pics remove && pics_paste && pics send; } || status=1
+  # Steps 1, 5 and 4, in this chat's own claude -p; the second paste by touch.
+  { pics open -e "SESSION=E2E pictures own" && pics_paste && pics own &&
+    pics remove && pics_paste && pics send; } || status=1
   echo "what the stand-in's claude -p was sent:"
   sudo grep '"ev": "message"' "$log" ||
     { echo "::error::step 1: no message reached claude -p"; status=1; }

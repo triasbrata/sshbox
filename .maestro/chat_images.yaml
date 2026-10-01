@@ -92,12 +92,15 @@ env:
       - assertNotVisible: "View .*"
       - eraseText: 20
 
-# remove: after a second Ctrl+V. Step 4, the card's own button takes its
-# token out of the box.
+# remove: the picture pasted by touch this time, a long press on the empty
+# box and its menu's Paste, as a phone with no keyboard pastes. Step 4, the
+# card's own button takes its token out of the box.
 - runFlow:
     when:
       true: ${STEP == 'remove'}
     commands:
+      - longPressOn: "Ask Claude…"
+      - tapOn: "Paste"
       - extendedWaitUntil:
           visible: "(?s)\\[Image #1\\] .*\\.png"
           timeout: 10000
