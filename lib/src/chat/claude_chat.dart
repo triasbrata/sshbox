@@ -1094,10 +1094,17 @@ class ClaudeChat extends ChangeNotifier {
       }
       // A moment for the rest of the screen to settle under the prompt.
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      var pasted = 0;
+      // Counted from what the line already shows, and with every
+      // `[Image #N]` typed as text: a picture goes on once there is one more
+      // than those, never at a count text of the user's own could make.
+      var chips = chipsIn(_screenLines(shown));
       for (final part in segments(said.text, paths)) {
         terminal.write(Uint8List.fromList(utf8.encode(part.keys)));
-        if (part.picture) await _chipShown(shown, ++pasted);
+        if (part.picture) {
+          await _chipShown(shown, ++chips);
+        } else {
+          chips += pictureToken.allMatches(part.keys).length;
+        }
       }
       await Future<void>.delayed(const Duration(milliseconds: 500));
       terminal.write(Uint8List.fromList(const [13]));
@@ -1158,7 +1165,13 @@ class ClaudeChat extends ChangeNotifier {
     if (paths == null) return;
     final parts = [
       for (final part in segments(said.text, paths))
-        (keys: utf8.encode(part.keys), picture: part.picture),
+        (
+          keys: utf8.encode(part.keys),
+          picture: part.picture,
+          tokens: part.picture
+              ? 0
+              : pictureToken.allMatches(part.keys).length,
+        ),
     ];
     final keys = Uint8List.fromList([for (final part in parts) ...part.keys]);
     final String answer;
@@ -1169,7 +1182,11 @@ class ClaudeChat extends ChangeNotifier {
           pid: now.pid!,
           parts: [
             for (final part in parts)
-              (length: part.keys.length, picture: part.picture),
+              (
+                length: part.keys.length,
+                picture: part.picture,
+                tokens: part.tokens,
+              ),
           ],
           chipWait: chipTimeout,
         ),
@@ -1305,15 +1322,16 @@ class ClaudeChat extends ChangeNotifier {
   /// hold [count] pictures in its input line.
   Future<void> _chipShown(Terminal shown, int count) async {
     final deadline = DateTime.now().add(chipTimeout);
-    while (chipsIn([
-          for (var line = 0; line < shown.buffer.height; line++)
-            shown.buffer.lines[line].getText(),
-        ]) <
-        count) {
+    while (chipsIn(_screenLines(shown)) < count) {
       if (DateTime.now().isAfter(deadline)) return;
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
+
+  static List<String> _screenLines(Terminal shown) => [
+    for (var line = 0; line < shown.buffer.height; line++)
+      shown.buffer.lines[line].getText(),
+  ];
 
   /// How many `[Image #N]` chips Claude Code's input line holds, in a screen
   /// of [lines]: from the last line that starts with its `❯`, the line
@@ -2195,29 +2213,37 @@ class ClaudeChat extends ChangeNotifier {
     String sessionId, {
     required int pid,
     int typing = 0,
-    List<({int length, bool picture})> parts = const [],
+    List<({int length, bool picture, int tokens})> parts = const [],
     Duration chipWait = const Duration(seconds: 15),
   }) {
-    if (parts.isEmpty && typing > 0) parts = [(length: typing, picture: false)];
+    if (parts.isEmpty && typing > 0) {
+      parts = [(length: typing, picture: false, tokens: 0)];
+    }
+    // As [_deliver] counts: from the chips the line held before, and the
+    // `[Image #N]` typed as text — each part's [tokens] — on the way.
     var chips = 0;
-    final pieces = [
-      for (final part in parts)
+    final pieces = StringBuffer();
+    for (final part in parts) {
+      pieces.write(
         'dd bs=1 count=${part.length} 2>/dev/null | '
-            r'"$t" load-buffer -b "$b" - && '
-            r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
-            r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
-            'no paste; }; '
-            '${part.picture ? 'chip ${++chips}; ' : ''}',
-    ].join();
+        r'"$t" load-buffer -b "$b" - && '
+        r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+        r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
+        'no paste; }; ',
+      );
+      chips += part.tokens;
+      if (part.picture) pieces.write('chip ${++chips}; ');
+    }
     // The chips in the input line: on the screen from its last line that
     // starts with ❯, as [chipsIn] counts them.
     final chip =
-        r'chip() { i=0; while [ "$("$t" -u capture-pane -p -t "$w" '
-        r'</dev/null 2>/dev/null | awk '
-        r"""'/^❯/ { n = 0 } { n += gsub(/\[Image #[0-9]+\]/, "") } """
-        r"""END { print n + 0 }')" -lt "$1" ] && """
+        r'chips() { "$t" -u capture-pane -p -t "$w" </dev/null 2>/dev/null | '
+        r"""awk '/^❯/ { n = 0 } { n += gsub(/\[Image #[0-9]+\]/, "") } """
+        r"""END { print n + 0 }'; }; """
+        r'chip() { i=0; while [ "$(chips)" -lt $((c0 + $1)) ] && '
         '[ \$i -lt ${(chipWait.inMilliseconds / 200).ceil()} ]; '
-        r'do sleep 0.2; i=$((i + 1)); done; }; ';
+        r'do sleep 0.2; i=$((i + 1)); done; }; '
+        r'c0=$(chips); ';
     final type = parts.isEmpty
         ? r'echo "sshbox:pane $w"'
         : r'j="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$p.json"; '

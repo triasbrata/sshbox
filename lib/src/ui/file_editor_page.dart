@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -1453,19 +1454,27 @@ class _PictureViewState extends State<PictureView> {
   int? _width;
   int? _height;
 
+  /// Set when its size could not be read: no picture to draw.
+  bool _unreadable = false;
+
   @override
   void initState() {
     super.initState();
     _width = widget.width;
     _height = widget.height;
     if (_width == null) {
-      pictureSize(widget.image).then((size) {
-        if (!mounted) return;
-        setState(() {
-          _width = size.width.round();
-          _height = size.height.round();
-        });
-      }, onError: (Object _) {});
+      pictureSize(widget.image).then(
+        (size) {
+          if (!mounted) return;
+          setState(() {
+            _width = size.width.round();
+            _height = size.height.round();
+          });
+        },
+        onError: (Object _) {
+          if (mounted) setState(() => _unreadable = true);
+        },
+      );
     }
   }
 
@@ -1507,6 +1516,34 @@ class _PictureViewState extends State<PictureView> {
 
   @override
   Widget build(BuildContext context) {
+    final width = _width;
+    final height = _height;
+    if (width == null || height == null) {
+      return Center(
+        child: _unreadable
+            ? const Icon(Icons.broken_image_outlined, size: 40)
+            : const TuiSpinner(),
+      );
+    }
+    // Its size is what it says of itself, and a picture of a few KB can say
+    // 30000 × 30000, which decoded is gigabytes: past the cap it is not
+    // drawn at all.
+    if (width * height > pictureMaxPixels) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'This picture is too large to show: $width × $height pixels, '
+            'where ${pictureMaxPixels ~/ 1000000} million is the most.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    // Decoded at no more than twice the screen each way, whatever it is.
+    final screen = MediaQuery.sizeOf(context) *
+        MediaQuery.devicePixelRatioOf(context);
+    final most = (math.max(screen.width, screen.height) * 2).ceil();
     // A mid grey behind it: what a transparent PNG leaves showing is as often
     // white as black, and this is the one ground neither disappears into,
     // light theme or dark.
@@ -1520,7 +1557,13 @@ class _PictureViewState extends State<PictureView> {
             transformationController: _view,
             maxScale: 8,
             child: Image(
-              image: widget.image,
+              image: ResizeImage(
+                widget.image,
+                width: most,
+                height: most,
+                policy: ResizeImagePolicy.fit,
+                allowUpscaling: false,
+              ),
               fit: BoxFit.contain,
               // A copy that went away under us, or a file that was never a
               // picture after all.
@@ -1557,28 +1600,34 @@ Future<void> showPicture(
   ),
 );
 
-/// The size [provider] decodes to, in pixels.
-Future<Size> pictureSize(ImageProvider provider) {
-  final done = Completer<Size>();
-  final stream = provider.resolve(ImageConfiguration.empty);
-  late final ImageStreamListener listener;
-  listener = ImageStreamListener(
-    (info, _) {
-      stream.removeListener(listener);
-      final size = Size(
-        info.image.width.toDouble(),
-        info.image.height.toDouble(),
-      );
-      info.dispose();
-      if (!done.isCompleted) done.complete(size);
-    },
-    onError: (error, _) {
-      stream.removeListener(listener);
-      if (!done.isCompleted) done.completeError(error);
-    },
-  );
-  stream.addListener(listener);
-  return done.future;
+/// The most pixels [PictureView] will draw a picture of.
+///
+/// ponytail: 50 million — a 50 MP camera's photo fits, and it is drawn at
+/// no more than twice the screen anyway; past it the file's own claim of its
+/// size is what would be decoded, which a tiny file can make gigabytes.
+const pictureMaxPixels = 50 * 1000 * 1000;
+
+/// The size [provider] says it is, in pixels, read from its header without
+/// decoding it: a picture may claim a size that would not fit in memory.
+/// Throws when it is no picture this app can read.
+Future<Size> pictureSize(ImageProvider provider) async {
+  final Uint8List bytes = switch (provider) {
+    FileImage(:final file) => await file.readAsBytes(),
+    MemoryImage(:final bytes) => bytes,
+    _ => throw ArgumentError('Not a picture of a file or of bytes'),
+  };
+  final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+  try {
+    final descriptor = await ui.ImageDescriptor.encoded(buffer);
+    final size = Size(
+      descriptor.width.toDouble(),
+      descriptor.height.toDouble(),
+    );
+    descriptor.dispose();
+    return size;
+  } finally {
+    buffer.dispose();
+  }
 }
 
 class _EditorError extends StatelessWidget {
