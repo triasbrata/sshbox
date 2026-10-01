@@ -660,6 +660,12 @@ func post(_ type: CGEventType) {
 // state the window server stamps on every event after it: from no source,
 // its flags were put back to the real keyboard's, which holds nothing.
 let keys = CGEventSource(stateID: .hidSystemState)
+// Each flag with the bit naming its left key, as a keyboard sets it
+// (NX_DEVICELSHIFTKEYMASK, NX_DEVICELCMDKEYMASK): Flutter tells a modifier's
+// press from its release by that bit, and without it heard neither.
+let shiftLeft = CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x2)
+let commandLeft =
+  CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x8)
 func modifier(_ key: CGKeyCode, _ mask: CGEventFlags, _ down: Bool) {
   flags = down ? mask : []
   let e = CGEvent(keyboardEventSource: keys, virtualKey: key, keyDown: down)!
@@ -679,17 +685,17 @@ for step in args[3].split(separator: ";") {
     post(pressed ? .leftMouseDragged : .mouseMoved)
   case "down": pressed = true; post(.leftMouseDown)
   case "up": pressed = false; post(.leftMouseUp)
-  case "shiftdown": modifier(56, .maskShift, true)
+  case "shiftdown": modifier(56, shiftLeft, true)
   case "cmdc":
-    modifier(55, .maskCommand, true)
+    modifier(55, commandLeft, true)
     for down in [true, false] {
       let e = CGEvent(keyboardEventSource: keys, virtualKey: 8, keyDown: down)!
-      e.flags = .maskCommand
+      e.flags = commandLeft
       e.post(tap: .cghidEventTap)
       usleep(150_000)
     }
-    modifier(55, .maskCommand, false)
-  case "shiftup": modifier(56, .maskShift, false)
+    modifier(55, commandLeft, false)
+  case "shiftup": modifier(56, shiftLeft, false)
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
   }
