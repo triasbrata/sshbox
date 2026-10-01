@@ -557,8 +557,11 @@ Future<void> _realRightClick(
     // the title bar, so the frame's corner is the app's (0, 0).
     final frame = await Process.run('osascript', [
       '-e',
-      'tell application "System Events" to tell process "Jeansh" to '
-          'get position of window 1',
+      'tell application "System Events" to tell process "Jeansh"\n'
+          // A key goes to the app in front, Shift's included.
+          'set frontmost to true\n'
+          'get position of window 1\n'
+          'end tell',
     ]);
     expect(frame.exitCode, 0, reason: 'the window: ${frame.stderr}');
     final [x, y] = '${frame.stdout}'
@@ -595,21 +598,28 @@ Future<void> _realRightClick(
 /// A right-click posted to the window server as CGEvents, at a point in the
 /// screen's points: the pointer moved there (kCGEventMouseMoved, 5), then
 /// the right button down (3) and up (4). With `shift`, the left Shift key
-/// (key code 56) goes down before and up after, and the clicks carry its
-/// flag (kCGEventFlagMaskShift, 0x20000), as a keyboard's do.
+/// (key code 56) goes down before and up after, and the key's own down and
+/// the clicks carry its flag (kCGEventFlagMaskShift, 0x20000), as a
+/// keyboard's do: a modifier's key event with no flag is no flagsChanged,
+/// and Flutter never hears Shift.
 const _macRightClickScript = r"""
 ObjC.import('CoreGraphics');
 function run(argv) {
   const p = $.CGPointMake(Number(argv[0]), Number(argv[1]));
   const shift = argv[2] === 'shift';
   const post = (e) => { $.CGEventPost(0, e); delay(0.05); };
-  if (shift) post($.CGEventCreateKeyboardEvent(null, 56, true));
+  const key = (down) => {
+    const e = $.CGEventCreateKeyboardEvent(null, 56, down);
+    $.CGEventSetFlags(e, down ? 0x20000 : 0);
+    post(e);
+  };
+  if (shift) key(true);
   for (const [type, button] of [[5, 0], [3, 1], [4, 1]]) {
     const e = $.CGEventCreateMouseEvent(null, type, p, button);
     if (shift) $.CGEventSetFlags(e, 0x20000);
     post(e);
   }
-  if (shift) post($.CGEventCreateKeyboardEvent(null, 56, false));
+  if (shift) key(false);
 }
 """;
 
@@ -1097,6 +1107,8 @@ touch '${done.path}'
       // #132: the same click as the OS sends it, Shift and all.
       final binding = IntegrationTestWidgetsFlutterBinding.instance;
       binding.shouldPropagateDevicePointerEvents = true;
+      // A failure here must not leave it on for the next test.
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
       Future<void> realClick(TerminalView view, {bool shift = false}) =>
           _realRightClick(
             tester,
@@ -2334,6 +2346,7 @@ touch '${done.path}'
   _test('a real right-click on a tab opens its menu', (tester) async {
     final binding = IntegrationTestWidgetsFlutterBinding.instance;
     binding.shouldPropagateDevicePointerEvents = true;
+    addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
     await _launch(tester);
     if (Platform.isLinux &&
         Process.runSync('sh', ['-c', 'command -v openbox']).exitCode == 0) {
