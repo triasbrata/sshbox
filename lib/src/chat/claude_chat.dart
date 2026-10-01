@@ -7,6 +7,9 @@ import 'package:flutter/foundation.dart';
 
 import '../session/terminal_session.dart';
 import '../session/tmux.dart';
+import 'slash_commands.dart';
+
+export 'slash_commands.dart';
 
 /// How much of a tool's result is kept for the transcript. A `cat` of a large
 /// file comes back whole, and every byte of it would sit in memory for as
@@ -95,6 +98,16 @@ class ChatNotice extends ChatEntry {
 
   final String text;
   final bool failed;
+}
+
+/// A slash command run in the session, as its transcript records it, and
+/// what it printed when it runs in the CLI rather than as a prompt.
+class ChatCommand extends ChatEntry {
+  ChatCommand(this.name, {this.args = ''});
+
+  final String name;
+  final String args;
+  String? output;
 }
 
 /// What Claude may do on the host without being asked.
@@ -504,6 +517,49 @@ class ClaudeChat extends ChangeNotifier {
         return byAge != 0 ? byAge : a.$1.compareTo(b.$1);
       });
     return [for (final (_, agent) in ordered) agent];
+  }
+
+  /// The slash commands a session on the host takes, for the list that
+  /// opens at a `/` in the box: see [SlashCommand]. Throws with what the
+  /// host said when it gave no list.
+  Future<List<SlashCommand>> slashCommands() async {
+    final output = const Utf8Decoder(allowMalformed: true).convert(
+      await _readAll(
+        slashCommandsCommand(cwd: cwd),
+        const Duration(seconds: 30),
+      ),
+    );
+    final commands = SlashCommand.parse(output);
+    if (commands != null) return commands;
+    final said = output.trim();
+    throw SshSessionException(
+      said.isEmpty ? 'The host listed no slash commands.' : said,
+    );
+  }
+
+  /// What the host runs to list its slash commands: the SDK's `initialize`
+  /// control request on stdin of a `claude -p` that ends when stdin does —
+  /// it asks the model nothing and writes no transcript — in [cwd], where a
+  /// project's own commands are; only the line answering it is kept, the
+  /// hooks' output beside it being no business of this. Then, after a line
+  /// of their own, the user's command files, which tell their commands from
+  /// skills. Found and quoted as [command] does it.
+  static String slashCommandsCommand({String? cwd}) {
+    final start = cwd == null || cwd.trim().isEmpty
+        ? ''
+        : 'cd ${_shellQuote(cwd)} || exit 1; ';
+    final request = jsonEncode({
+      'type': 'control_request',
+      'request_id': 'sshbox-commands',
+      'request': {'subtype': 'initialize'},
+    });
+    return 'sh -c ${_shellQuote('$_findClaude$start'
+    'printf "%s\\n" ${_shellQuote(request)} | "\$c" -p '
+    '--input-format stream-json --output-format stream-json --verbose '
+    '2>/dev/null | grep -F control_response; '
+    r'printf "\n--- yours\n"; '
+    r'find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/commands" .claude/commands '
+    "-name '*.md' 2>/dev/null")}';
   }
 
   /// The line between the listing and the pins.
@@ -1087,8 +1143,10 @@ class ClaudeChat extends ChangeNotifier {
       case 'user' when event['isMeta'] != true:
         final message = event['message'];
         text = message is Map<String, dynamic>
-            ? _userText(message['content'])
+            ? _commandOrText(_userText(message['content']))
             : null;
+      case 'system' when event['subtype'] == 'local_command':
+        text = _commandOrText(event['content'] as String?);
       default:
         text = null;
     }
@@ -1111,6 +1169,15 @@ class ClaudeChat extends ChangeNotifier {
     // the session put it.
     _pending.remove(said);
     _entries.remove(said);
+  }
+
+  /// A command line in a transcript as it was typed, `/name args`, so a
+  /// command typed from this chat is recognised; any other text as it is.
+  static String? _commandOrText(String? text) {
+    if (text == null) return null;
+    final command = CommandTags.command(text);
+    if (command == null) return text;
+    return '/${command.name} ${command.args}'.trim();
   }
 
   static String _normal(String text) =>
@@ -1346,6 +1413,8 @@ class ClaudeChat extends ChangeNotifier {
     switch (event['type']) {
       case 'assistant':
         _onAssistant(message);
+      case 'system' when event['subtype'] == 'local_command':
+        if (event['content'] case final String text) _onCommandLine(text);
       case 'user' when message is Map<String, dynamic>:
         final said = _userText(message['content']);
         if (said == null) {
@@ -1353,6 +1422,7 @@ class ClaudeChat extends ChangeNotifier {
           return;
         }
         final text = said.trim();
+        if (_onCommandLine(text)) return;
         // ponytail: a message the user typed that itself opens with `<` is
         // taken for one Claude Code wrote, and left out.
         if (text.isEmpty || text.startsWith('<')) return;
@@ -1362,6 +1432,25 @@ class ClaudeChat extends ChangeNotifier {
               : ChatSaid(text, mine: true),
         );
     }
+  }
+
+  /// A command the session ran, or what one printed, drawn as such: see
+  /// [CommandTags]. False for any other line.
+  bool _onCommandLine(String text) {
+    if (CommandTags.output(text) case final output?) {
+      final last = _entries.lastOrNull;
+      if (last is ChatCommand && last.output == null) {
+        last.output = output;
+      } else if (output.isNotEmpty) {
+        _entries.add(ChatNotice(output));
+      }
+      return true;
+    }
+    if (CommandTags.command(text) case final command?) {
+      _entries.add(ChatCommand(command.name, args: command.args));
+      return true;
+    }
+    return false;
   }
 
   /// What a `user` line's content says the user typed: a plain string, as a
