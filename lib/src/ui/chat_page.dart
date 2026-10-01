@@ -286,13 +286,17 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, box) {
       final wide = box.maxWidth >= _wide;
       final sidebar = wide && _sidebarOpen;
-      final sessions = _SessionList(
-        chat: _chat,
-        agents: _agents,
-        connected: widget.session.isConnected,
-        onPick: _pick,
-        onRefresh: () => setState(_listAgents),
-        onNewChat: _newChat,
+      // Chat at the content size, its sessions, messages, tool rows, code
+      // and composer alike: see ContentText.
+      final sessions = ContentText(
+        child: _SessionList(
+          chat: _chat,
+          agents: _agents,
+          connected: widget.session.isConnected,
+          onPick: _pick,
+          onRefresh: () => setState(_listAgents),
+          onNewChat: _newChat,
+        ),
       );
       return Scaffold(
         key: _scaffoldKey,
@@ -312,7 +316,9 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: _conversation(wide: wide, sidebar: sidebar),
+              child: ContentText(
+                child: _conversation(wide: wide, sidebar: sidebar),
+              ),
             ),
           ],
         ),
@@ -335,48 +341,45 @@ class _ChatPageState extends State<ChatPage> {
                   // them would do nothing.
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
-              // Prose and code at the content size.
-              : ContentText(
-                  child: CustomScrollView(
-                    // A list of its own for each session picked. The rows a
-                    // lazy list has built keep where they were laid out, and
-                    // another session's rows, of other heights, drawn into
-                    // them put what a session was left at somewhere else.
-                    key: ValueKey(chat.pickedFrom),
-                    controller: _scroll,
-                    center: _opened,
-                    slivers: [
-                      // Above [_opened], slivers grow upwards: the nearest to it
-                      // is the list of earlier turns, newest of them first, and
-                      // over them what says there are more.
-                      if (chat.hasEarlier)
-                        SliverToBoxAdapter(
-                          child: _Earlier(chat: chat, onLoad: _loadEarlier),
-                        ),
-                      SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        sliver: SliverList.builder(
-                          itemCount: chat.earlier,
-                          itemBuilder: (context, index) =>
-                              _entry(entries[chat.earlier - 1 - index]),
-                        ),
+              : CustomScrollView(
+                  // A list of its own for each session picked. The rows a
+                  // lazy list has built keep where they were laid out, and
+                  // another session's rows, of other heights, drawn into
+                  // them put what a session was left at somewhere else.
+                  key: ValueKey(chat.pickedFrom),
+                  controller: _scroll,
+                  center: _opened,
+                  slivers: [
+                    // Above [_opened], slivers grow upwards: the nearest to it
+                    // is the list of earlier turns, newest of them first, and
+                    // over them what says there are more.
+                    if (chat.hasEarlier)
+                      SliverToBoxAdapter(
+                        child: _Earlier(chat: chat, onLoad: _loadEarlier),
                       ),
-                      SliverPadding(
-                        key: _opened,
-                        padding: EdgeInsets.fromLTRB(
-                          12,
-                          chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
-                          12,
-                          4,
-                        ),
-                        sliver: SliverList.builder(
-                          itemCount: entries.length - chat.earlier,
-                          itemBuilder: (context, index) =>
-                              _entry(entries[chat.earlier + index]),
-                        ),
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      sliver: SliverList.builder(
+                        itemCount: chat.earlier,
+                        itemBuilder: (context, index) =>
+                            _entry(entries[chat.earlier - 1 - index]),
                       ),
-                    ],
-                  ),
+                    ),
+                    SliverPadding(
+                      key: _opened,
+                      padding: EdgeInsets.fromLTRB(
+                        12,
+                        chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
+                        12,
+                        4,
+                      ),
+                      sliver: SliverList.builder(
+                        itemCount: entries.length - chat.earlier,
+                        itemBuilder: (context, index) =>
+                            _entry(entries[chat.earlier + index]),
+                      ),
+                    ),
+                  ],
                 ),
         ),
         if (chat.busy)

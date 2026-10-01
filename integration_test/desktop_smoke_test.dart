@@ -39,7 +39,7 @@ import 'package:sshbox/src/update/updater.dart'
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/settings_page.dart'
-    show SettingsPage, localTmux, terminalFonts;
+    show SettingsPage, localTmux, maxFontSize, terminalFonts, terminalSettings;
 import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:xterm2/xterm.dart';
@@ -58,6 +58,60 @@ Future<void> _shot(WidgetTester tester, String name) async {
   final png = await image.toByteData(format: ui.ImageByteFormat.png);
   await Directory(_shots).create(recursive: true);
   await File('$_shots/$name.png').writeAsBytes(png!.buffer.asUint8List());
+}
+
+/// The stand-in Claude where the chat's finder looks, taken away after: see
+/// the chat tests, which skip where this machine has a Claude of its own.
+void _standInClaudeFor() {
+  final home = Platform.environment['HOME']!;
+  final standIn = File('$home/.local/bin/claude');
+  final config = Directory('$home/.claude');
+  final hadConfig = config.existsSync();
+  final hadBin = standIn.parent.existsSync();
+  standIn.parent.createSync(recursive: true);
+  standIn.writeAsStringSync(_standInClaude);
+  Process.runSync('chmod', ['755', standIn.path]);
+  addTearDown(() {
+    if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
+    if (!hadBin) standIn.parent.deleteSync(recursive: true);
+    if (!hadConfig) {
+      config.deleteSync(recursive: true);
+    } else {
+      Directory('${config.path}/projects/jeansh-e2e')
+          .deleteSync(recursive: true);
+    }
+  });
+}
+
+/// The chat's composer.
+final _composer = find.byWidgetPredicate(
+  (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+);
+
+/// The stand-in's answer.
+final _answer = find.textContaining(
+  'Echo from the stand-in',
+  findRichText: true,
+);
+
+/// A Local shell's chat opened, a message sent, and the stand-in's answer in.
+Future<void> _chatAnswered(WidgetTester tester) async {
+  await _localShell(tester);
+  await tester.tap(find.byTooltip('Chat with Claude'));
+  await _until(
+    tester,
+    () => _composer.evaluate().isNotEmpty,
+    'the chat tab to open, its version check passed',
+  );
+  await tester.enterText(_composer, 'hello from the e2e');
+  await tester.pump();
+  await tester.tap(find.byTooltip('Send'));
+  await _until(
+    tester,
+    () => _answer.evaluate().isNotEmpty,
+    "the stand-in's answer in the chat",
+    timeout: const Duration(seconds: 40),
+  );
 }
 
 /// Home, from a cold start, settled.
@@ -1408,47 +1462,61 @@ touch '${done.path}'
         ? 'this machine has a Claude Code of its own, which this would run'
         : null,
     (tester) async {
-      final home = Platform.environment['HOME']!;
-      final standIn = File('$home/.local/bin/claude');
-      final config = Directory('$home/.claude');
-      final hadConfig = config.existsSync();
-      final hadBin = standIn.parent.existsSync();
-      standIn.parent.createSync(recursive: true);
-      standIn.writeAsStringSync(_standInClaude);
-      Process.runSync('chmod', ['755', standIn.path]);
-      addTearDown(() {
-        if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
-        if (!hadBin) standIn.parent.deleteSync(recursive: true);
-        if (!hadConfig) {
-          config.deleteSync(recursive: true);
-        } else {
-          Directory('${config.path}/projects/jeansh-e2e')
-              .deleteSync(recursive: true);
-        }
-      });
-
+      _standInClaudeFor();
       await _launch(tester);
-      await _localShell(tester);
-      await tester.tap(find.byTooltip('Chat with Claude'));
-      final input = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.prefixText == '❯ ',
+      await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // Issue #133: "di chat size fontnya tidak mengikuti dari size font yang ada
+  // di settings". The content size raised with Settings' own slider, and a
+  // chat's answer and composer drawn at it.
+  _test(
+    'chat draws at the content size Settings sets',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      addTearDown(() => terminalSettings.choose(size: 13));
+      await terminalSettings.choose(size: 13);
+      await _launch(tester);
+
+      await _settings(tester);
+      final page = find
+          .descendant(
+            of: find.byType(SettingsPage),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        _label('Content text size'),
+        300,
+        scrollable: page,
       );
-      await _until(
-        tester,
-        () => input.evaluate().isNotEmpty,
-        'the chat tab to open, its version check passed',
+      await tester.scrollUntilVisible(
+        find.byType(TuiSlider).last,
+        100,
+        scrollable: page,
       );
-      await tester.enterText(input, 'hello from the e2e');
-      await tester.pump();
-      await tester.tap(find.byTooltip('Send'));
-      await _until(
-        tester,
-        () => find
-            .textContaining('Echo from the stand-in', findRichText: true)
-            .evaluate()
-            .isNotEmpty,
-        "the stand-in's answer in the chat",
-        timeout: const Duration(seconds: 40),
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(TuiSlider).last, const Offset(3000, 0));
+      await tester.pumpAndSettle();
+      expect(terminalSettings.value.fontSize, maxFontSize);
+      await _backHome(tester);
+
+      await _chatAnswered(tester);
+      await _shot(tester, 'desktop-chat-content-largest');
+      double at13(Finder finder) =>
+          MediaQuery.textScalerOf(tester.element(finder.first)).scale(13);
+      expect(at13(_answer), closeTo(maxFontSize, 0.01), reason: 'the answer');
+      expect(
+        at13(_composer),
+        closeTo(maxFontSize, 0.01),
+        reason: 'the composer',
       );
       await _closeTabs(tester);
     },
