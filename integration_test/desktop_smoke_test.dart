@@ -213,10 +213,8 @@ Future<void> _settings(WidgetTester tester) async {
   // was not on screen yet 600 ms after the tap.
   await _until(
     tester,
-    () => find
-        .text('LOOK · TERMINAL · KEYBOARD · PRIVACY')
-        .evaluate()
-        .isNotEmpty,
+    () =>
+        find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY').evaluate().isNotEmpty,
     'Settings to open',
   );
   await tester.pump(const Duration(milliseconds: 600));
@@ -527,27 +525,21 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
   }
 }
 
-/// A click with the real pointer at [local], a point in the app, sent
+/// A right-click with the real pointer at [local], a point in the app, sent
 /// through the OS as a hand sends it: xdotool on Linux, mouse_event on
-/// Windows, a CGEvent posted to the window server on macOS. [right] for the
-/// second button; [ctrl] for a Mac's Ctrl+click with the first.
+/// Windows, CGEvents posted to the window server on macOS.
 ///
 /// Wants the binding's shouldPropagateDevicePointerEvents on, or the
 /// integration binding drops what the device sends.
-Future<void> _realClick(
-  WidgetTester tester,
-  Offset local, {
-  bool right = false,
-  bool ctrl = false,
-}) async {
+Future<void> _realRightClick(WidgetTester tester, Offset local) async {
   final ratio = tester.view.devicePixelRatio;
   if (Platform.isWindows) {
     final at = local * ratio;
     await _winMouse([
       'move ${at.dx.round()} ${at.dy.round()}',
-      right ? 'rdown' : 'down',
+      'rdown',
       'sleep 40',
-      right ? 'rup' : 'up',
+      'rup',
     ]);
   } else if (Platform.isMacOS) {
     // The window's frame, in the screen's points: its content runs up under
@@ -565,8 +557,8 @@ Future<void> _realClick(
         .toList();
     final at = Offset(x, y) + local;
     final done = await Process.run('osascript', [
-      '-l', 'JavaScript', '-e', _macClickScript, //
-      '${at.dx}', '${at.dy}', right ? 'right' : (ctrl ? 'ctrl' : 'left'),
+      '-l', 'JavaScript', '-e', _macRightClickScript, //
+      '${at.dx}', '${at.dy}',
     ]);
     expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}');
   } else {
@@ -574,33 +566,22 @@ Future<void> _realClick(
     final frame = (window.width - tester.view.physicalSize.width) / 2;
     final at = window.topLeft + Offset(frame, frame) + local * ratio;
     await _xdo(['mousemove', '${at.dx.round()}', '${at.dy.round()}']);
-    await _xdo(['click', right ? '3' : '1']);
+    await _xdo(['click', '3']);
   }
   await tester.pump(const Duration(milliseconds: 300));
 }
 
-/// A click posted to the window server as CGEvents, at a point in the
-/// screen's points: `right`, `left`, or `ctrl`, a left click with Ctrl held
-/// as a Mac's one-button mouse right-clicks — the Ctrl key itself pressed
-/// and let go around it, as a keyboard sends it.
-const _macClickScript = r"""
+/// A right-click posted to the window server as CGEvents, at a point in the
+/// screen's points: the pointer moved there (kCGEventMouseMoved, 5), then
+/// the right button down (3) and up (4).
+const _macRightClickScript = r"""
 ObjC.import('CoreGraphics');
 function run(argv) {
   const p = $.CGPointMake(Number(argv[0]), Number(argv[1]));
-  const kind = argv[2];
-  const post = (e) => { $.CGEventPost(0, e); delay(0.05); };
-  // kCGEventMouseMoved, then the button's down and up.
-  post($.CGEventCreateMouseEvent(null, 5, p, 0));
-  const [down, up, button] = kind === 'right' ? [3, 4, 1] : [1, 2, 0];
-  const ctrl = kind === 'ctrl';
-  // Left Control is key code 59; kCGEventFlagMaskControl is 0x40000.
-  if (ctrl) post($.CGEventCreateKeyboardEvent(null, 59, true));
-  for (const type of [down, up]) {
-    const e = $.CGEventCreateMouseEvent(null, type, p, button);
-    if (ctrl) $.CGEventSetFlags(e, 0x40000);
-    post(e);
+  for (const [type, button] of [[5, 0], [3, 1], [4, 1]]) {
+    $.CGEventPost(0, $.CGEventCreateMouseEvent(null, type, p, button));
+    delay(0.05);
   }
-  if (ctrl) post($.CGEventCreateKeyboardEvent(null, 59, false));
 }
 """;
 
@@ -1365,9 +1346,8 @@ touch '${done.path}'
     (tester) async {
       // A digit first, so it sorts ahead of every other folder in a home
       // with many and is drawn without a scroll.
-      final dir = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('0-jeansh-e2e-');
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
       addTearDown(() => dir.deleteSync(recursive: true));
       final name = 'made-by-the-e2e-${dir.path.hashCode}.txt';
       File('${dir.path}/$name').writeAsStringSync('hello from the e2e\n');
@@ -1417,9 +1397,8 @@ touch '${done.path}'
         if (!hadConfig) {
           config.deleteSync(recursive: true);
         } else {
-          Directory(
-            '${config.path}/projects/jeansh-e2e',
-          ).deleteSync(recursive: true);
+          Directory('${config.path}/projects/jeansh-e2e')
+              .deleteSync(recursive: true);
         }
       });
 
@@ -2296,8 +2275,10 @@ touch '${done.path}'
   // #132. A tab's menu from a right-click the OS itself sends, not one the
   // test makes up inside Flutter: on a desktop the strip is the window's
   // title bar, and what the runner, the window manager or AppKit does with a
-  // press there comes before any widget. On a Mac a Ctrl+click is a
-  // right-click too. On Linux under openbox, where there is one, since a
+  // press there comes before any widget. Not a Mac's Ctrl+click: the
+  // binding that makes it a right-click (JeanshBinding) is the app's, and
+  // integration_test's is made first; right_click_test.dart holds that one.
+  // On Linux under openbox, where there is one, since a
   // window manager is what turns a right-click on a title bar into its
   // window menu; after the window-buttons test, as it may move the window.
   _test('a real right-click on a tab opens its menu', (tester) async {
@@ -2324,16 +2305,14 @@ touch '${done.path}'
     // Left of its close button, on the chip's title: where a hand aims.
     Offset chip() => tester.getCenter(close.first) - const Offset(40, 0);
 
-    for (final ctrl in [false, if (Platform.isMacOS) true]) {
-      final before = tabs.evaluate().length;
-      await _realClick(tester, chip(), right: !ctrl, ctrl: ctrl);
-      await _pick(tester, 'Duplicate session');
-      await _until(
-        tester,
-        () => tabs.evaluate().length == before + 1,
-        'a second Local shell, from a ${ctrl ? 'Ctrl+click' : 'right-click'}',
-      );
-    }
+    final before = tabs.evaluate().length;
+    await _realRightClick(tester, chip());
+    await _pick(tester, 'Duplicate session');
+    await _until(
+      tester,
+      () => tabs.evaluate().length == before + 1,
+      'a second Local shell',
+    );
     await _closeTabs(tester);
     // In the body: the binding checks it is back before any tear-down runs.
     binding.shouldPropagateDevicePointerEvents = false;
