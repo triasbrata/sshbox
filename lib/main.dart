@@ -8,6 +8,7 @@ import 'src/telemetry/telemetry.dart';
 import 'src/ui/onboarding_page.dart';
 import 'src/ui/right_click.dart';
 import 'src/ui/settings_page.dart';
+import 'src/ui/text_size.dart';
 import 'src/ui/title_bar.dart';
 import 'src/ui/tui.dart';
 
@@ -24,6 +25,7 @@ Future<void> main() async {
   // chosen keys and the app in its chosen colours, rather than changing a
   // moment later when they arrive.
   await terminalSettings.load();
+  await uiTextSize.load();
   await keyBarSettings.load();
   await appTheme.load();
   await gitInDrawer.load();

@@ -13,7 +13,9 @@ import '../session/session_manager.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart' show CodeBlockBuilder;
 import 'markdown_input.dart';
+import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
+import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
@@ -56,6 +58,11 @@ class _ChatPageState extends State<ChatPage> {
   bool _canSend = false;
 
   bool get _sendable => _canSend && _input.text.trim().isNotEmpty;
+
+  /// True while a menu over the box — a list of slash commands — is open:
+  /// the box then leaves its keys to the menu, which sits above it in the
+  /// focus chain and hears what the box ignores.
+  final _menuOpen = ValueNotifier(false);
 
   /// Whether the tabs showed this chat when it last looked; null until its
   /// first look.
@@ -135,6 +142,7 @@ class _ChatPageState extends State<ChatPage> {
     _chat.removeListener(_onChanged);
     _input.dispose();
     _inputFocus.dispose();
+    _menuOpen.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -159,7 +167,8 @@ class _ChatPageState extends State<ChatPage> {
   /// Enter sends, Shift+Enter then being the new line. An IME's Enter, which
   /// confirms what it is composing, is the IME's.
   KeyEventResult _onBoxKey(FocusNode node, KeyEvent event) {
-    if (event is KeyUpEvent ||
+    if (_menuOpen.value ||
+        event is KeyUpEvent ||
         (event.logicalKey != LogicalKeyboardKey.enter &&
             event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
         _input.value.isComposingRangeValid) {
@@ -430,13 +439,17 @@ class _ChatPageState extends State<ChatPage> {
     builder: (context, box) {
       final wide = box.maxWidth >= _wide;
       final sidebar = wide && _sidebarOpen;
-      final sessions = _SessionList(
-        chat: _chat,
-        agents: _agents,
-        connected: widget.session.isConnected,
-        onPick: _pick,
-        onRefresh: () => setState(_listAgents),
-        onNewChat: _newChat,
+      // Chat at the content size, its sessions, messages, tool rows, code
+      // and composer alike: see ContentText.
+      final sessions = ContentText(
+        child: _SessionList(
+          chat: _chat,
+          agents: _agents,
+          connected: widget.session.isConnected,
+          onPick: _pick,
+          onRefresh: () => setState(_listAgents),
+          onNewChat: _newChat,
+        ),
       );
       return Scaffold(
         key: _scaffoldKey,
@@ -456,7 +469,9 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: _conversation(wide: wide, sidebar: sidebar),
+              child: ContentText(
+                child: _conversation(wide: wide, sidebar: sidebar),
+              ),
             ),
           ],
         ),
@@ -840,6 +855,13 @@ class _Bubble extends StatelessWidget {
   );
 }
 
+/// The builders every Markdown in a chat draws with, what was asked and
+/// what was answered alike: a ```mermaid fence as a diagram, its source
+/// copyable beside it, and any other code block with its copy button.
+final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
+  'code': CodeBlockBuilder(copyable: true),
+};
+
 /// What Claude said, as Markdown: it writes lists, headings and code.
 class _Answer extends StatelessWidget {
   const _Answer({required this.text, required this.onTapLink});
@@ -871,10 +893,6 @@ class _ChatMarkdown extends StatelessWidget {
   /// would not show; null on the page's own ground.
   final TextStyle? ink;
 
-  /// Shared by every message, so a builder added here — a diagram's — draws
-  /// in both.
-  static final _builders = {'code': CodeBlockBuilder()};
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -890,9 +908,11 @@ class _ChatMarkdown extends StatelessWidget {
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
       builder: (context, terminal, _) => MarkdownBody(
-        data: text,
+        // A ```mermaid fence is a diagram, as in the Markdown preview,
+        // once it has closed.
+        data: holdOpenMermaid(text),
         onTapLink: onTapLink,
-        builders: _builders,
+        builders: chatMarkdownBuilders,
         // A message is text, and any picture in it lives on a server we do
         // not fetch from: its alt text says what was meant.
         imageBuilder: (uri, title, alt) =>
