@@ -993,6 +993,7 @@ class LiveSession extends ChangeNotifier {
   /// ponytail: inside a tmux started by hand the probe sees tmux, not the
   /// pane's shell, so every `cd` is refused as "tmux is running".
   Future<String?> changeDirectory(String path) async {
+    if (hasControl(path)) return controlRefusal;
     var slow = false;
     final now = await foreground().timeout(
       const Duration(milliseconds: 1500),
@@ -1012,6 +1013,20 @@ class LiveSession extends ChangeNotifier {
     if (now.cwd != path) sendRaw('cd ${shellQuote(path)}\n');
     return null;
   }
+
+  /// Whether [path] holds a C0 control, DEL or a C1 control. A path typed
+  /// into a shell arrives as keystrokes, and readline and zle act on those
+  /// even inside single quotes: in a folder named `/x^Utouch pwned #`, ^U
+  /// wipes `cd '/x` and the Enter runs `touch pwned`. Such names come from
+  /// the host — a listing, `git worktree list` — so a cloned repository or
+  /// a tarball can hold one, and nothing with one in it is ever typed.
+  static bool hasControl(String path) =>
+      RegExp('[\u0000-\u001f\u007f-\u009f]').hasMatch(path);
+
+  /// What is said when [hasControl] keeps a path from the shell.
+  static const controlRefusal =
+      "That folder's name holds a control character — not typing it into "
+      'the shell';
 
   /// Wraps a path so the shell sees exactly these characters: bare when
   /// nothing in it is special, so what lands at the prompt reads as typed.

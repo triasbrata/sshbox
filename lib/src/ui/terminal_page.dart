@@ -552,7 +552,19 @@ class _TerminalPageState extends State<TerminalPage> {
   static String _shellQuote(String path) => LiveSession.shellQuote(path);
 
   /// Puts a path at the prompt, ready for a command to be written around it.
-  void _typePath(String path) => _session.sendRaw('${_shellQuote(path)} ');
+  /// Never one holding a control character, which the shell would act on as
+  /// a key: see [LiveSession.hasControl].
+  void _typePath(String path) {
+    if (LiveSession.hasControl(path)) {
+      showToast(
+        context,
+        LiveSession.controlRefusal,
+        type: TuiToastType.warning,
+      );
+      return;
+    }
+    _session.sendRaw('${_shellQuote(path)} ');
+  }
 
   /// Puts a file's path at the prompt the way a drop in iTerm2 does, with a
   /// trailing space so it is ready to be followed by arguments.

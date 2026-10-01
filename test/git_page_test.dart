@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -6,7 +8,9 @@ import 'package:sshbox/src/git/git_diff.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/git_page.dart';
+import 'package:sshbox/src/ui/terminal_link.dart';
 import 'package:sshbox/src/ui/tui.dart';
 
 import 'fake_file_browser.dart';
@@ -24,6 +28,10 @@ class _NoSecrets implements SecretStore {
 
 const _main = '/home/me/dev';
 const _agent = '/home/me/dev/.claude/worktrees/agent-x';
+
+/// A folder name whose ^U, typed into readline or zle, wipes `cd '/x` off the
+/// line so the Enter runs `touch pwned`.
+const _hostile = '/home/me/x\u0015touch pwned #';
 
 /// A host with one repository and one worktree of it, the way Claude Code
 /// leaves them: each checkout answers with its own branch and its own
@@ -98,6 +106,11 @@ class _Shell
         'worktree $_agent',
         'HEAD 2222222',
         'branch refs/heads/agent',
+        '',
+        // A worktree whose folder name a clone or a tarball chose.
+        'worktree $_hostile',
+        'HEAD 4444444',
+        'branch refs/heads/hostile',
         '',
       ]);
     }
@@ -348,5 +361,98 @@ void main() {
     await _settle(tester);
     expect(shell.sent, ['cd $_agent\n']);
     await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('Open in terminal types nothing for a worktree whose name holds '
+      'a control character', (tester) async {
+    await pumpPanel(tester);
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('x\u0015touch pwned #').last);
+    await _settle(tester);
+
+    await tester.tap(find.byTooltip('Open in terminal'));
+    await _settle(tester);
+    expect(find.text(LiveSession.controlRefusal), findsOneWidget);
+    expect(shell.sent, isEmpty);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('the files drawer, following, types nothing for a folder whose '
+      'name holds a control character', (tester) async {
+    final shell = _Shell();
+    final session = LiveSession(
+      host: const HostProfile(
+        id: 'host-1',
+        label: 'box',
+        host: '10.0.2.2',
+        username: 'me',
+      ),
+      transport: (_, _) => shell,
+    );
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    final files = FakeFileBrowser();
+    await files.makeDirectory(_hostile);
+    final refused = <String?>[];
+    // The terminal page's own link, minus its toast: Follow reaches the shell
+    // through the session's changeDirectory and nothing else.
+    final link = TerminalLink(
+      typePath: (_) {},
+      changeDirectory: (path) async =>
+          refused.add(await session.changeDirectory(path)),
+    )..follow = true;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: FileBrowserPage(
+          browser: files,
+          title: 'box',
+          terminal: link,
+          onFileSelected: (_, {line}) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('x\u0015touch pwned #'));
+    await tester.pumpAndSettle();
+    expect(refused, [LiveSession.controlRefusal]);
+    expect(shell.sent, isEmpty);
+
+    // What the old code typed, and what the session types now, each into an
+    // interactive bash on a real terminal: the old line ran the command.
+    Future<bool> ran(String typed) => tester
+        .runAsync(() async {
+          final dir = await Directory.systemTemp.createTemp('cd-pty');
+          try {
+            final bash = await Process.start(
+              'script',
+              ['-qfc', 'bash --norc --noprofile -i', '/dev/null'],
+              workingDirectory: dir.path,
+              environment: {'HOME': dir.path, 'PS1': r'$ ', 'TERM': 'dumb'},
+            );
+            bash.stdout.drain<void>();
+            bash.stderr.drain<void>();
+            bash.stdin.write(typed);
+            await Future<void>.delayed(const Duration(milliseconds: 500));
+            bash.stdin.write('exit\n');
+            await bash.exitCode.timeout(const Duration(seconds: 10));
+            return File('${dir.path}/pwned').existsSync();
+          } finally {
+            await dir.delete(recursive: true);
+          }
+        })
+        .then((value) => value!);
+    // util-linux's script; a Mac's takes other arguments.
+    if (Platform.isLinux) {
+      expect(await ran('cd ${LiveSession.shellQuote(_hostile)}\n'), isTrue);
+      expect(await ran(shell.sent.join()), isFalse);
+    }
+
+    // An ordinary folder still goes.
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    expect(refused.last, isNull);
+    expect(shell.sent, ['cd /home/me/dev\n']);
   });
 }
