@@ -25,14 +25,16 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, Icons, InkWell, TextField, Tooltip;
+    show DropdownButton, IconButton, Icons, InkWell, TextField, Tooltip;
 import 'package:flutter/rendering.dart' show OffsetLayer;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
@@ -3666,6 +3668,193 @@ touch '${done.path}'
       expect(_named('Close'), findsOneWidget);
       // In the body: the binding checks it is back before any tear-down runs.
       binding.shouldPropagateDevicePointerEvents = false;
+    },
+  );
+
+  // #137: a Local shell's chat types into an interactive Claude in a tmux
+  // pane, as an SSH host's does (.maestro/chat_two_way on Android). The
+  // session is tools/e2e_live_claude.py in a pane of the run's own tmux
+  // server (tools/e2e_desktop.sh), with a stand-in claude that lists it, both
+  // in the runner's home, which on CI holds no Claude Code of its own.
+  _test(
+    "a Local shell's chat types into a session's tmux pane, and its answer "
+    'comes back',
+    skip: !Platform.isLinux
+        ? "the session's pane needs the run's own tmux server, which "
+              'tools/e2e_desktop.sh gives Linux alone'
+        : Platform.environment['CI'] != 'true' || _claudeInstalled()
+        ? "off CI it would write a claude into the user's own home"
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      const sid = 'e2e00005-0000-4000-8000-000000000005';
+      final claude = File('$home/.local/bin/claude');
+      final config = Directory('$home/.claude');
+      final agents = File('$home/.e2e-agents.json');
+      final script = File('tools/e2e_live_claude.py').absolute;
+      expect(script.existsSync(), isTrue, reason: 'no ${script.path}');
+      expect(agents.existsSync(), isFalse, reason: '${agents.path} is there');
+      final hadConfig = config.existsSync();
+      addTearDown(() {
+        final shown = Process.runSync('tmux', [
+          'capture-pane',
+          '-p',
+          '-t',
+          'e2e-pane',
+        ]);
+        debugPrint('Pane: ${shown.stdout}${shown.stderr}');
+        Process.runSync('tmux', ['kill-session', '-t', 'e2e-pane']);
+        if (claude.existsSync()) claude.deleteSync();
+        if (agents.existsSync()) agents.deleteSync();
+        if (!hadConfig && config.existsSync()) {
+          config.deleteSync(recursive: true);
+        }
+      });
+      claude.parent.createSync(recursive: true);
+      claude.writeAsStringSync(
+        '#!/bin/sh\ncase "\$1" in\n'
+        "  --version) echo '2.1.300 (Claude Code)' ;;\n"
+        '  agents) cat "\$HOME/.e2e-agents.json" ;;\n'
+        '  *) exec cat >/dev/null ;;\nesac\n',
+      );
+      Process.runSync('chmod', ['755', claude.path]);
+      final projects = Directory(
+        '${config.path}/projects/${home.replaceAll(RegExp('[/.]'), '-')}',
+      )..createSync(recursive: true);
+      final transcript = File('${projects.path}/$sid.jsonl')
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'user',
+            'message': {'role': 'user', 'content': 'Earlier question'},
+          })}\n'
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Earlier answer'},
+              ],
+            },
+          })}\n',
+        );
+      agents.writeAsStringSync('[]');
+      final pane = await Process.run(
+        'tmux',
+        [
+          'new-session', '-d', '-s', 'e2e-pane', '-x', '120', '-y', '30', //
+          '-c', home,
+          'env PYTHONIOENCODING=utf-8 python3 ${script.path} $sid',
+        ],
+        environment: const {'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'},
+      );
+      expect(pane.exitCode, 0, reason: 'tmux: ${pane.stderr}');
+      // The stand-in's own pid, as `claude agents` gives Claude's.
+      final states = Directory('${config.path}/sessions');
+      final started = DateTime.now().add(const Duration(seconds: 10));
+      String? state;
+      while ((state = states.existsSync()
+              ? states
+                    .listSync()
+                    .map((f) => f.path)
+                    .where((p) => File(p).readAsStringSync().contains(sid))
+                    .firstOrNull
+              : null) ==
+          null) {
+        if (DateTime.now().isAfter(started)) fail('the stand-in never started');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      final pid = int.parse(state!.split('/').last.replaceAll('.json', ''));
+      agents.writeAsStringSync(
+        jsonEncode([
+          {
+            'kind': 'interactive', 'pid': pid, 'sessionId': sid, //
+            'name': 'E2E pane session', 'cwd': home, 'status': 'idle',
+            'startedAt': 1790000000100,
+          },
+        ]),
+      );
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final row = find.text('E2E pane session');
+      await _until(
+        tester,
+        () =>
+            row.evaluate().isNotEmpty ||
+            find.byTooltip('Sessions on this host').evaluate().isNotEmpty,
+        'the chat to open',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(find.byTooltip('Sessions on this host'));
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        'the live session listed',
+      );
+      await tester.tap(row.first);
+      await _until(
+        tester,
+        () => find.textContaining('typed into that pane').evaluate().isNotEmpty,
+        'the chat to watch the session, typing into its pane',
+      );
+      final chat = tester.widget<ChatPage>(find.byType(ChatPage)).session.chat;
+      String said() => chat.entries
+          .map(
+            (e) => switch (e) {
+              ChatSaid(:final text, :final why) => '$text${why ?? ''}',
+              ChatNotice(:final text) => text,
+              _ => '$e',
+            },
+          )
+          .join(' | ');
+
+      final field = find.byWidgetPredicate(
+        (w) =>
+            w is TextField &&
+            w.decoration?.hintText == 'Message “E2E pane session”…',
+      );
+      await _until(tester, () => field.evaluate().isNotEmpty, 'the field');
+      await tester.enterText(field, 'hello from the desktop');
+      // Send turns on in the frame after the text goes in. Tapped sooner it
+      // is still off and sends nothing — which, with no frame waited for,
+      // read as a chat that never typed into the pane (run 36875853136).
+      await _until(
+        tester,
+        () =>
+            tester
+                .widget<IconButton>(
+                  find
+                      .ancestor(
+                        of: find.byTooltip('Send'),
+                        matching: find.byType(IconButton),
+                      )
+                      .first,
+                )
+                .onPressed !=
+            null,
+        'Send to turn on',
+      );
+      await tester.tap(find.byTooltip('Send'));
+      final end = DateTime.now().add(const Duration(seconds: 40));
+      while (!transcript.readAsStringSync().contains(
+        'hello from the desktop',
+      )) {
+        if (DateTime.now().isAfter(end)) {
+          fail('never reached the pane; the chat said: ${said()}');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+      }
+      await _until(
+        tester,
+        () => chat.entries.whereType<ChatSaid>().any(
+          (e) => e.text == 'Echo: hello from the desktop',
+        ),
+        "the stand-in's answer in the chat",
+      );
+      await _closeTabs(tester);
     },
   );
 
