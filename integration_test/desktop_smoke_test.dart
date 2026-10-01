@@ -527,6 +527,83 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
   }
 }
 
+/// A click with the real pointer at [local], a point in the app, sent
+/// through the OS as a hand sends it: xdotool on Linux, mouse_event on
+/// Windows, a CGEvent posted to the window server on macOS. [right] for the
+/// second button; [ctrl] for a Mac's Ctrl+click with the first.
+///
+/// Wants the binding's shouldPropagateDevicePointerEvents on, or the
+/// integration binding drops what the device sends.
+Future<void> _realClick(
+  WidgetTester tester,
+  Offset local, {
+  bool right = false,
+  bool ctrl = false,
+}) async {
+  final ratio = tester.view.devicePixelRatio;
+  if (Platform.isWindows) {
+    final at = local * ratio;
+    await _winMouse([
+      'move ${at.dx.round()} ${at.dy.round()}',
+      right ? 'rdown' : 'down',
+      'sleep 40',
+      right ? 'rup' : 'up',
+    ]);
+  } else if (Platform.isMacOS) {
+    // The window's frame, in the screen's points: its content runs up under
+    // the title bar, so the frame's corner is the app's (0, 0).
+    final frame = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh" to '
+          'get position of window 1',
+    ]);
+    expect(frame.exitCode, 0, reason: 'the window: ${frame.stderr}');
+    final [x, y] = '${frame.stdout}'
+        .trim()
+        .split(', ')
+        .map(double.parse)
+        .toList();
+    final at = Offset(x, y) + local;
+    final done = await Process.run('osascript', [
+      '-l', 'JavaScript', '-e', _macClickScript, //
+      '${at.dx}', '${at.dy}', right ? 'right' : (ctrl ? 'ctrl' : 'left'),
+    ]);
+    expect(done.exitCode, 0, reason: 'the mouse: ${done.stderr}');
+  } else {
+    final window = await _windowRect();
+    final frame = (window.width - tester.view.physicalSize.width) / 2;
+    final at = window.topLeft + Offset(frame, frame) + local * ratio;
+    await _xdo(['mousemove', '${at.dx.round()}', '${at.dy.round()}']);
+    await _xdo(['click', right ? '3' : '1']);
+  }
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+/// A click posted to the window server as CGEvents, at a point in the
+/// screen's points: `right`, `left`, or `ctrl`, a left click with Ctrl held
+/// as a Mac's one-button mouse right-clicks — the Ctrl key itself pressed
+/// and let go around it, as a keyboard sends it.
+const _macClickScript = r"""
+ObjC.import('CoreGraphics');
+function run(argv) {
+  const p = $.CGPointMake(Number(argv[0]), Number(argv[1]));
+  const kind = argv[2];
+  const post = (e) => { $.CGEventPost(0, e); delay(0.05); };
+  // kCGEventMouseMoved, then the button's down and up.
+  post($.CGEventCreateMouseEvent(null, 5, p, 0));
+  const [down, up, button] = kind === 'right' ? [3, 4, 1] : [1, 2, 0];
+  const ctrl = kind === 'ctrl';
+  // Left Control is key code 59; kCGEventFlagMaskControl is 0x40000.
+  if (ctrl) post($.CGEventCreateKeyboardEvent(null, 59, true));
+  for (const type of [down, up]) {
+    const e = $.CGEventCreateMouseEvent(null, type, p, button);
+    if (ctrl) $.CGEventSetFlags(e, 0x40000);
+    post(e);
+  }
+  if (ctrl) post($.CGEventCreateKeyboardEvent(null, 59, false));
+}
+""";
+
 const _winMouseScript = r'''
 param([string]$steps)
 $ErrorActionPreference = 'Stop'
@@ -572,6 +649,8 @@ if ($steps) {
       'restore' { [W]::ShowWindow($h, 9) | Out-Null }
       'down' { [W]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero) }
       'up' { [W]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+      'rdown' { [W]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero) }
+      'rup' { [W]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero) }
       'sleep' { Start-Sleep -Milliseconds ([int]$p[1]) }
     }
   }
@@ -2213,4 +2292,50 @@ touch '${done.path}'
       binding.shouldPropagateDevicePointerEvents = false;
     },
   );
+
+  // #132. A tab's menu from a right-click the OS itself sends, not one the
+  // test makes up inside Flutter: on a desktop the strip is the window's
+  // title bar, and what the runner, the window manager or AppKit does with a
+  // press there comes before any widget. On a Mac a Ctrl+click is a
+  // right-click too. On Linux under openbox, where there is one, since a
+  // window manager is what turns a right-click on a title bar into its
+  // window menu; after the window-buttons test, as it may move the window.
+  _test('a real right-click on a tab opens its menu', (tester) async {
+    final binding = IntegrationTestWidgetsFlutterBinding.instance;
+    binding.shouldPropagateDevicePointerEvents = true;
+    await _launch(tester);
+    if (Platform.isLinux &&
+        Process.runSync('sh', ['-c', 'command -v openbox']).exitCode == 0) {
+      await _window();
+      final wm = await Process.start('openbox', []);
+      addTearDown(wm.kill);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await tester.pump();
+    }
+    await _localShell(tester);
+    final close = find.byWidgetPredicate(
+      (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+    );
+    final tabs = find.byWidgetPredicate(
+      (w) =>
+          w is Tooltip &&
+          ((w.message ?? '').startsWith('Close ') || w.message == 'Reconnect'),
+    );
+    // Left of its close button, on the chip's title: where a hand aims.
+    Offset chip() => tester.getCenter(close.first) - const Offset(40, 0);
+
+    for (final ctrl in [false, if (Platform.isMacOS) true]) {
+      final before = tabs.evaluate().length;
+      await _realClick(tester, chip(), right: !ctrl, ctrl: ctrl);
+      await _pick(tester, 'Duplicate session');
+      await _until(
+        tester,
+        () => tabs.evaluate().length == before + 1,
+        'a second Local shell, from a ${ctrl ? 'Ctrl+click' : 'right-click'}',
+      );
+    }
+    await _closeTabs(tester);
+    // In the body: the binding checks it is back before any tear-down runs.
+    binding.shouldPropagateDevicePointerEvents = false;
+  });
 }
