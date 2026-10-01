@@ -155,6 +155,7 @@ void main() {
           .terminal
           .write('\x1b[?1000h');
       await tester.pump();
+      shells['box']!.sent.clear();
       final at = tester.getCenter(find.byType(TerminalView));
 
       await rightClick(tester, at);

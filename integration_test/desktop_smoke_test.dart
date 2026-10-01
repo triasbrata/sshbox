@@ -353,6 +353,7 @@ Future<_Recording> _record(
   WidgetTester tester,
   TerminalView view, {
   required bool bracketed,
+  bool mouse = false,
 }) async {
   final dir = _scratch();
   final got = File('${dir.path}/got');
@@ -362,6 +363,8 @@ Future<_Recording> _record(
   final script = File('${dir.path}/record.sh')
     ..writeAsStringSync(
       "printf '\\033[?2004${bracketed ? 'h' : 'l'}'\n"
+      // Every mouse mode, in SGR, as Claude Code's fullscreen view asks.
+      "${mouse ? r"printf '\033[?1000h\033[?1002h\033[?1003h\033[?1006h'" : ':'}\n"
       'stty raw -echo\n'
       'touch ${ready.path}\n'
       // From the terminal by name: a background job of a non-interactive sh
@@ -370,7 +373,7 @@ Future<_Recording> _record(
       'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
       'kill \$! 2>/dev/null\n'
       'stty sane\n'
-      "printf '\\033[?2004l'\n"
+      "printf '\\033[?1006l\\033[?1003l\\033[?1002l\\033[?1000l\\033[?2004l'\n"
       'echo $done\n',
     );
   _run(view, 'sh ${script.path}');
@@ -592,6 +595,130 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
   ]);
   expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
 }
+
+/// [body] with the real pointer reaching the app, given back however it
+/// ends: left on after a failure, it fails every test after this one.
+Future<void> _realPointer(Future<void> Function() body) async {
+  final binding = IntegrationTestWidgetsFlutterBinding.instance;
+  binding.shouldPropagateDevicePointerEvents = true;
+  try {
+    await body();
+  } finally {
+    binding.shouldPropagateDevicePointerEvents = false;
+  }
+}
+
+/// [body], and on a failure what reached the app of the keys and the
+/// buttons meanwhile: whether a real key arrived at all.
+Future<void> _hearing(Future<void> Function() body) async {
+  final heard = <String>[];
+  bool key(KeyEvent event) {
+    heard.add('${event.runtimeType} ${event.logicalKey.debugName}');
+    return false;
+  }
+
+  void pointer(PointerEvent event) {
+    if (event is PointerDownEvent || event is PointerUpEvent) {
+      heard.add(
+        '${event.runtimeType} buttons ${event.buttons}, keys held '
+        '${HardwareKeyboard.instance.logicalKeysPressed}',
+      );
+    }
+  }
+
+  HardwareKeyboard.instance.addHandler(key);
+  GestureBinding.instance.pointerRouter.addGlobalRoute(pointer);
+  try {
+    await body();
+  } on TestFailure {
+    debugPrint('What the app heard:\n${heard.join('\n')}');
+    rethrow;
+  } finally {
+    HardwareKeyboard.instance.removeHandler(key);
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(pointer);
+  }
+}
+
+/// Two fingers on a Mac's trackpad, pushing the content down over [at], a
+/// global position in this window: the phased scroll events a trackpad
+/// makes — began, changed a step at a time, ended — posted through
+/// CoreGraphics at the HID tap, as the hardware's would be, with the pointer
+/// moved over this window first; the Cocoa embedder turns them into a pan as
+/// it does a real one. (Posted to the pid instead, none arrived.) The window
+/// is found by this process's pid; its content
+/// fills its bottom, under whatever title bar there is.
+Future<void> _trackpad(WidgetTester tester, Offset at) async {
+  final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+  try {
+    final script = File('${dir.path}/trackpad.swift')
+      ..writeAsStringSync(_trackpadScript);
+    final size = tester.view.physicalSize / tester.view.devicePixelRatio;
+    var done = false;
+    // What reached the app, for a failure to say whether the pan arrived.
+    final seen = <String>[];
+    void hear(PointerEvent event) => seen.add('${event.runtimeType}');
+    GestureBinding.instance.pointerRouter.addGlobalRoute(hear);
+    final run = Process.run('swift', [
+      script.path, '$pid', '${at.dx}', '${at.dy}', '${size.height}', //
+    ]).whenComplete(() => done = true);
+    // Pumped while it runs, so the pan is drawn as it comes.
+    while (!done) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+    final ran = await run;
+    expect(ran.exitCode, 0, reason: 'the trackpad: ${ran.stderr}${ran.stdout}');
+    await tester.pump(const Duration(seconds: 1));
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(hear);
+    debugPrint(
+      'The trackpad posted ${'${ran.stdout}'.trim()}; '
+      'the app heard ${seen.toSet()} (${seen.length} events)',
+    );
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+}
+
+const _trackpadScript = r"""
+import AppKit
+import ApplicationServices
+import CoreGraphics
+
+let args = CommandLine.arguments
+let pid = pid_t(args[1])!
+let x = Double(args[2])!, y = Double(args[3])!, viewHeight = Double(args[4])!
+
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+  as! [[String: Any]]
+guard let window = windows.first(where: {
+  ($0[kCGWindowOwnerPID as String] as? pid_t) == pid
+    && ($0[kCGWindowLayer as String] as? Int) == 0
+}) else { print("no window for \(pid)"); exit(1) }
+let bounds = CGRect(
+  dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+let at = CGPoint(x: bounds.minX + x, y: bounds.maxY - viewHeight + y)
+print("at \(at) in \(bounds), trusted \(AXIsProcessTrusted())")
+
+NSRunningApplication(processIdentifier: pid)?.activate()
+usleep(300_000)
+CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: at,
+        mouseButton: .left)!.post(tap: .cghidEventTap)
+usleep(100_000)
+
+func scroll(_ dy: Int32, _ phase: Int64) {
+  let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                  wheel1: dy, wheel2: 0, wheel3: 0)!
+  e.location = at
+  e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+  e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+  e.post(tap: .cghidEventTap)
+  usleep(16_000)
+}
+// kCGScrollPhaseBegan, Changed, Ended.
+scroll(0, 1)
+for _ in 0..<40 { scroll(4, 2) }
+scroll(0, 4)
+""";
 
 /// A widget by the name it gives a screen reader, with no semantics tree
 /// asked for: the window's buttons have no text or tooltip to find them by.
@@ -3092,6 +3219,312 @@ touch '${done.path}'
         'Alt+click to hand the link to the browser',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // #126, with the real pointer. In a shell: a double click selects a word,
+  // and selecting more after it — a longer drag, then a fresh one elsewhere
+  // — copies each, a few times over, the user having seen it fail often and
+  // not always.
+  _test('after a double click on a word, a drag still selects more, and a '
+      'fresh drag elsewhere too', (tester) async {
+    await _realPointer(() async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      // Quoted: PowerShell's echo puts each word on a line of its own.
+      _run(view, "echo 'jeansh select me please'; echo 'second line here'");
+      final lines = view.terminal.buffer.lines;
+      int row(String text) {
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].getText().startsWith(text)) return i;
+        }
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => row('second line here') >= 0,
+        'the lines to be printed',
+      );
+      final first = row('jeansh select me please');
+      final second = row('second line here');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col, int line) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, line)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      Future<void> copies(List<String> steps, String text) async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, steps);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'something to be copied, expecting "$text"',
+        );
+        expect(await _clipboard(), text);
+      }
+
+      List<String> drag(int from, int to, int line) => [
+        cell(from, line),
+        'down',
+        // Held, as a hand does before it moves.
+        'sleep 300',
+        for (var col = from + 1; col <= to; col++) cell(col, line),
+        'up',
+      ];
+
+      for (var round = 0; round < 3; round++) {
+        await copies([
+          cell(8, first),
+          for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+          'sleep 400',
+        ], 'select');
+        await copies(drag(0, 22, first), 'jeansh select me please');
+        await copies(drag(0, 10, second), 'second line');
+      }
+      await _closeTabs(tester);
+    });
+  });
+
+  // #126: under a program that tracks the mouse — every mode on, as Claude
+  // Code's fullscreen view asks — a drag is the program's, so it selects and
+  // copies for itself: the press, the moves and the release, a double click
+  // as two whole clicks, and never a press left without its release, which
+  // used to leave Claude Code dragging. Shift+drag stays the terminal's own
+  // selection and copies. The program here records what it is sent.
+  _test(
+    'a program tracking the mouse gets a drag and a double click whole, and '
+    'Shift+drag still copies',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _realPointer(() async {
+        await _launch(tester);
+        final view = await _localShell(tester);
+        _run(view, 'echo jeansh select me');
+        final lines = view.terminal.buffer.lines;
+        var row = -1;
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].getText().startsWith('jeansh select me')) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be printed');
+        final got = await _record(tester, view, bracketed: false, mouse: true);
+
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        String cell(int col) {
+          final at = render.localToGlobal(
+            render.getOffset(CellOffset(col, row)) +
+                Offset(render.cellSize.width / 2, render.lineHeight / 2),
+          );
+          return 'move ${at.dx} ${at.dy}';
+        }
+
+        final drag = [
+          cell(0),
+          'down',
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ];
+        await _osMouse(tester, drag);
+        await _osMouse(tester, [
+          cell(8),
+          for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+          'sleep 400',
+        ]);
+
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _hearing(() async {
+          // Shift held past the release, as a hand holds it: the app may
+        // hear a key before the pointer events sent ahead of it, and xterm2
+        // reads Shift as the drag starts, not at the press.
+        await _osMouse(tester, [
+          'shiftdown',
+          'sleep 200',
+          ...drag,
+          'sleep 500',
+          'shiftup',
+        ]);
+          await _until(
+            tester,
+            () async => await _clipboard() != 'untouched',
+            'Shift+drag to copy',
+          );
+        });
+        expect(await _clipboard(), 'jeansh select me');
+
+        final bytes = await got.bytes('the mouse');
+        final said = bytes.replaceAll('\x1b', 'ESC');
+        int count(String pattern) => RegExp(pattern).allMatches(bytes).length;
+        // The drag's press and the double click's two, each with its release.
+        expect(count(r'\x1b\[<0;\d+;\d+M'), 3, reason: said);
+        expect(count(r'\x1b\[<0;\d+;\d+m'), 3, reason: said);
+        expect(count(r'\x1b\[<32;\d+;\d+M'), greaterThan(0), reason: said);
+        expect(
+          bytes,
+          matches(RegExp(r'\x1b\[<0;1;\d+M')),
+          reason: 'a press where the drag began: $said',
+        );
+
+        await _closeTabs(tester);
+      });
+    },
+  );
+
+  // #126: on a Mac ⌘ is the link key as well as the copy key. Under the
+  // kitty protocol, which Claude Code turns on, xterm2 sent a lone ⌘ to the
+  // program as a key, and a key sent lets the selection go, so ⌘C copied
+  // nothing. Selected with the real pointer and copied with real keys.
+  _test(
+    'on a Mac, ⌘C copies a selection under the kitty keyboard protocol',
+    skip: Platform.isMacOS ? null : '⌘ is the link key on a Mac alone',
+    (tester) async {
+      await _realPointer(() async {
+        await _launch(tester);
+        final view = await _localShell(tester);
+        _run(view, 'echo jeansh select me');
+        final lines = view.terminal.buffer.lines;
+        var row = -1;
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].getText().startsWith('jeansh select me')) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be printed');
+        // Flags 1 and 4, Claude Code's.
+        _run(view, r"printf '\033[>5u'");
+        await _until(
+          tester,
+          () => view.terminal.kittyKeyboardMode == 5,
+          'the kitty protocol to be on',
+        );
+
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        String cell(int col) {
+          final at = render.localToGlobal(
+            render.getOffset(CellOffset(col, row)) +
+                Offset(render.cellSize.width / 2, render.lineHeight / 2),
+          );
+          return 'move ${at.dx} ${at.dy}';
+        }
+
+        await _osMouse(tester, [
+          cell(0),
+          'down',
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ]);
+        // Copy on select has copied it already; ⌘C must copy it again.
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _hearing(() async {
+          await _osMouse(tester, ['cmdc']);
+          await _until(
+            tester,
+            () async => await _clipboard() != 'untouched',
+            '⌘C to copy',
+          );
+        });
+        expect(await _clipboard(), 'jeansh select me');
+
+        _run(view, r"printf '\033[<u'");
+        await _closeTabs(tester);
+      });
+    },
+  );
+
+  // #126: on a Mac a trackpad's two-finger scroll reaches Flutter as a pan,
+  // never a wheel, and only the Cocoa embedder makes one from the system's
+  // own phased scroll events. So the scroll is posted to this process as
+  // AppKit would get it from a trackpad (see [_trackpad]): over a plain
+  // shell's scrollback, and over a program reading the mouse after a click
+  // on its bottom row, where Claude Code's prompt is — a pan's wheel events
+  // went to that click's cell rather than the pointer's.
+  _test(
+    'a trackpad scroll moves the scrollback and reaches a program that reads '
+    'the mouse at the pointer',
+    skip: Platform.isMacOS
+        ? null
+        : "a phased trackpad scroll is posted through a Mac's CoreGraphics",
+    (tester) async {
+      await _realPointer(() async {
+        await _launch(tester);
+        final dir = _scratch();
+
+        final view = await _localShell(tester);
+        _run(view, 'seq 1 400');
+        await _until(
+          tester,
+          () => _text(view).any((line) => line.trim() == '400'),
+          'seq to print 400 lines',
+        );
+        final scroll = tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(TerminalView),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        // Off the bottom first, so a pan either way has room to move it.
+        scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
+        await tester.pump();
+        final from = scroll.position.pixels;
+        final box = tester.getRect(find.byType(TerminalView));
+        await _trackpad(tester, box.center);
+        expect(
+          scroll.position.pixels,
+          isNot(from),
+          reason: 'the scrollback, from $from',
+        );
+
+        // writing what it is sent to a file a byte at a time: cat would hold it
+        // in its buffer.
+        // writing what it is sent to a file a byte at a time, as cat would buffer it.
+        final got = File('${dir.path}/wheel');
+        _run(
+          view,
+          r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; "
+          'dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () => view.terminal.isUsingAltBuffer && got.existsSync(),
+          'the program to take the mouse',
+        );
+        await tester.tapAt(Offset(box.center.dx, box.bottom - 12));
+        await tester.pump(const Duration(milliseconds: 500));
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        final cell = render.getCellOffset(render.globalToLocal(box.center));
+        await _trackpad(tester, box.center);
+        final wheel = RegExp(r'\x1b\[<6[45];(\d+);(\d+)M');
+        await _until(
+          tester,
+          () => wheel.hasMatch(got.readAsStringSync()),
+          'a wheel event to reach the program',
+        );
+        final at = {
+          for (final m in wheel.allMatches(got.readAsStringSync()))
+            '${m[1]};${m[2]}',
+        };
+        expect(at, {'${cell.x + 1};${cell.y + 1}'}, reason: 'the pointer cell');
+
+        view.terminal.keyInput(TerminalKey.keyC, ctrl: true);
+        await _closeTabs(tester);
+      });
     },
   );
 
