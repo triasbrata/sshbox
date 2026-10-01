@@ -1,0 +1,152 @@
+# #145: chat's / list. Typing a / opens the slash commands the host's Claude
+# Code lists for itself (its answer to the SDK's `initialize`), filtered as
+# typed and picked with the keys; a command that opens a dialog is refused
+# before anything is typed; and one that runs, sent into a watched session,
+# comes back as a command with what it printed — then again from history.
+#
+# The host's stand-in lists compact, context, model and config as built-ins
+# and e2e-review as a skill; the live session is tools/e2e_live_claude.py in
+# a tmux pane, which records a /line as Claude Code does (tools/e2e_android.sh's
+# chat_slash).
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+# A / opens the list: the built-ins that run, and none that open a dialog.
+- tapOn: "Message “E2E live session”…"
+- inputText: "/"
+- extendedWaitUntil:
+    visible: "(?i)built-in"
+    timeout: 30000
+- assertVisible: "(?s)/compact.*"
+- assertVisible: "(?s)/context.*"
+- assertVisible: "(?s)/e2e-review.*"
+- assertNotVisible: "(?s)/model.*"
+- assertNotVisible: "(?s)/config.*"
+- takeScreenshot: chat-slash-list
+
+# Narrowed as typed: only what holds "con".
+- inputText: "con"
+- extendedWaitUntil:
+    notVisible: "(?s)/compact.*"
+    timeout: 3000
+- assertVisible: "(?s)/context.*"
+- assertNotVisible: "(?s)/e2e-review.*"
+
+# Picked with a tap: the name in the box, a space after it, the list shut.
+- tapOn: "(?s)/context.*"
+- extendedWaitUntil:
+    notVisible: "(?i)built-in"
+    timeout: 3000
+- assertVisible: "/context\\s*"
+- takeScreenshot: chat-slash-tapped
+
+# And with the keys, a hardware Enter picking rather than sending.
+- eraseText: 20
+- inputText: "/con"
+- extendedWaitUntil:
+    visible: "(?s)/context.*"
+    timeout: 10000
+- pressKey: Remote Dpad Down
+- pressKey: Enter
+- extendedWaitUntil:
+    notVisible: "(?i)built-in"
+    timeout: 3000
+- assertVisible: "/context\\s*"
+- assertNotVisible: "(?s).*Sending….*"
+
+# Escape shuts the list and leaves what is typed.
+- eraseText: 20
+- inputText: "/"
+- extendedWaitUntil:
+    visible: "(?i)built-in"
+    timeout: 10000
+# On the emulator Gboard is up and takes an Escape to close itself; a real
+# hardware keyboard keeps Gboard down, so the second is the one the list sees.
+- pressKey: Escape
+- pressKey: Escape
+- extendedWaitUntil:
+    notVisible: "(?i)built-in"
+    timeout: 3000
+- assertVisible: "/"
+
+# A dialog's command is refused: a toast, the box as it was, nothing sent.
+- eraseText: 20
+- inputText: "/model"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*/model opens a dialog chat cannot answer.*"
+    timeout: 5000
+- takeScreenshot: chat-slash-refused
+- assertVisible: "/model"
+
+# One that runs, into the watched session: a command, and what it printed.
+- eraseText: 20
+- inputText: "/context"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*Context Usage: 12k/200k tokens \\(6%\\) from /context.*"
+    timeout: 20000
+- assertVisible: "(?s)/context.*"
+- takeScreenshot: chat-slash-command
+# Recognised as the message sent: no "Not delivered" once its 30 s are up.
+- swipe:
+    start: 50%, 30%
+    end: 50%, 31%
+    duration: 32000
+- assertNotVisible: "(?s).*Not delivered.*"
+
+# Closed and opened again: the command and its output, from history.
+- tapOn: "(?s)Close .*Claude.*"
+- extendedWaitUntil:
+    visible: "Chat with Claude"
+    timeout: 10000
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*Context Usage: 12k/200k tokens \\(6%\\) from /context.*"
+    timeout: 20000
+- assertVisible: "(?s)/context.*"
+- takeScreenshot: chat-slash-history
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

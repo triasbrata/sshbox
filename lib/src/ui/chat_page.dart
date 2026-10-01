@@ -15,6 +15,7 @@ import 'file_editor_page.dart' show CodeBlockBuilder, copyAndSay;
 import 'markdown_input.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
+import 'slash_command_menu.dart';
 import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
@@ -101,6 +102,37 @@ class _ChatPageState extends State<ChatPage> {
     _agents = _chat.agents(all: true)..ignore();
   }
 
+  /// The slash commands the host's Claude Code takes, read the first time
+  /// the list opens on a connection, and again by its ↻. What came back, or
+  /// why not, is kept for [_send] and the list: see [SlashCommandMenu].
+  AsyncSnapshot<List<SlashCommand>> _commands = const AsyncSnapshot.nothing();
+
+  void _wantCommands() {
+    if (_commands.connectionState == ConnectionState.none) {
+      setState(_listCommands);
+    }
+  }
+
+  void _listCommands() {
+    _commands = const AsyncSnapshot.waiting();
+    final asked = _chat.slashCommands();
+    unawaited(
+      asked
+          .then(
+            (commands) =>
+                AsyncSnapshot.withData(ConnectionState.done, commands),
+            onError: (Object error) =>
+                AsyncSnapshot<List<SlashCommand>>.withError(
+                  ConnectionState.done,
+                  error,
+                ),
+          )
+          .then((snapshot) {
+            if (mounted) setState(() => _commands = snapshot);
+          }),
+    );
+  }
+
   /// Nearer the end than this, the reader is following: a new entry scrolls
   /// into view.
   static const _nearEnd = 240.0;
@@ -167,8 +199,7 @@ class _ChatPageState extends State<ChatPage> {
   /// Enter sends, Shift+Enter then being the new line. An IME's Enter, which
   /// confirms what it is composing, is the IME's.
   KeyEventResult _onBoxKey(FocusNode node, KeyEvent event) {
-    if (_menuOpen.value ||
-        event is KeyUpEvent ||
+    if (event is KeyUpEvent ||
         (event.logicalKey != LogicalKeyboardKey.enter &&
             event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
         _input.value.isComposingRangeValid) {
@@ -179,6 +210,8 @@ class _ChatPageState extends State<ChatPage> {
       TargetPlatform.macOS || TargetPlatform.iOS => keys.isMetaPressed,
       _ => keys.isControlPressed,
     };
+    // An open menu takes every other Enter, to pick; the chord still sends.
+    if (_menuOpen.value && !chord) return KeyEventResult.ignored;
     if (chord ||
         (chatEnterSends.value &&
             !keys.isShiftPressed &&
@@ -275,6 +308,7 @@ class _ChatPageState extends State<ChatPage> {
     if (connected && !_wasConnected) {
       _wasConnected = true;
       _listAgents();
+      _commands = const AsyncSnapshot.nothing();
       // After a reconnect the old process, or the follow of a session being
       // watched, went with the old connection: it is picked up again on the
       // new one, the same conversation either way.
@@ -418,6 +452,17 @@ class _ChatPageState extends State<ChatPage> {
   void _send() {
     final text = _input.text;
     if (text.trim().isEmpty) return;
+    // A dialog in a terminal chat cannot see takes the next Enter as a
+    // choice, so a command that may open one is not typed at all.
+    if (SlashCommand.refusal(text, _commands.data) case final why?) {
+      showToast(
+        context,
+        why,
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
     final starts = _chat.composing;
     final sent = _chat.send(text);
     _input.clear();
@@ -560,6 +605,7 @@ class _ChatPageState extends State<ChatPage> {
     ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
+    final ChatCommand command => _CommandRow(command: command),
   };
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
@@ -614,9 +660,17 @@ class _ChatPageState extends State<ChatPage> {
       ..accent = palette.accent
       // The selection colour: the field itself is drawn on the panel.
       ..panel = palette.selection;
+    // The list of commands goes above the whole row, as wide as the page:
+    // the box alone is too narrow for it on a phone.
     return SafeArea(
       top: false,
-      child: Padding(
+      child: SlashCommandMenu(
+        controller: _input,
+        commands: _commands,
+        onOpen: _wantCommands,
+        openState: _menuOpen,
+        onRefresh: () => setState(_listCommands),
+        child: Padding(
         padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -667,7 +721,9 @@ class _ChatPageState extends State<ChatPage> {
                     ? TextInputAction.send
                     : null,
                 onSubmitted: (_) {
-                  if (_sendable) _send();
+                  // Not while the list of commands is open: a half-typed
+                  // /com is a pick still being made.
+                  if (_sendable && !_menuOpen.value) _send();
                 },
                 enabled: open,
                 minLines: 1,
@@ -680,6 +736,10 @@ class _ChatPageState extends State<ChatPage> {
                 // TuiInput does not.
                 decoration: InputDecoration(
                   isDense: true,
+                  // One line, cut: at a large text size on a phone a hint
+                  // that wraps grows the box past the room the keyboard
+                  // leaves.
+                  hintMaxLines: 1,
                   prefixText: '❯ ',
                   prefixStyle: TextStyle(
                     fontFamily: TermulFonts.mono,
@@ -722,6 +782,7 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
       ),
+      ),
     );
   }
 }
@@ -739,8 +800,9 @@ class _Empty extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final root = session.host.fileRoot.trim();
+    // Scrolls when a phone's keyboard leaves it less height than it needs.
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -776,11 +838,15 @@ class _Empty extends StatelessWidget {
             // the host are offered before anything has been typed.
             if (onPickSession case final show?) ...[
               const SizedBox(height: 20),
-              TuiButton(
-                label: 'Sessions on this host',
-                prefix: '▸',
-                variant: TuiButtonVariant.ghost,
-                onPressed: show,
+              // Shrunk rather than cut where a phone is too narrow for it.
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: TuiButton(
+                  label: 'Sessions on this host',
+                  prefix: '▸',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: show,
+                ),
               ),
             ],
           ],
@@ -1413,6 +1479,51 @@ class _ToolInput extends StatelessWidget {
         _ => '$key: ${const JsonEncoder.withIndent('  ').convert(value)}',
       },
   ].join('\n');
+}
+
+/// A slash command run in the session: the command as a chip on the user's
+/// side, and under it, when it ran in the CLI, what it printed, in the
+/// terminal's font as it printed it.
+class _CommandRow extends StatelessWidget {
+  const _CommandRow({required this.command});
+
+  final ChatCommand command;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final output = command.output;
+    final typed = '/${command.name} ${command.args}'.trim();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          TuiBadge(label: typed, tone: TuiTextTone.accent),
+          if (output != null && output.trim().isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: p.surface,
+                border: Border.all(color: p.border),
+              ),
+              child: SelectableText(
+                output,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 12,
+                  color: p.text,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 /// The run's own asides: it ended, it was refused, the host had nothing to
