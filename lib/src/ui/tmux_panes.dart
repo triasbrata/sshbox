@@ -231,6 +231,13 @@ class _BorderDrag extends PanGestureRecognizer {
   static bool _precise(PointerDeviceKind kind) =>
       kind == PointerDeviceKind.mouse || kind == PointerDeviceKind.trackpad;
 
+  /// A trackpad's two-finger scroll is a pan too, and never a border drag.
+  /// Let in, it was decided by the last press's border and movement, so
+  /// after a border was dragged every scroll in the window moved that border
+  /// to the pointer and never reached the pane.
+  @override
+  bool isPointerPanZoomAllowed(PointerPanZoomStartEvent event) => false;
+
   @override
   bool isPointerAllowed(PointerEvent event) {
     if (event is PointerDownEvent) {
