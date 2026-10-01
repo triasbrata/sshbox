@@ -269,6 +269,10 @@ class _LiveHost {
   /// says: one it has just started.
   Map<String, Object?>? listed;
 
+  /// When set, `claude agents` answers only once it completes, as a slow
+  /// host answers: what the session does meanwhile goes on.
+  Future<void>? agentsGate;
+
   Future<CommandChannel> openTerminal(String command) async {
     commands.add(command);
     final typed = <String>[];
@@ -319,6 +323,8 @@ class _LiveHost {
       );
     }
     if (command.contains('agents --json')) {
+      final gate = agentsGate;
+      if (gate != null) await gate;
       final listed = jsonEncode([
         {
           'pid': _live.pid,
@@ -2891,6 +2897,53 @@ void main() {
         expect(chat.progress, isNull);
       },
     );
+
+    test('a look that comes back after its turn ended says nothing of the '
+        'next one', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      final look = chat.checkState();
+      await _settle();
+      // Answered and finished meanwhile, and the next turn begun.
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      expect(chat.progress, isNotNull);
+      expect(chat.progress?.waitingFor, isNull);
+    });
+
+    test('an idle look from the last turn does not count against the next',
+        () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'done';
+      final look = chat.checkState();
+      await _settle();
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      host.agentsGate = null;
+      // One idle look at the new turn: not yet two.
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+    });
 
     test('times and counts read as Claude Code writes them', () {
       expect(ChatProgress.elapsed(const Duration(seconds: 33)), '33s');

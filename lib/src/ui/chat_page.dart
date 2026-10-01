@@ -155,14 +155,32 @@ class _ChatPageState extends State<ChatPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final end = _scroll.position.maxScrollExtent;
-      if (end - _scroll.offset > _nearEnd) return;
-      _scroll.animateTo(
-        end,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
+      // Measured from where a scroll still in flight is going: on a hidden
+      // tab it is paused short, and would read as the reader scrolled up.
+      if (end - (_following ?? _scroll.offset) > _nearEnd) return;
+      // Hidden, the tab's tickers are off and an animation would stand
+      // still: it goes to the end at once, and is there when shown.
+      if (!TickerMode.valuesOf(context).enabled) {
+        _following = null;
+        return _scroll.jumpTo(end);
+      }
+      _following = end;
+      unawaited(
+        _scroll
+            .animateTo(
+              end,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+            )
+            .whenComplete(() {
+              if (_following == end) _following = null;
+            }),
       );
     });
   }
+
+  /// Where a scroll following the transcript is going, while it goes.
+  double? _following;
 
   /// Puts a session just picked where it was left, [at] — or, left at the
   /// bottom or never seen, at its bottom.
@@ -384,7 +402,11 @@ class _ChatPageState extends State<ChatPage> {
               SizedBox(width: 12, height: 12, child: TuiSpinner()),
               const SizedBox(width: 8),
               Text(
-                'Starting a new session on the host…',
+                // Between Claude's last message and its result, in a chat of
+                // its own.
+                chat.composing
+                    ? 'Starting a new session on the host…'
+                    : 'Claude is working…',
                 style: theme.textTheme.bodySmall,
               ),
             ],

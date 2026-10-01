@@ -451,6 +451,10 @@ class ClaudeChat extends ChangeNotifier {
         (timestamp is String ? DateTime.tryParse(timestamp) : null) ??
         DateTime.now();
     _turnTokens.clear();
+    // What the last turn waited for, or was seen idle after, is not this
+    // one's.
+    _waitingFor = null;
+    _seenIdle = false;
   }
 
   void _endTurn() {
@@ -488,13 +492,16 @@ class ClaudeChat extends ChangeNotifier {
   /// going wrong costs only this look.
   Future<void> checkState() async {
     final watching = _watching;
-    if (watching == null || _turnStart == null || _checking) return;
+    final turn = _turnStart;
+    if (watching == null || turn == null || _checking) return;
     _checking = true;
     try {
       final now = (await agents())
           .where((row) => row.sessionId == watching.sessionId)
           .firstOrNull;
-      if (_watching != watching || now == null || !now.live) return;
+      // The turn looked at may have ended, and another begun, meanwhile.
+      if (_watching != watching || _turnStart != turn) return;
+      if (now == null || !now.live) return;
       _waitingFor = now.waitingFor;
       // Idle with nothing to wait for, twice running: the turn's end was
       // missed, so it stops spinning rather than spinning for ever. Twice,
