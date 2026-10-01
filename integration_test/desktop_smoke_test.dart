@@ -24,7 +24,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
-    show DropdownButton, InkWell, PopupMenuDivider, TextField, Tooltip;
+    show DropdownButton, Icons, InkWell, PopupMenuDivider, TextField, Tooltip;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -40,6 +40,7 @@ import 'package:sshbox/src/update/updater.dart'
 import 'package:sshbox/src/ui/file_download.dart'
     show downloadFile, openDownload;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart' show localTmux, terminalFonts;
@@ -689,7 +690,15 @@ const _standInClaude = r'''#!/bin/sh
 d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 sid=0e2e0000-0000-4000-8000-00000000c0de
 t="$d/projects/jeansh-e2e/$sid.jsonl"
-answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in"}]}}'
+# Thirty diagrams after it (#131): a long reply's worth, past the 27 a Mac
+# preview once drew as one grey area.
+fences=''
+i=1
+while [ $i -le 30 ]; do
+  fences="$fences\\n\\n\`\`\`mermaid\\ngraph LR\\n  E2E$i --> Done$i\\n\`\`\`"
+  i=$((i + 1))
+done
+answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in'"$fences"'"}]}}'
 case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
@@ -1088,6 +1097,99 @@ touch '${done.path}'
         reason: 'the right-click menu copied the selection without its gaps',
       );
 
+      await _closeTabs(tester);
+    },
+  );
+
+  // #131: a terminal selection holding Mermaid is shown as a diagram, where
+  // a web view draws one — the Mac — from the right-click menu, and not
+  // offered at all where none does.
+  _test(
+    'a selection holding Mermaid is shown as a diagram',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final script = File('${_scratch().path}/diagram.sh')
+        ..writeAsStringSync(
+          "printf '  \\140\\140\\140mermaid\\n  graph TD\\n    A --> B\\n"
+          "  \\140\\140\\140\\n'\n",
+        );
+      _run(view, 'sh ${script.path}');
+
+      final lines = view.terminal.buffer.lines;
+      var open = -1;
+      await _until(tester, () {
+        for (var i = 0; i + 3 < lines.length; i++) {
+          if (lines[i].getText().trim() == '```mermaid' &&
+              lines[i + 3].getText().trim() == '```') {
+            open = i;
+          }
+        }
+        return open >= 0;
+      }, 'the mermaid block to be drawn');
+
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col, int row) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      final mouse = await tester.startGesture(
+        cell(0, open),
+        kind: PointerDeviceKind.mouse,
+      );
+      for (final (col, row) in [(6, open + 1), (10, open + 2), (5, open + 3)]) {
+        await mouse.moveTo(cell(col, row));
+        await tester.pump();
+      }
+      await mouse.up();
+      await tester.pump(const Duration(milliseconds: 300));
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toasts to go',
+      );
+      await tester.tapAt(
+        cell(4, open + 1),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await _until(
+        tester,
+        () => _label('Copy').evaluate().isNotEmpty,
+        'the menu to open',
+      );
+      if (!hasWebView) {
+        expect(_label('Show as diagram'), findsNothing);
+        await _escape(tester);
+      } else {
+        await _pick(tester, 'Show as diagram');
+        await _until(
+          tester,
+          () => find.byType(MermaidView).evaluate().isNotEmpty,
+          'the diagram dialog',
+        );
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          'graph TD\n  A --> B\n',
+        );
+        await _until(
+          tester,
+          () => find
+              .descendant(
+                of: find.byType(MermaidView),
+                matching: find.byIcon(Icons.account_tree_outlined),
+              )
+              .evaluate()
+              .isEmpty,
+          'the diagram to be drawn',
+          timeout: const Duration(seconds: 30),
+        );
+        await tester.tap(_label('Close'));
+        await tester.pump(const Duration(milliseconds: 600));
+      }
       await _closeTabs(tester);
     },
   );
@@ -1768,6 +1870,43 @@ touch '${done.path}'
         "the stand-in's answer in the chat",
         timeout: const Duration(seconds: 40),
       );
+
+      // #131: its mermaid fences are diagrams where a web view draws them,
+      // the Mac, and their source as code where none does.
+      final diagrams = find.byType(MermaidView);
+      if (!hasWebView) {
+        expect(diagrams, findsNothing);
+        expect(
+          find.textContaining('E2E1 --> Done1', findRichText: true),
+          findsWidgets,
+        );
+      } else {
+        // Drawn: the placeholder a view shows until the page says its height.
+        Finder waiting() => find.descendant(
+          of: diagrams,
+          matching: find.byIcon(Icons.account_tree_outlined),
+        );
+        expect(diagrams, findsWidgets);
+        expect(
+          find.textContaining('E2E1 --> Done1', findRichText: true),
+          findsNothing,
+          reason: 'a diagram shown as its source',
+        );
+        await _until(
+          tester,
+          () => waiting().evaluate().length < diagrams.evaluate().length,
+          'a diagram in the reply to be drawn',
+          timeout: const Duration(seconds: 60),
+        );
+        // Given the time, how many of those built came to be drawn, and none
+        // as the grey of a widget that threw.
+        await tester.pump(const Duration(seconds: 5));
+        debugPrint(
+          'Diagrams built ${diagrams.evaluate().length}, '
+          'still waiting ${waiting().evaluate().length}',
+        );
+        expect(find.byType(ErrorWidget), findsNothing);
+      }
       await _closeTabs(tester);
     },
   );
