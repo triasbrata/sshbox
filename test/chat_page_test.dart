@@ -2090,6 +2090,30 @@ void main() {
       expect(box(tester), '[Image #1] plain words');
     });
 
+    testWidgets('the selection menu offers Paste with only a picture on the '
+        'clipboard, and it takes the picture', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      tester
+          .state<EditableTextState>(
+            find.descendant(
+              of: find.byType(TextField),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .showToolbar();
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+    });
+
     testWidgets('a file that is not a picture is refused, saying why', (
       tester,
     ) async {
