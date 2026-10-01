@@ -1005,7 +1005,6 @@ Future<void> _grab(WidgetTester tester, String name) async {
   ]);
 }
 
-
 /// Answers the desktop's save dialog as a person would, once it is up: saves
 /// to [path], or cancels it when [path] is null. A Mac's panel saves where it
 /// opens, so [path] there only says to save. Done outside Flutter, which the
@@ -2253,6 +2252,48 @@ touch '${done.path}'
       // The chat is the same one, its answer still there. (A second message
       // would go through claude attach, which the stand-in does not answer.)
       expect(_answer, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // The same report, as the user meant it: the right-click was on a session
+  // in chat's sidebar, which is no tab and has no menu. A real right-click
+  // there opens nothing, while one on the conversation still opens the tab's.
+  _test(
+    "a real right-click on a chat session is not the tab's",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
+      _standInClaudeFor();
+      await _launch(tester);
+      // Two tabs, so the tab's menu has a Group with… to offer.
+      await _chatAnswered(tester);
+      // The stand-in's own session, as `claude agents` lists it.
+      final row = find.text('e2e');
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        "the stand-in's session in the sidebar",
+      );
+
+      await _realRightClick(tester, tester.getCenter(row.first));
+      await tester.pumpAndSettle();
+      expect(find.text('Group with…'), findsNothing);
+
+      await _realRightClick(tester, tester.getCenter(_answer.first));
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the tab's menu, from the conversation",
+      );
+      await _escape(tester);
+      binding.shouldPropagateDevicePointerEvents = false;
       await _closeTabs(tester);
     },
   );

@@ -441,14 +441,20 @@ class _ChatPageState extends State<ChatPage> {
       final sidebar = wide && _sidebarOpen;
       // Chat at the content size, its sessions, messages, tool rows, code
       // and composer alike: see ContentText.
-      final sessions = ContentText(
-        child: _SessionList(
-          chat: _chat,
-          agents: _agents,
-          connected: widget.session.isConnected,
-          onPick: _pick,
-          onRefresh: () => setState(_listAgents),
-          onNewChat: _newChat,
+      // A right-click on the sessions is theirs, and a session has no menu:
+      // claimed here, it never falls through to the tab's own menu, whose
+      // Group with… a session is no tab to answer.
+      final sessions = GestureDetector(
+        onSecondaryTapUp: (_) {},
+        child: ContentText(
+          child: _SessionList(
+            chat: _chat,
+            agents: _agents,
+            connected: widget.session.isConnected,
+            onPick: _pick,
+            onRefresh: () => setState(_listAgents),
+            onNewChat: _newChat,
+          ),
         ),
       );
       return Scaffold(
