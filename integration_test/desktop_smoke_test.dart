@@ -2320,18 +2320,29 @@ touch '${done.path}'
       final hadConfig = config.existsSync();
       addTearDown(() {
         // What the session saw, for a run that went red.
-        final shown = Process.runSync('tmux', ['capture-pane', '-p', '-t', 'e2e-live']);
+        final shown = Process.runSync('tmux', [
+          'capture-pane',
+          '-p',
+          '-t',
+          'e2e-live',
+        ]);
         debugPrint('Pane: ${shown.stdout}${shown.stderr}');
         final env = Process.runSync('tmux', ['show-environment', '-g']);
-        debugPrint('tmux env: ${'${env.stdout}'.split('\n').where((l) => l.startsWith('HOME') || l.startsWith('CLAUDE') || l.startsWith('LANG')).join(' ')}');
-        for (final f in config.existsSync()
-            ? config.listSync(recursive: true).whereType<File>()
-            : const <File>[]) {
+        debugPrint(
+          'tmux env: ${'${env.stdout}'.split('\n').where((l) => l.startsWith('HOME') || l.startsWith('CLAUDE') || l.startsWith('LANG')).join(' ')}',
+        );
+        for (final f
+            in config.existsSync()
+                ? config.listSync(recursive: true).whereType<File>()
+                : const <File>[]) {
           final text = f.readAsStringSync();
-          final tail = text.length > 1500 ? text.substring(text.length - 1500) : text;
+          final tail = text.length > 1500
+              ? text.substring(text.length - 1500)
+              : text;
           debugPrint('${f.path}: $tail');
         }
-        if (agents.existsSync()) debugPrint('Listing: ${agents.readAsStringSync()}');
+        if (agents.existsSync())
+          debugPrint('Listing: ${agents.readAsStringSync()}');
         Process.runSync('tmux', ['kill-session', '-t', 'e2e-live']);
         if (claude.existsSync()) claude.deleteSync();
         if (agents.existsSync()) agents.deleteSync();
@@ -2440,19 +2451,32 @@ touch '${done.path}'
         );
         await tester.enterText(field, text);
         await tester.tap(find.byTooltip('Send'));
-        // In the session's transcript, or a refusal's toast to say why not.
+        // In the session's own transcript, typed into its pane, or what the
+        // chat said instead: a toast, or its own word after 30 s.
+        final transcript = File('${projects.path}/$sid.jsonl');
         final toasts = <String>{};
-        final end = DateTime.now().add(const Duration(seconds: 10));
-        while (find.textContaining(text, findRichText: true).evaluate().isEmpty) {
+        final end = DateTime.now().add(const Duration(seconds: 40));
+        while (!transcript.readAsStringSync().contains(jsonEncode(text))) {
           toasts.addAll(
             find
-                .descendant(of: find.byType(TuiToastCard), matching: find.byType(Text))
+                .descendant(
+                  of: find.byType(TuiToastCard),
+                  matching: find.byType(Text),
+                )
                 .evaluate()
                 .map((e) => (e.widget as Text).data)
                 .whereType<String>(),
           );
           if (DateTime.now().isAfter(end)) {
-            fail('"$text" never reached the session; toasts: $toasts');
+            final words = find
+                .byType(Text)
+                .evaluate()
+                .map((e) => (e.widget as Text).data)
+                .whereType<String>()
+                .join(' | ');
+            fail(
+              '"$text" never reached the pane; toasts: $toasts; on screen: $words',
+            );
           }
           await Future<void>.delayed(const Duration(milliseconds: 100));
           await tester.pump();
