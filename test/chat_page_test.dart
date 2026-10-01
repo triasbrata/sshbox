@@ -123,6 +123,27 @@ class _Shell
   /// What `claude agents --json` answers, when a test sets one.
   String? listing;
 
+  /// What the CLI answers `initialize` with: its slash commands.
+  String slashListing = '${jsonEncode({
+    'type': 'control_response',
+    'response': {
+      'response': {
+        'commands': [
+          {
+            'name': 'model',
+            'description': 'Set the AI model for Claude Code',
+            'builtin': true,
+          },
+          {
+            'name': 'compact',
+            'description': 'Free up context by summarizing the conversation',
+            'builtin': true,
+          },
+        ],
+      },
+    },
+  })}\n';
+
   /// What finding an interactive session's tmux pane answers: none, unless a
   /// test puts it in one.
   String pane = 'sshbox:no pane\n';
@@ -184,6 +205,13 @@ class _Shell
           ),
         ),
         write: (Uint8List data) => paneTyped.add(utf8.decode(data)),
+        close: () {},
+      );
+    }
+    if (command.contains('control_request')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(slashListing))),
+        write: (Uint8List data) {},
         close: () {},
       );
     }
@@ -468,6 +496,159 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.text('Claude is working…'), findsNothing);
+  });
+
+  testWidgets('a / lists the host\'s commands, and one that opens a dialog '
+      'is neither offered nor sent', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    // Read from the host the first time the list opens, and only then.
+    expect(shell.commands.where((c) => c.contains('initialize')), isEmpty);
+    await tester.enterText(find.byType(TextField), '/');
+    await tester.pump();
+    await tester.pump();
+    expect(shell.commands.where((c) => c.contains('initialize')), hasLength(1));
+    expect(find.text('/compact'), findsOneWidget);
+    expect(find.text('/model'), findsNothing);
+
+    // Typed whole and sent anyway, it is refused, and nothing reaches Claude.
+    await tester.enterText(find.byType(TextField), '/model opus');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    expect(shell.written, isEmpty);
+    expect(find.textContaining('run it in the terminal'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '/model opus',
+    );
+
+    await tester.enterText(find.byType(TextField), '/compact');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    expect(shell.written, hasLength(1));
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets('on a phone with the keyboard up the list fits, and /con '
+      'still shows /context', (tester) async {
+    // The CI emulator's screen: 320 by 568, with Gboard over the bottom.
+    tester.view
+      ..physicalSize = const Size(320, 568)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')])
+      ..slashListing = '${jsonEncode({
+        'type': 'control_response',
+        'response': {
+          'response': {
+            'commands': [
+              for (final name in ['compact', 'context', 'code-review'])
+                {
+                  'name': name,
+                  'description': 'What /$name does, said at some length so '
+                      'it cannot fit a phone',
+                  'argumentHint': '<optional custom summarization '
+                      'instructions>',
+                  'builtin': true,
+                },
+              {
+                'name': 'a-skill-whose-name-is-much-too-long-for-a-phone',
+                'description': 'A skill',
+              },
+            ],
+          },
+        },
+      })}\n';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    // A chat with nothing in it yet, the keyboard up: what it says scrolls
+    // rather than overflowing, as its button shrinks rather than overflowing.
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pump();
+    tester.view.resetViewInsets();
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    // The keyboard comes up as the box is typed into. An overflow is an
+    // error the test framework fails on by itself.
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), '/');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('/compact').hitTestable(), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '/con');
+    await tester.pump();
+    expect(find.text('/context').hitTestable(), findsOneWidget);
+    // The list sits above the box and inside the room the keyboard leaves.
+    final list = tester.getRect(find.text('/context'));
+    expect(list.bottom, lessThanOrEqualTo(568 - 260));
+    expect(
+      list.bottom,
+      lessThanOrEqualTo(tester.getRect(find.byType(TextField)).top),
+    );
+  });
+
+  testWidgets('at the largest content text size the list\'s rows still fit '
+      'on a phone', (tester) async {
+    addTearDown(() => terminalSettings.value = TerminalSettings.defaultStyle);
+    tester.view
+      ..physicalSize = const Size(320, 568)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')])
+      ..slashListing = '${jsonEncode({
+        'type': 'control_response',
+        'response': {
+          'response': {
+            'commands': [
+              for (final name in ['compact', 'context'])
+                {
+                  'name': name,
+                  'description': 'What /$name does',
+                  'argumentHint': '<instructions>',
+                  'builtin': true,
+                },
+            ],
+          },
+        },
+      })}\n';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+    terminalSettings.value = terminalStyleOf('monospace', 32);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pump();
+
+    // An overflow in a row is an error the test framework fails on.
+    await tester.enterText(find.byType(TextField), '/con');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('/context'), findsOneWidget);
   });
 
   testWidgets('an unconnected session says so rather than starting anything', (
@@ -1025,6 +1206,49 @@ void main() {
         expect(field.controller.text, isNot(contains(r'\n')));
       }
     }
+
+    testWidgets('every code box has a Copy code button holding exactly its '
+        'text: a command, a file written and a result', (tester) async {
+      final copied = _useFakeClipboard();
+      const command = "grep -n 'error' app.log\ntail -n 5 app.log";
+      await opened(tester, 'Bash', {'command': command}, result: 'a\nb');
+      final buttons = find.byTooltip('Copy code');
+      expect(buttons, findsNWidgets(2));
+      await tester.tap(buttons.at(0));
+      await tester.pump();
+      await tester.tap(buttons.at(1));
+      await tester.pump();
+      expect(copied, [command, 'a\nb']);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('Write and Edit copy the file and the diff as shown', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      const content = 'import os\n\ndef main():\n    pass\n';
+      await opened(tester, 'Write', {
+        'file_path': '/srv/a.py',
+        'content': content,
+      });
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied, [content]);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('Edit copies its diff with the - and + lines', (tester) async {
+      final copied = _useFakeClipboard();
+      await opened(tester, 'Edit', {
+        'file_path': '/srv/n.conf',
+        'old_string': 'listen 80;',
+        'new_string': 'listen 8080;',
+      });
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied, ['- listen 80;\n+ listen 8080;']);
+      await tester.pump(const Duration(seconds: 2));
+    });
 
     testWidgets('Bash: the command as a command, what it is for above it', (
       tester,
@@ -2190,6 +2414,60 @@ void main() {
         );
       });
 
+      testWidgets('not while the list of commands is open: Enter picks, and '
+          'only the chord sends', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, '/com');
+        await tester.pump();
+        expect(find.text('/compact'), findsOneWidget);
+
+        // Enter picks the command rather than sending a half-typed /com.
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(box(tester), '/compact ');
+        expect(find.text('/compact'), findsNothing);
+
+        // Gboard's own send action, the list open again, sends nothing, even
+        // with a whole command in the box.
+        await tester.enterText(find.byType(TextField), '/compact');
+        await tester.pump();
+        expect(find.text('/compact'), findsWidgets);
+        await tester.testTextInput.receiveAction(TextInputAction.send);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+
+        // The chord sends what is in the box, list open or not.
+        await tester.enterText(find.byType(TextField), '/compact');
+        await tester.pump();
+        expect(find.text('/compact'), findsWidgets);
+        await chord(tester, LogicalKeyboardKey.controlLeft);
+        expect(shell.written, hasLength(1));
+        expect(
+          (((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content'] as List)
+              .single['text'],
+          '/compact',
+        );
+      });
+
+      testWidgets('a list with nothing to pick leaves Enter to the box, so a '
+          'command no one knows is refused there', (tester) async {
+        chatEnterSends.value = true;
+        addTearDown(() => chatEnterSends.value = false);
+        final shell = await typed(tester, '/xyz');
+        await tester.pump();
+        expect(find.text('No command chat can run starts with /xyz'),
+            findsOneWidget);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shell.written, isEmpty);
+        expect(find.textContaining('run it in the terminal'), findsOneWidget);
+        await tester.pump(const Duration(seconds: 6));
+      });
+
       testWidgets('never with an IME\'s Enter, which confirms what it is '
           'composing', (tester) async {
         chatEnterSends.value = true;
@@ -2305,7 +2583,9 @@ void main() {
       '60e6kgAAAABJRU5ErkJggg==',
     );
     late Directory dir;
-    setUp(() => dir = Directory.systemTemp.createTempSync('chat-pictures-test'));
+    setUp(
+      () => dir = Directory.systemTemp.createTempSync('chat-pictures-test'),
+    );
     tearDown(() => dir.deleteSync(recursive: true));
 
     /// What the clipboard holds next, as MainActivity hands a picture over:
@@ -2353,7 +2633,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await tester.pump();
       await _continue(tester, 'Zsh config fix');
@@ -2426,7 +2708,10 @@ void main() {
     testWidgets('an [Image #N] whose number no int holds draws, and is sent, '
         'as text', (tester) async {
       final shell = await continued(tester);
-      await tester.enterText(find.byType(TextField), 'see [Image #99999999999999999999]');
+      await tester.enterText(
+        find.byType(TextField),
+        'see [Image #99999999999999999999]',
+      );
       await tester.pump();
       expect(tester.takeException(), isNull);
       expect(box(tester), 'see [Image #99999999999999999999]');
@@ -2440,6 +2725,89 @@ void main() {
         {'type': 'text', 'text': 'see [Image #99999999999999999999]'},
       ]);
     });
+
+    testWidgets(
+      'a picture dropped before the chat is ready becomes a card, and '
+      'Send turns on once it is',
+      (tester) async {
+        final shell = _Shell();
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        final shot = File('${dir.path}/early.png')..writeAsBytesSync(pixel);
+
+        // Not connected: nothing to send to yet, but the picture is kept.
+        await tester.runAsync(() async {
+          await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        });
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        IconButton send() => tester.widget<IconButton>(
+          find.widgetWithIcon(IconButton, Icons.send),
+        );
+        expect(send().onPressed, isNull);
+
+        await tester.runAsync(() => session.connect(secrets: _NoSecrets()));
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        expect(send().onPressed, isNotNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.linux),
+    );
+
+    testWidgets('a session that is read-only from here refuses a picture, '
+        'saying why', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      final shot = File('${dir.path}/ro.png')..writeAsBytesSync(pixel);
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      // A drop target is off there, so the refusal is the + button's route:
+      // no card either way.
+      expect(find.text('[Image #1] ro.png'), findsNothing);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.widgetWithIcon(
+                IconButton,
+                Icons.add_photo_alternate_outlined,
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     testWidgets('removing a card takes its token out, and deleting a token '
         'takes its card', (tester) async {

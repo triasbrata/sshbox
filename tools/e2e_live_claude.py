@@ -6,7 +6,9 @@ idle and waiting for nothing; a ❯ input line with the cursor just after it;
 and the pane's foreground. Each line typed at it — from the chat, which types
 into the pane, or at the pane itself — goes into its transcript as the user's
 turn, followed by an answer, which chat reads back as it follows the
-transcript.
+transcript. A line starting with `/` is a command instead, recorded as 2.1.286
+records one it runs itself: a `system` line of subtype `local_command` holding
+its name, message and arguments in tags, then another with what it printed.
 
     python3 e2e_live_claude.py SESSION_ID
 
@@ -53,7 +55,17 @@ while True:
     if not line:
         break
     text = line.rstrip('\n')
-    if text:
+    if text.startswith('/'):
+        name, _, args = text[1:].partition(' ')
+        record({'type': 'system', 'subtype': 'local_command', 'content':
+                f'<command-name>/{name}</command-name>\n'
+                f'<command-message>{name}</command-message>\n'
+                f'<command-args>{args.strip()}</command-args>'})
+        printed = f'Context Usage: 12k/200k tokens (6%) from /{name}'
+        record({'type': 'system', 'subtype': 'local_command', 'content':
+                f'<local-command-stdout>{printed}</local-command-stdout>'})
+        sys.stdout.write(printed + '\n')
+    elif text:
         record({'type': 'user', 'message': {'role': 'user', 'content': text}})
         answer = f'Echo: {text}'
         record({'type': 'assistant', 'message': {

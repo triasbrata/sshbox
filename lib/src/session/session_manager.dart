@@ -1945,17 +1945,51 @@ class _ShiftEnterInputHandler implements TerminalInputHandler {
 /// so one hardware Ctrl+T reached it twice, and Shift+Enter made two new
 /// lines. The key bar was never affected, since it sends bytes rather than
 /// presses and releases. Every other handler already drops releases.
+///
+/// And a modifier pressed alone — ⌘, Ctrl, Alt, Shift, Super, Hyper, or a
+/// lock key, Caps, Num or Scroll Lock — goes out only to a program that
+/// asked for every key as an escape code, kitty's flag 8. The
+/// protocol reports a lone modifier under that flag alone, but xterm2 sent
+/// one under any flag, `ESC [57444;9u` for ⌘ under Claude Code's 1 and 4.
+/// Anything sent counts as typing, which lets a selection go, so on a Mac,
+/// where ⌘ is also the link key, pressing ⌘ to copy wiped the selection and
+/// ⌘C copied nothing (#126).
 class _ReleaseOnlyIfAsked implements TerminalInputHandler {
   const _ReleaseOnlyIfAsked(this._keys);
 
   final TerminalInputHandler _keys;
 
   static const _reportEventTypes = 0x02;
+  static const _reportAllKeys = 0x08;
+
+  static const _modifiers = {
+    TerminalKey.shiftLeft,
+    TerminalKey.shiftRight,
+    TerminalKey.controlLeft,
+    TerminalKey.controlRight,
+    TerminalKey.altLeft,
+    TerminalKey.altRight,
+    TerminalKey.metaLeft,
+    TerminalKey.metaRight,
+    TerminalKey.shift,
+    TerminalKey.control,
+    TerminalKey.alt,
+    TerminalKey.meta,
+    TerminalKey.superKey,
+    TerminalKey.hyper,
+    TerminalKey.capsLock,
+    TerminalKey.numLock,
+    TerminalKey.scrollLock,
+  };
 
   @override
   String? call(TerminalKeyboardEvent event) {
+    final mode = event.state.kittyKeyboardMode;
     if (event.type == TerminalKeyEventType.release &&
-        event.state.kittyKeyboardMode & _reportEventTypes == 0) {
+        mode & _reportEventTypes == 0) {
+      return null;
+    }
+    if (_modifiers.contains(event.key) && mode & _reportAllKeys == 0) {
       return null;
     }
     return _keys(event);

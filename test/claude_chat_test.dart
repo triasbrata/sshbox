@@ -414,6 +414,108 @@ Map<String, Object?> _said(String text) => {
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  // A chat closed while a host call is in flight must not go on to open
+  // channels nobody will close: a tail -f or a claude -p held on the SSH
+  // session for a tab that no longer exists.
+  group('a chat closed mid-call opens nothing more', () {
+    test('after `claude --bg` answers: no listing, no history, no tail', () async {
+      final gate = Completer<void>();
+      final opened = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          opened.add(command);
+          if (command.contains(' --bg ')) {
+            await gate.future;
+            return (
+              output: Stream.value(
+                Uint8List.fromList(utf8.encode('backgrounded · e2e0c0de · x\n')),
+              ),
+              write: (Uint8List _) {},
+              close: () {},
+            );
+          }
+          // Anything later: a live session listed, a history, a tail.
+          return _noHistory();
+        },
+      );
+      final sent = chat.send('hello');
+      await _settle();
+      expect(opened.single, contains(' --bg '));
+      chat.dispose();
+      gate.complete();
+      await sent;
+      expect(opened, hasLength(1), reason: 'opened after dispose: $opened');
+    });
+
+    test('a claude -p whose open lands after dispose is closed', () async {
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => gate.future);
+      final started = chat.start();
+      await _settle();
+      chat.dispose();
+      final claude = _FakeClaude();
+      gate.complete(claude.channel);
+      await started;
+      expect(claude.closed, isTrue);
+    });
+
+    test('a tail whose open lands after dispose is closed', () async {
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(
+        open: (command) =>
+            command.contains(' -f ') ? gate.future : Future.value(_noHistory()),
+      );
+      final picked = chat.continueFrom(
+        const ClaudeAgent(
+          sessionId: 'f44e6c8b-7c64-4ef9-8f88-aeb262622b73',
+          name: 'x',
+          cwd: '/srv',
+          kind: 'background',
+          id: 'e2e0c0de',
+          state: 'done',
+          pid: 4242,
+        ),
+      );
+      await _settle();
+      await _settle();
+      chat.dispose();
+      final tail = _FakeClaude();
+      gate.complete(tail.channel);
+      await picked;
+      expect(tail.closed, isTrue);
+    });
+  });
+
+  // What a Mac's e2e hit closing a chat tab: a "used after being disposed"
+  // thrown after the test, failing the tests that came next.
+  test('a chat closed while a new session starts and Claude still writes '
+      'tells no one', () async {
+    final started = StreamController<Uint8List>();
+    final chat = ClaudeChat(
+      open: (_) async =>
+          (output: started.stream, write: (Uint8List _) {}, close: () {}),
+    );
+    final sent = chat.send('hello');
+    await _settle();
+    chat.dispose();
+    // `claude --bg` answers after the tab has gone.
+    started.add(Uint8List.fromList(utf8.encode('no session\n')));
+    await started.close();
+    await sent;
+
+    final claude = _FakeClaude();
+    final running = ClaudeChat(open: (_) async => claude.channel);
+    await running.start();
+    running.dispose();
+    // A line Claude was writing as the tab closed.
+    claude.event({
+      'type': 'system',
+      'subtype': 'init',
+      'session_id': 'f44e6c8b-7c64-4ef9-8f88-aeb262622b73',
+    });
+    await _settle();
+  });
+
   test('a turn becomes bubbles, and its tools fold their results in', () async {
     final claude = _FakeClaude();
     final chat = ClaudeChat(open: (_) async => claude.channel);
@@ -1468,6 +1570,135 @@ void main() {
       expect(host.commands.any((command) => command.contains(' stop ')),
           isFalse);
       expect(chat.watching?.sessionId, _live.sessionId);
+    });
+
+    test('a command typed from the chat is taken as sent once the session '
+        'records it as a command', () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('/color cyan');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals.single.typed, ['/color cyan', '\r']);
+
+      // How 2.1.286 records it: tags, in a system line, then its output.
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<command-name>/color</command-name>\n'
+            '            <command-message>color</command-message>\n'
+            '            <command-args>cyan</command-args>',
+      });
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Session color set to: cyan'
+            '</local-command-stdout>',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // No message left sending, and the command drawn once, as a command.
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+      final command = chat.entries.whereType<ChatCommand>().single;
+      expect(command.name, 'color');
+      expect(command.args, 'cyan');
+      expect(command.output, 'Session color set to: cyan');
+    });
+
+    test('a command typed from the chat that the session records in a user '
+        'line is taken as sent too', () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('/context');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      // 2.1.286 wrote /context, /config and /agents this way.
+      host.adds(
+        recorded(
+          '<command-name>/context</command-name>\n'
+          '            <command-message>context</command-message>\n'
+          '            <command-args></command-args>',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+      expect(chat.entries.whereType<ChatCommand>().single.name, 'context');
+    });
+
+    test('commands in a transcript read back as commands and what they '
+        'printed, never as their tags', () async {
+      // Lines as Claude Code 2.1.286 wrote them in a throwaway session, cut
+      // to what matters.
+      String user(String content, {bool meta = false}) => jsonEncode({
+        'type': 'user',
+        'isMeta': meta,
+        'message': {'role': 'user', 'content': content},
+      });
+      String system(String content) => jsonEncode({
+        'type': 'system',
+        'subtype': 'local_command',
+        'isMeta': false,
+        'content': content,
+      });
+      final text = [
+        system(
+          '<command-name>/model</command-name>\n'
+          '            <command-message>model</command-message>\n'
+          '            <command-args></command-args>',
+        ),
+        system(
+          '<local-command-stdout>Kept model as `Opus 5.5`'
+          '</local-command-stdout>',
+        ),
+        user(
+          '<local-command-caveat>The command below was run directly in '
+          'Claude Code…</local-command-caveat>',
+          meta: true,
+        ),
+        user(
+          '<command-name>/context</command-name>\n'
+          '            <command-message>context</command-message>\n'
+          '            <command-args></command-args>',
+        ),
+        user(
+          '<local-command-stdout> \x1b[1mContext Usage\x1b[22m\n'
+          '\x1b[38;5;244m⛀ \x1b[39m  Opus 5.5</local-command-stdout>',
+        ),
+        user('## Context Usage\n\n**Model:** claude-opus-5-5', meta: true),
+        user(
+          '<command-message>simplify is running…</command-message>\n'
+          '<command-name>/simplify</command-name>\n'
+          '<command-args>lib/</command-args>',
+        ),
+        user('Review the changed code for reuse…', meta: true),
+      ].join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      final commands = chat.entries.whereType<ChatCommand>().toList();
+      expect(
+        [for (final c in commands) c.name],
+        ['model', 'context', 'simplify'],
+      );
+      expect(commands[0].output, 'Kept model as `Opus 5.5`');
+      // The terminal's colours are taken out.
+      expect(commands[1].output, ' Context Usage\n⛀   Opus 5.5');
+      expect(commands[2].args, 'lib/');
+      expect(commands[2].output, isNull);
+      // Nothing else: no tag, no caveat, no skill's own prompt.
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+      for (final notice in chat.entries.whereType<ChatNotice>()) {
+        expect(notice.text, isNot(contains('<')));
+        expect(notice.text, isNot(contains('Context Usage')));
+        expect(notice.text, isNot(contains('Review the changed')));
+      }
     });
 
     test('a message behind a running turn says it is queued', () async {
@@ -2649,6 +2880,7 @@ void main() {
             ChatSaid(:final text) => text,
             ChatNotice(:final text) => text,
             ChatToolRun() => 'tool',
+            ChatCommand(:final name) => '/$name',
           },
       ];
       final gap = texts.indexWhere((text) => text.contains('left out'));
