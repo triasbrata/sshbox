@@ -473,6 +473,18 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
   expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
 }
 
+/// [body] with the real pointer reaching the app, given back however it
+/// ends: left on after a failure, it fails every test after this one.
+Future<void> _realPointer(Future<void> Function() body) async {
+  final binding = IntegrationTestWidgetsFlutterBinding.instance;
+  binding.shouldPropagateDevicePointerEvents = true;
+  try {
+    await body();
+  } finally {
+    binding.shouldPropagateDevicePointerEvents = false;
+  }
+}
+
 /// The real pointer, moved and pressed as a hand would, over this window:
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `sleep ms`, or
@@ -498,6 +510,9 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
     final window = await _windowRect();
     final frame = (window.width - tester.view.physicalSize.width) / 2;
     final origin = window.topLeft + Offset(frame, frame);
+    // Keys go to the focused window, which Xvfb with no window manager
+    // gives nobody: as _escape does.
+    await _xdo(['windowfocus', '--sync', await _window()]);
     run = _xdo([
       for (final step in steps)
         ...switch (step.split(' ')) {
@@ -520,12 +535,26 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
     final script = File('${dir.path}/mouse.swift')
       ..writeAsStringSync(_macMouseScript);
     final size = tester.view.physicalSize / ratio;
-    run = Process.run('swift', [
-      script.path, '$pid', '${size.height}', steps.join(';'), //
-    ]).then((ran) {
-      expect(ran.exitCode, 0, reason: 'the mouse: ${ran.stderr}${ran.stdout}');
-      return ran;
-    });
+    // Frontmost, for its keys: the pointer reaches the window under it
+    // anyway, but keys go to the active app, and a Mac will not let the
+    // script's own activate() take that from another app.
+    final front = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to set frontmost of '
+          '(first process whose unix id is $pid) to true',
+    ]);
+    expect(front.exitCode, 0, reason: 'frontmost: ${front.stderr}');
+    run =
+        Process.run('swift', [
+          script.path, '$pid', '${size.height}', steps.join(';'), //
+        ]).then((ran) {
+          expect(
+            ran.exitCode,
+            0,
+            reason: 'the mouse: ${ran.stderr}${ran.stdout}',
+          );
+          return ran;
+        });
   }
   await run;
   await tester.pump(const Duration(milliseconds: 300));
@@ -2129,70 +2158,68 @@ touch '${done.path}'
   // not always.
   _test('after a double click on a word, a drag still selects more, and a '
       'fresh drag elsewhere too', (tester) async {
-    final binding = IntegrationTestWidgetsFlutterBinding.instance;
-    binding.shouldPropagateDevicePointerEvents = true;
-    await _launch(tester);
-    final view = await _localShell(tester);
-    // Quoted: PowerShell's echo puts each word on a line of its own.
-    _run(view, "echo 'jeansh select me please'; echo 'second line here'");
-    final lines = view.terminal.buffer.lines;
-    int row(String text) {
-      for (var i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].getText().startsWith(text)) return i;
+    await _realPointer(() async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      // Quoted: PowerShell's echo puts each word on a line of its own.
+      _run(view, "echo 'jeansh select me please'; echo 'second line here'");
+      final lines = view.terminal.buffer.lines;
+      int row(String text) {
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].getText().startsWith(text)) return i;
+        }
+        return -1;
       }
-      return -1;
-    }
 
-    await _until(
-      tester,
-      () => row('second line here') >= 0,
-      'the lines to be printed',
-    );
-    final first = row('jeansh select me please');
-    final second = row('second line here');
-    final render = tester
-        .state<TerminalViewState>(find.byType(TerminalView))
-        .renderTerminal;
-    String cell(int col, int line) {
-      final at = render.localToGlobal(
-        render.getOffset(CellOffset(col, line)) +
-            Offset(render.cellSize.width / 2, render.lineHeight / 2),
-      );
-      return 'move ${at.dx} ${at.dy}';
-    }
-
-    Future<void> copies(List<String> steps, String text) async {
-      await Clipboard.setData(const ClipboardData(text: 'untouched'));
-      await _osMouse(tester, steps);
       await _until(
         tester,
-        () async => await _clipboard() != 'untouched',
-        'something to be copied, expecting "$text"',
+        () => row('second line here') >= 0,
+        'the lines to be printed',
       );
-      expect(await _clipboard(), text);
-    }
+      final first = row('jeansh select me please');
+      final second = row('second line here');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col, int line) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, line)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
 
-    List<String> drag(int from, int to, int line) => [
-      cell(from, line),
-      'down',
-      // Held, as a hand does before it moves.
-      'sleep 300',
-      for (var col = from + 1; col <= to; col++) cell(col, line),
-      'up',
-    ];
+      Future<void> copies(List<String> steps, String text) async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, steps);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'something to be copied, expecting "$text"',
+        );
+        expect(await _clipboard(), text);
+      }
 
-    for (var round = 0; round < 3; round++) {
-      await copies([
-        cell(8, first),
-        for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
-        'sleep 400',
-      ], 'select');
-      await copies(drag(0, 22, first), 'jeansh select me please');
-      await copies(drag(0, 10, second), 'second line');
-    }
-    await _closeTabs(tester);
-    // In the body: the binding checks it is back before any tear-down runs.
-    binding.shouldPropagateDevicePointerEvents = false;
+      List<String> drag(int from, int to, int line) => [
+        cell(from, line),
+        'down',
+        // Held, as a hand does before it moves.
+        'sleep 300',
+        for (var col = from + 1; col <= to; col++) cell(col, line),
+        'up',
+      ];
+
+      for (var round = 0; round < 3; round++) {
+        await copies([
+          cell(8, first),
+          for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+          'sleep 400',
+        ], 'select');
+        await copies(drag(0, 22, first), 'jeansh select me please');
+        await copies(drag(0, 10, second), 'second line');
+      }
+      await _closeTabs(tester);
+    });
   });
 
   // #126: under a program that tracks the mouse — every mode on, as Claude
@@ -2206,71 +2233,69 @@ touch '${done.path}'
     'Shift+drag still copies',
     skip: Platform.isWindows ? _powershell : null,
     (tester) async {
-      final binding = IntegrationTestWidgetsFlutterBinding.instance;
-      binding.shouldPropagateDevicePointerEvents = true;
-      await _launch(tester);
-      final view = await _localShell(tester);
-      _run(view, 'echo jeansh select me');
-      final lines = view.terminal.buffer.lines;
-      var row = -1;
-      await _until(tester, () {
-        for (var i = 0; i < lines.length; i++) {
-          if (lines[i].getText().startsWith('jeansh select me')) row = i;
+      await _realPointer(() async {
+        await _launch(tester);
+        final view = await _localShell(tester);
+        _run(view, 'echo jeansh select me');
+        final lines = view.terminal.buffer.lines;
+        var row = -1;
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].getText().startsWith('jeansh select me')) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be printed');
+        final got = await _record(tester, view, bracketed: false, mouse: true);
+
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        String cell(int col) {
+          final at = render.localToGlobal(
+            render.getOffset(CellOffset(col, row)) +
+                Offset(render.cellSize.width / 2, render.lineHeight / 2),
+          );
+          return 'move ${at.dx} ${at.dy}';
         }
-        return row >= 0;
-      }, 'the line to be printed');
-      final got = await _record(tester, view, bracketed: false, mouse: true);
 
-      final render = tester
-          .state<TerminalViewState>(find.byType(TerminalView))
-          .renderTerminal;
-      String cell(int col) {
-        final at = render.localToGlobal(
-          render.getOffset(CellOffset(col, row)) +
-              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        final drag = [
+          cell(0),
+          'down',
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ];
+        await _osMouse(tester, drag);
+        await _osMouse(tester, [
+          cell(8),
+          for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+          'sleep 400',
+        ]);
+
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, ['shiftdown', ...drag, 'shiftup']);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'Shift+drag to copy',
         );
-        return 'move ${at.dx} ${at.dy}';
-      }
+        expect(await _clipboard(), 'jeansh select me');
 
-      final drag = [
-        cell(0),
-        'down',
-        'sleep 300',
-        for (var col = 1; col <= 15; col++) cell(col),
-        'up',
-      ];
-      await _osMouse(tester, drag);
-      await _osMouse(tester, [
-        cell(8),
-        for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
-        'sleep 400',
-      ]);
+        final bytes = await got.bytes('the mouse');
+        final said = bytes.replaceAll('\x1b', 'ESC');
+        int count(String pattern) => RegExp(pattern).allMatches(bytes).length;
+        // The drag's press and the double click's two, each with its release.
+        expect(count(r'\x1b\[<0;\d+;\d+M'), 3, reason: said);
+        expect(count(r'\x1b\[<0;\d+;\d+m'), 3, reason: said);
+        expect(count(r'\x1b\[<32;\d+;\d+M'), greaterThan(0), reason: said);
+        expect(
+          bytes,
+          matches(RegExp(r'\x1b\[<0;1;\d+M')),
+          reason: 'a press where the drag began: $said',
+        );
 
-      await Clipboard.setData(const ClipboardData(text: 'untouched'));
-      await _osMouse(tester, ['shiftdown', ...drag, 'shiftup']);
-      await _until(
-        tester,
-        () async => await _clipboard() != 'untouched',
-        'Shift+drag to copy',
-      );
-      expect(await _clipboard(), 'jeansh select me');
-
-      final bytes = await got.bytes('the mouse');
-      final said = bytes.replaceAll('\x1b', 'ESC');
-      int count(String pattern) => RegExp(pattern).allMatches(bytes).length;
-      // The drag's press and the double click's two, each with its release.
-      expect(count(r'\x1b\[<0;\d+;\d+M'), 3, reason: said);
-      expect(count(r'\x1b\[<0;\d+;\d+m'), 3, reason: said);
-      expect(count(r'\x1b\[<32;\d+;\d+M'), greaterThan(0), reason: said);
-      expect(
-        bytes,
-        matches(RegExp(r'\x1b\[<0;1;\d+M')),
-        reason: 'a press where the drag began: $said',
-      );
-
-      await _closeTabs(tester);
-      // In the body: the binding checks it is back before any tear-down runs.
-      binding.shouldPropagateDevicePointerEvents = false;
+        await _closeTabs(tester);
+      });
     },
   );
 
@@ -2282,59 +2307,57 @@ touch '${done.path}'
     'on a Mac, ⌘C copies a selection under the kitty keyboard protocol',
     skip: Platform.isMacOS ? null : '⌘ is the link key on a Mac alone',
     (tester) async {
-      final binding = IntegrationTestWidgetsFlutterBinding.instance;
-      binding.shouldPropagateDevicePointerEvents = true;
-      await _launch(tester);
-      final view = await _localShell(tester);
-      _run(view, 'echo jeansh select me');
-      final lines = view.terminal.buffer.lines;
-      var row = -1;
-      await _until(tester, () {
-        for (var i = 0; i < lines.length; i++) {
-          if (lines[i].getText().startsWith('jeansh select me')) row = i;
-        }
-        return row >= 0;
-      }, 'the line to be printed');
-      // Flags 1 and 4, Claude Code's.
-      _run(view, r"printf '\033[>5u'");
-      await _until(
-        tester,
-        () => view.terminal.kittyKeyboardMode == 5,
-        'the kitty protocol to be on',
-      );
-
-      final render = tester
-          .state<TerminalViewState>(find.byType(TerminalView))
-          .renderTerminal;
-      String cell(int col) {
-        final at = render.localToGlobal(
-          render.getOffset(CellOffset(col, row)) +
-              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      await _realPointer(() async {
+        await _launch(tester);
+        final view = await _localShell(tester);
+        _run(view, 'echo jeansh select me');
+        final lines = view.terminal.buffer.lines;
+        var row = -1;
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].getText().startsWith('jeansh select me')) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be printed');
+        // Flags 1 and 4, Claude Code's.
+        _run(view, r"printf '\033[>5u'");
+        await _until(
+          tester,
+          () => view.terminal.kittyKeyboardMode == 5,
+          'the kitty protocol to be on',
         );
-        return 'move ${at.dx} ${at.dy}';
-      }
 
-      await _osMouse(tester, [
-        cell(0),
-        'down',
-        'sleep 300',
-        for (var col = 1; col <= 15; col++) cell(col),
-        'up',
-      ]);
-      // Copy on select has copied it already; ⌘C must copy it again.
-      await Clipboard.setData(const ClipboardData(text: 'untouched'));
-      await _osMouse(tester, ['cmdc']);
-      await _until(
-        tester,
-        () async => await _clipboard() != 'untouched',
-        '⌘C to copy',
-      );
-      expect(await _clipboard(), 'jeansh select me');
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        String cell(int col) {
+          final at = render.localToGlobal(
+            render.getOffset(CellOffset(col, row)) +
+                Offset(render.cellSize.width / 2, render.lineHeight / 2),
+          );
+          return 'move ${at.dx} ${at.dy}';
+        }
 
-      _run(view, r"printf '\033[<u'");
-      await _closeTabs(tester);
-      // In the body: the binding checks it is back before any tear-down runs.
-      binding.shouldPropagateDevicePointerEvents = false;
+        await _osMouse(tester, [
+          cell(0),
+          'down',
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ]);
+        // Copy on select has copied it already; ⌘C must copy it again.
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, ['cmdc']);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          '⌘C to copy',
+        );
+        expect(await _clipboard(), 'jeansh select me');
+
+        _run(view, r"printf '\033[<u'");
+        await _closeTabs(tester);
+      });
     },
   );
 
@@ -2352,75 +2375,73 @@ touch '${done.path}'
         ? null
         : "a phased trackpad scroll is posted through a Mac's CoreGraphics",
     (tester) async {
-      final binding = IntegrationTestWidgetsFlutterBinding.instance;
-      binding.shouldPropagateDevicePointerEvents = true;
-      await _launch(tester);
-      final dir = _scratch();
+      await _realPointer(() async {
+        await _launch(tester);
+        final dir = _scratch();
 
-      final view = await _localShell(tester);
-      _run(view, 'seq 1 400');
-      await _until(
-        tester,
-        () => _text(view).any((line) => line.trim() == '400'),
-        'seq to print 400 lines',
-      );
-      final scroll = tester.state<ScrollableState>(
-        find
-            .descendant(
-              of: find.byType(TerminalView),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      // Off the bottom first, so a pan either way has room to move it.
-      scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
-      await tester.pump();
-      final from = scroll.position.pixels;
-      final box = tester.getRect(find.byType(TerminalView));
-      await _trackpad(tester, box.center);
-      expect(
-        scroll.position.pixels,
-        isNot(from),
-        reason: 'the scrollback, from $from',
-      );
+        final view = await _localShell(tester);
+        _run(view, 'seq 1 400');
+        await _until(
+          tester,
+          () => _text(view).any((line) => line.trim() == '400'),
+          'seq to print 400 lines',
+        );
+        final scroll = tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(TerminalView),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        // Off the bottom first, so a pan either way has room to move it.
+        scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
+        await tester.pump();
+        final from = scroll.position.pixels;
+        final box = tester.getRect(find.byType(TerminalView));
+        await _trackpad(tester, box.center);
+        expect(
+          scroll.position.pixels,
+          isNot(from),
+          reason: 'the scrollback, from $from',
+        );
 
-      // writing what it is sent to a file a byte at a time: cat would hold it
-      // in its buffer.
-      // writing what it is sent to a file a byte at a time, as cat would buffer it.
-      final got = File('${dir.path}/wheel');
-      _run(
-        view,
-        r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; "
-        'dd bs=1 of=${got.path} 2>/dev/null',
-      );
-      await _until(
-        tester,
-        () => view.terminal.isUsingAltBuffer && got.existsSync(),
-        'the program to take the mouse',
-      );
-      await tester.tapAt(Offset(box.center.dx, box.bottom - 12));
-      await tester.pump(const Duration(milliseconds: 500));
-      final render = tester
-          .state<TerminalViewState>(find.byType(TerminalView))
-          .renderTerminal;
-      final cell = render.getCellOffset(render.globalToLocal(box.center));
-      await _trackpad(tester, box.center);
-      final wheel = RegExp(r'\x1b\[<6[45];(\d+);(\d+)M');
-      await _until(
-        tester,
-        () => wheel.hasMatch(got.readAsStringSync()),
-        'a wheel event to reach the program',
-      );
-      final at = {
-        for (final m in wheel.allMatches(got.readAsStringSync()))
-          '${m[1]};${m[2]}',
-      };
-      expect(at, {'${cell.x + 1};${cell.y + 1}'}, reason: 'the pointer cell');
+        // writing what it is sent to a file a byte at a time: cat would hold it
+        // in its buffer.
+        // writing what it is sent to a file a byte at a time, as cat would buffer it.
+        final got = File('${dir.path}/wheel');
+        _run(
+          view,
+          r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; "
+          'dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () => view.terminal.isUsingAltBuffer && got.existsSync(),
+          'the program to take the mouse',
+        );
+        await tester.tapAt(Offset(box.center.dx, box.bottom - 12));
+        await tester.pump(const Duration(milliseconds: 500));
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        final cell = render.getCellOffset(render.globalToLocal(box.center));
+        await _trackpad(tester, box.center);
+        final wheel = RegExp(r'\x1b\[<6[45];(\d+);(\d+)M');
+        await _until(
+          tester,
+          () => wheel.hasMatch(got.readAsStringSync()),
+          'a wheel event to reach the program',
+        );
+        final at = {
+          for (final m in wheel.allMatches(got.readAsStringSync()))
+            '${m[1]};${m[2]}',
+        };
+        expect(at, {'${cell.x + 1};${cell.y + 1}'}, reason: 'the pointer cell');
 
-      view.terminal.keyInput(TerminalKey.keyC, ctrl: true);
-      await _closeTabs(tester);
-      // In the body: the binding checks it is back before any tear-down runs.
-      binding.shouldPropagateDevicePointerEvents = false;
+        view.terminal.keyInput(TerminalKey.keyC, ctrl: true);
+        await _closeTabs(tester);
+      });
     },
   );
 
