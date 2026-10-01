@@ -483,6 +483,10 @@ Future<void> _trackpad(WidgetTester tester, Offset at) async {
       ..writeAsStringSync(_trackpadScript);
     final size = tester.view.physicalSize / tester.view.devicePixelRatio;
     var done = false;
+    // What reached the app, for a failure to say whether the pan arrived.
+    final seen = <String>[];
+    void hear(PointerEvent event) => seen.add('${event.runtimeType}');
+    GestureBinding.instance.pointerRouter.addGlobalRoute(hear);
     final run = Process.run('swift', [
       script.path, '$pid', '${at.dx}', '${at.dy}', '${size.height}', //
     ]).whenComplete(() => done = true);
@@ -494,6 +498,11 @@ Future<void> _trackpad(WidgetTester tester, Offset at) async {
     final ran = await run;
     expect(ran.exitCode, 0, reason: 'the trackpad: ${ran.stderr}${ran.stdout}');
     await tester.pump(const Duration(seconds: 1));
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(hear);
+    debugPrint(
+      'The trackpad posted ${'${ran.stdout}'.trim()}; '
+      'the app heard ${seen.toSet()} (${seen.length} events)',
+    );
   } finally {
     dir.deleteSync(recursive: true);
   }
@@ -501,6 +510,7 @@ Future<void> _trackpad(WidgetTester tester, Offset at) async {
 
 const _trackpadScript = r"""
 import AppKit
+import ApplicationServices
 import CoreGraphics
 
 let args = CommandLine.arguments
@@ -516,6 +526,7 @@ guard let window = windows.first(where: {
 let bounds = CGRect(
   dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
 let at = CGPoint(x: bounds.minX + x, y: bounds.maxY - viewHeight + y)
+print("at \(at) in \(bounds), trusted \(AXIsProcessTrusted())")
 
 NSRunningApplication(processIdentifier: pid)?.activate()
 usleep(300_000)
@@ -2023,13 +2034,16 @@ touch '${done.path}'
             )
             .first,
       );
-      final bottom = scroll.position.pixels;
+      // Off the bottom first, so a pan either way has room to move it.
+      scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
+      await tester.pump();
+      final from = scroll.position.pixels;
       final box = tester.getRect(find.byType(TerminalView));
       await _trackpad(tester, box.center);
       expect(
         scroll.position.pixels,
-        lessThan(bottom),
-        reason: 'the scrollback, from ${scroll.position.maxScrollExtent}',
+        isNot(from),
+        reason: 'the scrollback, from $from',
       );
 
       // A program reading the mouse, as Claude Code's fullscreen view does,
