@@ -71,6 +71,9 @@ class Win32Window {
   // Called when Destroy is called.
   virtual void OnDestroy();
 
+  // How |Show| shows the window: maximized, when it was last time.
+  int show_command_ = SW_SHOWNORMAL;
+
  private:
   friend class WindowClassRegistrar;
 
