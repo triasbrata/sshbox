@@ -466,10 +466,26 @@ void main() {
     expect(find.text('Bash'), findsOneWidget);
     expect(find.text('tail -n 50 error.log'), findsOneWidget);
 
+    // Its last message says the turn is over before its result comes: still
+    // busy, and still said to be working, not starting a session.
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'stop_reason': 'end_turn',
+        'content': [
+          {'type': 'text', 'text': 'Done looking.'},
+        ],
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Claude is working…'), findsOneWidget);
+
     shell.event({'type': 'result', 'subtype': 'success'});
     await tester.pump();
     await tester.pump();
     expect(find.textContaining('Working…'), findsNothing);
+    expect(find.text('Claude is working…'), findsNothing);
   });
 
   testWidgets('an unconnected session says so rather than starting anything', (
@@ -1865,6 +1881,63 @@ void main() {
       expect(find.textContaining('81badf4a'), findsOneWidget);
       expect(find.textContaining('Working…'), findsNothing);
       expect(find.byIcon(Icons.pause), findsOneWidget);
+    });
+
+    testWidgets('hidden while following, the chat is at its end when shown '
+        'again, however much was written meanwhile', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([row()]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      // What the tab strip does to a page it is not showing.
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: shown,
+              builder: (context, on, child) =>
+                  TickerMode(enabled: on, child: child!),
+              child: ChatPage(session: session),
+            ),
+          ),
+        ),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+
+      shown.value = false;
+      await tester.pump();
+      // Claude writes several screens while the terminal tab is in front.
+      for (var reply = 0; reply < 12; reply++) {
+        shell.adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'msg_$reply',
+            'stop_reason': 'end_turn',
+            'content': [
+              {
+                'type': 'text',
+                'text': List.filled(8, 'Reply $reply goes on.').join('\n\n'),
+              },
+            ],
+          },
+        });
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await _frames(tester);
+      }
+
+      shown.value = true;
+      await _frames(tester);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent, greaterThan(1000));
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
   });
 
