@@ -1,6 +1,6 @@
 #include "my_application.h"
 
-#include <cstdio>
+#include <cerrno>
 #include <cstring>
 
 #include <flutter_linux/flutter_linux.h>
@@ -160,6 +160,23 @@ static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
   return FALSE;
 }
 
+// The numbers in window.txt, each within ±100000 — anything else, a file
+// cut short or written by hand included, and nothing is restored.
+static gboolean read_numbers(const gchar* text, gint* out, int count) {
+  const gchar* at = text;
+  for (int i = 0; i < count; i++) {
+    gchar* end = nullptr;
+    errno = 0;
+    gint64 value = g_ascii_strtoll(at, &end, 10);
+    if (end == at || errno != 0 || value < -100000 || value > 100000) {
+      return FALSE;
+    }
+    out[i] = static_cast<gint>(value);
+    at = end;
+  }
+  return TRUE;
+}
+
 // The window as it was last time, set before it is first shown so it never
 // jumps. Under Wayland a client cannot place its own window, so there the
 // size and the state come back and the compositor picks where.
@@ -167,37 +184,43 @@ static void restore_geometry(MyApplication* self) {
   g_autofree gchar* path = geometry_path();
   g_autofree gchar* text = nullptr;
   if (!g_file_get_contents(path, &text, nullptr, nullptr)) return;
-  gint x, y, width, height, maximized, fullscreen;
-  if (sscanf(text, "%d %d %d %d %d %d", &x, &y, &width, &height, &maximized,
-             &fullscreen) != 6 ||
-      width < 200 || height < 150) {
-    return;
-  }
-#ifdef GDK_WINDOWING_X11
+  gint n[6];
+  if (!read_numbers(text, n, 6) || n[2] < 200 || n[3] < 150) return;
+  gint x = n[0], y = n[1], width = n[2], height = n[3];
+  gboolean maximized = n[4] != 0, fullscreen = n[5] != 0;
+
+  // The monitor its top strip, the part that moves it, is on; when that is
+  // on none — a laptop undocked, a screen unplugged — the main one, centred.
+  // Either way it comes back no bigger than that monitor and wholly on it,
+  // so a window sized for a bigger screen keeps its buttons in reach.
   GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(self->window));
-  if (GDK_IS_X11_DISPLAY(display)) {
-    // On a monitor that is there, which is where its top strip, the part
-    // that moves it, is: otherwise — a laptop undocked, a screen unplugged
-    // — whole and centred on the main one.
-    GdkRectangle strip = {x, y, width, MIN(height, 40)};
-    gboolean seen = FALSE;
-    for (int i = 0; i < gdk_display_get_n_monitors(display) && !seen; i++) {
-      GdkRectangle area;
-      gdk_monitor_get_workarea(gdk_display_get_monitor(display, i), &area);
-      seen = gdk_rectangle_intersect(&strip, &area, nullptr);
+  GdkRectangle strip = {x, y, width, MIN(height, 40)};
+  GdkMonitor* monitor = nullptr;
+  for (int i = 0; i < gdk_display_get_n_monitors(display) && !monitor; i++) {
+    GdkRectangle area;
+    gdk_monitor_get_workarea(gdk_display_get_monitor(display, i), &area);
+    if (gdk_rectangle_intersect(&strip, &area, nullptr)) {
+      monitor = gdk_display_get_monitor(display, i);
     }
-    GdkMonitor* main = gdk_display_get_primary_monitor(display);
-    if (main == nullptr) main = gdk_display_get_monitor(display, 0);
-    if (!seen && main != nullptr) {
-      GdkRectangle area;
-      gdk_monitor_get_workarea(main, &area);
-      width = MIN(width, area.width);
-      height = MIN(height, area.height);
+  }
+  gboolean seen = monitor != nullptr;
+  if (!seen) monitor = gdk_display_get_primary_monitor(display);
+  if (monitor == nullptr) monitor = gdk_display_get_monitor(display, 0);
+  if (monitor != nullptr) {
+    GdkRectangle area;
+    gdk_monitor_get_workarea(monitor, &area);
+    width = MIN(width, area.width);
+    height = MIN(height, area.height);
+    if (seen) {
+      x = CLAMP(x, area.x, area.x + area.width - width);
+      y = CLAMP(y, area.y, area.y + area.height - height);
+    } else {
       x = area.x + (area.width - width) / 2;
       y = area.y + (area.height - height) / 2;
     }
-    gtk_window_move(self->window, x, y);
   }
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_DISPLAY(display)) gtk_window_move(self->window, x, y);
 #endif
   self->x = x;
   self->y = y;

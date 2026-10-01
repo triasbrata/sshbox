@@ -83,20 +83,23 @@ enum WindowPlace {
     window.setFrameUsingName(name)
     window.setFrameAutosaveName(name)
 
-    // On a screen that is there, which is where its top strip, the part that
-    // moves it, is: otherwise — a laptop undocked, a screen unplugged — whole
-    // and centred on the main one.
+    // The screen its top strip, the part that moves it, is on; when that is
+    // on none — a laptop undocked, a screen unplugged — the main one,
+    // centred. Either way it comes back no bigger than that screen and
+    // wholly on it. setFrameUsingName moves a frame saved on another screen
+    // relative to it, but is not relied on to shrink one, so this decides.
     let frame = window.frame
     let strip = NSRect(x: frame.minX, y: frame.maxY - 40, width: frame.width, height: 40)
-    if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(strip) }),
-      let area = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-    {
+    let on = NSScreen.screens.first { $0.visibleFrame.intersects(strip) }
+    if let area = (on ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame {
       let width = min(frame.width, area.width)
       let height = min(frame.height, area.height)
-      window.setFrame(
-        NSRect(
-          x: area.midX - width / 2, y: area.midY - height / 2, width: width, height: height),
-        display: false)
+      let x = on == nil
+        ? area.midX - width / 2 : min(max(frame.minX, area.minX), area.maxX - width)
+      let y = on == nil
+        ? area.midY - height / 2 : min(max(frame.minY, area.minY), area.maxY - height)
+      let fitted = NSRect(x: x, y: y, width: width, height: height)
+      if fitted != frame { window.setFrame(fitted, display: false) }
     }
 
     let defaults = UserDefaults.standard

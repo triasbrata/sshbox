@@ -119,29 +119,39 @@ void FlutterWindow::OnDestroy() {
 
 void FlutterWindow::RestorePlacement() {
   std::ifstream file(PlacementPath());
-  RECT rect;
-  int maximized = 0;
-  if (!(file >> rect.left >> rect.top >> rect.right >> rect.bottom >>
-        maximized)) {
-    return;
+  long v[5];
+  for (long& value : v) {
+    // Each within ±100000: a file cut short, written by hand or out of
+    // range leaves the window where it would have been.
+    if (!(file >> value) || value < -100000 || value > 100000) return;
   }
+  RECT rect = {v[0], v[1], v[2], v[3]};
+  bool maximized = v[4] != 0;
   LONG width = rect.right - rect.left, height = rect.bottom - rect.top;
   if (width < 200 || height < 150) return;
-  // On a monitor that is there, which is where its top strip, the part that
-  // moves it, is: otherwise — a laptop undocked, a screen unplugged — whole
-  // and centred on the main one.
+  // The monitor its top strip, the part that moves it, is on; when that is
+  // on none — a laptop undocked, a screen unplugged — the main one, centred.
+  // Either way it comes back no bigger than that monitor's work area and
+  // wholly on it, so a window sized for a bigger screen keeps its buttons in
+  // reach.
   RECT strip = {rect.left, rect.top, rect.right, rect.top + 40};
-  if (MonitorFromRect(&strip, MONITOR_DEFAULTTONULL) == nullptr) {
-    MONITORINFO info{sizeof(info)};
-    GetMonitorInfo(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info);
-    const RECT& work = info.rcWork;
-    width = std::min(width, work.right - work.left);
-    height = std::min(height, work.bottom - work.top);
+  HMONITOR monitor = MonitorFromRect(&strip, MONITOR_DEFAULTTONULL);
+  bool seen = monitor != nullptr;
+  if (!seen) monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO info{sizeof(info)};
+  GetMonitorInfo(monitor, &info);
+  const RECT& work = info.rcWork;
+  width = std::min(width, work.right - work.left);
+  height = std::min(height, work.bottom - work.top);
+  if (seen) {
+    rect.left = std::clamp(rect.left, work.left, work.right - width);
+    rect.top = std::clamp(rect.top, work.top, work.bottom - height);
+  } else {
     rect.left = work.left + (work.right - work.left - width) / 2;
     rect.top = work.top + (work.bottom - work.top - height) / 2;
-    rect.right = rect.left + width;
-    rect.bottom = rect.top + height;
   }
+  rect.right = rect.left + width;
+  rect.bottom = rect.top + height;
   // Twice: a move onto a monitor of another DPI scales the window to suit
   // it (WM_DPICHANGED), and the second, at that DPI already, puts it back
   // at the size it was.
@@ -156,9 +166,17 @@ void FlutterWindow::RestorePlacement() {
 void FlutterWindow::SavePlacement() {
   HWND hwnd = GetHandle();
   if (hwnd == nullptr || IsRectEmpty(&normal_)) return;
+  // Minimized, IsZoomed says no: whether it goes back to maximized is the
+  // placement's to say.
+  bool maximized = IsZoomed(hwnd);
+  if (IsIconic(hwnd)) {
+    WINDOWPLACEMENT placement{sizeof(placement)};
+    maximized = GetWindowPlacement(hwnd, &placement) &&
+                (placement.flags & WPF_RESTORETOMAXIMIZED);
+  }
   std::ofstream(PlacementPath())
       << normal_.left << ' ' << normal_.top << ' ' << normal_.right << ' '
-      << normal_.bottom << ' ' << (IsZoomed(hwnd) ? 1 : 0) << '\n';
+      << normal_.bottom << ' ' << (maximized ? 1 : 0) << '\n';
 }
 
 void FlutterWindow::OnWindowCall(
