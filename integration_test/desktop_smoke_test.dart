@@ -521,6 +521,37 @@ Future<void> _realPointer(Future<void> Function() body) async {
   }
 }
 
+/// [body], and on a failure what reached the app of the keys and the
+/// buttons meanwhile: whether a real key arrived at all.
+Future<void> _hearing(Future<void> Function() body) async {
+  final heard = <String>[];
+  bool key(KeyEvent event) {
+    heard.add('${event.runtimeType} ${event.logicalKey.debugName}');
+    return false;
+  }
+
+  void pointer(PointerEvent event) {
+    if (event is PointerDownEvent || event is PointerUpEvent) {
+      heard.add(
+        '${event.runtimeType} buttons ${event.buttons}, keys held '
+        '${HardwareKeyboard.instance.logicalKeysPressed}',
+      );
+    }
+  }
+
+  HardwareKeyboard.instance.addHandler(key);
+  GestureBinding.instance.pointerRouter.addGlobalRoute(pointer);
+  try {
+    await body();
+  } on TestFailure {
+    debugPrint('What the app heard:\n${heard.join('\n')}');
+    rethrow;
+  } finally {
+    HardwareKeyboard.instance.removeHandler(key);
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(pointer);
+  }
+}
+
 /// The real pointer, moved and pressed as a hand would, over this window:
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `sleep ms`, or
@@ -2488,12 +2519,14 @@ touch '${done.path}'
         ]);
 
         await Clipboard.setData(const ClipboardData(text: 'untouched'));
-        await _osMouse(tester, ['shiftdown', ...drag, 'shiftup']);
-        await _until(
-          tester,
-          () async => await _clipboard() != 'untouched',
-          'Shift+drag to copy',
-        );
+        await _hearing(() async {
+          await _osMouse(tester, ['shiftdown', ...drag, 'shiftup']);
+          await _until(
+            tester,
+            () async => await _clipboard() != 'untouched',
+            'Shift+drag to copy',
+          );
+        });
         expect(await _clipboard(), 'jeansh select me');
 
         final bytes = await got.bytes('the mouse');
@@ -2562,12 +2595,14 @@ touch '${done.path}'
         ]);
         // Copy on select has copied it already; ⌘C must copy it again.
         await Clipboard.setData(const ClipboardData(text: 'untouched'));
-        await _osMouse(tester, ['cmdc']);
-        await _until(
-          tester,
-          () async => await _clipboard() != 'untouched',
-          '⌘C to copy',
-        );
+        await _hearing(() async {
+          await _osMouse(tester, ['cmdc']);
+          await _until(
+            tester,
+            () async => await _clipboard() != 'untouched',
+            '⌘C to copy',
+          );
+        });
         expect(await _clipboard(), 'jeansh select me');
 
         _run(view, r"printf '\033[<u'");
