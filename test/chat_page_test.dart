@@ -12,6 +12,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/terminal_schemes.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:sshbox/src/ui/tui.dart';
@@ -1865,5 +1866,55 @@ void main() {
       expect(find.textContaining('Working…'), findsNothing);
       expect(find.byIcon(Icons.pause), findsOneWidget);
     });
+  });
+
+  testWidgets('the Send button reads in every theme, light and dark: its '
+      'arrow on its fill, and its fill on the composer', (tester) async {
+    final shell = _Shell();
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    final failures = <String>[];
+    for (final scheme in terminalSchemes) {
+      for (final brightness in Brightness.values) {
+        final palette = scheme.palette(brightness);
+        await tester.pumpWidget(
+          MaterialApp(
+            key: ValueKey('${scheme.name} $brightness'),
+            theme: jeanshTheme(palette),
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        await tester.enterText(find.byType(TextField), 'hi');
+        // The button eases into its enabled colours.
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        final send = find.widgetWithIcon(IconButton, Icons.send);
+        expect(tester.widget<IconButton>(send).onPressed, isNotNull);
+        final fill = tester
+            .widget<Material>(
+              find.descendant(of: send, matching: find.byType(Material)),
+            )
+            .color!;
+        final arrow = tester
+            .widget<RichText>(
+              find.descendant(of: send, matching: find.byType(RichText)),
+            )
+            .text
+            .style!
+            .color!;
+        final ground = jeanshTheme(palette).scaffoldBackgroundColor;
+        final onFill = tuiContrast(arrow, fill);
+        final onGround = tuiContrast(fill, ground);
+        if (onFill < 3 || onGround < 3) {
+          failures.add(
+            '${scheme.name} $brightness: arrow ${onFill.toStringAsFixed(2)}, '
+            'fill ${onGround.toStringAsFixed(2)}',
+          );
+        }
+      }
+    }
+    expect(failures, isEmpty);
   });
 }
