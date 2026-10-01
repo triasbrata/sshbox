@@ -131,6 +131,12 @@ chat_stand_in() {
 case "$1" in
   --version) echo '2.1.300 (Claude Code)' ;;
   agents) cat "$HOME/.e2e-agents.json" ;;
+  # The SDK's `initialize` on stdin, as chat lists the slash commands with it:
+  # answered with ~/.e2e-commands.json where a flow put one; the rest read
+  # until stdin ends, as before.
+  -p) while IFS= read -r line; do
+      case $line in *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;; esac
+    done ;;
   *) exec cat >/dev/null ;;
 esac
 SH
@@ -407,6 +413,40 @@ chat_version() {
   return "$status"
 }
 
+# #145: chat's / list, read from the host's own answer to the SDK's
+# `initialize`, and a command sent into a watched session drawn as one. The
+# stand-in lists four built-ins chat treats two ways -- compact and context
+# run, model and config open dialogs -- and one command of a skill's; the live
+# session records a /context it is sent as Claude Code does, in local_command
+# lines, so the chip and its output come back from history too.
+end_slash_session() {
+  sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+chat_slash() {
+  local status=0 commands=/home/$SSH_USER/.e2e-commands.json
+  chat_stand_in
+  end_slash_session
+  live_session
+  sudo -u "$SSH_USER" -H tee "$commands" >/dev/null <<'JSON'
+{"type":"control_response","response":{"subtype":"success","request_id":"sshbox-commands","response":{"commands":[{"name":"compact","description":"Clear the conversation but keep a summary in context","argumentHint":"<optional instructions>","builtin":true,"aliases":[]},{"name":"context","description":"Show current context usage","argumentHint":"","builtin":true,"aliases":[]},{"name":"model","description":"Set the AI model for Claude Code","argumentHint":"","builtin":true,"aliases":[]},{"name":"config","description":"Open the settings panel","argumentHint":"","builtin":true,"aliases":["settings"]},{"name":"e2e-review","description":"A skill the e2e stand-in lists","argumentHint":"<file>","builtin":false,"aliases":[]}]}}}
+JSON
+  flow chat_slash || status=1
+  # Refused means never typed: the session's own record holds no /model.
+  if sudo grep -q 'command-name>/model\|"/model' \
+    "/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl" 2>/dev/null; then
+    echo "::error::/model reached the session"
+    status=1
+  fi
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-slash-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_slash_session
+  sudo rm -f "$commands"
+  stand_in ''
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -491,6 +531,10 @@ kill "$terminal_side" 2>/dev/null
 sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::chat_slash (report only)"
+chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"
 soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
