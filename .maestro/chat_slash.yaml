@@ -61,13 +61,27 @@ env:
 - assertVisible: "(?s)/context.*"
 - assertNotVisible: "(?s)/e2e-review.*"
 
-# Picked with the keys: the name in the box, a space after it, the list shut.
+# Picked with a tap: the name in the box, a space after it, the list shut.
+- tapOn: "(?s)/context.*"
+- extendedWaitUntil:
+    notVisible: "(?i)built-in"
+    timeout: 3000
+- assertVisible: "/context\\s*"
+- takeScreenshot: chat-slash-tapped
+
+# And with the keys, a hardware Enter picking rather than sending.
+- eraseText: 20
+- inputText: "/con"
+- extendedWaitUntil:
+    visible: "(?s)/context.*"
+    timeout: 10000
 - pressKey: Remote Dpad Down
 - pressKey: Enter
 - extendedWaitUntil:
     notVisible: "(?i)built-in"
     timeout: 3000
 - assertVisible: "/context\\s*"
+- assertNotVisible: "(?s).*Sending….*"
 
 # Escape shuts the list and leaves what is typed.
 - eraseText: 20
