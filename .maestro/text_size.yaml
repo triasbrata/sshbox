@@ -29,11 +29,15 @@ env:
       text: "Set the UI text size"
     direction: RIGHT
 # Scrolled to, not asserted where it was: at 160% the page above it grows
-# and pushes the readout down past the screen's edge.
+# and pushes the readout down past the screen's edge. The readout is read as
+# part of a larger node, so this matches any node holding it, and asks for
+# only a sliver of that node on screen. The mutation that does nothing never
+# shows 160% anywhere.
 - scrollUntilVisible:
     element:
-      text: "160%"
+      text: "(?s).*160%.*"
     direction: DOWN
+    visibilityPercentage: 1
 - takeScreenshot: text-size-settings-largest
 
 # Settings still scrolls to its end and comes back.
