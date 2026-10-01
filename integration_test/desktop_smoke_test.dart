@@ -2427,7 +2427,23 @@ touch '${done.path}'
         );
         await tester.enterText(field, text);
         await tester.tap(find.byTooltip('Send'));
-        await tester.pump();
+        // In the session's transcript, or a refusal's toast to say why not.
+        final toasts = <String>{};
+        final end = DateTime.now().add(const Duration(seconds: 10));
+        while (find.textContaining(text, findRichText: true).evaluate().isEmpty) {
+          toasts.addAll(
+            find
+                .descendant(of: find.byType(TuiToastCard), matching: find.byType(Text))
+                .evaluate()
+                .map((e) => (e.widget as Text).data)
+                .whereType<String>(),
+          );
+          if (DateTime.now().isAfter(end)) {
+            fail('"$text" never reached the session; toasts: $toasts');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          await tester.pump();
+        }
       }
 
       String? line() => find
