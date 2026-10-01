@@ -21,6 +21,7 @@ import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
+import 'text_size.dart';
 
 /// One remote file in a tab: an image in a viewer, anything else in the
 /// editor.
@@ -1004,7 +1005,9 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// goes in both of termul's slots, so the text stays built behind the
   /// preview, with its cursor and scroll position, as it always has.
   Widget _editorChrome() {
-    final body = _buildBody();
+    // The text and the preview at the content size, termul's chrome round
+    // them at the UI's.
+    final body = ContentText(child: _buildBody());
     return TuiCodeEditor(
       path: RemotePath.basename(widget.path),
       subtitle: [
@@ -1892,7 +1895,7 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
                 data: shown,
                 controller: _scroll,
                 onTapLink: widget.onTapLink,
-                builders: {'code': _CodeBuilder()},
+                builders: {'code': CodeBlockBuilder()},
                 imageBuilder: (uri, title, alt) {
                   final label = alt == null || alt.isEmpty ? '$uri' : alt;
                   // Anything with a scheme or a host is somebody else's
@@ -1942,14 +1945,17 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
   }
 }
 
-/// The Markdown preview's code: a ```mermaid fence is a diagram, as
+/// The Markdown preview's code, and chat's: a ```mermaid fence is a diagram, as
 /// [MermaidBuilder] draws it, any other block gets a button that copies it,
 /// and inline code is left to the package.
 ///
 /// A mermaid fence deliberately gets no button. What it shows is a picture
 /// rather than the text, and the button would have to sit over a web view's
 /// own surface to be near it; Source has the whole file, that block included.
-class _CodeBuilder extends MermaidBuilder {
+class CodeBlockBuilder extends MermaidBuilder {
+  /// [copyable] as [MermaidBuilder]'s: chat's, which has no Source view.
+  CodeBlockBuilder({super.copyable});
+
   @override
   Widget? visitElementAfterWithContext(
     BuildContext context,

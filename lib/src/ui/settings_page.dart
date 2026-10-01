@@ -17,6 +17,7 @@ import 'key_bar.dart';
 import 'terminal_page.dart' show openUrl;
 import 'update_dialog.dart';
 import 'terminal_schemes.dart';
+import 'text_size.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
 import 'tui.dart';
@@ -59,7 +60,7 @@ const terminalFonts = <({String family, String label, String? note})>[
 ];
 
 const minFontSize = 9.0;
-const maxFontSize = 24.0;
+const maxFontSize = 32.0;
 
 /// What a terminal draws with in [family] at [size]. The Nerd Font comes
 /// first and the symbols font behind it, with xterm2's own fallbacks last, so
@@ -103,11 +104,21 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
   /// rather than to a font that is not there.
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final family = prefs.getString(_familyKey);
-    final size = prefs.getDouble(_sizeKey);
+    // Read before the app runs, so a value of another type, or NaN, gives
+    // way to the default rather than stopping it starting.
+    String? family;
+    double? size;
+    try {
+      family = prefs.getString(_familyKey);
+    } catch (_) {}
+    try {
+      size = prefs.getDouble(_sizeKey);
+    } catch (_) {}
     value = terminalStyleOf(
       await _usable(family) ? family! : defaultStyle.fontFamily,
-      (size ?? defaultStyle.fontSize).clamp(minFontSize, maxFontSize),
+      size != null && !size.isNaN
+          ? size.clamp(minFontSize, maxFontSize)
+          : defaultStyle.fontSize,
     );
   }
 
@@ -377,6 +388,38 @@ class GitPanelSetting extends ValueNotifier<bool> {
 /// The app's one; `main` reads the saved choice into it. True is the drawer.
 final gitInDrawer = GitPanelSetting();
 
+/// What sends a chat message from the keyboard: ⌘+Enter on Apple's
+/// keyboards and Ctrl+Enter on the rest, a plain Enter making a new line, as
+/// the box always has; or Enter, as in Discord, Shift+Enter then being the
+/// new line. The chord sends either way.
+class ChatEnterSetting extends ValueNotifier<bool> {
+  ChatEnterSetting() : super(false);
+
+  static const _key = 'sshbox.chat.enterSends';
+
+  /// Reads the saved choice. Nothing saved is the chord.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? false;
+  }
+
+  /// Applies at once, and is saved for the next start.
+  Future<void> choose(bool enter) async {
+    value = enter;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, enter);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it. True is Enter.
+final chatEnterSends = ChatEnterSetting();
+
+/// The send chord's name on this platform.
+String get chatSendChord => switch (defaultTargetPlatform) {
+  TargetPlatform.macOS || TargetPlatform.iOS => '⌘+Enter',
+  _ => 'Ctrl+Enter',
+};
+
 /// Whether this machine's own shells run in tmux, and which tmux. The Local
 /// shell is saved nowhere, so its choice cannot live on a host, as a saved
 /// host's `useTmux` does.
@@ -631,6 +674,7 @@ class SettingsPage extends StatelessWidget {
                   if (LinkModifierSetting.offered.length > 1)
                     const _LinkModifierTile(),
                   const _GitSection(),
+                  const _ChatSection(),
                   // Desktop alone: only a desktop has a shell of its own to
                   // run.
                   if (isDesktop) const _LocalShellSection(),
@@ -1033,7 +1077,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
     return ValueListenableBuilder(
       valueListenable: terminalSettings,
       builder: (context, style, _) {
-        final cell = terminalCellSize(style, MediaQuery.textScalerOf(context));
+        final cell = terminalCellSize(style, systemTextScaler(context));
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1043,16 +1087,38 @@ class _TerminalSectionState extends State<_TerminalSection> {
               // Only to look at: a tap would take focus for a terminal that
               // has nothing behind it.
               child: IgnorePointer(
-                child: TerminalView(
-                  _preview,
-                  textStyle: style,
-                  theme: terminalThemeOf(context),
-                  padding: _previewPadding,
-                  readOnly: true,
+                // At the content size, as every terminal is: see ContentText.
+                child: ContentText(
+                  scale: false,
+                  child: TerminalView(
+                    _preview,
+                    textStyle: style,
+                    theme: terminalThemeOf(context),
+                    padding: _previewPadding,
+                    readOnly: true,
+                  ),
                 ),
               ),
             ),
-            const _Label('Font size'),
+            // The app's chrome — tabs, the key bar, menus, dialogs, Settings
+            // and Home — apart from what is read in a tab: see text_size.dart.
+            const _Label('UI text size'),
+            ValueListenableBuilder(
+              valueListenable: uiTextSize,
+              // Named, for a screen reader and the e2e flow that sets it.
+              builder: (context, scale, _) => TuiSlider(
+                semanticLabel: 'Set the UI text size',
+                value: (scale * 100).roundToDouble(),
+                min: UiTextSize.min * 100,
+                max: UiTextSize.max * 100,
+                divisions: ((UiTextSize.max - UiTextSize.min) * 10).round(),
+                valueLabel: '${(scale * 100).round()}%',
+                onChanged: (percent) => uiTextSize.choose(percent / 100),
+              ),
+            ),
+            // The terminal's font size, which chat, the editor, diffs, the
+            // Markdown preview and the database grid follow too.
+            const _Label('Content text size'),
             TuiSlider(
               value: style.fontSize.roundToDouble(),
               min: minFontSize.roundToDouble(),
@@ -1923,6 +1989,32 @@ class _GitSection extends StatelessWidget {
       ],
     );
   }
+}
+
+class _ChatSection extends StatelessWidget {
+  const _ChatSection();
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const _SectionHeader('Chat'),
+      const _Label('Send a message with'),
+      ValueListenableBuilder(
+        valueListenable: chatEnterSends,
+        builder: (context, enter, _) => TuiSelect<bool>(
+          options: [(false, chatSendChord), (true, 'Enter')],
+          value: enter,
+          onChanged: chatEnterSends.choose,
+        ),
+      ),
+      _Note(
+        'With $chatSendChord, Enter makes a new line. With Enter, '
+        'Shift+Enter makes a new line, and $chatSendChord sends too. The '
+        'send button works either way.',
+      ),
+    ],
+  );
 }
 
 /// This machine's own shells in tmux: see [localTmux]. On Windows the Local
