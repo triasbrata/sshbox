@@ -30,6 +30,7 @@ import 'file_browser_page.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
+import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
 import 'right_click.dart';
 import 'settings_page.dart';
 import 'terminal_link.dart';
@@ -1345,6 +1346,9 @@ class _PaneViewState extends State<_PaneView> {
         terminal.hyperlinkAt(cell) ??
         (range == null ? null : hyperlinkIn(terminal, range));
     final tabMenu = TabMenu.of(context)?.entries() ?? const [];
+    final diagram = range == null || !hasWebView
+        ? null
+        : mermaidSource(selectedText(terminal.buffer, range));
     void copy(String text, String said) {
       Clipboard.setData(ClipboardData(text: text));
       showToast(context, said, type: TuiToastType.success);
@@ -1359,6 +1363,11 @@ class _PaneViewState extends State<_PaneView> {
       menuAction('Paste', () => unawaited(_paste())),
       if (link != null)
         menuAction('Copy link address', () => copy(link, 'Copied $link')),
+      if (diagram != null)
+        menuAction(
+          'Show as diagram',
+          () => unawaited(showMermaidDialog(context, diagram)),
+        ),
       // The tab's own, as its chip offers them.
       if (tabMenu.isNotEmpty) ...[const TuiMenuDivider(), ...tabMenu],
     ]);

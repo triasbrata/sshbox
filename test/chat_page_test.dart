@@ -12,9 +12,13 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:sshbox/src/ui/tui.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
+
+import 'fake_web_view.dart';
 
 /// Takes every link it is handed and remembers it: what would have gone to
 /// the phone's browser, or to whatever app answers the link's scheme.
@@ -1588,6 +1592,63 @@ void main() {
       await pick(tester, shell, 'first', long('first', 90));
       expect(at().pixels, at().maxScrollExtent);
       expect(find.text('first 89'), findsOneWidget);
+    });
+  });
+
+  group('a mermaid fence in a reply', () {
+    Future<void> pumpAnswer(WidgetTester tester, String markdown) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Diagrams')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': markdown},
+              ],
+            },
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Diagrams');
+    }
+
+    testWidgets('is drawn as a diagram with its source copyable, and other '
+        'code stays code', (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpAnswer(
+        tester,
+        'Here:\n\n```mermaid\ngraph TD\n  A --> B\n```\n\n'
+        '```sh\necho hello\n```\n',
+      );
+
+      expect(
+        tester.widget<MermaidView>(find.byType(MermaidView)).source,
+        'graph TD\n  A --> B\n',
+      );
+      expect(find.textContaining('A --> B'), findsNothing);
+      expect(find.textContaining('echo hello'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Copy diagram source'));
+      await tester.pumpAndSettle();
+      expect(copied, ['graph TD\n  A --> B\n']);
+    });
+
+    testWidgets('one not closed yet stays code', (tester) async {
+      await pumpAnswer(tester, 'Drawing:\n\n```mermaid\ngraph TD\n  A --> B');
+
+      expect(find.byType(MermaidView), findsNothing);
+      expect(find.textContaining('A --> B'), findsOneWidget);
     });
   });
 

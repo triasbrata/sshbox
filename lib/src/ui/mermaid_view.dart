@@ -4,17 +4,26 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../platform.dart';
+import 'toast.dart';
+import 'tui.dart';
 
 /// Draws a Markdown file's ```mermaid blocks as diagrams, as the builder for
 /// `code` in [Markdown.builders]. Any other code, block or inline, is left to
 /// the package — and so is a mermaid block where there is no web view to draw
 /// it in, Linux and Windows, which show its source as code.
 class MermaidBuilder extends MarkdownElementBuilder {
+  /// [copyable] puts a button beside each diagram that copies its source:
+  /// chat's, where a reply has no Source view to copy it from.
+  MermaidBuilder({this.copyable = false});
+
+  final bool copyable;
+
   @override
   Widget? visitElementAfterWithContext(
     BuildContext context,
@@ -25,9 +34,169 @@ class MermaidBuilder extends MarkdownElementBuilder {
     if (!hasWebView) return null;
     if (element.attributes['class'] != 'language-mermaid') return null;
     final source = element.textContent;
-    return MermaidView(key: ValueKey(source), source: source);
+    if (!copyable) return MermaidView(key: ValueKey(source), source: source);
+    return Row(
+      key: ValueKey(source),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: MermaidView(source: source)),
+        // Beside it rather than over the web view, as the preview's code
+        // blocks keep theirs.
+        IconButton(
+          tooltip: 'Copy diagram source',
+          onPressed: () => copyMermaid(context, source),
+          icon: const Icon(Icons.content_copy, size: 18),
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+        ),
+      ],
+    );
   }
 }
+
+void copyMermaid(BuildContext context, String source) {
+  unawaited(Clipboard.setData(ClipboardData(text: source)));
+  showToast(context, 'Copied', type: TuiToastType.success);
+}
+
+final _fence = RegExp(r'^ {0,3}(`{3,}|~{3,})(.*)$');
+
+/// [markdown] with a fence still open at its end — a reply that has not
+/// finished arriving — as plain code when it is a mermaid one, so a diagram
+/// is drawn once its closing fence is there rather than tried at every chunk
+/// of a source still being written.
+String holdOpenMermaid(String markdown) {
+  final lines = markdown.split('\n');
+  String? open;
+  var at = -1;
+  for (var i = 0; i < lines.length; i++) {
+    final m = _fence.firstMatch(lines[i]);
+    if (m == null) continue;
+    final mark = m[1]!;
+    final info = m[2]!;
+    if (open == null) {
+      // A backtick in a backtick fence's info makes it no fence.
+      if (mark.startsWith('`') && info.contains('`')) continue;
+      open = mark;
+      at = i;
+    } else if (mark[0] == open[0] &&
+        mark.length >= open.length &&
+        info.trim().isEmpty) {
+      open = null;
+    }
+  }
+  if (open == null) return markdown;
+  final m = _fence.firstMatch(lines[at])!;
+  if (m[2]!.trim().split(RegExp(r'\s')).first != 'mermaid') return markdown;
+  lines[at] = lines[at].substring(0, lines[at].length - m[2]!.length);
+  return lines.join('\n');
+}
+
+/// The first word of every kind of diagram Mermaid 12 draws.
+const _diagrams = {
+  'graph',
+  'flowchart',
+  'sequenceDiagram',
+  'classDiagram',
+  'classDiagram-v2',
+  'stateDiagram',
+  'stateDiagram-v2',
+  'erDiagram',
+  'journey',
+  'gantt',
+  'pie',
+  'quadrantChart',
+  'requirementDiagram',
+  'gitGraph',
+  'C4Context',
+  'C4Container',
+  'C4Component',
+  'C4Dynamic',
+  'C4Deployment',
+  'mindmap',
+  'timeline',
+  'zenuml',
+  'sankey',
+  'sankey-beta',
+  'xychart',
+  'xychart-beta',
+  'block',
+  'block-beta',
+  'packet',
+  'packet-beta',
+  'kanban',
+  'architecture',
+  'architecture-beta',
+  'radar-beta',
+  'treemap',
+  'treemap-beta',
+};
+
+/// The Mermaid source in a terminal selection, or null when it holds none:
+/// a ```mermaid fence around it and the indent a program draws a code block
+/// with are taken off, and what is left is Mermaid only when its first line,
+/// past a front matter block and `%%` comments, names a kind of diagram.
+String? mermaidSource(String selection) {
+  var lines = [for (final line in selection.split('\n')) line.trimRight()];
+  bool blank(String line) => line.trim().isEmpty;
+  while (lines.isNotEmpty && blank(lines.first)) {
+    lines.removeAt(0);
+  }
+  while (lines.isNotEmpty && blank(lines.last)) {
+    lines.removeLast();
+  }
+  if (lines.isEmpty) return null;
+  if (RegExp(r'^\s*(`{3,}|~{3,})\s*mermaid$').hasMatch(lines.first)) {
+    lines.removeAt(0);
+    if (lines.isNotEmpty &&
+        RegExp(r'^\s*(`{3,}|~{3,})$').hasMatch(lines.last)) {
+      lines.removeLast();
+    }
+  }
+  final indent = lines
+      .where((line) => !blank(line))
+      .map((line) => line.length - line.trimLeft().length)
+      .fold<int?>(null, (least, n) => least == null || n < least ? n : least);
+  if (indent == null) return null;
+  lines = [for (final line in lines) blank(line) ? '' : line.substring(indent)];
+
+  var i = 0;
+  if (lines.first == '---') {
+    i = lines.indexOf('---', 1) + 1;
+    if (i == 0) return null;
+  }
+  while (i < lines.length && (blank(lines[i]) || lines[i].startsWith('%%'))) {
+    i++;
+  }
+  if (i == lines.length) return null;
+  final word = lines[i].split(RegExp(r'[\s;]')).first;
+  if (!_diagrams.contains(word)) return null;
+  return '${lines.join('\n')}\n';
+}
+
+/// [source] drawn in a dialog of its own, with a button to copy it: what a
+/// terminal selection's Show as diagram opens.
+Future<void> showMermaidDialog(BuildContext context, String source) =>
+    showDialog<void>(
+      context: context,
+      builder: (dialog) => TuiDialog(
+        title: 'Diagram',
+        maxWidth: 720,
+        actions: [
+          TuiButton(
+            label: 'Close',
+            variant: TuiButtonVariant.ghost,
+            onPressed: () => Navigator.pop(dialog),
+          ),
+          TuiButton(
+            label: 'Copy source',
+            onPressed: () => copyMermaid(dialog, source),
+          ),
+        ],
+        child: SingleChildScrollView(child: MermaidView(source: source)),
+      ),
+    );
 
 /// One Mermaid diagram, drawn by Mermaid itself (assets/mermaid) in a web
 /// view the diagram's height. A wide one scrolls sideways; one Mermaid can't
