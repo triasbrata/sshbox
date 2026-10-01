@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
@@ -142,45 +143,170 @@ void main() {
     expect(cellOf(box.center), isNot(cellOf(prompt)));
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('a drag selects and leaves a program that reads the mouse no '
-      'half a click, and a click reaches it whole', (tester) async {
+  String shown(List<String> sent) =>
+      sent.map((each) => each.replaceAll('\x1b', 'ESC')).join(' ');
+
+  Future<TestGesture> heldDrag(WidgetTester tester, {int row = 17}) async {
+    final render = tester
+        .state<TerminalViewState>(find.byType(TerminalView))
+        .renderTerminal;
+    Offset at(int col) => render.localToGlobal(
+      render.getOffset(CellOffset(col, row)) +
+          render.cellSize.center(Offset.zero),
+    );
+    final drag = await tester.startGesture(
+      at(2),
+      kind: PointerDeviceKind.mouse,
+    );
+    // Held a moment before it moves, as a hand does.
+    await tester.pump(const Duration(milliseconds: 200));
+    for (var col = 3; col <= 6; col++) {
+      await drag.moveTo(at(col));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    return drag;
+  }
+
+  Future<void> doubleClick(WidgetTester tester) async {
+    final render = tester
+        .state<TerminalViewState>(find.byType(TerminalView))
+        .renderTerminal;
+    final word = render.localToGlobal(
+      render.getOffset(const CellOffset(7, 10)) +
+          render.cellSize.center(Offset.zero),
+    );
+    for (var i = 0; i < 2; i++) {
+      await tester.tapAt(word, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 60));
+    }
+    await tester.pump(const Duration(milliseconds: 500));
+  }
+
+  TerminalController controller(WidgetTester tester) =>
+      tester.widget<TerminalView>(find.byType(TerminalView)).controller!;
+
+  const text = 'hello world this is a line of text here\r\n';
+
+  group('a program tracking drags, as Claude Code does', () {
+    testWidgets('gets a held drag whole: press, moves, release', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      // Button-event tracking, in SGR.
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      final drag = await heldDrag(tester);
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(
+        shown(shell.sent),
+        'ESC[<0;3;18M ESC[<32;4;18M ESC[<32;5;18M ESC[<32;6;18M '
+        'ESC[<32;7;18M ESC[<0;7;18m',
+      );
+      // The program selects: none of xterm2's over it.
+      expect(controller(tester).selection, isNull);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('hears a double click as two whole clicks, and a drag after '
+        'it', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      // Every mode, as Claude Code's fullscreen view asks.
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      await doubleClick(tester);
+      // xterm2 sent a release for a single tap only, so the second click's
+      // never went: Claude Code was left dragging, and nothing selected
+      // after a double click.
+      expect(
+        shown(shell.sent),
+        [for (var i = 0; i < 2; i++) 'ESC[<0;8;11M ESC[<0;8;11m'].join(' '),
+      );
+      expect(controller(tester).selection, isNull);
+
+      shell.sent.clear();
+      final drag = await heldDrag(tester);
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(shell.sent.first, 'ESC[<0;3;18M'.replaceAll('ESC', '\x1b'));
+      expect(shell.sent.last, 'ESC[<0;7;18m'.replaceAll('ESC', '\x1b'));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('leaves Shift+drag to the terminal\'s own selection', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      final drag = await heldDrag(tester);
+      await drag.up();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(shell.sent, isEmpty);
+      expect(
+        session.terminal.buffer.getText(controller(tester).selection!),
+        'llo w',
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  testWidgets('a program reading clicks alone gets no half a click from a '
+      'drag, which selects, and a click whole', (tester) async {
     await pumpPage(tester);
-    session.terminal.write('hello world this is a line of text here\r\n' * 30);
-    // Claude Code's fullscreen view asks for every mouse mode, in SGR.
-    session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h');
+    session.terminal.write(text * 30);
+    // Normal tracking: clicks, no drags.
+    session.terminal.write('\x1b[?1000h\x1b[?1006h');
     await tester.pump();
     shell.sent.clear();
 
-    // Held a moment before it moves, as a hand does.
-    final box = tester.getRect(find.byType(TerminalView));
-    final drag = await tester.startGesture(
-      box.center - const Offset(100, 0),
-      kind: PointerDeviceKind.mouse,
-    );
-    await tester.pump(const Duration(milliseconds: 200));
-    for (var i = 0; i < 10; i++) {
-      await drag.moveBy(const Offset(20, 0));
-      await tester.pump(const Duration(milliseconds: 16));
-    }
+    final drag = await heldDrag(tester);
     await drag.up();
     await tester.pump(const Duration(milliseconds: 500));
-
-    final controller = tester
-        .widget<TerminalView>(find.byType(TerminalView))
-        .controller!;
-    expect(controller.selection, isNotNull);
-    // The press went out 100 ms in and its release never did, so Claude Code
-    // took a drag of its own as going on for ever.
+    // The press went out 100 ms in and its release never did.
     expect(shell.sent, isEmpty);
-
-    // A click, away from the selection: both halves, at its cell.
-    await tester.tapAt(
-      box.topLeft + const Offset(40, 20),
-      kind: PointerDeviceKind.mouse,
+    expect(
+      session.terminal.buffer.getText(controller(tester).selection!),
+      'llo w',
     );
-    await tester.pump(const Duration(milliseconds: 500));
-    expect(shell.sent, hasLength(2));
-    expect(shell.sent.first, matches(RegExp(r'^\x1b\[<0;\d+;\d+M$')));
-    expect(shell.sent.last, shell.sent.first.replaceFirst(RegExp(r'M$'), 'm'));
+
+    await doubleClick(tester);
+    expect(
+      shown(shell.sent),
+      [for (var i = 0; i < 2; i++) 'ESC[<0;8;11M ESC[<0;8;11m'].join(' '),
+    );
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+  testWidgets('in a shell, a drag after a double click selects, from the word '
+      'and away from it', (tester) async {
+    await pumpPage(tester);
+    session.terminal.write(text * 30);
+    await tester.pump();
+
+    await doubleClick(tester);
+    expect(
+      session.terminal.buffer.getText(controller(tester).selection!),
+      'world',
+    );
+    for (final row in [10, 17]) {
+      final drag = await heldDrag(tester, row: row);
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        session.terminal.buffer.getText(controller(tester).selection!),
+        'llo w',
+      );
+    }
+    expect(shell.sent, isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 }

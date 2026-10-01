@@ -475,7 +475,8 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
 
 /// The real pointer, moved and pressed as a hand would, over this window:
 /// each step `move x y` to a point in the app (logical pixels, as a finder
-/// gives them), `down`, `up` (the primary button) or `sleep ms`. On Linux
+/// gives them), `down`, `up` (the primary button), `sleep ms`, or
+/// `shiftdown` and `shiftup` (Linux and macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
 /// The app is pumped while it goes.
@@ -504,6 +505,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
             '${(origin.dy + double.parse(y) * ratio).round()}',
           ],
           ['down'] => ['mousedown', '1'],
+          ['shiftdown'] => ['keydown', 'Shift_L'],
+          ['shiftup'] => ['keyup', 'Shift_L'],
           ['up'] => ['mouseup', '1'],
           ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
           _ => throw ArgumentError(step),
@@ -552,10 +555,20 @@ usleep(300_000)
 
 var at = CGPoint(x: bounds.midX, y: bounds.midY)
 var pressed = false
+var flags: CGEventFlags = []
 func post(_ type: CGEventType) {
-  CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at,
-          mouseButton: .left)!.post(tap: .cghidEventTap)
+  let e = CGEvent(mouseEventSource: nil, mouseType: type,
+                  mouseCursorPosition: at, mouseButton: .left)!
+  e.flags = flags
+  e.post(tap: .cghidEventTap)
   usleep(10_000)
+}
+func shift(_ down: Bool) {
+  flags = down ? .maskShift : []
+  let e = CGEvent(keyboardEventSource: nil, virtualKey: 56, keyDown: down)!
+  e.flags = flags
+  e.post(tap: .cghidEventTap)
+  usleep(50_000)
 }
 for step in args[3].split(separator: ";") {
   let p = step.split(separator: " ")
@@ -566,6 +579,8 @@ for step in args[3].split(separator: ";") {
     post(pressed ? .leftMouseDragged : .mouseMoved)
   case "down": pressed = true; post(.leftMouseDown)
   case "up": pressed = false; post(.leftMouseUp)
+  case "shiftdown": shift(true)
+  case "shiftup": shift(false)
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
   }
@@ -2104,19 +2119,87 @@ touch '${done.path}'
     },
   );
 
-  // #126: selecting broke on every desktop under a program that reads the
-  // mouse. xterm2 sent such a program the press once the button had been
-  // down 100 ms, and its release only if the gesture ended as a tap, while
-  // a drag was xterm2's own selection: so a drag begun after a short hold
-  // left the program a press that never ended, and Claude Code, which keeps
-  // a drag of its own until it hears the release, was left dragging. Here
-  // with the real pointer: a line held and dragged copies it, the program
-  // under it — every mouse mode on, as Claude Code's fullscreen view has
-  // them — hears no half a click, a click after it reaches the program
-  // whole, and a drag after that still copies.
+  // #126, with the real pointer. In a shell: a double click selects a word,
+  // and selecting more after it — a longer drag, then a fresh one elsewhere
+  // — copies each, a few times over, the user having seen it fail often and
+  // not always.
+  _test('after a double click on a word, a drag still selects more, and a '
+      'fresh drag elsewhere too', (tester) async {
+    final binding = IntegrationTestWidgetsFlutterBinding.instance;
+    binding.shouldPropagateDevicePointerEvents = true;
+    await _launch(tester);
+    final view = await _localShell(tester);
+    _run(view, 'echo jeansh select me please; echo second line here');
+    final lines = view.terminal.buffer.lines;
+    int row(String text) {
+      for (var i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].getText().startsWith(text)) return i;
+      }
+      return -1;
+    }
+
+    await _until(
+      tester,
+      () => row('second line here') >= 0,
+      'the lines to be printed',
+    );
+    final first = row('jeansh select me please');
+    final second = row('second line here');
+    final render = tester
+        .state<TerminalViewState>(find.byType(TerminalView))
+        .renderTerminal;
+    String cell(int col, int line) {
+      final at = render.localToGlobal(
+        render.getOffset(CellOffset(col, line)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      return 'move ${at.dx} ${at.dy}';
+    }
+
+    Future<void> copies(List<String> steps, String text) async {
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await _osMouse(tester, steps);
+      await _until(
+        tester,
+        () async => await _clipboard() != 'untouched',
+        'something to be copied, expecting "$text"',
+      );
+      expect(await _clipboard(), text);
+    }
+
+    List<String> drag(int from, int to, int line) => [
+      cell(from, line),
+      'down',
+      // Held, as a hand does before it moves.
+      'sleep 300',
+      for (var col = from + 1; col <= to; col++) cell(col, line),
+      'up',
+    ];
+
+    for (var round = 0; round < 3; round++) {
+      await copies([
+        cell(8, first),
+        for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+        'sleep 400',
+      ], 'select');
+      await copies(drag(0, 22, first), 'jeansh select me please');
+      await copies(drag(0, 10, second), 'second line');
+    }
+    await _closeTabs(tester);
+    // In the body: the binding checks it is back before any tear-down runs.
+    binding.shouldPropagateDevicePointerEvents = false;
+  });
+
+  // #126: under a program that tracks the mouse — every mode on, as Claude
+  // Code's fullscreen view asks — a drag is the program's, so it selects and
+  // copies for itself: the press, the moves and the release, a double click
+  // as two whole clicks, and never a press left without its release, which
+  // used to leave Claude Code dragging. Shift+drag stays the terminal's own
+  // selection and copies. The program here records what it is sent.
   _test(
-    'a held mouse drag copies the line and leaves a program that reads the '
-    'mouse no press without its release',
+    'a program tracking the mouse gets a drag and a double click whole, and '
+    'Shift+drag still copies',
+    skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       final binding = IntegrationTestWidgetsFlutterBinding.instance;
       binding.shouldPropagateDevicePointerEvents = true;
@@ -2131,11 +2214,7 @@ touch '${done.path}'
         }
         return row >= 0;
       }, 'the line to be printed');
-      // Not under PowerShell, which this cannot record with: there the
-      // drags alone.
-      final got = Platform.isWindows
-          ? null
-          : await _record(tester, view, bracketed: false, mouse: true);
+      final got = await _record(tester, view, bracketed: false, mouse: true);
 
       final render = tester
           .state<TerminalViewState>(find.byType(TerminalView))
@@ -2148,42 +2227,40 @@ touch '${done.path}'
         return 'move ${at.dx} ${at.dy}';
       }
 
-      Future<void> dragAcross() async {
-        await Clipboard.setData(const ClipboardData(text: 'untouched'));
-        await _osMouse(tester, [
-          cell(0),
-          'down',
-          // Held, as a hand does before it moves: past the 100 ms after
-          // which the press used to go out on its own.
-          'sleep 300',
-          for (var col = 1; col <= 15; col++) cell(col),
-          'up',
-        ]);
-        await _until(
-          tester,
-          () async => await _clipboard() != 'untouched',
-          'the drag to copy',
-        );
-        expect(await _clipboard(), 'jeansh select me');
-      }
+      final drag = [
+        cell(0),
+        'down',
+        'sleep 300',
+        for (var col = 1; col <= 15; col++) cell(col),
+        'up',
+      ];
+      await _osMouse(tester, drag);
+      await _osMouse(tester, [
+        cell(8),
+        for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+        'sleep 400',
+      ]);
 
-      await dragAcross();
-      await _osMouse(tester, [cell(3), 'down', 'sleep 40', 'up']);
-      await dragAcross();
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await _osMouse(tester, ['shiftdown', ...drag, 'shiftup']);
+      await _until(
+        tester,
+        () async => await _clipboard() != 'untouched',
+        'Shift+drag to copy',
+      );
+      expect(await _clipboard(), 'jeansh select me');
 
-      if (got == null) {
-        await _closeTabs(tester);
-        binding.shouldPropagateDevicePointerEvents = false;
-        return;
-      }
-      final bytes = await got.bytes('the clicks');
-      final presses = RegExp(r'\x1b\[<0;\d+;\d+M').allMatches(bytes).length;
-      final releases = RegExp(r'\x1b\[<0;\d+;\d+m').allMatches(bytes).length;
+      final bytes = await got.bytes('the mouse');
+      final said = bytes.replaceAll('\x1b', 'ESC');
+      int count(String pattern) => RegExp(pattern).allMatches(bytes).length;
+      // The drag's press and the double click's two, each with its release.
+      expect(count(r'\x1b\[<0;\d+;\d+M'), 3, reason: said);
+      expect(count(r'\x1b\[<0;\d+;\d+m'), 3, reason: said);
+      expect(count(r'\x1b\[<32;\d+;\d+M'), greaterThan(0), reason: said);
       expect(
-        (presses, releases),
-        (1, 1),
-        reason: 'the click whole, and nothing of the drags: '
-            '${bytes.replaceAll('\x1b', 'ESC')}',
+        bytes,
+        matches(RegExp(r'\x1b\[<0;1;\d+M')),
+        reason: 'a press where the drag began: $said',
       );
 
       await _closeTabs(tester);
