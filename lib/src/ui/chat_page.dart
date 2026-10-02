@@ -480,6 +480,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> _dropped(DropDoneDetails details) async {
     setState(() => _dropping = false);
     final here =
+        false &&
         widget.session.host.id == localHostId &&
         defaultTargetPlatform != TargetPlatform.windows;
     for (final item in details.files) {
