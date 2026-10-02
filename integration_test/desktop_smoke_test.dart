@@ -32,7 +32,9 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
@@ -351,6 +353,7 @@ Future<_Recording> _record(
   WidgetTester tester,
   TerminalView view, {
   required bool bracketed,
+  bool mouse = false,
 }) async {
   final dir = _scratch();
   final got = File('${dir.path}/got');
@@ -360,6 +363,8 @@ Future<_Recording> _record(
   final script = File('${dir.path}/record.sh')
     ..writeAsStringSync(
       "printf '\\033[?2004${bracketed ? 'h' : 'l'}'\n"
+      // Every mouse mode, in SGR, as Claude Code's fullscreen view asks.
+      "${mouse ? r"printf '\033[?1000h\033[?1002h\033[?1003h\033[?1006h'" : ':'}\n"
       'stty raw -echo\n'
       'touch ${ready.path}\n'
       // From the terminal by name: a background job of a non-interactive sh
@@ -368,7 +373,7 @@ Future<_Recording> _record(
       'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
       'kill \$! 2>/dev/null\n'
       'stty sane\n'
-      "printf '\\033[?2004l'\n"
+      "printf '\\033[?1006l\\033[?1003l\\033[?1002l\\033[?1000l\\033[?2004l'\n"
       'echo $done\n',
     );
   _run(view, 'sh ${script.path}');
@@ -590,6 +595,130 @@ Future<void> _menuCheckForUpdates(WidgetTester tester) async {
   ]);
   expect(done.exitCode, 0, reason: 'the Jeansh menu: ${done.stderr}');
 }
+
+/// [body] with the real pointer reaching the app, given back however it
+/// ends: left on after a failure, it fails every test after this one.
+Future<void> _realPointer(Future<void> Function() body) async {
+  final binding = IntegrationTestWidgetsFlutterBinding.instance;
+  binding.shouldPropagateDevicePointerEvents = true;
+  try {
+    await body();
+  } finally {
+    binding.shouldPropagateDevicePointerEvents = false;
+  }
+}
+
+/// [body], and on a failure what reached the app of the keys and the
+/// buttons meanwhile: whether a real key arrived at all.
+Future<void> _hearing(Future<void> Function() body) async {
+  final heard = <String>[];
+  bool key(KeyEvent event) {
+    heard.add('${event.runtimeType} ${event.logicalKey.debugName}');
+    return false;
+  }
+
+  void pointer(PointerEvent event) {
+    if (event is PointerDownEvent || event is PointerUpEvent) {
+      heard.add(
+        '${event.runtimeType} buttons ${event.buttons}, keys held '
+        '${HardwareKeyboard.instance.logicalKeysPressed}',
+      );
+    }
+  }
+
+  HardwareKeyboard.instance.addHandler(key);
+  GestureBinding.instance.pointerRouter.addGlobalRoute(pointer);
+  try {
+    await body();
+  } on TestFailure {
+    debugPrint('What the app heard:\n${heard.join('\n')}');
+    rethrow;
+  } finally {
+    HardwareKeyboard.instance.removeHandler(key);
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(pointer);
+  }
+}
+
+/// Two fingers on a Mac's trackpad, pushing the content down over [at], a
+/// global position in this window: the phased scroll events a trackpad
+/// makes — began, changed a step at a time, ended — posted through
+/// CoreGraphics at the HID tap, as the hardware's would be, with the pointer
+/// moved over this window first; the Cocoa embedder turns them into a pan as
+/// it does a real one. (Posted to the pid instead, none arrived.) The window
+/// is found by this process's pid; its content
+/// fills its bottom, under whatever title bar there is.
+Future<void> _trackpad(WidgetTester tester, Offset at) async {
+  final dir = Directory.systemTemp.createTempSync('jeansh-e2e-');
+  try {
+    final script = File('${dir.path}/trackpad.swift')
+      ..writeAsStringSync(_trackpadScript);
+    final size = tester.view.physicalSize / tester.view.devicePixelRatio;
+    var done = false;
+    // What reached the app, for a failure to say whether the pan arrived.
+    final seen = <String>[];
+    void hear(PointerEvent event) => seen.add('${event.runtimeType}');
+    GestureBinding.instance.pointerRouter.addGlobalRoute(hear);
+    final run = Process.run('swift', [
+      script.path, '$pid', '${at.dx}', '${at.dy}', '${size.height}', //
+    ]).whenComplete(() => done = true);
+    // Pumped while it runs, so the pan is drawn as it comes.
+    while (!done) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+    final ran = await run;
+    expect(ran.exitCode, 0, reason: 'the trackpad: ${ran.stderr}${ran.stdout}');
+    await tester.pump(const Duration(seconds: 1));
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(hear);
+    debugPrint(
+      'The trackpad posted ${'${ran.stdout}'.trim()}; '
+      'the app heard ${seen.toSet()} (${seen.length} events)',
+    );
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+}
+
+const _trackpadScript = r"""
+import AppKit
+import ApplicationServices
+import CoreGraphics
+
+let args = CommandLine.arguments
+let pid = pid_t(args[1])!
+let x = Double(args[2])!, y = Double(args[3])!, viewHeight = Double(args[4])!
+
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+  as! [[String: Any]]
+guard let window = windows.first(where: {
+  ($0[kCGWindowOwnerPID as String] as? pid_t) == pid
+    && ($0[kCGWindowLayer as String] as? Int) == 0
+}) else { print("no window for \(pid)"); exit(1) }
+let bounds = CGRect(
+  dictionaryRepresentation: window[kCGWindowBounds as String] as! CFDictionary)!
+let at = CGPoint(x: bounds.minX + x, y: bounds.maxY - viewHeight + y)
+print("at \(at) in \(bounds), trusted \(AXIsProcessTrusted())")
+
+NSRunningApplication(processIdentifier: pid)?.activate()
+usleep(300_000)
+CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: at,
+        mouseButton: .left)!.post(tap: .cghidEventTap)
+usleep(100_000)
+
+func scroll(_ dy: Int32, _ phase: Int64) {
+  let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                  wheel1: dy, wheel2: 0, wheel3: 0)!
+  e.location = at
+  e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+  e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+  e.post(tap: .cghidEventTap)
+  usleep(16_000)
+}
+// kCGScrollPhaseBegan, Changed, Ended.
+scroll(0, 1)
+for _ in 0..<40 { scroll(4, 2) }
+scroll(0, 4)
+""";
 
 /// A widget by the name it gives a screen reader, with no semantics tree
 /// asked for: the window's buttons have no text or tooltip to find them by.
@@ -3093,6 +3222,312 @@ touch '${done.path}'
     },
   );
 
+  // #126, with the real pointer. In a shell: a double click selects a word,
+  // and selecting more after it — a longer drag, then a fresh one elsewhere
+  // — copies each, a few times over, the user having seen it fail often and
+  // not always.
+  _test('after a double click on a word, a drag still selects more, and a '
+      'fresh drag elsewhere too', (tester) async {
+    await _realPointer(() async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      // Quoted: PowerShell's echo puts each word on a line of its own.
+      _run(view, "echo 'jeansh select me please'; echo 'second line here'");
+      final lines = view.terminal.buffer.lines;
+      int row(String text) {
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].getText().startsWith(text)) return i;
+        }
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => row('second line here') >= 0,
+        'the lines to be printed',
+      );
+      final first = row('jeansh select me please');
+      final second = row('second line here');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col, int line) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, line)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      Future<void> copies(List<String> steps, String text) async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, steps);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'something to be copied, expecting "$text"',
+        );
+        expect(await _clipboard(), text);
+      }
+
+      List<String> drag(int from, int to, int line) => [
+        cell(from, line),
+        'down',
+        // Held, as a hand does before it moves.
+        'sleep 300',
+        for (var col = from + 1; col <= to; col++) cell(col, line),
+        'up',
+      ];
+
+      for (var round = 0; round < 3; round++) {
+        await copies([
+          cell(8, first),
+          for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+          'sleep 400',
+        ], 'select');
+        await copies(drag(0, 22, first), 'jeansh select me please');
+        await copies(drag(0, 10, second), 'second line');
+      }
+      await _closeTabs(tester);
+    });
+  });
+
+  // #126: under a program that tracks the mouse — every mode on, as Claude
+  // Code's fullscreen view asks — a drag is the program's, so it selects and
+  // copies for itself: the press, the moves and the release, a double click
+  // as two whole clicks, and never a press left without its release, which
+  // used to leave Claude Code dragging. Shift+drag stays the terminal's own
+  // selection and copies. The program here records what it is sent.
+  _test(
+    'a program tracking the mouse gets a drag and a double click whole, and '
+    'Shift+drag still copies',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _realPointer(() async {
+        await _launch(tester);
+        final view = await _localShell(tester);
+        _run(view, 'echo jeansh select me');
+        final lines = view.terminal.buffer.lines;
+        var row = -1;
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].getText().startsWith('jeansh select me')) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be printed');
+        final got = await _record(tester, view, bracketed: false, mouse: true);
+
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        String cell(int col) {
+          final at = render.localToGlobal(
+            render.getOffset(CellOffset(col, row)) +
+                Offset(render.cellSize.width / 2, render.lineHeight / 2),
+          );
+          return 'move ${at.dx} ${at.dy}';
+        }
+
+        final drag = [
+          cell(0),
+          'down',
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ];
+        await _osMouse(tester, drag);
+        await _osMouse(tester, [
+          cell(8),
+          for (var i = 0; i < 2; i++) ...['down', 'sleep 30', 'up', 'sleep 60'],
+          'sleep 400',
+        ]);
+
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _hearing(() async {
+          // Shift held past the release, as a hand holds it: the app may
+        // hear a key before the pointer events sent ahead of it, and xterm2
+        // reads Shift as the drag starts, not at the press.
+        await _osMouse(tester, [
+          'shiftdown',
+          'sleep 200',
+          ...drag,
+          'sleep 500',
+          'shiftup',
+        ]);
+          await _until(
+            tester,
+            () async => await _clipboard() != 'untouched',
+            'Shift+drag to copy',
+          );
+        });
+        expect(await _clipboard(), 'jeansh select me');
+
+        final bytes = await got.bytes('the mouse');
+        final said = bytes.replaceAll('\x1b', 'ESC');
+        int count(String pattern) => RegExp(pattern).allMatches(bytes).length;
+        // The drag's press and the double click's two, each with its release.
+        expect(count(r'\x1b\[<0;\d+;\d+M'), 3, reason: said);
+        expect(count(r'\x1b\[<0;\d+;\d+m'), 3, reason: said);
+        expect(count(r'\x1b\[<32;\d+;\d+M'), greaterThan(0), reason: said);
+        expect(
+          bytes,
+          matches(RegExp(r'\x1b\[<0;1;\d+M')),
+          reason: 'a press where the drag began: $said',
+        );
+
+        await _closeTabs(tester);
+      });
+    },
+  );
+
+  // #126: on a Mac ⌘ is the link key as well as the copy key. Under the
+  // kitty protocol, which Claude Code turns on, xterm2 sent a lone ⌘ to the
+  // program as a key, and a key sent lets the selection go, so ⌘C copied
+  // nothing. Selected with the real pointer and copied with real keys.
+  _test(
+    'on a Mac, ⌘C copies a selection under the kitty keyboard protocol',
+    skip: Platform.isMacOS ? null : '⌘ is the link key on a Mac alone',
+    (tester) async {
+      await _realPointer(() async {
+        await _launch(tester);
+        final view = await _localShell(tester);
+        _run(view, 'echo jeansh select me');
+        final lines = view.terminal.buffer.lines;
+        var row = -1;
+        await _until(tester, () {
+          for (var i = 0; i < lines.length; i++) {
+            if (lines[i].getText().startsWith('jeansh select me')) row = i;
+          }
+          return row >= 0;
+        }, 'the line to be printed');
+        // Flags 1 and 4, Claude Code's.
+        _run(view, r"printf '\033[>5u'");
+        await _until(
+          tester,
+          () => view.terminal.kittyKeyboardMode == 5,
+          'the kitty protocol to be on',
+        );
+
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        String cell(int col) {
+          final at = render.localToGlobal(
+            render.getOffset(CellOffset(col, row)) +
+                Offset(render.cellSize.width / 2, render.lineHeight / 2),
+          );
+          return 'move ${at.dx} ${at.dy}';
+        }
+
+        await _osMouse(tester, [
+          cell(0),
+          'down',
+          'sleep 300',
+          for (var col = 1; col <= 15; col++) cell(col),
+          'up',
+        ]);
+        // Copy on select has copied it already; ⌘C must copy it again.
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _hearing(() async {
+          await _osMouse(tester, ['cmdc']);
+          await _until(
+            tester,
+            () async => await _clipboard() != 'untouched',
+            '⌘C to copy',
+          );
+        });
+        expect(await _clipboard(), 'jeansh select me');
+
+        _run(view, r"printf '\033[<u'");
+        await _closeTabs(tester);
+      });
+    },
+  );
+
+  // #126: on a Mac a trackpad's two-finger scroll reaches Flutter as a pan,
+  // never a wheel, and only the Cocoa embedder makes one from the system's
+  // own phased scroll events. So the scroll is posted to this process as
+  // AppKit would get it from a trackpad (see [_trackpad]): over a plain
+  // shell's scrollback, and over a program reading the mouse after a click
+  // on its bottom row, where Claude Code's prompt is — a pan's wheel events
+  // went to that click's cell rather than the pointer's.
+  _test(
+    'a trackpad scroll moves the scrollback and reaches a program that reads '
+    'the mouse at the pointer',
+    skip: Platform.isMacOS
+        ? null
+        : "a phased trackpad scroll is posted through a Mac's CoreGraphics",
+    (tester) async {
+      await _realPointer(() async {
+        await _launch(tester);
+        final dir = _scratch();
+
+        final view = await _localShell(tester);
+        _run(view, 'seq 1 400');
+        await _until(
+          tester,
+          () => _text(view).any((line) => line.trim() == '400'),
+          'seq to print 400 lines',
+        );
+        final scroll = tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(TerminalView),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        // Off the bottom first, so a pan either way has room to move it.
+        scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
+        await tester.pump();
+        final from = scroll.position.pixels;
+        final box = tester.getRect(find.byType(TerminalView));
+        await _trackpad(tester, box.center);
+        expect(
+          scroll.position.pixels,
+          isNot(from),
+          reason: 'the scrollback, from $from',
+        );
+
+        // writing what it is sent to a file a byte at a time: cat would hold it
+        // in its buffer.
+        // writing what it is sent to a file a byte at a time, as cat would buffer it.
+        final got = File('${dir.path}/wheel');
+        _run(
+          view,
+          r"printf '\033[?1049h\033[?1000h\033[?1006h'; stty raw -echo; "
+          'dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () => view.terminal.isUsingAltBuffer && got.existsSync(),
+          'the program to take the mouse',
+        );
+        await tester.tapAt(Offset(box.center.dx, box.bottom - 12));
+        await tester.pump(const Duration(milliseconds: 500));
+        final render = tester
+            .state<TerminalViewState>(find.byType(TerminalView))
+            .renderTerminal;
+        final cell = render.getCellOffset(render.globalToLocal(box.center));
+        await _trackpad(tester, box.center);
+        final wheel = RegExp(r'\x1b\[<6[45];(\d+);(\d+)M');
+        await _until(
+          tester,
+          () => wheel.hasMatch(got.readAsStringSync()),
+          'a wheel event to reach the program',
+        );
+        final at = {
+          for (final m in wheel.allMatches(got.readAsStringSync()))
+            '${m[1]};${m[2]}',
+        };
+        expect(at, {'${cell.x + 1};${cell.y + 1}'}, reason: 'the pointer cell');
+
+        view.terminal.keyInput(TerminalKey.keyC, ctrl: true);
+        await _closeTabs(tester);
+      });
+    },
+  );
+
   // #117: on Linux and Windows the runner draws no title bar, and the app
   // draws its buttons and moves the window from the tab strip's empty space.
   // Pressed with the real pointer, as each goes a way no widget test reaches:
@@ -3236,6 +3671,193 @@ touch '${done.path}'
     },
   );
 
+  // #137: a Local shell's chat types into an interactive Claude in a tmux
+  // pane, as an SSH host's does (.maestro/chat_two_way on Android). The
+  // session is tools/e2e_live_claude.py in a pane of the run's own tmux
+  // server (tools/e2e_desktop.sh), with a stand-in claude that lists it, both
+  // in the runner's home, which on CI holds no Claude Code of its own.
+  _test(
+    "a Local shell's chat types into a session's tmux pane, and its answer "
+    'comes back',
+    skip: !Platform.isLinux
+        ? "the session's pane needs the run's own tmux server, which "
+              'tools/e2e_desktop.sh gives Linux alone'
+        : Platform.environment['CI'] != 'true' || _claudeInstalled()
+        ? "off CI it would write a claude into the user's own home"
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      const sid = 'e2e00005-0000-4000-8000-000000000005';
+      final claude = File('$home/.local/bin/claude');
+      final config = Directory('$home/.claude');
+      final agents = File('$home/.e2e-agents.json');
+      final script = File('tools/e2e_live_claude.py').absolute;
+      expect(script.existsSync(), isTrue, reason: 'no ${script.path}');
+      expect(agents.existsSync(), isFalse, reason: '${agents.path} is there');
+      final hadConfig = config.existsSync();
+      addTearDown(() {
+        final shown = Process.runSync('tmux', [
+          'capture-pane',
+          '-p',
+          '-t',
+          'e2e-pane',
+        ]);
+        debugPrint('Pane: ${shown.stdout}${shown.stderr}');
+        Process.runSync('tmux', ['kill-session', '-t', 'e2e-pane']);
+        if (claude.existsSync()) claude.deleteSync();
+        if (agents.existsSync()) agents.deleteSync();
+        if (!hadConfig && config.existsSync()) {
+          config.deleteSync(recursive: true);
+        }
+      });
+      claude.parent.createSync(recursive: true);
+      claude.writeAsStringSync(
+        '#!/bin/sh\ncase "\$1" in\n'
+        "  --version) echo '2.1.300 (Claude Code)' ;;\n"
+        '  agents) cat "\$HOME/.e2e-agents.json" ;;\n'
+        '  *) exec cat >/dev/null ;;\nesac\n',
+      );
+      Process.runSync('chmod', ['755', claude.path]);
+      final projects = Directory(
+        '${config.path}/projects/${home.replaceAll(RegExp('[/.]'), '-')}',
+      )..createSync(recursive: true);
+      final transcript = File('${projects.path}/$sid.jsonl')
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'user',
+            'message': {'role': 'user', 'content': 'Earlier question'},
+          })}\n'
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Earlier answer'},
+              ],
+            },
+          })}\n',
+        );
+      agents.writeAsStringSync('[]');
+      final pane = await Process.run(
+        'tmux',
+        [
+          'new-session', '-d', '-s', 'e2e-pane', '-x', '120', '-y', '30', //
+          '-c', home,
+          'env PYTHONIOENCODING=utf-8 python3 ${script.path} $sid',
+        ],
+        environment: const {'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'},
+      );
+      expect(pane.exitCode, 0, reason: 'tmux: ${pane.stderr}');
+      // The stand-in's own pid, as `claude agents` gives Claude's.
+      final states = Directory('${config.path}/sessions');
+      final started = DateTime.now().add(const Duration(seconds: 10));
+      String? state;
+      while ((state = states.existsSync()
+              ? states
+                    .listSync()
+                    .map((f) => f.path)
+                    .where((p) => File(p).readAsStringSync().contains(sid))
+                    .firstOrNull
+              : null) ==
+          null) {
+        if (DateTime.now().isAfter(started)) fail('the stand-in never started');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      final pid = int.parse(state!.split('/').last.replaceAll('.json', ''));
+      agents.writeAsStringSync(
+        jsonEncode([
+          {
+            'kind': 'interactive', 'pid': pid, 'sessionId': sid, //
+            'name': 'E2E pane session', 'cwd': home, 'status': 'idle',
+            'startedAt': 1790000000100,
+          },
+        ]),
+      );
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final row = find.text('E2E pane session');
+      await _until(
+        tester,
+        () =>
+            row.evaluate().isNotEmpty ||
+            find.byTooltip('Sessions on this host').evaluate().isNotEmpty,
+        'the chat to open',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(find.byTooltip('Sessions on this host'));
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        'the live session listed',
+      );
+      await tester.tap(row.first);
+      await _until(
+        tester,
+        () => find.textContaining('typed into that pane').evaluate().isNotEmpty,
+        'the chat to watch the session, typing into its pane',
+      );
+      final chat = tester.widget<ChatPage>(find.byType(ChatPage)).session.chat;
+      String said() => chat.entries
+          .map(
+            (e) => switch (e) {
+              ChatSaid(:final text, :final why) => '$text${why ?? ''}',
+              ChatNotice(:final text) => text,
+              _ => '$e',
+            },
+          )
+          .join(' | ');
+
+      final field = find.byWidgetPredicate(
+        (w) =>
+            w is TextField &&
+            w.decoration?.hintText == 'Message “E2E pane session”…',
+      );
+      await _until(tester, () => field.evaluate().isNotEmpty, 'the field');
+      await tester.enterText(field, 'hello from the desktop');
+      // Send turns on in the frame after the text goes in. Tapped sooner it
+      // is still off and sends nothing — which, with no frame waited for,
+      // read as a chat that never typed into the pane (run 36875853136).
+      await _until(
+        tester,
+        () =>
+            tester
+                .widget<IconButton>(
+                  find
+                      .ancestor(
+                        of: find.byTooltip('Send'),
+                        matching: find.byType(IconButton),
+                      )
+                      .first,
+                )
+                .onPressed !=
+            null,
+        'Send to turn on',
+      );
+      await tester.tap(find.byTooltip('Send'));
+      final end = DateTime.now().add(const Duration(seconds: 40));
+      while (!transcript.readAsStringSync().contains(
+        'hello from the desktop',
+      )) {
+        if (DateTime.now().isAfter(end)) {
+          fail('never reached the pane; the chat said: ${said()}');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+      }
+      await _until(
+        tester,
+        () => chat.entries.whereType<ChatSaid>().any(
+          (e) => e.text == 'Echo: hello from the desktop',
+        ),
+        "the stand-in's answer in the chat",
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #132. A tab's menu from a right-click the OS itself sends, not one the
   // test makes up inside Flutter: on a desktop the strip is the window's
   // title bar, and what the runner, the window manager or AppKit does with a
@@ -3334,8 +3956,9 @@ touch '${done.path}'
               : text;
           debugPrint('${f.path}: $tail');
         }
-        if (agents.existsSync())
+        if (agents.existsSync()) {
           debugPrint('Listing: ${agents.readAsStringSync()}');
+        }
         Process.runSync('tmux', ['kill-session', '-t', 'e2e-live']);
         if (claude.existsSync()) claude.deleteSync();
         if (agents.existsSync()) agents.deleteSync();
