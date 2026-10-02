@@ -10,7 +10,14 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart'
-    show PointerDeviceKind, kSecondaryMouseButton;
+    show
+        GestureBinding,
+        kMiddleMouseButton,
+        kPrimaryMouseButton,
+        kSecondaryMouseButton,
+        PointerDeviceKind,
+        PointerPanZoomStartEvent,
+        PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -1223,7 +1230,13 @@ class _PaneViewState extends State<_PaneView> {
   /// Shared by the terminal view, which paints the selection, and the pad,
   /// which makes it by touch. It also carries the underlines Ctrl puts under
   /// every link, and keeps a Ctrl+tap from a program that reads the mouse.
-  final selection = TerminalController();
+  /// What xterm2 itself sends a program that reads the mouse: see
+  /// [_pointerInputs].
+  final selection = TerminalController(pointerInputs: _pointerInputs(false));
+
+  /// A press [_mouseDown] sent and whose release has not gone yet, with where
+  /// the pointer last was: xterm2 sends the moves between them.
+  bool get _holding => (_tracked?.pointer ?? -1) != -1;
   List<TerminalUnderline> _underlines = const [];
 
   @override
@@ -1247,6 +1260,22 @@ class _PaneViewState extends State<_PaneView> {
       widget.terminal.onClipboardStore = _programCopied;
     }
     if (!oldWidget.focused) _followFocus();
+  }
+
+  /// A pane going away mid-drag — its tab closed, its tmux pane gone — still
+  /// lets the button go for the program, or Claude Code would go on dragging.
+  /// Here rather than in [dispose], which runs once the terminal view below
+  /// is gone and nothing can be sent through it; and from where the pointer
+  /// was last, the render object being detached by now.
+  @override
+  void deactivate() {
+    final tracked = _tracked;
+    if (tracked != null && _holding) {
+      _sendAt(tracked.button, TerminalMouseButtonState.up, tracked.at);
+      _tracked = null;
+      selection.setPointerInputs(_pointerInputs(false));
+    }
+    super.deactivate();
   }
 
   @override
@@ -1367,16 +1396,145 @@ class _PaneViewState extends State<_PaneView> {
 
   void _mouseDown(PointerDownEvent event) {
     _rightDown(event);
-    if (event.kind == PointerDeviceKind.mouse) {
-      _selectionAtDown = selection.selection;
+    // A second pointer — a touchscreen, a pen — must not lose the held
+    // press its release: the program would drag for ever.
+    if (_holding) return;
+    _tracked = null;
+    if (event.kind != PointerDeviceKind.mouse) return;
+    _selectionAtDown = selection.selection;
+    final button = switch (event.buttons) {
+      kPrimaryMouseButton => TerminalMouseButton.left,
+      // The right button is Jeansh's, for its menu: see [_contextMenu].
+      kMiddleMouseButton => TerminalMouseButton.middle,
+      _ => null,
+    };
+    if (button == null || !_tracksDrags) return;
+    if (_send(button, TerminalMouseButtonState.down, event.position)) {
+      _tracked = (
+        pointer: event.pointer,
+        button: button,
+        at: _local(event.position),
+      );
+      selection.setPointerInputs(_pointerInputs(true));
     }
+  }
+
+  /// The press a program tracking drags has been sent, until its release:
+  /// its pointer, -1 once released, its button, and where it last was, in
+  /// the terminal's own coordinates.
+  ({int pointer, TerminalMouseButton button, Offset at})? _tracked;
+
+  void _trackedMove(PointerMoveEvent event) {
+    final tracked = _tracked;
+    if (tracked == null || tracked.pointer != event.pointer) return;
+    _tracked = (
+      pointer: tracked.pointer,
+      button: tracked.button,
+      at: _local(event.position),
+    );
+  }
+
+  /// Whether a program has asked for the mouse's drags — button-event
+  /// tracking (1002) or any-event (1003), as Claude Code's fullscreen view,
+  /// vim and tmux with its mouse on do — and so gets the press, every move
+  /// with the button held and the release, as xterm and iTerm2 send them:
+  /// the program selects, and Claude Code copies its selection itself.
+  /// xterm2 draws no selection meanwhile, and sends the moves itself.
+  ///
+  /// Shift keeps the drag for the terminal's own selection and copy on
+  /// select, unless the program asked for Shift too; an armed Ctrl keeps it
+  /// too. A desktop's mouse alone: a finger still scrolls.
+  bool get _tracksDrags {
+    if (!isDesktop || _ctrlArmed) return false;
+    final terminal = widget.terminal;
+    if (HardwareKeyboard.instance.isShiftPressed &&
+        !terminal.mouseShiftCaptureMode) {
+      return false;
+    }
+    return switch (terminal.mouseMode) {
+      MouseMode.upDownScrollDrag || MouseMode.upDownScrollMove => true,
+      _ => false,
+    };
+  }
+
+  /// One mouse report at [global], with the keys held now. Answers whether
+  /// the program reads the mouse at all.
+  bool _send(
+    TerminalMouseButton button,
+    TerminalMouseButtonState state,
+    Offset global,
+  ) => _sendAt(button, state, _local(global));
+
+  Offset _local(Offset global) =>
+      _viewKey.currentState?.renderTerminal.globalToLocal(global) ?? global;
+
+  bool _sendAt(
+    TerminalMouseButton button,
+    TerminalMouseButtonState state,
+    Offset local,
+  ) {
+    final render = _viewKey.currentState?.renderTerminal;
+    if (render == null) return false;
+    final keys = HardwareKeyboard.instance;
+    return render.mouseEvent(
+      button,
+      state,
+      local,
+      modifiers: TerminalMouseModifiers(
+        shift: keys.isShiftPressed,
+        alt: keys.isAltPressed,
+        control: keys.isControlPressed,
+      ),
+    );
+  }
+
+  /// The release of a press [_mouseDown] sent, wherever the pointer went —
+  /// or a cancel, which a program hears as a release too, never as a button
+  /// left down.
+  void _trackedUp(PointerEvent event) {
+    final tracked = _tracked;
+    if (tracked == null || tracked.pointer != event.pointer) return;
+    _send(tracked.button, TerminalMouseButtonState.up, event.position);
+    // Kept until the next press, so the tap this gesture also makes does
+    // not send it again: see [_click].
+    _tracked = (pointer: -1, button: tracked.button, at: tracked.at);
+    selection.setPointerInputs(_pointerInputs(false));
+  }
+
+  /// A trackpad's scroll, which a Mac sends as a pan and not as a wheel,
+  /// made to land where the pointer is.
+  ///
+  /// For a program that reads the mouse — Claude Code's fullscreen view, vim,
+  /// less, a program in a tmux pane — xterm2 turns the scroll into wheel
+  /// events at the cell it last saw the pointer on, and it looks for that
+  /// only in a press or a wheel. A trackpad's pan is neither, so its wheel
+  /// events went to wherever the last click was: after a click in Claude
+  /// Code's prompt, on the prompt, which does not scroll, so scrolling did
+  /// nothing until the next mouse wheel. Claude Code aims a wheel at the
+  /// element under its cell, as a browser does.
+  ///
+  /// So the pan's start is handed on as a wheel that moves nothing, which
+  /// xterm2 takes the place from and every scroll view ignores.
+  // ponytail: a synthetic event, since the place is private to xterm2's
+  // TerminalScrollGestureHandler; retire this once it listens to
+  // onPointerPanZoomStart itself.
+  void _trackpadDown(PointerPanZoomStartEvent event) {
+    GestureBinding.instance.handlePointerEvent(
+      PointerScrollEvent(
+        viewId: event.viewId,
+        timeStamp: event.timeStamp,
+        kind: event.kind,
+        device: event.device,
+        position: event.position,
+      ),
+    );
   }
 
   /// On a desktop, what the mouse has just selected — a drag, a double
   /// click's word, a triple click's line — goes to the clipboard as the
-  /// button comes up: iTerm2's habit, and what Claude Code does in its own
-  /// fullscreen view, which never sees the drag here, xterm2 keeping drags
-  /// for its own selection.
+  /// button comes up: iTerm2's habit. A program that tracks drags, Claude
+  /// Code's fullscreen view among them, selects and copies for itself, and
+  /// Shift+drag still selects here.
   ///
   /// Only a selection the mouse made, never one already there or one the
   /// app made. Looked at once the up has been dealt with, since xterm2
@@ -1384,6 +1542,16 @@ class _PaneViewState extends State<_PaneView> {
   /// The text is what every other copy takes: see [selectedText].
   void _mouseUp(PointerUpEvent event) {
     _rightUp(event);
+    _trackedUp(event);
+    if (_tracked != null) {
+      // The program selects: a double or triple click's word or line, which
+      // xterm2 selects whatever the program asked for, would only lie over
+      // the program's own.
+      scheduleMicrotask(() {
+        if (mounted) selection.clearSelection();
+      });
+      return;
+    }
     if (!isDesktop ||
         event.kind != PointerDeviceKind.mouse ||
         !copyOnSelect.value) {
@@ -1467,6 +1635,7 @@ class _PaneViewState extends State<_PaneView> {
   }
 
   void _contextMenu(TapUpDetails details, CellOffset cell) {
+    // A plain right-click; Shift+right goes to the program.
     final terminal = widget.terminal;
     if (HardwareKeyboard.instance.isShiftPressed &&
         terminal.mouseMode != MouseMode.none) {
@@ -1569,14 +1738,13 @@ class _PaneViewState extends State<_PaneView> {
   void showLinks({required bool ctrl, required Color color}) {
     // The tap is held back, because a program reading the mouse would
     // otherwise take a Ctrl+tap as a click and the link would never open.
-    // The scroll is not: suspending every pointer input, as this used to,
+    // The scroll is not: suspending every pointer input, as this once did,
     // took scrolling away too, and on the alternate screen or under a
     // program that reads the mouse — Claude Code, vim, less, tmux — a drag
     // is the only way a finger can scroll at all, there being no wheel. So
     // an armed CTRL froze the terminal's content until the app was killed.
-    selection.setPointerInputs(
-      ctrl ? _ctrlPointerInputs : _defaultPointerInputs,
-    );
+    _ctrlArmed = ctrl;
+    selection.setPointerInputs(_pointerInputs(_holding && !ctrl));
     for (final underline in _underlines) {
       underline.dispose();
     }
@@ -1594,14 +1762,53 @@ class _PaneViewState extends State<_PaneView> {
     );
   }
 
-  /// What a terminal normally takes: xterm2's own default.
-  static const _defaultPointerInputs = PointerInputs({
-    PointerInput.tap,
+  /// What xterm2 hands a program that reads the mouse: the wheel, and the
+  /// moves of a drag only while [_mouseDown] has sent its press and the
+  /// release has not gone — [drag]. Never the press or the release: xterm2
+  /// sends a press once the button has been down 100 ms and its release only
+  /// if the gesture ends as a tap, which left a program a press that never
+  /// ended. [_mouseDown] and [_click] send those instead.
+  ///
+  /// The moves are held to the press because xterm2 decides each one alone,
+  /// from Shift and the button held then: a Shift+drag let go of Shift, a
+  /// Ctrl disarmed mid-drag or a right-button drag would otherwise send a
+  /// program moves with a button held that no press began and no release
+  /// ends — the very drag that never ends.
+  static PointerInputs _pointerInputs(bool drag) => PointerInputs({
     PointerInput.scroll,
+    if (drag) PointerInput.drag,
   });
 
-  /// The same without the tap, which Ctrl has claimed for opening links.
-  static const _ctrlPointerInputs = PointerInputs({PointerInput.scroll});
+  /// Whether Ctrl has claimed the tap, for opening a link: see [showLinks].
+  bool _ctrlArmed = false;
+
+  /// A click for a program that reads the mouse — Claude Code's fullscreen
+  /// view, vim, less, a program in a tmux pane — sent whole once the button
+  /// is up: the press and its release together. Answers whether the program
+  /// took it.
+  ///
+  /// xterm2 sent the press as soon as the button had been down 100 ms and
+  /// the release only if the gesture ended as a tap, while a drag was its
+  /// own selection. So a drag begun after a short hold left the program a
+  /// press that never ended: Claude Code took it as a selection of its own
+  /// being dragged, for ever, and its selection and copy broke until it next
+  /// heard a release. A program that tracks drags has had this click's press
+  /// and release already, from [_mouseDown]; one that does not gets no drag
+  /// at all, and a click always as both halves.
+  ///
+  /// Shift keeps the click for the terminal, as it always has, unless the
+  /// program asked for Shift too.
+  bool _click(TerminalMouseButton button, Offset global) {
+    if (_tracked != null) return true;
+    if (_ctrlArmed && button == TerminalMouseButton.left) return false;
+    final keys = HardwareKeyboard.instance;
+    if (keys.isShiftPressed && !widget.terminal.mouseShiftCaptureMode) {
+      return false;
+    }
+    if (!_send(button, TerminalMouseButtonState.down, global)) return false;
+    _send(button, TerminalMouseButtonState.up, global);
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1626,7 +1833,12 @@ class _PaneViewState extends State<_PaneView> {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
-          onPointerCancel: _rightUp,
+          onPointerMove: _trackedMove,
+          onPointerCancel: (event) {
+            _trackedUp(event);
+            _rightUp(event);
+          },
+          onPointerPanZoomStart: _trackpadDown,
           child: TerminalView(
             widget.terminal,
             key: _viewKey,
@@ -1643,7 +1855,10 @@ class _PaneViewState extends State<_PaneView> {
             onKeyEvent: _onCopyChord,
             // Tapping a terminal that already has focus is how you ask for the
             // keyboard back, and focus alone will not raise it.
-            onTapUp: (_, cell) => widget.onTap(this, cell),
+            onTapUp: (details, cell) {
+              _click(TerminalMouseButton.left, details.globalPosition);
+              widget.onTap(this, cell);
+            },
             onSecondaryTapUp: isDesktop ? _contextMenu : null,
             padding: widget.padding,
             textStyle: widget.textStyle,
