@@ -4547,7 +4547,10 @@ touch '${done.path}'
       final words = [for (var i = 0; i < 60; i++) 'wd$i'].join(' ');
       final reply =
           'Echo from the stand-in.\n\nUse `inline_code()` here.\n\n'
-          '```sh\n$words\n```\n';
+          '```sh\n$words\n```\n\n'
+          '| Name | Note |\n| --- | --- |\n'
+          '| alpha | first `cell_code()` here |\n'
+          '| beta | second row words |\n';
       final answer = File('$home/.claude/e2e-answer.json')
         ..createSync(recursive: true)
         ..writeAsStringSync(
@@ -4641,7 +4644,7 @@ touch '${done.path}'
                 w.scrollDirection == Axis.horizontal,
           ),
         );
-        expect(sideways, findsNothing, reason: 'a code block scrolls sideways');
+        expect(sideways, findsNWidgets(1), reason: 'only the table scrolls sideways, not a code block');
         final block = tester.renderObject<RenderParagraph>(
           find.textContaining('wd0 wd1', findRichText: true).first,
         );
@@ -4696,6 +4699,50 @@ touch '${done.path}'
           chord,
         ]);
         await clipboardIs('wd7', '4. a double-click on a word');
+
+        // 5. A real drag within a table cell, then the chord.
+        await setClipboard('SENTINEL');
+        final (c, d) = ends('second row words');
+        await _osMouse(tester, [
+          'move ${xy(c)}',
+          'sleep 200',
+          'down',
+          'move ${xy(Offset.lerp(c, d, 0.5)!)}',
+          'move ${xy(d)}',
+          'sleep 200',
+          'up',
+          'sleep 300',
+          chord,
+        ]);
+        await clipboardIs('second row words', '5. a drag within a table cell');
+
+        // 6. A real drag over inline code in a table cell.
+        await setClipboard('SENTINEL');
+        final (e, f) = ends('cell_code()');
+        await _osMouse(tester, [
+          'move ${xy(e)}',
+          'sleep 200',
+          'down',
+          'move ${xy(Offset.lerp(e, f, 0.5)!)}',
+          'move ${xy(f)}',
+          'sleep 200',
+          'up',
+          'sleep 300',
+          chord,
+        ]);
+        await clipboardIs('cell_code()', '6. a drag over code in a table cell');
+
+        // 7. A real double-click on a word in a table cell.
+        await setClipboard('SENTINEL');
+        final (g, h) = ends('alpha');
+        await _osMouse(tester, [
+          'move ${xy(Offset.lerp(g, h, 0.5)!)}',
+          'sleep 200',
+          'dclick',
+          'sleep 300',
+          chord,
+        ]);
+        await clipboardIs('alpha', '7. a double-click in a table cell');
       });
       await _grab(tester, 'chat-code-copy-end');
       await _closeTabs(tester);
