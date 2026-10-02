@@ -401,6 +401,125 @@ void main() {
     );
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+  // macOS and every terminal on it: the second click of a double click, held
+  // and dragged, grows the word selection word by word. xterm2 selected
+  // characters from the press instead, and from a quick drag never selected
+  // the word at all.
+  group('in a shell, a held double click', () {
+    Offset cellAt(WidgetTester tester, int col, int row) {
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      return render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            render.cellSize.center(Offset.zero),
+      );
+    }
+
+    String selected(WidgetTester tester) => session.terminal.buffer.getText(
+      controller(tester).selection!,
+    );
+
+    Future<TestGesture> secondClick(
+      WidgetTester tester, {
+      required int col,
+      required int clicks,
+    }) async {
+      for (var i = 1; i < clicks; i++) {
+        await tester.tapAt(cellAt(tester, col, 10), kind: PointerDeviceKind.mouse);
+        await tester.pump(const Duration(milliseconds: 60));
+      }
+      return tester.startGesture(
+        cellAt(tester, col, 10),
+        kind: PointerDeviceKind.mouse,
+      );
+    }
+
+    for (final hold in [0, 200]) {
+      testWidgets('extends the word by words as it is dragged right and '
+          'left, held $hold ms before it moves', (tester) async {
+        await pumpPage(tester);
+        session.terminal.write(text * 30);
+        await tester.pump();
+
+        final g = await secondClick(tester, col: 14, clicks: 2);
+        await tester.pump(Duration(milliseconds: hold));
+        expect(selected(tester), 'this');
+        for (var col = 15; col <= 20; col++) {
+          await g.moveTo(cellAt(tester, col, 10));
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        // To the middle of "a": whole words, "this is a".
+        expect(selected(tester), 'this is a');
+        for (var col = 13; col >= 7; col--) {
+          await g.moveTo(cellAt(tester, col, 10));
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        // Back past the word's start, into "world": it grows leftwards.
+        expect(selected(tester), 'world this');
+        await g.up();
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(selected(tester), 'world this');
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+    }
+
+    testWidgets('a triple click drags by lines', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      final g = await secondClick(tester, col: 14, clicks: 3);
+      await tester.pump(const Duration(milliseconds: 200));
+      await g.moveTo(cellAt(tester, 20, 12));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(
+        selected(tester).trimRight().split('\n').length,
+        3,
+        reason: selected(tester),
+      );
+      await g.up();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('then Shift+click, or Shift and a drag, extends the '
+        'selection to the cell', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      final g = await secondClick(tester, col: 7, clicks: 2);
+      await g.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(selected(tester), 'world');
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      final shift = await tester.startGesture(
+        cellAt(tester, 18, 10),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(selected(tester), 'world this is');
+      await shift.moveTo(cellAt(tester, 24, 10));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(selected(tester), 'world this is a lin');
+      await shift.up();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(selected(tester), 'world this is a lin');
+
+      // A plain press afterwards starts a selection of its own again.
+      final fresh = await tester.startGesture(
+        cellAt(tester, 2, 12),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      await fresh.moveTo(cellAt(tester, 6, 12));
+      await tester.pump(const Duration(milliseconds: 16));
+      await fresh.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(selected(tester), 'llo w');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
   testWidgets('in a shell, a drag after a double click selects, from the word '
       'and away from it', (tester) async {
     await pumpPage(tester);
