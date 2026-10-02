@@ -1146,6 +1146,21 @@ class _ToolRow extends StatefulWidget {
     return result;
   }
 
+  /// A result of a tool with no renderer of its own that is a JSON object or
+  /// array, ready for a tree; null for any other, drawn as text.
+  static Object? _resultTree(ChatToolRun run) {
+    final result = run.result;
+    if (result == null || ChatToolRun.own.contains(run.name) || run.failed) {
+      return null;
+    }
+    try {
+      final value = jsonDecode(_unquoted(result));
+      return value is Map || value is List ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   State<_ToolRow> createState() => _ToolRowState();
 }
@@ -1213,7 +1228,7 @@ class _ToolRowState extends State<_ToolRow> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          run.name,
+                          run.title,
                           style: TextStyle(
                             fontFamily: TermulFonts.mono,
                             fontSize: 12,
@@ -1267,6 +1282,9 @@ class _ToolRowState extends State<_ToolRow> {
                         if (result != null && result.isNotEmpty) ...[
                           const SizedBox(height: 8),
                           _label(p, 'result'),
+                          if (_ToolRow._resultTree(run) case final tree?)
+                            _ToolInput._tree(context, 'result', tree)
+                          else
                           _block(
                             context,
                             'result',
@@ -1491,10 +1509,33 @@ class _ToolInput extends StatelessWidget {
           parts.add(_checklist(context, items));
         }
     }
-    if (rest.isNotEmpty) parts.add(code('fields', _fields(rest)));
+    if (rest.isNotEmpty) {
+      parts.add(
+        ChatToolRun.own.contains(run.name)
+            ? code('fields', _fields(rest))
+            : _tree(context, 'fields', rest),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: parts,
+    );
+  }
+
+  /// [value] as a tree that opens node by node, in a box with a button that
+  /// copies the whole of it as indented JSON.
+  static Widget _tree(BuildContext context, String slot, Object? value) {
+    String copy;
+    try {
+      copy = const JsonEncoder.withIndent('  ').convert(value);
+    } catch (_) {
+      copy = '$value';
+    }
+    return _block(
+      context,
+      slot,
+      TuiJsonTree(value: value, foldStrings: true),
+      copy: copy,
     );
   }
 
@@ -1787,7 +1828,7 @@ class _ProgressState extends State<_Progress> {
       final tool = p.tool;
       final doing = tool == null
           ? ''
-          : ' · ${tool.name}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
+          : ' · ${tool.title}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
       text = 'Working… ($time$tokens)$doing';
     }
     return Padding(
