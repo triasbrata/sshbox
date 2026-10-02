@@ -2790,9 +2790,6 @@ touch '${done.path}'
     },
   );
 
-  // #14: a desktop's terminal can use a font the machine has, not only the
-  // five the app bundles — listed from the machine itself, monospaced ones
-  // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
   // #146: files dropped from the file manager on a desktop chat. A picture
   // becomes a card above the box and its [Image #1] in it; a folder dropped
   // with it is refused, saying it is a folder, and so is a file that is no
@@ -2870,6 +2867,9 @@ touch '${done.path}'
     },
   );
 
+  // #14: a desktop's terminal can use a font the machine has, not only the
+  // five the app bundles — listed from the machine itself, monospaced ones
+  // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
   // first monospaced family fontconfig lists that the app does not bundle.
   _test("the terminal takes a font installed on the machine", (tester) async {
     final bundled = terminalFonts.map((font) => font.family).toSet();
