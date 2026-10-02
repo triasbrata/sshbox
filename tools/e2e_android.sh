@@ -475,6 +475,8 @@ chat_markdown() {
 # than ended: its own only, by its session id, so live_session can start again.
 end_live_session() {
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  # Its task store, if tasks: wrote one: this session's folder alone.
+  [ -n "$LIVE_SID" ] && sudo rm -rf "/home/$SSH_USER/.claude/tasks/$LIVE_SID"
   sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
     -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
 }
