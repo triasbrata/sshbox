@@ -624,8 +624,16 @@ class _TabsShellState extends State<TabsShell> {
                     // still have focus nodes, and keystrokes land in whichever
                     // one grabbed focus last: typed commands going to the
                     // wrong host. Shown again, each page puts the focus back
-                    // on its own terminal, text or web view.
-                    ExcludeFocus(excluding: index != showing + 1, child: page),
+                    // on its own terminal, text or web view. Hidden, a page's
+                    // tickers stop too, and what it polls the host for by
+                    // them: a chat's progress line among them.
+                    TickerMode(
+                      enabled: index == showing + 1,
+                      child: ExcludeFocus(
+                        excluding: index != showing + 1,
+                        child: page,
+                      ),
+                    ),
                 ],
               ),
             ),

@@ -1,0 +1,34 @@
+# #159, first of three (tools/e2e_android.sh's chat_session_status, which
+# rewrites the stand-in listing between them): a pinned background session
+# whose turn is running is marked Working in chat's sessions list.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E status session.*"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "Working"
+    timeout: 10000
+- takeScreenshot: chat-status-working
