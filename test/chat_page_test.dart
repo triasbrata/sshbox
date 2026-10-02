@@ -197,9 +197,20 @@ class _Shell
   void adds(Map<String, Object?> line) =>
       follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
+  /// What the session's task store holds, as the host prints it: one line a
+  /// task. Empty, and the list is what the transcript made of it.
+  String tasksOut = '';
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('/tasks')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(tasksOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     // Before the rest: tmux's finder has a ` -f ` of its own.
     if (command.contains('list-panes')) {
       final typing = command.contains('load-buffer');
@@ -2931,7 +2942,7 @@ void main() {
         );
       });
 
-      testWidgets('leaves shortcuts, Enter, Tab, arrows and Escape alone', (
+      testWidgets('leaves shortcuts, Tab, Escape and the F-keys alone', (
         tester,
       ) async {
         final box = await pumpChat(tester);
@@ -2940,9 +2951,7 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
         for (final key in [
-          LogicalKeyboardKey.enter,
           LogicalKeyboardKey.tab,
-          LogicalKeyboardKey.arrowUp,
           LogicalKeyboardKey.escape,
           LogicalKeyboardKey.f5,
         ]) {
@@ -3697,6 +3706,437 @@ void main() {
     });
   });
 
+  group('a chat takes what is typed or pasted without the box clicked', () {
+    /// A finished session continued here, with one answer to select from.
+    /// Returns the host, to see what was sent into it.
+    Future<_Shell> pumpChat(
+      WidgetTester tester, {
+      String answer = 'hello world answer',
+    }) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Notes')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': answer},
+              ],
+            },
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Notes');
+      return shell;
+    }
+
+    TextField box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField));
+    String typed(WidgetTester tester) => box(tester).controller!.text;
+
+    /// Focus on the sessions button: a control that is not a text field.
+    Future<void> focusAButton(WidgetTester tester) async {
+      Focus.of(tester.element(find.byIcon(Icons.view_sidebar_outlined)))
+          .requestFocus();
+      await tester.pump();
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+    }
+
+    /// Pastes [text]: what the clipboard answers to a read.
+    void clipboardHolds(String text) {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') return {'text': text};
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+    }
+
+    /// A paste looks for a picture first, which is real work off the frame
+    /// clock: let it run out before reading the box.
+    Future<void> pasteSettles(WidgetTester tester) async {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 300)),
+      );
+      await tester.pump();
+    }
+
+    Future<void> chord(
+      WidgetTester tester,
+      LogicalKeyboardKey modifier,
+      LogicalKeyboardKey key,
+    ) async {
+      await tester.sendKeyDownEvent(modifier);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(modifier);
+      await tester.pump();
+      await tester.pump();
+    }
+
+    /// Drags the mouse over the answer, as a person selects it.
+    Future<void> selectTheAnswer(WidgetTester tester) async {
+      final answer = find.textContaining('hello world', findRichText: true);
+      final gesture = await tester.startGesture(
+        tester.getTopLeft(answer.first) + const Offset(2, 6),
+        kind: PointerDeviceKind.mouse,
+      );
+      await gesture.moveTo(
+        tester.getTopRight(answer.first) + const Offset(-2, 6),
+      );
+      await gesture.up();
+      await tester.pump();
+    }
+
+    testWidgets('a letter, with focus on a button, goes into the box once', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      await focusAButton(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.pump();
+
+      expect(typed(tester), 'h');
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+    });
+
+    testWidgets('Backspace and the arrows, with focus on a button, are the '
+        'button\'s: the box is left alone', (tester) async {
+      await pumpChat(tester);
+      await tester.enterText(find.byType(TextField), 'abc');
+      await tester.pump();
+      await focusAButton(tester);
+      final button = FocusManager.instance.primaryFocus;
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.pump();
+      expect(typed(tester), 'abc');
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+
+      // The arrow moves between controls, as Flutter's own does.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(typed(tester), 'abc');
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      expect(FocusManager.instance.primaryFocus, isNot(same(button)));
+    });
+
+    testWidgets('Backspace and an arrow, from a selection in a reply, go to '
+        'the box', (tester) async {
+      await pumpChat(tester);
+      await tester.enterText(find.byType(TextField), 'abc');
+      await tester.pump();
+      await selectTheAnswer(tester);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.pump();
+      expect(typed(tester), 'ab');
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+
+      await selectTheAnswer(tester);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+      expect(
+        box(tester).controller!.selection.baseOffset,
+        lessThan(2),
+        reason: 'the arrow moved the caret',
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Enter, with focus on a button, presses it and is not the '
+        'box\'s', (tester) async {
+      final shell = await pumpChat(tester);
+      await tester.enterText(find.byType(TextField), 'one');
+      await tester.pump();
+      await focusAButton(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      await tester.pump();
+
+      // The button's: it opened the sessions drawer, and the box was left.
+      expect(typed(tester), 'one');
+      expect(shell.written, isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+    });
+
+    testWidgets('Enter, from a selection in a reply, is the box\'s: a new '
+        'line by default, a send where Settings says so', (tester) async {
+      final shell = await pumpChat(tester);
+      await tester.enterText(find.byType(TextField), 'one');
+      await tester.pump();
+      await selectTheAnswer(tester);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(typed(tester), 'one\n');
+      expect(shell.written, isEmpty);
+
+      chatEnterSends.value = true;
+      addTearDown(() => chatEnterSends.value = false);
+      await selectTheAnswer(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(shell.written, hasLength(1));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Enter from a selection into an empty box only focuses it', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      await selectTheAnswer(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(typed(tester), isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Enter on a reply\'s Copy button, inside its selection area, '
+        'presses it and is not the box\'s', (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpChat(tester, answer: 'Run:\n\n```sh\necho hi\n```\n');
+      Focus.of(tester.element(find.byIcon(Icons.content_copy))).requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      await tester.pump();
+
+      expect(copied, ['echo hi']);
+      expect(typed(tester), isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('Ctrl+V of text, with the box unfocused, pastes into it', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      clipboardHolds('pasted text');
+      await focusAButton(tester);
+
+      await chord(
+        tester,
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.keyV,
+      );
+      await pasteSettles(tester);
+
+      expect(typed(tester), 'pasted text');
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Shift+Insert pastes too, on Linux', (tester) async {
+      await pumpChat(tester);
+      clipboardHolds('pasted text');
+      await focusAButton(tester);
+
+      await chord(
+        tester,
+        LogicalKeyboardKey.shiftLeft,
+        LogicalKeyboardKey.insert,
+      );
+      await pasteSettles(tester);
+
+      expect(typed(tester), 'pasted text');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('⌘V of text, with the box unfocused, pastes into it', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      clipboardHolds('pasted text');
+      // The Mac's native half answers that no picture is there.
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('sshbox/share'),
+        (call) async => null,
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/share'),
+          null,
+        ),
+      );
+      await focusAButton(tester);
+
+      await chord(tester, LogicalKeyboardKey.metaLeft, LogicalKeyboardKey.keyV);
+      await pasteSettles(tester);
+
+      expect(typed(tester), 'pasted text');
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('the first key after selecting text in a reply goes into '
+        'the box', (tester) async {
+      await pumpChat(tester);
+      await selectTheAnswer(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.pump();
+
+      expect(typed(tester), 'h');
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Space after selecting text in a reply goes into the box '
+        'too', (tester) async {
+      await pumpChat(tester);
+      await selectTheAnswer(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+
+      expect(typed(tester), ' ');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Ctrl+C on a selected reply still copies it', (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpChat(tester);
+      await selectTheAnswer(tester);
+
+      await chord(
+        tester,
+        LogicalKeyboardKey.controlLeft,
+        LogicalKeyboardKey.keyC,
+      );
+
+      expect(copied, isNotEmpty);
+      expect(copied.last, contains('hello'));
+      expect(typed(tester), isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('⌘, is left to the app, not typed', (tester) async {
+      await pumpChat(tester);
+      await focusAButton(tester);
+
+      await chord(
+        tester,
+        LogicalKeyboardKey.metaLeft,
+        LogicalKeyboardKey.comma,
+      );
+
+      expect(typed(tester), isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('Escape and Tab are left alone', (tester) async {
+      await pumpChat(tester);
+      await focusAButton(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyEvent(LogicalKeyboardKey.f5);
+      await tester.pump();
+
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      expect(typed(tester), isEmpty);
+    });
+
+    /// Sends [text] by [how] and says the turn is over, so the next send is
+    /// open.
+    Future<void> sendAndFinish(
+      WidgetTester tester,
+      _Shell shell,
+      String text,
+      Future<void> Function() how,
+    ) async {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump();
+      await how();
+      await tester.pump();
+      await tester.pump();
+      expect(typed(tester), isEmpty, reason: '$text was sent');
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('a click on Send, which takes the focus off the box on a '
+        'desktop, gives it back', (tester) async {
+      final shell = await pumpChat(tester);
+      final focus = box(tester).focusNode!;
+
+      await sendAndFinish(
+        tester,
+        shell,
+        'first',
+        () => tester.tap(find.byIcon(Icons.send)),
+      );
+
+      expect(focus.hasFocus, isTrue);
+      // And what is typed next reaches it through the platform's text input,
+      // as on a desktop, with no click on the box.
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'n',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
+      );
+      await tester.pump();
+      expect(typed(tester), 'n');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Ctrl+Enter leaves the focus in the box', (tester) async {
+      final shell = await pumpChat(tester);
+      final focus = box(tester).focusNode!;
+
+      await sendAndFinish(
+        tester,
+        shell,
+        'first',
+        () => chord(
+          tester,
+          LogicalKeyboardKey.controlLeft,
+          LogicalKeyboardKey.enter,
+        ),
+      );
+
+      expect(focus.hasFocus, isTrue);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('on a phone a send from the box keeps the focus, and one '
+        'from outside it does not take it', (tester) async {
+      final shell = await pumpChat(tester);
+      final focus = box(tester).focusNode!;
+      await sendAndFinish(
+        tester,
+        shell,
+        'first',
+        () => tester.tap(find.byIcon(Icons.send)),
+      );
+      expect(focus.hasFocus, isTrue);
+
+      // The box let go, as when the keyboard was put away: a send from
+      // elsewhere must not bring Gboard back.
+      await tester.enterText(find.byType(TextField), 'second');
+      await tester.pump();
+      focus.unfocus();
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.pump();
+      expect(focus.hasFocus, isFalse);
+    });
+  });
+
   testWidgets('the Send button reads in every theme, light and dark: its '
       'arrow on its fill, and its fill on the composer', (tester) async {
     final shell = _Shell();
@@ -3937,12 +4377,13 @@ void main() {
         });
     }
 
-    Future<_Shell> watching(WidgetTester tester) async {
+    Future<_Shell> watching(WidgetTester tester, {String tasks = ''}) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final shell = _Shell()
+        ..tasksOut = tasks
         ..history = _nightlyHistory
         ..listing = jsonEncode([
           {
@@ -4041,6 +4482,35 @@ void main() {
       expect(find.text('  … +2 in progress'), findsOneWidget);
     });
 
+    testWidgets('lists the session\'s whole store under a header counting it, '
+        'tasks the transcript never carried among them', (tester) async {
+      String task(int n, String subject, String status) => jsonEncode({
+        'id': '$n',
+        'subject': subject,
+        'description': 'd',
+        'activeForm': 'Doing $subject',
+        'status': status,
+        'blocks': <String>[],
+        'blockedBy': <String>[],
+      });
+      // Eight tasks, none of them in the transcript the chat read.
+      final shell = await watching(
+        tester,
+        tasks: [
+          task(1, 'early a', 'completed'),
+          task(2, 'early b', 'completed'),
+          task(3, 'early c', 'in_progress'),
+          for (var n = 4; n <= 8; n++) task(n, 'early $n', 'pending'),
+        ].join('\n'),
+      );
+      await _settlePickUp(tester);
+      expect(shell.commands.any((c) => c.contains('/tasks')), isTrue);
+      expect(find.text('8 tasks (2 done, 1 in progress, 5 open)'), findsOneWidget);
+      expect(find.text('⎿ ■ Doing early c'), findsOneWidget);
+      expect(find.text('  □ early 4'), findsOneWidget);
+      expect(find.text('  … 2 completed'), findsOneWidget);
+    });
+
     testWidgets('its text is drawn as text, never read as anything else', (
       tester,
     ) async {
@@ -4128,6 +4598,29 @@ void main() {
       await tester.pump();
       return shell;
     }
+
+    testWidgets('Ctrl+V with the box unfocused and a picture on the '
+        'clipboard focuses the box and makes the card', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+      // The box let go: the focus on a button, as after a tab or a click.
+      Focus.of(
+        tester.element(find.byIcon(Icons.view_sidebar_outlined)),
+      ).requestFocus();
+      await tester.pump();
+      expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+          isFalse);
+
+      next.add('shot.png');
+      await paste(tester);
+
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+        isTrue,
+      );
+    });
 
     testWidgets('a picture pasted becomes a card and an [Image #N] at the '
         'caret, and goes with the message as a picture', (tester) async {
