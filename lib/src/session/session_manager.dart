@@ -321,6 +321,12 @@ class LiveSession extends ChangeNotifier {
   /// Whether [dispose] has run: a listener must not be added to, or removed
   /// from, a session that has.
   bool get isDisposed => _disposed;
+
+  final _gone = Completer<void>();
+
+  /// Completes as [dispose] runs, for what has to close with the session —
+  /// a connect sheet — without a notify that every listener would hear.
+  Future<void> get whenDisposed => _gone.future;
   (int columns, int rows) _size = (80, 24);
 
   /// Teardown is asynchronous but [dispose] is not, so every notify has to be
@@ -1313,9 +1319,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     // Flag first: teardown continues after this method returns, and anything
     // it triggers must not touch a disposed notifier.
     _disposed = true;
-    // Once, so what is showing the session — a connect sheet — learns it is
-    // gone: after this a notify is refused.
-    notifyListeners();
+    if (!_gone.isCompleted) _gone.complete();
     // Closing the tab ends its tmux session — except where [detach] has
     // already let it go on purpose, or the session was never the app's.
     unawaited(_teardown(kill: _killsTmux));

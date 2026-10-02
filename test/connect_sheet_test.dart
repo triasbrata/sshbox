@@ -253,11 +253,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Trust 10.0.2.2?'), findsOneWidget);
 
+    bool? result;
+    unawaited(shown.then((v) => result = v));
     session.dispose();
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(await shown, isFalse);
+    // Read without waiting: a sheet left open fails here, null, rather than
+    // hanging the run.
+    expect(result, isFalse);
     expect(find.text('Trust 10.0.2.2?'), findsNothing);
   });
 

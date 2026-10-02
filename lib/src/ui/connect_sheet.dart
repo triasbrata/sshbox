@@ -167,6 +167,12 @@ class _ConnectSheetState extends State<_ConnectSheet> {
       return;
     }
     _session.addListener(_onSessionChanged);
+    // Its tab closing under the sheet leaves nothing to connect.
+    unawaited(
+      _session.whenDisposed.then((_) {
+        if (mounted) _close();
+      }),
+    );
     // After the frame: connecting tells whatever shows the session — the
     // tabs, and a reconnecting tab's page — which must not hear of it while
     // this sheet is being built.
@@ -175,8 +181,6 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   void _onSessionChanged() {
     if (!mounted) return;
-    // Its tab closed under the sheet: nothing is left to connect.
-    if (_session.isDisposed) return _close();
     setState(() {});
   }
 
