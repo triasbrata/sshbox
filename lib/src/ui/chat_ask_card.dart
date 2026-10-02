@@ -123,14 +123,20 @@ class _ChatAskCardState extends State<ChatAskCard> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  TuiButton(
-                    label: 'Send answers',
+                  _KeyButton(
                     onPressed: _complete ? _send : null,
+                    child: TuiButton(
+                      label: 'Send answers',
+                      onPressed: _complete ? _send : null,
+                    ),
                   ),
-                  TuiButton(
-                    label: 'Dismiss',
-                    variant: TuiButtonVariant.ghost,
+                  _KeyButton(
                     onPressed: () => widget.onDecline(ask),
+                    child: TuiButton(
+                      label: 'Dismiss',
+                      variant: TuiButtonVariant.ghost,
+                      onPressed: () => widget.onDecline(ask),
+                    ),
                   ),
                 ],
               ),
@@ -273,6 +279,50 @@ class _ChatAskCardState extends State<ChatAskCard> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A termul button the keyboard can reach: Tab moves to it, Enter and Space
+/// press it, and an outline shows where it is. termul's own TuiButton takes
+/// taps only.
+///
+/// TODO(termul): a focusable TuiButton, which would make this unneeded.
+class _KeyButton extends StatefulWidget {
+  const _KeyButton({required this.onPressed, required this.child});
+
+  final VoidCallback? onPressed;
+  final Widget child;
+
+  @override
+  State<_KeyButton> createState() => _KeyButtonState();
+}
+
+class _KeyButtonState extends State<_KeyButton> {
+  var _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final enabled = widget.onPressed != null;
+    return FocusableActionDetector(
+      enabled: enabled,
+      onShowFocusHighlight: (on) => setState(() => _focused = on),
+      actions: {
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onPressed?.call();
+            return null;
+          },
+        ),
+      },
+      child: DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          border: _focused ? Border.all(color: p.accent, width: 2) : null,
+        ),
+        child: widget.child,
       ),
     );
   }

@@ -1636,11 +1636,14 @@ class ClaudeChat extends ChangeNotifier {
       // `[Image #N]` typed as text: a picture goes on once there is one more
       // than those, never at a count text of the user's own could make.
       var chips = chipsIn(_screenLines(shown));
+      var wrote = false;
       for (final part in segments(said.text, paths)) {
         // Before each part, not once: a picture waits for its chip, and a
-        // chat that moved on meanwhile writes no more of it.
-        if (!_current(target)) return _movedOn(said, agent, typed: chips > 0);
+        // chat that moved on meanwhile writes no more of it. What was written
+        // before is in the session's input line, which is what is said.
+        if (!_current(target)) return _movedOn(said, agent, typed: wrote);
         terminal.write(Uint8List.fromList(utf8.encode(part.keys)));
+        wrote = true;
         if (part.picture) {
           await _chipShown(shown, ++chips);
         } else {
