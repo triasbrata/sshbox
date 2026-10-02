@@ -84,12 +84,11 @@ void _standInClaudeFor() {
   addTearDown(() {
     if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
     if (!hadBin) standIn.parent.deleteSync(recursive: true);
-    if (!hadConfig) {
-      config.deleteSync(recursive: true);
-    } else {
-      Directory('${config.path}/projects/jeansh-e2e')
-          .deleteSync(recursive: true);
-    }
+    // A chat that never started a session wrote nothing there.
+    final ours = hadConfig
+        ? Directory('${config.path}/projects/jeansh-e2e')
+        : config;
+    if (ours.existsSync()) ours.deleteSync(recursive: true);
   });
 }
 
@@ -472,12 +471,18 @@ window.show_all()
 Gtk.main()
 ''';
 
-/// Drags [path] from [_dragSource] onto the middle of Jeansh's window — the
-/// terminal of the tab showing — with the X pointer, as a hand would.
-Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
+/// Drags [path], and [more] with it, from [_dragSource] onto the middle of
+/// Jeansh's window — the terminal of the tab showing — with the X pointer,
+/// as a hand would.
+Future<void> _drag(
+  WidgetTester tester,
+  String path,
+  Directory dir, {
+  List<String> more = const [],
+}) async {
   final source = File('${dir.path}/drag_source.py')
     ..writeAsStringSync(_dragSource);
-  final process = await Process.start('python3', [source.path, path]);
+  final process = await Process.start('python3', [source.path, path, ...more]);
   try {
     Future<void> xdo(List<String> args) async {
       final result = await Process.run('xdotool', args);
@@ -781,10 +786,10 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `rdown`, `rup` (the
 /// secondary, #132's), `sleep ms`, or
-/// `shiftdown` and `shiftup` (Linux and macOS only), `dclick`, a double
-/// click (Linux and macOS, the second press carrying click state 2), `ctrlc`
-/// (Linux only), or `cmdc`, ⌘ held, C typed and ⌘ let go as three key events
-/// (macOS only). On Linux
+/// `clickstate N` (what a Mac's events carry for the count of a double click,
+/// the app counting them itself elsewhere), `shiftdown` and `shiftup` (Linux
+/// and macOS only), or `cmdc`, ⌘ held, C
+/// typed and ⌘ let go as three key events (macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
 /// Not pumped while it goes: the app takes the pointer on its own, and a
@@ -795,7 +800,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
   if (Platform.isWindows) {
     run = _winMouse([
       for (final step in steps)
-        if (step.split(' ') case ['move', final x, final y])
+        if (step.startsWith('clickstate')) ...<String>[]
+        else if (step.split(' ') case ['move', final x, final y])
           'move ${(double.parse(x) * ratio).round()} '
               '${(double.parse(y) * ratio).round()}'
         else
@@ -825,6 +831,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
           ['shiftup'] => ['keyup', 'Shift_L'],
           ['up'] => ['mouseup', '1'],
           ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
+          // X carries no click count: the app counts them.
+          ['clickstate', _] => <String>[],
           _ => throw ArgumentError(step),
         },
     ]);
@@ -881,12 +889,16 @@ usleep(300_000)
 var at = CGPoint(x: bounds.midX, y: bounds.midY)
 var pressed = false
 var flags: CGEventFlags = []
-var clicks: Int64 = 0
+// What a real double click carries: kCGMouseEventClickState, 2 on the second
+// down and on its drags and its up.
+var clickState: Int64 = 0
 func post(_ type: CGEventType, _ button: CGMouseButton = .left) {
   let e = CGEvent(mouseEventSource: nil, mouseType: type,
                   mouseCursorPosition: at, mouseButton: button)!
   e.flags = flags
-  if clicks > 0 { e.setIntegerValueField(.mouseEventClickState, value: clicks) }
+  if clickState > 0 {
+    e.setIntegerValueField(.mouseEventClickState, value: clickState)
+  }
   e.post(tap: .cghidEventTap)
   usleep(10_000)
 }
@@ -922,12 +934,12 @@ for step in args[3].split(separator: ";") {
   case "dclick":
     // Click state 1, then 2: what makes the second press a double-click.
     for n in [Int64(1), Int64(2)] {
-      clicks = n
+      clickState = n
       post(.leftMouseDown)
       post(.leftMouseUp)
       usleep(60_000)
     }
-    clicks = 0
+    clickState = 0
   case "rdown": post(.rightMouseDown, .right)
   case "rup": post(.rightMouseUp, .right)
   case "shiftdown": modifier(56, shiftLeft, true)
@@ -941,6 +953,7 @@ for step in args[3].split(separator: ";") {
     }
     modifier(55, commandLeft, false)
   case "shiftup": modifier(56, shiftLeft, false)
+  case "clickstate": clickState = Int64(p[1])!
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
   }
@@ -1150,7 +1163,6 @@ Future<void> _grab(WidgetTester tester, String name) async {
     '-i', display, '-frames:v', '1', '$dir/$name.png',
   ]);
 }
-
 
 /// Answers the desktop's save dialog as a person would, once it is up: saves
 /// to [path], or cancels it when [path] is null. A Mac's panel saves where it
@@ -2312,11 +2324,15 @@ touch '${done.path}'
       // Marked as from the internet, as Windows reads it, so a host's .bat
       // or .exe is not run unwarned.
       if (Platform.isWindows) {
-        final zone = await Process.run('powershell', [
-          '-NoProfile',
-          '-Command',
-          r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
-        ], environment: {'JEANSH_SAVED': kept.path});
+        final zone = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-Command',
+            r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
+          ],
+          environment: {'JEANSH_SAVED': kept.path},
+        );
         expect(zone.stdout, contains('ZoneId=3'), reason: '${zone.stderr}');
       }
 
@@ -2349,6 +2365,113 @@ touch '${done.path}'
       _standInClaudeFor();
       await _launch(tester);
       await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan tab
+  // lain padahal ini nga bisa di merge": a chat tab's chip, right-clicked,
+  // grouped with its Local shell, both shown as panes and the chat still
+  // answering.
+  _test(
+    'a chat tab groups with its shell from a right-click',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      await _launch(tester);
+      await _chatAnswered(tester);
+      final chip = find.textContaining('Claude').first;
+      await tester.tapAt(
+        tester.getCenter(chip),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the chat tab's menu to offer Group with…",
+      );
+      await tester.tap(find.text('Group with…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Local shell').last);
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () =>
+            find.byTooltip('Tab group').evaluate().isNotEmpty &&
+            find.byType(TerminalView).evaluate().isNotEmpty &&
+            _composer.evaluate().isNotEmpty,
+        'the chat and its shell side by side in one group',
+      );
+      // The chat is the same one, its answer still there. (A second message
+      // would go through claude attach, which the stand-in does not answer.)
+      expect(_answer, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // The same report, as the user meant it: the right-click was on a session
+  // in chat's sidebar, which is no tab and has no menu. A real right-click
+  // there opens nothing, while one on the conversation still opens the tab's.
+  _test(
+    "a real right-click on a chat session is not the tab's",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
+      _standInClaudeFor();
+      await _launch(tester);
+      // Two tabs, so the tab's menu has a Group with… to offer.
+      await _chatAnswered(tester);
+      // The stand-in's own session, as `claude agents` lists it: in the
+      // sidebar on a wide window, in the drawer its button opens otherwise.
+      // The list may still be loading on a wide window, whose button then
+      // reads Hide…: wait for one or the other before choosing.
+      final row = find.text('e2e');
+      final drawer = find.byTooltip('Sessions on this host');
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty || drawer.evaluate().isNotEmpty,
+        'the sessions, or the button that shows them',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(drawer);
+        await tester.pumpAndSettle();
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        "the stand-in's session in the sidebar",
+      );
+
+      await _realRightClick(tester, tester.getCenter(row.first));
+      await tester.pumpAndSettle();
+      expect(find.text('Group with…'), findsNothing);
+
+      // The tab's menu is still there, from the chat's chip. (The answer's
+      // text takes a right-click for its own Copy, as on main.)
+      await _escape(tester);
+      await _realRightClick(
+        tester,
+        tester.getCenter(find.textContaining('Claude').first),
+      );
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the tab's menu, from the chat's chip",
+      );
+      await _escape(tester);
+      binding.shouldPropagateDevicePointerEvents = false;
       await _closeTabs(tester);
     },
   );
@@ -2798,6 +2921,83 @@ touch '${done.path}'
         );
       }
       expect(find.textContaining('cannot be uploaded'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #146: files dropped from the file manager on a desktop chat. A picture
+  // becomes a card above the box and its [Image #1] in it; a folder dropped
+  // with it is refused, saying it is a folder, and so is a file that is no
+  // picture Claude reads. A real X drag, as the terminal's above.
+  _test(
+    'a picture dropped on a chat becomes a card, a folder is refused',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI it would drag with the user's own pointer"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final dir = _scratch();
+      // A 1x1 PNG.
+      final picture = File('${dir.path}/e2e-drop.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8Dw'
+            'HwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+          ),
+        );
+      final folder = Directory('${dir.path}/e2e-folder')..createSync();
+      final notes = File('${dir.path}/e2e-notes.txt')..writeAsStringSync('x');
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () => _composer.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      Finder toast(String text) => find.descendant(
+        of: find.byType(TuiToastCard),
+        matching: find.textContaining(text, findRichText: true),
+      );
+      final cards = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Remove '),
+      );
+
+      await _drag(tester, picture.path, dir, more: [folder.path]);
+      await _until(
+        tester,
+        () =>
+            toast('A folder is not a picture: e2e-folder')
+                .evaluate()
+                .isNotEmpty,
+        'the folder refused, saying it is a folder',
+      );
+      await _until(
+        tester,
+        () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
+        "the picture's card",
+      );
+      expect(cards, findsOneWidget, reason: 'one card, for the picture alone');
+      expect(
+        tester.widget<TextField>(_composer).controller!.text,
+        '[Image #1] ',
+      );
+      await _shot(tester, 'desktop-chat-dropped-picture');
+
+      await _drag(tester, notes.path, dir);
+      await _until(
+        tester,
+        () =>
+            toast('Not a picture Claude can read: e2e-notes.txt')
+                .evaluate()
+                .isNotEmpty,
+        'the text file refused',
+      );
+      expect(cards, findsOneWidget);
       await _closeTabs(tester);
     },
   );
@@ -3304,6 +3504,100 @@ touch '${done.path}'
         ], 'select');
         await copies(drag(0, 22, first), 'jeansh select me please');
         await copies(drag(0, 10, second), 'second line');
+      }
+      await _closeTabs(tester);
+    });
+  });
+
+  // The double click a Mac makes — the second press held, then dragged —
+  // grows the word selection word by word, as Terminal.app's and iTerm2's do.
+  // A trackpad's tap-to-click double tap and drag reaches Flutter as these
+  // same mouse events: only scrolling and pinching arrive as pans. xterm2
+  // dropped the word and selected characters from the press.
+  _test('a double click held and dragged selects by words, and the next drag '
+      'selects afresh', (tester) async {
+    await _realPointer(() async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      _run(view, "echo 'jeansh select me please'");
+      final lines = view.terminal.buffer.lines;
+      int row(String text) {
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].getText().startsWith(text)) return i;
+        }
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => row('jeansh select me please') >= 0,
+        'the line to be printed',
+      );
+      final line = row('jeansh select me please');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, line)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      Future<void> copies(List<String> steps, String text) async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, steps);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'something to be copied, expecting "$text"',
+        );
+        expect(await _clipboard(), text);
+      }
+
+      // The second click held on "select", dragged right across " me": a
+      // quick drag and a slow one.
+      for (final hold in [0, 300]) {
+        await copies([
+          cell(8),
+          'clickstate 1',
+          'down',
+          'sleep 30',
+          'up',
+          'sleep 60',
+          'clickstate 2',
+          'down',
+          if (hold > 0) 'sleep $hold',
+          for (var col = 9; col <= 15; col++) cell(col),
+          'up',
+          'clickstate 0',
+        ], 'select me');
+        // And leftwards, back across "jeansh".
+        await copies([
+          cell(8),
+          'sleep 700',
+          'clickstate 1',
+          'down',
+          'sleep 30',
+          'up',
+          'sleep 60',
+          'clickstate 2',
+          'down',
+          if (hold > 0) 'sleep $hold',
+          for (var col = 7; col >= 2; col--) cell(col),
+          'up',
+          'clickstate 0',
+        ], 'jeansh select');
+        // A plain drag after them is a fresh selection of characters.
+        await copies([
+          'sleep 700',
+          cell(2),
+          'down',
+          'sleep 300',
+          for (var col = 3; col <= 8; col++) cell(col),
+          'up',
+        ], 'ansh se');
       }
       await _closeTabs(tester);
     });
@@ -3922,6 +4216,317 @@ touch '${done.path}'
     binding.shouldPropagateDevicePointerEvents = false;
   });
 
+  // #143: the line chat shows while a watched turn runs, as .maestro's
+  // chat_progress checks it on Android, over a Local shell: Working… with its
+  // seconds ticking, the tokens and the tool, gone at the turn's end; what a
+  // turn stopped at a permission prompt waits for; and a chat hidden behind
+  // the shell's tab while Claude writes coming back still following.
+  //
+  // The session is tools/e2e_live_claude.py in a pane of the run's own tmux
+  // server (tools/e2e_desktop.sh), with a stand-in claude that lists it, both
+  // in the runner's home, which on CI holds no Claude Code of its own.
+  _test(
+    'a watched turn shows its progress, and a hidden chat still follows it',
+    skip: !Platform.isLinux
+        ? "the session's pane needs the run's own tmux server, which "
+              'tools/e2e_desktop.sh gives Linux alone'
+        : Platform.environment['CI'] != 'true' || _claudeInstalled()
+        ? "off CI it would write a claude into the user's own home"
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      const sid = 'e2e00004-0000-4000-8000-000000000004';
+      final claude = File('$home/.local/bin/claude');
+      final config = Directory('$home/.claude');
+      final agents = File('$home/.e2e-agents.json');
+      final script = File('tools/e2e_live_claude.py').absolute;
+      expect(script.existsSync(), isTrue, reason: 'no ${script.path}');
+      // Nothing of anyone's is written over.
+      expect(agents.existsSync(), isFalse, reason: '${agents.path} is there');
+      final hadConfig = config.existsSync();
+      addTearDown(() {
+        // What the session saw, for a run that went red.
+        final shown = Process.runSync('tmux', [
+          'capture-pane',
+          '-p',
+          '-t',
+          'e2e-live',
+        ]);
+        debugPrint('Pane: ${shown.stdout}${shown.stderr}');
+        final env = Process.runSync('tmux', ['show-environment', '-g']);
+        debugPrint(
+          'tmux env: ${'${env.stdout}'.split('\n').where((l) => l.startsWith('HOME') || l.startsWith('CLAUDE') || l.startsWith('LANG')).join(' ')}',
+        );
+        for (final f
+            in config.existsSync()
+                ? config.listSync(recursive: true).whereType<File>()
+                : const <File>[]) {
+          final text = f.readAsStringSync();
+          final tail = text.length > 1500
+              ? text.substring(text.length - 1500)
+              : text;
+          debugPrint('${f.path}: $tail');
+        }
+        if (agents.existsSync()) {
+          debugPrint('Listing: ${agents.readAsStringSync()}');
+        }
+        Process.runSync('tmux', ['kill-session', '-t', 'e2e-live']);
+        if (claude.existsSync()) claude.deleteSync();
+        if (agents.existsSync()) agents.deleteSync();
+        if (!hadConfig && config.existsSync()) {
+          config.deleteSync(recursive: true);
+        }
+      });
+      claude.parent.createSync(recursive: true);
+      claude.writeAsStringSync(
+        '#!/bin/sh\ncase "\$1" in\n'
+        "  --version) echo '2.1.300 (Claude Code)' ;;\n"
+        '  agents) cat "\$HOME/.e2e-agents.json" ;;\n'
+        '  *) exec cat >/dev/null ;;\nesac\n',
+      );
+      Process.runSync('chmod', ['755', claude.path]);
+      // One turn already said, so the chat has a transcript to open.
+      final projects = Directory(
+        '${config.path}/projects/${home.replaceAll('/', '-').replaceAll('.', '-')}',
+      )..createSync(recursive: true);
+      File('${projects.path}/$sid.jsonl').writeAsStringSync(
+        '${jsonEncode({
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'Earlier question'},
+        })}\n'
+        '${jsonEncode({
+          'type': 'assistant',
+          'message': {
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Earlier answer'},
+            ],
+          },
+        })}\n',
+      );
+      agents.writeAsStringSync('[]');
+      const utf8Env = {'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'};
+      final pane = await Process.run('tmux', [
+        'new-session', '-d', '-s', 'e2e-live', '-x', '120', '-y', '30', //
+        '-c', home,
+        'env PYTHONIOENCODING=utf-8 python3 ${script.path} $sid',
+      ], environment: utf8Env);
+      expect(pane.exitCode, 0, reason: 'tmux: ${pane.stderr}');
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final pid = int.parse(
+        '${(await Process.run('tmux', ['list-panes', '-t', 'e2e-live', '-F', '#{pane_pid}'])).stdout}'
+            .trim(),
+      );
+      // Listed as the CLI lists an interactive session: its pid, idle.
+      agents.writeAsStringSync(
+        jsonEncode([
+          {
+            'kind': 'interactive', 'pid': pid, 'sessionId': sid, //
+            'name': 'E2E live session', 'cwd': home, 'status': 'idle',
+            'startedAt': 1790000000100,
+          },
+        ]),
+      );
+
+      await _launch(tester);
+      await _localShell(tester);
+      final shell = find
+          .byWidgetPredicate(
+            (w) =>
+                w is Tooltip &&
+                (w.message ?? '').startsWith('Close ') &&
+                !(w.message ?? '').contains('· Claude'),
+          )
+          .first;
+      final shellChip = find
+          .ancestor(of: shell, matching: find.byType(InkWell))
+          .first;
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final row = find.text('E2E live session');
+      await _until(
+        tester,
+        () =>
+            row.evaluate().isNotEmpty ||
+            find.byTooltip('Sessions on this host').evaluate().isNotEmpty,
+        'the chat to open',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(find.byTooltip('Sessions on this host'));
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        'the live session listed',
+      );
+      await tester.tap(row.first);
+      await _until(
+        tester,
+        () => find.textContaining('typed into that pane').evaluate().isNotEmpty,
+        'the chat to watch the session, typing into its pane',
+      );
+
+      Future<void> send(String text) async {
+        final field = find.byWidgetPredicate(
+          (w) =>
+              w is TextField &&
+              w.decoration?.hintText == 'Message “E2E live session”…',
+        );
+        await _until(
+          tester,
+          () => field.evaluate().isNotEmpty,
+          'the message field',
+        );
+        await tester.enterText(field, text);
+        await tester.pump();
+        // What the box holds right after typing, for a run where Send stays
+        // off: the text, whether it takes input, and whether it has focus.
+        final box = tester.widget<TextField>(field);
+        final editable = tester.state<EditableTextState>(
+          find.descendant(of: field, matching: find.byType(EditableText)),
+        );
+        debugPrint(
+          'Typed "$text": box holds "${box.controller?.text}", '
+          'enabled ${box.enabled}, focused ${editable.widget.focusNode.hasFocus}',
+        );
+        // Send turns on a frame after the text is in, and a tap on it while
+        // still off sends nothing. The text itself stays: the box is never
+        // shut between turns (run 36883132321 lost it when it was).
+        await _until(
+          tester,
+          () =>
+              tester
+                  .widget<IconButton>(
+                    find.ancestor(
+                      of: find.byTooltip('Send'),
+                      matching: find.byType(IconButton),
+                    ),
+                  )
+                  .onPressed !=
+              null,
+          'Send to turn on, the text still in the box',
+        );
+        await tester.tap(find.byTooltip('Send'));
+        // In the session's own transcript, typed into its pane, or what the
+        // chat said instead: a toast, or its own word after 30 s.
+        final transcript = File('${projects.path}/$sid.jsonl');
+        final toasts = <String>{};
+        final end = DateTime.now().add(const Duration(seconds: 40));
+        while (!transcript.readAsStringSync().contains(jsonEncode(text))) {
+          toasts.addAll(
+            find
+                .descendant(
+                  of: find.byType(TuiToastCard),
+                  matching: find.byType(Text),
+                )
+                .evaluate()
+                .map((e) => (e.widget as Text).data)
+                .whereType<String>(),
+          );
+          if (DateTime.now().isAfter(end)) {
+            final words = find
+                .byType(Text)
+                .evaluate()
+                .map((e) => (e.widget as Text).data)
+                .whereType<String>()
+                .join(' | ');
+            fail(
+              '"$text" never reached the pane; toasts: $toasts; on screen: $words',
+            );
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          await tester.pump();
+        }
+      }
+
+      String? line() => find
+          .byType(Text)
+          .evaluate()
+          .map((e) => (e.widget as Text).data)
+          .whereType<String>()
+          .where(
+            (t) => t.startsWith('Working… (') || t.startsWith('Waiting for '),
+          )
+          .firstOrNull;
+      int seconds() => int.parse(
+        RegExp(r'Working… \((\d+)s').firstMatch(line()!)!.group(1)!,
+      );
+      Finder said(String text) => find.textContaining(text, findRichText: true);
+
+      // The slow turn: the line as the prompt lands, then its tokens and tool.
+      await send('slow: run it');
+      await _until(
+        tester,
+        () => line()?.startsWith('Working… (') ?? false,
+        'Working… as the prompt lands',
+        timeout: const Duration(seconds: 8),
+      );
+      final first = seconds();
+      await _until(
+        tester,
+        () =>
+            line()?.contains('↓ 87 tokens) · Bash: sleep 2; echo done') ??
+            false,
+        'the tokens and the tool on the line',
+        timeout: const Duration(seconds: 10),
+      );
+      expect(seconds(), greaterThan(first), reason: 'the seconds did not tick');
+      await _until(
+        tester,
+        () => said('Slow answer: done').evaluate().isNotEmpty,
+        'the answer',
+      );
+      expect(line(), isNull, reason: 'the line outlived the turn: ${line()}');
+
+      // A turn stopped at a permission prompt: what for, and no Working….
+      await send('wait: approve it');
+      await _until(
+        tester,
+        () =>
+            line() ==
+            'Waiting for permission prompt at its terminal. Answer it there.',
+        'the chat to say what the turn waits for',
+        timeout: const Duration(seconds: 15),
+      );
+      await _until(
+        tester,
+        () => said('Waited answer: done').evaluate().isNotEmpty,
+        'the waited answer',
+        timeout: const Duration(seconds: 40),
+      );
+      expect(line(), isNull, reason: 'the line outlived the turn: ${line()}');
+
+      // Hidden behind the shell's tab while six long answers come, and back.
+      await send('long: go');
+      await tester.tap(shellChip);
+      final end = DateTime.now().add(const Duration(seconds: 15));
+      while (DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+      }
+      final chat = find
+          .byWidgetPredicate(
+            (w) => w is Tooltip && (w.message ?? '').contains('· Claude'),
+          )
+          .first;
+      await tester.tap(
+        find.ancestor(of: chat, matching: find.byType(InkWell)).first,
+      );
+      final window = tester.view.physicalSize / tester.view.devicePixelRatio;
+      await _until(
+        tester,
+        () {
+          final last = said('Long answer 6 end');
+          if (last.evaluate().isEmpty) return false;
+          final rect = tester.getRect(last.last);
+          return rect.bottom > 0 && rect.top < window.height;
+        },
+        'the chat, shown again, to be on the last answer',
+        timeout: const Duration(seconds: 5),
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // Copying code out of a chat reply, with the real pointer and the real
   // keyboard, read back off the system clipboard: a code line wider than the
   // chat wraps rather than scrolling sideways, the Copy icon gives it
@@ -4057,7 +4662,7 @@ touch '${done.path}'
           debugPrint(
             'Copy icon at ${xy(copy)} of ${tester.view.physicalSize / tester.view.devicePixelRatio}; '
             "Flutter's clipboard says "
-            '"${flutter == null ? null : flutter.substring(0, flutter.length.clamp(0, 30))}"; '
+            '"${flutter?.substring(0, flutter.length.clamp(0, 30))}"; '
             'toasts: ${find.byType(TuiToastCard).evaluate().length}',
           );
           await _grab(tester, 'chat-code-copy-step2');

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show File;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:xterm2/xterm.dart' show Terminal;
 
 import '../session/terminal_session.dart';
 import '../session/tmux.dart';
@@ -33,11 +35,42 @@ enum Delivery {
   failed,
 }
 
+/// A picture in a message: the copy of the app's own one sent from here was
+/// taken into ([path]), or the bytes a transcript holds ([bytes]).
+class ChatPicture {
+  const ChatPicture({this.path, this.bytes, this.name = '', this.number = 0});
+
+  final String? path;
+  final Uint8List? bytes;
+  final String name;
+
+  /// The `[Image #N]` in the message's text that stands for it.
+  final int number;
+}
+
+/// `[Image #N]`, as Claude Code writes a picture into a message, and as a
+/// message written here marks where each of its pictures goes.
+///
+/// At most nine digits, so its number is always an int: a longer one, which
+/// no picture has, is text, and parsing it can never throw.
+final pictureToken = RegExp(r'\[Image #(\d{1,9})\]');
+
+/// Any `[Image #N]`, however long its number: what a screen is counted by,
+/// as the pane's awk counts it, since Claude draws text as it was typed.
+/// Counted only, never parsed.
+final _anyChip = RegExp(r'\[Image #\d+\]');
+
+/// Puts [picture] on the host and hands back its path there.
+typedef PictureUpload = Future<String> Function(ChatPicture picture);
+
 /// What the user typed, or what Claude answered.
 class ChatSaid extends ChatEntry {
-  ChatSaid(this.text, {required this.mine});
+  ChatSaid(this.text, {required this.mine, this.pictures = const []});
 
   final String text;
+
+  /// The pictures it carries, in the order of their `[Image #N]`.
+  final List<ChatPicture> pictures;
 
   /// Whose turn it was: the user's, or Claude's.
   final bool mine;
@@ -100,6 +133,50 @@ class ChatNotice extends ChatEntry {
   final bool failed;
 }
 
+/// A turn in flight, for the line under the chat that says the session is
+/// working rather than stuck — what Claude Code's own `✶ Zesting… (33s · ↓
+/// 1.4k tokens)` says at a terminal.
+class ChatProgress {
+  const ChatProgress({
+    required this.started,
+    required this.tokens,
+    this.tool,
+    this.waitingFor,
+  });
+
+  /// When the turn began: the transcript's own time on the line that
+  /// started it, so a session picked up mid-turn shows how long it has
+  /// really been at it. The host's clock, not this device's.
+  final DateTime started;
+
+  /// Output tokens of the turn's messages so far. A transcript gets a
+  /// message's line only once the message is whole — measured on 2.1.286 —
+  /// so this moves a message at a time, not a token at a time.
+  final int tokens;
+
+  /// The tool running now, if any.
+  final ChatToolRun? tool;
+
+  /// What the session waits for at its terminal — `permission prompt` — by
+  /// what `claude agents` says of it; null while it is working.
+  final String? waitingFor;
+
+  /// Seconds as Claude Code's line writes them: `33s`, `2m 5s`, `1h 4m`.
+  static String elapsed(Duration time) {
+    final s = math.max(0, time.inSeconds);
+    if (s < 60) return '${s}s';
+    if (s < 3600) return '${s ~/ 60}m ${s % 60}s';
+    return '${s ~/ 3600}h ${s % 3600 ~/ 60}m';
+  }
+
+  /// Tokens as Claude Code's line writes them: `87`, `1.4k`, `12k`.
+  static String count(int tokens) {
+    if (tokens < 1000) return '$tokens';
+    final k = tokens / 1000;
+    return '${k < 10 ? k.toStringAsFixed(1).replaceFirst('.0', '') : k.round()}k';
+  }
+}
+
 /// A slash command run in the session, as its transcript records it, and
 /// what it printed when it runs in the CLI rather than as a prompt.
 class ChatCommand extends ChatEntry {
@@ -108,6 +185,36 @@ class ChatCommand extends ChatEntry {
   final String name;
   final String args;
   String? output;
+}
+
+/// One line of the session's checklist, as Claude Code's own view lists it:
+/// from TaskCreate and TaskUpdate, or TodoWrite's whole list. Host text, so
+/// it is drawn and never run.
+class ChatTask {
+  ChatTask({
+    required this.id,
+    required this.subject,
+    this.activeForm,
+    this.status = 'pending',
+  });
+
+  final String id;
+  String subject;
+
+  /// What it reads as while in progress — `Fixing the bug` for `Fix the bug`.
+  String? activeForm;
+
+  /// `pending`, `in_progress` or `completed`.
+  String status;
+
+  bool get done => status == 'completed';
+  bool get inProgress => status == 'in_progress';
+
+  /// What a row says: the active form while it is being done.
+  String get label =>
+      inProgress && (activeForm?.trim().isNotEmpty ?? false)
+      ? activeForm!.trim()
+      : subject.trim();
 }
 
 /// What Claude may do on the host without being asked.
@@ -250,7 +357,18 @@ class ClaudeChat extends ChangeNotifier {
     this.openTerminal,
     this.cwd,
     this.deliveryTimeout = const Duration(seconds: 30),
+    this.chipTimeout = const Duration(seconds: 15),
   });
+
+  /// How long a picture pasted into a session's input line has to become
+  /// its `[Image #N]` before the text after it is typed. Measured on
+  /// 2.1.286: Claude Code puts the chip in only once it has read the file —
+  /// 2 s for an 8 MB picture — and wherever the cursor is by then, so text
+  /// typed sooner lands before it.
+  ///
+  /// ponytail: past it the rest is typed anyway, and the picture lands at
+  /// the end of the message rather than its place in it.
+  final Duration chipTimeout;
 
   /// Starts a command on the host with a terminal of its own — what typing
   /// into a running session goes through, since `claude attach` will not run
@@ -339,6 +457,20 @@ class ClaudeChat extends ChangeNotifier {
 
   String? get pickedFrom => _pickedFrom;
 
+  /// The highest `[Image #N]` the conversation has given out, as far as this
+  /// chat has seen: Claude Code numbers pictures through a whole session, not
+  /// a message — measured on 2.1.286, a second message's two came in as
+  /// `[Image #2]` and `[Image #3]` — and records the numbers it gave each
+  /// message as `imagePasteIds`.
+  int _pictures = 0;
+
+  /// What Claude will call the next picture sent.
+  ///
+  /// ponytail: a picture from before the part of the transcript read is not
+  /// counted, so the numbers shown can run behind Claude's; the message still
+  /// goes, Claude numbering its own chips, and is still recognised.
+  int get nextPicture => _pictures + 1;
+
   /// The running session this chat is watching live, or null. While it is
   /// set there is no Claude of this chat's own: what shows is what that
   /// session writes, followed from its transcript as it writes it.
@@ -387,6 +519,191 @@ class ClaudeChat extends ChangeNotifier {
   /// final, for the same reason as [_entries].
   Map<String, ChatToolRun> _running = {};
 
+  /// The session's checklist, in the order its tasks were made, by task id.
+  /// Rebuilt from the transcript, which holds every TaskCreate, TaskUpdate and
+  /// TodoWrite — measured on 2.1.286: a TaskCreate carries no id, which only
+  /// its result gives (`Task #14 created successfully…`), so the call waits in
+  /// [_parked] for it. A task made before the part of the transcript read is
+  /// not known, and a TaskUpdate naming it is dropped.
+  final Map<String, ChatTask> _tasks = {};
+
+  /// Task calls waiting for their result, by `tool_use_id`: Claude Code's own
+  /// view changes only when the tool succeeded, so nothing is applied before
+  /// its result says so.
+  final Map<String, ({String name, Map<String, dynamic> input})> _parked = {};
+
+  /// The tasks still to do or being done, for the list under the working
+  /// line, in order. Completed ones are only counted, by [tasksDone].
+  List<ChatTask> get openTasks => [
+    for (final task in _tasks.values)
+      if (!task.done) task,
+  ];
+
+  int get tasksDone => _tasks.values.where((task) => task.done).length;
+
+  void _noteTaskCall(String name, Map<String, dynamic> input, String id) {
+    if (_pastOnly || !const {'TaskCreate', 'TaskUpdate', 'TodoWrite'}.contains(name)) {
+      return;
+    }
+    _parked[id] = (name: name, input: input);
+  }
+
+  /// A tool result: the one that lets a parked task call take effect, and, for
+  /// a TaskCreate, tells it its id.
+  void _noteTaskResult(Object? toolUseId, String result, bool failed) {
+    final call = _parked.remove(toolUseId);
+    if (call == null || failed || _pastOnly) return;
+    final input = call.input;
+    String? text(String key) => input[key] is String ? input[key] as String : null;
+    switch (call.name) {
+      case 'TaskCreate':
+        final subject = text('subject');
+        final id = RegExp(r'^Task #(\d+) created').firstMatch(result)?.group(1);
+        if (subject == null || id == null) return;
+        _tasks[id] = ChatTask(
+          id: id,
+          subject: subject,
+          activeForm: text('activeForm'),
+        );
+      case 'TaskUpdate':
+        final task = _tasks[text('taskId')];
+        if (task == null) return;
+        switch (text('status')) {
+          case 'deleted':
+            _tasks.remove(task.id);
+            return;
+          case final status? when const {
+            'pending',
+            'in_progress',
+            'completed',
+          }.contains(status):
+            task.status = status;
+        }
+        task.subject = text('subject') ?? task.subject;
+        task.activeForm = text('activeForm') ?? task.activeForm;
+      case 'TodoWrite':
+        final todos = input['todos'];
+        if (todos is! List) return;
+        // The whole list every time.
+        _tasks.clear();
+        for (final (i, todo) in todos.indexed) {
+          if (todo is! Map || todo['content'] is! String) continue;
+          _tasks['todo-$i'] = ChatTask(
+            id: 'todo-$i',
+            subject: todo['content'] as String,
+            activeForm: todo['activeForm'] is String
+                ? todo['activeForm'] as String
+                : null,
+            status: const {'pending', 'in_progress', 'completed'}.contains(
+                  todo['status'],
+                )
+                ? todo['status'] as String
+                : 'pending',
+          );
+        }
+    }
+  }
+
+  /// When the turn in flight began, or null between turns.
+  DateTime? _turnStart;
+
+  /// Output tokens of the turn in flight, by message id: every content block
+  /// of a message gets a transcript line of its own, each repeating the
+  /// message's whole usage, so a message is counted once.
+  final Map<String, int> _turnTokens = {};
+
+  /// What the watched session waits for, from the listing: see [checkState].
+  String? _waitingFor;
+
+  /// Set while [loadEarlier] replays older turns, which are history and say
+  /// nothing about the turn in flight.
+  bool _pastOnly = false;
+
+  /// The turn in flight, or null when there is none — idle, or not begun.
+  ChatProgress? get progress {
+    final started = _turnStart;
+    if (started == null) return null;
+    return ChatProgress(
+      started: started,
+      tokens: _turnTokens.values.fold(0, (sum, n) => sum + n),
+      tool: _running.values.lastOrNull,
+      waitingFor: _watching == null ? null : _waitingFor,
+    );
+  }
+
+  void _startTurn(Object? timestamp) {
+    if (_pastOnly || _turnStart != null) return;
+    _turnStart =
+        (timestamp is String ? DateTime.tryParse(timestamp) : null) ??
+        DateTime.now();
+    _turnTokens.clear();
+    // What the last turn waited for, or was seen idle after, is not this
+    // one's.
+    _waitingFor = null;
+    _seenIdle = false;
+  }
+
+  void _endTurn() {
+    if (_pastOnly) return;
+    _turnStart = null;
+    _turnTokens.clear();
+    _waitingFor = null;
+    _seenIdle = false;
+  }
+
+  /// What an assistant line says of the turn: its tokens, and whether it is
+  /// the turn's last message. A line read with no turn open — the history cut
+  /// into one — opens it at its own time, the nearest there is.
+  void _onAssistantTurn(Map<String, dynamic> event) {
+    final message = event['message'];
+    if (_pastOnly || message is! Map<String, dynamic>) return;
+    final stop = message['stop_reason'];
+    if (stop is String && stop != 'tool_use') return _endTurn();
+    _startTurn(event['timestamp']);
+    final usage = message['usage'];
+    final id = message['id'];
+    final tokens = usage is Map ? usage['output_tokens'] : null;
+    if (id is String && tokens is int) _turnTokens[id] = tokens;
+  }
+
+  bool _checking = false;
+
+  /// The last look found the session idle: see [checkState].
+  bool _seenIdle = false;
+
+  /// Asks the host what the watched session is doing now, for what the
+  /// transcript cannot tell: a tool call waiting at a permission prompt
+  /// looks, there, just like one still running. The page asks this every
+  /// few seconds while a turn is open and the chat is on screen. Anything
+  /// going wrong costs only this look.
+  Future<void> checkState() async {
+    final watching = _watching;
+    final turn = _turnStart;
+    if (watching == null || turn == null || _checking) return;
+    _checking = true;
+    try {
+      final now = (await agents())
+          .where((row) => row.sessionId == watching.sessionId)
+          .firstOrNull;
+      // The turn looked at may have ended, and another begun, meanwhile.
+      if (_watching != watching || _turnStart != turn) return;
+      if (now == null || !now.live) return;
+      _waitingFor = now.waitingFor;
+      // Idle with nothing to wait for, twice running: the turn's end was
+      // missed, so it stops spinning rather than spinning for ever. Twice,
+      // since a turn just typed into is idle for a moment before the
+      // listing catches up.
+      final idle = now.status == 'idle' && now.waitingFor == null;
+      if (idle && _seenIdle) _endTurn();
+      _seenIdle = idle && _turnStart != null;
+      notifyListeners();
+    } catch (_) {
+      // Disconnected, or the host could not list them: the next look.
+    } finally {
+      _checking = false;
+    }
+  }
+
   /// Starts Claude on the host. Safe to call again: a chat already up, or on
   /// its way up, stays as it is.
   Future<void> start() async {
@@ -427,31 +744,82 @@ class ClaudeChat extends ChangeNotifier {
   /// Sends a message and waits for the turn it starts. Before this chat has
   /// a conversation, the message starts one, and what this returns settles
   /// once it has started, or failed to.
-  Future<void> send(String text) async {
+  ///
+  /// [pictures] go with it, each where its `[Image #N]` is in [text]. To this
+  /// chat's own Claude they go as image blocks, read here — measured, an
+  /// 8 MB PNG is taken and scaled by Claude Code itself; into a session on
+  /// the host they go through [upload], which puts each on the host and
+  /// hands back its path there, since a session's input line takes a picture
+  /// only as a path pasted into it.
+  Future<void> send(
+    String text, {
+    List<ChatPicture> pictures = const [],
+    PictureUpload? upload,
+  }) async {
     final message = text.trim();
-    if (message.isEmpty) return;
+    if (message.isEmpty && pictures.isEmpty) return;
+    _pictures = math.max(
+      _pictures,
+      pictures.fold(0, (most, picture) => math.max(most, picture.number)),
+    );
     final watching = _watching;
     if (watching != null) {
-      _typeInto(watching, message);
+      _typeInto(watching, message, pictures, upload);
       return;
     }
     if (_composing) {
-      if (!_busy) await _startInBackground(message);
+      if (!_busy) await _startInBackground(message, pictures, upload);
       return;
     }
     if (!_ready || _busy) return;
+    final List<Map<String, dynamic>> images;
+    try {
+      images = [
+        for (final picture in pictures)
+          {
+            'type': 'image',
+            'source': {
+              'type': 'base64',
+              'media_type': pictureType(picture.name),
+              'data': base64Encode(await File(picture.path!).readAsBytes()),
+            },
+          },
+      ];
+    } catch (error) {
+      _say(
+        ChatSaid(message, mine: true, pictures: pictures)
+          ..delivery = Delivery.failed
+          ..why = 'Not sent: a picture could not be read ($error).',
+      );
+      return;
+    }
+    // As Claude Code records a message with pictures pasted into it: the
+    // text, `[Image #N]` and all, then the pictures in that order.
     _write({
       'type': 'user',
       'message': {
         'role': 'user',
         'content': [
-          {'type': 'text', 'text': message},
+          if (message.isNotEmpty) {'type': 'text', 'text': message},
+          ...images,
         ],
       },
     });
-    _entries.add(ChatSaid(message, mine: true));
+    _entries.add(ChatSaid(message, mine: true, pictures: pictures));
     _busy = true;
+    _startTurn(null);
     notifyListeners();
+  }
+
+  /// The media type Claude's API takes for a picture called [name].
+  static String pictureType(String name) {
+    final extension = name.split('.').last.toLowerCase();
+    return switch (extension) {
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'gif' => 'image/gif',
+      'webp' => 'image/webp',
+      _ => 'image/png',
+    };
   }
 
   /// Starts Claude again, resuming the same conversation when it got far
@@ -639,6 +1007,7 @@ class ClaudeChat extends ChangeNotifier {
       final pane = agent.interactive ? await _findPane(agent, pid) : null;
       if (_disposed) return;
       _watching = agent;
+      _waitingFor = agent.waitingFor;
       _say(
         ChatNotice(
           !agent.interactive
@@ -678,6 +1047,8 @@ class ClaudeChat extends ChangeNotifier {
     _entries.clear();
     _running.clear();
     _orphans.clear();
+    _tasks.clear();
+    _parked.clear();
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
@@ -689,6 +1060,8 @@ class ClaudeChat extends ChangeNotifier {
     _watching = null;
     _readOnly = null;
     _pending.clear();
+    _pictures = 0;
+    _endTurn();
   }
 
   /// The tmux pane [agent], an interactive session, runs in — or null, with
@@ -732,13 +1105,28 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// The first message goes on the command line rather than being typed in,
   /// so it arrives in one round trip and is never taken for a paste.
-  Future<void> _startInBackground(String message) async {
-    final said = ChatSaid(message, mine: true)..delivery = Delivery.sending;
+  ///
+  /// Not with [pictures]: a path on `claude --bg`'s command line stays text,
+  /// which Claude then reads as a file, measured on 2.1.286. So that session
+  /// starts with no prompt — idle, `blocked`, waiting for one — and the
+  /// message is pasted into it as into any running session, which makes its
+  /// pictures pictures.
+  Future<void> _startInBackground(
+    String message, [
+    List<ChatPicture> pictures = const [],
+    PictureUpload? upload,
+  ]) async {
+    final said = ChatSaid(message, mine: true, pictures: pictures)
+      ..delivery = Delivery.sending;
     _busy = true;
     _say(said);
     try {
       final channel = await open(
-        backgroundCommand(message, cwd: cwd, permission: _permission),
+        backgroundCommand(
+          pictures.isEmpty ? message : '',
+          cwd: cwd,
+          permission: _permission,
+        ),
       );
       final String output;
       try {
@@ -776,6 +1164,12 @@ class ClaudeChat extends ChangeNotifier {
       // session stays on the host, in the list, and this chat shows what was
       // picked, if anything.
       if (!_composing || _disposed) return;
+      if (pictures.isNotEmpty) {
+        // Nothing to follow yet, a session writing its transcript only once
+        // it has a prompt: what it records of this is drawn once it does.
+        await _deliver(said, agent, upload: upload, confirm: false);
+        if (said.delivery == Delivery.failed) return;
+      }
       _busy = false;
       await continueFrom(agent, waitForTranscript: true);
     } catch (error) {
@@ -862,6 +1256,8 @@ class ClaudeChat extends ChangeNotifier {
   void _followDone(ClaudeAgent agent) {
     _followed = null;
     _follower = null;
+    // Not followed, nothing here can tell how the turn goes on.
+    _endTurn();
     if (!_sessionGone) {
       _say(
         ChatNotice(
@@ -919,21 +1315,65 @@ class ClaudeChat extends ChangeNotifier {
   /// Types [message] into [agent], the session being watched, rather than
   /// into a Claude of this chat's own: shown at once as being sent, and as
   /// sent only when the session's own transcript has it.
-  void _typeInto(ClaudeAgent agent, String message) {
-    final said = ChatSaid(message, mine: true)..delivery = Delivery.sending;
+  void _typeInto(
+    ClaudeAgent agent,
+    String message, [
+    List<ChatPicture> pictures = const [],
+    PictureUpload? upload,
+  ]) {
+    final said = ChatSaid(message, mine: true, pictures: pictures)
+      ..delivery = Delivery.sending;
     _pending.add(said);
     _recorded[said] = Completer<void>();
     _say(said);
     // Whatever goes wrong, the message says it was not delivered rather than
     // sitting at "sending", and the next one still gets its turn.
     _typing = _typing.then(
-      (_) => _deliver(said, agent).catchError(
+      (_) => _deliver(said, agent, upload: upload).catchError(
         (Object error) => _undelivered(said, 'Not delivered: $error'),
       ),
     );
   }
 
-  Future<void> _deliver(ChatSaid said, ClaudeAgent agent) async {
+  /// [said]'s pictures put on the host by [upload], by their number — or
+  /// null, with [said] saying why not.
+  Future<Map<int, String>?> _uploaded(
+    ChatSaid said,
+    PictureUpload? upload,
+  ) async {
+    if (said.pictures.isEmpty) return const {};
+    if (upload == null) {
+      _undelivered(
+        said,
+        'Not sent: this connection cannot put a picture on '
+        'the host, which a session there needs to be sent one.',
+      );
+      return null;
+    }
+    final paths = <int, String>{};
+    for (final picture in said.pictures) {
+      try {
+        paths[picture.number] = await upload(picture);
+      } catch (error) {
+        _undelivered(
+          said,
+          'Not sent: ${picture.name} could not be put on '
+          'the host ($error).',
+        );
+        return null;
+      }
+    }
+    return paths;
+  }
+
+  /// With [confirm] false, done once it is typed: a session that has just
+  /// started, which nothing follows yet.
+  Future<void> _deliver(
+    ChatSaid said,
+    ClaudeAgent agent, {
+    PictureUpload? upload,
+    bool confirm = true,
+  }) async {
     // What it is doing now, not what the list said when it was picked.
     final ClaudeAgent? now;
     try {
@@ -946,7 +1386,7 @@ class ClaudeChat extends ChangeNotifier {
     if (now == null || !now.live) {
       return _undelivered(said, '“${agent.name}” is no longer running.');
     }
-    if (now.interactive) return _typeIntoPane(said, agent, now);
+    if (now.interactive) return _typeIntoPane(said, agent, now, upload);
     final openTerminal = this.openTerminal;
     if (openTerminal == null) {
       return _undelivered(said, 'This connection cannot open a terminal on '
@@ -967,6 +1407,8 @@ class ClaudeChat extends ChangeNotifier {
       return _undelivered(said, 'This session has no id that can be '
           'attached to.');
     }
+    final paths = await _uploaded(said, upload);
+    if (paths == null) return;
     final CommandChannel terminal;
     try {
       terminal = await openTerminal(attachCommand(id));
@@ -974,10 +1416,14 @@ class ClaudeChat extends ChangeNotifier {
       return _undelivered(said, 'Could not open it on the host: $error');
     }
     final drawn = Completer<void>();
+    // What the attach shows, kept as a terminal would, to see each picture
+    // become its chip; the size is the one [openTerminal] gives.
+    final shown = Terminal(maxLines: 200)..resize(120, 40);
     final screen = const Utf8Decoder(allowMalformed: true)
         .bind(terminal.output)
         .listen(
           (chunk) {
+            shown.write(chunk);
             // Its input line: the TUI is up and a paste lands in it.
             if (chunk.contains('❯') && !drawn.isCompleted) drawn.complete();
           },
@@ -995,9 +1441,24 @@ class ClaudeChat extends ChangeNotifier {
       }
       // A moment for the rest of the screen to settle under the prompt.
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      terminal.write(Uint8List.fromList(utf8.encode(_keystrokes(said.text))));
+      // Counted from what the line already shows, and with every
+      // `[Image #N]` typed as text: a picture goes on once there is one more
+      // than those, never at a count text of the user's own could make.
+      var chips = chipsIn(_screenLines(shown));
+      for (final part in segments(said.text, paths)) {
+        terminal.write(Uint8List.fromList(utf8.encode(part.keys)));
+        if (part.picture) {
+          await _chipShown(shown, ++chips);
+        } else {
+          chips += _anyChip.allMatches(part.keys).length;
+        }
+      }
       await Future<void>.delayed(const Duration(milliseconds: 500));
       terminal.write(Uint8List.fromList(const [13]));
+      if (!confirm) {
+        said.delivery = null;
+        return;
+      }
       // Sent only once the session has it: recorded as its next turn, or
       // queued behind the one it is running.
       try {
@@ -1029,6 +1490,7 @@ class ClaudeChat extends ChangeNotifier {
     ChatSaid said,
     ClaudeAgent agent,
     ClaudeAgent now,
+    PictureUpload? upload,
   ) async {
     final name = '“${agent.name}”';
     final readOnly = _readOnly;
@@ -1046,11 +1508,35 @@ class ClaudeChat extends ChangeNotifier {
     // Taken now: the session can record it before the host has finished
     // saying it typed it, and recording it lets this go.
     final recorded = _recorded[said]?.future;
-    final keys = Uint8List.fromList(utf8.encode(_keystrokes(said.text)));
+    final paths = await _uploaded(said, upload);
+    if (paths == null) return;
+    final parts = [
+      for (final part in segments(said.text, paths))
+        (
+          keys: utf8.encode(part.keys),
+          picture: part.picture,
+          tokens: part.picture
+              ? 0
+              : _anyChip.allMatches(part.keys).length,
+        ),
+    ];
+    final keys = Uint8List.fromList([for (final part in parts) ...part.keys]);
     final String answer;
     try {
       final channel = await open(
-        paneCommand(agent.sessionId, pid: now.pid!, typing: keys.length),
+        paneCommand(
+          agent.sessionId,
+          pid: now.pid!,
+          parts: [
+            for (final part in parts)
+              (
+                length: part.keys.length,
+                picture: part.picture,
+                tokens: part.tokens,
+              ),
+          ],
+          chipWait: chipTimeout,
+        ),
       );
       try {
         channel.write(keys);
@@ -1133,11 +1619,77 @@ class ClaudeChat extends ChangeNotifier {
   /// ponytail: longer than [_typedLimit] it is still a paste, which Claude
   /// may ask about first; typing it in pieces was tried, and a 1.8 KB message
   /// in 200-character pieces never arrived at all.
-  static String _keystrokes(String text) {
-    final clean = _pasteable(text);
-    if (clean.length > _typedLimit) return '\x1b[200~$clean\x1b[201~';
-    final typed = clean.replaceAll('\t', '  ');
-    return typed.startsWith('!') ? ' $typed' : typed;
+  ///
+  /// Each `[Image #N]` in [text] with a path in [paths] is that path pasted
+  /// on its own: measured on 2.1.286, a path pasted as a bracketed paste
+  /// becomes the CLI's own `[Image #N]`, while one typed stays text. One
+  /// with no path is typed as it reads.
+  @visibleForTesting
+  static List<({String keys, bool picture})> segments(
+    String text, [
+    Map<int, String> paths = const {},
+  ]) {
+    final parts = <({String text, String? path})>[];
+    var at = 0;
+    for (final match in pictureToken.allMatches(text)) {
+      final path = paths[int.parse(match[1]!)];
+      if (path == null) continue;
+      parts.add((text: text.substring(at, match.start), path: path));
+      at = match.end;
+    }
+    parts.add((text: text.substring(at), path: null));
+    final pasted =
+        parts.fold(0, (length, part) => length + _pasteable(part.text).length) >
+        _typedLimit;
+    final keys = <({String keys, bool picture})>[];
+    for (final part in parts) {
+      final clean = _pasteable(part.text);
+      if (clean.isNotEmpty) {
+        final typed = clean.replaceAll('\t', '  ');
+        keys.add((
+          keys: pasted
+              ? '\x1b[200~$clean\x1b[201~'
+              : keys.isEmpty && typed.startsWith('!')
+              ? ' $typed'
+              : typed,
+          picture: false,
+        ));
+      }
+      final path = part.path;
+      if (path != null) {
+        // No control at all in a path, a newline included: it is one line.
+        final safe = path.replaceAll(RegExp(r'[\x00-\x1f\x7f-\x9f]'), '');
+        keys.add((keys: '\x1b[200~$safe\x1b[201~', picture: true));
+      }
+    }
+    return keys;
+  }
+
+  /// Waits, up to [chipTimeout], for [shown] — what an attach draws — to
+  /// hold [count] pictures in its input line.
+  Future<void> _chipShown(Terminal shown, int count) async {
+    final deadline = DateTime.now().add(chipTimeout);
+    while (chipsIn(_screenLines(shown)) < count) {
+      if (DateTime.now().isAfter(deadline)) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
+  static List<String> _screenLines(Terminal shown) => [
+    for (var line = 0; line < shown.buffer.height; line++)
+      shown.buffer.lines[line].getText(),
+  ];
+
+  /// How many `[Image #N]` chips Claude Code's input line holds, in a screen
+  /// of [lines]: from the last line that starts with its `❯`, the line
+  /// before it holding the turns already sent.
+  @visibleForTesting
+  static int chipsIn(List<String> lines) {
+    final at = lines.lastIndexWhere((line) => line.startsWith('❯'));
+    if (at < 0) return 0;
+    return lines
+        .skip(at)
+        .fold(0, (count, line) => count + _anyChip.allMatches(line).length);
   }
 
   /// Text as it may go into a paste: no escape, and no control but a newline
@@ -1197,8 +1749,12 @@ class ClaudeChat extends ChangeNotifier {
     return '/${command.name} ${command.args}'.trim();
   }
 
-  static String _normal(String text) =>
-      text.trim().replaceAll(RegExp(r'\s+'), ' ');
+  /// [text] as two messages are compared: its pictures by place alone, since
+  /// Claude numbers the chips a paste makes itself, and spaces as one.
+  static String _normal(String text) => text
+      .replaceAll(RegExp(r'\s*\[Image #\d+\]\s*'), ' [Image] ')
+      .trim()
+      .replaceAll(RegExp(r'\s+'), ' ');
 
   Future<void> _stopFollowing() async {
     final followed = _followed;
@@ -1290,6 +1846,7 @@ class ClaudeChat extends ChangeNotifier {
         run.result = '';
       }
       _running.clear();
+      _endTurn();
     }
     notifyListeners();
     return (from: size, carry: body.sublist(whole));
@@ -1379,6 +1936,7 @@ class ClaudeChat extends ChangeNotifier {
         final shownRunning = _running;
         _entries = [];
         _running = running;
+        _pastOnly = true;
         try {
           for (final line in const LineSplitter().convert(
             const Utf8Decoder(
@@ -1392,6 +1950,7 @@ class ClaudeChat extends ChangeNotifier {
         } finally {
           _entries = shownEntries;
           _running = shownRunning;
+          _pastOnly = false;
         }
       }
     } finally {
@@ -1429,7 +1988,12 @@ class ClaudeChat extends ChangeNotifier {
     final message = event['message'];
     switch (event['type']) {
       case 'assistant':
+        _onAssistantTurn(event);
         _onAssistant(message);
+      // Written once the turn is over, measured; an assistant line that
+      // ends the turn has usually said so already.
+      case 'system' when event['subtype'] == 'turn_duration':
+        _endTurn();
       case 'system' when event['subtype'] == 'local_command':
         if (event['content'] case final String text) _onCommandLine(text);
       case 'user' when message is Map<String, dynamic>:
@@ -1440,13 +2004,28 @@ class ClaudeChat extends ChangeNotifier {
         }
         final text = said.trim();
         if (_onCommandLine(text)) return;
+        final numbers = [
+          for (final id in event['imagePasteIds'] as List? ?? const [])
+            if (id is int) id,
+        ];
+        for (final id in numbers) {
+          _pictures = math.max(_pictures, id);
+        }
+        final pictures = _picturesIn(message['content'], numbers);
         // ponytail: a message the user typed that itself opens with `<` is
         // taken for one Claude Code wrote, and left out.
-        if (text.isEmpty || text.startsWith('<')) return;
+        if ((text.isEmpty && pictures.isEmpty) || text.startsWith('<')) {
+          return;
+        }
+        if (text.startsWith('[Request interrupted')) {
+          _endTurn();
+        } else {
+          _startTurn(event['timestamp']);
+        }
         _entries.add(
           text.startsWith('[Request interrupted')
               ? ChatNotice('The user interrupted this turn.')
-              : ChatSaid(text, mine: true),
+              : ChatSaid(text, mine: true, pictures: pictures),
         );
     }
   }
@@ -1486,6 +2065,41 @@ class ClaudeChat extends ChangeNotifier {
           .join('\n'),
     _ => null,
   };
+
+  /// The pictures a `user` line's content holds, as the transcript keeps
+  /// them: inline, base64 — measured on 2.1.286, a pasted 8 MB PNG kept as a
+  /// 434 KB JPEG Claude Code scaled it to. [numbers] are its
+  /// `imagePasteIds`, in the same order.
+  ///
+  /// ponytail: one bigger than [pictureLimit] in the transcript is left out
+  /// of the bubble rather than held in memory; its `[Image #N]` still says
+  /// it was there.
+  static List<ChatPicture> _picturesIn(Object? content, List<int> numbers) {
+    if (content is! List) return const [];
+    final pictures = <ChatPicture>[];
+    var index = -1;
+    for (final block in content.whereType<Map<String, dynamic>>()) {
+      if (block['type'] != 'image') continue;
+      index++;
+      final source = block['source'];
+      final data = source is Map ? source['data'] : null;
+      if (data is! String || data.length > pictureLimit * 4 / 3) continue;
+      try {
+        pictures.add(
+          ChatPicture(
+            bytes: base64Decode(data),
+            number: index < numbers.length ? numbers[index] : index + 1,
+          ),
+        );
+      } on FormatException {
+        // Not base64 after all: nothing to draw.
+      }
+    }
+    return pictures;
+  }
+
+  /// The most of one picture in a transcript a chat holds to draw.
+  static const pictureLimit = 4 * 1024 * 1024;
 
   /// How 2.1.277 marks what was pasted into a message:
   /// `<pasted_content id="…">` and `</pasted_content id="…">` around it.
@@ -1527,11 +2141,14 @@ class ClaudeChat extends ChangeNotifier {
         _sessionId = event['session_id'] as String?;
         notifyListeners();
       case 'assistant':
-        if (_onAssistant(event['message'])) notifyListeners();
+        _onAssistantTurn(event);
+        _onAssistant(event['message']);
+        notifyListeners();
       case 'user':
         if (_onToolResults(event['message'])) notifyListeners();
       case 'result':
         _busy = false;
+        _endTurn();
         final subtype = event['subtype'];
         if (subtype is String && subtype != 'success') {
           _entries.add(ChatNotice(_resultReason(subtype), failed: true));
@@ -1573,11 +2190,14 @@ class ClaudeChat extends ChangeNotifier {
             },
           );
           _entries.add(run);
+          _noteTaskCall(run.name, run.input, run.id);
           // Its result may have been read already, before this call was.
           if (_orphans.remove(run.id) case final orphan?) {
             run
               ..result = orphan.result
               ..failed = orphan.failed;
+            // Its result was read before it was: a task call takes effect now.
+            _noteTaskResult(run.id, orphan.result, orphan.failed);
           } else {
             _running[run.id] = run;
           }
@@ -1600,6 +2220,7 @@ class ClaudeChat extends ChangeNotifier {
       final id = block['tool_use_id'];
       final result = _resultText(block['content']);
       final failed = block['is_error'] == true;
+      _noteTaskResult(id, result, failed);
       final run = _running.remove(id);
       if (run == null) {
         // Its call is further back than anything read yet: kept for when
@@ -1650,6 +2271,7 @@ class ClaudeChat extends ChangeNotifier {
         ..failed = true;
     }
     _running.clear();
+    _endTurn();
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
     notifyListeners();
   }
@@ -1852,8 +2474,10 @@ class ClaudeChat extends ChangeNotifier {
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
     final script = '$_findClaude$start'
-        '"\$c" --bg --permission-mode ${permission.flag} '
-        '-- ${_shellQuote(_pasteable(prompt))} </dev/null 2>&1';
+        '"\$c" --bg --permission-mode ${permission.flag}'
+        // With none, the session waits for its first message.
+        '${prompt.isEmpty ? '' : ' -- ${_shellQuote(_pasteable(prompt))}'}'
+        ' </dev/null 2>&1';
     return 'sh -c ${_shellQuote(script)}';
   }
 
@@ -1992,12 +2616,49 @@ class ClaudeChat extends ChangeNotifier {
   /// pane's copy mode as key bindings. Every command before `head` reads
   /// /dev/null, so none of them eats it. [pid] is a number and [sessionId]
   /// is quoted once for sh, the whole script once more.
+  ///
+  /// [parts] are what to type in pieces, read from stdin one after another,
+  /// each a picture's path or the text between them: after a picture the
+  /// host waits, up to [chipWait], for the pane's input line to hold one chip
+  /// more before typing on, as [chipTimeout] says why. Each piece is read by
+  /// `dd` a byte at a time, since a `head` may read on past its count from a
+  /// pipe and swallow the next. [typing] is one piece of text.
   static String paneCommand(
     String sessionId, {
     required int pid,
     int typing = 0,
+    List<({int length, bool picture, int tokens})> parts = const [],
+    Duration chipWait = const Duration(seconds: 15),
   }) {
-    final type = typing <= 0
+    if (parts.isEmpty && typing > 0) {
+      parts = [(length: typing, picture: false, tokens: 0)];
+    }
+    // As [_deliver] counts: from the chips the line held before, and the
+    // `[Image #N]` typed as text — each part's [tokens] — on the way.
+    var chips = 0;
+    final pieces = StringBuffer();
+    for (final part in parts) {
+      pieces.write(
+        'dd bs=1 count=${part.length} 2>/dev/null | '
+        r'"$t" load-buffer -b "$b" - && '
+        r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+        r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
+        'no paste; }; ',
+      );
+      chips += part.tokens;
+      if (part.picture) pieces.write('chip ${++chips}; ');
+    }
+    // The chips in the input line: on the screen from its last line that
+    // starts with ❯, as [chipsIn] counts them.
+    final chip =
+        r'chips() { "$t" -u capture-pane -p -t "$w" </dev/null 2>/dev/null | '
+        r"""awk '/^❯/ { n = 0 } { n += gsub(/\[Image #[0-9]+\]/, "") } """
+        r"""END { print n + 0 }'; }; """
+        r'chip() { i=0; while [ "$(chips)" -lt $((c0 + $1)) ] && '
+        '[ \$i -lt ${(chipWait.inMilliseconds / 200).ceil()} ]; '
+        r'do sleep 0.2; i=$((i + 1)); done; }; '
+        r'c0=$(chips); ';
+    final type = parts.isEmpty
         ? r'echo "sshbox:pane $w"'
         : r'j="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$p.json"; '
               'ready() { '
@@ -2017,11 +2678,7 @@ class ClaudeChat extends ChangeNotifier {
               r'[ "$2" = 2 ] && "$t" -u capture-pane -p -t "$w" -S "$3" -E "$3" '
               '</dev/null 2>/dev/null | grep -q "^❯" || no draft; '
               r'b=sshbox-chat-$$; '
-              'head -c $typing | '
-              r'"$t" load-buffer -b "$b" - && '
-              r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
-              r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
-              'no paste; }; '
+              '$chip$pieces'
               'echo sshbox:pasted; sleep 1; ready; '
               r'printf "\r" | "$t" load-buffer -b "$b" - && '
               r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '

@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'fake_drop.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
@@ -20,6 +22,7 @@ import 'package:sshbox/src/ui/settings_page.dart'
     show TerminalSettings, terminalSettings, terminalStyleOf;
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/file_editor_page.dart' show PictureView;
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart' show chatEnterSends;
 import 'package:sshbox/src/ui/terminal_schemes.dart';
@@ -317,6 +320,8 @@ final _nightlyHistory = _history([
       ],
     },
   },
+  // The turn is over, as a real transcript says once it is.
+  {'type': 'system', 'subtype': 'turn_duration', 'durationMs': 9120},
 ]);
 
 /// Where the conversation is scrolled to: its list, not the sidebar's.
@@ -328,13 +333,22 @@ ScrollPosition _conversationAt(WidgetTester tester) => tester
 /// Lets a pick-up run out. Closing the drawer, reading the history and
 /// starting Claude are futures, not frames, so settling the frames alone
 /// returns while they are in flight; this takes turns between the two until
-/// both are quiet.
+/// both are quiet. Frames are pumped for a while rather than settled: a
+/// session mid-turn spins its progress line for as long as the turn runs.
 Future<void> _settlePickUp(WidgetTester tester) async {
   for (var turn = 0; turn < 8; turn++) {
-    await tester.pumpAndSettle();
+    await _frames(tester);
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
   }
   await tester.pump();
+}
+
+/// What [WidgetTester.pumpAndSettle] does, less the wait for every animation
+/// to stop: a second of frames, enough for a drawer or a scroll to finish.
+Future<void> _frames(WidgetTester tester) async {
+  for (var frame = 0; frame < 60; frame++) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
 }
 
 /// A session on the host whose process has finished, as `--all` lists it.
@@ -366,6 +380,52 @@ const _host = HostProfile(
 );
 
 void main() {
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan
+  // tab lain": a session in the sidebar is no tab, so a right-click on it
+  // must not reach the tab's menu, while the message area's still does.
+  testWidgets("a right-click on a session in the sidebar is not the tab's", (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('aaaa0001', 'nightly build')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    var tabMenus = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        // As the tab shell wraps every page: a right-click nothing deeper
+        // took opens the tab's menu.
+        home: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onSecondaryTapUp: (_) => tabMenus++,
+          child: Scaffold(body: ChatPage(session: session)),
+        ),
+      ),
+    );
+    await _settlePickUp(tester);
+    Future<void> rightClick(Finder at) async {
+      await tester.tapAt(
+        tester.getCenter(at),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await rightClick(find.text('nightly build'));
+    await rightClick(find.text('Sessions on this host'));
+    expect(tabMenus, 0);
+    // Nothing picked up by it either.
+    expect(shell.commands.where((c) => c.contains(' -f ')), isEmpty);
+
+    await rightClick(find.textContaining('starts a new session'));
+    expect(tabMenus, 1);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
   testWidgets('a new chat starts nothing on the host until its first '
       'message, which starts a background session there and watches it', (
     tester,
@@ -471,7 +531,7 @@ void main() {
       isEmpty,
     );
     // A turn is running: nothing else may be sent until it ends.
-    expect(find.text('Claude is working…'), findsOneWidget);
+    expect(find.textContaining('Working… (0s)'), findsOneWidget);
 
     shell.event({
       'type': 'assistant',
@@ -494,9 +554,25 @@ void main() {
     expect(find.text('Bash'), findsOneWidget);
     expect(find.text('tail -n 50 error.log'), findsOneWidget);
 
+    // Its last message says the turn is over before its result comes: still
+    // busy, and still said to be working, not starting a session.
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'stop_reason': 'end_turn',
+        'content': [
+          {'type': 'text', 'text': 'Done looking.'},
+        ],
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Claude is working…'), findsOneWidget);
+
     shell.event({'type': 'result', 'subtype': 'success'});
     await tester.pump();
     await tester.pump();
+    expect(find.textContaining('Working…'), findsNothing);
     expect(find.text('Claude is working…'), findsNothing);
   });
 
@@ -669,6 +745,42 @@ void main() {
 
     expect(shell.commands, isEmpty);
     expect(find.text('Connect this session first'), findsOneWidget);
+  });
+
+  testWidgets('what is typed while the chat is not ready is kept, Send waiting '
+      'until it is', (tester) async {
+    final shell = _Shell();
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+
+    bool sendOn() =>
+        tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.send))
+            .onPressed !=
+        null;
+    // Not ready, as between turns or before the connection is up: the box
+    // still takes the text, and Send waits.
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    await tester.enterText(find.byType(TextField), 'next question');
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'next question',
+    );
+    expect(sendOn(), isFalse);
+
+    // Ready again: the same text, and Send on.
+    await session.connect(secrets: _NoSecrets());
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'next question',
+    );
+    expect(sendOn(), isTrue);
   });
 
   testWidgets('the sessions on the host are offered, and one still running '
@@ -939,12 +1051,19 @@ void main() {
 
       if (!wide) await show();
       expect(find.text('the nightly build'), findsOneWidget);
-      final asked = shell.commands.where((c) => c.contains('agents')).length;
 
       await hide();
       expect(find.text('the nightly build'), findsNothing);
-      await show();
+      // Hidden, the list is not asked for, however long it stays hidden.
+      final asked = shell.commands.where((c) => c.contains('agents')).length;
+      await _settlePickUp(tester);
+      expect(shell.commands.where((c) => c.contains('agents')).length, asked);
 
+      // Shown, its rows are there at once, not after asking the host: it
+      // only goes on to ask while on show, to keep each row's mark current.
+      await tester.tap(find.byTooltip('Sessions on this host').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('the nightly build'), findsOneWidget);
       expect(shell.commands.where((c) => c.contains('agents')).length, asked);
     });
@@ -2838,6 +2957,252 @@ void main() {
     });
   });
 
+  group('the line under a turn in flight', () {
+    const sessionId = '81badf4a-7e9f-4f01-b098-6968dbe5f070';
+    Map<String, Object?> row({String? waitingFor}) => {
+      'pid': 4079548,
+      'id': '81badf4a',
+      'cwd': '/srv/app',
+      'kind': 'background',
+      'sessionId': sessionId,
+      'name': 'the nightly build',
+      'status': waitingFor == null ? 'busy' : 'waiting',
+      'state': waitingFor == null ? 'working' : 'blocked',
+      'waitingFor': ?waitingFor,
+    };
+
+    Future<_Shell> watching(WidgetTester tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([row()]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    String line(WidgetTester tester) =>
+        tester.widgetList<Text>(find.textContaining('Working…')).single.data!;
+
+    testWidgets('ticks its seconds here, counts tokens, names the tool, and '
+        'goes when the turn ends', (tester) async {
+      final shell = await watching(tester);
+      // Between turns: nothing.
+      expect(find.textContaining('Working…'), findsNothing);
+
+      // A turn typed at the terminal, 3 s before now by the host's clock.
+      final started = DateTime.now().toUtc().subtract(
+        const Duration(seconds: 3),
+      );
+      shell.adds({
+        'type': 'user',
+        'timestamp': started.toIso8601String(),
+        'message': {'role': 'user', 'content': 'run the tests'},
+      });
+      shell.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'msg_1',
+          'stop_reason': 'tool_use',
+          'usage': {'output_tokens': 1400},
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_1',
+              'name': 'Bash',
+              'input': {'command': 'npm test'},
+            },
+          ],
+        },
+      });
+      await _settlePickUp(tester);
+      // From the prompt's own time: 3 s at least, whatever the test took.
+      int seconds() => int.parse(
+        RegExp(r'^Working… \((\d+)s ').firstMatch(line(tester))!.group(1)!,
+      );
+      final first = seconds();
+      expect(first, inInclusiveRange(3, 10));
+      expect(line(tester), contains('s · ↓ 1.4k tokens) · Bash: npm test'));
+
+      // A second later by the device's own clock, with nothing from the host.
+      final before = shell.commands.length;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 1100)),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(seconds(), greaterThan(first));
+      // The host is asked at most every few seconds, not every tick.
+      expect(
+        shell.commands
+            .skip(before)
+            .where((command) => command.contains('agents --json')),
+        hasLength(lessThanOrEqualTo(1)),
+      );
+
+      shell.adds({
+        'type': 'system',
+        'subtype': 'turn_duration',
+        'durationMs': 5000,
+      });
+      await _settlePickUp(tester);
+      expect(find.textContaining('Working…'), findsNothing);
+    });
+
+    testWidgets('waiting at a prompt says what for and where to answer, and '
+        'does not spin', (tester) async {
+      final shell = await watching(tester);
+      shell.listing = jsonEncode([row(waitingFor: 'permission prompt')]);
+      shell.adds({
+        'type': 'user',
+        'message': {'role': 'user', 'content': 'touch a file'},
+      });
+      await _settlePickUp(tester);
+      // The first look goes at once, not after the first few seconds.
+      expect(
+        find.textContaining('Waiting for permission prompt on the host.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('81badf4a'), findsOneWidget);
+      expect(find.textContaining('Working…'), findsNothing);
+      expect(find.byIcon(Icons.pause), findsOneWidget);
+    });
+
+
+    Future<_Shell> watchingOnScreen(WidgetTester tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([row()]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    /// A reply of 25 lines, about 650 px: taller than the 240 px within which
+    /// the reader counts as following.
+    Future<void> longReply(WidgetTester tester, _Shell shell, int n) async {
+      shell.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'msg_long_$n',
+          'content': [
+            {
+              'type': 'text',
+              'text': [
+                for (var line = 1; line <= 25; line++)
+                  'Long answer $n, line $line',
+              ].join('\n\n'),
+            },
+          ],
+        },
+      });
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+    }
+
+    testWidgets('at the end, a reply taller than a screen is followed to '
+        'its own end, one after another', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 6; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent, greaterThan(3000));
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('scrolled up, a long reply leaves the reader where they are',
+        (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      // Up well past where a new entry would still be followed.
+      position.jumpTo(position.maxScrollExtent - 900);
+      await tester.pump();
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      expect(position.pixels, kept);
+      expect(position.maxScrollExtent - position.pixels, greaterThan(1000));
+    });
+
+    testWidgets('hidden while following, the chat is at its end when shown '
+        'again, however much was written meanwhile', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([row()]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      // What the tab strip does to a page it is not showing.
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: shown,
+              builder: (context, on, child) =>
+                  TickerMode(enabled: on, child: child!),
+              child: ChatPage(session: session),
+            ),
+          ),
+        ),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+
+      shown.value = false;
+      await tester.pump();
+      // Claude writes several screens while the terminal tab is in front.
+      for (var reply = 0; reply < 12; reply++) {
+        shell.adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'msg_$reply',
+            'stop_reason': 'end_turn',
+            'content': [
+              {
+                'type': 'text',
+                'text': List.filled(8, 'Reply $reply goes on.').join('\n\n'),
+              },
+            ],
+          },
+        });
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await _frames(tester);
+      }
+
+      shown.value = true;
+      await _frames(tester);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent, greaterThan(1000));
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+  });
+
   testWidgets('the Send button reads in every theme, light and dark: its '
       'arrow on its fill, and its fill on the composer', (tester) async {
     final shell = _Shell();
@@ -2886,5 +3251,726 @@ void main() {
       }
     }
     expect(failures, isEmpty);
+  });
+
+  group('each session\'s mark in the sidebar', () {
+    // A pinned background session, as `claude agents --json --all` lists it
+    // at each point of a turn: working, at a permission prompt, then done.
+    String listed({
+      required String status,
+      required String state,
+      String? waitingFor,
+    }) =>
+        '${jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': status,
+            'state': state,
+            'waitingFor': ?waitingFor,
+          },
+          {
+            'pid': 4079549,
+            'id': 'cccc3333',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': 'cccc3333-0000-4000-8000-000000000000',
+            'name': 'the other one',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ])}\n--- pins\n["81badf4a"]\n';
+
+    Finder mark(String label) => find.bySemanticsLabel(label);
+
+    testWidgets('moves while it works, asks for attention while it waits, '
+        'and is checked with a dot once done until it is opened', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final semantics = tester.ensureSemantics();
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = listed(status: 'busy', state: 'working');
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+
+      // Pinned, and working: the pin kept, and a mark that moves.
+      expect(find.text('★'), findsOneWidget);
+      expect(mark('Working'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(TuiChatSessionList),
+          matching: find.byType(TuiSpinner),
+        ),
+        findsOneWidget,
+      );
+
+      // At a permission prompt, by the next look, with nothing tapped.
+      shell.listing = listed(
+        status: 'waiting',
+        state: 'blocked',
+        waitingFor: 'permission prompt',
+      );
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(mark('Waiting for permission prompt'), findsOneWidget);
+      expect(mark('Working'), findsNothing);
+
+      // Done while nobody had it open: checked, with the dot.
+      shell.listing = listed(status: 'idle', state: 'done');
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(mark('Done, idle, not opened since'), findsOneWidget);
+      // The other one was never seen working: no dot.
+      expect(mark('Done, idle'), findsOneWidget);
+
+      // Opened: the dot goes.
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(mark('Done, idle, not opened since'), findsNothing);
+      expect(mark('Done, idle'), findsNWidgets(2));      semantics.dispose();
+    });
+
+    testWidgets('nothing is asked for while the tab is hidden', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()..listing = listed(status: 'busy', state: 'working');
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: shown,
+              builder: (context, on, child) =>
+                  TickerMode(enabled: on, child: child!),
+              child: ChatPage(session: session),
+            ),
+          ),
+        ),
+      );
+      await _frames(tester);
+      int asked() =>
+          shell.commands.where((c) => c.contains('agents --json')).length;
+
+      // On show, asked again every few seconds.
+      final before = asked();
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(asked(), greaterThan(before));
+
+      // Hidden: not once, however long.
+      shown.value = false;
+      await _frames(tester);
+      final hidden = asked();
+      for (var look = 0; look < 4; look++) {
+        await tester.pump(const Duration(seconds: 6));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(asked(), hidden);
+    });
+  });
+
+  group('the checklist under the working line', () {
+    Map<String, Object?> call(
+      String id,
+      String name,
+      Map<String, Object?> input,
+    ) => {
+      'type': 'assistant',
+      'message': {
+        'id': 'msg_$id',
+        'stop_reason': 'tool_use',
+        'content': [
+          {'type': 'tool_use', 'id': id, 'name': name, 'input': input},
+        ],
+      },
+    };
+
+    Map<String, Object?> created(String id, int n) => {
+      'type': 'user',
+      'message': {
+        'role': 'user',
+        'content': [
+          {
+            'type': 'tool_result',
+            'tool_use_id': id,
+            'content': 'Task #$n created successfully: x',
+          },
+        ],
+      },
+    };
+
+    /// A TaskUpdate, and its result: it takes effect when that says it did.
+    void update(_Shell shell, String id, Map<String, Object?> input) {
+      shell
+        ..adds(call(id, 'TaskUpdate', input))
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': id,
+                'content': 'Updated task #${input['taskId']} status',
+              },
+            ],
+          },
+        });
+    }
+
+    Future<_Shell> watching(WidgetTester tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'busy',
+            'state': 'working',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    Future<void> make(WidgetTester tester, _Shell shell, int n) async {
+      shell
+        ..adds(
+          call('c$n', 'TaskCreate', {
+            'subject': 'Task $n',
+            'description': 'd',
+            'activeForm': 'Doing $n',
+          }),
+        )
+        ..adds(created('c$n', n));
+      await _settlePickUp(tester);
+    }
+
+    testWidgets('lists what is open, bold in progress with ■ and pending '
+        'with □, and follows each update', (tester) async {
+      final shell = await watching(tester);
+      expect(find.textContaining('□'), findsNothing);
+
+      await make(tester, shell, 1);
+      await make(tester, shell, 2);
+      expect(find.text('⎿ □ Task 1'), findsOneWidget);
+      expect(find.text('  □ Task 2'), findsOneWidget);
+
+      // Live: one becomes in progress, and reads as its active form.
+      update(shell, 'u1', {'taskId': '1', 'status': 'in_progress'});
+      await _settlePickUp(tester);
+      expect(find.text('⎿ ■ Doing 1'), findsOneWidget);
+      expect(find.text('  □ Task 2'), findsOneWidget);
+      expect(
+        tester.widget<TuiText>(find.widgetWithText(TuiText, '⎿ ■ Doing 1')).bold,
+        isTrue,
+      );
+
+      // Completed ones are counted, not listed.
+      update(shell, 'u2', {'taskId': '1', 'status': 'completed'});
+      await _settlePickUp(tester);
+      expect(find.textContaining('Doing 1'), findsNothing);
+      expect(find.text('  … 1 completed'), findsOneWidget);
+
+      // All done: nothing left to show.
+      update(shell, 'u3', {'taskId': '2', 'status': 'completed'});
+      await _settlePickUp(tester);
+      expect(find.text('  … 2 completed'), findsNothing);
+      expect(find.textContaining('□'), findsNothing);
+    });
+
+    testWidgets('past a few lines it counts the rest, as Claude Code does', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      for (var n = 1; n <= 10; n++) {
+        await make(tester, shell, n);
+      }
+      update(shell, 'u1', {'taskId': '1', 'status': 'completed'});
+      await _settlePickUp(tester);
+      // 9 open, 6 shown, 3 more, 1 done.
+      expect(find.text('  … +3 pending, 1 completed'), findsOneWidget);
+      expect(find.text('⎿ □ Task 2'), findsOneWidget);
+      expect(find.text('  □ Task 7'), findsOneWidget);
+      expect(find.textContaining('Task 8'), findsNothing);
+    });
+
+    testWidgets('hidden rows are counted for what they are', (tester) async {
+      final shell = await watching(tester);
+      for (var n = 1; n <= 8; n++) {
+        await make(tester, shell, n);
+        update(shell, 'ip$n', {'taskId': '$n', 'status': 'in_progress'});
+      }
+      await _settlePickUp(tester);
+      // 8 in progress, 6 shown: the 2 more are not called pending.
+      expect(find.text('  … +2 in progress'), findsOneWidget);
+    });
+
+    testWidgets('its text is drawn as text, never read as anything else', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      shell
+        ..adds(
+          call('c1', 'TaskCreate', {
+            'subject': '[x](javascript:alert(1)) **b** <b>',
+            'description': 'd',
+          }),
+        )
+        ..adds(created('c1', 1));
+      await _settlePickUp(tester);
+      expect(
+        find.text('⎿ □ [x](javascript:alert(1)) **b** <b>'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('pictures', () {
+    /// A real picture, one pixel, so it decodes as one.
+    final pixel = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA'
+      '60e6kgAAAABJRU5ErkJggg==',
+    );
+    late Directory dir;
+    setUp(
+      () => dir = Directory.systemTemp.createTempSync('chat-pictures-test'),
+    );
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    /// What the clipboard holds next, as MainActivity hands a picture over:
+    /// a file of the app's own, and its name. Null holds none.
+    List<String?> clipboard(WidgetTester tester) {
+      final next = <String?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('sshbox/share'),
+        (call) async {
+          if (call.method != 'clipboardImage' || next.isEmpty) return null;
+          final name = next.removeAt(0);
+          if (name == null) return null;
+          final file = File('${dir.path}/$name')..writeAsBytesSync(pixel);
+          return {'path': file.path, 'name': name};
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/share'),
+          null,
+        ),
+      );
+      return next;
+    }
+
+    /// Ctrl+V in the box, its file work let run.
+    Future<void> paste(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    Future<_Shell> continued(WidgetTester tester, {String? history}) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      if (history != null) shell.history = history;
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      return shell;
+    }
+
+    testWidgets('a picture pasted becomes a card and an [Image #N] at the '
+        'caret, and goes with the message as a picture', (tester) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.byIcon(Icons.send));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] what is it?'});
+      expect((content.last as Map)['source'], {
+        'type': 'base64',
+        'media_type': 'image/png',
+        'data': base64Encode(pixel),
+      });
+      // The card went with it, and the bubble holds the picture.
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+      expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+Enter in the box sends the message with its pictures', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.enterText(find.byType(TextField), '[Image #1] look');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] look'});
+      expect((content.last as Map)['type'], 'image');
+      expect(box(tester), isEmpty);
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+    });
+
+    testWidgets('an [Image #N] whose number no int holds draws, and is sent, '
+        'as text', (tester) async {
+      final shell = await continued(tester);
+      await tester.enterText(
+        find.byType(TextField),
+        'see [Image #99999999999999999999]',
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(box(tester), 'see [Image #99999999999999999999]');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content, [
+        {'type': 'text', 'text': 'see [Image #99999999999999999999]'},
+      ]);
+    });
+
+    testWidgets(
+      'a picture dropped before the chat is ready becomes a card, and '
+      'Send turns on once it is',
+      (tester) async {
+        final shell = _Shell();
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        final shot = File('${dir.path}/early.png')..writeAsBytesSync(pixel);
+
+        // Not connected: nothing to send to yet, but the picture is kept.
+        await tester.runAsync(() async {
+          await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        });
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        IconButton send() => tester.widget<IconButton>(
+          find.widgetWithIcon(IconButton, Icons.send),
+        );
+        expect(send().onPressed, isNull);
+
+        await tester.runAsync(() => session.connect(secrets: _NoSecrets()));
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        expect(send().onPressed, isNotNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.linux),
+    );
+
+    testWidgets('a session that is read-only from here refuses a picture, '
+        'saying why', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      final shot = File('${dir.path}/ro.png')..writeAsBytesSync(pixel);
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      // A drop target is off there, so the refusal is the + button's route:
+      // no card either way.
+      expect(find.text('[Image #1] ro.png'), findsNothing);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.widgetWithIcon(
+                IconButton,
+                Icons.add_photo_alternate_outlined,
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('removing a card takes its token out, and deleting a token '
+        'takes its card', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.addAll(['a.png', 'b.png']);
+      await paste(tester);
+      await paste(tester);
+      expect(box(tester), '[Image #1] [Image #2] ');
+
+      await tester.tap(find.byTooltip('Remove a.png'));
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] b.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'no picture now');
+      await tester.pump();
+      expect(find.textContaining('b.png'), findsNothing);
+    });
+
+    testWidgets('a card opens its picture large, and text on the clipboard is '
+        'pasted as text', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.tap(find.bySemanticsLabel('View shot.png'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      // Its size read from the file before anything is drawn.
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(find.byType(PictureView), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      // No picture: the field's own paste, which asks for text.
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') return {'text': 'plain words'};
+        if (call.method == 'Clipboard.hasStrings') return {'value': true};
+        return null;
+      });
+      await paste(tester);
+      await tester.pump();
+      expect(box(tester), '[Image #1] plain words');
+    });
+
+    testWidgets('the selection menu offers Paste with only a picture on the '
+        'clipboard, and it takes the picture', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      tester
+          .state<EditableTextState>(
+            find.descendant(
+              of: find.byType(TextField),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .showToolbar();
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a transcript\'s picture that claims too many pixels is not '
+        'drawn in its bubble, and one that does not is, decoded small', (
+      tester,
+    ) async {
+      // 68 bytes of PNG that say they are 30000 × 30000.
+      final huge = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAdTAAAHUwCAYAAABmJ/i6AAAAC0lEQVR4nGNgQAUAABAA'
+        'ATm9j2UAAAAASUVORK5CYII=',
+      );
+      Map<String, Object?> said(String text, List<int> bytes) => {
+        'type': 'user',
+        'imagePasteIds': [1],
+        'message': {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': text},
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode(bytes)},
+            },
+          ],
+        },
+      };
+      await continued(
+        tester,
+        history: _history([
+          said('[Image #1] the bomb', huge),
+          said('[Image #1] a pixel', pixel),
+        ]),
+      );
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+
+      expect(find.text('[Image #1] the bomb'), findsOneWidget);
+      final drawn = tester
+          .widgetList<Image>(find.byType(Image))
+          .map((image) => image.image)
+          .whereType<ResizeImage>()
+          .map((resized) => (resized.imageProvider as MemoryImage).bytes)
+          .toList();
+      expect(drawn, [pixel]);
+      expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
+    });
+
+    testWidgets('a file that is not a picture is refused, saying why', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('notes.txt');
+      await paste(tester);
+      await tester.pump();
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      expect(box(tester), isEmpty);
+      // Long enough to read and act on, not the second a notice gets.
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('files dropped on a desktop chat become cards, a folder '
+        'refused', (tester) async {
+      await continued(tester);
+      final shot = File('${dir.path}/drop.png')..writeAsBytesSync(pixel);
+      final folder = Directory('${dir.path}/pics')..createSync();
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [
+          shot.path,
+          folder.path,
+        ], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] drop.png'), findsOneWidget);
+      expect(
+        find.textContaining('A folder is not a picture: pics'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 }

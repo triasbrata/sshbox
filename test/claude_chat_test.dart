@@ -269,6 +269,10 @@ class _LiveHost {
   /// says: one it has just started.
   Map<String, Object?>? listed;
 
+  /// When set, `claude agents` answers only once it completes, as a slow
+  /// host answers: what the session does meanwhile goes on.
+  Future<void>? agentsGate;
+
   Future<CommandChannel> openTerminal(String command) async {
     commands.add(command);
     final typed = <String>[];
@@ -281,15 +285,45 @@ class _LiveHost {
         () => screen.add(Uint8List.fromList(utf8.encode('\x1b[2J ❯ '))),
       );
     }
+    var drawn = 0;
+    // The input line as Claude Code draws it: what is typed as it comes, and
+    // each path pasted as its chip a moment later, once it has read the file.
+    var line = '';
+    void redraw() =>
+        screen.add(Uint8List.fromList(utf8.encode('\r\n❯ $line')));
     return (
       output: screen.stream,
-      write: (Uint8List data) => typed.add(utf8.decode(data)),
+      write: (Uint8List data) {
+        final keys = utf8.decode(data);
+        typed.add(keys);
+        chipsWhenTyped.add(drawn);
+        if (!drawChips) return;
+        if (keys.startsWith('\x1b[200~/')) {
+          Timer(chipDelay, () {
+            drawn++;
+            line += '[Image #9] ';
+            redraw();
+          });
+        } else if (keys != '\r') {
+          line += keys;
+          redraw();
+        }
+      },
       close: () {
         closed[0] = true;
         unawaited(screen.close());
       },
     );
   }
+
+  /// Whether a terminal draws a chip for each path pasted into it.
+  var drawChips = false;
+
+  /// How long a pasted path takes to become its chip.
+  var chipDelay = const Duration(milliseconds: 50);
+
+  /// How many chips each terminal had drawn when each of its writes came.
+  final chipsWhenTyped = <int>[];
 
   Future<CommandChannel> open(String command) async {
     commands.add(command);
@@ -319,6 +353,8 @@ class _LiveHost {
       );
     }
     if (command.contains('agents --json')) {
+      final gate = agentsGate;
+      if (gate != null) await gate;
       final listed = jsonEncode([
         {
           'pid': _live.pid,
@@ -1874,7 +1910,7 @@ void main() {
         // and the host told exactly how many bytes to take.
         final typing = host.paneTyping.single;
         expect(typing.stdin, [' !is the build green?']);
-        expect(typing.command, contains('head -c 21 '));
+        expect(typing.command, contains('dd bs=1 count=21 '));
         expect(host.terminals, isEmpty);
         final said = chat.entries.whereType<ChatSaid>().single;
         expect(said.delivery, Delivery.sending);
@@ -2181,6 +2217,59 @@ void main() {
         follow.add(Uint8List.fromList(utf8.encode('$recorded\n')));
         await Future<void>.delayed(const Duration(milliseconds: 100));
         expect(chat.entries.whereType<ChatSaid>().single.delivery, isNull);
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+
+    test(
+      'a picture\'s path goes in as a paste of its own between the text, '
+      'from stdin, and nothing in it runs',
+      () async {
+        await tmux([
+          'new-session', '-d', '-s', 'sshbox-chat-pic', '-x', '80', '-y', '20',
+          recorder('claude'),
+        ]);
+        final pid = await started('sshbox-chat-pic');
+        final pwned = '${dir.path}/pwned';
+        final parts = ClaudeChat.segments('look [Image #1] here', {
+          1: "/tmp/it's \$(touch $pwned-sub)\n`touch $pwned-tick`; x.png",
+        });
+        final bytes = [for (final part in parts) utf8.encode(part.keys)];
+        final watch = Stopwatch()..start();
+        final answer = await host(
+          ClaudeChat.paneCommand(
+            _live.sessionId,
+            pid: pid,
+            parts: [
+              for (final (index, part) in parts.indexed)
+                (
+                  length: bytes[index].length,
+                  picture: part.picture,
+                  tokens: 0,
+                ),
+            ],
+            chipWait: const Duration(seconds: 2),
+          ),
+          utf8.decode([for (final piece in bytes) ...piece]),
+        );
+        expect(answer, contains('sshbox:typed'));
+        // The recorder draws no chip: the host waited for one as long as it
+        // was told to, and no longer.
+        expect(watch.elapsed, greaterThan(const Duration(seconds: 2)));
+        expect(watch.elapsed, lessThan(const Duration(seconds: 6)));
+        // One line: the newline taken out of the path, the rest as it is.
+        expect(
+          got('claude'),
+          'look \x1b[200~/tmp/it\'s \$(touch $pwned-sub)`touch $pwned-tick`; '
+          'x.png\x1b[201~ here\r',
+        );
+        expect(
+          dir
+              .listSync()
+              .map((entry) => entry.path)
+              .where((path) => path.startsWith(pwned)),
+          isEmpty,
+        );
       },
       skip: hasTmux ? false : 'tmux is not installed here',
     );
@@ -2871,6 +2960,852 @@ void main() {
         chat.entries.whereType<ChatSaid>().map((e) => e.text),
         [...said, 'live 1', 'live 2'],
       );
+    });
+  });
+
+  group('the turn in flight', () {
+    // A turn as 2.1.286 wrote it, measured on a throwaway background
+    // session: the prompt, a message calling Bash, its result, and a
+    // message of two blocks — thinking, then text — each block on a line of
+    // its own repeating the message's usage, then the turn's duration.
+    Map<String, Object?> prompt() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:10.643Z',
+      'isSidechain': false,
+      'message': {'role': 'user', 'content': 'run the tests'},
+    };
+    Map<String, Object?> callsBash() => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:19.547Z',
+      'message': {
+        'id': 'msg_01ma8teqDx',
+        'role': 'assistant',
+        'stop_reason': 'tool_use',
+        'usage': {'input_tokens': 2, 'output_tokens': 87},
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_t1',
+            'name': 'Bash',
+            'input': {'command': 'npm test', 'description': 'Run the tests'},
+          },
+        ],
+      },
+    };
+    Map<String, Object?> bashResult() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:28.899Z',
+      'message': {
+        'role': 'user',
+        'content': [
+          {'type': 'tool_result', 'tool_use_id': 'toolu_t1', 'content': 'ok'},
+        ],
+      },
+    };
+    Map<String, Object?> answers(String type, {String? stop = 'end_turn'}) => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:37.713Z',
+      'message': {
+        'id': 'msg_01ofPoDr74',
+        'role': 'assistant',
+        'stop_reason': stop,
+        'usage': {'input_tokens': 2, 'output_tokens': 1313},
+        'content': [
+          type == 'text'
+              ? {'type': 'text', 'text': 'All green.'}
+              : {'type': 'thinking', 'thinking': '', 'signature': 'CAQS'},
+        ],
+      },
+    };
+    const turnDuration = {
+      'type': 'system',
+      'subtype': 'turn_duration',
+      'durationMs': 29623,
+      'isMeta': false,
+    };
+
+    Future<(ClaudeChat, _LiveHost)> watch({
+      String? waitingFor,
+      String state = 'working',
+    }) async {
+      final host = _LiveHost(
+        '0\n',
+        state: state,
+        status: waitingFor == null ? null : 'waiting',
+        waitingFor: waitingFor,
+      );
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      return (chat, host);
+    }
+
+    test('starts at the prompt\'s own time, names the tool running, and '
+        'counts each message once', () async {
+      final (chat, host) = await watch();
+      expect(chat.progress, isNull);
+
+      host.adds(prompt());
+      await _settle();
+      expect(chat.progress?.started, DateTime.utc(2026, 10, 1, 12, 6, 10, 643));
+      expect(chat.progress?.tokens, 0);
+      expect(chat.progress?.tool, isNull);
+
+      host.adds(callsBash());
+      await _settle();
+      expect(chat.progress?.tool?.name, 'Bash');
+      expect(chat.progress?.tool?.summary, 'npm test');
+      expect(chat.progress?.tokens, 87);
+
+      host.adds(bashResult());
+      await _settle();
+      expect(chat.progress?.tool, isNull);
+      expect(chat.progress?.tokens, 87);
+
+      // Two lines of one message: its usage counted once, not twice. The
+      // first block of the last message says the turn is over, too, so
+      // here the message is still open: written with no stop yet.
+      host.adds(answers('thinking', stop: null));
+      host.adds(answers('text', stop: null));
+      await _settle();
+      expect(chat.progress?.tokens, 87 + 1313);
+      expect(ChatProgress.count(chat.progress!.tokens), '1.4k');
+
+      host.adds(turnDuration);
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('a message that ends the turn clears the line at once', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash())
+        ..adds(bashResult())
+        ..adds(answers('thinking'));
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a session picked up mid-turn shows the turn from its real start',
+      () async {
+        final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+        final size = utf8.encode('$text\n').length;
+        final host = _LiveHost('$size\n$text\n', state: 'working');
+        final chat = ClaudeChat(open: host.open);
+        addTearDown(chat.dispose);
+        await chat.continueFrom(_live);
+        expect(
+          chat.progress?.started,
+          DateTime.utc(2026, 10, 1, 12, 6, 10, 643),
+        );
+        expect(chat.progress?.tool?.summary, 'npm test');
+      },
+    );
+
+    test('a finished session\'s history leaves no turn open', () async {
+      final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      expect(chat.progress, isNull);
+    });
+
+    test('at a permission prompt it says what it waits for, from the '
+        'listing', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash());
+      await _settle();
+      expect(chat.progress?.waitingFor, isNull);
+
+      host
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, 'permission prompt');
+
+      // Answered at the terminal: working again.
+      host
+        ..state = 'working'
+        ..status = null
+        ..waitingFor = null;
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, isNull);
+      expect(chat.progress, isNotNull);
+    });
+
+    test('idle at two looks running, a turn whose end was missed stops '
+        'spinning', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+      await chat.checkState();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'idle shows nothing, and a turn that ends goes from the line',
+      () async {
+        final (chat, host) = await watch(state: 'done');
+        expect(chat.progress, isNull);
+        host.adds(prompt());
+        await _settle();
+        final started = chat.progress?.started;
+        expect(started, isNotNull);
+        host.adds(turnDuration);
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('an interrupted turn clears the line', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': '[Request interrupted by user]'},
+            ],
+          },
+        });
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('the session going clears the line', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.adds('sshbox:ended\n');
+      await host.follow!.close();
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a turn of this chat\'s own runs from the send to the result',
+      () async {
+        final claude = _FakeClaude();
+        final chat = ClaudeChat(open: (_) async => claude.channel);
+        addTearDown(chat.dispose);
+        await chat.start();
+        final before = DateTime.now();
+        await chat.send('hello');
+        expect(chat.progress!.started.isBefore(before), isFalse);
+        claude.event(callsBash());
+        await _settle();
+        expect(chat.progress?.tokens, 87);
+        claude.event({'type': 'result', 'subtype': 'success'});
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('a look that comes back after its turn ended says nothing of the '
+        'next one', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      final look = chat.checkState();
+      await _settle();
+      // Answered and finished meanwhile, and the next turn begun.
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      expect(chat.progress, isNotNull);
+      expect(chat.progress?.waitingFor, isNull);
+    });
+
+    test('an idle look from the last turn does not count against the next',
+        () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'done';
+      final look = chat.checkState();
+      await _settle();
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      host.agentsGate = null;
+      // One idle look at the new turn: not yet two.
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+    });
+
+    test('times and counts read as Claude Code writes them', () {
+      expect(ChatProgress.elapsed(const Duration(seconds: 33)), '33s');
+      expect(ChatProgress.elapsed(const Duration(seconds: 125)), '2m 5s');
+      expect(ChatProgress.elapsed(const Duration(minutes: 64)), '1h 4m');
+      expect(ChatProgress.elapsed(const Duration(seconds: -3)), '0s');
+      expect(ChatProgress.count(87), '87');
+      expect(ChatProgress.count(1000), '1k');
+      expect(ChatProgress.count(1400), '1.4k');
+      expect(ChatProgress.count(12345), '12k');
+    });
+  });
+
+  group('the session\'s checklist', () {
+    // Shapes measured on 2.1.286: a TaskCreate has no id, which its result
+    // gives; a TaskUpdate names it, with a status of in_progress, completed
+    // or deleted. The words are this test's own.
+    Map<String, Object?> call(
+      String id,
+      String name,
+      Map<String, Object?> input,
+    ) => {
+      'type': 'assistant',
+      'message': {
+        'id': 'msg_$id',
+        'stop_reason': 'tool_use',
+        'content': [
+          {'type': 'tool_use', 'id': id, 'name': name, 'input': input},
+        ],
+      },
+    };
+    Map<String, Object?> result(String id, String text, {bool error = false}) =>
+        {
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': id,
+                'content': text,
+                'is_error': error,
+              },
+            ],
+          },
+        };
+    List<Map<String, Object?>> made(int n, String subject, {String? form}) => [
+      call('c$n', 'TaskCreate', {
+        'subject': subject,
+        'description': 'd',
+        'activeForm': ?form,
+      }),
+      result('c$n', 'Task #$n created successfully: $subject'),
+    ];
+    // A TaskUpdate and its result, which says it took.
+    List<Map<String, Object?>> update(
+      int n,
+      Map<String, Object?> input, {
+      bool fails = false,
+    }) {
+      final id = 'u$n${input.hashCode}';
+      return [
+        call(id, 'TaskUpdate', {'taskId': '$n', ...input}),
+        result(id, fails ? 'Task not found' : 'Updated task #$n status', error: fails),
+      ];
+    }
+
+    void adds(_LiveHost host, List<Map<String, Object?>> lines) {
+      for (final line in lines) {
+        host.adds(line);
+      }
+    }
+
+    List<Map<String, Object?>> todo(String id, Map<String, Object?> input) => [
+      call(id, 'TodoWrite', input),
+      result(id, 'Todos have been modified successfully'),
+    ];
+
+    Future<(ClaudeChat, _LiveHost)> watch([
+      List<Object?> history = const [],
+    ]) async {
+      final text = history.map(jsonEncode).join('\n');
+      final host = _LiveHost(
+        history.isEmpty ? '0\n' : '${utf8.encode('$text\n').length}\n$text\n',
+        state: 'working',
+      );
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      return (chat, host);
+    }
+
+    List<String> labels(ClaudeChat chat) => [
+      for (final t in chat.openTasks) '${t.status}:${t.label}',
+    ];
+
+    test('TaskCreate gets its id from the result, and TaskUpdate moves it '
+        'along, live', () async {
+      final (chat, host) = await watch();
+      expect(chat.openTasks, isEmpty);
+      for (final line in [
+        ...made(1, 'Fix the bug', form: 'Fixing the bug'),
+        ...made(2, 'Write the tests'),
+      ]) {
+        host.adds(line);
+      }
+      await _settle();
+      expect(labels(chat), ['pending:Fix the bug', 'pending:Write the tests']);
+
+      adds(host, update(1, {'status': 'in_progress'}));
+      await _settle();
+      // In progress, it reads as its active form.
+      expect(labels(chat), [
+        'in_progress:Fixing the bug',
+        'pending:Write the tests',
+      ]);
+
+      adds(host, update(1, {'status': 'completed'}));
+      await _settle();
+      expect(labels(chat), ['pending:Write the tests']);
+      expect(chat.tasksDone, 1);
+
+      adds(host, update(2, {'status': 'deleted'}));
+      await _settle();
+      expect(chat.openTasks, isEmpty);
+    });
+
+    test(
+      'a session opened mid-way rebuilds its list from the history',
+      () async {
+        final (chat, _) = await watch([
+          ...made(1, 'One'),
+          ...made(2, 'Two', form: 'Doing two'),
+          ...update(2, {'status': 'in_progress'}),
+          ...made(3, 'Three'),
+          ...update(3, {'status': 'completed'}),
+        ]);
+        expect(labels(chat), ['pending:One', 'in_progress:Doing two']);
+        expect(chat.tasksDone, 1);
+      },
+    );
+
+    test('TodoWrite carries the whole list every time', () async {
+      final (chat, host) = await watch();
+      adds(host, todo('t1', {
+          'todos': [
+            {
+              'content': 'First',
+              'status': 'in_progress',
+              'activeForm': 'Firsting',
+            },
+            {
+              'content': 'Second',
+              'status': 'pending',
+              'activeForm': 'Seconding',
+            },
+          ],
+        }));
+      await _settle();
+      expect(labels(chat), ['in_progress:Firsting', 'pending:Second']);
+      adds(host, todo('t2', {
+          'todos': [
+            {
+              'content': 'Second',
+              'status': 'in_progress',
+              'activeForm': 'Seconding',
+            },
+          ],
+        }));
+      await _settle();
+      // The list shrank: what it no longer names is gone, not kept.
+      expect(labels(chat), ['in_progress:Seconding']);
+      expect(chat.tasksDone, 0);
+    });
+
+    test('a failed TaskUpdate or TodoWrite leaves the list as it was', () async {
+      final (chat, host) = await watch();
+      for (final line in made(1, 'Keep me')) {
+        host.adds(line);
+      }
+      await _settle();
+      adds(host, update(1, {'status': 'completed'}, fails: true));
+      adds(host, update(1, {'status': 'deleted'}, fails: true));
+      host
+        ..adds(call('tw', 'TodoWrite', {'todos': <Object?>[]}))
+        ..adds(result('tw', 'refused', error: true));
+      await _settle();
+      expect(labels(chat), ['pending:Keep me']);
+      expect(chat.tasksDone, 0);
+    });
+
+    test('a result read before its call still makes the task', () async {
+      // The tail of a transcript cut mid-way: the result first.
+      final (chat, host) = await watch([
+        result('c1', 'Task #1 created successfully: Late'),
+        call('c1', 'TaskCreate', {'subject': 'Late', 'description': 'd'}),
+      ]);
+      expect(labels(chat), ['pending:Late']);
+      host.adds(result('x', 'unrelated'));
+    });
+
+    test('a task it never saw made, and a create that failed, are not '
+        'invented', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(update(9, {'status': 'in_progress'}).first)
+        ..adds(
+          call('bad', 'TaskCreate', {'subject': 'Nope', 'description': 'd'}),
+        )
+        ..adds(result('bad', 'no such tool', error: true));
+      await _settle();
+      expect(chat.openTasks, isEmpty);
+    });
+
+    test(
+      'this chat\'s own turns fill it too, and a new chat empties it',
+      () async {
+        final claude = _FakeClaude();
+        final chat = ClaudeChat(open: (_) async => claude.channel);
+        addTearDown(chat.dispose);
+        await chat.start();
+        for (final line in made(1, 'Own task')) {
+          claude.event(line);
+        }
+        await _settle();
+        expect(labels(chat), ['pending:Own task']);
+        await chat.newChat();
+        expect(chat.openTasks, isEmpty);
+        expect(chat.tasksDone, 0);
+      },
+    );
+  });
+
+  group('pictures', () {
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('sshbox-pictures'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    ChatPicture picture(String name, int number, [List<int>? bytes]) {
+      final file = File('${dir.path}/$name')
+        ..writeAsBytesSync(bytes ?? [0x89, 0x50, 0x4e, 0x47, number]);
+      return ChatPicture(path: file.path, name: name, number: number);
+    }
+
+    test('to this chat\'s own Claude they go as image blocks after the text, '
+        'read from here', () async {
+      final claude = _FakeClaude();
+      final chat = ClaudeChat(open: (_) async => claude.channel);
+      addTearDown(chat.dispose);
+      await chat.start();
+
+      final shot = picture('shot.jpg', 1, [1, 2, 3]);
+      await chat.send('what is [Image #1]?', pictures: [shot]);
+
+      final content =
+          (claude.sent.single['message'] as Map)['content'] as List<Object?>;
+      expect(content, [
+        {'type': 'text', 'text': 'what is [Image #1]?'},
+        {
+          'type': 'image',
+          'source': {
+            'type': 'base64',
+            'media_type': 'image/jpeg',
+            'data': base64Encode([1, 2, 3]),
+          },
+        },
+      ]);
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.pictures.single.path, shot.path);
+      expect(chat.nextPicture, 2);
+    });
+
+    test('into a running session each is uploaded and pasted as a path of '
+        'its own where its [Image #N] is, the text typed around it once its '
+        'chip is in, and it is sent once the session records it', () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final uploaded = <String>[];
+      final watch = Stopwatch()..start();
+      await chat.send(
+        'compare [Image #1] with [Image #2], and [Image #7] stays text',
+        pictures: [picture('a.png', 1), picture('b.png', 2)],
+        upload: (picture) async {
+          uploaded.add(picture.name);
+          return '/tmp/${picture.name}';
+        },
+      );
+      while (host.terminals.isEmpty ||
+          !host.terminals.single.typed.contains('\r')) {
+        if (watch.elapsed > const Duration(seconds: 8)) fail('never sent');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+
+      expect(uploaded, ['a.png', 'b.png']);
+      expect(host.terminals.single.typed, [
+        'compare ',
+        '\x1b[200~/tmp/a.png\x1b[201~',
+        ' with ',
+        '\x1b[200~/tmp/b.png\x1b[201~',
+        ', and [Image #7] stays text',
+        '\r',
+      ]);
+      // What follows a picture waited for its chip, and not the whole
+      // timeout.
+      expect(host.chipsWhenTyped, [0, 0, 1, 1, 2, 2]);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+
+      // Claude numbers the chips itself, and the message is still its own.
+      host.adds({
+        'type': 'user',
+        'imagePasteIds': [4, 5],
+        'message': {
+          'role': 'user',
+          'content': [
+            {
+              'type': 'text',
+              'text': 'compare [Image #4] with [Image #5], and [Image #7] '
+                  'stays text',
+            },
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode([9])},
+            },
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode([8])},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final mine = chat.entries.whereType<ChatSaid>().single;
+      expect(mine.delivery, isNull);
+      expect([for (final p in mine.pictures) p.bytes], [
+        [9],
+        [8],
+      ]);
+      expect([for (final p in mine.pictures) p.number], [4, 5]);
+      expect(chat.nextPicture, 6);
+    });
+
+    test('an [Image #N] typed as text does not stand for a chip: what '
+        'follows a picture still waits for that picture\'s own', () async {
+      // Slow enough that the text's own [Image #1] is on the line first.
+      final host = _LiveHost('0\n')
+        ..drawChips = true
+        ..chipDelay = const Duration(milliseconds: 400);
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      await chat.send(
+        '[Image #1] is text, [Image #2] is the picture',
+        pictures: [picture('b.png', 2)],
+        upload: (picture) async => '/tmp/${picture.name}',
+      );
+      final watch = Stopwatch()..start();
+      while (host.terminals.isEmpty ||
+          !host.terminals.single.typed.contains('\r')) {
+        if (watch.elapsed > const Duration(seconds: 8)) fail('never sent');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(host.terminals.single.typed, [
+        '[Image #1] is text, ',
+        '\x1b[200~/tmp/b.png\x1b[201~',
+        ' is the picture',
+        '\r',
+      ]);
+      // The text after the picture came once its chip was drawn, though the
+      // line already held an [Image #1] of the user's own.
+      expect(host.chipsWhenTyped, [0, 0, 1, 1]);
+    });
+
+    test('a picture that cannot go up says so, and nothing is typed', () async {
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open, openTerminal: host.openTerminal);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      await chat.send(
+        'see [Image #1]',
+        pictures: [picture('a.png', 1)],
+        upload: (_) async => throw const FileSystemException('disk full'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      var said = chat.entries.whereType<ChatSaid>().last;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('a.png could not be put on the host'));
+
+      // A connection that cannot put a file there at all.
+      await chat.send('see [Image #1]', pictures: [picture('a.png', 1)]);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      said = chat.entries.whereType<ChatSaid>().last;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('cannot put a picture on the host'));
+      expect(host.terminals, isEmpty);
+    });
+
+    test('a new chat with pictures starts with no prompt, and the message is '
+        'pasted into it', () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains(' --bg ')) {
+            return (
+              output: Stream.value(
+                Uint8List.fromList(
+                  utf8.encode('backgrounded · 9e1f2a3b (idle — send a '
+                      'prompt to start)\n'),
+                ),
+              ),
+              write: (Uint8List data) {},
+              close: () {},
+            );
+          }
+          return host.open(command);
+        },
+        openTerminal: host.openTerminal,
+      );
+      addTearDown(chat.dispose);
+      host.listed = {
+        'pid': 7,
+        'id': '9e1f2a3b',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'sessionId': '9e1f2a3b-0000-4000-8000-000000000000',
+        'name': '9e1f2a3b',
+        'status': 'idle',
+        'state': 'blocked',
+      };
+
+      await chat.send(
+        '[Image #1] what is this?',
+        pictures: [picture('a.png', 1)],
+        upload: (picture) async => '/tmp/${picture.name}',
+      );
+
+      final start = commands.firstWhere((c) => c.contains(' --bg '));
+      expect(start, isNot(contains(' -- ')));
+      expect(start, isNot(contains('what is this')));
+      expect(host.terminals.single.typed, [
+        '\x1b[200~/tmp/a.png\x1b[201~',
+        ' what is this?',
+        '\r',
+      ]);
+      expect(chat.watching?.id, '9e1f2a3b');
+    });
+
+    test('a transcript\'s pictures are kept to draw, numbered as it numbered '
+        'them, and one too big is left out', () async {
+      final big = 'A' * (ClaudeChat.pictureLimit * 2);
+      // Live: a line this long is past what the history's first read takes.
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open, openTerminal: host.openTerminal);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'user',
+        'imagePasteIds': [2, 3],
+        'message': {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': '[Image #2] [Image #3] which?'},
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': big},
+            },
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode([7])},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.pictures.single.bytes, [7]);
+      expect(said.pictures.single.number, 3);
+      expect(chat.nextPicture, 4);
+    });
+
+    test('the pane waits for chips counted from what its line held, with '
+        'each [Image #N] typed as text on the way', () {
+      final command = ClaudeChat.paneCommand(
+        _live.sessionId,
+        pid: 1,
+        parts: [
+          (length: 20, picture: false, tokens: 1),
+          (length: 30, picture: true, tokens: 0),
+          (length: 9, picture: false, tokens: 2),
+          (length: 30, picture: true, tokens: 0),
+        ],
+      );
+      // From c0, read before anything is typed: one typed token, then the
+      // picture's chip; two more typed, then the second picture's.
+      expect(command, contains('c0=\$(chips); '));
+      expect(command, contains(r'-lt $((c0 + $1))'));
+      expect(
+        RegExp(r'chip (\d+);').allMatches(command).map((m) => m[1]),
+        ['2', '5'],
+      );
+      expect(
+        command.indexOf('c0=\$(chips); '),
+        lessThan(command.indexOf('dd bs=1 count=20 ')),
+      );
+    });
+
+    test('a token whose number no int holds is typed as text, and counted on '
+        'the screen as Claude draws it', () {
+      final parts = ClaudeChat.segments('[Image #99999999999999999999] hi [Image #1]', {
+        1: '/tmp/a.png',
+      });
+      expect([for (final part in parts) part.keys], [
+        '[Image #99999999999999999999] hi ',
+        '\x1b[200~/tmp/a.png\x1b[201~',
+      ]);
+      expect(ClaudeChat.chipsIn(['❯ [Image #99999999999999999999] [Image #1]']), 2);
+    });
+
+    test('the chips counted are the input line\'s, not the turns above it', () {
+      expect(
+        ClaudeChat.chipsIn([
+          '❯ [Image #1] an earlier one',
+          '● Red',
+          '────',
+          '❯ [Image #2] [Image #3]',
+          '  [Image #4]',
+          '────',
+          '  Opus 5.5',
+        ]),
+        3,
+      );
+      expect(ClaudeChat.chipsIn(['no prompt here [Image #1]']), 0);
     });
   });
 }

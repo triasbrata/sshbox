@@ -419,7 +419,33 @@ chat_markdown() {
   local status=0
   flow chat_markdown || status=1
   keep_shots 'chat-markdown-*.png'
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# The stand-in's pane killed, and the state file it leaves when killed rather
+# than ended: its own only, by its session id, so live_session can start again.
+end_live_session() {
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+
+# #143: the line chat shows while a watched turn runs -- Working… with its
+# seconds, tokens and tool, gone at the turn's end; what a turn stopped at a
+# permission prompt waits for; and a chat hidden while Claude writes coming
+# back still following. Against the stand-in's slow:, wait: and long: turns.
+chat_progress() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_progress || status=1
+  # Its screenshots, pass or fail, into the evidence folder (see chat_version_case).
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-progress-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
   stand_in ''
   return "$status"
 }
@@ -434,6 +460,311 @@ chat_version() {
     '(?s).*Could not tell which Claude Code this host has.*2\.1\.259.*' || status=1
   chat_version_case not-installed '' \
     '(?s).*Claude Code is not installed on this host.*' || status=1
+  return "$status"
+}
+
+# Pictures in chat (#146), .maestro/chat_images.yaml a section at a time, what
+# each sent to the host checked between them. Pictures go in by touch, the
+# box's own Paste, and by +; a Ctrl+V, which Maestro cannot press, is tried
+# once with adb and reported. The host's Claude is the stand-in in
+# tools/e2e_image_claude.py, which logs what it is given to ~/.e2e-pics.log;
+# what reached the host is read from there and from the transcripts.
+# Ids no other block uses: chat_stand_in counts up from 1, STATUS_SID is 8,
+# LIVE_SID 9, and the image stand-in's --bg and -p take a and b.
+PICS_SIDS=(e2e0000c-0000-4000-8000-00000000000c e2e0000d-0000-4000-8000-00000000000d
+  e2e0000e-0000-4000-8000-00000000000e)
+pics_pids=()
+
+# How many picture cards the screen shows, read off Android's own view tree.
+pics_cards() {
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'View [^"]*' | wc -l | tr -d ' '
+}
+
+# A Ctrl+V on the emulator, into whatever has focus: the chat's box, which
+# takes a picture on that chord. Said, with what the app's clipboard reader
+# logged, whether it made one more card; with none, a chord held longer.
+pics_paste() {
+  local before after
+  before=$(pics_cards)
+  adb logcat -c 2>/dev/null
+  for hold in '' '-t 300'; do
+    # shellcheck disable=SC2086
+    adb shell input keycombination $hold KEYCODE_CTRL_LEFT KEYCODE_V
+    sleep 3
+    after=$(pics_cards)
+    echo "Ctrl+V${hold:+ held ($hold)}: cards $before -> $after"
+    adb logcat -d -s JeanshPaste 2>/dev/null | tail -5
+    [ "$after" -gt "$before" ] && return 0
+  done
+  echo "::warning::Ctrl+V made no card"
+  return 1
+}
+
+# chat_images' sections, one by one: pics STEP [-e ...].
+pics() {
+  local step=$1
+  shift
+  echo "-- chat_images: $step"
+  flow chat_images -e "STEP=$step" "$@" || {
+    echo "::error::chat_images failed at its '$step' section"
+    return 1
+  }
+}
+
+pics_host() {
+  local home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) pid bg
+  if "${as[@]}" tmux has-session -t e2e-pics 2>/dev/null; then
+    echo "::error::the host already has a tmux session e2e-pics" >&2
+    return 1
+  fi
+  put_stand_in <<'SH'
+p=$HOME/.e2e-pics/e2e_live_claude.py
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  attach) exec env PYTHONIOENCODING=utf-8 python3 "$p" --tui --id "$2" ;;
+  --bg) exec env PYTHONIOENCODING=utf-8 python3 "$p" --bg "$@" ;;
+  -p) exec env PYTHONIOENCODING=utf-8 python3 "$p" --stream "$@" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  "${as[@]}" mkdir -p "$home/.e2e-pics"
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_live_claude.py tools/e2e_image_claude.py \
+    "$home/.e2e-pics/"
+  # A red PNG in the home, the file tree's root, and the sessions' transcripts.
+  "${as[@]}" python3 - "$home" <<'PY' || return 1
+import json, os, struct, sys, zlib
+home = sys.argv[1]
+def png(rgb, w=64, h=48):
+    raw = b''.join(b'\x00' + bytes(rgb) * w for _ in range(h))
+    def chunk(n, b):
+        return struct.pack('>I', len(b)) + n + b + struct.pack('>I', zlib.crc32(n + b) & 0xffffffff)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+open(os.path.join(home, 'e2e-red.png'), 'wb').write(png((230, 20, 20)))
+d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+os.makedirs(d, exist_ok=True)
+for n in 'cde':
+    with open(os.path.join(d, f'e2e0000{n}-0000-4000-8000-00000000000{n}.jsonl'), 'w') as f:
+        for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'Earlier question'}},
+                  {'type': 'assistant', 'message': {'role': 'assistant',
+                   'content': [{'type': 'text', 'text': 'Earlier answer'}]}}):
+            f.write(json.dumps(e) + '\n')
+PY
+  # On the phone, in Downloads for the + button: a blue PNG, and a BMP, a
+  # picture to Android's picker and not one Claude reads.
+  python3 - "$ROOT/build" <<'PY' || return 1
+import struct, sys, zlib
+out = sys.argv[1]
+raw = b''.join(b'\x00' + bytes((20, 20, 230)) * 64 for _ in range(48))
+def chunk(n, b):
+    return struct.pack('>I', len(b)) + n + b + struct.pack('>I', zlib.crc32(n + b) & 0xffffffff)
+open(out + '/e2e-blue.png', 'wb').write(
+    b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 64, 48, 8, 2, 0, 0, 0))
+    + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+pixel = b'\x00\x00\xff\x00'
+info = struct.pack('<IiiHHIIiiII', 40, 1, 1, 1, 24, 0, len(pixel), 2835, 2835, 0, 0)
+head = struct.pack('<2sIHHI', b'BM', 14 + len(info) + len(pixel), 0, 0, 14 + len(info))
+open(out + '/e2e-old.bmp', 'wb').write(head + info + pixel)
+PY
+  adb push "$ROOT/build/e2e-blue.png" /sdcard/Download/e2e-blue.png >/dev/null &&
+    adb push "$ROOT/build/e2e-old.bmp" /sdcard/Download/e2e-old.bmp >/dev/null || return 1
+  # The background session: a sleep for chat's follow to watch, as a live one.
+  bg=$("${as[@]}" sh -c 'setsid sleep 3600 </dev/null >/dev/null 2>&1 & echo $!')
+  pics_pids+=("$bg")
+  # The interactive one, in a tmux pane of its own.
+  "${as[@]}" sh -c 'cd && LANG=C.UTF-8 LC_ALL=C.UTF-8 tmux new-session -d -s e2e-pics \
+    -x 120 -y 30 "exec env PYTHONIOENCODING=utf-8 python3 $HOME/.e2e-pics/e2e_live_claude.py --tui --pane $1"' \
+    sh "${PICS_SIDS[2]}" || return 1
+  sleep 1
+  pid=$("${as[@]}" tmux list-panes -t e2e-pics -F '#{pane_pid}')
+  "${as[@]}" python3 - "$home" "$bg" "$pid" "${PICS_SIDS[@]}" <<'PY'
+import json, os, sys
+home, bg, pane, own, live, inpane = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), *sys.argv[4:]
+path = os.path.join(home, '.e2e-agents.json')
+try:
+    rows = json.load(open(path))
+except (OSError, ValueError):
+    rows = []
+rows = [r for r in rows if r.get('sessionId') not in (own, live, inpane)]
+rows += [
+    {'id': 'e2e0000c', 'sessionId': own, 'name': 'E2E pictures own', 'cwd': home,
+     'kind': 'background', 'state': 'done', 'startedAt': 1790000000200},
+    {'id': 'e2e0000d', 'sessionId': live, 'pid': bg, 'name': 'E2E pictures live',
+     'cwd': home, 'kind': 'background', 'state': 'done', 'status': 'idle',
+     'startedAt': 1790000000201},
+    {'kind': 'interactive', 'pid': pane, 'sessionId': inpane, 'name': 'E2E pictures pane',
+     'cwd': home, 'status': 'idle', 'startedAt': 1790000000202},
+]
+json.dump(rows, open(path, 'w'))
+PY
+  sudo rm -f "$home/.e2e-pics.log"
+  echo "pictures' host: background sleep $bg, pane pid $pid"
+}
+
+# Step 2's order, from the stand-in's log: each picture's path, uploaded to
+# the host's /tmp, pasted; its chip; and only then the text after it; and the
+# message recorded as [Image #N] between [Image #N] after.
+pics_order() {
+  echo "the stand-in's log for $1:"
+  sudo cat "/home/$SSH_USER/.e2e-pics.log"
+  sudo python3 - "/home/$SSH_USER/.e2e-pics.log" <<'PY'
+import json, re, sys
+events = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+problems = []
+pasted = [e for e in events if e['ev'] == 'paste']
+if len(pasted) != 2:
+    problems.append(f'{len(pasted)} pictures pasted, not 2; pasted as text: '
+                    f'{[e.get("v") for e in events if e["ev"] == "paste-text"]}')
+for e in pasted:
+    p = e['path']
+    if not p.startswith('/tmp/') or open(p, 'rb').read(8) != b'\x89PNG\r\n\x1a\n':
+        problems.append(f'{p} is not a PNG uploaded to /tmp')
+waiting = 0
+for e in events:
+    if e['ev'] == 'paste':
+        waiting += 1
+    elif e['ev'] == 'chip':
+        waiting -= 1
+    elif e['ev'] in ('text', 'enter') and waiting:
+        problems.append(f'{e["ev"]} {e.get("v", e.get("text"))!r} came before a chip')
+enter = [e for e in events if e['ev'] == 'enter']
+said = enter[-1]['text'] if enter else ''
+if not re.fullmatch(r'\[Image #\d+\]\s+between\s+\[Image #\d+\]\s+after', said):
+    problems.append(f'recorded as {said!r}')
+for p in problems:
+    print('::error::' + p)
+sys.exit(1 if problems else 0)
+PY
+}
+
+# One adb Ctrl+V, and what came of it: the box's text, as Android's view tree
+# has it, and the clipboard reader's log, which says whether the app's own
+# paste ran. Report only.
+pics_probe() {
+  adb logcat -c 2>/dev/null
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_V
+  sleep 3
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  echo "probe $1: fields now hold:"
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o '<node [^>]*EditText[^>]*>' |
+    grep -o ' text="[^"]*"'
+  echo "probe $1: cards: $(adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o 'View [^"]*' | wc -l)"
+  echo "probe $1: JeanshPaste said:"
+  adb logcat -d -s JeanshPaste 2>/dev/null | grep -v '^-' | tail -5
+}
+
+chat_images() {
+  local status=0 log=/home/$SSH_USER/.e2e-pics.log session started pid
+  pics_host || return 1
+  # Steps 1, 5 and 4, in this chat's own claude -p. A Ctrl+V is tried once,
+  # and said whether it made a card; the flow pastes by touch where not.
+  { pics open -e "SESSION=E2E pictures own" && { pics_paste || true; } &&
+    pics own && pics remove && pics send; } || status=1
+  echo "what the stand-in's claude -p was sent:"
+  sudo grep '"ev": "message"' "$log" ||
+    { echo "::error::step 1: no message reached claude -p"; status=1; }
+  sudo grep -q '"images": \["image/png"\]' "$log" ||
+    { echo "::error::step 1: the message carried no PNG image block"; status=1; }
+  # Step 2, into a background session through attach, then one in a pane.
+  for session in live pane; do
+    sudo truncate -s 0 "$log"
+    pics watch -e "SESSION=E2E pictures $session" -e "SHOT=$session" || status=1
+    pics_order "step 2, $session" || { echo "::error::step 2 ($session) failed"; status=1; }
+  done
+  # Step 3: a new chat with a picture starts claude --bg with no prompt, and
+  # pastes the message in after.
+  sudo truncate -s 0 "$log"
+  pics new || status=1
+  echo "the stand-in's log for step 3:"
+  sudo cat "$log"
+  sudo python3 - "$log" <<'PY' || { echo "::error::step 3 failed"; status=1; }
+import json, sys
+events = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+bg = [e for e in events if e['ev'] == 'bg']
+enter = [e for e in events if e['ev'] == 'enter']
+ok = bool(bg and '--' not in bg[0]['argv'] and enter and enter[-1]['images']
+          and any(e['ev'] == 'paste' for e in events))
+if not ok:
+    print('::error::step 3: --bg', bg and bg[0]['argv'], 'then', enter)
+sys.exit(0 if ok else 1)
+PY
+  # Step 6: + offers a file Claude cannot read, which is refused. With the
+  # emulator's animations off a toast is gone at once, so they are on for
+  # this one.
+  adb shell settings put global animator_duration_scale 1
+  pics refuse || status=1
+  adb shell settings put global animator_duration_scale 0
+  # Where a hardware Ctrl+V goes: into the box with a picture on the
+  # clipboard, with text, and into the terminal. Report only.
+  pics probe-picture && pics_probe picture
+  pics probe-text && pics_probe text
+  pics probe-terminal && pics_probe terminal
+  pics done
+  # Only what this started: the tmux session, the sleeps, the stand-in.
+  sudo -u "$SSH_USER" -H tmux kill-session -t e2e-pics 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l '"sessionId":"e2e0000e-' {} + 2>/dev/null | xargs -r sudo rm -f
+  started=$(sudo python3 -c 'import json, sys
+print(" ".join(str(r["pid"]) for r in json.load(open(sys.argv[1]))
+               if r.get("sessionId", "").startswith("e2e0000a") and r.get("pid")))' \
+    "/home/$SSH_USER/.e2e-agents.json" 2>/dev/null)
+  for pid in "${pics_pids[@]}" $started; do sudo kill "$pid" 2>/dev/null; done
+  stand_in ''
+  return "$status"
+}
+
+# #159: the live marks in chat's sessions sidebar. One pinned background
+# session on the stand-in listing, its process a sleep of the host user's own,
+# rewritten between three flows that keep the app as it is: working, then
+# waiting for a permission prompt, then done -- marked "not opened since" until
+# its row is opened. The sidebar asks for the listing every 5 s while shown.
+STATUS_SID=e2e00008-0000-4000-8000-000000000008
+status_row() { # status state [waitingFor]
+  sudo -u "$SSH_USER" -H python3 - "$STATUS_SID" "$STATUS_PID" "$@" <<'PY'
+import json, os, sys
+sid, pid, status, state = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+row = {'id': 'e2es8', 'sessionId': sid, 'pid': pid, 'kind': 'background',
+       'name': 'E2E status session', 'cwd': os.environ['HOME'],
+       'startedAt': 1790000000200, 'status': status, 'state': state}
+if len(sys.argv) > 5:
+    row['waitingFor'] = sys.argv[5]
+json.dump([row], open(os.path.join(os.environ['HOME'], '.e2e-agents.json'), 'w'))
+PY
+}
+chat_session_status() {
+  local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H)
+  chat_stand_in
+  # Its process: something of the host user's own that lives through the run.
+  STATUS_PID=$("${as[@]}" sh -c 'sleep 900 >/dev/null 2>&1 & echo $!')
+  "${as[@]}" python3 - "$STATUS_SID" <<'PY'
+import json, os, sys
+home, sid = os.environ['HOME'], sys.argv[1]
+projects = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+os.makedirs(projects, exist_ok=True)
+with open(os.path.join(projects, sid + '.jsonl'), 'w') as f:
+    f.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'Status question'}}) + '\n')
+    f.write(json.dumps({'type': 'assistant', 'message': {'role': 'assistant',
+            'content': [{'type': 'text', 'text': 'Status answer'}]}}) + '\n')
+jobs = os.path.join(home, '.claude', 'jobs')
+os.makedirs(jobs, exist_ok=True)
+json.dump(['e2es8'], open(os.path.join(jobs, 'pins.json'), 'w'))
+PY
+  status_row busy working
+  flow chat_status_working || status=1
+  if [ "$status" -eq 0 ]; then
+    status_row waiting blocked 'permission prompt'
+    flow chat_status_waiting || status=1
+  fi
+  if [ "$status" -eq 0 ]; then
+    status_row idle done
+    flow chat_status_done || status=1
+  fi
+  keep_shots 'chat-status-*.png'
+  "${as[@]}" kill "$STATUS_PID" 2>/dev/null
+  sudo rm -f "$home/.claude/jobs/pins.json"
+  stand_in ''
   return "$status"
 }
 
@@ -556,9 +887,21 @@ echo "::endgroup::"
 echo "::group::chat_markdown (report only)"
 flow chat_markdown || echo "::warning::chat_markdown failed -- report only, not gating"
 keep_shots 'chat-markdown-*.png'
-sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+end_live_session
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::chat_session_status (report only)"
+chat_session_status || echo "::warning::chat_session_status failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_progress (report only)"
+chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_images (report only)"
+chat_images || echo "::warning::chat_images failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
