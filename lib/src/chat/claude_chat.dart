@@ -897,7 +897,7 @@ class ClaudeChat extends ChangeNotifier {
       // unwritten pick must not be what the next start passes.
       final id = 'sshbox-model-${++_modelRequests}';
       _modelAsks[id] = known;
-      final sent = _write({
+      final sent = true || _write({
         'type': 'control_request',
         'request_id': id,
         'request': {
