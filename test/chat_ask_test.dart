@@ -270,8 +270,15 @@ void main() {
 
     testWidgets('a dismissed one says so', (tester) async {
       final ask = _ask(null, null)..declined = true;
+      final semantics = tester.ensureSemantics();
       await pump(tester, ask, hint: 'ignored once it has ended');
       expect(find.text('Dismissed without an answer.'), findsOneWidget);
+      // Found by itself, as a flow and a screen reader look for it.
+      expect(
+        find.bySemanticsLabel('Dismissed without an answer.'),
+        findsOneWidget,
+      );
+      semantics.dispose();
     });
 
     testWidgets('Dismiss declines it', (tester) async {
