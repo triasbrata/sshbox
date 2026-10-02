@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
@@ -377,6 +377,52 @@ const _host = HostProfile(
 );
 
 void main() {
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan
+  // tab lain": a session in the sidebar is no tab, so a right-click on it
+  // must not reach the tab's menu, while the message area's still does.
+  testWidgets("a right-click on a session in the sidebar is not the tab's", (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('aaaa0001', 'nightly build')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    var tabMenus = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        // As the tab shell wraps every page: a right-click nothing deeper
+        // took opens the tab's menu.
+        home: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onSecondaryTapUp: (_) => tabMenus++,
+          child: Scaffold(body: ChatPage(session: session)),
+        ),
+      ),
+    );
+    await _settlePickUp(tester);
+    Future<void> rightClick(Finder at) async {
+      await tester.tapAt(
+        tester.getCenter(at),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await rightClick(find.text('nightly build'));
+    await rightClick(find.text('Sessions on this host'));
+    expect(tabMenus, 0);
+    // Nothing picked up by it either.
+    expect(shell.commands.where((c) => c.contains(' -f ')), isEmpty);
+
+    await rightClick(find.textContaining('starts a new session'));
+    expect(tabMenus, 1);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
   testWidgets('a new chat starts nothing on the host until its first '
       'message, which starts a background session there and watches it', (
     tester,
