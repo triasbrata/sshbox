@@ -51,13 +51,13 @@ class _Feedback implements BugFeedback {
 
   @override
   final bool available;
-  final sent = <({SentryId id, String message, String log})>[];
+  final sent = <({SentryId id, String message, String? log})>[];
 
   @override
   Future<bool> send({
     required SentryId id,
     required String message,
-    required String log,
+    String? log,
   }) async {
     sent.add((id: id, message: message, log: log));
     return true;
@@ -321,17 +321,33 @@ void main() {
       expect(body, isNot(contains('session 7')));
     });
 
-    testWidgets('the anonymous issue holds the id and no log text', (
+    testWidgets('privately sends the event alone and opens no URL', (
       tester,
     ) async {
       appLog.add('chat: marker-line-for-test restart');
       await open(tester);
-      await tester.tap(find.bySemanticsLabel('Anonymously'));
+      await tester.tap(find.bySemanticsLabel('Privately to the developer'));
       await tester.pumpAndSettle();
-      final sent = jsonDecode(net.sent.single.$2) as Map<String, dynamic>;
-      expect(sent['body'], contains('Sentry event: '));
-      expect(sent['body'], isNot(contains('marker-line-for-test')));
-      expect(feedback.sent.single.log, contains('marker-line-for-test'));
+      expect(launcher.opened, isEmpty);
+      expect(net.sent, isEmpty);
+      final sent = feedback.sent.single;
+      expect(sent.message, contains('the tab froze'));
+      expect(sent.message, contains('1.0.62+66'));
+      expect(sent.log, contains('marker-line-for-test'));
+    });
+
+    testWidgets('privately, with the log switched off, sends no log', (
+      tester,
+    ) async {
+      await open(tester);
+      await tester.ensureVisible(findTuiSwitch('Attach the app log'));
+      await tester.pumpAndSettle();
+      await tester.tap(findTuiSwitchTrack('Attach the app log'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Privately to the developer'));
+      await tester.pumpAndSettle();
+      expect(feedback.sent.single.log, isNull);
+      expect(launcher.opened, isEmpty);
     });
 
     testWidgets('with telemetry off it asks, and the answer starts as no', (
@@ -340,7 +356,6 @@ void main() {
       telemetryOn.value = false;
       await open(tester);
       expect(find.textContaining('Telemetry is off'), findsOne);
-      expect(find.textContaining(eventLine), findsNothing);
       await tester.tap(find.bySemanticsLabel('Under my name'));
       await tester.pumpAndSettle();
       expect(feedback.sent, isEmpty);
@@ -372,6 +387,7 @@ void main() {
     ) async {
       await open(tester, using: _Feedback(available: false));
       expect(find.textContaining("can't be attached in this build"), findsOne);
+      expect(find.bySemanticsLabel('Privately to the developer'), findsNothing);
       await tester.tap(find.bySemanticsLabel('Under my name'));
       await tester.pumpAndSettle();
       expect(

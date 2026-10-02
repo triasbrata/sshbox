@@ -1,4 +1,3 @@
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -146,37 +145,6 @@ void main() {
       Uri.parse(launcher.opened.single).queryParameters['body'],
       contains('cut short'),
     );
-  });
-
-  testWidgets('anonymously, it posts to the relay and says where it went', (
-    tester,
-  ) async {
-    await open(tester, write: 'the tab froze');
-    await tester.tap(find.bySemanticsLabel('Anonymously'));
-    // The post, then the toast's overlay and its slide in, as the other page
-    // tests pump one: pumpAndSettle alone pumps right through its five
-    // seconds and finds nothing left on screen.
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(launcher.opened, isEmpty);
-    final body = jsonDecode(net.sent.single.$2) as Map<String, Object?>;
-    expect(net.sent.single.$1.toString(), 'https://t.test/issue');
-    expect(body['title'], 'the tab froze');
-    // The maintainer has to know nobody can be written back to.
-    expect(body['body'], contains('no way to reply'));
-    expect(find.textContaining('https://github.test/issues/7'), findsOne);
-    await tester.pumpAndSettle();
-  });
-
-  testWidgets('it still works with telemetry off — the user pressed it', (
-    tester,
-  ) async {
-    telemetryOn.value = false;
-    await open(tester, write: 'the tab froze');
-    await tester.tap(find.bySemanticsLabel('Anonymously'));
-    await tester.pumpAndSettle();
-    expect(net.sent, hasLength(1));
   });
 
   group('the switch in Settings', () {

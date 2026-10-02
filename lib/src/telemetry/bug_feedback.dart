@@ -17,7 +17,7 @@ abstract class BugFeedback {
   Future<bool> send({
     required SentryId id,
     required String message,
-    required String log,
+    String? log,
   });
 }
 
@@ -32,7 +32,7 @@ class SentryBugFeedback implements BugFeedback {
   Future<bool> send({
     required SentryId id,
     required String message,
-    required String log,
+    String? log,
   }) async {
     if (!available) return false;
     // Telemetry off, or switched off since the app started, leaves Sentry
@@ -69,15 +69,19 @@ class SentryBugFeedback implements BugFeedback {
 Future<bool> sendFeedbackEvent({
   required SentryId id,
   required String message,
-  required String log,
+  String? log,
 }) async {
-  final hint = Hint.withAttachment(
-    SentryAttachment.fromUint8List(
-      utf8.encode(log),
-      'jeansh-log.txt',
-      contentType: 'text/plain',
-    ),
-  )..set(reportHintKey, true);
+  final hint =
+      (log == null
+            ? Hint()
+            : Hint.withAttachment(
+                SentryAttachment.fromUint8List(
+                  utf8.encode(log),
+                  'jeansh-log.txt',
+                  contentType: 'text/plain',
+                ),
+              ))
+        ..set(reportHintKey, true);
   final sent = await Sentry.captureEvent(
     SentryEvent(
       eventId: id,

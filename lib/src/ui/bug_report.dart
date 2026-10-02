@@ -196,32 +196,32 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     Navigator.of(context).pop();
   }
 
-  /// The anonymous route: the Worker opens the issue as a bot, and the report
-  /// says so, so nobody tries to reply to a reporter who left no name.
-  Future<void> _sendAnonymously() async {
+  // The Worker behind `Telemetry.report` (anonymous issues) is not deployed,
+  // so no route calls it. The private route below takes its place: Sentry
+  // alone, nothing public. Offer the Worker again once it has a record.
+
+  /// The private route: only the Sentry feedback event, with the description
+  /// and, if switched on, the log. No issue anywhere.
+  Future<void> _sendPrivately() async {
     setState(() => _sending = true);
-    final sent = await _deliver();
-    final String where;
-    try {
-      where = await _relay.report(
-        _title,
-        '${_bodyFor(sent)}\n\nSent anonymously through Jeansh. There is no way to reply '
-        'to whoever sent it.',
-      );
-    } catch (error) {
-      if (!mounted) return;
+    final sent = await _feedback.send(
+      id: _eventId,
+      message: _bodyFor(false),
+      log: _attach ? appLog.render() : null,
+    );
+    if (!mounted) return;
+    if (!sent) {
       setState(() => _sending = false);
       showToast(
         context,
-        error is TelemetryException ? error.message : 'Could not send: $error',
+        'Could not send the report. Try again, or send it under your name.',
         type: TuiToastType.error,
       );
       return;
     }
-    if (!mounted) return;
     showToast(
       context,
-      'Reported\n$where',
+      'Sent privately\nSentry event: $_eventId',
       type: TuiToastType.success,
       duration: const Duration(seconds: 5),
     );
@@ -235,7 +235,8 @@ class _BugReportDialogState extends State<_BugReportDialog> {
       return const [
         TuiText(
           "The log can't be attached in this build, which has nowhere to send "
-          'it. The report goes without it.',
+          "it, so sending privately isn't offered. Under my name still works, "
+          'without an event id.',
           tone: TuiTextTone.dim,
           size: 11,
         ),
@@ -256,10 +257,16 @@ class _BugReportDialogState extends State<_BugReportDialog> {
                   'for this report only. It goes to Sentry, never to the '
                   'public issue.',
       ),
+      const SizedBox(height: 8),
+      TuiText('Sentry event: $_eventId', size: 11),
+      const SizedBox(height: 4),
+      const TuiText(
+        'Privately to the developer sends this report to Sentry alone, with '
+        'the log if it is switched on: nothing is posted publicly.',
+        tone: TuiTextTone.dim,
+        size: 11,
+      ),
       if (_attach) ...[
-        const SizedBox(height: 8),
-        TuiText('Sentry event: $_eventId', size: 11),
-        const SizedBox(height: 4),
         GestureDetector(
           onTap: () => setState(() => _showLog = !_showLog),
           child: TuiText(
@@ -312,11 +319,12 @@ class _BugReportDialogState extends State<_BugReportDialog> {
           variant: TuiButtonVariant.ghost,
           onPressed: ready ? _openGitHub : null,
         ),
-        TuiButton(
-          label: _sending ? 'Sending…' : 'Anonymously',
-          prefix: '▸',
-          onPressed: ready ? _sendAnonymously : null,
-        ),
+        if (_feedback.available)
+          TuiButton(
+            label: _sending ? 'Sending…' : 'Privately to the developer',
+            prefix: '▸',
+            onPressed: ready ? _sendPrivately : null,
+          ),
       ],
       child: SingleChildScrollView(
         child: Column(
