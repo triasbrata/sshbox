@@ -63,10 +63,11 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
+      # The tap raises the keyboard and the box with it, so the long press
+      # finds the box again by its hint rather than at the same point.
       - tapOn:
           point: "62%,95%"
-      - longPressOn:
-          point: "62%,95%"
+      - longPressOn: "Ask Cla.*"
       - tapOn: "Paste"
 
 - runFlow:
@@ -74,8 +75,6 @@ env:
       true: ${STEP == 'second'}
     commands:
       - eraseText: 40
-      # The keyboard from the last paste is down, so the box is back where
-      # the taps below find it.
       - hideKeyboard
       - tapOn:
           text: "Copy code"
@@ -83,10 +82,11 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
+      # The tap raises the keyboard and the box with it, so the long press
+      # finds the box again by its hint rather than at the same point.
       - tapOn:
           point: "62%,95%"
-      - longPressOn:
-          point: "62%,95%"
+      - longPressOn: "Ask Cla.*"
       - tapOn: "Paste"
 
 # reply: a code block in Claude's reply has its own Copy code.
@@ -95,8 +95,6 @@ env:
       true: ${STEP == 'reply'}
     commands:
       - eraseText: 40
-      # The keyboard from the last paste is down, so the box is back where
-      # the taps below find it.
       - hideKeyboard
       - tapOn: "Sessions on this host"
       - extendedWaitUntil:
@@ -114,10 +112,11 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
+      # The tap raises the keyboard and the box with it, so the long press
+      # finds the box again by its hint rather than at the same point.
       - tapOn:
           point: "62%,95%"
-      - longPressOn:
-          point: "62%,95%"
+      - longPressOn: "Ask Cla.*"
       - tapOn: "Paste"
 
 # select: a long press on a word of the reply selects it, and the toolbar's
@@ -127,18 +126,17 @@ env:
       true: ${STEP == 'select'}
     commands:
       - eraseText: 40
-      # The keyboard from the last paste is down, so the box is back where
-      # the taps below find it.
       - hideKeyboard
       - longPressOn: "(?s).*e2eword.*"
       - tapOn: "Copy"
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
+      # The tap raises the keyboard and the box with it, so the long press
+      # finds the box again by its hint rather than at the same point.
       - tapOn:
           point: "62%,95%"
-      - longPressOn:
-          point: "62%,95%"
+      - longPressOn: "Ask Cla.*"
       - tapOn: "Paste"
 
 - runFlow:
