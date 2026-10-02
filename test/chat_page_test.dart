@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
+import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
@@ -2177,6 +2180,176 @@ void main() {
       expect(copied, [wide]);
       await tester.pump(const Duration(seconds: 2));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  group('code in a reply, in the real shell', () {
+    const inline = 'inline_code()';
+
+    /// The app's TabsShell holding a terminal tab and its chat, the chat
+    /// shown, a finished session picked and [md] its last answer.
+    Future<_Shell> pumpApp(WidgetTester tester, String md) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Sel')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': md},
+              ],
+            },
+          },
+        ]);
+      final manager = SessionManager();
+      addTearDown(manager.closeAll);
+      final session = manager.open(_host, transport: (_, _) => shell);
+      await session.connect(secrets: _NoSecrets());
+      manager.openChat(session.id);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TabsShell(
+            repository: HostRepository(_NoSecrets()),
+            secrets: _NoSecrets(),
+            sessions: manager,
+            onOpenHost: (_) async {},
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      // pumpAndSettle never settles under the shell, which animates.
+      Future<void> frames() async {
+        for (var i = 0; i < 6; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+      }
+
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await frames();
+      await tester.tap(find.text('Sel'));
+      await frames();
+      return shell;
+    }
+
+    (Offset, Offset) ends(WidgetTester tester, String word) {
+      final para = tester.renderObject<RenderParagraph>(
+        find.textContaining(word, findRichText: true).first,
+      );
+      final at = para.text.toPlainText().indexOf(word);
+      final boxes = para.getBoxesForSelection(
+        TextSelection(baseOffset: at, extentOffset: at + word.length),
+      );
+      return (
+        para.localToGlobal(boxes.first.toRect().centerLeft) +
+            const Offset(1, 0),
+        para.localToGlobal(boxes.last.toRect().centerRight) -
+            const Offset(1, 0),
+      );
+    }
+
+    Future<void> dragThenCopy(
+      WidgetTester tester,
+      (Offset, Offset) span, {
+      required LogicalKeyboardKey chord,
+    }) async {
+      final g = await tester.startGesture(
+        span.$1,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+      await g.moveTo(span.$2);
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      await tester.sendKeyDownEvent(chord);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(chord);
+      await tester.pump();
+    }
+
+    testWidgets('inline code in the user\'s own bubble copies', (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpApp(tester, 'ok');
+      await tester.enterText(find.byType(TextField), 'try `mine_code()` now');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      await dragThenCopy(
+        tester,
+        ends(tester, 'mine_code()'),
+        chord: LogicalKeyboardKey.controlLeft,
+      );
+      expect(copied, ['mine_code()']);
+    });
+
+    for (final (platform, chord) in [
+      (TargetPlatform.linux, LogicalKeyboardKey.controlLeft),
+      (TargetPlatform.macOS, LogicalKeyboardKey.metaLeft),
+    ]) {
+      testWidgets('inline code in a finished reply copies on $platform', (
+        tester,
+      ) async {
+        debugDefaultTargetPlatformOverride = platform;
+        final copied = _useFakeClipboard();
+        await pumpApp(tester, 'Words and `$inline` here.');
+        await tester.tap(find.byType(TextField));
+        await tester.pump();
+        await dragThenCopy(tester, ends(tester, inline), chord: chord);
+        debugDefaultTargetPlatformOverride = null;
+        expect(copied, [inline]);
+      });
+
+      testWidgets('inline code in a reply being written copies on $platform', (
+        tester,
+      ) async {
+        debugDefaultTargetPlatformOverride = platform;
+        final copied = _useFakeClipboard();
+        final shell = await pumpApp(tester, 'Words and `$inline` here.');
+        await tester.enterText(find.byType(TextField), 'go on');
+        await tester.pump();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pump();
+        shell.event({
+          'type': 'assistant',
+          'message': {
+            'content': [
+              {'type': 'text', 'text': 'Now a `second_code()` while it goes'},
+            ],
+          },
+        });
+        await tester.pump();
+        await tester.tap(find.byType(TextField));
+        await tester.pump();
+        final span = ends(tester, inline);
+        final g = await tester.startGesture(
+          span.$1,
+          kind: PointerDeviceKind.mouse,
+        );
+        await g.moveTo(span.$2);
+        await g.up();
+        await tester.pump();
+        shell.event({
+          'type': 'assistant',
+          'message': {
+            'content': [
+              {'type': 'text', 'text': ' and more words'},
+            ],
+          },
+        });
+        await tester.pump();
+        await tester.sendKeyDownEvent(chord);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+        await tester.sendKeyUpEvent(chord);
+        await tester.pump();
+        debugDefaultTargetPlatformOverride = null;
+        expect(copied, [inline]);
+      });
+    }
   });
 
   group('a link in a reply', () {
