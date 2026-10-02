@@ -198,18 +198,35 @@ class _ChatPageState extends State<ChatPage> {
   /// jump button to say.
   int _arrived = 0;
 
-  /// What the list says it did. Upward is the reader's only when the reader
-  /// is the one scrolling — a drag, the wheel, a fling after them, which set
-  /// the position's `userScrollDirection` — and not when the layout moved the
-  /// view: a keyboard going away or a window growing leaves the view past its
-  /// new end and the list runs back to it, upward and with no reader in it. A
-  /// landing on a place is [_switching]'s.
-  bool _onScrollUpdate(ScrollUpdateNotification note) {
-    if (_switching || !_scroll.hasClients) return false;
+  /// True while the list runs the view back into range after the layout left
+  /// it past its end; see [_onScrollUpdate].
+  bool _runBack = false;
+
+  /// What the list says it did. Upward is the reader's unless the layout did
+  /// it: a keyboard going away or a window growing leaves the view past its
+  /// new end and the list runs back to it, upward and with no reader in it.
+  /// That run starts out of range; anything upward that starts in range is
+  /// the reader's, PageUp and the arrows included, which scroll by animateTo
+  /// or jumpTo. Under bouncing physics an overscroll at the bottom is the end
+  /// anyway. Our own pinning to the end is [_pinning], and a landing on a
+  /// place is [_switching]'s.
+  bool _onScrollUpdate(ScrollNotification note) {
+    if (note is ScrollEndNotification) _runBack = false;
+    if (note is! ScrollUpdateNotification ||
+        _switching ||
+        !_scroll.hasClients) {
+      return false;
+    }
     final metrics = note.metrics;
-    final byReader =
-        (note.scrollDelta ?? 0) < 0 &&
-        _scroll.position.userScrollDirection == ScrollDirection.forward;
+    // Where the move started: the layout's run-back starts out of range, the
+    // viewport having grown under a view left at its old end, and the
+    // reader's move up starts in range. A run-back, once seen to start out of
+    // range, is one until it ends, its last steps being in range.
+    final delta = note.scrollDelta ?? 0;
+    if (metrics.pixels - delta > metrics.maxScrollExtent + 0.5) {
+      _runBack = true;
+    }
+    final byReader = delta < 0 && !_pinning && !_runBack;
     final follow = byReader
         ? false
         : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
@@ -725,7 +742,7 @@ class _ChatPageState extends State<ChatPage> {
                 )
               : NotificationListener<ScrollMetricsNotification>(
                   onNotification: _onScrollMetrics,
-                  child: NotificationListener<ScrollUpdateNotification>(
+                  child: NotificationListener<ScrollNotification>(
                   onNotification: _onScrollUpdate,
                   child: CustomScrollView(
                   // A list of its own for each session picked. The rows a
