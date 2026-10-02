@@ -1,0 +1,49 @@
+# Keeps one Gradle build cache per build on main.
+#
+# A build cache is keyed on its commit (.github/actions/gradle-build-cache),
+# since its outputs change with the code, and actions/cache cannot overwrite
+# a key, so every main push saves one more of about 470 MB. Left to GitHub's
+# least-recently-used eviction, they would fill the 10 GB and push out main's
+# other caches -- the thrash ci-cache-fix ended. So once a run on main is
+# over, every entry but the newest of each build goes.
+#
+# A workflow of its own because deleting a cache wants `actions: write`, and
+# e2e.yml and release.yml are called from tag.yml, whose calls grant neither;
+# here it is the only permission, in the only job, which holds no secret.
+name: Cache prune
+
+on:
+  workflow_run:
+    workflows: [E2E, Tag]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency: cache-prune
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete all but the newest build cache of each build on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for build in Linux release-Linux; do
+            gh cache list --ref refs/heads/main --key "gradle-build-$build-" \
+              --sort created_at --order desc --limit 100 \
+              --json id,key,sizeInBytes \
+              --jq '.[] | select(.key | test("^gradle-build-'"$build"'-[0-9a-f]{40}$")) | "\(.id) \(.key) \(.sizeInBytes)"' |
+              tail -n +2 |
+              while read -r id key size; do
+                gh cache delete "$id"
+                echo "deleted $key ($((size / 1048576)) MB)"
+              done
+          done
+          gh cache list --ref refs/heads/main --key gradle-build- --json key,sizeInBytes \
+            --jq '.[] | "kept \(.key) (\(.sizeInBytes / 1048576 | floor) MB)"'
