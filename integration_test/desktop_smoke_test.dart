@@ -3574,7 +3574,9 @@ touch '${done.path}'
           'down',
           'sleep 30',
           'up',
-          'sleep 60',
+          // About 400 ms from press to press on a Mac runner, past Flutter's
+          // 300 ms for a touch and inside the 500 ms of a mouse.
+          'sleep 200',
           'clickstate 2',
           'down',
           if (hold > 0) 'sleep $hold',
@@ -3590,7 +3592,9 @@ touch '${done.path}'
           'down',
           'sleep 30',
           'up',
-          'sleep 60',
+          // About 400 ms from press to press on a Mac runner, past Flutter's
+          // 300 ms for a touch and inside the 500 ms of a mouse.
+          'sleep 200',
           'clickstate 2',
           'down',
           if (hold > 0) 'sleep $hold',
