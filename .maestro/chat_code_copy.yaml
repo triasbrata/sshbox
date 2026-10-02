@@ -1,0 +1,124 @@
+# Copy code on a chat tool row's blocks (#163): an opened Bash row has two,
+# its command's and its result's, and each puts exactly its block's text on
+# the clipboard. Its "Copied code block" toast lasts the app's 1 s, gone
+# before Maestro looks on CI's emulator, so what was copied is the proof.
+#
+# The session is a stand-in's, from tools/e2e_android.sh's chat_stand_in:
+# "E2E tool rows" ran `echo hi`, which answered `hi from e2e`. What a button
+# copied is pasted into the chat's box by the script, which finds the box,
+# long-presses it and taps Paste from Android's own view tree, and reads it
+# back the same way: Maestro's taps by point or hint missed the box once the
+# keyboard moved it.
+#
+# STEP comes from -e alone (see chat_images.yaml): `open` opens the row and
+# pastes the first block's copy; `second` the second's; `reply` a reply's
+# code block's; `select` a word of the reply, long-pressed and copied.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E tool rows.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E tool rows.*"
+      - extendedWaitUntil:
+          visible: "Tools done"
+          timeout: 20000
+      - tapOn: "(?s)\\W*Bash.*"
+      - extendedWaitUntil:
+          visible: "List the e2e folder"
+          timeout: 5000
+      # One in the command's block and one in the result's: the Write row
+      # stays shut, so these two are the Bash row's.
+      - assertVisible:
+          text: "Copy code"
+          index: 1
+      - takeScreenshot: chat-code-copy-row
+      - tapOn:
+          text: "Copy code"
+          index: 0
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 20000
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+
+- runFlow:
+    when:
+      true: ${STEP == 'second'}
+    commands:
+      - eraseText: 40
+      - hideKeyboard
+      - tapOn:
+          text: "Copy code"
+          index: 1
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+
+# reply: a code block in Claude's reply has its own Copy code.
+- runFlow:
+    when:
+      true: ${STEP == 'reply'}
+    commands:
+      - eraseText: 40
+      - hideKeyboard
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E code reply.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E code reply.*"
+      - extendedWaitUntil:
+          visible: "(?s).*e2eword.*"
+          timeout: 20000
+      - takeScreenshot: chat-code-copy-reply
+      - tapOn: "Copy code"
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 20000
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+
+# select: the box emptied; tools/e2e_android.sh then long-presses the
+# reply's first word, e2eword, and taps the toolbar's Copy.
+- runFlow:
+    when:
+      true: ${STEP == 'select'}
+    commands:
+      - eraseText: 40
+      - hideKeyboard
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+
+- runFlow:
+    when:
+      true: ${STEP == 'done'}
+    commands:
+      - eraseText: 40
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"

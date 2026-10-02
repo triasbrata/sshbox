@@ -168,8 +168,8 @@ sessions = {
     'E2E short session': [user('Short question'), said('Short answer of the short session')],
     'E2E tool rows': [user('run it'),
                       *tool('toolu_e2e1', 'Bash',
-                            {'command': 'ls -la /tmp/e2e-tool-rows',
-                             'description': 'List the e2e folder'}, 'total 0'),
+                            {'command': 'echo hi',
+                             'description': 'List the e2e folder'}, 'hi from e2e'),
                       *tool('toolu_e2e2', 'Write',
                             {'file_path': '/tmp/e2e-tool-rows/notes.txt',
                              'content': 'first line\nsecond line'}, 'ok'),
@@ -177,6 +177,10 @@ sessions = {
     # #131: a mermaid fence in a reply is drawn as a diagram, not its source.
     'E2E diagram': [user('draw it'),
                     said('Diagram below\n\n```mermaid\ngraph TD\n  E2EA --> E2EB\n```\n\nDiagram above')],
+    # #163: a reply's code block, its Copy code beside it, and a word of its
+    # own a long press selects.
+    'E2E code reply': [user('show code'),
+                       said('e2eword\n\n```sh\nprintf e2e-reply\n```')],
 }
 rows = []
 for n, (name, events) in enumerate(sessions.items(), start=1):
@@ -189,6 +193,106 @@ for n, (name, events) in enumerate(sessions.items(), start=1):
 with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
     json.dump(rows, f)
 PY
+}
+
+# #163: each Copy code on an opened tool row copies its block exactly. The
+# flow pastes what it copied into the chat's empty box, and the box is read
+# here off Android's view tree, the row showing the same text. A toast with
+# animations off is gone at once, so they are on meanwhile.
+code_ui() {
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null
+}
+# The centre of the first node whose attributes match $1, as "x y".
+code_at() {
+  code_ui | grep -o '<node [^>]*>' | grep -E "$1" | head -1 |
+    grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' |
+    sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/' |
+    awk '{ print int(($1 + $3) / 2), int(($2 + $4) / 2) }'
+}
+# What is on the clipboard, pasted into the chat's box: a tap to focus it,
+# found again once the keyboard has moved it, a long press, and Paste.
+code_paste() {
+  local at try
+  # Twice: a selection just copied out of the reply keeps its own toolbar
+  # up, and the first tap on the box only takes it down.
+  for try in 1 2; do
+    at=$(code_at 'EditText')
+    [ -n "$at" ] || { echo "no chat box on screen"; return 1; }
+    adb shell input tap $at
+    sleep 1.5
+    at=$(code_at 'EditText')
+    # shellcheck disable=SC2086
+    adb shell input swipe $at $at 900
+    sleep 1.5
+    at=$(code_at 'text="Paste"|content-desc="Paste"')
+    if [ -n "$at" ]; then
+      adb shell input tap $at
+      sleep 1.5
+      return 0
+    fi
+  done
+  echo "no Paste in the box's menu"
+  return 1
+}
+# A long press on the reply's first word, e2eword, near the start of the
+# node that holds it, and the toolbar's Copy.
+code_select() {
+  local box
+  box=$(code_ui | grep -o '<node [^>]*>' | grep -E 'e2eword' | grep -v EditText | tail -1 |
+    grep -oE 'bounds="\[[0-9]+,[0-9]+\]' | grep -oE '[0-9]+,[0-9]+' | tr , ' ')
+  [ -n "$box" ] || { echo "no reply on screen"; return 1; }
+  set -- $box
+  adb shell input swipe $(($1 + 25)) $(($2 + 12)) $(($1 + 25)) $(($2 + 12)) 900
+  sleep 1.5
+  box=$(code_at 'text="Copy"|content-desc="Copy"')
+  [ -n "$box" ] || { echo "no Copy in the selection's toolbar"; return 1; }
+  adb shell input tap $box
+  sleep 1
+}
+# The box's text, trimmed.
+code_box() {
+  code_ui | grep -o '<node [^>]*EditText[^>]*>' |
+    grep -o ' text="[^"]*"' | head -1 | sed 's/^ text="//; s/"$//; s/^ *//; s/ *$//'
+}
+chat_code_copy() {
+  local status=0 got
+  adb shell settings put global animator_duration_scale 1
+  # Android 13's clipboard preview, drawn over the bottom of the screen after
+  # every copy, takes the taps meant for the chat's box: one opened Nearby
+  # Share. Off for this block alone.
+  adb shell device_config put systemui clipboard_overlay_enabled false
+  flow chat_code_copy -e STEP=open || status=1
+  code_paste
+  got=$(code_box)
+  echo "the command's Copy code pasted: '$got'"
+  [ "$got" = 'echo hi' ] || { echo "::error::the command's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=second || status=1
+  code_paste
+  got=$(code_box)
+  echo "the result's Copy code pasted: '$got'"
+  [ "$got" = 'hi from e2e' ] || { echo "::error::the result's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=reply || status=1
+  code_paste
+  got=$(code_box)
+  echo "the reply's Copy code pasted: '$got'"
+  [ "$got" = 'printf e2e-reply' ] || { echo "::error::the reply's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=select || status=1
+  code_select
+  code_paste
+  got=$(code_box)
+  echo "a long press and Copy pasted: '$got'"
+  [ "$got" = e2eword ] || { echo "::error::a long press copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=done || status=1
+  adb shell device_config delete systemui clipboard_overlay_enabled
+  adb shell settings put global animator_duration_scale 0
+  return "$status"
+}
+
+# chat_code_copy alone, for E2E_ONLY: the stand-in's sessions first.
+chat_code_copy_alone() {
+  chat_stand_in
+  chat_code_copy
 }
 
 # chat_mermaid alone, for E2E_ONLY: the stand-in's sessions first.
@@ -866,6 +970,9 @@ chat_version || true
 # conversation comes back to, and how a tool's row reads. Report-only until
 # they have earned the gate.
 chat_stand_in
+echo "::group::chat_code_copy (report only)"
+chat_code_copy || echo "::warning::chat_code_copy failed -- report only, not gating"
+echo "::endgroup::"
 for name in chat_scroll chat_tool_rows chat_mermaid; do
   echo "::group::$name (report only)"
   flow "$name" || echo "::warning::$name failed -- report only, not gating"

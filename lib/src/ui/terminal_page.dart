@@ -12,7 +12,6 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart'
     show
         GestureBinding,
-        kDoubleTapTimeout,
         kDoubleTapTouchSlop,
         kMiddleMouseButton,
         kPrimaryMouseButton,
@@ -1262,7 +1261,7 @@ class _PaneView extends StatefulWidget {
   State<_PaneView> createState() => _PaneViewState();
 }
 
-class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
+class _PaneViewState extends State<_PaneView> {
   /// Shared with the terminal view below it, which is what holds focus.
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
@@ -1289,8 +1288,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
     FocusManager.instance.addListener(_onFocusMoved);
-    // A window that blurs mid-gesture may never deliver the button's up.
-    WidgetsBinding.instance.addObserver(this);
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
@@ -1327,7 +1324,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     FocusManager.instance.removeListener(_onFocusMoved);
-    WidgetsBinding.instance.removeObserver(this);
     _clickTimer?.cancel();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1372,9 +1368,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
   /// gives it to no one, and a menu opened from the pane then gave it back to
   /// the scope as it closed.
   void _onFocusMoved() {
-    // Focus gone from the pane in mid-gesture: the up may never come, and
-    // [selection] would go on ignoring everything but the gesture.
-    if (_gesture != null && !_focusNode.hasFocus) _endGesture();
     if (_shown == true &&
         FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
       _followFocus(keyboard: false);
@@ -1471,24 +1464,22 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     }
   }
 
+  /// How long after a press the next still counts as the same run of
+  /// clicks: macOS's and Windows's default double-click interval. Flutter's
+  /// own 300 ms, [kDoubleTapTimeout], is a touch's, and a mouse's second
+  /// press on a loaded machine, or a slower hand, comes later: it was
+  /// counted as a first click and xterm2's drag of characters took over.
+  static const _doubleClickInterval = Duration(milliseconds: 500);
+
   /// Clicks in a row on one spot, and the timer that ends the run.
   int _clicks = 0;
   Offset _clickAt = Offset.zero;
   Timer? _clickTimer;
 
-  // An observer, not an AppLifecycleListener, which asserts on a jump such as
-  // resumed to hidden (a real minimize on Linux).
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
-      _endGesture();
-    }
-  }
-
   /// The mouse gesture that owns [selection] until its button comes up: the
   /// pointer, where it began, and how it selects.
-  ({int pointer, Offset anchor, _Grain grain, BufferRange? base})? _gesture;
+  ({int pointer, int device, Offset anchor, _Grain grain, BufferRange? base})?
+  _gesture;
 
   /// A double click selects the word under the pointer, a triple click its
   /// line, and a drag held from that click goes on word by word, line by
@@ -1516,7 +1507,7 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     _clickTimer?.cancel();
     _clicks = near ? math.min(_clicks + 1, 3) : 1;
     _clickAt = event.position;
-    _clickTimer = Timer(kDoubleTapTimeout, () {
+    _clickTimer = Timer(_doubleClickInterval, () {
       _clicks = 0;
       _clickTimer = null;
     });
@@ -1527,6 +1518,7 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
       final grain = _clicks == 2 ? _Grain.word : _Grain.line;
       _gesture = (
         pointer: event.pointer,
+        device: event.device,
         anchor: anchor,
         grain: grain,
         base: null,
@@ -1536,6 +1528,7 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     } else if (HardwareKeyboard.instance.isShiftPressed && base != null) {
       _gesture = (
         pointer: event.pointer,
+        device: event.device,
         anchor: anchor,
         grain: _Grain.extend,
         base: base,
@@ -1574,6 +1567,20 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
   void _gestureMove(PointerMoveEvent event) {
     if (_gesture?.pointer != event.pointer) return;
     _selectTo(_local(event.position));
+  }
+
+  /// The pointer hovering means no button is down, so a gesture still held
+  /// is one whose up never came — the window blurred mid-drag, or the
+  /// platform dropped it — and [selection] would go on ignoring everything
+  /// but the gesture. A drag always has its button down and never hovers.
+  /// Only the device that began the gesture counts: a pen or a second mouse
+  /// hovering over the pane says nothing of this one's button.
+  ///
+  /// This, and not a focus or an app lifecycle change, which a click itself
+  /// can bring on: on a Mac the first click that activates the window did,
+  /// and ended the gesture it began.
+  void _gestureHover(PointerHoverEvent event) {
+    if (_gesture?.device == event.device) _endGesture();
   }
 
   /// Gives [selection] back to xterm2 once the tap that ends the gesture has
@@ -2003,6 +2010,7 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
+          onPointerHover: _gestureHover,
           onPointerMove: (event) {
             _trackedMove(event);
             _gestureMove(event);

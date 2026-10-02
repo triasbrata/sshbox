@@ -5795,6 +5795,111 @@ void main() {
       expect(asked(), n);
     });
 
+    test('a retry left waiting while unseen is forgotten when the session is '
+        'replaced, so showing it asks nothing for the new one', () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 30);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      int asked() => host.commands.where((c) => c.contains('ls "\$dir"')).length;
+      chat.setSeen(false);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_wait',
+              'name': 'Agent',
+              'input': {'description': 'wait'},
+            },
+          ],
+        },
+      });
+      // The retry comes due while it cannot be seen, and waits.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      // The session is replaced while still unseen.
+      await chat.continueFrom(_finished);
+      final n = asked();
+      chat.setSeen(true);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(asked(), n);
+    });
+
+    test('a covered sub-agent view still finds a sub-agent whose files came '
+        'late: its retry does not wait for it to be on top', () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 30);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n')
+        ..subAgentsOut = line('agent-aaa111', meta('toolu_agent1'));
+      final parent = ClaudeChat(open: host.open);
+      addTearDown(parent.dispose);
+      await parent.continueFrom(_live);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_agent1',
+              'name': 'Agent',
+              'input': {'description': 'a'},
+            },
+          ],
+        },
+      });
+      await _settle();
+      await _settle();
+      // View A holds a call of its own whose sub-agent is not listed yet.
+      host.subAgentLines = [
+        jsonEncode({
+          'type': 'assistant',
+          'isSidechain': true,
+          'message': {
+            'id': 'sa1',
+            'stop_reason': 'tool_use',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_nested',
+                'name': 'Agent',
+                'input': {'description': 'nested'},
+              },
+            ],
+          },
+        }),
+      ];
+      final a = ClaudeChat.subAgent(
+        open: host.open,
+        parent: parent,
+        agent: parent.subAgentOf('toolu_agent1')!,
+        isRunning: () => true,
+      );
+      addTearDown(a.dispose);
+      await a.openSubAgent();
+      // The reads its opening started settle first, and find nothing for the
+      // nested call: the retry is what is left to find it.
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      expect(a.subAgentOf('toolu_nested'), isNull);
+      // The user opens B over it, so A is covered, before the retry comes due.
+      a.setSubVisible(false);
+      host.subAgentsOut = [
+        line('agent-aaa111', meta('toolu_agent1')),
+        line('agent-nested1', meta('toolu_nested')),
+      ].join('\n');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      // Back on A: its strip is there.
+      expect(a.subAgentOf('toolu_nested')!.file, 'agent-nested1');
+    });
+
     test('each call has its own retries: one that never appears does not '
         'hold back the next', () async {
       final real = ClaudeChat.subAgentRetry;
