@@ -3271,10 +3271,29 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 
-    testWidgets('a move the reader did not make is not the reader scrolling '
-        'up: the view put back from above leaves it following', (
-      tester,
-    ) async {
+    testWidgets('a run back the layout makes is not the reader scrolling up: '
+        'the view put back into range leaves it following', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position =
+          _conversationAt(tester) as ScrollPositionWithSingleContext;
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // As a keyboard going away leaves the view past its new end: out of
+      // range, and the list runs it back, upward, with no drag in it.
+      // ignore: invalid_use_of_protected_member
+      position.forcePixels(position.maxScrollExtent + 200);
+      position.goBallistic(0);
+      await _frames(tester);
+      expect(find.textContaining('LATEST'), findsNothing);
+      await longReply(tester, shell, 4);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('PageUp is the reader scrolling up, though it moves the view '
+        'by animateTo or jumpTo', (tester) async {
       final shell = await watchingOnScreen(tester);
       for (var n = 1; n <= 3; n++) {
         await longReply(tester, shell, n);
@@ -3282,13 +3301,19 @@ void main() {
       final position = _conversationAt(tester);
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
 
-      // Moved upward by the program, as a layout correction runs the view
-      // back, with no drag or wheel in it: its direction is idle.
-      position.jumpTo(position.maxScrollExtent - 300);
-      await tester.pump();
-      expect(find.textContaining('LATEST'), findsNothing);
+      // What the key does where it reaches the list: a ScrollAction.
+      Actions.invoke(
+        tester.element(find.byType(SliverList).last),
+        const ScrollIntent(
+          direction: AxisDirection.up,
+          type: ScrollIncrementType.page,
+        ),
+      );
+      await _frames(tester);
+      expect(find.textContaining('LATEST'), findsOneWidget);
+      final kept = position.pixels;
       await longReply(tester, shell, 4);
-      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(position.pixels, kept);
     });
 
     testWidgets('scrolled up, a long reply leaves the reader where they are',

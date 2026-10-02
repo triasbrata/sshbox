@@ -198,18 +198,25 @@ class _ChatPageState extends State<ChatPage> {
   /// jump button to say.
   int _arrived = 0;
 
-  /// What the list says it did. Upward is the reader's only when the reader
-  /// is the one scrolling — a drag, the wheel, a fling after them, which set
-  /// the position's `userScrollDirection` — and not when the layout moved the
-  /// view: a keyboard going away or a window growing leaves the view past its
-  /// new end and the list runs back to it, upward and with no reader in it. A
-  /// landing on a place is [_switching]'s.
+  /// What the list says it did. Upward is the reader's unless the layout did
+  /// it: a keyboard going away or a window growing leaves the view past its
+  /// new end and the list runs back to it, upward and with no reader in it —
+  /// a ballistic run that no drag, wheel or fling began, so the position's
+  /// `userScrollDirection` stays idle. Anything else upward is the reader's,
+  /// PageUp and the arrows included, which scroll by animateTo or jumpTo and
+  /// leave that direction idle too. Our own pinning to the end is [_pinning],
+  /// and a landing on a place is [_switching]'s.
   bool _onScrollUpdate(ScrollUpdateNotification note) {
     if (_switching || !_scroll.hasClients) return false;
     final metrics = note.metrics;
+    final position = _scroll.position;
+    // The one place that says what began a move: Flutter marks it for tests.
+    // ignore: invalid_use_of_protected_member, invalid_use_of_visible_for_testing_member
+    final ballistic = position.activity is BallisticScrollActivity;
     final byReader =
         (note.scrollDelta ?? 0) < 0 &&
-        _scroll.position.userScrollDirection == ScrollDirection.forward;
+        !_pinning &&
+        !(ballistic && position.userScrollDirection == ScrollDirection.idle);
     final follow = byReader
         ? false
         : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
