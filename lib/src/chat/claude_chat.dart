@@ -500,7 +500,7 @@ class ClaudeChat extends ChangeNotifier {
     switch (call.name) {
       case 'TaskCreate':
         final subject = text('subject');
-        final id = RegExp(r'^Task #(\d+) created').firstMatch(result)?.group(1);
+        const String? id = null;
         if (subject == null || id == null) return;
         _tasks[id] = ChatTask(
           id: id,
