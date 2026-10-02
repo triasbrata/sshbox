@@ -591,25 +591,71 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     // The second press of a double click comes later on a loaded machine, or
-    // from a slower hand, than Flutter's 300 ms for a touch.
-    testWidgets('counts a second press 400 ms after the first as a double '
-        'click', (tester) async {
+    // from a slower hand, than Flutter's 300 ms for a touch: within the
+    // platform's interval it still counts.
+    for (final (platform, within, past) in [
+      (TargetPlatform.linux, 350, 450),
+      (TargetPlatform.macOS, 450, 550),
+    ]) {
+      testWidgets('counts a second press $within ms after the first as a '
+          'double click on $platform, $past ms after not', (tester) async {
+        await pumpPage(tester);
+        session.terminal.write(text * 30);
+        await tester.pump();
+
+        Future<String?> afterGap(int gap) async {
+          await tester.tapAt(
+            cellAt(tester, 14, 10),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump(Duration(milliseconds: gap));
+          final g = await tester.startGesture(
+            cellAt(tester, 14, 10),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          for (var col = 15; col <= 20; col++) {
+            await g.moveTo(cellAt(tester, col, 10));
+            await tester.pump(const Duration(milliseconds: 16));
+          }
+          final range = controller(tester).selection;
+          await g.up();
+          await tester.pump(const Duration(seconds: 1));
+          return range == null
+              ? null
+              : session.terminal.buffer.getText(range);
+        }
+
+        expect(await afterGap(within), 'this is a');
+        // Past it, a first click again: characters from the press.
+        expect(await afterGap(past), isNot('this is a'));
+      }, variant: TargetPlatformVariant.only(platform));
+    }
+
+    // A press while the gesture is still held, from the same device, shows
+    // its up never came: a right click, say, after a window blurred mid-drag.
+    testWidgets('lets go of a held gesture at a right press from the same '
+        'device', (tester) async {
       await pumpPage(tester);
       session.terminal.write(text * 30);
       await tester.pump();
 
-      await tester.tapAt(cellAt(tester, 14, 10), kind: PointerDeviceKind.mouse);
-      await tester.pump(const Duration(milliseconds: 400));
-      final g = await tester.startGesture(
-        cellAt(tester, 14, 10),
-        kind: PointerDeviceKind.mouse,
-      );
+      final g = await secondClick(tester, col: 14, clicks: 2);
       await tester.pump(const Duration(milliseconds: 200));
-      for (var col = 15; col <= 20; col++) {
-        await g.moveTo(cellAt(tester, col, 10));
-        await tester.pump(const Duration(milliseconds: 16));
-      }
-      expect(selected(tester), 'this is a');
+      expect(selected(tester), 'this');
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNotNull);
+
+      final right = await tester.startGesture(
+        cellAt(tester, 20, 10),
+        kind: PointerDeviceKind.mouse,
+        pointer: 77,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pump();
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNull);
+      await right.cancel();
       await g.up();
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
