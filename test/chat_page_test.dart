@@ -3201,7 +3201,10 @@ void main() {
   group('a chat takes what is typed or pasted without the box clicked', () {
     /// A finished session continued here, with one answer to select from.
     /// Returns the host, to see what was sent into it.
-    Future<_Shell> pumpChat(WidgetTester tester) async {
+    Future<_Shell> pumpChat(
+      WidgetTester tester, {
+      String answer = 'hello world answer',
+    }) async {
       final shell = _Shell()
         ..listing = jsonEncode([_finished('cf58d27a', 'Notes')])
         ..history = _history([
@@ -3210,7 +3213,7 @@ void main() {
             'message': {
               'role': 'assistant',
               'content': [
-                {'type': 'text', 'text': 'hello world answer'},
+                {'type': 'text', 'text': answer},
               ],
             },
           },
@@ -3388,6 +3391,23 @@ void main() {
       expect(typed(tester), isEmpty);
       expect(box(tester).focusNode!.hasFocus, isTrue);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Enter on a reply\'s Copy button, inside its selection area, '
+        'presses it and is not the box\'s', (tester) async {
+      final copied = _useFakeClipboard();
+      await pumpChat(tester, answer: 'Run:\n\n```sh\necho hi\n```\n');
+      Focus.of(tester.element(find.byIcon(Icons.content_copy))).requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      await tester.pump();
+
+      expect(copied, ['echo hi']);
+      expect(typed(tester), isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      await tester.pump(const Duration(seconds: 2));
+    });
 
     testWidgets('Ctrl+V of text, with the box unfocused, pastes into it', (
       tester,

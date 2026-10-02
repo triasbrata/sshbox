@@ -425,20 +425,32 @@ class _ChatPageState extends State<ChatPage> {
             focused.findAncestorWidgetOfExactType<EditableText>() == null);
   }
 
-  /// Whether [node] is a control the user moved to: any focus that is not
-  /// nothing, the page's own scope or a selection in a reply. Those are where
-  /// a click leaves the focus, and where a key has no other meaning.
+  /// Whether [node] is a control the user moved to: a button, a row, a
+  /// checkbox, any focus that is not nothing, the page's own scope or a
+  /// selection in a reply. The last three are where a click leaves the focus,
+  /// and where a key has no other meaning.
+  ///
+  /// Decided from what the node sits in, nearest first: a button's own ink
+  /// response, or a focus of another widget, makes it a control even inside a
+  /// reply's selection area, as a code block's Copy button is; reaching the
+  /// selection area first means it is the selection itself.
   static bool _onControl(FocusNode? node) {
     if (node == null || node is FocusScopeNode) return false;
-    var selection = false;
+    var control = true;
     node.context?.visitAncestorElements((element) {
-      if (element.widget is SelectableRegion) {
-        selection = true;
+      final widget = element.widget;
+      if (widget is SelectableRegion) {
+        control = false;
+        return false;
+      }
+      if (widget is InkResponse ||
+          widget is FocusableActionDetector ||
+          widget is Focus) {
         return false;
       }
       return true;
     });
-    return !selection;
+    return control;
   }
 
   /// The box takes the focus now, so that the key being heard lands in it.
