@@ -1139,7 +1139,6 @@ Future<void> _grab(WidgetTester tester, String name) async {
   ]);
 }
 
-
 /// Answers the desktop's save dialog as a person would, once it is up: saves
 /// to [path], or cancels it when [path] is null. A Mac's panel saves where it
 /// opens, so [path] there only says to save. Done outside Flutter, which the
@@ -2300,11 +2299,15 @@ touch '${done.path}'
       // Marked as from the internet, as Windows reads it, so a host's .bat
       // or .exe is not run unwarned.
       if (Platform.isWindows) {
-        final zone = await Process.run('powershell', [
-          '-NoProfile',
-          '-Command',
-          r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
-        ], environment: {'JEANSH_SAVED': kept.path});
+        final zone = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-Command',
+            r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
+          ],
+          environment: {'JEANSH_SAVED': kept.path},
+        );
         expect(zone.stdout, contains('ZoneId=3'), reason: '${zone.stderr}');
       }
 
@@ -2337,6 +2340,113 @@ touch '${done.path}'
       _standInClaudeFor();
       await _launch(tester);
       await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan tab
+  // lain padahal ini nga bisa di merge": a chat tab's chip, right-clicked,
+  // grouped with its Local shell, both shown as panes and the chat still
+  // answering.
+  _test(
+    'a chat tab groups with its shell from a right-click',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      await _launch(tester);
+      await _chatAnswered(tester);
+      final chip = find.textContaining('Claude').first;
+      await tester.tapAt(
+        tester.getCenter(chip),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the chat tab's menu to offer Group with…",
+      );
+      await tester.tap(find.text('Group with…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Local shell').last);
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () =>
+            find.byTooltip('Tab group').evaluate().isNotEmpty &&
+            find.byType(TerminalView).evaluate().isNotEmpty &&
+            _composer.evaluate().isNotEmpty,
+        'the chat and its shell side by side in one group',
+      );
+      // The chat is the same one, its answer still there. (A second message
+      // would go through claude attach, which the stand-in does not answer.)
+      expect(_answer, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // The same report, as the user meant it: the right-click was on a session
+  // in chat's sidebar, which is no tab and has no menu. A real right-click
+  // there opens nothing, while one on the conversation still opens the tab's.
+  _test(
+    "a real right-click on a chat session is not the tab's",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
+      _standInClaudeFor();
+      await _launch(tester);
+      // Two tabs, so the tab's menu has a Group with… to offer.
+      await _chatAnswered(tester);
+      // The stand-in's own session, as `claude agents` lists it: in the
+      // sidebar on a wide window, in the drawer its button opens otherwise.
+      // The list may still be loading on a wide window, whose button then
+      // reads Hide…: wait for one or the other before choosing.
+      final row = find.text('e2e');
+      final drawer = find.byTooltip('Sessions on this host');
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty || drawer.evaluate().isNotEmpty,
+        'the sessions, or the button that shows them',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(drawer);
+        await tester.pumpAndSettle();
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        "the stand-in's session in the sidebar",
+      );
+
+      await _realRightClick(tester, tester.getCenter(row.first));
+      await tester.pumpAndSettle();
+      expect(find.text('Group with…'), findsNothing);
+
+      // The tab's menu is still there, from the chat's chip. (The answer's
+      // text takes a right-click for its own Copy, as on main.)
+      await _escape(tester);
+      await _realRightClick(
+        tester,
+        tester.getCenter(find.textContaining('Claude').first),
+      );
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the tab's menu, from the chat's chip",
+      );
+      await _escape(tester);
+      binding.shouldPropagateDevicePointerEvents = false;
       await _closeTabs(tester);
     },
   );
@@ -3986,4 +4096,315 @@ touch '${done.path}'
     // In the body: the binding checks it is back before any tear-down runs.
     binding.shouldPropagateDevicePointerEvents = false;
   });
+
+  // #143: the line chat shows while a watched turn runs, as .maestro's
+  // chat_progress checks it on Android, over a Local shell: Working… with its
+  // seconds ticking, the tokens and the tool, gone at the turn's end; what a
+  // turn stopped at a permission prompt waits for; and a chat hidden behind
+  // the shell's tab while Claude writes coming back still following.
+  //
+  // The session is tools/e2e_live_claude.py in a pane of the run's own tmux
+  // server (tools/e2e_desktop.sh), with a stand-in claude that lists it, both
+  // in the runner's home, which on CI holds no Claude Code of its own.
+  _test(
+    'a watched turn shows its progress, and a hidden chat still follows it',
+    skip: !Platform.isLinux
+        ? "the session's pane needs the run's own tmux server, which "
+              'tools/e2e_desktop.sh gives Linux alone'
+        : Platform.environment['CI'] != 'true' || _claudeInstalled()
+        ? "off CI it would write a claude into the user's own home"
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      const sid = 'e2e00004-0000-4000-8000-000000000004';
+      final claude = File('$home/.local/bin/claude');
+      final config = Directory('$home/.claude');
+      final agents = File('$home/.e2e-agents.json');
+      final script = File('tools/e2e_live_claude.py').absolute;
+      expect(script.existsSync(), isTrue, reason: 'no ${script.path}');
+      // Nothing of anyone's is written over.
+      expect(agents.existsSync(), isFalse, reason: '${agents.path} is there');
+      final hadConfig = config.existsSync();
+      addTearDown(() {
+        // What the session saw, for a run that went red.
+        final shown = Process.runSync('tmux', [
+          'capture-pane',
+          '-p',
+          '-t',
+          'e2e-live',
+        ]);
+        debugPrint('Pane: ${shown.stdout}${shown.stderr}');
+        final env = Process.runSync('tmux', ['show-environment', '-g']);
+        debugPrint(
+          'tmux env: ${'${env.stdout}'.split('\n').where((l) => l.startsWith('HOME') || l.startsWith('CLAUDE') || l.startsWith('LANG')).join(' ')}',
+        );
+        for (final f
+            in config.existsSync()
+                ? config.listSync(recursive: true).whereType<File>()
+                : const <File>[]) {
+          final text = f.readAsStringSync();
+          final tail = text.length > 1500
+              ? text.substring(text.length - 1500)
+              : text;
+          debugPrint('${f.path}: $tail');
+        }
+        if (agents.existsSync()) {
+          debugPrint('Listing: ${agents.readAsStringSync()}');
+        }
+        Process.runSync('tmux', ['kill-session', '-t', 'e2e-live']);
+        if (claude.existsSync()) claude.deleteSync();
+        if (agents.existsSync()) agents.deleteSync();
+        if (!hadConfig && config.existsSync()) {
+          config.deleteSync(recursive: true);
+        }
+      });
+      claude.parent.createSync(recursive: true);
+      claude.writeAsStringSync(
+        '#!/bin/sh\ncase "\$1" in\n'
+        "  --version) echo '2.1.300 (Claude Code)' ;;\n"
+        '  agents) cat "\$HOME/.e2e-agents.json" ;;\n'
+        '  *) exec cat >/dev/null ;;\nesac\n',
+      );
+      Process.runSync('chmod', ['755', claude.path]);
+      // One turn already said, so the chat has a transcript to open.
+      final projects = Directory(
+        '${config.path}/projects/${home.replaceAll('/', '-').replaceAll('.', '-')}',
+      )..createSync(recursive: true);
+      File('${projects.path}/$sid.jsonl').writeAsStringSync(
+        '${jsonEncode({
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'Earlier question'},
+        })}\n'
+        '${jsonEncode({
+          'type': 'assistant',
+          'message': {
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Earlier answer'},
+            ],
+          },
+        })}\n',
+      );
+      agents.writeAsStringSync('[]');
+      const utf8Env = {'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'};
+      final pane = await Process.run('tmux', [
+        'new-session', '-d', '-s', 'e2e-live', '-x', '120', '-y', '30', //
+        '-c', home,
+        'env PYTHONIOENCODING=utf-8 python3 ${script.path} $sid',
+      ], environment: utf8Env);
+      expect(pane.exitCode, 0, reason: 'tmux: ${pane.stderr}');
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final pid = int.parse(
+        '${(await Process.run('tmux', ['list-panes', '-t', 'e2e-live', '-F', '#{pane_pid}'])).stdout}'
+            .trim(),
+      );
+      // Listed as the CLI lists an interactive session: its pid, idle.
+      agents.writeAsStringSync(
+        jsonEncode([
+          {
+            'kind': 'interactive', 'pid': pid, 'sessionId': sid, //
+            'name': 'E2E live session', 'cwd': home, 'status': 'idle',
+            'startedAt': 1790000000100,
+          },
+        ]),
+      );
+
+      await _launch(tester);
+      await _localShell(tester);
+      final shell = find
+          .byWidgetPredicate(
+            (w) =>
+                w is Tooltip &&
+                (w.message ?? '').startsWith('Close ') &&
+                !(w.message ?? '').contains('· Claude'),
+          )
+          .first;
+      final shellChip = find
+          .ancestor(of: shell, matching: find.byType(InkWell))
+          .first;
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      final row = find.text('E2E live session');
+      await _until(
+        tester,
+        () =>
+            row.evaluate().isNotEmpty ||
+            find.byTooltip('Sessions on this host').evaluate().isNotEmpty,
+        'the chat to open',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(find.byTooltip('Sessions on this host'));
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        'the live session listed',
+      );
+      await tester.tap(row.first);
+      await _until(
+        tester,
+        () => find.textContaining('typed into that pane').evaluate().isNotEmpty,
+        'the chat to watch the session, typing into its pane',
+      );
+
+      Future<void> send(String text) async {
+        final field = find.byWidgetPredicate(
+          (w) =>
+              w is TextField &&
+              w.decoration?.hintText == 'Message “E2E live session”…',
+        );
+        await _until(
+          tester,
+          () => field.evaluate().isNotEmpty,
+          'the message field',
+        );
+        await tester.enterText(field, text);
+        await tester.pump();
+        // What the box holds right after typing, for a run where Send stays
+        // off: the text, whether it takes input, and whether it has focus.
+        final box = tester.widget<TextField>(field);
+        final editable = tester.state<EditableTextState>(
+          find.descendant(of: field, matching: find.byType(EditableText)),
+        );
+        debugPrint(
+          'Typed "$text": box holds "${box.controller?.text}", '
+          'enabled ${box.enabled}, focused ${editable.widget.focusNode.hasFocus}',
+        );
+        // Send turns on a frame after the text is in, and a tap on it while
+        // still off sends nothing. The text itself stays: the box is never
+        // shut between turns (run 36883132321 lost it when it was).
+        await _until(
+          tester,
+          () =>
+              tester
+                  .widget<IconButton>(
+                    find.ancestor(
+                      of: find.byTooltip('Send'),
+                      matching: find.byType(IconButton),
+                    ),
+                  )
+                  .onPressed !=
+              null,
+          'Send to turn on, the text still in the box',
+        );
+        await tester.tap(find.byTooltip('Send'));
+        // In the session's own transcript, typed into its pane, or what the
+        // chat said instead: a toast, or its own word after 30 s.
+        final transcript = File('${projects.path}/$sid.jsonl');
+        final toasts = <String>{};
+        final end = DateTime.now().add(const Duration(seconds: 40));
+        while (!transcript.readAsStringSync().contains(jsonEncode(text))) {
+          toasts.addAll(
+            find
+                .descendant(
+                  of: find.byType(TuiToastCard),
+                  matching: find.byType(Text),
+                )
+                .evaluate()
+                .map((e) => (e.widget as Text).data)
+                .whereType<String>(),
+          );
+          if (DateTime.now().isAfter(end)) {
+            final words = find
+                .byType(Text)
+                .evaluate()
+                .map((e) => (e.widget as Text).data)
+                .whereType<String>()
+                .join(' | ');
+            fail(
+              '"$text" never reached the pane; toasts: $toasts; on screen: $words',
+            );
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          await tester.pump();
+        }
+      }
+
+      String? line() => find
+          .byType(Text)
+          .evaluate()
+          .map((e) => (e.widget as Text).data)
+          .whereType<String>()
+          .where(
+            (t) => t.startsWith('Working… (') || t.startsWith('Waiting for '),
+          )
+          .firstOrNull;
+      int seconds() => int.parse(
+        RegExp(r'Working… \((\d+)s').firstMatch(line()!)!.group(1)!,
+      );
+      Finder said(String text) => find.textContaining(text, findRichText: true);
+
+      // The slow turn: the line as the prompt lands, then its tokens and tool.
+      await send('slow: run it');
+      await _until(
+        tester,
+        () => line()?.startsWith('Working… (') ?? false,
+        'Working… as the prompt lands',
+        timeout: const Duration(seconds: 8),
+      );
+      final first = seconds();
+      await _until(
+        tester,
+        () =>
+            line()?.contains('↓ 87 tokens) · Bash: sleep 2; echo done') ??
+            false,
+        'the tokens and the tool on the line',
+        timeout: const Duration(seconds: 10),
+      );
+      expect(seconds(), greaterThan(first), reason: 'the seconds did not tick');
+      await _until(
+        tester,
+        () => said('Slow answer: done').evaluate().isNotEmpty,
+        'the answer',
+      );
+      expect(line(), isNull, reason: 'the line outlived the turn: ${line()}');
+
+      // A turn stopped at a permission prompt: what for, and no Working….
+      await send('wait: approve it');
+      await _until(
+        tester,
+        () =>
+            line() ==
+            'Waiting for permission prompt at its terminal. Answer it there.',
+        'the chat to say what the turn waits for',
+        timeout: const Duration(seconds: 15),
+      );
+      await _until(
+        tester,
+        () => said('Waited answer: done').evaluate().isNotEmpty,
+        'the waited answer',
+        timeout: const Duration(seconds: 40),
+      );
+      expect(line(), isNull, reason: 'the line outlived the turn: ${line()}');
+
+      // Hidden behind the shell's tab while six long answers come, and back.
+      await send('long: go');
+      await tester.tap(shellChip);
+      final end = DateTime.now().add(const Duration(seconds: 15));
+      while (DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+      }
+      final chat = find
+          .byWidgetPredicate(
+            (w) => w is Tooltip && (w.message ?? '').contains('· Claude'),
+          )
+          .first;
+      await tester.tap(
+        find.ancestor(of: chat, matching: find.byType(InkWell)).first,
+      );
+      final window = tester.view.physicalSize / tester.view.devicePixelRatio;
+      await _until(
+        tester,
+        () {
+          final last = said('Long answer 6 end');
+          if (last.evaluate().isEmpty) return false;
+          final rect = tester.getRect(last.last);
+          return rect.bottom > 0 && rect.top < window.height;
+        },
+        'the chat, shown again, to be on the last answer',
+        timeout: const Duration(seconds: 5),
+      );
+      await _closeTabs(tester);
+    },
+  );
 }
