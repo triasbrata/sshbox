@@ -168,8 +168,8 @@ sessions = {
     'E2E short session': [user('Short question'), said('Short answer of the short session')],
     'E2E tool rows': [user('run it'),
                       *tool('toolu_e2e1', 'Bash',
-                            {'command': 'ls -la /tmp/e2e-tool-rows',
-                             'description': 'List the e2e folder'}, 'total 0'),
+                            {'command': 'echo hi',
+                             'description': 'List the e2e folder'}, 'hi from e2e'),
                       *tool('toolu_e2e2', 'Write',
                             {'file_path': '/tmp/e2e-tool-rows/notes.txt',
                              'content': 'first line\nsecond line'}, 'ok'),
@@ -189,6 +189,37 @@ for n, (name, events) in enumerate(sessions.items(), start=1):
 with open(os.path.join(home, '.e2e-agents.json'), 'w') as f:
     json.dump(rows, f)
 PY
+}
+
+# #163: each Copy code on an opened tool row copies its block exactly. The
+# flow pastes what it copied into the chat's empty box, and the box is read
+# here off Android's view tree, the row showing the same text. A toast with
+# animations off is gone at once, so they are on meanwhile.
+code_box() {
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o '<node [^>]*EditText[^>]*>' |
+    grep -o ' text="[^"]*"' | head -1 | sed 's/^ text="//; s/"$//'
+}
+chat_code_copy() {
+  local status=0 got
+  adb shell settings put global animator_duration_scale 1
+  flow chat_code_copy -e STEP=open || status=1
+  got=$(code_box)
+  echo "the command's Copy code pasted: '$got'"
+  [ "$got" = 'echo hi' ] || { echo "::error::the command's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=second || status=1
+  got=$(code_box)
+  echo "the result's Copy code pasted: '$got'"
+  [ "$got" = 'hi from e2e' ] || { echo "::error::the result's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=done || status=1
+  adb shell settings put global animator_duration_scale 0
+  return "$status"
+}
+
+# chat_code_copy alone, for E2E_ONLY: the stand-in's sessions first.
+chat_code_copy_alone() {
+  chat_stand_in
+  chat_code_copy
 }
 
 # chat_mermaid alone, for E2E_ONLY: the stand-in's sessions first.
@@ -594,6 +625,9 @@ chat_version || true
 # conversation comes back to, and how a tool's row reads. Report-only until
 # they have earned the gate.
 chat_stand_in
+echo "::group::chat_code_copy (report only)"
+chat_code_copy || echo "::warning::chat_code_copy failed -- report only, not gating"
+echo "::endgroup::"
 for name in chat_scroll chat_tool_rows chat_mermaid; do
   echo "::group::$name (report only)"
   flow "$name" || echo "::warning::$name failed -- report only, not gating"
