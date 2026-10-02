@@ -269,6 +269,10 @@ class _LiveHost {
   /// says: one it has just started.
   Map<String, Object?>? listed;
 
+  /// When set, `claude agents` answers only once it completes, as a slow
+  /// host answers: what the session does meanwhile goes on.
+  Future<void>? agentsGate;
+
   Future<CommandChannel> openTerminal(String command) async {
     commands.add(command);
     final typed = <String>[];
@@ -319,6 +323,8 @@ class _LiveHost {
       );
     }
     if (command.contains('agents --json')) {
+      final gate = agentsGate;
+      if (gate != null) await gate;
       final listed = jsonEncode([
         {
           'pid': _live.pid,
@@ -2872,5 +2878,534 @@ void main() {
         [...said, 'live 1', 'live 2'],
       );
     });
+  });
+
+  group('the turn in flight', () {
+    // A turn as 2.1.286 wrote it, measured on a throwaway background
+    // session: the prompt, a message calling Bash, its result, and a
+    // message of two blocks — thinking, then text — each block on a line of
+    // its own repeating the message's usage, then the turn's duration.
+    Map<String, Object?> prompt() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:10.643Z',
+      'isSidechain': false,
+      'message': {'role': 'user', 'content': 'run the tests'},
+    };
+    Map<String, Object?> callsBash() => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:19.547Z',
+      'message': {
+        'id': 'msg_01ma8teqDx',
+        'role': 'assistant',
+        'stop_reason': 'tool_use',
+        'usage': {'input_tokens': 2, 'output_tokens': 87},
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_t1',
+            'name': 'Bash',
+            'input': {'command': 'npm test', 'description': 'Run the tests'},
+          },
+        ],
+      },
+    };
+    Map<String, Object?> bashResult() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:28.899Z',
+      'message': {
+        'role': 'user',
+        'content': [
+          {'type': 'tool_result', 'tool_use_id': 'toolu_t1', 'content': 'ok'},
+        ],
+      },
+    };
+    Map<String, Object?> answers(String type, {String? stop = 'end_turn'}) => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:37.713Z',
+      'message': {
+        'id': 'msg_01ofPoDr74',
+        'role': 'assistant',
+        'stop_reason': stop,
+        'usage': {'input_tokens': 2, 'output_tokens': 1313},
+        'content': [
+          type == 'text'
+              ? {'type': 'text', 'text': 'All green.'}
+              : {'type': 'thinking', 'thinking': '', 'signature': 'CAQS'},
+        ],
+      },
+    };
+    const turnDuration = {
+      'type': 'system',
+      'subtype': 'turn_duration',
+      'durationMs': 29623,
+      'isMeta': false,
+    };
+
+    Future<(ClaudeChat, _LiveHost)> watch({
+      String? waitingFor,
+      String state = 'working',
+    }) async {
+      final host = _LiveHost(
+        '0\n',
+        state: state,
+        status: waitingFor == null ? null : 'waiting',
+        waitingFor: waitingFor,
+      );
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      return (chat, host);
+    }
+
+    test('starts at the prompt\'s own time, names the tool running, and '
+        'counts each message once', () async {
+      final (chat, host) = await watch();
+      expect(chat.progress, isNull);
+
+      host.adds(prompt());
+      await _settle();
+      expect(chat.progress?.started, DateTime.utc(2026, 10, 1, 12, 6, 10, 643));
+      expect(chat.progress?.tokens, 0);
+      expect(chat.progress?.tool, isNull);
+
+      host.adds(callsBash());
+      await _settle();
+      expect(chat.progress?.tool?.name, 'Bash');
+      expect(chat.progress?.tool?.summary, 'npm test');
+      expect(chat.progress?.tokens, 87);
+
+      host.adds(bashResult());
+      await _settle();
+      expect(chat.progress?.tool, isNull);
+      expect(chat.progress?.tokens, 87);
+
+      // Two lines of one message: its usage counted once, not twice. The
+      // first block of the last message says the turn is over, too, so
+      // here the message is still open: written with no stop yet.
+      host.adds(answers('thinking', stop: null));
+      host.adds(answers('text', stop: null));
+      await _settle();
+      expect(chat.progress?.tokens, 87 + 1313);
+      expect(ChatProgress.count(chat.progress!.tokens), '1.4k');
+
+      host.adds(turnDuration);
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('a message that ends the turn clears the line at once', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash())
+        ..adds(bashResult())
+        ..adds(answers('thinking'));
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a session picked up mid-turn shows the turn from its real start',
+      () async {
+        final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+        final size = utf8.encode('$text\n').length;
+        final host = _LiveHost('$size\n$text\n', state: 'working');
+        final chat = ClaudeChat(open: host.open);
+        addTearDown(chat.dispose);
+        await chat.continueFrom(_live);
+        expect(
+          chat.progress?.started,
+          DateTime.utc(2026, 10, 1, 12, 6, 10, 643),
+        );
+        expect(chat.progress?.tool?.summary, 'npm test');
+      },
+    );
+
+    test('a finished session\'s history leaves no turn open', () async {
+      final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      expect(chat.progress, isNull);
+    });
+
+    test('at a permission prompt it says what it waits for, from the '
+        'listing', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash());
+      await _settle();
+      expect(chat.progress?.waitingFor, isNull);
+
+      host
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, 'permission prompt');
+
+      // Answered at the terminal: working again.
+      host
+        ..state = 'working'
+        ..status = null
+        ..waitingFor = null;
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, isNull);
+      expect(chat.progress, isNotNull);
+    });
+
+    test('idle at two looks running, a turn whose end was missed stops '
+        'spinning', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+      await chat.checkState();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'idle shows nothing, and a turn that ends goes from the line',
+      () async {
+        final (chat, host) = await watch(state: 'done');
+        expect(chat.progress, isNull);
+        host.adds(prompt());
+        await _settle();
+        final started = chat.progress?.started;
+        expect(started, isNotNull);
+        host.adds(turnDuration);
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('an interrupted turn clears the line', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': '[Request interrupted by user]'},
+            ],
+          },
+        });
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('the session going clears the line', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.adds('sshbox:ended\n');
+      await host.follow!.close();
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a turn of this chat\'s own runs from the send to the result',
+      () async {
+        final claude = _FakeClaude();
+        final chat = ClaudeChat(open: (_) async => claude.channel);
+        addTearDown(chat.dispose);
+        await chat.start();
+        final before = DateTime.now();
+        await chat.send('hello');
+        expect(chat.progress!.started.isBefore(before), isFalse);
+        claude.event(callsBash());
+        await _settle();
+        expect(chat.progress?.tokens, 87);
+        claude.event({'type': 'result', 'subtype': 'success'});
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('a look that comes back after its turn ended says nothing of the '
+        'next one', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      final look = chat.checkState();
+      await _settle();
+      // Answered and finished meanwhile, and the next turn begun.
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      expect(chat.progress, isNotNull);
+      expect(chat.progress?.waitingFor, isNull);
+    });
+
+    test('an idle look from the last turn does not count against the next',
+        () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'done';
+      final look = chat.checkState();
+      await _settle();
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      host.agentsGate = null;
+      // One idle look at the new turn: not yet two.
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+    });
+
+    test('times and counts read as Claude Code writes them', () {
+      expect(ChatProgress.elapsed(const Duration(seconds: 33)), '33s');
+      expect(ChatProgress.elapsed(const Duration(seconds: 125)), '2m 5s');
+      expect(ChatProgress.elapsed(const Duration(minutes: 64)), '1h 4m');
+      expect(ChatProgress.elapsed(const Duration(seconds: -3)), '0s');
+      expect(ChatProgress.count(87), '87');
+      expect(ChatProgress.count(1000), '1k');
+      expect(ChatProgress.count(1400), '1.4k');
+      expect(ChatProgress.count(12345), '12k');
+    });
+  });
+
+  group('the session\'s checklist', () {
+    // Shapes measured on 2.1.286: a TaskCreate has no id, which its result
+    // gives; a TaskUpdate names it, with a status of in_progress, completed
+    // or deleted. The words are this test's own.
+    Map<String, Object?> call(
+      String id,
+      String name,
+      Map<String, Object?> input,
+    ) => {
+      'type': 'assistant',
+      'message': {
+        'id': 'msg_$id',
+        'stop_reason': 'tool_use',
+        'content': [
+          {'type': 'tool_use', 'id': id, 'name': name, 'input': input},
+        ],
+      },
+    };
+    Map<String, Object?> result(String id, String text, {bool error = false}) =>
+        {
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': id,
+                'content': text,
+                'is_error': error,
+              },
+            ],
+          },
+        };
+    List<Map<String, Object?>> made(int n, String subject, {String? form}) => [
+      call('c$n', 'TaskCreate', {
+        'subject': subject,
+        'description': 'd',
+        'activeForm': ?form,
+      }),
+      result('c$n', 'Task #$n created successfully: $subject'),
+    ];
+    // A TaskUpdate and its result, which says it took.
+    List<Map<String, Object?>> update(
+      int n,
+      Map<String, Object?> input, {
+      bool fails = false,
+    }) {
+      final id = 'u$n${input.hashCode}';
+      return [
+        call(id, 'TaskUpdate', {'taskId': '$n', ...input}),
+        result(id, fails ? 'Task not found' : 'Updated task #$n status', error: fails),
+      ];
+    }
+
+    void adds(_LiveHost host, List<Map<String, Object?>> lines) {
+      for (final line in lines) {
+        host.adds(line);
+      }
+    }
+
+    List<Map<String, Object?>> todo(String id, Map<String, Object?> input) => [
+      call(id, 'TodoWrite', input),
+      result(id, 'Todos have been modified successfully'),
+    ];
+
+    Future<(ClaudeChat, _LiveHost)> watch([
+      List<Object?> history = const [],
+    ]) async {
+      final text = history.map(jsonEncode).join('\n');
+      final host = _LiveHost(
+        history.isEmpty ? '0\n' : '${utf8.encode('$text\n').length}\n$text\n',
+        state: 'working',
+      );
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      return (chat, host);
+    }
+
+    List<String> labels(ClaudeChat chat) => [
+      for (final t in chat.openTasks) '${t.status}:${t.label}',
+    ];
+
+    test('TaskCreate gets its id from the result, and TaskUpdate moves it '
+        'along, live', () async {
+      final (chat, host) = await watch();
+      expect(chat.openTasks, isEmpty);
+      for (final line in [
+        ...made(1, 'Fix the bug', form: 'Fixing the bug'),
+        ...made(2, 'Write the tests'),
+      ]) {
+        host.adds(line);
+      }
+      await _settle();
+      expect(labels(chat), ['pending:Fix the bug', 'pending:Write the tests']);
+
+      adds(host, update(1, {'status': 'in_progress'}));
+      await _settle();
+      // In progress, it reads as its active form.
+      expect(labels(chat), [
+        'in_progress:Fixing the bug',
+        'pending:Write the tests',
+      ]);
+
+      adds(host, update(1, {'status': 'completed'}));
+      await _settle();
+      expect(labels(chat), ['pending:Write the tests']);
+      expect(chat.tasksDone, 1);
+
+      adds(host, update(2, {'status': 'deleted'}));
+      await _settle();
+      expect(chat.openTasks, isEmpty);
+    });
+
+    test(
+      'a session opened mid-way rebuilds its list from the history',
+      () async {
+        final (chat, _) = await watch([
+          ...made(1, 'One'),
+          ...made(2, 'Two', form: 'Doing two'),
+          ...update(2, {'status': 'in_progress'}),
+          ...made(3, 'Three'),
+          ...update(3, {'status': 'completed'}),
+        ]);
+        expect(labels(chat), ['pending:One', 'in_progress:Doing two']);
+        expect(chat.tasksDone, 1);
+      },
+    );
+
+    test('TodoWrite carries the whole list every time', () async {
+      final (chat, host) = await watch();
+      adds(host, todo('t1', {
+          'todos': [
+            {
+              'content': 'First',
+              'status': 'in_progress',
+              'activeForm': 'Firsting',
+            },
+            {
+              'content': 'Second',
+              'status': 'pending',
+              'activeForm': 'Seconding',
+            },
+          ],
+        }));
+      await _settle();
+      expect(labels(chat), ['in_progress:Firsting', 'pending:Second']);
+      adds(host, todo('t2', {
+          'todos': [
+            {
+              'content': 'Second',
+              'status': 'in_progress',
+              'activeForm': 'Seconding',
+            },
+          ],
+        }));
+      await _settle();
+      // The list shrank: what it no longer names is gone, not kept.
+      expect(labels(chat), ['in_progress:Seconding']);
+      expect(chat.tasksDone, 0);
+    });
+
+    test('a failed TaskUpdate or TodoWrite leaves the list as it was', () async {
+      final (chat, host) = await watch();
+      for (final line in made(1, 'Keep me')) {
+        host.adds(line);
+      }
+      await _settle();
+      adds(host, update(1, {'status': 'completed'}, fails: true));
+      adds(host, update(1, {'status': 'deleted'}, fails: true));
+      host
+        ..adds(call('tw', 'TodoWrite', {'todos': <Object?>[]}))
+        ..adds(result('tw', 'refused', error: true));
+      await _settle();
+      expect(labels(chat), ['pending:Keep me']);
+      expect(chat.tasksDone, 0);
+    });
+
+    test('a result read before its call still makes the task', () async {
+      // The tail of a transcript cut mid-way: the result first.
+      final (chat, host) = await watch([
+        result('c1', 'Task #1 created successfully: Late'),
+        call('c1', 'TaskCreate', {'subject': 'Late', 'description': 'd'}),
+      ]);
+      expect(labels(chat), ['pending:Late']);
+      host.adds(result('x', 'unrelated'));
+    });
+
+    test('a task it never saw made, and a create that failed, are not '
+        'invented', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(update(9, {'status': 'in_progress'}).first)
+        ..adds(
+          call('bad', 'TaskCreate', {'subject': 'Nope', 'description': 'd'}),
+        )
+        ..adds(result('bad', 'no such tool', error: true));
+      await _settle();
+      expect(chat.openTasks, isEmpty);
+    });
+
+    test(
+      'this chat\'s own turns fill it too, and a new chat empties it',
+      () async {
+        final claude = _FakeClaude();
+        final chat = ClaudeChat(open: (_) async => claude.channel);
+        addTearDown(chat.dispose);
+        await chat.start();
+        for (final line in made(1, 'Own task')) {
+          claude.event(line);
+        }
+        await _settle();
+        expect(labels(chat), ['pending:Own task']);
+        await chat.newChat();
+        expect(chat.openTasks, isEmpty);
+        expect(chat.tasksDone, 0);
+      },
+    );
   });
 }

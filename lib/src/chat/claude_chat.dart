@@ -100,6 +100,50 @@ class ChatNotice extends ChatEntry {
   final bool failed;
 }
 
+/// A turn in flight, for the line under the chat that says the session is
+/// working rather than stuck — what Claude Code's own `✶ Zesting… (33s · ↓
+/// 1.4k tokens)` says at a terminal.
+class ChatProgress {
+  const ChatProgress({
+    required this.started,
+    required this.tokens,
+    this.tool,
+    this.waitingFor,
+  });
+
+  /// When the turn began: the transcript's own time on the line that
+  /// started it, so a session picked up mid-turn shows how long it has
+  /// really been at it. The host's clock, not this device's.
+  final DateTime started;
+
+  /// Output tokens of the turn's messages so far. A transcript gets a
+  /// message's line only once the message is whole — measured on 2.1.286 —
+  /// so this moves a message at a time, not a token at a time.
+  final int tokens;
+
+  /// The tool running now, if any.
+  final ChatToolRun? tool;
+
+  /// What the session waits for at its terminal — `permission prompt` — by
+  /// what `claude agents` says of it; null while it is working.
+  final String? waitingFor;
+
+  /// Seconds as Claude Code's line writes them: `33s`, `2m 5s`, `1h 4m`.
+  static String elapsed(Duration time) {
+    final s = math.max(0, time.inSeconds);
+    if (s < 60) return '${s}s';
+    if (s < 3600) return '${s ~/ 60}m ${s % 60}s';
+    return '${s ~/ 3600}h ${s % 3600 ~/ 60}m';
+  }
+
+  /// Tokens as Claude Code's line writes them: `87`, `1.4k`, `12k`.
+  static String count(int tokens) {
+    if (tokens < 1000) return '$tokens';
+    final k = tokens / 1000;
+    return '${k < 10 ? k.toStringAsFixed(1).replaceFirst('.0', '') : k.round()}k';
+  }
+}
+
 /// A slash command run in the session, as its transcript records it, and
 /// what it printed when it runs in the CLI rather than as a prompt.
 class ChatCommand extends ChatEntry {
@@ -108,6 +152,36 @@ class ChatCommand extends ChatEntry {
   final String name;
   final String args;
   String? output;
+}
+
+/// One line of the session's checklist, as Claude Code's own view lists it:
+/// from TaskCreate and TaskUpdate, or TodoWrite's whole list. Host text, so
+/// it is drawn and never run.
+class ChatTask {
+  ChatTask({
+    required this.id,
+    required this.subject,
+    this.activeForm,
+    this.status = 'pending',
+  });
+
+  final String id;
+  String subject;
+
+  /// What it reads as while in progress — `Fixing the bug` for `Fix the bug`.
+  String? activeForm;
+
+  /// `pending`, `in_progress` or `completed`.
+  String status;
+
+  bool get done => status == 'completed';
+  bool get inProgress => status == 'in_progress';
+
+  /// What a row says: the active form while it is being done.
+  String get label =>
+      inProgress && (activeForm?.trim().isNotEmpty ?? false)
+      ? activeForm!.trim()
+      : subject.trim();
 }
 
 /// What Claude may do on the host without being asked.
@@ -387,6 +461,191 @@ class ClaudeChat extends ChangeNotifier {
   /// final, for the same reason as [_entries].
   Map<String, ChatToolRun> _running = {};
 
+  /// The session's checklist, in the order its tasks were made, by task id.
+  /// Rebuilt from the transcript, which holds every TaskCreate, TaskUpdate and
+  /// TodoWrite — measured on 2.1.286: a TaskCreate carries no id, which only
+  /// its result gives (`Task #14 created successfully…`), so the call waits in
+  /// [_parked] for it. A task made before the part of the transcript read is
+  /// not known, and a TaskUpdate naming it is dropped.
+  final Map<String, ChatTask> _tasks = {};
+
+  /// Task calls waiting for their result, by `tool_use_id`: Claude Code's own
+  /// view changes only when the tool succeeded, so nothing is applied before
+  /// its result says so.
+  final Map<String, ({String name, Map<String, dynamic> input})> _parked = {};
+
+  /// The tasks still to do or being done, for the list under the working
+  /// line, in order. Completed ones are only counted, by [tasksDone].
+  List<ChatTask> get openTasks => [
+    for (final task in _tasks.values)
+      if (!task.done) task,
+  ];
+
+  int get tasksDone => _tasks.values.where((task) => task.done).length;
+
+  void _noteTaskCall(String name, Map<String, dynamic> input, String id) {
+    if (_pastOnly || !const {'TaskCreate', 'TaskUpdate', 'TodoWrite'}.contains(name)) {
+      return;
+    }
+    _parked[id] = (name: name, input: input);
+  }
+
+  /// A tool result: the one that lets a parked task call take effect, and, for
+  /// a TaskCreate, tells it its id.
+  void _noteTaskResult(Object? toolUseId, String result, bool failed) {
+    final call = _parked.remove(toolUseId);
+    if (call == null || failed || _pastOnly) return;
+    final input = call.input;
+    String? text(String key) => input[key] is String ? input[key] as String : null;
+    switch (call.name) {
+      case 'TaskCreate':
+        final subject = text('subject');
+        final id = RegExp(r'^Task #(\d+) created').firstMatch(result)?.group(1);
+        if (subject == null || id == null) return;
+        _tasks[id] = ChatTask(
+          id: id,
+          subject: subject,
+          activeForm: text('activeForm'),
+        );
+      case 'TaskUpdate':
+        final task = _tasks[text('taskId')];
+        if (task == null) return;
+        switch (text('status')) {
+          case 'deleted':
+            _tasks.remove(task.id);
+            return;
+          case final status? when const {
+            'pending',
+            'in_progress',
+            'completed',
+          }.contains(status):
+            task.status = status;
+        }
+        task.subject = text('subject') ?? task.subject;
+        task.activeForm = text('activeForm') ?? task.activeForm;
+      case 'TodoWrite':
+        final todos = input['todos'];
+        if (todos is! List) return;
+        // The whole list every time.
+        _tasks.clear();
+        for (final (i, todo) in todos.indexed) {
+          if (todo is! Map || todo['content'] is! String) continue;
+          _tasks['todo-$i'] = ChatTask(
+            id: 'todo-$i',
+            subject: todo['content'] as String,
+            activeForm: todo['activeForm'] is String
+                ? todo['activeForm'] as String
+                : null,
+            status: const {'pending', 'in_progress', 'completed'}.contains(
+                  todo['status'],
+                )
+                ? todo['status'] as String
+                : 'pending',
+          );
+        }
+    }
+  }
+
+  /// When the turn in flight began, or null between turns.
+  DateTime? _turnStart;
+
+  /// Output tokens of the turn in flight, by message id: every content block
+  /// of a message gets a transcript line of its own, each repeating the
+  /// message's whole usage, so a message is counted once.
+  final Map<String, int> _turnTokens = {};
+
+  /// What the watched session waits for, from the listing: see [checkState].
+  String? _waitingFor;
+
+  /// Set while [loadEarlier] replays older turns, which are history and say
+  /// nothing about the turn in flight.
+  bool _pastOnly = false;
+
+  /// The turn in flight, or null when there is none — idle, or not begun.
+  ChatProgress? get progress {
+    final started = _turnStart;
+    if (started == null) return null;
+    return ChatProgress(
+      started: started,
+      tokens: _turnTokens.values.fold(0, (sum, n) => sum + n),
+      tool: _running.values.lastOrNull,
+      waitingFor: _watching == null ? null : _waitingFor,
+    );
+  }
+
+  void _startTurn(Object? timestamp) {
+    if (_pastOnly || _turnStart != null) return;
+    _turnStart =
+        (timestamp is String ? DateTime.tryParse(timestamp) : null) ??
+        DateTime.now();
+    _turnTokens.clear();
+    // What the last turn waited for, or was seen idle after, is not this
+    // one's.
+    _waitingFor = null;
+    _seenIdle = false;
+  }
+
+  void _endTurn() {
+    if (_pastOnly) return;
+    _turnStart = null;
+    _turnTokens.clear();
+    _waitingFor = null;
+    _seenIdle = false;
+  }
+
+  /// What an assistant line says of the turn: its tokens, and whether it is
+  /// the turn's last message. A line read with no turn open — the history cut
+  /// into one — opens it at its own time, the nearest there is.
+  void _onAssistantTurn(Map<String, dynamic> event) {
+    final message = event['message'];
+    if (_pastOnly || message is! Map<String, dynamic>) return;
+    final stop = message['stop_reason'];
+    if (stop is String && stop != 'tool_use') return _endTurn();
+    _startTurn(event['timestamp']);
+    final usage = message['usage'];
+    final id = message['id'];
+    final tokens = usage is Map ? usage['output_tokens'] : null;
+    if (id is String && tokens is int) _turnTokens[id] = tokens;
+  }
+
+  bool _checking = false;
+
+  /// The last look found the session idle: see [checkState].
+  bool _seenIdle = false;
+
+  /// Asks the host what the watched session is doing now, for what the
+  /// transcript cannot tell: a tool call waiting at a permission prompt
+  /// looks, there, just like one still running. The page asks this every
+  /// few seconds while a turn is open and the chat is on screen. Anything
+  /// going wrong costs only this look.
+  Future<void> checkState() async {
+    final watching = _watching;
+    final turn = _turnStart;
+    if (watching == null || turn == null || _checking) return;
+    _checking = true;
+    try {
+      final now = (await agents())
+          .where((row) => row.sessionId == watching.sessionId)
+          .firstOrNull;
+      // The turn looked at may have ended, and another begun, meanwhile.
+      if (_watching != watching || _turnStart != turn) return;
+      if (now == null || !now.live) return;
+      _waitingFor = now.waitingFor;
+      // Idle with nothing to wait for, twice running: the turn's end was
+      // missed, so it stops spinning rather than spinning for ever. Twice,
+      // since a turn just typed into is idle for a moment before the
+      // listing catches up.
+      final idle = now.status == 'idle' && now.waitingFor == null;
+      if (idle && _seenIdle) _endTurn();
+      _seenIdle = idle && _turnStart != null;
+      notifyListeners();
+    } catch (_) {
+      // Disconnected, or the host could not list them: the next look.
+    } finally {
+      _checking = false;
+    }
+  }
+
   /// Starts Claude on the host. Safe to call again: a chat already up, or on
   /// its way up, stays as it is.
   Future<void> start() async {
@@ -451,6 +710,7 @@ class ClaudeChat extends ChangeNotifier {
     });
     _entries.add(ChatSaid(message, mine: true));
     _busy = true;
+    _startTurn(null);
     notifyListeners();
   }
 
@@ -639,6 +899,7 @@ class ClaudeChat extends ChangeNotifier {
       final pane = agent.interactive ? await _findPane(agent, pid) : null;
       if (_disposed) return;
       _watching = agent;
+      _waitingFor = agent.waitingFor;
       _say(
         ChatNotice(
           !agent.interactive
@@ -678,6 +939,8 @@ class ClaudeChat extends ChangeNotifier {
     _entries.clear();
     _running.clear();
     _orphans.clear();
+    _tasks.clear();
+    _parked.clear();
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
@@ -689,6 +952,7 @@ class ClaudeChat extends ChangeNotifier {
     _watching = null;
     _readOnly = null;
     _pending.clear();
+    _endTurn();
   }
 
   /// The tmux pane [agent], an interactive session, runs in — or null, with
@@ -862,6 +1126,8 @@ class ClaudeChat extends ChangeNotifier {
   void _followDone(ClaudeAgent agent) {
     _followed = null;
     _follower = null;
+    // Not followed, nothing here can tell how the turn goes on.
+    _endTurn();
     if (!_sessionGone) {
       _say(
         ChatNotice(
@@ -1290,6 +1556,7 @@ class ClaudeChat extends ChangeNotifier {
         run.result = '';
       }
       _running.clear();
+      _endTurn();
     }
     notifyListeners();
     return (from: size, carry: body.sublist(whole));
@@ -1379,6 +1646,7 @@ class ClaudeChat extends ChangeNotifier {
         final shownRunning = _running;
         _entries = [];
         _running = running;
+        _pastOnly = true;
         try {
           for (final line in const LineSplitter().convert(
             const Utf8Decoder(
@@ -1392,6 +1660,7 @@ class ClaudeChat extends ChangeNotifier {
         } finally {
           _entries = shownEntries;
           _running = shownRunning;
+          _pastOnly = false;
         }
       }
     } finally {
@@ -1429,7 +1698,12 @@ class ClaudeChat extends ChangeNotifier {
     final message = event['message'];
     switch (event['type']) {
       case 'assistant':
+        _onAssistantTurn(event);
         _onAssistant(message);
+      // Written once the turn is over, measured; an assistant line that
+      // ends the turn has usually said so already.
+      case 'system' when event['subtype'] == 'turn_duration':
+        _endTurn();
       case 'system' when event['subtype'] == 'local_command':
         if (event['content'] case final String text) _onCommandLine(text);
       case 'user' when message is Map<String, dynamic>:
@@ -1443,6 +1717,11 @@ class ClaudeChat extends ChangeNotifier {
         // ponytail: a message the user typed that itself opens with `<` is
         // taken for one Claude Code wrote, and left out.
         if (text.isEmpty || text.startsWith('<')) return;
+        if (text.startsWith('[Request interrupted')) {
+          _endTurn();
+        } else {
+          _startTurn(event['timestamp']);
+        }
         _entries.add(
           text.startsWith('[Request interrupted')
               ? ChatNotice('The user interrupted this turn.')
@@ -1527,11 +1806,14 @@ class ClaudeChat extends ChangeNotifier {
         _sessionId = event['session_id'] as String?;
         notifyListeners();
       case 'assistant':
-        if (_onAssistant(event['message'])) notifyListeners();
+        _onAssistantTurn(event);
+        _onAssistant(event['message']);
+        notifyListeners();
       case 'user':
         if (_onToolResults(event['message'])) notifyListeners();
       case 'result':
         _busy = false;
+        _endTurn();
         final subtype = event['subtype'];
         if (subtype is String && subtype != 'success') {
           _entries.add(ChatNotice(_resultReason(subtype), failed: true));
@@ -1573,11 +1855,14 @@ class ClaudeChat extends ChangeNotifier {
             },
           );
           _entries.add(run);
+          _noteTaskCall(run.name, run.input, run.id);
           // Its result may have been read already, before this call was.
           if (_orphans.remove(run.id) case final orphan?) {
             run
               ..result = orphan.result
               ..failed = orphan.failed;
+            // Its result was read before it was: a task call takes effect now.
+            _noteTaskResult(run.id, orphan.result, orphan.failed);
           } else {
             _running[run.id] = run;
           }
@@ -1600,6 +1885,7 @@ class ClaudeChat extends ChangeNotifier {
       final id = block['tool_use_id'];
       final result = _resultText(block['content']);
       final failed = block['is_error'] == true;
+      _noteTaskResult(id, result, failed);
       final run = _running.remove(id);
       if (run == null) {
         // Its call is further back than anything read yet: kept for when
@@ -1650,6 +1936,7 @@ class ClaudeChat extends ChangeNotifier {
         ..failed = true;
     }
     _running.clear();
+    _endTurn();
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
     notifyListeners();
   }

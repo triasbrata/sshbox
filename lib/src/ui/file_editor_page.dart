@@ -1954,7 +1954,11 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
 /// own surface to be near it; Source has the whole file, that block included.
 class CodeBlockBuilder extends MermaidBuilder {
   /// [copyable] as [MermaidBuilder]'s: chat's, which has no Source view.
-  CodeBlockBuilder({super.copyable});
+  /// [wrap] folds a long line onto the next row, as chat does, rather than
+  /// scrolling sideways as the preview does; the text itself is unchanged.
+  CodeBlockBuilder({super.copyable, this.wrap = false});
+
+  final bool wrap;
 
   @override
   Widget? visitElementAfterWithContext(
@@ -1981,6 +1985,7 @@ class CodeBlockBuilder extends MermaidBuilder {
       // should not bring a blank line along.
       source: source.substring(0, source.length - 1),
       style: preferredStyle,
+      wrap: wrap,
     );
   }
 }
@@ -1991,10 +1996,11 @@ class CodeBlockBuilder extends MermaidBuilder {
 /// No ceiling of its own — the preview stops at 100 KB, well inside what the
 /// clipboard takes.
 class _CodeBlock extends StatefulWidget {
-  const _CodeBlock({required this.source, this.style});
+  const _CodeBlock({required this.source, this.style, this.wrap = false});
 
   final String source;
   final TextStyle? style;
+  final bool wrap;
 
   @override
   State<_CodeBlock> createState() => _CodeBlockState();
@@ -2015,19 +2021,26 @@ class _CodeBlockState extends State<_CodeBlock> {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Expanded(
-        child: Scrollbar(
-          controller: _scroll,
-          child: SingleChildScrollView(
-            controller: _scroll,
-            scrollDirection: Axis.horizontal,
-            // What MarkdownStyleSheet.codeblockPadding gives a block the
-            // package builds itself, which this stands in for.
-            padding: const EdgeInsets.all(8),
-            child: Text.rich(
-              TextSpan(text: widget.source, style: widget.style),
-            ),
-          ),
-        ),
+        child: widget.wrap
+            ? Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text.rich(
+                  TextSpan(text: widget.source, style: widget.style),
+                ),
+              )
+            : Scrollbar(
+                controller: _scroll,
+                child: SingleChildScrollView(
+                  controller: _scroll,
+                  scrollDirection: Axis.horizontal,
+                  // What MarkdownStyleSheet.codeblockPadding gives a block the
+                  // package builds itself, which this stands in for.
+                  padding: const EdgeInsets.all(8),
+                  child: Text.rich(
+                    TextSpan(text: widget.source, style: widget.style),
+                  ),
+                ),
+              ),
       ),
       // Beside the code, not over it: an overlay would cover the first line
       // of a wide block and take the drag that scrolls it. 40 dp square, so a
