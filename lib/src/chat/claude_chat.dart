@@ -1344,9 +1344,11 @@ class ClaudeChat extends ChangeNotifier {
   }
 
   /// Whether the host may be asked about sub-agents now: the chat is on show
-  /// with the app in front — [setSeen] — and, for a sub-agent's view, so is it
-  /// ([setSubVisible]).
-  bool get _canAskForSubAgents => _top._seen && (_sub == null || _subVisible);
+  /// with the app in front — [setSeen]. A sub-agent's view covered by another
+  /// is no reason to wait: the listing is one command for the whole session,
+  /// its answer is shared through the top chat, and the view comes back to it
+  /// found.
+  bool get _canAskForSubAgents => _top._seen;
 
   bool _seen = true;
   bool _askWhenSeen = false;
@@ -2073,6 +2075,10 @@ class ClaudeChat extends ChangeNotifier {
     _tasks.clear();
     _parked.clear();
     _context = null;
+    // What was waiting to ask about the session being left, and how often it
+    // had asked, is of no use to the one that replaces it.
+    _askWhenSeen = false;
+    _subTries.clear();
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
