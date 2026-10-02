@@ -3448,6 +3448,129 @@ touch '${done.path}'
     },
   );
 
+  // #216: the UI text size from the keyboard, the wheel and the in-frame Help
+  // menu, as a person would, through X: Ctrl with = − 0 steps it 10% at a
+  // time and back to 100%, Ctrl+wheel over the UI grows it and over a
+  // terminal leaves it, and Ctrl+Shift+− still reaches a program as ^_.
+  _test(
+    'Ctrl with = − 0, Ctrl+wheel and Help zoom the UI text, never a terminal',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys and the wheel go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      await _launch(tester);
+      await uiTextSize.choose(1);
+      await tester.pump();
+
+      Future<void> keys(String chord) async {
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo(['key', '--clearmodifiers', chord]);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      Future<void> sizeIs(int percent, String what) => _until(
+        tester,
+        () => (uiTextSize.value * 100).round() == percent,
+        '$what: the UI text size to be $percent% '
+            '(it is ${(uiTextSize.value * 100).round()}%)',
+        timeout: const Duration(seconds: 5),
+      );
+
+      // 1 and 2: the keys.
+      await keys('ctrl+equal');
+      await keys('ctrl+equal');
+      await sizeIs(120, 'Ctrl+= twice');
+      expect(
+        find.textContaining('UI text size 120%'),
+        findsWidgets,
+        reason: 'no toast with the size',
+      );
+      await _settings(tester);
+      final slider = find.byWidgetPredicate(
+        (w) => w is Semantics && w.properties.label == 'Set the UI text size',
+      );
+      await tester.scrollUntilVisible(
+        slider,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('120%'), findsOneWidget, reason: 'Settings disagrees');
+      await _backHome(tester);
+      await keys('ctrl+minus');
+      await sizeIs(110, 'Ctrl+−');
+      await keys('ctrl+0');
+      await sizeIs(100, 'Ctrl+0');
+
+      // Where a point of the app is on the X screen.
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      Future<void> ctrlWheelUp(Offset at) async {
+        final x = (window.left + frame + at.dx * ratio).round();
+        final y = (window.top + frame + at.dy * ratio).round();
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo([
+          'mousemove', '$x', '$y', 'sleep', '0.2', //
+          'keydown', 'Control_L', 'click', '4', 'sleep', '0.2', 'click', '4',
+          'sleep', '0.2', 'keyup', 'Control_L',
+        ]);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      // 3: the wheel over Home grows it; over a terminal it does not.
+      final home = tester.view.physicalSize / ratio;
+      await ctrlWheelUp(Offset(home.width / 2, home.height * 0.6));
+      await _until(
+        tester,
+        () => uiTextSize.value > 1.001,
+        'Ctrl+wheel up over Home to grow the UI text',
+        timeout: const Duration(seconds: 5),
+      );
+      await uiTextSize.choose(1);
+      await tester.pump();
+      final view = await _localShell(tester);
+      final terminal = tester.getCenter(find.byWidget(view));
+      await ctrlWheelUp(terminal);
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        (uiTextSize.value * 100).round(),
+        100,
+        reason: 'Ctrl+wheel over the terminal zoomed the UI',
+      );
+
+      // 4: Ctrl+Shift+− reaches the program, as ^_.
+      _run(view, 'cat -v');
+      await tester.pump(const Duration(seconds: 1));
+      await keys('ctrl+shift+minus');
+      await keys('Return');
+      final lines = view.terminal.buffer.lines;
+      await _until(tester, () {
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].getText().contains('^_')) return true;
+        }
+        return false;
+      }, 'cat -v to print ^_ for Ctrl+Shift+−');
+      expect((uiTextSize.value * 100).round(), 100);
+      await keys('ctrl+c');
+
+      // 5: Help's Zoom in, Zoom out and Actual size.
+      await tester.tap(_named('Help'));
+      await _pick(tester, 'Zoom in');
+      await sizeIs(110, 'Help › Zoom in');
+      await tester.tap(_named('Help'));
+      await _pick(tester, 'Zoom in');
+      await sizeIs(120, 'Help › Zoom in again');
+      await tester.tap(_named('Help'));
+      await _pick(tester, 'Zoom out');
+      await sizeIs(110, 'Help › Zoom out');
+      await tester.tap(_named('Help'));
+      await _pick(tester, 'Actual size');
+      await sizeIs(100, 'Help › Actual size');
+      await _closeTabs(tester);
+    },
+  );
+
   // #126, with the real pointer. In a shell: a double click selects a word,
   // and selecting more after it — a longer drag, then a fresh one elsewhere
   // — copies each, a few times over, the user having seen it fail often and

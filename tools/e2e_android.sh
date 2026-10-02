@@ -908,6 +908,14 @@ JSON
   return "$status"
 }
 
+# #216: Home's Text size control and Settings' slider (.maestro/text_size_home).
+text_size_home() {
+  local status=0
+  flow text_size_home || status=1
+  keep_shots 'text-size-*.png'
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -1014,6 +1022,10 @@ echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::text_size_home (report only)"
+text_size_home || echo "::warning::text_size_home failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"
