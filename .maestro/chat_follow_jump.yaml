@@ -1,0 +1,133 @@
+# Chat follows the latest reply only while the view is at its end, and has a
+# button to get back there: reaching the end turns following on; the reader's
+# own scroll up turns it off at once, so what Claude writes then leaves the
+# view where it was and the "Jump to latest, N new" button shows; scrolling
+# back to the end, or tapping the button, follows again.
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_progress (tools/e2e_android.sh's chat_follow_jump). long:, long2: and
+# long3: write six answers of 25 lines (well over a screen) five seconds after
+# the line, ending "Long answer 6 end", "Second answer 6 end" and "Third
+# answer 6 end"; late: does so twenty seconds after, for a reader to scroll
+# away and come back first.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+# 1. Never scrolled: each answer is followed to its end, the sixth's end in
+# view, and no button.
+- tapOn: "Message “E2E live session”…"
+- inputText: "long: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*Long answer 6 end.*"
+    timeout: 30000
+- assertNotVisible: "(?s).*Jump to latest.*"
+- takeScreenshot: chat-follow-jump-1-followed
+
+# 2. The reader scrolls up a few lines while the next turn's grace runs: the
+# button shows at once, and the six answers that come then do not move the
+# view -- their last line stays off screen, and the button counts them.
+- tapOn: "Message “E2E live session”…"
+- inputText: "long2: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- swipe:
+    start: 50%, 25%
+    end: 50%, 50%
+    duration: 400
+- extendedWaitUntil:
+    visible: "(?s).*Jump to latest.*"
+    timeout: 5000
+- takeScreenshot: chat-follow-jump-2-away
+- extendedWaitUntil:
+    visible: "(?s).*Jump to latest, \\d+ new.*"
+    timeout: 30000
+- assertNotVisible: "(?s).*Second answer 6 end.*"
+- takeScreenshot: chat-follow-jump-2-held
+
+# 3. Back at the end by hand: the button goes, and the next turn is followed.
+- scrollUntilVisible:
+    element: "(?s).*Second answer 6 end.*"
+    direction: DOWN
+    timeout: 60000
+- swipe:
+    start: 50%, 50%
+    end: 50%, 20%
+    duration: 300
+- swipe:
+    start: 50%, 50%
+    end: 50%, 20%
+    duration: 300
+- extendedWaitUntil:
+    notVisible: "(?s).*Jump to latest.*"
+    timeout: 5000
+- tapOn: "Message “E2E live session”…"
+- inputText: "long3: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*Third answer 6 end.*"
+    timeout: 30000
+- assertNotVisible: "(?s).*Jump to latest.*"
+- takeScreenshot: chat-follow-jump-3-resumed
+
+# 4. The button: away from the end during late:'s twenty seconds, the button
+# lands at the end and turns following on, so the late answers are followed.
+- tapOn: "Message “E2E live session”…"
+- inputText: "late: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- swipe:
+    start: 50%, 25%
+    end: 50%, 50%
+    duration: 400
+- extendedWaitUntil:
+    visible: "(?s).*Jump to latest.*"
+    timeout: 5000
+- tapOn: "(?s).*Jump to latest.*"
+- extendedWaitUntil:
+    notVisible: "(?s).*Jump to latest.*"
+    timeout: 5000
+- takeScreenshot: chat-follow-jump-4-jumped
+- extendedWaitUntil:
+    visible: "(?s).*Late answer 6 end.*"
+    timeout: 60000
+- assertNotVisible: "(?s).*Jump to latest.*"
+- takeScreenshot: chat-follow-jump-4-followed
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

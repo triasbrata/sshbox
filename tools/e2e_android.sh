@@ -450,6 +450,21 @@ chat_progress() {
   return "$status"
 }
 
+# Chat following the latest reply only at the bottom, and its Latest button,
+# against the stand-in's long:, long2:, long3: and late: turns.
+chat_follow_jump() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_follow_jump || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-follow-jump-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
 # The three hosts, one after another: a block of its own for E2E_ONLY.
 # Fails if any of them did, for a run asking for it alone.
 chat_version() {
@@ -645,6 +660,10 @@ echo "::endgroup::"
 
 echo "::group::chat_progress (report only)"
 chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_follow_jump (report only)"
+chat_follow_jump || echo "::warning::chat_follow_jump failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"

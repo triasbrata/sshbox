@@ -20,7 +20,8 @@ in the stand-in listing, ~/.e2e-agents.json, says busy, as `claude agents`
 says of a session mid-turn. A line starting `wait:` stops at a permission
 prompt instead: its row says waiting, with waitingFor, for twenty seconds.
 A line starting `long:` writes six long answers after five seconds, for a
-chat put behind another tab meanwhile to come back following.
+chat put behind another tab meanwhile to come back following; `long2:` and
+`long3:` write the same under other words, and `late:` after twenty seconds.
 
     python3 e2e_live_claude.py SESSION_ID
 
@@ -123,24 +124,24 @@ def slow_turn(text):
     sys.stdout.write('Slow answer: done\n')
 
 
-def long_turn(text):
-    """Five seconds' grace, for the chat to be put behind another tab, then
-    six answers of twenty-five lines each, well over a screen, the last
-    ending "Long answer 6 end"."""
+def long_turn(text, word='Long', grace=5):
+    """[grace] seconds' grace, for the chat to be put behind another tab or
+    scrolled, then six answers of twenty-five lines each, well over a screen,
+    the last ending "<word> answer 6 end"."""
     record({'type': 'user', 'timestamp': now(),
             'message': {'role': 'user', 'content': text}})
-    time.sleep(5)
+    time.sleep(grace)
     for n in range(1, 7):
-        lines = [f'Long answer {n}, line {k}' for k in range(1, 25)]
+        lines = [f'{word} answer {n}, line {k}' for k in range(1, 25)]
         record({'type': 'assistant', 'timestamp': now(), 'message': {
-            'id': f'msg_e2e_l{n}', 'role': 'assistant',
+            'id': f'msg_e2e_{word}{n}', 'role': 'assistant',
             'stop_reason': 'end_turn' if n == 6 else None,
             'content': [{'type': 'text',
-                         'text': '\n\n'.join(lines + [f'Long answer {n} end'])}]}})
+                         'text': '\n\n'.join(lines + [f'{word} answer {n} end'])}]}})
         time.sleep(0.5)
     record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 8000,
             'timestamp': now()})
-    sys.stdout.write('Long answer 6 end\n')
+    sys.stdout.write(f'{word} answer 6 end\n')
 
 
 task_counter = [0]
@@ -209,6 +210,15 @@ while True:
         waiting_turn(text)
     elif text.startswith('long:'):
         long_turn(text)
+    # The same turn under other words, so one run can tell its turns apart:
+    # chat_follow_jump's second and third, and a late one whose answers come
+    # twenty seconds after the line, for a reader to move before they do.
+    elif text.startswith('long2:'):
+        long_turn(text, 'Second')
+    elif text.startswith('long3:'):
+        long_turn(text, 'Third')
+    elif text.startswith('late:'):
+        long_turn(text, 'Late', 20)
     elif text.startswith('/'):
         name, _, args = text[1:].partition(' ')
         record({'type': 'system', 'subtype': 'local_command', 'content':
