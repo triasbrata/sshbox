@@ -201,11 +201,11 @@ def task_turn(text):
         call('TaskCreate', f'tc{n}', {'subject': name, 'description': name,
                                        'activeForm': form})
         result(f'tc{n}', f'Task #{n} created successfully: {name}')
-    time.sleep(4)
+    time.sleep(12)
     store(ids[0], 'Check the stand-in', 'in_progress', 'Checking the stand-in')
     call('TaskUpdate', f'tu{ids[0]}a', {'taskId': str(ids[0]), 'status': 'in_progress'})
     result(f'tu{ids[0]}a', f'Updated task #{ids[0]} status')
-    time.sleep(6)
+    time.sleep(12)
     store(ids[0], 'Check the stand-in', 'completed', 'Checking the stand-in')
     call('TaskUpdate', f'tu{ids[0]}b', {'taskId': str(ids[0]), 'status': 'completed'})
     result(f'tu{ids[0]}b', f'Updated task #{ids[0]} status')
@@ -214,7 +214,7 @@ def task_turn(text):
         'id': 'msg_tasks_end', 'role': 'assistant', 'stop_reason': 'end_turn',
         'usage': {'output_tokens': 30},
         'content': [{'type': 'text', 'text': 'Tasks played'}]}})
-    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 16000,
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 30000,
             'timestamp': now()})
     listed_as('idle')
     sys.stdout.write('Tasks played\n')
