@@ -1262,7 +1262,7 @@ class _PaneView extends StatefulWidget {
   State<_PaneView> createState() => _PaneViewState();
 }
 
-class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
+class _PaneViewState extends State<_PaneView> {
   /// Shared with the terminal view below it, which is what holds focus.
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
@@ -1289,8 +1289,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
     FocusManager.instance.addListener(_onFocusMoved);
-    // A window that blurs mid-gesture may never deliver the button's up.
-    WidgetsBinding.instance.addObserver(this);
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
@@ -1327,7 +1325,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     FocusManager.instance.removeListener(_onFocusMoved);
-    WidgetsBinding.instance.removeObserver(this);
     _clickTimer?.cancel();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1372,9 +1369,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
   /// gives it to no one, and a menu opened from the pane then gave it back to
   /// the scope as it closed.
   void _onFocusMoved() {
-    // Focus gone from the pane in mid-gesture: the up may never come, and
-    // [selection] would go on ignoring everything but the gesture.
-    if (_gesture != null && !_focusNode.hasFocus) _endGesture();
     if (_shown == true &&
         FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
       _followFocus(keyboard: false);
@@ -1476,16 +1470,6 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
   Offset _clickAt = Offset.zero;
   Timer? _clickTimer;
 
-  // An observer, not an AppLifecycleListener, which asserts on a jump such as
-  // resumed to hidden (a real minimize on Linux).
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
-      _endGesture();
-    }
-  }
-
   /// The mouse gesture that owns [selection] until its button comes up: the
   /// pointer, where it began, and how it selects.
   ({int pointer, Offset anchor, _Grain grain, BufferRange? base})? _gesture;
@@ -1574,6 +1558,18 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
   void _gestureMove(PointerMoveEvent event) {
     if (_gesture?.pointer != event.pointer) return;
     _selectTo(_local(event.position));
+  }
+
+  /// The pointer hovering means no button is down, so a gesture still held
+  /// is one whose up never came — the window blurred mid-drag, or the
+  /// platform dropped it — and [selection] would go on ignoring everything
+  /// but the gesture. A drag always has its button down and never hovers.
+  ///
+  /// This, and not a focus or an app lifecycle change, which a click itself
+  /// can bring on: on a Mac the first click that activates the window did,
+  /// and ended the gesture it began.
+  void _gestureHover(PointerHoverEvent event) {
+    if (_gesture != null) _endGesture();
   }
 
   /// Gives [selection] back to xterm2 once the tap that ends the gesture has
@@ -2003,6 +1999,7 @@ class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
+          onPointerHover: _gestureHover,
           onPointerMove: (event) {
             _trackedMove(event);
             _gestureMove(event);
