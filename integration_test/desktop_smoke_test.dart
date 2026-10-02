@@ -3155,7 +3155,9 @@ touch '${done.path}'
         'the uploaded path and a space in the box',
         timeout: const Duration(seconds: 30),
       );
-      final mine = transfers.items.skip(before).toList();
+      final mine = transfers.items
+          .take(transfers.items.length - before)
+          .toList();
       expect(mine, hasLength(1), reason: 'one transfer for the one file');
       expect(mine.single.name, remoteName);
       expect(mine.single.state, TransferState.done);
