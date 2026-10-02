@@ -82,7 +82,11 @@ env:
 - extendedWaitUntil:
     visible: "You dismissed the question"
     timeout: 30000
-- assertVisible: "Dismissed without an answer."
+# The card is above Claude's reply now, and may be scrolled off with the
+# keyboard up.
+- scrollUntilVisible:
+    element: "Dismissed without an answer."
+    direction: UP
 - takeScreenshot: chat-ask-dismissed
 
 # No hideKeyboard: with none up it presses Back.
