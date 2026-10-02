@@ -83,9 +83,30 @@ class _Shell
         SessionTransport,
         TerminalSession,
         ChannelCapable,
-        TerminalChannelCapable {
+        TerminalChannelCapable,
+        FileUploadCapable {
   /// What was typed into each terminal opened on the host.
   final typed = <List<String>>[];
+
+  /// Every file put on the host, by name; the first [failUploads] of them
+  /// fail, as a disk that is full does.
+  final uploaded = <String>[];
+  var failUploads = 0;
+
+  @override
+  Future<String> uploadToTmp({
+    required String localPath,
+    required String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    uploaded.add(fileName);
+    if (failUploads > 0) {
+      failUploads--;
+      throw const FileSystemException('disk full');
+    }
+    return '/tmp/${fileName.split('/').last}';
+  }
 
   @override
   Future<CommandChannel> openTerminal(
@@ -101,7 +122,19 @@ class _Shell
     scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))));
     return (
       output: screen.stream,
-      write: (Uint8List data) => keys.add(utf8.decode(data)),
+      write: (Uint8List data) {
+        final text = utf8.decode(data);
+        keys.add(text);
+        // A path pasted into `claude attach` becomes a chip, which the next
+        // part waits for.
+        if (text.startsWith('\x1b[200~/') && !screen.isClosed) {
+          Timer(const Duration(milliseconds: 20), () {
+            if (!screen.isClosed) {
+              screen.add(Uint8List.fromList(utf8.encode('\r\n❯ [Image #9] ')));
+            }
+          });
+        }
+      },
       close: () => unawaited(screen.close()),
     );
   }
@@ -301,6 +334,10 @@ class _Shell
   void event(Map<String, dynamic> event) => _channels.last.add(
     Uint8List.fromList(utf8.encode('${jsonEncode(event)}\n')),
   );
+
+  /// One line of the transcript as written, for what jsonEncode cannot make.
+  void rawLine(String line) =>
+      _channels.last.add(Uint8List.fromList(utf8.encode('$line\n')));
 
   @override
   final status = ValueNotifier(SessionStatus.connected);
@@ -895,6 +932,531 @@ void main() {
     expect(find.text('Lint fixed, build running again.'), findsOneWidget);
   });
 
+  testWidgets('a question Claude asks is answered from its card, and the '
+      'answer reaches the CLI as the reply it waits for', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_ask',
+            'name': 'AskUserQuestion',
+            'input': input,
+          },
+        ],
+      },
+    });
+    shell.event({
+      'type': 'control_request',
+      'request_id': 'req-1',
+      'request': {
+        'subtype': 'can_use_tool',
+        'tool_name': 'AskUserQuestion',
+        'input': input,
+        'tool_use_id': 'toolu_ask',
+        'requires_user_interaction': true,
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+
+    // The question, not a tool row for it.
+    expect(find.text('Which colour?'), findsOneWidget);
+    expect(find.text('A cool colour.'), findsOneWidget);
+    expect(find.text('AskUserQuestion'), findsNothing);
+
+    await tester.tap(find.text('Blue'));
+    await tester.pump();
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await tester.pump();
+
+    final reply = shell.written
+        .map((line) => jsonDecode(line.trim()) as Map)
+        .singleWhere((m) => m['type'] == 'control_response');
+    final response = (reply['response'] as Map)['response'] as Map;
+    expect((reply['response'] as Map)['request_id'], 'req-1');
+    expect(response['behavior'], 'allow');
+    expect((response['updatedInput'] as Map)['answers'], {
+      'Which colour?': 'Blue',
+    });
+    // Answered on the card, which now shows what was given.
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(find.text('Blue'), findsOneWidget);
+  });
+
+  testWidgets('a ⋮ mode change while a question is open: its buttons go, '
+      'nothing is written to either Claude, and a message is not sent '
+      'without a word', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_ask',
+            'name': 'AskUserQuestion',
+            'input': input,
+          },
+        ],
+      },
+    });
+    shell.event({
+      'type': 'control_request',
+      'request_id': 'req-1',
+      'request': {
+        'subtype': 'can_use_tool',
+        'tool_name': 'AskUserQuestion',
+        'input': input,
+        'tool_use_id': 'toolu_ask',
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Blue'));
+    await tester.pump();
+    expect(find.bySemanticsLabel('Send answers'), findsOneWidget);
+    final before = shell.written.length;
+
+    // Plan only: Claude starts again, a new process with a new request ids.
+    await tester.tap(find.byType(TuiMenuButton<Object>));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Plan only'));
+    await _settlePickUp(tester);
+
+    // The question no longer waits on anybody here: no buttons, and it says so.
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(find.bySemanticsLabel('Dismiss'), findsNothing);
+    expect(
+      find.textContaining('no longer waiting for this here'),
+      findsOneWidget,
+    );
+    // Nothing went to either process in the meantime: the old one's reply
+    // never came, and the new one was never answered for it.
+    expect(
+      shell.written
+          .skip(before)
+          .where((l) => l.contains('control_response')),
+      isEmpty,
+    );
+  });
+
+  testWidgets('a message that was not delivered says why and can be sent '
+      'again or removed, and Retry goes through the chat\'s one way in',
+      (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    String listed(Map<String, Object?> extra) => jsonEncode([
+      {
+        'pid': 4079548,
+        'id': '81badf4a',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+        'name': 'the nightly build',
+        ...extra,
+      },
+    ]);
+    // At a permission prompt: nothing is typed into it.
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = listed({
+        'status': 'waiting',
+        'state': 'blocked',
+        'waitingFor': 'permission prompt',
+      });
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('the nightly build'));
+    await _settlePickUp(tester);
+
+    Future<void> sendIt(String text) async {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      for (var turn = 0; turn < 6; turn++) {
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+    }
+
+    await sendIt('run it once more');
+    expect(shell.typed, isEmpty);
+    expect(find.textContaining('waiting for permission prompt'), findsWidgets);
+    expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+    expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+
+    // Removed: the bubble goes, and nothing was sent.
+    await tester.tap(find.bySemanticsLabel('Remove'));
+    await tester.pump();
+    expect(find.text('run it once more'), findsNothing);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+
+    // Again, and now the session is waiting for a message: Retry sends it.
+    await sendIt('run it once more');
+    expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+    shell.listing = listed({'status': 'idle', 'state': 'done'});
+    await tester.tap(find.bySemanticsLabel('Retry'));
+    for (var turn = 0; turn < 12; turn++) {
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(shell.typed.single.first, 'run it once more');
+    // The session records it, as it does a message that arrived.
+    shell.adds({
+      'type': 'user',
+      'message': {'role': 'user', 'content': 'run it once more'},
+    });
+    await _settlePickUp(tester);
+    // One bubble, no longer failed: the old one went when Retry was taken.
+    expect(find.text('run it once more'), findsOneWidget);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+  });
+
+  // #171 hands the keys typed anywhere on the chat to the box; a question
+  // Claude asked is where the user is, and keeps all of them.
+  group('a question card under the chat\'s key capture', () {
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+
+    Future<_Shell> asked(WidgetTester tester, {bool usage = false}) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      shell.event({
+        'type': 'assistant',
+        'message': {
+          // What puts the context chip on screen beside the card.
+          if (usage) ...{
+            'model': 'claude-opus-5-5',
+            'usage': {'input_tokens': 90000, 'output_tokens': 1},
+          },
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_ask',
+              'name': 'AskUserQuestion',
+              'input': input,
+            },
+          ],
+        },
+      });
+      shell.event({
+        'type': 'control_request',
+        'request_id': 'req-1',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'AskUserQuestion',
+          'input': input,
+          'tool_use_id': 'toolu_ask',
+        },
+      });
+      await tester.pump();
+      await tester.pump();
+      return shell;
+    }
+
+    /// Focus on the control that holds [inside], as Tab would leave it.
+    Future<void> focusOn(WidgetTester tester, Finder inside) async {
+      Focus.of(tester.element(inside)).requestFocus();
+      await tester.pump();
+    }
+
+    /// What is inside the card's button called [label]: the text it draws,
+    /// under the button's own focus.
+    Finder insideButton(String label) => find
+        .descendant(
+          of: find.ancestor(
+            of: find.text(label.toUpperCase()),
+            matching: find.byType(FocusableActionDetector),
+          ),
+          matching: find.text(label.toUpperCase()),
+        )
+        .first;
+
+    String composer(WidgetTester tester) => tester
+        .widget<TextField>(find.byType(TextField).last)
+        .controller!
+        .text;
+
+    Map<String, dynamic>? reply(_Shell shell) {
+      for (final line in shell.written) {
+        final m = jsonDecode(line.trim()) as Map<String, dynamic>;
+        if (m['type'] == 'control_response') return m;
+      }
+      return null;
+    }
+
+    testWidgets('an option row keeps Space and Enter: they choose it, and '
+        'no key lands in the composer', (tester) async {
+      await asked(tester);
+      await focusOn(tester, find.byType(TuiCheckbox).last);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      // Chosen: Send answers is on now.
+      expect(find.bySemanticsLabel('Send answers'), findsOneWidget);
+      await focusOn(tester, find.byType(TuiCheckbox).first);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(composer(tester), isEmpty);
+      // Red now, by Enter, and not Blue by Space: one answer.
+      await tester.tap(find.bySemanticsLabel('Send answers'));
+      await tester.pump();
+    });
+
+    testWidgets('Send answers works by keyboard, and sends the choice made '
+        'by keyboard', (tester) async {
+      final shell = await asked(tester);
+      await focusOn(tester, find.byType(TuiCheckbox).last);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      await focusOn(tester, insideButton('Send answers'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      final decision = (reply(shell)!['response'] as Map)['response'] as Map;
+      expect(decision['behavior'], 'allow');
+      expect((decision['updatedInput'] as Map)['answers'], {
+        'Which colour?': 'Blue',
+      });
+      expect(composer(tester), isEmpty);
+    });
+
+    testWidgets('Dismiss works by keyboard', (tester) async {
+      final shell = await asked(tester);
+      await focusOn(tester, insideButton('Dismiss'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+
+      final decision = (reply(shell)!['response'] as Map)['response'] as Map;
+      expect(decision['behavior'], 'deny');
+      expect(composer(tester), isEmpty);
+    });
+
+    testWidgets('the Other field keeps every key, characters and Backspace '
+        'among them', (tester) async {
+      await asked(tester);
+      // The card's field is the first, the composer's the last.
+      final other = find.byType(TextField).first;
+      await tester.tap(other);
+      await tester.pump();
+      await tester.enterText(other, 'teal');
+      await tester.pump();
+      for (final key in [
+        LogicalKeyboardKey.keyH,
+        LogicalKeyboardKey.backspace,
+        LogicalKeyboardKey.space,
+        LogicalKeyboardKey.arrowLeft,
+        LogicalKeyboardKey.delete,
+      ]) {
+        await tester.sendKeyEvent(key);
+        await tester.pump();
+      }
+      expect(composer(tester), isEmpty);
+      // The field acted on its own keys — Backspace and Delete edited it —
+      // and the composer behind it heard none of them.
+      expect(tester.widget<TextField>(other).controller!.text, 'te');
+    });
+
+    testWidgets('a character typed with focus on the card never leaks into '
+        'the composer', (tester) async {
+      await asked(tester);
+      await focusOn(tester, find.byType(TuiCheckbox).first);
+      for (final key in [
+        LogicalKeyboardKey.keyH,
+        LogicalKeyboardKey.keyI,
+        LogicalKeyboardKey.digit1,
+      ]) {
+        await tester.sendKeyEvent(key);
+        await tester.pump();
+      }
+      await focusOn(tester, insideButton('Dismiss'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.pump();
+      expect(composer(tester), isEmpty);
+    });
+
+    testWidgets('beside the context chip the card keeps its keys: a letter '
+        'on an option stays out of the composer, and Enter on Send answers '
+        'sends', (tester) async {
+      final shell = await asked(tester, usage: true);
+      expect(find.text('Context 45%'), findsOneWidget);
+      await focusOn(tester, find.byType(TuiCheckbox).last);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      expect(composer(tester), isEmpty);
+      await focusOn(tester, insideButton('Send answers'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      final decision = (reply(shell)!['response'] as Map)['response'] as Map;
+      expect(decision['behavior'], 'allow');
+      expect((decision['updatedInput'] as Map)['answers'], {
+        'Which colour?': 'Blue',
+      });
+    });
+
+    testWidgets('and off the card the same key is still the box\'s', (
+      tester,
+    ) async {
+      await asked(tester);
+      await focusOn(
+        tester,
+        find.byIcon(Icons.view_sidebar_outlined),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.pump();
+      expect(composer(tester), 'h');
+    });
+  });
+
+  testWidgets('a question in a session being watched is shown with where to '
+      'answer it, and nothing is sent', (tester) async {
+    const input = {
+      'questions': [
+        {
+          'question': 'Deploy now?',
+          'header': 'Deploy',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Yes', 'description': 'Ship it.'},
+            {'label': 'No', 'description': 'Wait.'},
+          ],
+        },
+      ],
+    };
+    final shell = _Shell()
+      ..history = _history([
+        {
+          'type': 'assistant',
+          'message': {
+            'role': 'assistant',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_ask',
+                'name': 'AskUserQuestion',
+                'input': input,
+              },
+            ],
+          },
+        },
+      ])
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the deploy',
+          'status': 'idle',
+          'state': 'blocked',
+          'waitingFor': 'input needed',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await tester.tap(find.text('SESSIONS ON THIS HOST'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    // The row says it waits for an answer.
+    expect(find.textContaining('waiting for an answer'), findsOneWidget);
+
+    await tester.tap(find.text('the deploy'));
+    await _settlePickUp(tester);
+
+    expect(find.text('Deploy now?'), findsOneWidget);
+    expect(find.text('Ship it.'), findsOneWidget);
+    expect(
+      find.textContaining('Answer it at claude attach 81badf4a'),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(shell.written, isEmpty);
+    expect(shell.paneTyped, isEmpty);
+  });
+
   testWidgets('a host that cannot list its sessions says what it said', (
     tester,
   ) async {
@@ -1287,6 +1849,7 @@ void main() {
       String name,
       Map<String, Object?> input, {
       Object result = 'done',
+      String? titled,
     }) async {
       final shell = _Shell()
         ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
@@ -1327,11 +1890,18 @@ void main() {
       shell.event({'type': 'result', 'subtype': 'success'});
       await tester.pump();
       await tester.pump();
-      await tester.tap(find.text(name));
+      await tester.tap(find.text(titled ?? name));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(tester.takeException(), isNull);
     }
+
+    /// The tree node, folded or leaf, whose line reads exactly [text].
+    Finder node(String text) => find.byWidgetPredicate(
+      (w) =>
+          (w is RichText && w.text.toPlainText() == text) ||
+          (w is EditableText && w.controller.text == text),
+    );
 
     /// The text of the selectable block that reads exactly [text].
     TextSpan spanOf(WidgetTester tester, String text) => tester
@@ -1524,22 +2094,143 @@ void main() {
       expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
     });
 
-    testWidgets('a tool it does not know: each field a line, text as it '
+    testWidgets('a tool it does not know: its input a tree, text as it '
         'reads', (tester) async {
       await opened(tester, 'mcp__tracker__file_issue', {
         'title': 'Nightly is red',
         'body': 'Lint fails.\nSee the log.',
         'labels': ['ci'],
-      });
+      }, titled: 'tracker · file_issue');
       noJson(tester);
+      expect(node('title: Nightly is red'), findsOneWidget);
+      expect(node('body: Lint fails.\nSee the log.'), findsOneWidget);
+      expect(node('labels: Array(1)'), findsOneWidget);
+    });
+
+    testWidgets('an MCP tool is titled server · tool, with what it is about',
+        (tester) async {
+      await opened(tester, 'mcp__tracker__file_issue', {
+        'title': 'Nightly is red',
+      }, titled: 'tracker · file_issue');
+      expect(find.text('tracker · file_issue'), findsOneWidget);
+      expect(find.text('mcp__tracker__file_issue'), findsNothing);
+      expect(find.text('Nightly is red'), findsOneWidget);
+    });
+
+    testWidgets('a SendMessage is titled → who: what, never as JSON', (
+      tester,
+    ) async {
+      await opened(tester, 'SendMessage', {
+        'to': 'macos double-click select',
+        'summary': 'dblclick passed review',
+        'message': 'All good. Merge it.',
+      });
       expect(
-        shown(
-          'title: Nightly is red\n'
-          'body:\nLint fails.\nSee the log.\n'
-          'labels: [\n  "ci"\n]',
-        ),
+        find.text('→ macos double-click select: dblclick passed review'),
         findsOneWidget,
       );
+      expect(find.textContaining('{'), findsNothing);
+    });
+
+    testWidgets('a nested input opens and closes a node at a tap', (
+      tester,
+    ) async {
+      await opened(tester, 'Mystery', {
+        'meta': {
+          'inner': {'deep': 'value'},
+        },
+      });
+      expect(node('meta: Object(1)'), findsOneWidget);
+      expect(node('deep: value'), findsNothing);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump();
+      await tester.tap(node('inner: Object(1)'));
+      await tester.pump();
+      expect(node('deep: value'), findsOneWidget);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump();
+      expect(node('deep: value'), findsNothing);
+    });
+
+    testWidgets('a long string is folded behind show more, and copies whole', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      final long = List.filled(50, 'abcdefghij').join();
+      await opened(tester, 'Mystery', {'note': long});
+      expect(node('note: ${long.substring(0, 200)}…'), findsOneWidget);
+      await tester.tap(find.text('show more'));
+      await tester.pump();
+      expect(node('note: $long'), findsOneWidget);
+      expect(find.text('show less'), findsOneWidget);
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(jsonDecode(copied.single), {'note': long});
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('a JSON result of a tool with no renderer is a tree too', (
+      tester,
+    ) async {
+      await opened(tester, 'Mystery', {
+        'q': 'x',
+      }, result: jsonEncode({'rows': [1, 2], 'ok': true}));
+      expect(node('rows: Array(2)'), findsOneWidget);
+      expect(node('ok: true'), findsOneWidget);
+    });
+
+    testWidgets('an input nested far too deep still opens, and copies a '
+        'note instead of throwing', (tester) async {
+      final copied = _useFakeClipboard();
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.enterText(find.byType(TextField), 'go on');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      const depth = 400000;
+      shell.rawLine(
+        '{"type":"assistant","message":{"content":[{"type":"tool_use",'
+        '"id":"toolu_1","name":"Mystery","input":{"deep":'
+        '${'[' * depth}1${']' * depth}}}]}}',
+      );
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.text('Mystery'));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied.single, '(too deep to copy)');
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('shapes it did not expect throw nothing', (tester) async {
+      await opened(tester, 'Mystery', {
+        'a': null,
+        'b': [
+          1,
+          {'c': []},
+          null,
+        ],
+        'd': {},
+        'e': 3.5,
+        'f': {r'$oid': 'x'},
+        'g': '',
+      }, result: '{"cut off');
+      expect(node('d: {}'), findsOneWidget);
+      expect(find.text('{"cut off'), findsOneWidget);
     });
 
     testWidgets('a known tool of a shape it did not expect still shows '
@@ -2261,6 +2952,235 @@ void main() {
       expect(copied, [wide]);
       await tester.pump(const Duration(seconds: 2));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  group('a table in a reply', () {
+    const table =
+        'Before the table.\n\n'
+        '| Name | Note |\n| --- | --- |\n'
+        '| alpha | first `code_one()` cell |\n'
+        '| beta | second row |\n\n'
+        'After the table.\n';
+
+    Future<void> pump(WidgetTester tester, String md) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Sel')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': md},
+              ],
+            },
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Sel');
+    }
+
+    (Offset, Offset) ends(WidgetTester tester, String word, {String? within}) {
+      final para = tester.renderObject<RenderParagraph>(
+        find.textContaining(within ?? word, findRichText: true).first,
+      );
+      final from = para.text.toPlainText().indexOf(word);
+      final boxes = para.getBoxesForSelection(
+        TextSelection(baseOffset: from, extentOffset: from + word.length),
+      );
+      return (
+        para.localToGlobal(boxes.first.toRect().centerLeft) +
+            const Offset(1, 0),
+        para.localToGlobal(boxes.last.toRect().centerRight) -
+            const Offset(1, 0),
+      );
+    }
+
+    Future<void> dragThenCopy(
+      WidgetTester tester,
+      Offset from,
+      Offset to,
+    ) async {
+      final g = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await g.moveTo(Offset.lerp(from, to, 0.5)!);
+      await g.moveTo(to);
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+    }
+
+    testWidgets('a drag within one cell copies what it covers', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second row');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['second row']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag within a cell holding inline code copies it', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'code_one()');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['code_one()']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag from the text before the table to the text after '
+        'copies the cells between, in reading order', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'Before');
+      final (_, b) = ends(tester, 'After the table.');
+      await dragThenCopy(tester, a, b);
+      expect(copied, hasLength(1));
+      final text = copied.single;
+      for (final part in [
+        'Before the table.',
+        'Name',
+        'Note',
+        'alpha',
+        'code_one()',
+        'beta',
+        'second row',
+        'After the table.',
+      ]) {
+        expect(text, contains(part));
+      }
+      expect(text.indexOf('alpha'), lessThan(text.indexOf('beta')));
+      expect(text.indexOf('first'), lessThan(text.indexOf('second row')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    final wide =
+        '| ${[for (var i = 0; i < 8; i++) 'Column$i'].join(' | ')} |\n'
+        '| ${List.filled(8, '---').join(' | ')} |\n'
+        '| ${[for (var i = 0; i < 8; i++) 'cell_$i has quite a lot of words in it'].join(' | ')} |\n';
+
+    testWidgets('a wide table, scrolling sideways, still copies a drag in '
+        'a cell', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Intro.\n\n$wide');
+      final (a, b) = ends(tester, 'cell_0');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['cell_0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a wide table: a long press in a cell then Copy', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Intro.\n\n$wide');
+      final (a, b) = ends(tester, 'cell_0');
+      await tester.longPressAt(Offset.lerp(a, b, 0.5)!);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, ['cell_0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('a double-click on a word in a cell, then Ctrl+C', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second');
+      final at = Offset.lerp(a, b, 0.5)!;
+      await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(copied, ['second']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag down a column from one cell to the next copies both, '
+        'one after the other', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'alpha');
+      final (_, b) = ends(tester, 'beta');
+      await dragThenCopy(tester, a, b);
+      expect(copied, hasLength(1));
+      expect(copied.single, contains('alpha'));
+      expect(copied.single, contains('beta'));
+      expect(copied.single.indexOf('alpha'), lessThan(copied.single.indexOf('beta')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('cells copy apart: a tab between the cells of a row and a '
+        'newline between rows', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'Name');
+      final (_, b) = ends(tester, 'second row');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single, 'Name\tNote\nalpha\tfirst code_one() cell\nbeta\tsecond row');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('two paragraphs copy with a newline between them', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'First paragraph.\n\nSecond paragraph.\n');
+      final (a, _) = ends(tester, 'First');
+      final (_, b) = ends(tester, 'Second paragraph.');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single, 'First paragraph.\nSecond paragraph.');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a list copies a line per item', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, '- one\n- two\n- three\n');
+      final (a, _) = ends(tester, 'one');
+      final (_, b) = ends(tester, 'three');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single.split('\n').map((l) => l.trim()).toList(), [
+        'one',
+        '• two',
+        '• three',
+      ]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('part of one paragraph copies with no separator added', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Alpha beta gamma.\n\nOther.\n');
+      final (a, b) = ends(tester, 'beta gamma');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['beta gamma']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Android: a long press in a cell then Copy copies the word', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second row');
+      await tester.longPressAt(a + const Offset(6, 0));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, ['second']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   });
 
   group('code in a reply, in the real shell', () {
@@ -3111,6 +4031,22 @@ void main() {
       expect(find.textContaining('81badf4a'), findsOneWidget);
       expect(find.textContaining('Working…'), findsNothing);
       expect(find.byIcon(Icons.pause), findsOneWidget);
+    });
+
+    testWidgets('waiting at a question says it waits for an answer, in words '
+        'and not as the CLI puts it', (tester) async {
+      final shell = await watching(tester);
+      shell.listing = jsonEncode([row(waitingFor: 'input needed')]);
+      shell.adds({
+        'type': 'user',
+        'message': {'role': 'user', 'content': 'ask me something'},
+      });
+      await _settlePickUp(tester);
+      expect(
+        find.textContaining('Waiting for an answer on the host.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('input needed'), findsNothing);
     });
 
 
@@ -4046,6 +4982,20 @@ void main() {
       expect(mark('Waiting for permission prompt'), findsOneWidget);
       expect(mark('Working'), findsNothing);
 
+      // Held at a question of Claude's, which the CLI calls `input needed`:
+      // the same mark, saying what it waits for.
+      shell.listing = listed(
+        status: 'waiting',
+        state: 'blocked',
+        waitingFor: 'input needed',
+      );
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(mark('Waiting for an answer'), findsOneWidget);
+      expect(mark('Waiting for input needed'), findsNothing);
+      expect(mark('Waiting for permission prompt'), findsNothing);
+
       // Done while nobody had it open: checked, with the dot.
       shell.listing = listed(status: 'idle', state: 'done');
       await tester.pump(const Duration(seconds: 6));
@@ -4435,6 +5385,138 @@ void main() {
       // The card went with it, and the bubble holds the picture.
       expect(find.text('[Image #1] shot.png'), findsNothing);
       expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a picture message that could not go has Retry and Remove, '
+        'and Retry sends it again with its picture, through the one way in',
+        (tester) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+      next.add('shot.png');
+      await paste(tester);
+      // The page keeps its own copy of what was pasted, in a folder of its
+      // own: that goes before Send, so the picture cannot be read.
+      final copies = [
+        for (final d in Directory.systemTemp.listSync().whereType<Directory>())
+          if (d.path.contains('chat-pictures') && d.path != dir.path)
+            for (final f in d.listSync().whereType<File>())
+              if (f.path.endsWith('shot.png')) f,
+      ]..sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
+      final file = copies.last;
+      final bytes = file.readAsBytesSync();
+      file.deleteSync();
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.byIcon(Icons.send));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      expect(shell.written, isEmpty);
+      expect(find.textContaining('a picture could not be read'), findsWidgets);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+
+      // Retry while the file is still gone: refused, said, nothing sent.
+      await tester.tap(find.bySemanticsLabel('Retry'));
+      await tester.pump();
+      expect(find.textContaining('no longer on this device'), findsOneWidget);
+      expect(shell.written, isEmpty);
+      await tester.pump(const Duration(seconds: 6));
+
+      // The file is back: Retry sends the message with its picture, once.
+      file.writeAsBytesSync(bytes);
+      await tester.runAsync(() async {
+        await tester.tap(find.bySemanticsLabel('Retry'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] what is it?'});
+      expect((content.last as Map)['source'], {
+        'type': 'base64',
+        'media_type': 'image/png',
+        'data': base64Encode(pixel),
+      });
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+      expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a picture message to a session being watched whose upload '
+        'failed is retried from its bubble: the upload runs again through '
+        'the page, and the message is sent once', (tester) async {
+      final next = clipboard(tester);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..failUploads = 1
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.pump();
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      Future<void> turns(int n) async {
+        for (var turn = 0; turn < n; turn++) {
+          await tester.pump(const Duration(milliseconds: 250));
+          await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        }
+      }
+
+      await turns(6);
+
+      // The first upload failed: said, with Retry, and nothing typed.
+      expect(shell.uploaded, hasLength(1));
+      expect(find.textContaining('could not be put on the host'), findsWidgets);
+      expect(shell.typed, isEmpty);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+
+      await tester.tap(find.bySemanticsLabel('Retry'));
+      await turns(24);
+
+      // Uploaded again through the page, pasted as a path, sent once.
+      expect(shell.uploaded, hasLength(2));
+      expect(shell.typed, hasLength(1));
+      expect(shell.typed.single.first, startsWith('\x1b[200~/tmp/'));
+      expect(shell.typed.single.where((k) => k == '\r'), hasLength(1));
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+
+      // The session records it, and the bubble is delivered.
+      shell.adds({
+        'type': 'user',
+        'message': {'role': 'user', 'content': '[Image #1] what is it?'},
+      });
+      await _settlePickUp(tester);
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
     });
 
     testWidgets('Ctrl+Enter in the box sends the message with its pictures', (

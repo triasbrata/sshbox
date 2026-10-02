@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'file_browser.dart';
+import '../telemetry/app_log.dart';
 
 /// Which way a [Transfer] goes: down to the phone, or up to a host.
 enum TransferDirection { download, upload }
@@ -104,6 +105,7 @@ class Transfers extends ChangeNotifier {
     required Future<T> Function(Transfer transfer) work,
   }) async {
     final transfer = Transfer._(this, name, host, direction);
+    appLog.add('transfer: ${direction.name} ${transfer.id} started');
     _items.insert(0, transfer);
     notifyListeners();
     try {
@@ -151,6 +153,10 @@ class Transfers extends ChangeNotifier {
   }
 
   void _end(Transfer transfer, TransferState state, {String? error}) {
+    appLog.add(
+      'transfer: ${transfer.direction.name} ${transfer.id} ${state.name}',
+      level: state == TransferState.failed ? 'W' : 'I',
+    );
     transfer
       .._state = state
       .._error = error;
