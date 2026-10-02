@@ -23,6 +23,10 @@ class MarkdownEditingController extends TextEditingController {
   Color accent;
   Color panel;
 
+  /// The numbers of the pictures the message carries: each `[Image #N]` of
+  /// one is drawn as a chip, and any other is text.
+  Set<int> pictures = const {};
+
   /// Past this many characters the box is plain text: styling runs at every
   /// keystroke, and a paste this big is not being read as it is typed.
   static const plainPast = 20 * 1024;
@@ -101,7 +105,8 @@ final _inline = RegExp(
   r'|(\*\*|__)(?=\S)(.+?)(?<=\S)\5' // 5, 6: bold
   r'|~~(?=\S)(.+?)(?<=\S)~~' // 7: strike
   r'|\*(?=[^\s*])(.+?)(?<=[^\s*])\*' // 8: italic
-  r'|(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])', // 9: italic
+  r'|(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])' // 9: italic
+  r'|\[Image #(\d{1,9})\]', // 10: a picture, as pictureToken bounds one
 );
 
 /// [text] as runs of (start, end, style) that cover it end to end, in order.
@@ -219,6 +224,20 @@ void _spans(
         ),
       );
       add(label, e, over(marker));
+    } else if (m[10] != null) {
+      add(
+        s,
+        e,
+        c.pictures.contains(int.parse(m[10]!))
+            ? over(
+                TextStyle(
+                  color: c.accent,
+                  backgroundColor: c.accent.withValues(alpha: 0.18),
+                  fontWeight: FontWeight.w600,
+                ),
+              )
+            : base,
+      );
     } else {
       final (n, style) = m[5] != null
           ? (2, const TextStyle(fontWeight: FontWeight.bold))

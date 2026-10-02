@@ -84,12 +84,11 @@ void _standInClaudeFor() {
   addTearDown(() {
     if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
     if (!hadBin) standIn.parent.deleteSync(recursive: true);
-    if (!hadConfig) {
-      config.deleteSync(recursive: true);
-    } else {
-      Directory('${config.path}/projects/jeansh-e2e')
-          .deleteSync(recursive: true);
-    }
+    // A chat that never started a session wrote nothing there.
+    final ours = hadConfig
+        ? Directory('${config.path}/projects/jeansh-e2e')
+        : config;
+    if (ours.existsSync()) ours.deleteSync(recursive: true);
   });
 }
 
@@ -472,12 +471,18 @@ window.show_all()
 Gtk.main()
 ''';
 
-/// Drags [path] from [_dragSource] onto the middle of Jeansh's window — the
-/// terminal of the tab showing — with the X pointer, as a hand would.
-Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
+/// Drags [path], and [more] with it, from [_dragSource] onto the middle of
+/// Jeansh's window — the terminal of the tab showing — with the X pointer,
+/// as a hand would.
+Future<void> _drag(
+  WidgetTester tester,
+  String path,
+  Directory dir, {
+  List<String> more = const [],
+}) async {
   final source = File('${dir.path}/drag_source.py')
     ..writeAsStringSync(_dragSource);
-  final process = await Process.start('python3', [source.path, path]);
+  final process = await Process.start('python3', [source.path, path, ...more]);
   try {
     Future<void> xdo(List<String> args) async {
       final result = await Process.run('xdotool', args);
@@ -2891,6 +2896,83 @@ touch '${done.path}'
         );
       }
       expect(find.textContaining('cannot be uploaded'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #146: files dropped from the file manager on a desktop chat. A picture
+  // becomes a card above the box and its [Image #1] in it; a folder dropped
+  // with it is refused, saying it is a folder, and so is a file that is no
+  // picture Claude reads. A real X drag, as the terminal's above.
+  _test(
+    'a picture dropped on a chat becomes a card, a folder is refused',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI it would drag with the user's own pointer"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final dir = _scratch();
+      // A 1x1 PNG.
+      final picture = File('${dir.path}/e2e-drop.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8Dw'
+            'HwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+          ),
+        );
+      final folder = Directory('${dir.path}/e2e-folder')..createSync();
+      final notes = File('${dir.path}/e2e-notes.txt')..writeAsStringSync('x');
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () => _composer.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      Finder toast(String text) => find.descendant(
+        of: find.byType(TuiToastCard),
+        matching: find.textContaining(text, findRichText: true),
+      );
+      final cards = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Remove '),
+      );
+
+      await _drag(tester, picture.path, dir, more: [folder.path]);
+      await _until(
+        tester,
+        () =>
+            toast('A folder is not a picture: e2e-folder')
+                .evaluate()
+                .isNotEmpty,
+        'the folder refused, saying it is a folder',
+      );
+      await _until(
+        tester,
+        () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
+        "the picture's card",
+      );
+      expect(cards, findsOneWidget, reason: 'one card, for the picture alone');
+      expect(
+        tester.widget<TextField>(_composer).controller!.text,
+        '[Image #1] ',
+      );
+      await _shot(tester, 'desktop-chat-dropped-picture');
+
+      await _drag(tester, notes.path, dir);
+      await _until(
+        tester,
+        () =>
+            toast('Not a picture Claude can read: e2e-notes.txt')
+                .evaluate()
+                .isNotEmpty,
+        'the text file refused',
+      );
+      expect(cards, findsOneWidget);
       await _closeTabs(tester);
     },
   );
