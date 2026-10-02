@@ -350,6 +350,51 @@ void main() {
       expect(launcher.opened, isEmpty);
     });
 
+    testWidgets('each route previews exactly what it sends', (tester) async {
+      appLog.add('tab: preview-marker opened file tab');
+      await open(tester, write: 'froze on my-box.ts.net');
+      String text(String key) =>
+          tester.widget<SelectableText>(find.byKey(ValueKey(key))).data!;
+      final private = text('preview-private');
+      final public = text('preview-public');
+      await tester.tap(find.bySemanticsLabel('Under my name'));
+      await tester.pumpAndSettle();
+      final url = Uri.parse(launcher.opened.single);
+      expect(url.queryParameters['body'], public);
+      // The Sentry text and the log under the public route are the private
+      // route's.
+      expect(feedback.sent.single.message, private);
+      expect(feedback.sent.single.log, contains('preview-marker'));
+    });
+
+    testWidgets('the private route previews its Sentry text', (tester) async {
+      await open(tester, write: 'froze');
+      final private = tester
+          .widget<SelectableText>(find.byKey(const ValueKey('preview-private')))
+          .data!;
+      await tester.tap(find.bySemanticsLabel('Privately to the developer'));
+      await tester.pumpAndSettle();
+      expect(feedback.sent.single.message, private);
+    });
+
+    testWidgets('with the log off, the public route sends nothing to Sentry', (
+      tester,
+    ) async {
+      await open(tester, write: 'froze');
+      await tester.ensureVisible(findTuiSwitch('Attach the app log'));
+      await tester.pumpAndSettle();
+      await tester.tap(findTuiSwitchTrack('Attach the app log'));
+      await tester.pumpAndSettle();
+      final public = tester
+          .widget<SelectableText>(find.byKey(const ValueKey('preview-public')))
+          .data!;
+      expect(public, isNot(contains('Sentry event')));
+      await tester.tap(find.bySemanticsLabel('Under my name'));
+      await tester.pumpAndSettle();
+      expect(Uri.parse(launcher.opened.single).queryParameters['body'], public);
+      expect(feedback.sent, isEmpty);
+    });
+
     testWidgets('with telemetry off it asks, and the answer starts as no', (
       tester,
     ) async {

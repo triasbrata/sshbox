@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -89,7 +88,7 @@ void main() {
     tester,
   ) async {
     await open(tester, write: '');
-    expect(find.text('This is everything that will be sent:'), findsOne);
+    expect(find.byKey(const ValueKey('preview-public')), findsOne);
     // With nothing written there is nothing to send.
     expect(
       tester.widget<TuiButton>(findTuiButton('Under my name')).onPressed,
