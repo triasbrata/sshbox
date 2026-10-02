@@ -1262,7 +1262,7 @@ class _PaneView extends StatefulWidget {
   State<_PaneView> createState() => _PaneViewState();
 }
 
-class _PaneViewState extends State<_PaneView> {
+class _PaneViewState extends State<_PaneView> with WidgetsBindingObserver {
   /// Shared with the terminal view below it, which is what holds focus.
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
@@ -1290,7 +1290,7 @@ class _PaneViewState extends State<_PaneView> {
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
     FocusManager.instance.addListener(_onFocusMoved);
     // A window that blurs mid-gesture may never deliver the button's up.
-    _lifecycle = AppLifecycleListener(onInactive: _endGesture);
+    WidgetsBinding.instance.addObserver(this);
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
@@ -1327,7 +1327,7 @@ class _PaneViewState extends State<_PaneView> {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     FocusManager.instance.removeListener(_onFocusMoved);
-    _lifecycle.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     _clickTimer?.cancel();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1476,7 +1476,15 @@ class _PaneViewState extends State<_PaneView> {
   Offset _clickAt = Offset.zero;
   Timer? _clickTimer;
 
-  late final AppLifecycleListener _lifecycle;
+  // An observer, not an AppLifecycleListener, which asserts on a jump such as
+  // resumed to hidden (a real minimize on Linux).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _endGesture();
+    }
+  }
 
   /// The mouse gesture that owns [selection] until its button comes up: the
   /// pointer, where it began, and how it selects.
@@ -1938,10 +1946,8 @@ class _PaneViewState extends State<_PaneView> {
   /// Ctrl disarmed mid-drag or a right-button drag would otherwise send a
   /// program moves with a button held that no press began and no release
   /// ends — the very drag that never ends.
-  static PointerInputs _pointerInputs(bool drag) => PointerInputs({
-    PointerInput.scroll,
-    if (drag) PointerInput.drag,
-  });
+  static PointerInputs _pointerInputs(bool drag) =>
+      PointerInputs({PointerInput.scroll, if (drag) PointerInput.drag});
 
   /// Whether Ctrl has claimed the tap, for opening a link: see [showLinks].
   bool _ctrlArmed = false;
