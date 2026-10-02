@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'termul/tui_toast.dart';
+import '../telemetry/app_log.dart';
 
 /// What a toast is about — info, success, warning or error — shown as
 /// termul's glyph mark, never as a colour.
@@ -105,6 +106,9 @@ final _fallback = Expando<(TuiToastController, TuiToastController)>();
 ///
 /// [low] puts it near the bottom instead, for a long word that must not lie
 /// over a page's header and title.
+///
+/// [logAs] is the fixed category the app log records for it, such as
+/// `upload failed`. Never pass the message or any part of it.
 void showToast(
   BuildContext context,
   String message, {
@@ -112,7 +116,15 @@ void showToast(
   ({String label, VoidCallback onPressed})? action,
   Duration? duration,
   bool low = false,
+  String? logAs,
 }) {
+  // A toast quotes host data verbatim (a row, a session name, a file), so
+  // the log keeps its type and a fixed category the call site gives, never
+  // its text.
+  appLog.add(
+    logAs == null ? 'toast ${type.name}' : 'toast ${type.name}: $logAs',
+    level: type == TuiToastType.error ? 'E' : 'I',
+  );
   final (top, bottom) = _stacksFor(context);
   final [title, ...rest] = message.split('\n');
   (low ? bottom : top).show(
