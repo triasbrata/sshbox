@@ -47,13 +47,7 @@ jobs:
       - name: Every passed feature has a guard
         run: python3 tool/e2e_coverage.py
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.2 # .fvmrc
-          channel: stable
-          cache: true
-
-      - run: flutter pub get
+      - uses: ./.github/actions/flutter
       - run: flutter analyze
       # The *_live_test files skip themselves: no SSH server, database or
       # tmux runs here.
