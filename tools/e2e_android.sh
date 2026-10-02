@@ -450,6 +450,22 @@ chat_progress() {
   return "$status"
 }
 
+# #169: the task checklist under chat's working line, against the stand-in's
+# tasks: turn -- three TaskCreate calls, the first moved to in progress and then
+# completed, the turn ended with two tasks still open.
+chat_tasks() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_tasks || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-tasks-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
 # The three hosts, one after another: a block of its own for E2E_ONLY.
 # Fails if any of them did, for a run asking for it alone.
 chat_version() {
@@ -645,6 +661,10 @@ echo "::endgroup::"
 
 echo "::group::chat_progress (report only)"
 chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_tasks (report only)"
+chat_tasks || echo "::warning::chat_tasks failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"

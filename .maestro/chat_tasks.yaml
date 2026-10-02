@@ -1,0 +1,90 @@
+# #169: chat shows the session's task checklist under its working line, as
+# Claude Code's own view draws it: ⎿ then the tasks in progress, bold with ■,
+# the pending ones with □, and a last "… +N pending, M completed" counting the
+# done ones, which are not listed. It follows each TaskCreate and TaskUpdate as
+# the transcript writes them, and stays between turns while a task is open.
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_progress (tools/e2e_android.sh's chat_tasks). A line starting tasks:
+# plays a sixteen-second turn: three TaskCreate calls at once, #1 in progress
+# at 4 s, completed at 10 s, the answer and turn_duration at 16 s.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+# No task yet: no list.
+- assertNotVisible: "(?s).*□.*"
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "tasks: go"
+# A ticking Working… never lets the screen settle: kept short.
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+
+# The three tasks, as the TaskCreate results gave them their ids: the first
+# on the ⎿ line, the others under it, all pending.
+- extendedWaitUntil:
+    visible: "(?s).*⎿ □ Check the stand-in.*"
+    timeout: 10000
+- assertVisible: "(?s).*□ Write the report.*"
+- assertVisible: "(?s).*□ Ship it.*"
+- takeScreenshot: chat-tasks-pending
+
+# TaskUpdate #1 to in progress at 4 s: ■, and its active form.
+- extendedWaitUntil:
+    visible: "(?s).*⎿ ■ Checking the stand-in.*"
+    timeout: 10000
+- assertNotVisible: "(?s).*⎿ □ Check the stand-in.*"
+- takeScreenshot: chat-tasks-in-progress
+
+# Completed at 10 s: counted, not listed. The other two stay open.
+- extendedWaitUntil:
+    visible: "(?s).*… 1 completed.*"
+    timeout: 15000
+- assertNotVisible: "(?s).*■ Checking the stand-in.*"
+- assertVisible: "(?s).*□ Write the report.*"
+- takeScreenshot: chat-tasks-completed
+
+# The turn ends at 16 s: the working line goes, and the two open tasks stay
+# on screen between turns.
+- extendedWaitUntil:
+    visible: "(?i)Tasks played"
+    timeout: 20000
+- extendedWaitUntil:
+    notVisible: "(?s).*Working….*"
+    timeout: 3000
+- assertVisible: "(?s).*□ Write the report.*"
+- assertVisible: "(?s).*□ Ship it.*"
+- takeScreenshot: chat-tasks-after
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
