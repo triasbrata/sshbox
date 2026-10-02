@@ -486,10 +486,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     for (final item in details.files) {
       final path = item.path;
       final isDir = FileSystemEntity.isDirectorySync(path);
-      if (!isDir && _pictureNames.hasMatch(item.name)) {
-        await _addPicture((path: path, name: item.name));
-      } else if (_misleading.hasMatch(path)) {
+      if (_misleading.hasMatch(path)) {
         _refuse('Not added: the name holds a control character: ${item.name}');
+      } else if (!isDir && _pictureNames.hasMatch(item.name)) {
+        await _addPicture((path: path, name: item.name));
       } else if (here) {
         _typePath(path);
       } else if (isDir) {
