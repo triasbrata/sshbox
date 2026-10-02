@@ -60,6 +60,8 @@ env:
       - extendedWaitUntil:
           visible: "Ask Claude…"
           timeout: 20000
+      # Focused first: a long press on a box with no focus opens no menu.
+      - tapOn: "Ask Claude…"
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"
 
@@ -71,6 +73,8 @@ env:
       - tapOn:
           text: "Copy code"
           index: 1
+      # Focused first: a long press on a box with no focus opens no menu.
+      - tapOn: "Ask Claude…"
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"
 
@@ -93,6 +97,8 @@ env:
       - extendedWaitUntil:
           visible: "Ask Claude…"
           timeout: 20000
+      # Focused first: a long press on a box with no focus opens no menu.
+      - tapOn: "Ask Claude…"
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"
 
@@ -105,6 +111,8 @@ env:
       - eraseText: 40
       - longPressOn: "(?s).*e2eword.*"
       - tapOn: "Copy"
+      # Focused first: a long press on a box with no focus opens no menu.
+      - tapOn: "Ask Claude…"
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"
 
