@@ -63,11 +63,17 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises the keyboard and the box with it, so the long press
-      # finds the box again by its hint rather than at the same point.
+      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
+      # screen (its hint is cut short beside +, so no selector finds it
+      # reliably); the long press goes there.
       - tapOn:
           point: "62%,95%"
-      - longPressOn: "Ask Cla.*"
+      - extendedWaitUntil:
+          visible: "(?s).*(Paste|Ask Cla).*"
+          timeout: 3000
+          optional: true
+      - longPressOn:
+          point: "62%,59%"
       - tapOn: "Paste"
 
 - runFlow:
@@ -82,11 +88,17 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises the keyboard and the box with it, so the long press
-      # finds the box again by its hint rather than at the same point.
+      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
+      # screen (its hint is cut short beside +, so no selector finds it
+      # reliably); the long press goes there.
       - tapOn:
           point: "62%,95%"
-      - longPressOn: "Ask Cla.*"
+      - extendedWaitUntil:
+          visible: "(?s).*(Paste|Ask Cla).*"
+          timeout: 3000
+          optional: true
+      - longPressOn:
+          point: "62%,59%"
       - tapOn: "Paste"
 
 # reply: a code block in Claude's reply has its own Copy code.
@@ -112,11 +124,17 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises the keyboard and the box with it, so the long press
-      # finds the box again by its hint rather than at the same point.
+      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
+      # screen (its hint is cut short beside +, so no selector finds it
+      # reliably); the long press goes there.
       - tapOn:
           point: "62%,95%"
-      - longPressOn: "Ask Cla.*"
+      - extendedWaitUntil:
+          visible: "(?s).*(Paste|Ask Cla).*"
+          timeout: 3000
+          optional: true
+      - longPressOn:
+          point: "62%,59%"
       - tapOn: "Paste"
 
 # select: a long press on a word of the reply selects it, and the toolbar's
@@ -132,11 +150,17 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises the keyboard and the box with it, so the long press
-      # finds the box again by its hint rather than at the same point.
+      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
+      # screen (its hint is cut short beside +, so no selector finds it
+      # reliably); the long press goes there.
       - tapOn:
           point: "62%,95%"
-      - longPressOn: "Ask Cla.*"
+      - extendedWaitUntil:
+          visible: "(?s).*(Paste|Ask Cla).*"
+          timeout: 3000
+          optional: true
+      - longPressOn:
+          point: "62%,59%"
       - tapOn: "Paste"
 
 - runFlow:
