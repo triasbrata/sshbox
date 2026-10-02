@@ -1016,6 +1016,85 @@ void main() {
     );
   });
 
+  testWidgets('a message that was not delivered says why and can be sent '
+      'again or removed, and Retry goes through the chat\'s one way in',
+      (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    String listed(Map<String, Object?> extra) => jsonEncode([
+      {
+        'pid': 4079548,
+        'id': '81badf4a',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+        'name': 'the nightly build',
+        ...extra,
+      },
+    ]);
+    // At a permission prompt: nothing is typed into it.
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = listed({
+        'status': 'waiting',
+        'state': 'blocked',
+        'waitingFor': 'permission prompt',
+      });
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('the nightly build'));
+    await _settlePickUp(tester);
+
+    Future<void> sendIt(String text) async {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      for (var turn = 0; turn < 6; turn++) {
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+    }
+
+    await sendIt('run it once more');
+    expect(shell.typed, isEmpty);
+    expect(find.textContaining('waiting for permission prompt'), findsWidgets);
+    expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+    expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+
+    // Removed: the bubble goes, and nothing was sent.
+    await tester.tap(find.bySemanticsLabel('Remove'));
+    await tester.pump();
+    expect(find.text('run it once more'), findsNothing);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+
+    // Again, and now the session is waiting for a message: Retry sends it.
+    await sendIt('run it once more');
+    expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+    shell.listing = listed({'status': 'idle', 'state': 'done'});
+    await tester.tap(find.bySemanticsLabel('Retry'));
+    for (var turn = 0; turn < 12; turn++) {
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(shell.typed.single.first, 'run it once more');
+    // The session records it, as it does a message that arrived.
+    shell.adds({
+      'type': 'user',
+      'message': {'role': 'user', 'content': 'run it once more'},
+    });
+    await _settlePickUp(tester);
+    // One bubble, no longer failed: the old one went when Retry was taken.
+    expect(find.text('run it once more'), findsOneWidget);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+  });
+
   testWidgets('a question in a session being watched is shown with where to '
       'answer it, and nothing is sent', (tester) async {
     const input = {

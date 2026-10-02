@@ -710,7 +710,12 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _entry(ChatEntry entry) => switch (entry) {
-    ChatSaid(mine: true) => _Bubble(said: entry, onTapLink: _openLink),
+    ChatSaid(mine: true) => _Bubble(
+      said: entry,
+      onTapLink: _openLink,
+      onRetry: () => _retry(entry),
+      onRemove: () => _chat.remove(entry),
+    ),
     ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
@@ -738,6 +743,20 @@ class _ChatPageState extends State<ChatPage> {
         ? 'claude attach ${watching.id}'
         : 'its terminal';
     return '“${watching.name}” waits for an answer. Answer it at $where.';
+  }
+
+  /// Sends a message that was not delivered again, to what this chat writes
+  /// to now. Said, and the message left as it is, when that cannot be done.
+  void _retry(ChatSaid said) {
+    final why = _chat.retry(said);
+    if (why != null && mounted) {
+      showToast(
+        context,
+        'Not sent: $why',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+    }
   }
 
   bool _answerAsk(ChatAsk ask, Map<String, String> answers) {
@@ -1047,14 +1066,47 @@ class _Earlier extends StatelessWidget {
 /// Markdown it was typed in — and, for a message typed into a session being
 /// watched, where it has got to, until that session has recorded it.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.said, required this.onTapLink});
+  const _Bubble({
+    required this.said,
+    required this.onTapLink,
+    required this.onRetry,
+    required this.onRemove,
+  });
 
   final ChatSaid said;
   final MarkdownTapLinkCallback onTapLink;
 
-  /// termul's bubble, with its note while it is not in the session yet.
+  /// Send it again, or drop it: offered once it is known not to have been
+  /// delivered.
+  final VoidCallback onRetry;
+  final VoidCallback onRemove;
+
+  /// termul's bubble, with its note while it is not in the session yet, and
+  /// what to do about it when it never arrived.
   @override
-  Widget build(BuildContext context) => TuiChatBubble(
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      _bubble(context),
+      if (said.delivery == Delivery.failed)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Wrap(
+            spacing: 8,
+            children: [
+              TuiButton(label: 'Retry', prefix: '↻', onPressed: onRetry),
+              TuiButton(
+                label: 'Remove',
+                variant: TuiButtonVariant.ghost,
+                onPressed: onRemove,
+              ),
+            ],
+          ),
+        ),
+    ],
+  );
+
+  Widget _bubble(BuildContext context) => TuiChatBubble(
     text: said.text,
     delivery: switch (said.delivery) {
       Delivery.sending => TuiChatDelivery.sending,

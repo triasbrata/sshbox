@@ -2367,11 +2367,16 @@ void main() {
   });
 
   group('typing into the session being watched', () {
-    ClaudeChat watcher(_LiveHost host, {Duration? deliveryTimeout}) {
+    ClaudeChat watcher(
+      _LiveHost host, {
+      Duration? deliveryTimeout,
+      Duration? dropGrace,
+    }) {
       final chat = ClaudeChat(
         open: host.open,
         openTerminal: host.openTerminal,
         deliveryTimeout: deliveryTimeout ?? const Duration(seconds: 30),
+        dropGrace: dropGrace ?? const Duration(seconds: 10),
       );
       addTearDown(chat.dispose);
       return chat;
@@ -2564,6 +2569,219 @@ void main() {
         chat.entries.whereType<ChatSaid>().single.delivery,
         Delivery.queued,
       );
+    });
+
+    // How Claude Code records a message that was sent mid-turn, once it is
+    // delivered into the turn: an `attachment` of type `queued_command`.
+    Map<String, Object?> delivered(String prompt, {bool human = true}) => {
+      'type': 'attachment',
+      'attachment': {
+        'type': 'queued_command',
+        'prompt': prompt,
+        'delivery_id': 'd-1',
+        'humanTurn': human,
+        'origin': {'kind': 'human'},
+        'commandMode': 'prompt',
+      },
+    };
+
+    Map<String, Object?> enqueued(String text) => {
+      'type': 'queue-operation',
+      'operation': 'enqueue',
+      'content': text,
+    };
+
+    test('a queued message resolves when the session records it as delivered '
+        'into its turn, and is not drawn twice', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final queuedSaid = chat.entries.whereType<ChatSaid>().single;
+      expect(queuedSaid.delivery, Delivery.queued);
+
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      host.adds(delivered('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // The same bubble, where it was sent from, delivered, and no second
+      // one for the record.
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said, same(queuedSaid));
+      expect(said.text, 'then run the tests');
+      expect(said.delivery, isNull);
+      expect(said.why, isNull);
+    });
+
+    test('a message delivered into the turn that nobody typed here is a turn '
+        'of the user\'s, live and read back from the history', () async {
+      final text = [
+        jsonEncode({
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'start'},
+        }),
+        jsonEncode(delivered('typed at the terminal mid-turn')),
+        jsonEncode(delivered('a system one', human: false)),
+        jsonEncode(delivered('<task-notification>x</task-notification>')),
+      ].join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      expect(
+        chat.entries.whereType<ChatSaid>().map((said) => said.text).toList(),
+        ['start', 'typed at the terminal mid-turn'],
+      );
+      host.adds(delivered('and one more, live'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(chat.entries.whereType<ChatSaid>().last.text, 'and one more, live');
+    });
+
+    test('a queued message the queue gives up without running it is said not '
+        'to have arrived, with Retry, which sends it once through the gate',
+        () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(
+        host,
+        dropGrace: const Duration(milliseconds: 200),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      // Within the grace it may still be delivered; none comes.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        chat.entries.whereType<ChatSaid>().single.delivery,
+        Delivery.queued,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+      expect(failed.why, contains('took it off its queue'));
+
+      // Retry: the same text, once, to the session as it is now.
+      host.state = 'done';
+      expect(chat.retry(failed), isNull);
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(chat.entries, isNot(contains(failed)));
+      expect(host.terminals, hasLength(2));
+      // Typed once, and sent with Enter once.
+      expect(host.terminals.last.typed, ['then run the tests', '\r']);
+      // The failed one is gone: a second Retry has nothing to send.
+      expect(chat.retry(failed), contains('no longer here'));
+      expect(host.terminals, hasLength(2));
+    });
+
+    test('a removal followed by its delivery is not a drop', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(
+        host,
+        dropGrace: const Duration(milliseconds: 200),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      host.adds(delivered('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+
+      expect(chat.entries.whereType<ChatSaid>().single.delivery, isNull);
+    });
+
+    test('Retry goes to what the chat writes to now, not to the session it '
+        'failed in: once that has ended and Claude has taken over, to Claude',
+        () async {
+      final host = _LiveHost('0\n')..terminalsDraw = false;
+      final claudes = <_FakeClaude>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          if (command.contains('stream-json')) {
+            final claude = _FakeClaude();
+            claudes.add(claude);
+            return claude.channel;
+          }
+          return host.open(command);
+        },
+        openTerminal: host.openTerminal,
+        deliveryTimeout: const Duration(milliseconds: 200),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      // It never comes up to type into: not delivered.
+      chat.send('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+      expect(host.terminals, hasLength(1));
+
+      // The session ends, and what is sent from here continues it.
+      host.adds('\nsshbox:ended\n');
+      await host.follow!.close();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.watching, isNull);
+      expect(claudes, hasLength(1));
+
+      expect(chat.retry(failed), isNull);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // To the new target, and not to the old session's terminal.
+      expect(host.terminals, hasLength(1));
+      final message = claudes.single.sent.single;
+      expect(message['type'], 'user');
+      expect(
+        (((message['message'] as Map)['content'] as List).single as Map)['text'],
+        'hello',
+      );
+    });
+
+    test('Retry is refused, with why, while there is nothing to send to, and '
+        'the failed message stays', () async {
+      final host = _LiveHost(
+        '0\n',
+        state: 'blocked',
+        status: 'waiting',
+        waitingFor: 'permission prompt',
+      );
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      chat.send('anything');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+
+      // Replaced, and the old bubble is gone with its view.
+      await chat.newChat();
+      expect(chat.retry(failed), contains('no longer here'));
+      expect(host.terminals, isEmpty);
+    });
+
+    test('Remove drops a failed message, and only a failed one', () async {
+      final host = _LiveHost(
+        '0\n',
+        state: 'blocked',
+        status: 'waiting',
+        waitingFor: 'permission prompt',
+      );
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      chat.send('anything');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+
+      chat.remove(failed);
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
     });
 
     // At a dialog as measured — blocked, waiting on a permission prompt —

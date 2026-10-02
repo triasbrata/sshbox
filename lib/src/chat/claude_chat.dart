@@ -347,6 +347,7 @@ class ClaudeChat extends ChangeNotifier {
     this.openTerminal,
     this.cwd,
     this.deliveryTimeout = const Duration(seconds: 30),
+    this.dropGrace = const Duration(seconds: 10),
   });
 
   /// Starts a command on the host with a terminal of its own — what typing
@@ -772,6 +773,29 @@ class ClaudeChat extends ChangeNotifier {
   /// [text] shortened to what a notice can hold.
   static String _excerpt(String text) =>
       text.length > 200 ? '${text.substring(0, 200)}…' : text;
+
+  /// Sends [said], a message that was not delivered, again — to what this
+  /// chat writes to now, through [send], which is the one way in, and so
+  /// never to a process or session that has been replaced. Null when it was
+  /// handed over, and why not otherwise, with the failed message left as it
+  /// is.
+  String? retry(ChatSaid said) {
+    if (said.delivery != Delivery.failed || !_entries.contains(said)) {
+      return 'That message is no longer here to send again.';
+    }
+    final why = unsendable;
+    if (why != null) return why;
+    _entries.remove(said);
+    notifyListeners();
+    unawaited(send(said.text));
+    return null;
+  }
+
+  /// Drops [said], a message that was not delivered, from the chat.
+  void remove(ChatSaid said) {
+    if (said.delivery != Delivery.failed) return;
+    if (_entries.remove(said)) notifyListeners();
+  }
 
   /// Starts Claude again, resuming the same conversation when it got far
   /// enough to have one. What a changed permission mode needs, since the
@@ -1202,13 +1226,14 @@ class ClaudeChat extends ChangeNotifier {
       _say(ChatNotice(text, failed: true));
       return;
     }
+    var consumed = false;
     try {
       final event = jsonDecode(text);
-      if (event is Map<String, dynamic>) _confirm(event);
+      if (event is Map<String, dynamic>) consumed = _confirm(event);
     } catch (_) {
       // Drawn or not by the replay, which reads it again.
     }
-    _replay(text);
+    if (!consumed) _replay(text);
     notifyListeners();
   }
 
@@ -1560,14 +1585,35 @@ class ClaudeChat extends ChangeNotifier {
 
   /// What the session writing [event] says about a message typed into it:
   /// that it has taken it as a turn, or queued it behind the one it is on.
-  void _confirm(Map<String, dynamic> event) {
-    if (_pending.isEmpty) return;
+  ///
+  /// True when the line is that message's delivery and nothing more, so it is
+  /// not drawn again as a turn of the user's: a `queued_command`.
+  bool _confirm(Map<String, dynamic> event) {
+    if (_pending.isEmpty) return false;
     final String? text;
     var queued = false;
+    var delivered = false;
     switch (event['type']) {
       case 'queue-operation' when event['operation'] == 'enqueue':
         text = event['content'] as String?;
         queued = true;
+      case 'queue-operation' when event['operation'] == 'remove':
+        // Off the queue: delivered next, or dropped. Which, the record that
+        // follows says; none within the timeout is a drop. See [_dequeued].
+        _dequeued();
+        return false;
+      case 'attachment':
+        // How a message sent while the session is mid-turn is recorded once
+        // it is delivered into that turn: not as a user line, but as this.
+        final attachment = event['attachment'];
+        if (attachment is Map<String, dynamic> &&
+            attachment['type'] == 'queued_command' &&
+            attachment['prompt'] is String) {
+          text = (attachment['prompt'] as String).replaceAll(_pasteTag, '');
+          delivered = true;
+        } else {
+          text = null;
+        }
       case 'user' when event['isMeta'] != true:
         final message = event['message'];
         text = message is Map<String, dynamic>
@@ -1578,26 +1624,64 @@ class ClaudeChat extends ChangeNotifier {
       default:
         text = null;
     }
-    if (text == null) return;
+    if (text == null) return false;
     final key = _normal(text);
     // What reached the session is what was sent less what [_pasteable] took
     // out, so that is what is compared.
     final said = _pending
         .where((said) => _normal(_pasteable(said.text)) == key)
         .firstOrNull;
-    if (said == null) return;
+    if (said == null) return false;
     // Either way the session has it, and the attach can go.
     _recorded.remove(said)?.complete();
     if (queued) {
       // Still pending: it moves to where the session puts it once taken.
       said.delivery = Delivery.queued;
-      return;
+      return false;
+    }
+    if (delivered) {
+      // Delivered into the running turn, and shown where it was sent from:
+      // no longer waiting.
+      _pending.remove(said);
+      said
+        ..delivery = null
+        ..why = null;
+      return true;
     }
     // Taken as a turn: the session's own line is drawn in its place, where
     // the session put it.
     _pending.remove(said);
     _entries.remove(said);
+    return false;
   }
+
+  /// How long after the queue gave a message up, with no record that it was
+  /// delivered, it is taken as dropped.
+  final Duration dropGrace;
+
+  /// A message sat in the session's queue and the queue gave it up. It runs
+  /// next, which its own record says, or it was dropped. The record of a
+  /// delivery follows the removal closely, so a message still queued after
+  /// [dropGrace] is taken as dropped, and said not to have arrived.
+  void _dequeued() {
+    final said = _pending
+        .where((said) => said.delivery == Delivery.queued)
+        .firstOrNull;
+    if (said == null) return;
+    late final Timer timer;
+    timer = Timer(dropGrace, () {
+      _timers.remove(timer);
+      if (_disposed || !_pending.contains(said)) return;
+      _undelivered(
+        said,
+        'Not delivered: the session took it off its queue without running '
+        'it. It may have been dropped when its turn ended.',
+      );
+    });
+    _timers.add(timer);
+  }
+
+  final Set<Timer> _timers = {};
 
   /// A command line in a transcript as it was typed, `/name args`, so a
   /// command typed from this chat is recognised; any other text as it is.
@@ -1849,6 +1933,8 @@ class ClaudeChat extends ChangeNotifier {
       // ends the turn has usually said so already.
       case 'system' when event['subtype'] == 'turn_duration':
         _endTurn();
+      case 'attachment':
+        _onQueuedCommand(event['attachment']);
       case 'system' when event['subtype'] == 'local_command':
         if (event['content'] case final String text) _onCommandLine(text);
       case 'user' when message is Map<String, dynamic>:
@@ -1873,6 +1959,23 @@ class ClaudeChat extends ChangeNotifier {
               : ChatSaid(text, mine: true),
         );
     }
+  }
+
+  /// A message that was sent while the session was mid-turn, as it is
+  /// recorded once delivered into the turn: a turn of the user's, as an
+  /// ordinary user line is. Nothing is drawn for one the user did not type
+  /// (`humanTurn: false`) or that opens with `<`, a tag Claude Code wrote.
+  void _onQueuedCommand(Object? attachment) {
+    if (attachment is! Map<String, dynamic> ||
+        attachment['type'] != 'queued_command' ||
+        attachment['humanTurn'] == false) {
+      return;
+    }
+    final prompt = attachment['prompt'];
+    if (prompt is! String) return;
+    final text = prompt.replaceAll(_pasteTag, '').trim();
+    if (text.isEmpty || text.startsWith('<')) return;
+    _entries.add(ChatSaid(text, mine: true));
   }
 
   /// A command the session ran, or what one printed, drawn as such: see
@@ -2339,6 +2442,10 @@ class ClaudeChat extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    for (final timer in _timers) {
+      timer.cancel();
+    }
+    _timers.clear();
     unawaited(_stop());
     super.dispose();
   }
