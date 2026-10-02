@@ -1,0 +1,10 @@
+# #159, second of three: the app left as the first flow left it, the sessions
+# list open. The listing now says the session waits at a permission prompt;
+# the list, asked again every 5 s, says what for.
+appId: cloud.brata.terminal
+---
+- extendedWaitUntil:
+    visible: "Waiting for permission prompt"
+    timeout: 12000
+- assertNotVisible: "Working"
+- takeScreenshot: chat-status-waiting
