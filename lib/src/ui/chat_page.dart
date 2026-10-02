@@ -2031,7 +2031,14 @@ class _SubAgentPageState extends State<_SubAgentView>
                   children: [
                     for (final (i, crumb) in crumbs.indexed) ...[
                       if (i > 0) Text(' › ', style: theme.textTheme.bodySmall),
-                      InkWell(
+                      Semantics(
+                        container: true,
+                        button: i != crumbs.length - 1,
+                        label: i == crumbs.length - 1
+                            ? crumb
+                            : 'Back to $crumb',
+                        excludeSemantics: true,
+                        child: InkWell(
                         onTap: i == crumbs.length - 1
                             ? null
                             : () => widget.onBackTo(i),
@@ -2046,6 +2053,7 @@ class _SubAgentPageState extends State<_SubAgentView>
                                   : null,
                             ),
                           ),
+                        ),
                         ),
                       ),
                     ],
