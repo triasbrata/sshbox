@@ -6,8 +6,8 @@
 #
 # The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
 # chat_progress (tools/e2e_android.sh's chat_tasks). A line starting tasks:
-# plays a sixteen-second turn: three TaskCreate calls at once, #1 in progress
-# at 4 s, completed at 10 s, the answer and turn_duration at 16 s. It writes the
+# plays a thirty-second turn: three TaskCreate calls at once, #1 in progress
+# at 12 s, completed at 24 s, the answer and turn_duration at 30 s. It writes the
 # session's own task store beside the transcript, with seven earlier tasks
 # (five done, two open) that no transcript carries: the list and its header
 # come from that store, so they must be there.
@@ -66,7 +66,7 @@ env:
 - assertVisible: "10 tasks \\(5 done, 5 open\\)"
 - takeScreenshot: chat-tasks-pending
 
-# TaskUpdate #1 to in progress at 4 s: ■, and its active form.
+# TaskUpdate #1 to in progress at 12 s: ■, and its active form.
 - extendedWaitUntil:
     visible: "(?s).*⎿ ■ Checking the stand-in.*"
     timeout: 10000
@@ -74,7 +74,7 @@ env:
 - assertVisible: "10 tasks \\(5 done, 1 in progress, 4 open\\)"
 - takeScreenshot: chat-tasks-in-progress
 
-# Completed at 10 s: counted, not listed. The others stay open.
+# Completed at 24 s: counted, not listed. The others stay open.
 - extendedWaitUntil:
     visible: "(?s).*… 6 completed.*"
     timeout: 15000
@@ -83,7 +83,7 @@ env:
 - assertVisible: "(?s).*□ Write the report.*"
 - takeScreenshot: chat-tasks-completed
 
-# The turn ends at 16 s: the working line goes, and the two open tasks stay
+# The turn ends at 30 s: the working line goes, and the two open tasks stay
 # on screen between turns.
 - extendedWaitUntil:
     visible: "(?i)Tasks played"
