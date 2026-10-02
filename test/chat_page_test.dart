@@ -3316,6 +3316,26 @@ void main() {
       expect(position.pixels, kept);
     });
 
+    testWidgets('a PageUp key press, with a reply focused, is the reader '
+        'scrolling up', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // A click into a reply puts the focus on its selectable text.
+      await tester.tapAt(tester.getCenter(find.byType(SelectionArea).last));
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.pageUp);
+      await _frames(tester);
+      expect(find.textContaining('LATEST'), findsOneWidget);
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      expect(position.pixels, kept);
+    });
+
     testWidgets('scrolled up, a long reply leaves the reader where they are',
         (tester) async {
       final shell = await watchingOnScreen(tester);
