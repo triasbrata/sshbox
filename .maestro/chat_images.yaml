@@ -95,7 +95,6 @@ env:
       - takeScreenshot: chat-images-viewer
       - tapOn: "Close"
       - assertVisible: "\\[Image #1\\] "
-      - tapOn: "\\[Image #1\\] "
       - eraseText: 2
       - extendedWaitUntil:
           notVisible: "(?s)\\[Image #1\\] .*\\.png"
