@@ -133,6 +133,10 @@ class ChatNotice extends ChatEntry {
   final bool failed;
 }
 
+/// What time it is, for a turn's elapsed seconds and how often the host is
+/// asked how a session is doing; a test replaces it with a clock it moves.
+DateTime Function() chatNow = DateTime.now;
+
 /// A turn in flight, for the line under the chat that says the session is
 /// working rather than stuck — what Claude Code's own `✶ Zesting… (33s · ↓
 /// 1.4k tokens)` says at a terminal.
@@ -635,7 +639,7 @@ class ClaudeChat extends ChangeNotifier {
     if (_pastOnly || _turnStart != null) return;
     _turnStart =
         (timestamp is String ? DateTime.tryParse(timestamp) : null) ??
-        DateTime.now();
+        chatNow();
     _turnTokens.clear();
     // What the last turn waited for, or was seen idle after, is not this
     // one's.
