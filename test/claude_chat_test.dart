@@ -6017,6 +6017,35 @@ void main() {
       expect(host.commands.where((c) => c.contains('tail -c +')).length, asked);
     });
 
+    test('through a real shell, tools and the last time are read from JSON '
+        'with spaces after its colons too', () async {
+      final dir = Directory.systemTemp.createTempSync('sshbox-subsp-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const sid = '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f';
+      final project = Directory('${dir.path}/projects/-srv-app')
+        ..createSync(recursive: true);
+      File('${project.path}/$sid.jsonl').writeAsStringSync('{"type": "mode"}\n');
+      final subs = Directory('${project.path}/$sid/subagents')
+        ..createSync(recursive: true);
+      File('${subs.path}/agent-spaced1.jsonl').writeAsStringSync(
+        '{"type": "user", "timestamp": "2026-10-02T08:21:00.000Z"}\n'
+        '{"type": "assistant", "timestamp": "2026-10-02T08:22:00.000Z", '
+        '"message": {"content": [{"type": "tool_use", "id": "t1"}]}}\n'
+        '{"type": "assistant", "timestamp": "2026-10-02T08:23:00.000Z", '
+        '"message": {"content": [{"type": "tool_use", "id": "t2"}]}}\n',
+      );
+      File('${subs.path}/agent-spaced1.meta.json')
+          .writeAsStringSync('{"toolUseId": "toolu_01A", "agentType": "Explore"}');
+      final r = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.subAgentsCommand(sid)],
+        environment: {'CLAUDE_CONFIG_DIR': dir.path},
+      );
+      final listed = SubAgent.allIn('${r.stdout}');
+      expect(listed.single.tools, 2);
+      expect(listed.single.last, DateTime.utc(2026, 10, 2, 8, 23));
+    });
+
     test('through a real shell, a link in the way is not followed: a linked '
         'subagents folder, session folder or agent file', () async {
       final dir = Directory.systemTemp.createTempSync('sshbox-sublink-');

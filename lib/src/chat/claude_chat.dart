@@ -1255,8 +1255,8 @@ class ClaudeChat extends ChangeNotifier {
           r'b=${m%.meta.json}; t="$dir/$b.jsonl"; '
           r'[ -L "$dir/$m" ] || [ -L "$t" ] && continue; '
           r's=$(wc -c < "$t" 2>/dev/null | tr -d " "); '
-          r'n=$(tail -c 2097152 "$t" 2>/dev/null | grep -c "\"type\":\"tool_use\""); '
-          r'l=$(tail -n 1 "$t" 2>/dev/null | grep -o "\"timestamp\":\"[^\"]*\"" | head -n 1 | cut -d "\"" -f4); '
+          r'n=$(tail -c 2097152 "$t" 2>/dev/null | grep -c "\"type\": *\"tool_use\""); '
+          r'l=$(tail -n 1 "$t" 2>/dev/null | grep -o "\"timestamp\": *\"[^\"]*\"" | head -n 1 | cut -d "\"" -f4); '
           r'printf "%s\t%s\t%s\t%s\t%s\n" "$b" '
           r'"$(head -c 4096 "$dir/$m" | tr "\n\t" "  ")" "${n:-0}" "${s:-0}" "$l"; '
           'done')}';
