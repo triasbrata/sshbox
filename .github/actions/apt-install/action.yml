@@ -58,7 +58,8 @@ runs:
         echo "apt: cache ${{ steps.restore.outputs.cache-hit == 'true' && 'hit' || 'miss' }}, .debs before $before, after $after, downloaded $((after - before))"
 
     - name: Save the .debs
-      if: steps.restore.outputs.cache-hit != 'true'
+      # From main alone: a branch's copy can be restored by that branch only.
+      if: github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ~/.apt-archives

@@ -107,18 +107,37 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.2 # .fvmrc
-          channel: stable
-          cache: true
-
-      - run: flutter pub get
+      - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # Debug, not release: it carries every ABI, so the emulator's x86_64 is in
       # it without guessing, and it needs no signing key, since this build is
       # driven and thrown away. release.yml builds what ships.
+      # Gradle's downloads -- its own distribution and every Maven artifact
+      # the Android build pulls -- from main's cache: uncached they cost each
+      # run most of the 250-380 s the debug build takes.
+      - name: Restore Gradle's downloads
+        id: gradle
+        timeout-minutes: 10
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
+          restore-keys: gradle-${{ runner.os }}-
+
       - run: flutter build apk --debug
+
+      # Saved from main alone, as every cache here is.
+      - name: Save Gradle's downloads
+        if: github.ref == 'refs/heads/main' && steps.gradle.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: ${{ steps.gradle.outputs.cache-primary-key }}
 
       # The host the flows connect to: this runner's own sshd, which the
       # emulator reaches as 10.0.2.2 -- its alias for the host's loopback.
@@ -165,18 +184,51 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Maestro, pinned so a new release can't change a run underneath it, and
+      # kept: its installer fetched the latest release on every run.
+      - name: Restore Maestro
+        id: maestro
+        timeout-minutes: 10
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.maestro/bin
+            ~/.maestro/lib
+          key: maestro-${{ runner.os }}-2.11.0
+
       - name: Install Maestro
+        if: steps.maestro.outputs.cache-hit != 'true'
+        env:
+          MAESTRO_VERSION: 2.11.0
+        run: curl -Ls "https://get.maestro.mobile.dev" | bash
+
+      # The key names 2.11.0, so only 2.11.0 may be saved under it.
+      - name: Check Maestro's version
+        if: steps.maestro.outputs.cache-hit != 'true'
         run: |
-          curl -Ls "https://get.maestro.mobile.dev" | bash
-          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          version=$("$HOME/.maestro/bin/maestro" --version 2>/dev/null | tail -1 | tr -d '[:space:]')
+          [ "$version" = 2.11.0 ] || { echo "::error::installed Maestro $version, not 2.11.0"; exit 1; }
+
+      - name: Save Maestro
+        if: github.ref == 'refs/heads/main' && steps.maestro.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.maestro/bin
+            ~/.maestro/lib
+          key: maestro-${{ runner.os }}-2.11.0
+
+      - run: echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       # The system image the emulator boots, kept between runs. Without this it
       # is fetched from Google on every release, and once in the gate's first
       # eight runs it arrived corrupt -- "Error on ZipFile unknown archive" --
       # so no emulator started. On an rc, a build that was fine would have
       # failed the gate, gone unpromoted and had an issue opened against it.
-      - name: Cache the emulator's system image
-        uses: actions/cache@v4
+      - name: Restore the emulator's system image
+        id: sysimg
+        timeout-minutes: 10
+        uses: actions/cache/restore@v4
         with:
           path: /usr/local/lib/android/sdk/system-images/android-34/google_apis/x86_64
           key: sysimg-android-34-google_apis-x86_64-v1
@@ -207,6 +259,13 @@ jobs:
       # Each line of `script` runs in a shell of its own, so the whole of the
       # logic lives in tools/e2e_android.sh: which flows gate, which only
       # report, and seed_host first.
+      - name: Save the emulator's system image
+        if: github.ref == 'refs/heads/main' && steps.sysimg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /usr/local/lib/android/sdk/system-images/android-34/google_apis/x86_64
+          key: sysimg-android-34-google_apis-x86_64-v1
+
       - name: The flows
         uses: reactivecircus/android-emulator-runner@v2
         # Empty unless a hand run names one block (tools/e2e_android.sh);
@@ -313,13 +372,8 @@ jobs:
             liblzma-dev libstdc++-12-dev libsecret-1-dev xvfb dbus-x11 gnome-keyring
             tmux xclip dunst xdotool python3-gi gir1.2-gtk-3.0 openbox x11-utils ffmpeg
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.2 # .fvmrc
-          channel: stable
-          cache: true
-
-      - run: flutter pub get
+      - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # Built to take updates from a feed the updater test serves on this
       # runner's loopback, as an older version, so there is something newer
@@ -375,13 +429,8 @@ jobs:
         run: |
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.2 # .fvmrc
-          channel: stable
-          cache: true
-
-      - run: flutter pub get
+      - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # tmux, which the Local shell uses where the machine has it: the image
       # has Homebrew but not tmux.
@@ -422,13 +471,8 @@ jobs:
         run: |
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.47.2 # .fvmrc
-          channel: stable
-          cache: true
-
-      - run: flutter pub get
+      - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       - name: Drive the desktop build
         timeout-minutes: 38
