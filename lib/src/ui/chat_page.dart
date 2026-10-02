@@ -452,22 +452,62 @@ class _ChatPageState extends State<ChatPage> {
     _scrollToEnd();
   }
 
-  /// To the end once the entry just added is laid out. Hidden, the tab's
-  /// tickers are off and an animation would stand still, so it goes at once,
-  /// and is at the end when shown.
+  /// To the end once what changed is laid out. Hidden, the tab's tickers are
+  /// off and an animation would stand still, so it goes at once, and is at the
+  /// end when shown.
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients || !_follow) return;
-      final end = _scroll.position.maxScrollExtent;
+      final position = _scroll.position;
+      final end = position.maxScrollExtent;
+      if (end - position.pixels <= _atEnd) return;
       if (!TickerMode.valuesOf(context).enabled) return _scroll.jumpTo(end);
+      _pinning = true;
+      // A run begun over this one ends it, and its late end is not this
+      // run's to act on.
+      final run = ++_pinRun;
       unawaited(
-        _scroll.animateTo(
-          end,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        ),
+        _scroll
+            .animateTo(
+              end,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+            )
+            .whenComplete(() {
+              if (run != _pinRun) return;
+              _pinning = false;
+              // What grew meanwhile, or came back from a reader's hand, is
+              // not for this to chase: only an idle list is pinned again.
+              if (mounted &&
+                  _follow &&
+                  _scroll.hasClients &&
+                  _scroll.position.userScrollDirection ==
+                      ScrollDirection.idle) {
+                _scrollToEnd();
+              }
+            }),
       );
     });
+  }
+
+  /// True while the view runs to the end, which is not to be started again
+  /// by each frame of its own run.
+  bool _pinning = false;
+  int _pinRun = 0;
+
+  /// The end slips below the fold with no new entry whenever the room or the
+  /// content changes size — the keyboard, a shorter window, the working line
+  /// appearing, a row growing in place — so while following, the end is kept
+  /// in view for those too.
+  bool _onScrollMetrics(ScrollMetricsNotification note) {
+    final metrics = note.metrics;
+    if (_follow &&
+        !_switching &&
+        !_pinning &&
+        metrics.maxScrollExtent - metrics.pixels > _atEnd) {
+      _scrollToEnd();
+    }
+    return false;
   }
 
   /// Puts a session just picked where it was left, [at] — or, left at the
@@ -620,15 +660,21 @@ class _ChatPageState extends State<ChatPage> {
       final sidebar = wide && _sidebarOpen;
       // Chat at the content size, its sessions, messages, tool rows, code
       // and composer alike: see ContentText.
-      final sessions = ContentText(
-        child: _SessionList(
-          chat: _chat,
-          agents: _agents,
-          connected: widget.session.isConnected,
-          onPick: _pick,
-          onRefresh: () => setState(_listAgents),
-          onNewChat: _newChat,
-          unseen: (agent) => _unseen.contains(_placeOf(agent.sessionId)),
+      // A right-click on the sessions is theirs, and a session has no menu:
+      // claimed here, it never falls through to the tab's own menu, whose
+      // Group with… a session is no tab to answer.
+      final sessions = GestureDetector(
+        onSecondaryTapUp: (_) {},
+        child: ContentText(
+          child: _SessionList(
+            chat: _chat,
+            agents: _agents,
+            connected: widget.session.isConnected,
+            onPick: _pick,
+            onRefresh: () => setState(_listAgents),
+            onNewChat: _newChat,
+            unseen: (agent) => _unseen.contains(_placeOf(agent.sessionId)),
+          ),
         ),
       );
       return Scaffold(
@@ -677,7 +723,9 @@ class _ChatPageState extends State<ChatPage> {
                   // them would do nothing.
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
-              : NotificationListener<ScrollUpdateNotification>(
+              : NotificationListener<ScrollMetricsNotification>(
+                  onNotification: _onScrollMetrics,
+                  child: NotificationListener<ScrollUpdateNotification>(
                   onNotification: _onScrollUpdate,
                   child: CustomScrollView(
                   // A list of its own for each session picked. The rows a
@@ -720,6 +768,7 @@ class _ChatPageState extends State<ChatPage> {
                   ],
                 ),
                 ),
+                ),
               ),
               // Over the list's own corner, so it covers neither the working
               // line nor the box, which sit below the list.
@@ -753,6 +802,9 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ],
           ),
+        // Under the working line, and alone between turns while a task is
+        // still open, as Claude Code's own view keeps it.
+        if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
         const Divider(height: 1),
         _composer(theme, wide: wide, sidebar: sidebar),
       ],
@@ -1088,7 +1140,7 @@ class _Bubble extends StatelessWidget {
 /// what was answered alike: a ```mermaid fence as a diagram, its source
 /// copyable beside it, and any other code block with its copy button.
 final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
-  'code': CodeBlockBuilder(copyable: true),
+  'code': CodeBlockBuilder(copyable: true, wrap: true),
 };
 
 /// What Claude said, as Markdown: it writes lists, headings and code.
@@ -1737,6 +1789,72 @@ class _JumpToLatest extends StatelessWidget {
       onPressed: onPressed,
     ),
   );
+}
+
+/// The session's tasks, as Claude Code's view draws them under its spinner:
+/// `⎿` then the ones in progress, bold with a filled square, and the ones
+/// pending with an empty one; completed ones are only counted, in a last
+/// `… +N pending, M completed` line. Task text is host text: plain [Text].
+class _Checklist extends StatelessWidget {
+  const _Checklist({required this.chat});
+
+  final ClaudeChat chat;
+
+  /// How many tasks it lists before it counts the rest.
+  static const _lines = 6;
+
+  @override
+  Widget build(BuildContext context) {
+    final open = chat.openTasks;
+    final done = chat.tasksDone;
+    // The ones in progress first, then the pending, shown in task order.
+    final shown = {
+      ...[...open.where((t) => t.inProgress), ...open.where((t) => !t.inProgress)]
+          .take(_lines),
+    };
+    // Counted for what they are: more than the lines hold of the ones in
+    // progress is possible too.
+    final hidden = open.where((t) => !shown.contains(t));
+    final hiddenActive = hidden.where((t) => t.inProgress).length;
+    final hiddenPending = hidden.length - hiddenActive;
+    final more = [
+      if (hiddenActive > 0) '+$hiddenActive in progress',
+      if (hiddenPending > 0) '+$hiddenPending pending',
+      if (done > 0) '$done completed',
+    ];
+    Widget line(String text, {bool bold = false, TuiTextTone? tone}) => Row(
+      children: [
+        const SizedBox(width: 16),
+        Expanded(
+          child: TuiText(
+            text,
+            size: 12,
+            bold: bold,
+            tone: tone ?? TuiTextTone.normal,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (i, task) in open.where(shown.contains).indexed)
+            line(
+              '${i == 0 ? '⎿ ' : '  '}${task.inProgress ? '■' : '□'} '
+              '${task.label}',
+              bold: task.inProgress,
+              tone: task.inProgress ? null : TuiTextTone.muted,
+            ),
+          if (more.isNotEmpty)
+            line('  … ${more.join(', ')}', tone: TuiTextTone.dim),
+        ],
+      ),
+    );
+  }
 }
 
 /// The line under the chat while a turn runs, shaped on Claude Code's own:
