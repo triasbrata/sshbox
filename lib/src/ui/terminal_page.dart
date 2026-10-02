@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show FileSystemEntity, FileSystemEntityType;
+import 'dart:io' show FileSystemEntity, FileSystemEntityType, Platform;
 
 import 'package:desktop_drop/desktop_drop.dart';
 
@@ -22,6 +22,7 @@ import 'package:flutter/gestures.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:win32/win32.dart' show GetDoubleClickTime;
 import 'package:xterm2/xterm.dart';
 
 import '../data/secret_store.dart';
@@ -1438,6 +1439,10 @@ class _PaneViewState extends State<_PaneView> {
 
   void _mouseDown(PointerDownEvent event) {
     _rightDown(event);
+    // A press while a gesture is still held means its up never came — the
+    // window blurred mid-drag — whatever the press is: a right click, or a
+    // left one a program tracking the mouse keeps from [_selectByClicks].
+    if (_gesture?.device == event.device) _endGesture();
     // A second pointer — a touchscreen, a pen — must not lose the held
     // press its release: the program would drag for ever.
     if (_holding) return;
@@ -1465,11 +1470,22 @@ class _PaneViewState extends State<_PaneView> {
   }
 
   /// How long after a press the next still counts as the same run of
-  /// clicks: macOS's and Windows's default double-click interval. Flutter's
-  /// own 300 ms, [kDoubleTapTimeout], is a touch's, and a mouse's second
-  /// press on a loaded machine, or a slower hand, comes later: it was
-  /// counted as a first click and xterm2's drag of characters took over.
-  static const _doubleClickInterval = Duration(milliseconds: 500);
+  /// clicks. Flutter's own 300 ms, [kDoubleTapTimeout], is a touch's, and a
+  /// mouse's second press on a loaded machine, or from a slower hand, comes
+  /// later: it was counted as a first click and xterm2's drag of characters
+  /// took over.
+  ///
+  /// Windows says what the user set. macOS and Linux would need a native
+  /// channel for it (NSEvent.doubleClickInterval, GTK's
+  /// gtk-double-click-time), so they get their defaults: 500 ms and 400 ms.
+  static Duration get _doubleClickInterval {
+    final ms = switch (defaultTargetPlatform) {
+      TargetPlatform.windows => Platform.isWindows ? GetDoubleClickTime() : 0,
+      TargetPlatform.linux => 400,
+      _ => 500,
+    };
+    return Duration(milliseconds: ms > 0 ? ms : 500);
+  }
 
   /// Clicks in a row on one spot, and the timer that ends the run.
   int _clicks = 0;
