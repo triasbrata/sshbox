@@ -111,13 +111,13 @@ class _BugReportDialogState extends State<_BugReportDialog> {
   /// write one.
   bool get _logGoes => _feedback.available && _attach;
 
-  String get _body => _bodyFor(_logGoes);
-
   String _bodyFor(bool withEventId) {
     final what = scrub(_what.text.trim());
     final about = widget.about;
     final body = StringBuffer(what.isEmpty ? '(nothing written)' : what);
-    if (about != null && about.isNotEmpty) {
+    // With an event id the fault is in the Sentry event, privately; the
+    // public issue does not repeat it.
+    if (!withEventId && about != null && about.isNotEmpty) {
       body.writeln();
       body.writeln();
       body.writeln('What Jeansh caught:');
@@ -144,7 +144,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     if (!_logGoes) return false;
     final sent = await _feedback.send(
       id: _eventId,
-      message: _body,
+      message: _bodyFor(false),
       log: appLog.render(),
     );
     if (!sent && mounted) {
@@ -158,10 +158,8 @@ class _BugReportDialogState extends State<_BugReportDialog> {
   }
 
   /// The named route: their browser, their account, their Submit.
-  Future<void> _openGitHub() async {
-    setState(() => _sending = true);
-    final sent = await _deliver();
-    var body = _bodyFor(sent);
+  /// [body] cut to what the link has room for, as it will be opened.
+  String _fit(String body) {
     // The whole URL has to fit, and only the body can give: work out what
     // everything else costs and cut the body to what is left.
     final overhead = Uri.parse(issuesUrl)
@@ -180,6 +178,16 @@ class _BugReportDialogState extends State<_BugReportDialog> {
       }
       body = '${body.substring(0, cut < 0 ? 0 : cut)}$note';
     }
+    return body;
+  }
+
+  /// What the public issue will hold, as the link carries it.
+  String get _publicBody => _fit(_bodyFor(_logGoes));
+
+  Future<void> _openGitHub() async {
+    setState(() => _sending = true);
+    final sent = await _deliver();
+    final body = _fit(_bodyFor(sent));
     final url = Uri.parse(issuesUrl)
         .replace(queryParameters: {'title': _title, 'body': body});
     final opened = await launchUrl(url, mode: LaunchMode.externalApplication);
@@ -227,6 +235,35 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     );
     Navigator.of(context).pop();
   }
+
+  Widget _preview(TermulPalette p, Key key, String heading, String text) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TuiText(heading, tone: TuiTextTone.muted, size: 11),
+          const SizedBox(height: 6),
+          Container(
+            constraints: const BoxConstraints(maxHeight: 180),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: p.bg,
+              border: Border.all(color: p.border),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                text,
+                key: key,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 11,
+                  color: p.text,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
 
   /// What the app did, for the developer: its own switch, the id it will be
   /// found by, and the exact text, which is also what is sent.
@@ -340,30 +377,25 @@ class _BugReportDialogState extends State<_BugReportDialog> {
               hint: 'What you did, and what happened instead',
             ),
             const SizedBox(height: 16),
-            const TuiText(
-              'This is everything that will be sent:',
-              tone: TuiTextTone.muted,
-              size: 11,
-            ),
-            const SizedBox(height: 6),
-            Container(
-              constraints: const BoxConstraints(maxHeight: 180),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: p.bg,
-                border: Border.all(color: p.border),
+            if (_feedback.available) ...[
+              _preview(
+                p,
+                const ValueKey('preview-private'),
+                'Privately to the developer sends this to Sentry'
+                '${_attach ? ', with the log below' : ''}:',
+                _bodyFor(false),
               ),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  _body,
-                  style: TextStyle(
-                    fontFamily: TermulFonts.mono,
-                    fontSize: 11,
-                    color: p.text,
-                    height: 1.4,
-                  ),
-                ),
-              ),
+              const SizedBox(height: 12),
+            ],
+            _preview(
+              p,
+              const ValueKey('preview-public'),
+              _logGoes
+                  ? 'Under my name opens this on GitHub, and sends the Sentry '
+                        'text above with the log below:'
+                  : 'Under my name opens this on GitHub'
+                        '${_feedback.available ? ', and sends nothing to Sentry' : ''}:',
+              _publicBody,
             ),
             const SizedBox(height: 8),
             const TuiText(

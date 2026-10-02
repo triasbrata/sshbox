@@ -111,15 +111,18 @@ class AppLog {
     final file = _file;
     if (file == null) return;
     try {
-      if (!await file.exists()) await file.create();
-      await _private(file);
+      if (!await file.exists()) {
+        await file.create();
+        await _private(file);
+      }
       await file.writeAsString(current, flush: true);
     } catch (_) {}
   }
 
-  /// Dart has no chmod; Windows keeps a file in the user's own profile.
+  /// Dart has no chmod; Windows keeps a file in the user's own profile and iOS
+  /// cannot run one (its app folder is private to the app already).
   static Future<void> _private(File file) async {
-    if (Platform.isWindows) return;
+    if (Platform.isWindows || Platform.isIOS) return;
     await Process.run('chmod', ['600', file.path]);
   }
 }
@@ -127,12 +130,16 @@ class AppLog {
 /// The app's one.
 final appLog = AppLog();
 
+var _watching = false;
+
 /// Chains the app's own error paths and `debugPrint` into [appLog], and
 /// flushes it when the app pauses. Called once, after the framework's and
 /// Sentry's handlers are in place, so it sees what they see and consumes
 /// nothing.
-var _watching = false;
-
+///
+/// **A `debugPrint` line goes into bug reports.** It is scrubbed, but a
+/// pattern scrubber cannot know a file name or a session name, so a
+/// `debugPrint` must never carry host text: print a type or a fixed phrase.
 void watchAppLog() {
   if (_watching) return;
   _watching = true;
@@ -140,14 +147,22 @@ void watchAppLog() {
   FlutterError.onError = (details) {
     inner?.call(details);
     appLog.error(
-      _trace('flutter', details.exceptionAsString(), details.stack),
+      _trace(
+        'flutter',
+        details.exception.runtimeType.toString(),
+        details.exceptionAsString(),
+        details.stack,
+      ),
       scrubbed: true,
     );
     unawaited(appLog.flush());
   };
   final dispatcher = PlatformDispatcher.instance.onError;
   PlatformDispatcher.instance.onError = (error, stack) {
-    appLog.error(_trace('platform', error.toString(), stack), scrubbed: true);
+    appLog.error(
+      _trace('platform', error.runtimeType.toString(), error.toString(), stack),
+      scrubbed: true,
+    );
     unawaited(appLog.flush());
     return dispatcher?.call(error, stack) ?? false;
   };
@@ -164,7 +179,7 @@ void watchAppLog() {
 
 /// An error as one line: its text, then the first frames, in the same shape a
 /// bug report's fault text takes ([scrubStackLine] keeps `package:` frames).
-String _trace(String where, String what, StackTrace? stack) {
+String _trace(String where, String type, String what, StackTrace? stack) {
   final frames = stack
       ?.toString()
       .split('\n')
@@ -172,5 +187,8 @@ String _trace(String where, String what, StackTrace? stack) {
       .map((line) => scrubStackLine(line.trim()))
       .where((line) => line.isNotEmpty)
       .join(' | ');
-  return '$where ${scrub(what)}${frames == null || frames.isEmpty ? '' : ' | $frames'}';
+  // The crash path's rule: an exception type whose text is host output by
+  // construction keeps its type and frames, not its message.
+  final message = scrubValue(type, what);
+  return '$where $type: $message${frames == null || frames.isEmpty ? '' : ' | $frames'}';
 }
