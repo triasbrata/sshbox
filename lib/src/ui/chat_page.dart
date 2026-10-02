@@ -2573,7 +2573,7 @@ class _ToolRowState extends State<_ToolRow> {
                     ),
                   ),
                 ),
-                if (widget.sub case final sub?)
+                if (false && widget.sub != null)
                   _SubAgentStrip(
                     sub: sub,
                     running: !run.done,
