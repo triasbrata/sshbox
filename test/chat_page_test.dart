@@ -335,6 +335,10 @@ class _Shell
     Uint8List.fromList(utf8.encode('${jsonEncode(event)}\n')),
   );
 
+  /// One line of the transcript as written, for what jsonEncode cannot make.
+  void rawLine(String line) =>
+      _channels.last.add(Uint8List.fromList(utf8.encode('$line\n')));
+
   @override
   final status = ValueNotifier(SessionStatus.connected);
 
@@ -1845,6 +1849,7 @@ void main() {
       String name,
       Map<String, Object?> input, {
       Object result = 'done',
+      String? titled,
     }) async {
       final shell = _Shell()
         ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
@@ -1885,11 +1890,18 @@ void main() {
       shell.event({'type': 'result', 'subtype': 'success'});
       await tester.pump();
       await tester.pump();
-      await tester.tap(find.text(name));
+      await tester.tap(find.text(titled ?? name));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(tester.takeException(), isNull);
     }
+
+    /// The tree node, folded or leaf, whose line reads exactly [text].
+    Finder node(String text) => find.byWidgetPredicate(
+      (w) =>
+          (w is RichText && w.text.toPlainText() == text) ||
+          (w is EditableText && w.controller.text == text),
+    );
 
     /// The text of the selectable block that reads exactly [text].
     TextSpan spanOf(WidgetTester tester, String text) => tester
@@ -2082,22 +2094,143 @@ void main() {
       expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
     });
 
-    testWidgets('a tool it does not know: each field a line, text as it '
+    testWidgets('a tool it does not know: its input a tree, text as it '
         'reads', (tester) async {
       await opened(tester, 'mcp__tracker__file_issue', {
         'title': 'Nightly is red',
         'body': 'Lint fails.\nSee the log.',
         'labels': ['ci'],
-      });
+      }, titled: 'tracker · file_issue');
       noJson(tester);
+      expect(node('title: Nightly is red'), findsOneWidget);
+      expect(node('body: Lint fails.\nSee the log.'), findsOneWidget);
+      expect(node('labels: Array(1)'), findsOneWidget);
+    });
+
+    testWidgets('an MCP tool is titled server · tool, with what it is about',
+        (tester) async {
+      await opened(tester, 'mcp__tracker__file_issue', {
+        'title': 'Nightly is red',
+      }, titled: 'tracker · file_issue');
+      expect(find.text('tracker · file_issue'), findsOneWidget);
+      expect(find.text('mcp__tracker__file_issue'), findsNothing);
+      expect(find.text('Nightly is red'), findsOneWidget);
+    });
+
+    testWidgets('a SendMessage is titled → who: what, never as JSON', (
+      tester,
+    ) async {
+      await opened(tester, 'SendMessage', {
+        'to': 'macos double-click select',
+        'summary': 'dblclick passed review',
+        'message': 'All good. Merge it.',
+      });
       expect(
-        shown(
-          'title: Nightly is red\n'
-          'body:\nLint fails.\nSee the log.\n'
-          'labels: [\n  "ci"\n]',
-        ),
+        find.text('→ macos double-click select: dblclick passed review'),
         findsOneWidget,
       );
+      expect(find.textContaining('{'), findsNothing);
+    });
+
+    testWidgets('a nested input opens and closes a node at a tap', (
+      tester,
+    ) async {
+      await opened(tester, 'Mystery', {
+        'meta': {
+          'inner': {'deep': 'value'},
+        },
+      });
+      expect(node('meta: Object(1)'), findsOneWidget);
+      expect(node('deep: value'), findsNothing);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump();
+      await tester.tap(node('inner: Object(1)'));
+      await tester.pump();
+      expect(node('deep: value'), findsOneWidget);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump();
+      expect(node('deep: value'), findsNothing);
+    });
+
+    testWidgets('a long string is folded behind show more, and copies whole', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      final long = List.filled(50, 'abcdefghij').join();
+      await opened(tester, 'Mystery', {'note': long});
+      expect(node('note: ${long.substring(0, 200)}…'), findsOneWidget);
+      await tester.tap(find.text('show more'));
+      await tester.pump();
+      expect(node('note: $long'), findsOneWidget);
+      expect(find.text('show less'), findsOneWidget);
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(jsonDecode(copied.single), {'note': long});
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('a JSON result of a tool with no renderer is a tree too', (
+      tester,
+    ) async {
+      await opened(tester, 'Mystery', {
+        'q': 'x',
+      }, result: jsonEncode({'rows': [1, 2], 'ok': true}));
+      expect(node('rows: Array(2)'), findsOneWidget);
+      expect(node('ok: true'), findsOneWidget);
+    });
+
+    testWidgets('an input nested far too deep still opens, and copies a '
+        'note instead of throwing', (tester) async {
+      final copied = _useFakeClipboard();
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.enterText(find.byType(TextField), 'go on');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      const depth = 400000;
+      shell.rawLine(
+        '{"type":"assistant","message":{"content":[{"type":"tool_use",'
+        '"id":"toolu_1","name":"Mystery","input":{"deep":'
+        '${'[' * depth}1${']' * depth}}}]}}',
+      );
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.text('Mystery'));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied.single, '(too deep to copy)');
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('shapes it did not expect throw nothing', (tester) async {
+      await opened(tester, 'Mystery', {
+        'a': null,
+        'b': [
+          1,
+          {'c': []},
+          null,
+        ],
+        'd': {},
+        'e': 3.5,
+        'f': {r'$oid': 'x'},
+        'g': '',
+      }, result: '{"cut off');
+      expect(node('d: {}'), findsOneWidget);
+      expect(find.text('{"cut off'), findsOneWidget);
     });
 
     testWidgets('a known tool of a shape it did not expect still shows '

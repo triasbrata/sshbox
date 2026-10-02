@@ -376,11 +376,16 @@ class TuiJsonTree extends StatelessWidget {
     required this.value,
     this.rootName,
     this.maxChildren = 100,
+    this.foldStrings = false,
   });
 
   final Object? value;
   final String? rootName;
   final int maxChildren;
+
+  /// Strings as they read, not as JSON would escape them, and one longer than
+  /// [TuiJsonNode.foldAt] cut short behind a "show more".
+  final bool foldStrings;
 
   @override
   Widget build(BuildContext context) {
@@ -389,32 +394,51 @@ class TuiJsonTree extends StatelessWidget {
         name: rootName!,
         value: value,
         maxChildren: maxChildren,
+        foldStrings: foldStrings,
       );
     }
     final v = value;
-    if (v is Map) {
+    // The first [maxChildren] of a big root only, as every node below it:
+    // a list of 50,000 items is not 50,000 widgets.
+    final entries = switch (v) {
+      Map() => [for (final e in v.entries) ('${e.key}', e.value)],
+      List() => [for (final (i, item) in v.indexed) ('$i', item)],
+      _ => null,
+    };
+    if (entries != null) {
+      final p = TermulThemeData.of(context).palette;
+      final rest = entries.length - maxChildren;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final e in v.entries)
+          for (final (name, item) in entries.take(maxChildren))
             TuiJsonNode(
-              name: '${e.key}',
-              value: e.value,
+              name: name,
+              value: item,
               maxChildren: maxChildren,
+              foldStrings: foldStrings,
+            ),
+          if (rest > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(32, 2, 12, 4),
+              child: Text(
+                '… $rest more',
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 11,
+                  color: p.dim,
+                ),
+              ),
             ),
         ],
       );
     }
-    if (v is List) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final (i, item) in v.indexed)
-            TuiJsonNode(name: '$i', value: item, maxChildren: maxChildren),
-        ],
-      );
-    }
-    return TuiJsonNode(name: 'value', value: v, maxChildren: maxChildren);
+    return TuiJsonNode(
+      name: 'value',
+      value: v,
+      maxChildren: maxChildren,
+      foldStrings: foldStrings,
+    );
   }
 }
 
@@ -426,12 +450,17 @@ class TuiJsonNode extends StatefulWidget {
     required this.value,
     this.depth = 0,
     this.maxChildren = 100,
+    this.foldStrings = false,
   });
+
+  /// How much of a folded string shows before "show more".
+  static const foldAt = 200;
 
   final String name;
   final Object? value;
   final int depth;
   final int maxChildren;
+  final bool foldStrings;
 
   @override
   State<TuiJsonNode> createState() => _TuiJsonNodeState();
@@ -439,6 +468,7 @@ class TuiJsonNode extends StatefulWidget {
 
 class _TuiJsonNodeState extends State<TuiJsonNode> {
   bool _open = false;
+  bool _whole = false;
 
   @override
   Widget build(BuildContext context) {
@@ -463,28 +493,54 @@ class _TuiJsonNodeState extends State<TuiJsonNode> {
     final indent = 12.0 + widget.depth * 16;
 
     if (children == null) {
+      final fold = widget.foldStrings &&
+          value is String &&
+          value.length > TuiJsonNode.foldAt;
+      final text = widget.foldStrings && value is String
+          ? (fold && !_whole ? value.substring(0, TuiJsonNode.foldAt) : value)
+          : _encode(value);
       return Padding(
         padding: EdgeInsets.fromLTRB(indent + 20, 3, 12, 3),
-        child: SelectableText.rich(
-          TextSpan(
-            style: TextStyle(
-              fontFamily: TermulFonts.mono,
-              fontSize: 12,
-              height: 1.35,
-              color: p.text,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText.rich(
+              TextSpan(
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 12,
+                  height: 1.35,
+                  color: p.text,
+                ),
+                children: [
+                  TextSpan(
+                    text: widget.name,
+                    style: TextStyle(color: p.accent),
+                  ),
+                  const TextSpan(text: ': '),
+                  TextSpan(
+                    text: fold && !_whole ? '$text…' : text,
+                    style: TextStyle(color: value is String ? p.cyan : p.text),
+                  ),
+                ],
+              ),
             ),
-            children: [
-              TextSpan(
-                text: widget.name,
-                style: TextStyle(color: p.accent),
+            if (fold)
+              InkWell(
+                onTap: () => setState(() => _whole = !_whole),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    _whole ? 'show less' : 'show more',
+                    style: TextStyle(
+                      fontFamily: TermulFonts.mono,
+                      fontSize: 11,
+                      color: p.accent,
+                    ),
+                  ),
+                ),
               ),
-              const TextSpan(text: ': '),
-              TextSpan(
-                text: _encode(value),
-                style: TextStyle(color: value is String ? p.cyan : p.text),
-              ),
-            ],
-          ),
+          ],
         ),
       );
     }
@@ -548,6 +604,7 @@ class _TuiJsonNodeState extends State<TuiJsonNode> {
               value: child,
               depth: widget.depth + 1,
               maxChildren: widget.maxChildren,
+              foldStrings: widget.foldStrings,
             ),
           if (rest > 0)
             Padding(

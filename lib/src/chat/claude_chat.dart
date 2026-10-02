@@ -104,26 +104,90 @@ class ChatToolRun extends ChatEntry {
   /// spinner rather than a result.
   bool get done => result != null;
 
-  /// The one line the row shows beside the tool's name: the command, the
-  /// file, the pattern — whatever this tool is chiefly about. Everything
-  /// else is behind the row's own expansion.
-  String get summary {
-    for (final key in const [
-      'command',
-      'file_path',
-      'path',
-      'pattern',
-      'url',
-      'query',
-      'prompt',
-      'description',
-    ]) {
-      final value = input[key];
-      if (value is String && value.trim().isNotEmpty) {
-        return value.trim().replaceAll('\n', ' ');
+  /// The tool as the row names it: `mcp__server__tool` as `server · tool`,
+  /// any other name as it is.
+  String get title {
+    if (name.startsWith('mcp__')) {
+      final parts = name.substring(5).split('__');
+      if (parts.length >= 2 && parts.every((part) => part.isNotEmpty)) {
+        return '${parts.first} · ${parts.skip(1).join('__')}';
       }
     }
-    return input.isEmpty ? '' : jsonEncode(input);
+    return name;
+  }
+
+  /// Tools drawn by a renderer of their own, whose own fields say what they
+  /// are about: for them the command or the path comes before a description.
+  static const own = {
+    'Bash',
+    'BashOutput',
+    'Read',
+    'Write',
+    'Edit',
+    'MultiEdit',
+    'NotebookEdit',
+    'Grep',
+    'Glob',
+    'TodoWrite',
+  };
+
+  /// The text of [key] in [input] when it is a non-empty string, on one line.
+  String? _text(String key) {
+    final value = input[key];
+    if (value is! String || value.trim().isEmpty) return null;
+    return value.trim().replaceAll(RegExp(r'\s*\n\s*'), ' ');
+  }
+
+  /// The one line the row shows beside the tool's name: what the call is
+  /// about, in words, never the JSON it came as. Everything else is behind
+  /// the row's own expansion, as a tree.
+  String get summary {
+    switch (name) {
+      case 'SendMessage':
+        final to = _text('to');
+        final what = _text('summary') ?? _text('message');
+        if (to != null || what != null) {
+          return [if (to != null) '→ $to', ?what].join(': ');
+        }
+      case 'TaskUpdate':
+        final id = _text('taskId');
+        final status = _text('status');
+        if (id != null && status != null) return '#$id → $status';
+    }
+    final keys = own.contains(name)
+        ? const [
+            'command',
+            'file_path',
+            'path',
+            'pattern',
+            'url',
+            'query',
+            'prompt',
+            'description',
+          ]
+        : const [
+            'description',
+            'summary',
+            'subject',
+            'to',
+            'command',
+            'file_path',
+            'path',
+            'pattern',
+            'url',
+            'query',
+            'prompt',
+          ];
+    for (final key in keys) {
+      if (_text(key) case final text?) return text;
+    }
+    if (own.contains(name)) return input.isEmpty ? '' : jsonEncode(input);
+    for (final value in input.values) {
+      if (value is String && value.trim().isNotEmpty && value.length <= 80) {
+        return value.trim().replaceAll(RegExp(r'\s*\n\s*'), ' ');
+      }
+    }
+    return '';
   }
 }
 
