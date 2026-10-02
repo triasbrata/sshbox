@@ -2938,11 +2938,12 @@ touch '${done.path}'
   );
 
   // #146: files dropped from the file manager on a desktop chat. A picture
-  // becomes a card above the box and its [Image #1] in it; a folder dropped
-  // with it is refused, saying it is a folder, and so is a file that is no
-  // picture Claude reads. A real X drag, as the terminal's above.
+  // becomes a card above the box and its [Image #1] in it; since #217 a
+  // folder, or a file that is no picture, dropped with it goes in as its
+  // path on this machine instead of being refused. A real X drag, as the
+  // terminal's above.
   _test(
-    'a picture dropped on a chat becomes a card, a folder is refused',
+    'a picture dropped on a chat becomes a card, a folder goes in as a path',
     skip: !Platform.isLinux
         ? 'the drag is a real X drag, made with xdotool and a GTK window'
         : Platform.environment['CI'] != 'true'
@@ -2971,10 +2972,6 @@ touch '${done.path}'
         () => _composer.evaluate().isNotEmpty,
         'the chat tab to open, its version check passed',
       );
-      Finder toast(String text) => find.descendant(
-        of: find.byType(TuiToastCard),
-        matching: find.textContaining(text, findRichText: true),
-      );
       final cards = find.byWidgetPredicate(
         (w) => w is Tooltip && (w.message ?? '').startsWith('Remove '),
       );
@@ -2982,32 +2979,24 @@ touch '${done.path}'
       await _drag(tester, picture.path, dir, more: [folder.path]);
       await _until(
         tester,
-        () =>
-            toast('A folder is not a picture: e2e-folder')
-                .evaluate()
-                .isNotEmpty,
-        'the folder refused, saying it is a folder',
-      );
-      await _until(
-        tester,
         () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
         "the picture's card",
       );
       expect(cards, findsOneWidget, reason: 'one card, for the picture alone');
-      expect(
-        tester.widget<TextField>(_composer).controller!.text,
-        '[Image #1] ',
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+      await _until(
+        tester,
+        () => box() == '[Image #1] ${folder.path} ',
+        "the picture's token, then the folder's own path",
       );
+      expect(find.textContaining('is not a picture'), findsNothing);
       await _shot(tester, 'desktop-chat-dropped-picture');
 
       await _drag(tester, notes.path, dir);
       await _until(
         tester,
-        () =>
-            toast('Not a picture Claude can read: e2e-notes.txt')
-                .evaluate()
-                .isNotEmpty,
-        'the text file refused',
+        () => box() == '[Image #1] ${folder.path} ${notes.path} ',
+        'the text file as a path after the folder',
       );
       expect(cards, findsOneWidget);
       await _closeTabs(tester);
@@ -3112,7 +3101,13 @@ touch '${done.path}'
       final secrets = KeystoreSecretStore();
       final hosts = HostRepository(secrets);
       const id = 'e2e-ssh-drop';
-      await secrets.write(SecretKeys.password(id), password);
+      // A locked keyring waits for a prompt nobody sees: say so, not hang.
+      await secrets
+          .write(SecretKeys.password(id), password)
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () => fail('the keyring never took the password'),
+          );
       await hosts.upsert(
         HostProfile(
           id: id,
