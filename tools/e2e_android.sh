@@ -207,6 +207,10 @@ code_box() {
 chat_code_copy() {
   local status=0 got
   adb shell settings put global animator_duration_scale 1
+  # Android 13's clipboard preview, drawn over the bottom of the screen after
+  # every copy, takes the taps meant for the chat's box: one opened Nearby
+  # Share. Off for this block alone.
+  adb shell device_config put systemui clipboard_overlay_enabled false
   flow chat_code_copy -e STEP=open || status=1
   got=$(code_box)
   echo "the command's Copy code pasted: '$got'"
@@ -228,6 +232,7 @@ chat_code_copy() {
     *) false ;;
   esac || { echo "::error::a long press copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=done || status=1
+  adb shell device_config delete systemui clipboard_overlay_enabled
   adb shell settings put global animator_duration_scale 0
   return "$status"
 }
