@@ -6023,6 +6023,49 @@ void main() {
       expect(started, contains('--permission-mode acceptEdits --model sonnet'));
     });
 
+    testWidgets('a new chat whose --model the account cannot use says so', (
+      tester,
+    ) async {
+      final shell = await open(tester);
+      shell.background =
+          "There's an issue with the selected model (fable). "
+          'It may not exist or you may not have access to it.\n';
+      await pick(tester, 'Fable');
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      expect(
+        shell.commands.firstWhere((c) => c.contains(' --bg ')),
+        contains('--model fable'),
+      );
+      expect(find.textContaining('selected model (fable)'), findsWidgets);
+    });
+
+    testWidgets("Send sits at the box's right edge at every width", (
+      tester,
+    ) async {
+      for (final size in [const Size(360, 740), const Size(1280, 800)]) {
+        await open(tester, running: running, size: size);
+        if (size.width < 840) {
+          await tester.tap(find.text('SESSIONS ON THIS HOST'));
+          await _settlePickUp(tester);
+        }
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        final box = find.ancestor(
+          of: find.byType(TextField),
+          matching: find.byType(TuiBox),
+        );
+        final send = tester.getTopRight(find.byIcon(Icons.send)).dx;
+        expect(
+          tester.getTopRight(box).dx - send,
+          lessThan(30),
+          reason: '$size',
+        );
+      }
+    });
+
     testWidgets('a new chat on Default passes no --model', (tester) async {
       final shell = await open(tester);
       await pick(tester, 'Opus');

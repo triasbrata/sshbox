@@ -1622,10 +1622,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         ),
                       ],
                     ),
-                    const Spacer(),
-                    if (chat.context != null) _UsageChip(chat: chat),
-                    // Gives way first when the row is short of room.
-                    Flexible(child: _ModelChip(chat: chat)),
+                    // Fills the row, so Send sits at the box's right edge; the
+                    // chip gives way first when the row is short of room.
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (chat.context != null) _UsageChip(chat: chat),
+                            Flexible(child: _ModelChip(chat: chat)),
+                          ],
+                        ),
+                      ),
+                    ),
                     const SizedBox(width: 4),
                     IconButton.filled(
                       tooltip: 'Send',

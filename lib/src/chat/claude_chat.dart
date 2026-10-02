@@ -310,6 +310,7 @@ class ChatModel {
     ChatModel(defaultAlias, 'Default'),
     ChatModel('opus', 'Opus'),
     ChatModel('sonnet', 'Sonnet'),
+    ChatModel('fable', 'Fable'),
     ChatModel('haiku', 'Haiku'),
   ];
 
