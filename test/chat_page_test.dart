@@ -302,6 +302,10 @@ class _Shell
     Uint8List.fromList(utf8.encode('${jsonEncode(event)}\n')),
   );
 
+  /// One line of the transcript as written, for what jsonEncode cannot make.
+  void rawLine(String line) =>
+      _channels.last.add(Uint8List.fromList(utf8.encode('$line\n')));
+
   @override
   final status = ValueNotifier(SessionStatus.connected);
 
@@ -1615,6 +1619,43 @@ void main() {
       }, result: jsonEncode({'rows': [1, 2], 'ok': true}));
       expect(node('rows: Array(2)'), findsOneWidget);
       expect(node('ok: true'), findsOneWidget);
+    });
+
+    testWidgets('an input nested far too deep still opens, and copies a '
+        'note instead of throwing', (tester) async {
+      final copied = _useFakeClipboard();
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.enterText(find.byType(TextField), 'go on');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      const depth = 400000;
+      shell.rawLine(
+        '{"type":"assistant","message":{"content":[{"type":"tool_use",'
+        '"id":"toolu_1","name":"Mystery","input":{"deep":'
+        '${'[' * depth}1${']' * depth}}}]}}',
+      );
+      shell.event({'type': 'result', 'subtype': 'success'});
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.text('Mystery'));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.byTooltip('Copy code').first);
+      await tester.pump();
+      expect(copied.single, '(too deep to copy)');
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 2));
     });
 
     testWidgets('shapes it did not expect throw nothing', (tester) async {

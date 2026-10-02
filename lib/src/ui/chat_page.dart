@@ -2308,7 +2308,8 @@ class _ToolInput extends StatelessWidget {
     try {
       copy = const JsonEncoder.withIndent('  ').convert(value);
     } catch (_) {
-      copy = '$value';
+      // Too deep for the encoder, and for toString: nothing to copy but this.
+      copy = '(too deep to copy)';
     }
     return _block(
       context,

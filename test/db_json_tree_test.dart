@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
+import 'package:sshbox/src/ui/termul/tui_data_grid.dart' show TuiJsonNode, TuiJsonTree;
 
 /// A MongoDB whose every command finds one nested document.
 class _Shops extends DbSession {
@@ -102,6 +103,25 @@ void main() {
     expect(find.textContaining('100: 100', skipOffstage: false), findsNothing);
     expect(
       find.textContaining('… 50 more', skipOffstage: false),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a root of 50,000 items builds only the first hundred', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: TuiJsonTree(value: List.generate(50000, (i) => 'item $i')),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(TuiJsonNode, skipOffstage: false), findsNWidgets(100));
+    expect(
+      find.text('… 49900 more', skipOffstage: false),
       findsOneWidget,
     );
   });

@@ -398,30 +398,37 @@ class TuiJsonTree extends StatelessWidget {
       );
     }
     final v = value;
-    if (v is Map) {
+    // The first [maxChildren] of a big root only, as every node below it:
+    // a list of 50,000 items is not 50,000 widgets.
+    final entries = switch (v) {
+      Map() => [for (final e in v.entries) ('${e.key}', e.value)],
+      List() => [for (final (i, item) in v.indexed) ('$i', item)],
+      _ => null,
+    };
+    if (entries != null) {
+      final p = TermulThemeData.of(context).palette;
+      final rest = entries.length - maxChildren;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final e in v.entries)
+          for (final (name, item) in entries.take(maxChildren))
             TuiJsonNode(
-              name: '${e.key}',
-              value: e.value,
-              maxChildren: maxChildren,
-              foldStrings: foldStrings,
-            ),
-        ],
-      );
-    }
-    if (v is List) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final (i, item) in v.indexed)
-            TuiJsonNode(
-              name: '$i',
+              name: name,
               value: item,
               maxChildren: maxChildren,
               foldStrings: foldStrings,
+            ),
+          if (rest > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(32, 2, 12, 4),
+              child: Text(
+                '… $rest more',
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 11,
+                  color: p.dim,
+                ),
+              ),
             ),
         ],
       );
