@@ -18,6 +18,7 @@ import 'code_languages.dart';
 import 'file_download.dart';
 import 'key_bar.dart';
 import 'mermaid_view.dart';
+import 'selection_separators.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
@@ -2011,7 +2012,8 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
             ),
           Expanded(
             child: SelectionArea(
-              child: Markdown(
+              child: SeparatedSelection(
+                child: Markdown(
                 data: shown,
                 controller: _scroll,
                 onTapLink: widget.onTapLink,
@@ -2056,6 +2058,7 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
                   // the way a code block does, rather than squeezing.
                   tableColumnWidth: const IntrinsicColumnWidth(),
                 ),
+              ),
               ),
             ),
           ),

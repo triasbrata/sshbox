@@ -416,9 +416,8 @@ void main() {
       );
     }
 
-    String selected(WidgetTester tester) => session.terminal.buffer.getText(
-      controller(tester).selection!,
-    );
+    String selected(WidgetTester tester) =>
+        session.terminal.buffer.getText(controller(tester).selection!);
 
     Future<TestGesture> secondClick(
       WidgetTester tester, {
@@ -426,7 +425,10 @@ void main() {
       required int clicks,
     }) async {
       for (var i = 1; i < clicks; i++) {
-        await tester.tapAt(cellAt(tester, col, 10), kind: PointerDeviceKind.mouse);
+        await tester.tapAt(
+          cellAt(tester, col, 10),
+          kind: PointerDeviceKind.mouse,
+        );
         await tester.pump(const Duration(milliseconds: 60));
       }
       return tester.startGesture(
@@ -526,6 +528,31 @@ void main() {
       await tester.pump();
       // Select all, the menu's, and the clear a tracked press makes, both
       // used to be ignored until the next press.
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNull);
+      await g.up();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('lets go of the gesture when the window is hidden straight '
+        'from resumed, as a real minimize on Linux does', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      final g = await secondClick(tester, col: 14, clicks: 2);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(selected(tester), 'this');
+
+      // No inactive step between: AppLifecycleListener asserts on this jump.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      addTearDown(
+        () => tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        ),
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await tester.pump();
+      // An owned selection ignores a clear; one let go of takes it.
       controller(tester).clearSelection();
       expect(controller(tester).selection, isNull);
       await g.up();
