@@ -1105,7 +1105,7 @@ while [ $i -le 30 ]; do
   i=$((i + 1))
 done
 answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in'"$fences"'"}]}}'
-# A test that wants particular events leaves them here, a line each.
+# A test that wants a particular answer leaves the whole event here.
 [ -f "$d/e2e-answer.json" ] && answer=$(cat "$d/e2e-answer.json")
 case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
