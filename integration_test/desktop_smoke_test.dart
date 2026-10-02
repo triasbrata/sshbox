@@ -4050,7 +4050,19 @@ touch '${done.path}'
         await setClipboard('SENTINEL');
         final copy = tester.getCenter(find.byTooltip('Copy code'));
         await _osMouse(tester, ['move ${xy(copy)}', 'sleep 200', 'down', 'up']);
-        await clipboardIs(words, '2. the Copy icon');
+        try {
+          await clipboardIs(words, '2. the Copy icon');
+        } on TestFailure {
+          final flutter = await _clipboard();
+          debugPrint(
+            'Copy icon at ${xy(copy)} of ${tester.view.physicalSize / tester.view.devicePixelRatio}; '
+            "Flutter's clipboard says "
+            '"${flutter == null ? null : flutter.substring(0, flutter.length.clamp(0, 30))}"; '
+            'toasts: ${find.byType(TuiToastCard).evaluate().length}',
+          );
+          await _grab(tester, 'chat-code-copy-step2');
+          rethrow;
+        }
 
         // 3. A real drag over inline code, then the real chord.
         await setClipboard('SENTINEL');
