@@ -1,0 +1,65 @@
+name: apt install, cached
+description: >
+  Installs packages from the runner image's own apt index, with the .debs it
+  downloads cached per image and package list, so a warm run downloads
+  nothing. `apt-get update` runs only when that install fails, as on a stale
+  index's 404, and the install is then tried once more.
+inputs:
+  args:
+    description: What follows `apt-get install`, flags and packages, exactly as before.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The image's index and the .debs that match it go together, so the key
+    # is the image and the package list: a new image starts a new cache.
+    - name: Name the cache
+      id: key
+      shell: bash
+      env:
+        ARGS: ${{ inputs.args }}
+      run: |
+        sum=$(printf '%s' "$ARGS" | sha256sum | cut -c1-16)
+        echo "key=apt-$ImageOS-$ImageVersion-$sum" >> "$GITHUB_OUTPUT"
+        echo "dir=$HOME/.apt-archives" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the .debs
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.apt-archives
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Install
+      shell: bash
+      env:
+        ARGS: ${{ inputs.args }}
+        DIR: ${{ steps.key.outputs.dir }}
+      run: |
+        mkdir -p "$DIR/partial"
+        before=$(ls "$DIR"/*.deb 2>/dev/null | wc -l)
+        # Retries and a timeout per request, so a slow mirror fails the step
+        # in minutes rather than holding it until the job's own timeout.
+        apt=(sudo apt-get -o "Dir::Cache::Archives=$DIR"
+          -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30)
+        # shellcheck disable=SC2086 # ARGS is flags and packages, split on purpose
+        if ! "${apt[@]}" install $ARGS; then
+          echo "::notice::installing from the image's index failed; updating it once"
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 update -q
+          # shellcheck disable=SC2086
+          "${apt[@]}" install $ARGS
+        fi
+        # Root wrote them; the cache is saved as this user.
+        sudo chown -R "$(id -u):$(id -g)" "$DIR"
+        sudo rm -f "$DIR/lock"
+        after=$(ls "$DIR"/*.deb 2>/dev/null | wc -l)
+        echo "apt: cache ${{ steps.restore.outputs.cache-hit == 'true' && 'hit' || 'miss' }}, .debs before $before, after $after, downloaded $((after - before))"
+
+    - name: Save the .debs
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.apt-archives
+        key: ${{ steps.key.outputs.key }}

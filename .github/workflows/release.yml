@@ -186,9 +186,11 @@ jobs:
 
       - name: Install the Linux build's packages
         if: matrix.target == 'linux'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq clang cmake ninja-build pkg-config libgtk-3-dev \
+        timeout-minutes: 10
+        uses: ./.github/actions/apt-install
+        with:
+          args: >-
+            -yq clang cmake ninja-build pkg-config libgtk-3-dev
             liblzma-dev libstdc++-12-dev libsecret-1-dev
 
       # Each lands in dist/<X.Y.Z+N>/ as the scripts package it by hand.
