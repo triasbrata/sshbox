@@ -254,7 +254,11 @@ class ChatQuota {
           label: names[key] ?? _plainName(key),
           percent: percent.toDouble(),
           resetsAt: switch (resets) {
-            final num seconds when seconds.isFinite && seconds > 0 =>
+            // Seconds, and a date this side of the year 5000: a larger one is
+            // milliseconds sent for seconds, or nonsense, and DateTime throws.
+            final num seconds when seconds.isFinite &&
+                seconds > 0 &&
+                seconds < 1e11 =>
               DateTime.fromMillisecondsSinceEpoch(
                 (seconds * 1000).round(),
                 isUtc: true,
@@ -307,12 +311,16 @@ class ChatQuota {
     for (final match in line.allMatches(text)) {
       final percent = double.tryParse(match.group(2)!);
       if (percent == null || !percent.isFinite) continue;
-      final label = match.group(1)!.trim();
+      // Host text: no control or escape reaches the screen.
+      String clean(String text) =>
+          text.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]'), '').trim();
+      final label = clean(match.group(1)!);
+      final resets = match.group(3) == null ? null : clean(match.group(3)!);
       windows.add(
         QuotaWindow(
           label: label.isEmpty ? 'Limit' : label,
           percent: percent,
-          resetsText: match.group(3)?.trim(),
+          resetsText: resets == null || resets.isEmpty ? null : resets,
         ),
       );
     }

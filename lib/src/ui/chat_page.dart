@@ -2420,6 +2420,20 @@ class _UsageChipState extends State<_UsageChip> {
     super.dispose();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Hidden under the pointer, the chat gets no exit: the popup goes with it,
+    // and is not there again when the tab comes back.
+    if (!TickerMode.valuesOf(context).enabled && (_hover || _pinned)) {
+      _hover = false;
+      _pinned = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _portal.isShowing) _portal.hide();
+      });
+    }
+  }
+
   /// A turn ended: what it used of the plan has moved, and Claude Code is
   /// asked once, as often as the minute allows — and only while the tab shows,
   /// so a chat in the background spawns nothing.

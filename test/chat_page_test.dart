@@ -4417,6 +4417,57 @@ void main() {
       });
     }
 
+    testWidgets('hidden under the pointer, the popup goes and does not come '
+        'back with the tab', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = history(90000)
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: shown,
+              builder: (context, on, child) =>
+                  TickerMode(enabled: on, child: child!),
+              child: ChatPage(session: session),
+            ),
+          ),
+        ),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      await hover(tester, find.text('Context 45%'));
+      expect(find.textContaining('Usage'), findsOneWidget);
+
+      shown.value = false;
+      await _frames(tester);
+      expect(find.textContaining('Usage'), findsNothing);
+      shown.value = true;
+      await _frames(tester);
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
     testWidgets('a tap opens it on touch, and a tap elsewhere closes it', (
       tester,
     ) async {

@@ -4018,6 +4018,36 @@ void main() {
       expect(quota.windows.first.resetsText, 'Oct 2, 3:59pm (Asia/Example)');
     });
 
+    test('a reset out of range, a negative one and a string are left out, '
+        'and the rest of the event is kept', () {
+      final quota = ChatQuota.fromRateLimitEvent({
+        'type': 'rate_limit_event',
+        'rate_limit_info': {
+          'unifiedWindows': {
+            'five_hour': {'utilization': 0.1, 'resetsAt': 1e13},
+            'seven_day': {'utilization': 0.2, 'resetsAt': -5},
+            'other': {'utilization': 0.3, 'resetsAt': 'soon'},
+            'more': {'utilization': 0.4, 'resetsAt': 1790931600},
+          },
+        },
+      }, asOf: DateTime.utc(2026))!;
+      expect([for (final w in quota.windows) w.resetsAt == null], [
+        true,
+        true,
+        true,
+        false,
+      ]);
+    });
+
+    test('controls in /usage text are cleaned from what is drawn', () {
+      final quota = ChatQuota.fromUsageText(
+        'Current \u001b[1msession\u001b[0m: 5% used · resets \u001b[2mlater\u009b\n',
+        asOf: DateTime.utc(2026),
+      )!;
+      expect(quota.windows.single.label, 'Current [1msession[0m');
+      expect(quota.windows.single.resetsText, '[2mlater');
+    });
+
     test('usage nobody can read is no quota, and never throws', () {
       final at = DateTime.utc(2026);
       expect(ChatQuota.fromUsageText('', asOf: at), isNull);
