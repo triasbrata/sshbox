@@ -197,6 +197,10 @@ class _Shell
   void adds(Map<String, Object?> line) =>
       follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
+  /// What `claude -p /usage` prints on the host, for the plan's usage; nothing
+  /// by default, which is Claude Code reporting no limit.
+  String usageOut = '';
+
   /// What the session's task store holds, as the host prints it: one line a
   /// task. Empty, and the list is what the transcript made of it.
   String tasksOut = '';
@@ -207,6 +211,13 @@ class _Shell
     if (command.contains('/tasks')) {
       return (
         output: Stream.value(Uint8List.fromList(utf8.encode(tasksOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    if (command.contains('/usage')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(usageOut))),
         write: (Uint8List data) {},
         close: () {},
       );
@@ -2342,6 +2353,235 @@ void main() {
       expect(copied, [wide]);
       await tester.pump(const Duration(seconds: 2));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  group('a table in a reply', () {
+    const table =
+        'Before the table.\n\n'
+        '| Name | Note |\n| --- | --- |\n'
+        '| alpha | first `code_one()` cell |\n'
+        '| beta | second row |\n\n'
+        'After the table.\n';
+
+    Future<void> pump(WidgetTester tester, String md) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Sel')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': md},
+              ],
+            },
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Sel');
+    }
+
+    (Offset, Offset) ends(WidgetTester tester, String word, {String? within}) {
+      final para = tester.renderObject<RenderParagraph>(
+        find.textContaining(within ?? word, findRichText: true).first,
+      );
+      final from = para.text.toPlainText().indexOf(word);
+      final boxes = para.getBoxesForSelection(
+        TextSelection(baseOffset: from, extentOffset: from + word.length),
+      );
+      return (
+        para.localToGlobal(boxes.first.toRect().centerLeft) +
+            const Offset(1, 0),
+        para.localToGlobal(boxes.last.toRect().centerRight) -
+            const Offset(1, 0),
+      );
+    }
+
+    Future<void> dragThenCopy(
+      WidgetTester tester,
+      Offset from,
+      Offset to,
+    ) async {
+      final g = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await g.moveTo(Offset.lerp(from, to, 0.5)!);
+      await g.moveTo(to);
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+    }
+
+    testWidgets('a drag within one cell copies what it covers', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second row');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['second row']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag within a cell holding inline code copies it', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'code_one()');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['code_one()']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag from the text before the table to the text after '
+        'copies the cells between, in reading order', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'Before');
+      final (_, b) = ends(tester, 'After the table.');
+      await dragThenCopy(tester, a, b);
+      expect(copied, hasLength(1));
+      final text = copied.single;
+      for (final part in [
+        'Before the table.',
+        'Name',
+        'Note',
+        'alpha',
+        'code_one()',
+        'beta',
+        'second row',
+        'After the table.',
+      ]) {
+        expect(text, contains(part));
+      }
+      expect(text.indexOf('alpha'), lessThan(text.indexOf('beta')));
+      expect(text.indexOf('first'), lessThan(text.indexOf('second row')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    final wide =
+        '| ${[for (var i = 0; i < 8; i++) 'Column$i'].join(' | ')} |\n'
+        '| ${List.filled(8, '---').join(' | ')} |\n'
+        '| ${[for (var i = 0; i < 8; i++) 'cell_$i has quite a lot of words in it'].join(' | ')} |\n';
+
+    testWidgets('a wide table, scrolling sideways, still copies a drag in '
+        'a cell', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Intro.\n\n$wide');
+      final (a, b) = ends(tester, 'cell_0');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['cell_0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a wide table: a long press in a cell then Copy', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Intro.\n\n$wide');
+      final (a, b) = ends(tester, 'cell_0');
+      await tester.longPressAt(Offset.lerp(a, b, 0.5)!);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, ['cell_0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('a double-click on a word in a cell, then Ctrl+C', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second');
+      final at = Offset.lerp(a, b, 0.5)!;
+      await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(copied, ['second']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag down a column from one cell to the next copies both, '
+        'one after the other', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'alpha');
+      final (_, b) = ends(tester, 'beta');
+      await dragThenCopy(tester, a, b);
+      expect(copied, hasLength(1));
+      expect(copied.single, contains('alpha'));
+      expect(copied.single, contains('beta'));
+      expect(copied.single.indexOf('alpha'), lessThan(copied.single.indexOf('beta')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('cells copy apart: a tab between the cells of a row and a '
+        'newline between rows', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'Name');
+      final (_, b) = ends(tester, 'second row');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single, 'Name\tNote\nalpha\tfirst code_one() cell\nbeta\tsecond row');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('two paragraphs copy with a newline between them', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'First paragraph.\n\nSecond paragraph.\n');
+      final (a, _) = ends(tester, 'First');
+      final (_, b) = ends(tester, 'Second paragraph.');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single, 'First paragraph.\nSecond paragraph.');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a list copies a line per item', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, '- one\n- two\n- three\n');
+      final (a, _) = ends(tester, 'one');
+      final (_, b) = ends(tester, 'three');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single.split('\n').map((l) => l.trim()).toList(), [
+        'one',
+        '• two',
+        '• three',
+      ]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('part of one paragraph copies with no separator added', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Alpha beta gamma.\n\nOther.\n');
+      final (a, b) = ends(tester, 'beta gamma');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['beta gamma']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Android: a long press in a cell then Copy copies the word', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second row');
+      await tester.longPressAt(a + const Offset(6, 0));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, ['second']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   });
 
   group('code in a reply, in the real shell', () {
@@ -4822,5 +5062,281 @@ void main() {
       );
       await tester.pumpAndSettle(const Duration(seconds: 6));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  group('the usage chip and its popup', () {
+    setUp(ClaudeChat.forgetQuotas);
+    String history(int tokens) {
+      final body = [
+        {
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'is the nightly build green?'},
+        },
+        {
+          'type': 'assistant',
+          'message': {
+            'id': 'm1',
+            'model': 'claude-opus-5-5',
+            'stop_reason': 'end_turn',
+            'usage': {'input_tokens': 1, 'cache_read_input_tokens': tokens},
+            'content': [
+              {'type': 'text', 'text': 'It failed at the lint step.'},
+            ],
+          },
+        },
+        {'type': 'system', 'subtype': 'turn_duration', 'durationMs': 9000},
+      ].map(jsonEncode).join('\n');
+      return '${utf8.encode(body).length}\n$body\n';
+    }
+
+    Future<_Shell> watching(
+      WidgetTester tester, {
+      int tokens = 90000,
+      String usage = '',
+    }) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..usageOut = usage
+        ..history = history(tokens)
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    Future<void> hover(WidgetTester tester, Finder at) async {
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(tester.getCenter(at));
+      await tester.pump();
+      await _frames(tester);
+    }
+
+    testWidgets('shows how much of the window the session uses', (
+      tester,
+    ) async {
+      await watching(tester, tokens: 90000);
+      // 90,001 of 200,000.
+      expect(find.text('Context 45%'), findsOneWidget);
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
+    testWidgets('hovering opens the popup: context with its model, the plan '
+        'with its resets, and when it was read', (tester) async {
+      final shell = await watching(
+        tester,
+        usage:
+            'Current session: 65% used · resets Oct 2, 3:59pm (Asia/Example)\n'
+            'Current week (all models): 28% used · resets Oct 9, 2:59am '
+            '(Asia/Example)\n',
+      );
+      await hover(tester, find.text('Context 45%'));
+      expect(find.textContaining('Usage'), findsOneWidget);
+      expect(find.text('Context  90k / 200k (45%)'), findsOneWidget);
+      expect(find.text('claude-opus-5-5'), findsOneWidget);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('Current session  65% used'), findsOneWidget);
+      expect(find.text('Current week (all models)  28% used'), findsOneWidget);
+      expect(
+        find.text('resets Oct 2, 3:59pm (Asia/Example)'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('as of '), findsOneWidget);
+      expect(
+        shell.commands.where((c) => c.contains('/usage')),
+        hasLength(1),
+      );
+    });
+
+    for (final shown in [true, false]) {
+      testWidgets('a turn ending ${shown ? 'on a chat on show asks' : 'in a '
+          'chat nobody is looking at does not ask'} for the plan\'s usage', (
+        tester,
+      ) async {
+        tester.view
+          ..physicalSize = const Size(1280, 800)
+          ..devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        final shell = _Shell()
+          ..usageOut = 'Current session: 10% used'
+          ..history = history(90000)
+          ..listing = jsonEncode([
+            {
+              'pid': 4079548,
+              'id': '81badf4a',
+              'cwd': '/srv/app',
+              'kind': 'background',
+              'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+              'name': 'the nightly build',
+              'status': 'busy',
+              'state': 'working',
+            },
+          ]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TickerMode(
+                enabled: shown,
+                child: ChatPage(session: session),
+              ),
+            ),
+          ),
+        );
+        await _frames(tester);
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        int asked() => shell.commands.where((c) => c.contains('/usage')).length;
+        expect(asked(), 0);
+
+        // A turn, and its end.
+        shell
+          ..adds({
+            'type': 'user',
+            'message': {'role': 'user', 'content': 'run it'},
+          })
+          ..adds({
+            'type': 'system',
+            'subtype': 'turn_duration',
+            'durationMs': 1000,
+          });
+        await _settlePickUp(tester);
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        expect(asked(), shown ? 1 : 0);
+      });
+    }
+
+    testWidgets('hidden under the pointer, the popup goes and does not come '
+        'back with the tab', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = history(90000)
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: shown,
+              builder: (context, on, child) =>
+                  TickerMode(enabled: on, child: child!),
+              child: ChatPage(session: session),
+            ),
+          ),
+        ),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      await hover(tester, find.text('Context 45%'));
+      expect(find.textContaining('Usage'), findsOneWidget);
+
+      shown.value = false;
+      await _frames(tester);
+      expect(find.textContaining('Usage'), findsNothing);
+      shown.value = true;
+      await _frames(tester);
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
+    testWidgets('a tap opens it on touch, and a tap elsewhere closes it', (
+      tester,
+    ) async {
+      await watching(tester);
+      await tester.tap(find.text('Context 45%'));
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsOneWidget);
+      await tester.tapAt(const Offset(40, 300));
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
+    testWidgets('past 80% the chip is in the warning colour', (tester) async {
+      await watching(tester, tokens: 170000);
+      final chip = tester.widget<TuiText>(find.widgetWithText(TuiText, 'Context 85%'));
+      expect(chip.tone, TuiTextTone.yellow);
+      expect(chip.bold, isTrue);
+    });
+
+    testWidgets('a plan reading that is old says how old', (tester) async {
+      var now = DateTime(2026, 10, 2, 12, 0);
+      final real = chatNow;
+      chatNow = () => now;
+      addTearDown(() => chatNow = real);
+      await watching(tester, usage: 'Current session: 10% used');
+      await tester.tap(find.text('Context 45%'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('as of 12:00'), findsOneWidget);
+      now = DateTime(2026, 10, 2, 12, 5);
+      await tester.pump(const Duration(seconds: 1));
+      await _frames(tester);
+      expect(find.text('as of 12:00 · 5 min ago'), findsOneWidget);
+    });
+
+    testWidgets('when Claude Code reports no usage, it says so', (
+      tester,
+    ) async {
+      await watching(tester, usage: 'Usage is not available.');
+      await tester.tap(find.text('Context 45%'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text("Claude Code didn't report plan usage."), findsOneWidget);
+      expect(find.text('Context  90k / 200k (45%)'), findsOneWidget);
+    });
+
+    testWidgets('what the host says is drawn as text', (tester) async {
+      await watching(
+        tester,
+        usage: 'Current <b>session</b> **x**: 5% used · resets [a](javascript:1)',
+      );
+      await tester.tap(find.text('Context 45%'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.textContaining('resets [a](javascript:1)'), findsOneWidget);
+    });
   });
 }

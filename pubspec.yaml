@@ -81,6 +81,9 @@ dependencies:
   # report: tool/release.sh bakes no JEANSH_VERSION, so the desktop builds'
   # define is no use on Android. Already here under sentry_flutter.
   package_info_plus: ^10.2.1
+  # The app log's private folder (lib/src/telemetry/app_log.dart). Already
+  # here under shared_preferences and package_info_plus.
+  path_provider: ^2.1.6
   # Already here under package_info_plus, pure Dart: the v4 install id, which
   # is random and carries nothing of the machine.
   uuid: ^4.6.0
