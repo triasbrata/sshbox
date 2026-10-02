@@ -429,7 +429,8 @@ jobs:
           tools/e2e_desktop.sh linux \
             --dart-define=JEANSH_UPDATE_HOST=$feed \
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
-            --dart-define=JEANSH_VERSION=1.0.0+1
+            --dart-define=JEANSH_VERSION=1.0.0+1 \
+            --plain-name 'dropped on a Local shell chat'
 
       # #136: Download once more on a session bus with no XDG portal at all,
       # as on a desktop that runs none, where file_picker could not save.
