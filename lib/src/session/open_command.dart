@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 /// The `jeansh` command: `jeansh <file>...` opens each file in a file tab of
 /// the terminal it is typed in, as `code <file>` does in VS Code's. A POSIX
@@ -80,7 +81,8 @@ void installOpenCommand(String dir) {
     throw FileSystemException('not Jeansh\'s own', target);
   }
   // Exclusive, so a name planted there is an error and never written through.
-  final temp = File('$target.$pid.new')..createSync(exclusive: true);
+  final suffix = Random.secure().nextInt(1 << 32).toRadixString(36);
+  final temp = File('$target.$suffix.new')..createSync(exclusive: true);
   temp.writeAsStringSync(openCommandScript, flush: true);
   Process.runSync('chmod', ['755', temp.path]);
   temp.renameSync(target);
@@ -114,14 +116,13 @@ mkdir -p "$d" || exit 1
 if [ -L "$t" ] || { [ -e "$t" ] && { [ ! -f "$t" ] || ! grep -q '^# jeansh-open: installed by Jeansh' "$t"; }; }; then
   echo "left alone"; exit 0
 fi
-n="$t.$$.new"; umask 022; set -C
-cat > "$n" <<'JEANSH_OPEN_EOF'
+n=$(mktemp "$t.XXXXXX") || exit 1
+cat > "$n" <<'JEANSH_OPEN_EOF' || { rm -f "$n"; exit 1; }
 ''' +
       openCommandScript +
       r'''JEANSH_OPEN_EOF
-set +C
 if [ -e "$t" ] && cmp -s "$n" "$t"; then rm -f "$n"; echo current; exit 0; fi
-chmod 755 "$n" && mv -f "$n" "$t" && echo installed
+chmod 755 "$n" && mv -f "$n" "$t" && echo installed || { rm -f "$n"; exit 1; }
 ''';
   return "sh -c '${script.replaceAll("'", r"'\''")}'";
 }

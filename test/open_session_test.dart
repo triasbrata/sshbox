@@ -57,6 +57,18 @@ class _Shell
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
+/// A keyring that answers [delay] after it is asked, as a locked one does
+/// once it is unlocked.
+class _SlowSecrets extends _Secrets {
+  _SlowSecrets(this.delay);
+  final Duration delay;
+  @override
+  Future<String?> read(String key) async {
+    await Future<void>.delayed(delay);
+    return map[key];
+  }
+}
+
 class _Secrets implements SecretStore {
   final map = <String, String>{};
   @override
@@ -184,6 +196,35 @@ void main() {
     shell.out.add(_osc(secret, '/stale.md'));
     await Future<void>.delayed(Duration.zero);
     expect(session.openFiles, hasLength(1));
+  });
+
+  test('a store that answers late does not change the secret a shell started '
+      'with', () async {
+    final secrets = _SlowSecrets(const Duration(milliseconds: 700))
+      ..map[SecretKeys.openSecret('local')] = 'stored-secret';
+    final shell = _Shell();
+    final manager = SessionManager();
+    final session = manager.create(localHost(), transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: secrets);
+    manager.add(session);
+    final started = shell.environment[openSecretVariable]!;
+    expect(started, isNot('stored-secret'));
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    shell.out.add(_osc(started, '/mine.md'));
+    shell.out.add(_osc('stored-secret', '/theirs.md'));
+    await Future<void>.delayed(Duration.zero);
+    expect(session.openFiles, ['/mine.md']);
+  });
+
+  test('an absurd host clock is clamped, not overflowed', () async {
+    final manager = SessionManager();
+    final shell = _Shell()..hostAhead = 1 << 60;
+    final session = manager.create(host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _Secrets());
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(session.openRequests.clockOffset, OpenRequests.maxOffset);
   });
 
   test('a Local shell keeps its secret across runs, as a restored tmux '

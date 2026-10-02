@@ -61,15 +61,15 @@ class _SshboxAppState extends State<SshboxApp> {
     onNotify: _notifications.showForHost,
     onOpenRefused: _openRefused,
   );
-  /// A `jeansh` request a terminal refused: its key is out of date, in a pane
-  /// started before the host's secret changed. Never says which check.
+  /// A `jeansh` request a terminal refused. Never says which check, nor that
+  /// it was one: a program's output can cause this too.
   void _openRefused() {
     final context = _navigator.currentContext;
     if (context == null) return;
     showToast(
       context,
-      'jeansh was refused: this pane\'s key is out of date. Open a new pane '
-      'or tab and try again.',
+      'A jeansh request was refused. If you typed jeansh, open a new pane or '
+      'tab and try again.',
       type: TuiToastType.warning,
     );
   }

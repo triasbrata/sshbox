@@ -125,12 +125,23 @@ void main() {
     final old = osc(
       'sek-ret',
       '/x',
-      at: clock.subtract(const Duration(days: 2)),
+      at: clock.subtract(const Duration(hours: 2)),
       nonce: 'cafe0123',
     );
     terminal.write(old);
     terminal.write(old);
     expect(opened, ['/x']);
+  });
+
+  test('with no offset measured, a time over a day off is still refused', () {
+    requests.clockOffset = null;
+    terminal.write(
+      osc('sek-ret', '/old', at: clock.subtract(const Duration(days: 2))),
+    );
+    terminal.write(
+      osc('sek-ret', '/future', at: clock.add(const Duration(days: 2))),
+    );
+    expect(opened, isEmpty);
   });
 
   test('a refused request says so at most every ten seconds, and only for '
@@ -207,8 +218,29 @@ void main() {
       expect(run(), 'left alone');
       expect(Link(target).targetSync(), '${home.path}/own');
 
-      // A FIFO is not read, which would hang: left alone.
+      // A link planted at a temp name is never followed: its target keeps its
+      // mode, and the install still goes in.
       Link(target).deleteSync();
+      Process.runSync('rm', ['-f', target]);
+      File('${home.path}/secret').writeAsStringSync('mine');
+      Process.runSync('chmod', ['600', '${home.path}/secret']);
+      for (final name in [
+        'jeansh.1234.new',
+        'jeansh.XXXXXX',
+        'jeansh.aaaaaa',
+      ]) {
+        Link('${home.path}/.local/bin/$name').createSync('${home.path}/secret');
+      }
+      expect(run(), 'installed');
+      expect(
+        File('${home.path}/secret').statSync().mode & 0x1ff,
+        0x180,
+      ); // 0600
+      expect(File('${home.path}/secret').readAsStringSync(), 'mine');
+      expect(File(target).readAsStringSync(), openCommandScript);
+      File(target).deleteSync();
+
+      // A FIFO is not read, which would hang: left alone.
       Process.runSync('mkfifo', [target]);
       expect(run(), 'left alone');
     },

@@ -718,11 +718,13 @@ class LiveSession extends ChangeNotifier {
       // one of its own. Its clock is ours.
       if (isLocalHostId(host.id)) {
         openRequests.clockOffset = 0;
-        await openRequests
+        // Taken only if it arrives in time: a store that answers later must
+        // not change the secret under a shell that has started without it.
+        final kept = await openRequests
             .load(secrets, host.id)
             .timeout(const Duration(milliseconds: 500))
-            .then<void>((_) {}, onError: (_) {});
-        openRequests.secret ??= OpenRequests.newSecret();
+            .then<String?>((v) => v, onError: (_) => null);
+        openRequests.secret = kept ?? OpenRequests.newSecret();
       }
       Future<Map<String, String>> environment(ForwardCapable connection) async {
         final value = await key?.timeout(
@@ -736,6 +738,7 @@ class LiveSession extends ChangeNotifier {
             : await openRequests
                   .load(secrets, host.id)
                   .then<String?>((v) => v, onError: (_) => null);
+        if (openSecret != null) openRequests.secret = openSecret;
         return {
           // That this terminal shows an OSC 8 hyperlink and a Ctrl+tap opens
           // it, for a profile to turn `FORCE_HYPERLINK` on from, so Claude
@@ -1268,7 +1271,10 @@ class LiveSession extends ChangeNotifier {
     final host = lines.isEmpty ? null : int.tryParse(lines.last.trim());
     if (host == null) return;
     final ended = DateTime.now().millisecondsSinceEpoch;
-    openRequests.clockOffset = host - ((started + ended) ~/ 2000);
+    openRequests.clockOffset = (host - ((started + ended) ~/ 2000)).clamp(
+      -OpenRequests.maxOffset,
+      OpenRequests.maxOffset,
+    );
   }
 
   /// Asks the host what it runs and saves that on its profile for the host

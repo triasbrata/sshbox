@@ -59,6 +59,12 @@ class OpenRequests {
   /// How far from the host's now a request's time may be, either way, in
   /// seconds.
   static const window = 120;
+
+  /// The same, while the host's clock has not been measured.
+  static const unmeasuredWindow = 24 * 60 * 60;
+
+  /// The most an offset can be, either way: about ten years, in seconds.
+  static const maxOffset = 315360000;
   static const refusedEvery = Duration(seconds: 10);
   static const maxPath = 4096;
   static const _maxNonces = 512;
@@ -72,6 +78,9 @@ class OpenRequests {
   /// environment its shell started with, through reconnects and restarts of
   /// the app, so a secret that changed would break `jeansh` in every pane
   /// older than the last connect. It is deleted with the host.
+  ///
+  /// Returns it without setting [secret]: a caller that gave up waiting must
+  /// not have the secret changed under a shell already started with another.
   Future<String> load(SecretStore secrets, String hostId) async {
     final key = SecretKeys.openSecret(hostId);
     var value = await secrets.read(key);
@@ -79,7 +88,7 @@ class OpenRequests {
       value = newSecret();
       await secrets.write(key, value);
     }
-    return secret = value;
+    return value;
   }
 
   static final _random = Random.secure();
@@ -96,13 +105,16 @@ class OpenRequests {
     final now = _now();
     final at = int.tryParse(args[2]);
     final offset = clockOffset;
+    // With no offset measured, only a day's slack: the host's clock cannot
+    // be told from a wrong one, but a year-old sequence still can.
+    final nowSeconds = now.millisecondsSinceEpoch ~/ 1000;
     final good =
         secret != null &&
         constantTimeEquals(args[1], secret) &&
         at != null &&
-        (offset == null ||
-            (at - (now.millisecondsSinceEpoch ~/ 1000 + offset)).abs() <=
-                window) &&
+        (offset == null
+            ? (at - nowSeconds).abs() <= unmeasuredWindow
+            : (at - (nowSeconds + offset)).abs() <= window) &&
         _hex.hasMatch(args[3]) &&
         _seen.add(args[3]);
     if (!good) return _refuse(now);
