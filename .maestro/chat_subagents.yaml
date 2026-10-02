@@ -53,7 +53,7 @@ env:
 - takeScreenshot: chat-subagents-row
 - tapOn: "(?s).*Open sub-agent: survey the repo.*"
 
-# Its own conversation, under a breadcrumb, with no box to type in.
+# Its own conversation, in the chat tab under a breadcrumb, with no box to type in.
 - extendedWaitUntil:
     visible: "(?s).*Surveying the repo.*"
     timeout: 15000
@@ -73,7 +73,10 @@ env:
     visible: "(?s).*Digging in the nested one.*"
     timeout: 15000
 - takeScreenshot: chat-subagents-nested
-- tapOn: "(?s).*WSL via.*"
+# The first crumb is the session; the sub-agent view is part of the chat tab,
+# so the tab strip is still there.
+- assertVisible: "(?s).*Claude.*"
+- tapOn: "Back to WSL via.*"
 - extendedWaitUntil:
     visible: "Message “E2E live session”…"
     timeout: 10000
