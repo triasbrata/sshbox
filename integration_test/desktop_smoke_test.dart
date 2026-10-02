@@ -4527,6 +4527,102 @@ touch '${done.path}'
     },
   );
 
+  // #180: tool rows read as words, not JSON, and open as a tree. A stand-in
+  // session makes a SendMessage, an MCP call with a nested input, and gets a
+  // JSON result back.
+  _test(
+    'tool rows have readable titles and open as a tree',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, and this stand-in is sh'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      final long = List.filled(40, 'abcdefghij').join();
+      final answer = File('$home/.claude/e2e-answer.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Echo from the stand-in.'},
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_msg',
+                  'name': 'SendMessage',
+                  'input': {'to': 'peer session', 'summary': 'review passed', 'message': 'Merge it.'},
+                },
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_mcp',
+                  'name': 'mcp__tracker__file_issue',
+                  'input': {
+                    'meta': {
+                      'inner': {'deep': 'value'},
+                    },
+                    'note': long,
+                  },
+                },
+              ],
+            },
+          })}\n'
+          '${jsonEncode({
+            'type': 'user',
+            'message': {
+              'role': 'user',
+              'content': [
+                {'type': 'tool_result', 'tool_use_id': 'toolu_msg', 'content': 'sent'},
+                {'type': 'tool_result', 'tool_use_id': 'toolu_mcp', 'content': jsonEncode({'rows': [1, 2], 'ok': true})},
+              ],
+            },
+          })}',
+        );
+      addTearDown(() {
+        if (answer.existsSync()) answer.deleteSync();
+      });
+
+      await _launch(tester);
+      await _chatAnswered(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.text('→ peer session: review passed'), findsOneWidget);
+      expect(find.text('tracker · file_issue'), findsOneWidget);
+      expect(find.text('mcp__tracker__file_issue'), findsNothing);
+      expect(find.textContaining('{"to"'), findsNothing);
+
+      Finder node(String text) => find.byWidgetPredicate(
+        (w) =>
+            (w is RichText && w.text.toPlainText() == text) ||
+            (w is EditableText && w.controller.text == text),
+      );
+
+      await tester.tap(find.text('tracker · file_issue'));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(node('meta: Object(1)'), findsOneWidget);
+      expect(node('deep: value'), findsNothing);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(node('inner: Object(1)'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(node('deep: value'), findsOneWidget);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(node('deep: value'), findsNothing);
+
+      expect(find.text('show more'), findsOneWidget);
+      await tester.tap(find.text('show more'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(node('note: $long'), findsOneWidget);
+      expect(node('rows: Array(2)'), findsOneWidget);
+      await _grab(tester, 'chat-tool-rows');
+      await _closeTabs(tester);
+    },
+  );
+
   // Copying code out of a chat reply, with the real pointer and the real
   // keyboard, read back off the system clipboard: a code line wider than the
   // chat wraps rather than scrolling sideways, the Copy icon gives it
