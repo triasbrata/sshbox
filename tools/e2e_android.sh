@@ -131,10 +131,13 @@ chat_stand_in() {
 case "$1" in
   --version) echo '2.1.300 (Claude Code)' ;;
   agents) cat "$HOME/.e2e-agents.json" ;;
+  # chat_ask's stand-in for a `-p` that asks and waits for the answer, where
+  # a flow put one; it answers the `initialize` below as well.
   # The SDK's `initialize` on stdin, as chat lists the slash commands with it:
   # answered with ~/.e2e-commands.json where a flow put one; the rest read
   # until stdin ends, as before.
-  -p) while IFS= read -r line; do
+  -p) if [ -f "$HOME/.e2e-ask.py" ]; then exec python3 "$HOME/.e2e-ask.py"; fi
+      while IFS= read -r line; do
       case $line in *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;; esac
     done ;;
   *) exec cat >/dev/null ;;
@@ -550,6 +553,50 @@ JSON
   return "$status"
 }
 
+# Claude's questions in chat: the AskUserQuestion tool, answered from the chat
+# tab. The finished "E2E short session" continued in place runs the stand-in
+# tools/e2e_ask_claude.py as its `claude -p`, which asks which colour for one
+# message and which size for the next, waits for the app's control_response,
+# and says what it was told. The flow reads that off the screen; this reads
+# what the app really sent, which the stand-in kept: an allow whose
+# updatedInput is the call's own input plus the answers and nothing else, and
+# a deny for the question dismissed.
+chat_ask() {
+  local status=0 home=/home/$SSH_USER replies=/home/$SSH_USER/.e2e-ask-replies.jsonl
+  chat_stand_in
+  sudo -u "$SSH_USER" -H tee "$home/.e2e-ask.py" >/dev/null < tools/e2e_ask_claude.py
+  sudo rm -f "$replies"
+  flow chat_ask || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-ask-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  if [ "$status" -eq 0 ]; then
+    sudo cat "$replies" 2>/dev/null | python3 -c '
+import json, sys
+lines = [json.loads(l) for l in sys.stdin if l.strip()]
+def fail(why):
+    print("::error::chat_ask: " + why); sys.exit(1)
+if len(lines) != 2:
+    fail("the app sent %d control_response lines, not 2" % len(lines))
+first = lines[0]["response"]
+decision = first["response"]
+if first["request_id"] != "req-ask-1" or decision.get("behavior") != "allow":
+    fail("the first answer was not an allow for req-ask-1: %r" % (first,))
+updated = decision["updatedInput"]
+if set(updated) != {"questions", "answers"}:
+    fail("updatedInput holds %r, not the questions and answers alone" % sorted(updated))
+if updated["answers"] != {"Which colour?": "Blue"}:
+    fail("the answers were %r" % (updated["answers"],))
+second = lines[1]["response"]
+if second["request_id"] != "req-ask-2" or second["response"].get("behavior") != "deny":
+    fail("the dismissed question was not denied: %r" % (second,))
+print("chat_ask: allow with the answers, deny for the dismissal")
+' || status=1
+  fi
+  sudo rm -f "$home/.e2e-ask.py" "$replies"
+  stand_in ''
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -649,6 +696,10 @@ echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_ask (report only)"
+chat_ask || echo "::warning::chat_ask failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"

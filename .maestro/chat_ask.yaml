@@ -1,0 +1,89 @@
+# Claude's questions in chat: the AskUserQuestion tool, answered from the chat
+# tab. In chat's own `claude -p` session, a question Claude asks is a card with
+# its options, and what is picked goes back to the CLI as the reply it waits
+# for; dismissing it denies the call. Without the answers in that reply, or
+# with the chat refusing the question, Claude is told nothing was chosen.
+#
+# The session is the stand-in's finished "E2E short session", continued in
+# place by a `claude -p` that is tools/e2e_ask_claude.py (tools/e2e_android.sh's
+# chat_ask): it asks which colour for the first message and which size for the
+# second, and answers what it is told with "You chose …" or "You dismissed the
+# question". The run itself checks what reached it, the control_response lines
+# it kept.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E short session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E short session.*"
+# A finished session, continued here: its own Claude is up once the box says so.
+- extendedWaitUntil:
+    visible: "Ask Claude…"
+    timeout: 30000
+
+# A message, and Claude asks: a card, not a tool row.
+- tapOn: "Ask Claude…"
+- inputText: "pick a colour for me"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "Which colour\\?"
+    timeout: 30000
+- assertVisible: "Red"
+- assertVisible: "A cool colour."
+- assertNotVisible: "AskUserQuestion"
+- takeScreenshot: chat-ask-card
+
+# Picked and sent: the card shows what was given, and Claude carries on with it.
+- scrollUntilVisible:
+    element: "Blue"
+- tapOn: "Blue"
+- scrollUntilVisible:
+    element: "Send answers"
+- tapOn: "Send answers"
+- extendedWaitUntil:
+    visible: "You chose Blue"
+    timeout: 30000
+- assertNotVisible: "Send answers"
+- takeScreenshot: chat-ask-answered
+
+# Another question, dismissed: the card says so, and Claude is told.
+- tapOn: "Ask Claude…"
+- inputText: "and a size"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "Which size\\?"
+    timeout: 30000
+- scrollUntilVisible:
+    element: "Dismiss"
+- tapOn: "Dismiss"
+- extendedWaitUntil:
+    visible: "You dismissed the question"
+    timeout: 30000
+- assertVisible: "Dismissed without an answer."
+- takeScreenshot: chat-ask-dismissed
+
+# No hideKeyboard: with none up it presses Back.
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
