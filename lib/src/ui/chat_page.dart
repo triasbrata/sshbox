@@ -686,15 +686,21 @@ class _ChatPageState extends State<ChatPage> {
       final sidebar = wide && _sidebarOpen;
       // Chat at the content size, its sessions, messages, tool rows, code
       // and composer alike: see ContentText.
-      final sessions = ContentText(
-        child: _SessionList(
-          chat: _chat,
-          agents: _agents,
-          connected: widget.session.isConnected,
-          onPick: _pick,
-          onRefresh: () => setState(_listAgents),
-          onNewChat: _newChat,
-          unseen: (agent) => _unseen.contains(_placeOf(agent.sessionId)),
+      // A right-click on the sessions is theirs, and a session has no menu:
+      // claimed here, it never falls through to the tab's own menu, whose
+      // Group with… a session is no tab to answer.
+      final sessions = GestureDetector(
+        onSecondaryTapUp: (_) {},
+        child: ContentText(
+          child: _SessionList(
+            chat: _chat,
+            agents: _agents,
+            connected: widget.session.isConnected,
+            onPick: _pick,
+            onRefresh: () => setState(_listAgents),
+            onNewChat: _newChat,
+            unseen: (agent) => _unseen.contains(_placeOf(agent.sessionId)),
+          ),
         ),
       );
       return Scaffold(
@@ -799,6 +805,9 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ],
           ),
+        // Under the working line, and alone between turns while a task is
+        // still open, as Claude Code's own view keeps it.
+        if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
         const Divider(height: 1),
         _composer(theme, wide: wide, sidebar: sidebar),
       ],
@@ -1755,6 +1764,72 @@ class _Notice extends StatelessWidget {
               ? theme.colorScheme.error
               : theme.colorScheme.onSurfaceVariant,
         ),
+      ),
+    );
+  }
+}
+
+/// The session's tasks, as Claude Code's view draws them under its spinner:
+/// `⎿` then the ones in progress, bold with a filled square, and the ones
+/// pending with an empty one; completed ones are only counted, in a last
+/// `… +N pending, M completed` line. Task text is host text: plain [Text].
+class _Checklist extends StatelessWidget {
+  const _Checklist({required this.chat});
+
+  final ClaudeChat chat;
+
+  /// How many tasks it lists before it counts the rest.
+  static const _lines = 6;
+
+  @override
+  Widget build(BuildContext context) {
+    final open = chat.openTasks;
+    final done = chat.tasksDone;
+    // The ones in progress first, then the pending, shown in task order.
+    final shown = {
+      ...[...open.where((t) => t.inProgress), ...open.where((t) => !t.inProgress)]
+          .take(_lines),
+    };
+    // Counted for what they are: more than the lines hold of the ones in
+    // progress is possible too.
+    final hidden = open.where((t) => !shown.contains(t));
+    final hiddenActive = hidden.where((t) => t.inProgress).length;
+    final hiddenPending = hidden.length - hiddenActive;
+    final more = [
+      if (hiddenActive > 0) '+$hiddenActive in progress',
+      if (hiddenPending > 0) '+$hiddenPending pending',
+      if (done > 0) '$done completed',
+    ];
+    Widget line(String text, {bool bold = false, TuiTextTone? tone}) => Row(
+      children: [
+        const SizedBox(width: 16),
+        Expanded(
+          child: TuiText(
+            text,
+            size: 12,
+            bold: bold,
+            tone: tone ?? TuiTextTone.normal,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (i, task) in open.where(shown.contains).indexed)
+            line(
+              '${i == 0 ? '⎿ ' : '  '}${task.inProgress ? '■' : '□'} '
+              '${task.label}',
+              bold: task.inProgress,
+              tone: task.inProgress ? null : TuiTextTone.muted,
+            ),
+          if (more.isNotEmpty)
+            line('  … ${more.join(', ')}', tone: TuiTextTone.dim),
+        ],
       ),
     );
   }

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
@@ -377,6 +377,52 @@ const _host = HostProfile(
 );
 
 void main() {
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan
+  // tab lain": a session in the sidebar is no tab, so a right-click on it
+  // must not reach the tab's menu, while the message area's still does.
+  testWidgets("a right-click on a session in the sidebar is not the tab's", (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('aaaa0001', 'nightly build')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    var tabMenus = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        // As the tab shell wraps every page: a right-click nothing deeper
+        // took opens the tab's menu.
+        home: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onSecondaryTapUp: (_) => tabMenus++,
+          child: Scaffold(body: ChatPage(session: session)),
+        ),
+      ),
+    );
+    await _settlePickUp(tester);
+    Future<void> rightClick(Finder at) async {
+      await tester.tapAt(
+        tester.getCenter(at),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await rightClick(find.text('nightly build'));
+    await rightClick(find.text('Sessions on this host'));
+    expect(tabMenus, 0);
+    // Nothing picked up by it either.
+    expect(shell.commands.where((c) => c.contains(' -f ')), isEmpty);
+
+    await rightClick(find.textContaining('starts a new session'));
+    expect(tabMenus, 1);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
   testWidgets('a new chat starts nothing on the host until its first '
       'message, which starts a background session there and watches it', (
     tester,
@@ -3728,6 +3774,179 @@ void main() {
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       }
       expect(asked(), hidden);
+    });
+  });
+
+  group('the checklist under the working line', () {
+    Map<String, Object?> call(
+      String id,
+      String name,
+      Map<String, Object?> input,
+    ) => {
+      'type': 'assistant',
+      'message': {
+        'id': 'msg_$id',
+        'stop_reason': 'tool_use',
+        'content': [
+          {'type': 'tool_use', 'id': id, 'name': name, 'input': input},
+        ],
+      },
+    };
+
+    Map<String, Object?> created(String id, int n) => {
+      'type': 'user',
+      'message': {
+        'role': 'user',
+        'content': [
+          {
+            'type': 'tool_result',
+            'tool_use_id': id,
+            'content': 'Task #$n created successfully: x',
+          },
+        ],
+      },
+    };
+
+    /// A TaskUpdate, and its result: it takes effect when that says it did.
+    void update(_Shell shell, String id, Map<String, Object?> input) {
+      shell
+        ..adds(call(id, 'TaskUpdate', input))
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': id,
+                'content': 'Updated task #${input['taskId']} status',
+              },
+            ],
+          },
+        });
+    }
+
+    Future<_Shell> watching(WidgetTester tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'busy',
+            'state': 'working',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    Future<void> make(WidgetTester tester, _Shell shell, int n) async {
+      shell
+        ..adds(
+          call('c$n', 'TaskCreate', {
+            'subject': 'Task $n',
+            'description': 'd',
+            'activeForm': 'Doing $n',
+          }),
+        )
+        ..adds(created('c$n', n));
+      await _settlePickUp(tester);
+    }
+
+    testWidgets('lists what is open, bold in progress with ■ and pending '
+        'with □, and follows each update', (tester) async {
+      final shell = await watching(tester);
+      expect(find.textContaining('□'), findsNothing);
+
+      await make(tester, shell, 1);
+      await make(tester, shell, 2);
+      expect(find.text('⎿ □ Task 1'), findsOneWidget);
+      expect(find.text('  □ Task 2'), findsOneWidget);
+
+      // Live: one becomes in progress, and reads as its active form.
+      update(shell, 'u1', {'taskId': '1', 'status': 'in_progress'});
+      await _settlePickUp(tester);
+      expect(find.text('⎿ ■ Doing 1'), findsOneWidget);
+      expect(find.text('  □ Task 2'), findsOneWidget);
+      expect(
+        tester.widget<TuiText>(find.widgetWithText(TuiText, '⎿ ■ Doing 1')).bold,
+        isTrue,
+      );
+
+      // Completed ones are counted, not listed.
+      update(shell, 'u2', {'taskId': '1', 'status': 'completed'});
+      await _settlePickUp(tester);
+      expect(find.textContaining('Doing 1'), findsNothing);
+      expect(find.text('  … 1 completed'), findsOneWidget);
+
+      // All done: nothing left to show.
+      update(shell, 'u3', {'taskId': '2', 'status': 'completed'});
+      await _settlePickUp(tester);
+      expect(find.text('  … 2 completed'), findsNothing);
+      expect(find.textContaining('□'), findsNothing);
+    });
+
+    testWidgets('past a few lines it counts the rest, as Claude Code does', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      for (var n = 1; n <= 10; n++) {
+        await make(tester, shell, n);
+      }
+      update(shell, 'u1', {'taskId': '1', 'status': 'completed'});
+      await _settlePickUp(tester);
+      // 9 open, 6 shown, 3 more, 1 done.
+      expect(find.text('  … +3 pending, 1 completed'), findsOneWidget);
+      expect(find.text('⎿ □ Task 2'), findsOneWidget);
+      expect(find.text('  □ Task 7'), findsOneWidget);
+      expect(find.textContaining('Task 8'), findsNothing);
+    });
+
+    testWidgets('hidden rows are counted for what they are', (tester) async {
+      final shell = await watching(tester);
+      for (var n = 1; n <= 8; n++) {
+        await make(tester, shell, n);
+        update(shell, 'ip$n', {'taskId': '$n', 'status': 'in_progress'});
+      }
+      await _settlePickUp(tester);
+      // 8 in progress, 6 shown: the 2 more are not called pending.
+      expect(find.text('  … +2 in progress'), findsOneWidget);
+    });
+
+    testWidgets('its text is drawn as text, never read as anything else', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      shell
+        ..adds(
+          call('c1', 'TaskCreate', {
+            'subject': '[x](javascript:alert(1)) **b** <b>',
+            'description': 'd',
+          }),
+        )
+        ..adds(created('c1', 1));
+      await _settlePickUp(tester);
+      expect(
+        find.text('⎿ □ [x](javascript:alert(1)) **b** <b>'),
+        findsOneWidget,
+      );
     });
   });
 }
