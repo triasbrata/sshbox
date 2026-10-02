@@ -61,7 +61,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// Draws what is typed as Markdown; its colours are set from the theme
   /// each time the box is built.
   final _input = MarkdownEditingController(
@@ -299,6 +299,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.session.addListener(_onChanged);
     _chat.addListener(_onChanged);
     _scroll.addListener(_onScrolled);
@@ -309,6 +310,10 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    for (final level in _subs) {
+      level.chat.dispose();
+    }
     _looking?.cancel();
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.session.removeListener(_onChanged);
@@ -548,7 +553,22 @@ class _ChatPageState extends State<ChatPage> {
       });
     }
     _shown = shown;
+    _reportSeen();
   }
+
+  bool _appFront = true;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appFront = state == AppLifecycleState.resumed;
+    if (mounted) _reportSeen();
+  }
+
+  /// Tells the chat whether anyone can see it — its tab in front and the app
+  /// too — which it asks before asking the host anything on its own.
+  void _reportSeen() => _chat.setSeen(
+    _appFront && TickerMode.valuesOf(context).enabled && Visibility.of(context),
+  );
 
   /// Enter in the box: ⌘+Enter on Apple's keyboards, Ctrl+Enter on the
   /// rest, sends; a plain Enter is a new line, or sends where Settings says
@@ -1075,7 +1095,41 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
+  Widget build(BuildContext context) {
+    final session = _buildSession(context);
+    // The session's view is always built, in front or not, so its list keeps
+    // its place and its box its text while a sub-agent's work is on show; a
+    // view behind another has its tickers off, as a hidden tab does.
+    final crumbs = [
+      widget.session.host.displayName,
+      for (final level in _subs) level.crumb,
+    ];
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Visibility(
+          visible: _subs.isEmpty,
+          maintainState: true,
+          child: session,
+        ),
+        for (final (i, level) in _subs.indexed)
+          Visibility(
+            key: ObjectKey(level),
+            visible: i == _subs.length - 1,
+            maintainState: true,
+            child: _SubAgentView(
+              level: level,
+              crumbs: crumbs.sublist(0, i + 2),
+              onBackTo: _backTo,
+              onOpenSub: _openSubAgent,
+              onOpenWeb: widget.onOpenWeb,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSession(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
       final wide = box.maxWidth >= _wideFrom;
       _sidebarWide = wide;
@@ -1239,18 +1293,50 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  Widget _entry(ChatEntry entry) => switch (entry) {
-    ChatSaid(mine: true) => _Bubble(
-      said: entry,
-      onTapLink: _openLink,
-      onRetry: () => _retry(entry),
-      onRemove: () => _chat.remove(entry),
-    ),
-    ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
-    final ChatToolRun run => _ToolRow(run: run),
-    final ChatNotice notice => _Notice(notice: notice),
-    final ChatCommand command => _CommandRow(command: command),
-    final ChatQuestion question => ChatAskCard(
+  /// The sub-agent views opened over this chat, the first over the session
+  /// and each next over the one before; the last is the one in front. Held
+  /// here, in the chat tab, so the tab strip and the other tabs stay in reach,
+  /// and the tab comes back to them as they were left.
+  final _subs = <_SubLevel>[];
+
+  /// Goes into [sub], the sub-agent that [run] started in [parent].
+  void _openSubAgent(ClaudeChat parent, ChatToolRun run, SubAgent sub) {
+    final label = sub.description.isEmpty ? sub.type : sub.description;
+    final child = ClaudeChat.subAgent(
+      open: parent.open,
+      parent: parent,
+      agent: sub,
+      isRunning: () => !run.done,
+    );
+    setState(
+      () => _subs.add(_SubLevel(child, label.isEmpty ? 'Sub-agent' : label)),
+    );
+  }
+
+  /// Back to the crumb at [index]: 0 is the session, where it was left, and
+  /// anything else the sub-agent view at that depth. The levels left behind go.
+  void _backTo(int index) {
+    if (index < 0 || index >= _subs.length + 1) return;
+    final gone = _subs.sublist(index);
+    setState(() => _subs.removeRange(index, _subs.length));
+    // After the frame that stops drawing them.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final level in gone) {
+        level.chat.dispose();
+      }
+    });
+  }
+
+  Widget _entry(ChatEntry entry) => _drawEntry(
+    entry,
+    chat: _chat,
+    onTapLink: _openLink,
+    openSub: (run, sub) => _openSubAgent(_chat, run, sub),
+    // A message of this chat's own can be tried again or taken back; a
+    // sub-agent's view has none to send.
+    onRetry: _retry,
+    onRemove: _chat.remove,
+    question: (question) => ChatAskCard(
       // One card for the question for as long as it is in the chat, so what
       // is half chosen survives the list being redrawn.
       key: ObjectKey(question.ask),
@@ -1259,7 +1345,7 @@ class _ChatPageState extends State<ChatPage> {
       onAnswer: _answerAsk,
       onDecline: _declineAsk,
     ),
-  };
+  );
 
   /// Where a question this chat cannot answer is to be answered instead: at
   /// the terminal of the session being watched, which `claude attach` opens
@@ -1791,6 +1877,270 @@ class _Empty extends StatelessWidget {
 /// Over the earliest turn showing, when the transcript on the host goes back
 /// further: a button that reads more of it, or, once a chat has read all it
 /// may of one transcript, that the rest is on the host.
+/// One entry of a conversation as the page draws it, for a session's own and
+/// for a sub-agent's alike: a row that started a sub-agent the host has told
+/// of gets the way into it.
+Widget _drawEntry(
+  ChatEntry entry, {
+  required ClaudeChat chat,
+  required void Function(String text, String? href, String title) onTapLink,
+  required void Function(ChatToolRun run, SubAgent sub) openSub,
+  void Function(ChatSaid said)? onRetry,
+  void Function(ChatSaid said)? onRemove,
+  Widget Function(ChatQuestion question)? question,
+}) => switch (entry) {
+  ChatSaid(mine: true) => _Bubble(
+    said: entry,
+    onTapLink: onTapLink,
+    // A sub-agent's view has no message of its own to send again.
+    onRetry: () => onRetry?.call(entry),
+    onRemove: () => onRemove?.call(entry),
+  ),
+  ChatSaid(:final text) => _Answer(text: text, onTapLink: onTapLink),
+  final ChatToolRun run => _ToolRow(
+    run: run,
+    sub: run.isSubAgentCall ? chat.subAgentOf(run.id) : null,
+    onOpenSub: run.isSubAgentCall && chat.subAgentOf(run.id) != null
+        ? () => openSub(run, chat.subAgentOf(run.id)!)
+        : null,
+  ),
+  final ChatNotice notice => _Notice(notice: notice),
+  final ChatCommand command => _CommandRow(command: command),
+  final ChatQuestion q => question == null
+      ? const SizedBox.shrink()
+      : question(q),
+};
+
+/// One level of sub-agent views over a chat: the view's own chat, and what the
+/// breadcrumb calls it.
+class _SubLevel {
+  _SubLevel(this.chat, this.crumb);
+
+  final ClaudeChat chat;
+  final String crumb;
+}
+
+/// A sub-agent's work, read-only and live while it runs: chat's own entries in
+/// a list, a breadcrumb over it that goes back to any level, and no box to type
+/// in, with the reason where the box would be. It is part of the chat tab, not
+/// a page over the tabs: the strip and the other tabs stay in reach, and the
+/// tab comes back to it as it was left.
+class _SubAgentView extends StatefulWidget {
+  const _SubAgentView({
+    required this.level,
+    required this.crumbs,
+    required this.onBackTo,
+    required this.onOpenSub,
+    required this.onOpenWeb,
+  });
+
+  final _SubLevel level;
+
+  /// The trail from the session to this view, the session first.
+  final List<String> crumbs;
+
+  /// Back to the crumb at this index: 0 is the session.
+  final void Function(int index) onBackTo;
+  final void Function(ClaudeChat parent, ChatToolRun run, SubAgent sub)
+  onOpenSub;
+  final void Function(Uri url)? onOpenWeb;
+
+  @override
+  State<_SubAgentView> createState() => _SubAgentPageState();
+}
+
+class _SubAgentPageState extends State<_SubAgentView>
+    with WidgetsBindingObserver {
+  final _scroll = ScrollController();
+
+  ClaudeChat get _chat => widget.level.chat;
+  bool _resumed = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _resumed = WidgetsBinding.instance.lifecycleState != AppLifecycleState.paused &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.hidden &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.inactive;
+    _chat.addListener(_onChanged);
+    unawaited(_chat.openSubAgent());
+  }
+
+  /// Shown only when this is the level on top, its tab is in front — a hidden
+  /// tab turns its tickers off — and the app is: otherwise the host is not
+  /// asked for anything, and it is asked once at once when it is shown again.
+  void _report() => _chat.setSubVisible(
+    _resumed && TickerMode.valuesOf(context).enabled,
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _report();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _resumed = state == AppLifecycleState.resumed;
+    if (mounted) _report();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _chat.removeListener(_onChanged);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  int _drawn = 0;
+
+  void _onChanged() {
+    if (!mounted) return;
+    final grew = _chat.entries.length != _drawn;
+    _drawn = _chat.entries.length;
+    final following = !_scroll.hasClients ||
+        _scroll.position.maxScrollExtent - _scroll.position.pixels <= 2;
+    setState(() {});
+    // Live: what it adds is followed while the reader is at the end, and left
+    // where they put it otherwise.
+    if (grew && following) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scroll.hasClients) {
+          _scroll.jumpTo(_scroll.position.maxScrollExtent);
+        }
+      });
+    }
+  }
+
+  void _link(String text, String? href, String title) {
+    final url = Uri.tryParse(href ?? '');
+    if (url != null && url.hasScheme) {
+      unawaited(openUrl(context, url, inTab: widget.onOpenWeb));
+      return;
+    }
+    final address = href ?? text;
+    unawaited(Clipboard.setData(ClipboardData(text: address)));
+    showToast(context, 'Not opened: $address is on the host. Copied it');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chat = _chat;
+    final theme = Theme.of(context);
+    final entries = chat.entries;
+    final crumbs = widget.crumbs;
+    return Material(
+      color: theme.scaffoldBackgroundColor,
+      child: ContentText(
+        child: Column(
+          children: [
+            // The trail: the session, then each sub-agent down to this one.
+            // Any crumb but the last goes back to that level; the first is
+            // the session itself, and where it was left.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                reverse: true,
+                child: Row(
+                  children: [
+                    for (final (i, crumb) in crumbs.indexed) ...[
+                      if (i > 0) Text(' › ', style: theme.textTheme.bodySmall),
+                      Semantics(
+                        container: true,
+                        button: i != crumbs.length - 1,
+                        label: i == crumbs.length - 1
+                            ? crumb
+                            : 'Back to $crumb',
+                        excludeSemantics: true,
+                        child: InkWell(
+                        onTap: i == crumbs.length - 1
+                            ? null
+                            : () => widget.onBackTo(i),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Text(
+                            crumb,
+                            maxLines: 1,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: i == crumbs.length - 1
+                                  ? FontWeight.w600
+                                  : null,
+                            ),
+                          ),
+                        ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: entries.isEmpty
+                  ? Center(
+                      child: chat.subReplaced
+                          ? const SizedBox.shrink()
+                          : const TuiSpinner(),
+                    )
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                      // Earlier turns on demand, above the first.
+                      itemCount: entries.length + (chat.hasEarlier ? 1 : 0),
+                      itemBuilder: (context, index) {
+                        if (chat.hasEarlier && index == 0) {
+                          return _Earlier(
+                            chat: chat,
+                            onLoad: () => unawaited(
+                              chat.loadEarlier().catchError((Object _) {}),
+                            ),
+                          );
+                        }
+                        final entry = entries[index - (chat.hasEarlier ? 1 : 0)];
+                        return _drawEntry(
+                          entry,
+                          chat: chat,
+                          onTapLink: _link,
+                          openSub: (run, sub) =>
+                              widget.onOpenSub(chat, run, sub),
+                        );
+                      },
+                    ),
+            ),
+            const Divider(height: 1),
+            // No box: what is here is a sub-agent's, and nothing is typed
+            // into one.
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_outline, size: 14),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      chat.subReplaced
+                          ? 'This session was replaced, so this is as far as '
+                                'the sub-agent’s work was followed. Go back to '
+                                'the session.'
+                          : 'Read-only: this is a sub-agent’s work. Go back to '
+                                'talk to the session.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _Earlier extends StatelessWidget {
   const _Earlier({required this.chat, required this.onLoad});
 
@@ -2009,9 +2359,14 @@ class _ChatMarkdown extends StatelessWidget {
 /// was given is drawn here the way the tool reads, so the row is termul's
 /// look around Jeansh's own body.
 class _ToolRow extends StatefulWidget {
-  const _ToolRow({required this.run});
+  const _ToolRow({required this.run, this.sub, this.onOpenSub});
 
   final ChatToolRun run;
+
+  /// The sub-agent this row's call started, once the host has told, and the
+  /// way into it.
+  final SubAgent? sub;
+  final VoidCallback? onOpenSub;
 
   /// A result that came back as a JSON string, quotes and escapes and all,
   /// as the text it holds; anything else as it came.
@@ -2046,6 +2401,80 @@ class _ToolRow extends StatefulWidget {
 
   @override
   State<_ToolRow> createState() => _ToolRowState();
+}
+
+/// Under an Agent row: what the sub-agent is, whether it is running, how much
+/// it has done and when it last did, and the way into its work.
+class _SubAgentStrip extends StatelessWidget {
+  const _SubAgentStrip({
+    required this.sub,
+    required this.running,
+    required this.onOpen,
+  });
+
+  final SubAgent sub;
+  final bool running;
+  final VoidCallback? onOpen;
+
+  static String _ago(DateTime? at) {
+    if (at == null) return '';
+    final since = chatNow().toUtc().difference(at.toUtc());
+    if (since.inMinutes < 1) return 'just now';
+    if (since.inHours < 1) return '${since.inMinutes}m ago';
+    if (since.inDays < 1) return '${since.inHours}h ago';
+    return '${since.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final detail = [
+      if (sub.type.isNotEmpty) sub.type,
+      running ? 'running' : 'done',
+      '${sub.tools}${sub.toolsAtLeast ? '+' : ''} '
+          '${sub.tools == 1 && !sub.toolsAtLeast ? 'tool' : 'tools'}',
+      if (_ago(sub.last).isNotEmpty) _ago(sub.last),
+    ].join(' · ');
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Open sub-agent. ${sub.description}. $detail',
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+          child: Row(
+            children: [
+              const TuiText('⧉', size: 12, tone: TuiTextTone.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TuiText(
+                      'Open sub-agent${sub.description.isEmpty ? '' : ': ${sub.description}'}',
+                      size: 12,
+                      tone: TuiTextTone.accent,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    TuiText(
+                      detail,
+                      size: 10,
+                      tone: TuiTextTone.dim,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const TuiText('›', size: 12, tone: TuiTextTone.dim),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _ToolRowState extends State<_ToolRow> {
@@ -2144,6 +2573,12 @@ class _ToolRowState extends State<_ToolRow> {
                     ),
                   ),
                 ),
+                if (widget.sub case final sub?)
+                  _SubAgentStrip(
+                    sub: sub,
+                    running: !run.done,
+                    onOpen: widget.onOpenSub,
+                  ),
                 // Built only once the row is opened: colouring code is work.
                 // Under a storage key of its own, as every block is: a
                 // SelectableText scrolls, and without one it would read the
