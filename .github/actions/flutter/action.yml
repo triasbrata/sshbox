@@ -1,0 +1,63 @@
+name: Flutter, from main's caches
+description: >
+  Sets up the Flutter SDK and runs `flutter pub get`, with the SDK and the pub
+  cache restored from what main saved. Only a run on main saves them: a cache
+  saved anywhere else can be restored by that ref alone, and every branch
+  saving its own copies filled the repository's 10 GB, so GitHub evicted
+  main's 1.6-2.1 GB SDKs and the next run downloaded them all again.
+
+  The SDK itself is cached on Linux alone. On macOS and Windows a fresh
+  install was as fast as restoring the cache -- 64 s and 78 s fresh
+  (release run 35458658677), against 29-77 s and 88-100 s restoring 2.1 GB
+  and 1.8 GB -- so those two would only take 3.9 GB of the 10 GB.
+inputs:
+  flutter-version:
+    description: The Flutter version, as .fvmrc pins it.
+    default: 3.47.2
+runs:
+  using: composite
+  steps:
+    # The keys and paths subosito/flutter-action would cache under, printed
+    # and nothing installed.
+    - id: info
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ inputs.flutter-version }}
+        channel: stable
+        dry-run: true
+
+    - id: sdk
+      if: runner.os == 'Linux'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.info.outputs.CACHE-PATH }}
+        key: ${{ steps.info.outputs.CACHE-KEY }}
+
+    - id: pub
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.info.outputs.PUB-CACHE-PATH }}
+        key: ${{ steps.info.outputs.PUB-CACHE-KEY }}-${{ hashFiles('**/pubspec.lock') }}
+        restore-keys: ${{ steps.info.outputs.PUB-CACHE-KEY }}-
+
+    # Finds the SDK already at its path on a hit and downloads nothing; on a
+    # miss it downloads it, as before.
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ inputs.flutter-version }}
+        channel: stable
+
+    - if: runner.os == 'Linux' && github.ref == 'refs/heads/main' && steps.sdk.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.info.outputs.CACHE-PATH }}
+        key: ${{ steps.info.outputs.CACHE-KEY }}
+
+    - shell: bash
+      run: flutter pub get
+
+    - if: github.ref == 'refs/heads/main' && steps.pub.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.info.outputs.PUB-CACHE-PATH }}
+        key: ${{ steps.info.outputs.PUB-CACHE-KEY }}-${{ hashFiles('**/pubspec.lock') }}
