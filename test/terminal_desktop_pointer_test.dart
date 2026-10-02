@@ -513,8 +513,10 @@ void main() {
       expect(selected(tester), 'this is a');
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
-    testWidgets('lets go of the selection when focus leaves mid-gesture, the '
-        'up never coming', (tester) async {
+    // The up of a gesture can fail to come, a window blurring mid-drag. The
+    // pointer hovering shows the button is up, and lets the selection go.
+    testWidgets('lets go of the selection when the pointer hovers, the up '
+        'never coming', (tester) async {
       await pumpPage(tester);
       session.terminal.write(text * 30);
       await tester.pump();
@@ -522,19 +524,42 @@ void main() {
       final g = await secondClick(tester, col: 14, clicks: 2);
       await tester.pump(const Duration(milliseconds: 200));
       expect(selected(tester), 'this');
+      // While it is held every selection but the gesture's is ignored.
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNotNull);
 
-      // The window blurred with the button down: no up, no cancel.
-      FocusManager.instance.primaryFocus?.unfocus();
+      // Another device hovering — a pen, a second mouse — is no word of this
+      // one's button.
+      tester.binding.handlePointerEvent(
+        PointerHoverEvent(
+          kind: PointerDeviceKind.stylus,
+          device: 7,
+          position: cellAt(tester, 20, 10),
+        ),
+      );
       await tester.pump();
-      // Select all, the menu's, and the clear a tracked press makes, both
-      // used to be ignored until the next press.
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNotNull);
+
+      // The mouse's own is: a mouse test pointer is device 1.
+      tester.binding.handlePointerEvent(
+        PointerHoverEvent(
+          kind: PointerDeviceKind.mouse,
+          device: 1,
+          position: cellAt(tester, 20, 10),
+        ),
+      );
+      await tester.pump();
       controller(tester).clearSelection();
       expect(controller(tester).selection, isNull);
       await g.up();
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
-    testWidgets('lets go of the gesture when the window is hidden straight '
-        'from resumed, as a real minimize on Linux does', (tester) async {
+    // On a Mac the first click, which activates the window, brings on a
+    // focus change and a lifecycle change of its own: they must not end the
+    // gesture it began.
+    testWidgets('keeps the gesture through a focus change and an inactive '
+        'or hidden app', (tester) async {
       await pumpPage(tester);
       session.terminal.write(text * 30);
       await tester.pump();
@@ -543,18 +568,94 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
       expect(selected(tester), 'this');
 
-      // No inactive step between: AppLifecycleListener asserts on this jump.
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      FocusManager.instance.primaryFocus?.unfocus();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       addTearDown(
         () => tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,
         ),
       );
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       await tester.pump();
-      // An owned selection ignores a clear; one let go of takes it.
+      for (var col = 15; col <= 20; col++) {
+        await g.moveTo(cellAt(tester, col, 10));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      // Still the gesture's: it grew, and a stray clear is ignored.
+      expect(selected(tester), 'this is a');
+      controller(tester).clearSelection();
+      expect(selected(tester), 'this is a');
+      await g.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(selected(tester), 'this is a');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    // The second press of a double click comes later on a loaded machine, or
+    // from a slower hand, than Flutter's 300 ms for a touch: within the
+    // platform's interval it still counts.
+    for (final (platform, within, past) in [
+      (TargetPlatform.linux, 350, 450),
+      (TargetPlatform.macOS, 450, 550),
+    ]) {
+      testWidgets('counts a second press $within ms after the first as a '
+          'double click on $platform, $past ms after not', (tester) async {
+        await pumpPage(tester);
+        session.terminal.write(text * 30);
+        await tester.pump();
+
+        Future<String?> afterGap(int gap) async {
+          await tester.tapAt(
+            cellAt(tester, 14, 10),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump(Duration(milliseconds: gap));
+          final g = await tester.startGesture(
+            cellAt(tester, 14, 10),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          for (var col = 15; col <= 20; col++) {
+            await g.moveTo(cellAt(tester, col, 10));
+            await tester.pump(const Duration(milliseconds: 16));
+          }
+          final range = controller(tester).selection;
+          await g.up();
+          await tester.pump(const Duration(seconds: 1));
+          return range == null
+              ? null
+              : session.terminal.buffer.getText(range);
+        }
+
+        expect(await afterGap(within), 'this is a');
+        // Past it, a first click again: characters from the press.
+        expect(await afterGap(past), isNot('this is a'));
+      }, variant: TargetPlatformVariant.only(platform));
+    }
+
+    // A press while the gesture is still held, from the same device, shows
+    // its up never came: a right click, say, after a window blurred mid-drag.
+    testWidgets('lets go of a held gesture at a right press from the same '
+        'device', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      final g = await secondClick(tester, col: 14, clicks: 2);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(selected(tester), 'this');
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNotNull);
+
+      final right = await tester.startGesture(
+        cellAt(tester, 20, 10),
+        kind: PointerDeviceKind.mouse,
+        pointer: 77,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pump();
       controller(tester).clearSelection();
       expect(controller(tester).selection, isNull);
+      await right.cancel();
       await g.up();
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
