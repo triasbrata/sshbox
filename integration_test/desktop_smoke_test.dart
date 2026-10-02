@@ -3529,6 +3529,32 @@ touch '${done.path}'
       );
       await uiTextSize.choose(1);
       await tester.pump();
+
+      // Over a long list, Settings', Ctrl+wheel zooms and leaves where the
+      // list was; a plain wheel would have scrolled it.
+      await _settings(tester);
+      final list = find.byType(Scrollable).first;
+      await tester.drag(list, const Offset(0, -200));
+      await tester.pumpAndSettle();
+      final position = tester.state<ScrollableState>(list).position;
+      final before = position.pixels;
+      expect(before, greaterThan(0), reason: 'Settings did not scroll at all');
+      await ctrlWheelUp(tester.getCenter(list));
+      await _until(
+        tester,
+        () => uiTextSize.value > 1.001,
+        'Ctrl+wheel up over Settings to grow the UI text',
+        timeout: const Duration(seconds: 5),
+      );
+      expect(
+        position.pixels,
+        before,
+        reason: 'Ctrl+wheel scrolled Settings as well as zooming',
+      );
+      await uiTextSize.choose(1);
+      await tester.pump();
+      await _backHome(tester);
+
       final view = await _localShell(tester);
       final terminal = tester.getCenter(find.byWidget(view));
       await ctrlWheelUp(terminal);
