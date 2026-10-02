@@ -534,6 +534,8 @@ end_live_session() {
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
   # Its task store, if tasks: wrote one: this session's folder alone.
   [ -n "$LIVE_SID" ] && sudo rm -rf "/home/$SSH_USER/.claude/tasks/$LIVE_SID"
+  # Its sub-agents, if agents: wrote any: this session's folder alone.
+  [ -n "$LIVE_SID" ] && sudo rm -rf "/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID"
   sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
     -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
 }
@@ -550,6 +552,22 @@ chat_progress() {
   flow chat_progress || status=1
   # Its screenshots, pass or fail, into the evidence folder (see chat_version_case).
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-progress-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# A sub-agent's work opened from its Agent row, read-only and live, and the
+# one it started in turn, against the stand-in's agents: turn, which writes
+# the files 2.1.300 writes under <session>/subagents.
+chat_subagents() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_subagents || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-subagents-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   end_live_session
   stand_in ''
@@ -1010,6 +1028,10 @@ echo "::endgroup::"
 
 echo "::group::chat_images (report only)"
 chat_images || echo "::warning::chat_images failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_subagents (report only)"
+chat_subagents || echo "::warning::chat_subagents failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"

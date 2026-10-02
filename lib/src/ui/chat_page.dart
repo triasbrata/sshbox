@@ -488,7 +488,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final isDir = FileSystemEntity.isDirectorySync(path);
       if (!isDir && _pictureNames.hasMatch(item.name)) {
         await _addPicture((path: path, name: item.name));
-      } else if (path.runes.any((c) => c < 0x20 || c == 0x7f)) {
+      } else if (_misleading.hasMatch(path)) {
         _refuse('Not added: the name holds a control character: ${item.name}');
       } else if (here) {
         _typePath(path);
@@ -522,9 +522,33 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  /// [path] at the caret, with a space after it so the next word is apart.
-  void _typePath(String path) =>
-      _type('${path.contains(RegExp(r'\s')) ? '"$path"' : path} ');
+  /// C0 and C1 controls and the bidi controls, which make a name show
+  /// reversed or hide what it says.
+  static final _misleading = RegExp(
+    r'[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]',
+  );
+
+  /// [path] after the selection, with a space after it so the next word is
+  /// apart: never over text, since an upload ends long after the drop and
+  /// the user may have selected a sentence meanwhile. Not at all once the
+  /// chat has turned read-only.
+  void _typePath(String path) {
+    if (!_attachable) return;
+    final quoted = path.contains(RegExp(r'\s'))
+        ? '"${path.replaceAll('"', r'\"')}"'
+        : path;
+    final value = _input.value;
+    final at = value.selection.isValid
+        ? value.selection.end
+        : value.text.length;
+    final apart = at > 0 && !RegExp(r'\s').hasMatch(value.text[at - 1]);
+    final text = '${apart ? ' ' : ''}$quoted ';
+    _input.value = TextEditingValue(
+      text: value.text.replaceRange(at, at, text),
+      selection: TextSelection.collapsed(offset: at + text.length),
+    );
+    setState(() {});
+  }
 
   /// Puts [picture] on the host for a session there, through the upload the
   /// terminal's paste uses: in the Transfers tab, made 0600 and named by

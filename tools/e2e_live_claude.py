@@ -220,6 +220,70 @@ def task_turn(text):
     sys.stdout.write('Tasks played\n')
 
 
+sub_dir = os.path.join(os.path.dirname(transcript), session, 'subagents')
+
+
+def sub_agent(file, tool_use_id, description, lines):
+    """A sub-agent as 2.1.300 files it: agent-<id>.meta.json naming the tool_use
+    that started it, and agent-<id>.jsonl, every line isSidechain."""
+    os.makedirs(sub_dir, exist_ok=True)
+    with open(os.path.join(sub_dir, file + '.meta.json'), 'w') as f:
+        json.dump({'agentType': 'Explore', 'description': description,
+                   'toolUseId': tool_use_id, 'spawnDepth': 1}, f)
+    with open(os.path.join(sub_dir, file + '.jsonl'), 'a') as f:
+        for event in lines:
+            event.update({'isSidechain': True, 'agentId': file,
+                          'timestamp': now()})
+            f.write(json.dumps(event) + '\n')
+
+
+def say(text, mid):
+    return {'type': 'assistant', 'message': {
+        'id': mid, 'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}}
+
+
+def agents_turn(text):
+    """A line starting `agents:` plays a turn that starts a sub-agent with the
+    Agent tool, which starts one of its own: both write their files under
+    <session>/subagents, the first says "Surveying the repo", writes more four
+    seconds on, and the turn ends after ten."""
+    listed_as('busy')
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_agent', 'role': 'assistant', 'stop_reason': 'tool_use',
+        'usage': {'output_tokens': 20},
+        'content': [{'type': 'tool_use', 'id': 'toolu_e2e_agent', 'name': 'Agent',
+                     'input': {'description': 'survey the repo',
+                               'subagent_type': 'Explore', 'prompt': 'p'}}]}})
+    sub_agent('agent-e2esurvey', 'toolu_e2e_agent', 'survey the repo', [
+        {'type': 'user', 'message': {'role': 'user', 'content': 'survey it for me'}},
+        {'type': 'assistant', 'message': {
+            'id': 'sa1', 'role': 'assistant', 'stop_reason': 'tool_use', 'content': [
+                {'type': 'tool_use', 'id': 'toolu_e2e_nested', 'name': 'Agent',
+                 'input': {'description': 'dig deeper', 'prompt': 'p'}}]}},
+        say('Surveying the repo', 'sa2'),
+    ])
+    sub_agent('agent-e2edeeper', 'toolu_e2e_nested', 'dig deeper', [
+        say('Digging in the nested one', 'sb1'),
+    ])
+    time.sleep(4)
+    sub_agent('agent-e2esurvey', 'toolu_e2e_agent', 'survey the repo', [
+        say('Found it, all done here', 'sa3'),
+    ])
+    time.sleep(6)
+    record({'type': 'user', 'timestamp': now(), 'message': {'role': 'user', 'content': [
+        {'type': 'tool_result', 'tool_use_id': 'toolu_e2e_agent', 'content': 'survey done'}]}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_agents_end', 'role': 'assistant', 'stop_reason': 'end_turn',
+        'usage': {'output_tokens': 30},
+        'content': [{'type': 'text', 'text': 'Agents played'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 11000,
+            'timestamp': now()})
+    listed_as('idle')
+    sys.stdout.write('Agents played\n')
+
+
 def prompt():
     sys.stdout.write('❯ ')
     sys.stdout.flush()
@@ -233,6 +297,8 @@ while True:
     text = line.rstrip('\n')
     if text.startswith('slow:'):
         slow_turn(text)
+    elif text.startswith('agents:'):
+        agents_turn(text)
     elif text.startswith('tasks:'):
         task_turn(text)
     elif text.startswith('wait:'):
