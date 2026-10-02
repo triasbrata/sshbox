@@ -179,10 +179,28 @@ _hostWithHistory(String? history) {
           close: () {},
         );
       }
+      if (command.contains('/tasks')) return _says(tasksOnHost);
+      if (command.contains('/tasks')) return _says(tasksOnHost);
       return _FakeClaude().channel;
     },
   );
 }
+
+/// A channel that says one thing and is then done.
+CommandChannel _says(String text) => (
+  output: Stream.value(Uint8List.fromList(utf8.encode(text))),
+  write: (Uint8List data) {},
+  close: () {},
+);
+
+/// What the session's task store holds on the host, for the next read of it.
+String tasksOnHost = '';
+
+/// [claude] for everything but a read of the task store, which is answered
+/// from [tasksOnHost] as the host would.
+Future<CommandChannel> Function(String) _routed(_FakeClaude claude) =>
+    (command) async =>
+        command.contains('/tasks') ? _says(tasksOnHost) : claude.channel;
 
 const _live = ClaudeAgent(
   sessionId: '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f',
@@ -361,6 +379,7 @@ class _LiveHost {
         close: () {},
       );
     }
+    if (command.contains('/tasks')) return _says(tasksOnHost);
     return _FakeClaude().channel;
   }
 
@@ -480,7 +499,7 @@ void main() {
     await sent;
 
     final claude = _FakeClaude();
-    final running = ClaudeChat(open: (_) async => claude.channel);
+    final running = ClaudeChat(open: _routed(claude));
     await running.start();
     running.dispose();
     // A line Claude was writing as the tab closed.
@@ -494,7 +513,7 @@ void main() {
 
   test('a turn becomes bubbles, and its tools fold their results in', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     expect(chat.ready, isTrue);
@@ -575,7 +594,7 @@ void main() {
 
   test('a refused tool shows as one, and the turn still ends', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     chat.send('fetch example.com');
@@ -617,7 +636,7 @@ void main() {
 
   test('a host with no Claude on it says so', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
 
@@ -635,7 +654,7 @@ void main() {
 
   test('a tool left running when Claude goes is not left spinning', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     chat.send('build it');
@@ -664,7 +683,7 @@ void main() {
 
   test('a big result is cut rather than kept whole', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     claude.event({
@@ -798,7 +817,7 @@ void main() {
   test('the sessions on the host come back however each row is shaped',
       () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     // Exactly the shapes the CLI prints: a background session at work, one
     // sitting idle, an interactive one — which carries no id and no state —
@@ -876,7 +895,7 @@ void main() {
   test('a word from the host beside the list does not cost the list',
       () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     // stderr is folded into stdout, so a warning can sit in front of it.
     claude.line('warning: something the host wanted to say');
@@ -899,7 +918,7 @@ void main() {
   test('a host whose Claude has no agents command says what it said',
       () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     claude.line("error: unknown command 'agents'");
     // The expectation is attached before the stream ends, so the throw has
@@ -925,6 +944,7 @@ void main() {
       open: (command) async {
         commands.add(command);
         if (command.contains('.jsonl')) return _noHistory();
+        if (command.contains('/tasks')) return _says(tasksOnHost);
         return _FakeClaude().channel;
       },
     );
@@ -1069,7 +1089,11 @@ void main() {
       contains('No transcript'),
     );
     expect(chat.watching, isNull);
-    expect(host.commands.single, contains('.jsonl'));
+    // Nothing but the history read and a read of the task store.
+    expect(
+      host.commands.where((c) => !c.contains('/tasks')).single,
+      contains('.jsonl'),
+    );
   });
 
   test('an id that is not a session id is never looked for on the host',
@@ -1263,7 +1287,7 @@ void main() {
   test('pinned sessions come first, in the order they were pinned, and are '
       'marked', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     Map<String, Object?> bg(String id, String name) => {
       'pid': 1,
@@ -1295,7 +1319,7 @@ void main() {
 
   test('a host with no pins file has nothing pinned', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     claude.line(jsonEncode([
       {
@@ -2558,7 +2582,7 @@ void main() {
   test('the listing puts pinned ones first, then running, then finished, '
       'each newest first', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     Map<String, Object?> row(String id, int started, {bool live = false}) => {
       if (live) 'pid': 1,
@@ -3115,7 +3139,7 @@ void main() {
       'a turn of this chat\'s own runs from the send to the result',
       () async {
         final claude = _FakeClaude();
-        final chat = ClaudeChat(open: (_) async => claude.channel);
+        final chat = ClaudeChat(open: _routed(claude));
         addTearDown(chat.dispose);
         await chat.start();
         final before = DateTime.now();
@@ -3377,6 +3401,175 @@ void main() {
       host.adds(result('x', 'unrelated'));
     });
 
+    // One task as the CLI's store holds it, a file of JSON.
+    String stored(int n, String subject, String status, {String? form}) =>
+        jsonEncode({
+          'id': '$n',
+          'subject': subject,
+          'description': 'd',
+          'activeForm': form ?? subject,
+          'status': status,
+          'blocks': <String>[],
+          'blockedBy': <String>[],
+        });
+
+    test('tasks made before the part of the transcript read are all there, '
+        'from the session\'s own store', () async {
+      tasksOnHost = [
+        stored(1, 'Early one', 'completed'),
+        stored(2, 'Early two', 'completed'),
+        stored(3, 'Early three', 'in_progress', form: 'Doing early three'),
+        stored(4, 'Early four', 'pending'),
+        stored(5, 'Recent', 'pending'),
+      ].join('\n');
+      addTearDown(() => tasksOnHost = '');
+      // The transcript read holds only the newest task, and an update of one
+      // it never saw made.
+      final (chat, _) = await watch([
+        ...made(5, 'Recent'),
+        ...update(3, {'status': 'in_progress'}),
+      ]);
+      await _settle();
+      expect(labels(chat), [
+        'in_progress:Doing early three',
+        'pending:Early four',
+        'pending:Recent',
+      ]);
+      expect(chat.tasksDone, 2);
+    });
+
+    test('the header\'s counts: all of them, done, in progress and open',
+        () async {
+      tasksOnHost = [
+        stored(1, 'a', 'completed'),
+        stored(2, 'b', 'completed'),
+        stored(3, 'c', 'in_progress'),
+        stored(4, 'd', 'pending'),
+        stored(5, 'e', 'pending'),
+        stored(6, 'f', 'pending'),
+      ].join('\n');
+      addTearDown(() => tasksOnHost = '');
+      final (chat, _) = await watch();
+      await _settle();
+      expect(
+        (
+          chat.tasksTotal,
+          chat.tasksDone,
+          chat.tasksInProgress,
+          chat.tasksPending,
+        ),
+        (6, 2, 1, 3),
+      );
+    });
+
+    test('a TaskCreate or TaskUpdate result makes it read the store again',
+        () async {
+      tasksOnHost = stored(1, 'One', 'pending');
+      addTearDown(() => tasksOnHost = '');
+      final (chat, host) = await watch();
+      await _settle();
+      int reads() => host.commands.where((c) => c.contains('/tasks')).length;
+      final before = reads();
+      expect(labels(chat), ['pending:One']);
+
+      // A create arrives, and the store has a task beside it that the
+      // transcript never carried.
+      tasksOnHost = [
+        stored(1, 'One', 'pending'),
+        stored(7, 'Seven', 'pending'),
+        stored(8, 'Eight', 'pending'),
+      ].join('\n');
+      for (final line in made(7, 'Seven')) {
+        host.adds(line);
+      }
+      await _settle();
+      await _settle();
+      expect(labels(chat), [
+        'pending:One',
+        'pending:Seven',
+        'pending:Eight',
+      ]);
+
+      // The store moved on, with a task the transcript never carried.
+      tasksOnHost = [
+        stored(1, 'One', 'completed'),
+        stored(2, 'Two', 'in_progress', form: 'Doing two'),
+        stored(9, 'Nine', 'pending'),
+      ].join('\n');
+      adds(host, update(1, {'status': 'completed'}));
+      await _settle();
+      await _settle();
+      expect(reads(), greaterThan(before));
+      expect(labels(chat), ['in_progress:Doing two', 'pending:Nine']);
+      expect(chat.tasksDone, 1);
+    });
+
+    test('a store with nothing readable leaves what the transcript made',
+        () async {
+      tasksOnHost = 'no such directory\nnot json';
+      addTearDown(() => tasksOnHost = '');
+      final (chat, host) = await watch();
+      for (final line in made(1, 'From the transcript')) {
+        host.adds(line);
+      }
+      await _settle();
+      await _settle();
+      expect(labels(chat), ['pending:From the transcript']);
+    });
+
+    test('only a task as the CLI writes one is read, in the order of its '
+        'number', () {
+      final tasks = ClaudeChat.tasksFrom([
+        stored(10, 'ten', 'pending'),
+        stored(2, 'two', 'completed'),
+        jsonEncode({'id': 'x1', 'subject': 'bad id', 'status': 'pending'}),
+        jsonEncode({'id': '3', 'subject': 'bad status', 'status': 'weird'}),
+        jsonEncode({'id': '4', 'status': 'pending'}),
+        jsonEncode(['not', 'a', 'task']),
+        'not json',
+      ].join('\n'));
+      expect([for (final t in tasks) t.id], ['2', '10']);
+    });
+
+    test('the store is read through a real shell: its files by number, the '
+        'id as a value, a cap on how many, nothing run', () async {
+      final dir = Directory.systemTemp.createTempSync('sshbox-tasks-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const id = "it's \$(touch pwned-sub) `touch pwned-tick`";
+      final tasks = Directory('${dir.path}/tasks/$id')
+        ..createSync(recursive: true);
+      for (var n = 1; n <= ClaudeChat.taskFiles + 20; n++) {
+        File('${tasks.path}/$n.json')
+            .writeAsStringSync('{\n  "id": "$n",\n  "subject": "t$n",\n'
+                '  "status": "pending"\n}\n');
+      }
+      // Not a task's file name: never read.
+      File('${tasks.path}/notes.txt').writeAsStringSync('{"id":"999"}');
+      final run = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.tasksCommand(id)],
+        environment: {'CLAUDE_CONFIG_DIR': dir.path},
+        workingDirectory: dir.path,
+      );
+      final lines = const LineSplitter().convert('${run.stdout}');
+      expect(lines.length, ClaudeChat.taskFiles);
+      expect(
+        lines.every((line) => !line.contains('999') && line.startsWith('{')),
+        isTrue,
+      );
+      expect(ClaudeChat.tasksFrom('${run.stdout}'), hasLength(ClaudeChat.taskFiles));
+      expect(File('${dir.path}/pwned-sub').existsSync(), isFalse);
+      expect(File('${dir.path}/pwned-tick').existsSync(), isFalse);
+      // And a session with no store says nothing, and succeeds.
+      final none = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.tasksCommand('e2e00000-0000-4000-8000-000000000000')],
+        environment: {'CLAUDE_CONFIG_DIR': dir.path},
+      );
+      expect((none.stdout as String).trim(), isEmpty);
+      expect(none.exitCode, 0);
+    });
+
     test('a task it never saw made, and a create that failed, are not '
         'invented', () async {
       final (chat, host) = await watch();
@@ -3394,7 +3587,7 @@ void main() {
       'this chat\'s own turns fill it too, and a new chat empties it',
       () async {
         final claude = _FakeClaude();
-        final chat = ClaudeChat(open: (_) async => claude.channel);
+        final chat = ClaudeChat(open: _routed(claude));
         addTearDown(chat.dispose);
         await chat.start();
         for (final line in made(1, 'Own task')) {

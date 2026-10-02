@@ -1702,6 +1702,17 @@ class _Checklist extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // As Claude Code's view heads its list: 19 tasks (11 done, 3 in
+          // progress, 5 open), the empty counts left out.
+          line(
+            '${chat.tasksTotal} ${chat.tasksTotal == 1 ? 'task' : 'tasks'} (${[
+              if (done > 0) '$done done',
+              if (chat.tasksInProgress > 0)
+                '${chat.tasksInProgress} in progress',
+              if (chat.tasksPending > 0) '${chat.tasksPending} open',
+            ].join(', ')})',
+            tone: TuiTextTone.muted,
+          ),
           for (final (i, task) in open.where(shown.contains).indexed)
             line(
               '${i == 0 ? '⎿ ' : '  '}${task.inProgress ? '■' : '□'} '
