@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'fake_drop.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
@@ -20,6 +22,7 @@ import 'package:sshbox/src/ui/settings_page.dart'
     show TerminalSettings, terminalSettings, terminalStyleOf;
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/file_editor_page.dart' show PictureView;
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart' show chatEnterSends;
 import 'package:sshbox/src/ui/terminal_schemes.dart';
@@ -337,6 +340,18 @@ Future<void> _settlePickUp(WidgetTester tester) async {
     await _frames(tester);
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
   }
+  await tester.pump();
+}
+
+/// The reader scrolling the conversation with a mouse wheel by [dy] (negative
+/// is up): the reader's own move, as against the program's jumpTo, which
+/// the chat does not take for the reader.
+Future<void> _wheel(WidgetTester tester, double dy) async {
+  final pointer = TestPointer(1, PointerDeviceKind.mouse);
+  await tester.sendEventToBinding(
+    pointer.hover(tester.getCenter(find.byType(CustomScrollView))),
+  );
+  await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
   await tester.pump();
 }
 
@@ -1014,6 +1029,85 @@ void main() {
           .where((l) => l.contains('control_response')),
       isEmpty,
     );
+  });
+
+  testWidgets('a message that was not delivered says why and can be sent '
+      'again or removed, and Retry goes through the chat\'s one way in',
+      (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    String listed(Map<String, Object?> extra) => jsonEncode([
+      {
+        'pid': 4079548,
+        'id': '81badf4a',
+        'cwd': '/srv/app',
+        'kind': 'background',
+        'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+        'name': 'the nightly build',
+        ...extra,
+      },
+    ]);
+    // At a permission prompt: nothing is typed into it.
+    final shell = _Shell()
+      ..history = _nightlyHistory
+      ..listing = listed({
+        'status': 'waiting',
+        'state': 'blocked',
+        'waitingFor': 'permission prompt',
+      });
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('the nightly build'));
+    await _settlePickUp(tester);
+
+    Future<void> sendIt(String text) async {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      for (var turn = 0; turn < 6; turn++) {
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+    }
+
+    await sendIt('run it once more');
+    expect(shell.typed, isEmpty);
+    expect(find.textContaining('waiting for permission prompt'), findsWidgets);
+    expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+    expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+
+    // Removed: the bubble goes, and nothing was sent.
+    await tester.tap(find.bySemanticsLabel('Remove'));
+    await tester.pump();
+    expect(find.text('run it once more'), findsNothing);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+
+    // Again, and now the session is waiting for a message: Retry sends it.
+    await sendIt('run it once more');
+    expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+    shell.listing = listed({'status': 'idle', 'state': 'done'});
+    await tester.tap(find.bySemanticsLabel('Retry'));
+    for (var turn = 0; turn < 12; turn++) {
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(shell.typed.single.first, 'run it once more');
+    // The session records it, as it does a message that arrived.
+    shell.adds({
+      'type': 'user',
+      'message': {'role': 'user', 'content': 'run it once more'},
+    });
+    await _settlePickUp(tester);
+    // One bubble, no longer failed: the old one went when Retry was taken.
+    expect(find.text('run it once more'), findsOneWidget);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
   });
 
   testWidgets('a question in a session being watched is shown with where to '
@@ -2049,8 +2143,7 @@ void main() {
 
     // Up at the top of what the first read brought, the offer of more.
     final at = _conversationAt(tester);
-    at.jumpTo(at.minScrollExtent);
-    await tester.pump();
+    await _wheel(tester, -1e6);
     expect(find.text('turn ${first - 1}'), findsNothing);
     final y = tester.getTopLeft(find.text('turn $first')).dy;
     final pixels = at.pixels;
@@ -2064,8 +2157,7 @@ void main() {
     expect(at.pixels, pixels);
     expect(find.text('Load earlier turns'), findsNothing);
     expect(tester.getTopLeft(find.text('turn ${first - 1}')).dy, lessThan(y));
-    at.jumpTo(at.minScrollExtent);
-    await tester.pump();
+    await _wheel(tester, -1e6);
     expect(find.text('turn 0'), findsOneWidget);
   });
 
@@ -3227,13 +3319,17 @@ void main() {
       // Between turns: nothing.
       expect(find.textContaining('Working…'), findsNothing);
 
-      // A turn typed at the terminal, 3 s before now by the host's clock.
-      final started = DateTime.now().toUtc().subtract(
-        const Duration(seconds: 3),
-      );
+      // The clock the line reads is this test's own, moved by hand, so no
+      // second of real time or of a loaded machine reaches what is asserted.
+      var now = DateTime.utc(2026, 10, 1, 12, 0, 10);
+      final real = chatNow;
+      chatNow = () => now;
+      addTearDown(() => chatNow = real);
+
+      // A turn typed at the terminal 3 s ago by the host's clock.
       shell.adds({
         'type': 'user',
-        'timestamp': started.toIso8601String(),
+        'timestamp': now.subtract(const Duration(seconds: 3)).toIso8601String(),
         'message': {'role': 'user', 'content': 'run the tests'},
       });
       shell.adds({
@@ -3253,27 +3349,29 @@ void main() {
         },
       });
       await _settlePickUp(tester);
-      // From the prompt's own time: 3 s at least, whatever the test took.
-      int seconds() => int.parse(
-        RegExp(r'^Working… \((\d+)s ').firstMatch(line(tester))!.group(1)!,
-      );
-      final first = seconds();
-      expect(first, inInclusiveRange(3, 10));
-      expect(line(tester), contains('s · ↓ 1.4k tokens) · Bash: npm test'));
+      expect(line(tester), 'Working… (3s · ↓ 1.4k tokens) · Bash: npm test');
 
-      // A second later by the device's own clock, with nothing from the host.
+      // A second later by that clock, with nothing from the host: the same
+      // line, a second on, and the host not asked again.
       final before = shell.commands.length;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 1100)),
-      );
+      now = now.add(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 1));
-      expect(seconds(), greaterThan(first));
-      // The host is asked at most every few seconds, not every tick.
+      expect(line(tester), 'Working… (4s · ↓ 1.4k tokens) · Bash: npm test');
       expect(
         shell.commands
             .skip(before)
             .where((command) => command.contains('agents --json')),
-        hasLength(lessThanOrEqualTo(1)),
+        isEmpty,
+      );
+
+      // Five seconds on, it is asked once.
+      now = now.add(const Duration(seconds: 5));
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        shell.commands
+            .skip(before)
+            .where((command) => command.contains('agents --json')),
+        hasLength(1),
       );
 
       shell.adds({
@@ -3361,6 +3459,17 @@ void main() {
       await _frames(tester);
     }
 
+    /// The reader scrolling with a mouse wheel by [dy] (negative is up): the
+    /// one input here that is the reader's and moves as little as a pixel.
+    Future<void> wheel(WidgetTester tester, double dy) async {
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        pointer.hover(tester.getCenter(find.byType(CustomScrollView))),
+      );
+      await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+      await tester.pump();
+    }
+
     testWidgets('at the end, a reply taller than a screen is followed to '
         'its own end, one after another', (tester) async {
       final shell = await watchingOnScreen(tester);
@@ -3372,6 +3481,245 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 
+    testWidgets('following keeps the end in view when the room shrinks, the '
+        'keyboard coming up', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // The keyboard: the box and the list lose 300 px, no entry is added.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(find.textContaining('LATEST'), findsNothing);
+    });
+
+    testWidgets('following keeps the end in view when the last row grows in '
+        'place, a tool row opened', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      shell
+        ..adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'msg_tool',
+            'stop_reason': 'tool_use',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_grow',
+                'name': 'Bash',
+                'input': {'command': 'echo grow'},
+              },
+            ],
+          },
+        })
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': 'toolu_grow',
+                'content': [for (var i = 0; i < 40; i++) 'out $i'].join('\n'),
+              },
+            ],
+          },
+        });
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // Opened: the row grows under a view already at the end.
+      await tester.tap(find.text('echo grow'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('a reader scrolling inside a tool row\'s block is not '
+        'scrolling the conversation: following goes on', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      shell
+        ..adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'msg_tall',
+            'stop_reason': 'tool_use',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_tall',
+                'name': 'Bash',
+                'input': {
+                  'command': [for (var i = 0; i < 80; i++) 'echo tall $i'].join('\n'),
+                },
+              },
+            ],
+          },
+        })
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'tool_result', 'tool_use_id': 'toolu_tall', 'content': 'ok'},
+            ],
+          },
+        });
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // Opened: a block taller than its cap, scrolling inside the row.
+      await tester.tap(find.textContaining('echo tall 0'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      final block = find.byType(SingleChildScrollView).first;
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(pointer.hover(tester.getCenter(block)));
+      // Down inside it, then back up: an upward move in range, in the block.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 100)));
+      await tester.pump();
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, -40)));
+      await tester.pump();
+
+      expect(find.textContaining('LATEST'), findsNothing);
+      await longReply(tester, shell, 4);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('a pixel up is enough to stop following, until the reader '
+        'is back at the end', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // One pixel up: no longer following, whatever arrives.
+      await wheel(tester, -1);
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      await longReply(tester, shell, 5);
+      expect(position.pixels, kept);
+
+      // Back at the end by hand: following again.
+      position.jumpTo(position.maxScrollExtent);
+      await tester.pump();
+      await longReply(tester, shell, 6);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('the jump button shows only away from the end, counts what '
+        'came in, and tapping it lands at the end and follows', (
+      tester,
+    ) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      // At the end: no button.
+      expect(find.textContaining('LATEST'), findsNothing);
+
+      final position = _conversationAt(tester);
+      await wheel(tester, -800);
+      expect(find.text('LATEST'), findsOneWidget);
+      await longReply(tester, shell, 4);
+      expect(find.text('LATEST · 1 NEW'), findsOneWidget);
+      // It sits over the list, clear of the box below.
+      expect(
+        tester.getRect(find.text('LATEST · 1 NEW')).bottom,
+        lessThan(tester.getRect(find.byType(TextField)).top),
+      );
+
+      await tester.tap(find.text('LATEST · 1 NEW'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(find.textContaining('LATEST'), findsNothing);
+
+      // Following from there on.
+      await longReply(tester, shell, 5);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('a run back the layout makes is not the reader scrolling up: '
+        'the view put back into range leaves it following', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position =
+          _conversationAt(tester) as ScrollPositionWithSingleContext;
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // As a keyboard going away leaves the view past its new end: out of
+      // range, and the list runs it back, upward, with no drag in it.
+      // ignore: invalid_use_of_protected_member
+      position.forcePixels(position.maxScrollExtent + 200);
+      position.goBallistic(0);
+      await _frames(tester);
+      expect(find.textContaining('LATEST'), findsNothing);
+      await longReply(tester, shell, 4);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('PageUp is the reader scrolling up, though it moves the view '
+        'by animateTo or jumpTo', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // What the key does where it reaches the list: a ScrollAction.
+      Actions.invoke(
+        tester.element(find.byType(SliverList).last),
+        const ScrollIntent(
+          direction: AxisDirection.up,
+          type: ScrollIncrementType.page,
+        ),
+      );
+      await _frames(tester);
+      expect(find.textContaining('LATEST'), findsOneWidget);
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      expect(position.pixels, kept);
+    });
+
+    testWidgets('a PageUp key press, with a reply focused, is the reader '
+        'scrolling up', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // A click into a reply puts the focus on its selectable text.
+      await tester.tapAt(tester.getCenter(find.byType(SelectionArea).last));
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.pageUp);
+      await _frames(tester);
+      expect(find.textContaining('LATEST'), findsOneWidget);
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      expect(position.pixels, kept);
+    });
+
     testWidgets('scrolled up, a long reply leaves the reader where they are',
         (tester) async {
       final shell = await watchingOnScreen(tester);
@@ -3380,8 +3728,7 @@ void main() {
       }
       final position = _conversationAt(tester);
       // Up well past where a new entry would still be followed.
-      position.jumpTo(position.maxScrollExtent - 900);
-      await tester.pump();
+      await wheel(tester, -900);
       final kept = position.pixels;
       await longReply(tester, shell, 4);
       expect(position.pixels, kept);
@@ -3822,5 +4169,471 @@ void main() {
         findsOneWidget,
       );
     });
+  });
+
+  group('pictures', () {
+    /// A real picture, one pixel, so it decodes as one.
+    final pixel = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA'
+      '60e6kgAAAABJRU5ErkJggg==',
+    );
+    late Directory dir;
+    setUp(
+      () => dir = Directory.systemTemp.createTempSync('chat-pictures-test'),
+    );
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    /// What the clipboard holds next, as MainActivity hands a picture over:
+    /// a file of the app's own, and its name. Null holds none.
+    List<String?> clipboard(WidgetTester tester) {
+      final next = <String?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('sshbox/share'),
+        (call) async {
+          if (call.method != 'clipboardImage' || next.isEmpty) return null;
+          final name = next.removeAt(0);
+          if (name == null) return null;
+          final file = File('${dir.path}/$name')..writeAsBytesSync(pixel);
+          return {'path': file.path, 'name': name};
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/share'),
+          null,
+        ),
+      );
+      return next;
+    }
+
+    /// Ctrl+V in the box, its file work let run.
+    Future<void> paste(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    Future<_Shell> continued(WidgetTester tester, {String? history}) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      if (history != null) shell.history = history;
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      return shell;
+    }
+
+    testWidgets('a picture pasted becomes a card and an [Image #N] at the '
+        'caret, and goes with the message as a picture', (tester) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.byIcon(Icons.send));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] what is it?'});
+      expect((content.last as Map)['source'], {
+        'type': 'base64',
+        'media_type': 'image/png',
+        'data': base64Encode(pixel),
+      });
+      // The card went with it, and the bubble holds the picture.
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+      expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a picture message that could not go has Retry and Remove, '
+        'and Retry sends it again with its picture, through the one way in',
+        (tester) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+      next.add('shot.png');
+      await paste(tester);
+      // The page keeps its own copy of what was pasted, in a folder of its
+      // own: that goes before Send, so the picture cannot be read.
+      final copies = [
+        for (final d in Directory.systemTemp.listSync().whereType<Directory>())
+          if (d.path.contains('chat-pictures') && d.path != dir.path)
+            for (final f in d.listSync().whereType<File>())
+              if (f.path.endsWith('shot.png')) f,
+      ]..sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
+      final file = copies.last;
+      final bytes = file.readAsBytesSync();
+      file.deleteSync();
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.byIcon(Icons.send));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      expect(shell.written, isEmpty);
+      expect(find.textContaining('a picture could not be read'), findsWidgets);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+
+      // Retry while the file is still gone: refused, said, nothing sent.
+      await tester.tap(find.bySemanticsLabel('Retry'));
+      await tester.pump();
+      expect(find.textContaining('no longer on this device'), findsOneWidget);
+      expect(shell.written, isEmpty);
+      await tester.pump(const Duration(seconds: 6));
+
+      // The file is back: Retry sends the message with its picture, once.
+      file.writeAsBytesSync(bytes);
+      await tester.runAsync(() async {
+        await tester.tap(find.bySemanticsLabel('Retry'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] what is it?'});
+      expect((content.last as Map)['source'], {
+        'type': 'base64',
+        'media_type': 'image/png',
+        'data': base64Encode(pixel),
+      });
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+      expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+Enter in the box sends the message with its pictures', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.enterText(find.byType(TextField), '[Image #1] look');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] look'});
+      expect((content.last as Map)['type'], 'image');
+      expect(box(tester), isEmpty);
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+    });
+
+    testWidgets('an [Image #N] whose number no int holds draws, and is sent, '
+        'as text', (tester) async {
+      final shell = await continued(tester);
+      await tester.enterText(
+        find.byType(TextField),
+        'see [Image #99999999999999999999]',
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(box(tester), 'see [Image #99999999999999999999]');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content, [
+        {'type': 'text', 'text': 'see [Image #99999999999999999999]'},
+      ]);
+    });
+
+    testWidgets(
+      'a picture dropped before the chat is ready becomes a card, and '
+      'Send turns on once it is',
+      (tester) async {
+        final shell = _Shell();
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        final shot = File('${dir.path}/early.png')..writeAsBytesSync(pixel);
+
+        // Not connected: nothing to send to yet, but the picture is kept.
+        await tester.runAsync(() async {
+          await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        });
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        IconButton send() => tester.widget<IconButton>(
+          find.widgetWithIcon(IconButton, Icons.send),
+        );
+        expect(send().onPressed, isNull);
+
+        await tester.runAsync(() => session.connect(secrets: _NoSecrets()));
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        expect(send().onPressed, isNotNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.linux),
+    );
+
+    testWidgets('a session that is read-only from here refuses a picture, '
+        'saying why', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      final shot = File('${dir.path}/ro.png')..writeAsBytesSync(pixel);
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      // A drop target is off there, so the refusal is the + button's route:
+      // no card either way.
+      expect(find.text('[Image #1] ro.png'), findsNothing);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.widgetWithIcon(
+                IconButton,
+                Icons.add_photo_alternate_outlined,
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('removing a card takes its token out, and deleting a token '
+        'takes its card', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.addAll(['a.png', 'b.png']);
+      await paste(tester);
+      await paste(tester);
+      expect(box(tester), '[Image #1] [Image #2] ');
+
+      await tester.tap(find.byTooltip('Remove a.png'));
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] b.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'no picture now');
+      await tester.pump();
+      expect(find.textContaining('b.png'), findsNothing);
+    });
+
+    testWidgets('a card opens its picture large, and text on the clipboard is '
+        'pasted as text', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.tap(find.bySemanticsLabel('View shot.png'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      // Its size read from the file before anything is drawn.
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(find.byType(PictureView), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      // No picture: the field's own paste, which asks for text.
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') return {'text': 'plain words'};
+        if (call.method == 'Clipboard.hasStrings') return {'value': true};
+        return null;
+      });
+      await paste(tester);
+      await tester.pump();
+      expect(box(tester), '[Image #1] plain words');
+    });
+
+    testWidgets('the selection menu offers Paste with only a picture on the '
+        'clipboard, and it takes the picture', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      tester
+          .state<EditableTextState>(
+            find.descendant(
+              of: find.byType(TextField),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .showToolbar();
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a transcript\'s picture that claims too many pixels is not '
+        'drawn in its bubble, and one that does not is, decoded small', (
+      tester,
+    ) async {
+      // 68 bytes of PNG that say they are 30000 × 30000.
+      final huge = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAdTAAAHUwCAYAAABmJ/i6AAAAC0lEQVR4nGNgQAUAABAA'
+        'ATm9j2UAAAAASUVORK5CYII=',
+      );
+      Map<String, Object?> said(String text, List<int> bytes) => {
+        'type': 'user',
+        'imagePasteIds': [1],
+        'message': {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': text},
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode(bytes)},
+            },
+          ],
+        },
+      };
+      await continued(
+        tester,
+        history: _history([
+          said('[Image #1] the bomb', huge),
+          said('[Image #1] a pixel', pixel),
+        ]),
+      );
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+
+      expect(find.text('[Image #1] the bomb'), findsOneWidget);
+      final drawn = tester
+          .widgetList<Image>(find.byType(Image))
+          .map((image) => image.image)
+          .whereType<ResizeImage>()
+          .map((resized) => (resized.imageProvider as MemoryImage).bytes)
+          .toList();
+      expect(drawn, [pixel]);
+      expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
+    });
+
+    testWidgets('a file that is not a picture is refused, saying why', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('notes.txt');
+      await paste(tester);
+      await tester.pump();
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      expect(box(tester), isEmpty);
+      // Long enough to read and act on, not the second a notice gets.
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('files dropped on a desktop chat become cards, a folder '
+        'refused', (tester) async {
+      await continued(tester);
+      final shot = File('${dir.path}/drop.png')..writeAsBytesSync(pixel);
+      final folder = Directory('${dir.path}/pics')..createSync();
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [
+          shot.path,
+          folder.path,
+        ], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] drop.png'), findsOneWidget);
+      expect(
+        find.textContaining('A folder is not a picture: pics'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 }
