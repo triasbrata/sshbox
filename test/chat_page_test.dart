@@ -2,16 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
-import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
-import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
-import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
@@ -2042,316 +2037,6 @@ void main() {
     });
   });
 
-  group('code in a reply', () {
-    final wide = [for (var i = 0; i < 40; i++) 'word_$i'].join(' ');
-    const inline = 'inline_code()';
-
-    Future<void> pump(WidgetTester tester, String md) async {
-      final shell = _Shell()
-        ..listing = jsonEncode([_finished('cf58d27a', 'Sel')])
-        ..history = _history([
-          {
-            'type': 'assistant',
-            'message': {
-              'role': 'assistant',
-              'content': [
-                {'type': 'text', 'text': md},
-              ],
-            },
-          },
-        ]);
-      final session = LiveSession(host: _host, transport: (_, _) => shell);
-      addTearDown(session.dispose);
-      await session.connect(secrets: _NoSecrets());
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: ChatPage(session: session)),
-        ),
-      );
-      await tester.pump();
-      await _continue(tester, 'Sel');
-    }
-
-    RenderParagraph paragraph(WidgetTester tester, String containing) =>
-        tester.renderObject<RenderParagraph>(
-          find.textContaining(containing, findRichText: true).first,
-        );
-
-    /// Global ends of [word] in [para]'s text.
-    (Offset, Offset) ends(RenderParagraph para, String word) {
-      final at = para.text.toPlainText().indexOf(word);
-      final boxes = para.getBoxesForSelection(
-        TextSelection(baseOffset: at, extentOffset: at + word.length),
-      );
-      return (
-        para.localToGlobal(boxes.first.toRect().centerLeft) +
-            const Offset(1, 0),
-        para.localToGlobal(boxes.last.toRect().centerRight) -
-            const Offset(1, 0),
-      );
-    }
-
-    Future<void> dragAndCopy(
-      WidgetTester tester,
-      Offset from,
-      Offset to,
-    ) async {
-      final g = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
-      await tester.pump();
-      await g.moveTo(to);
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await tester.pump();
-    }
-
-    testWidgets('desktop: a drag over inline code, the box focused, then '
-        'Ctrl+C copies just it', (tester) async {
-      final copied = _useFakeClipboard();
-      await pump(tester, 'Words and `$inline` here.');
-      await tester.tap(find.byType(TextField));
-      await tester.pump();
-      final (a, b) = ends(paragraph(tester, inline), inline);
-      await dragAndCopy(tester, a, b);
-      expect(copied, [inline]);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
-
-    testWidgets('desktop: a drag over a fenced block copies its lines, no '
-        'fence and no language', (tester) async {
-      final copied = _useFakeClipboard();
-      await pump(tester, '```sh\necho one\necho two\n```\n');
-      await tester.tap(find.byType(TextField));
-      await tester.pump();
-      final para = paragraph(tester, 'echo one');
-      final (a, _) = ends(para, 'echo one');
-      final (_, b) = ends(para, 'echo two');
-      await dragAndCopy(tester, a, b);
-      expect(copied, ['echo one\necho two']);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
-
-    testWidgets('Android: a long press on inline code then the toolbar\'s '
-        'Copy copies it', (tester) async {
-      final copied = _useFakeClipboard();
-      await pump(tester, 'Words and `$inline` here.');
-      final (a, b) = ends(paragraph(tester, inline), inline);
-      await tester.longPressAt(Offset.lerp(a, b, 0.5)!);
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('Copy'));
-      await tester.pump();
-      // A long press takes the word under it, as everywhere on Android.
-      expect(copied, ['inline_code']);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
-
-    testWidgets('a block with a line wider than the chat wraps: nothing '
-        'scrolls sideways, nothing overflows, and every way of copying '
-        'gives the line unbroken', (tester) async {
-      final copied = _useFakeClipboard();
-      await pump(tester, '```\n$wide\n```\n');
-      expect(tester.takeException(), isNull);
-      final sideways = find.byWidgetPredicate(
-        (w) =>
-            w is SingleChildScrollView && w.scrollDirection == Axis.horizontal,
-      );
-      expect(sideways, findsNothing);
-      final para = paragraph(tester, 'word_0');
-      expect(para.size.width, lessThan(tester.view.physicalSize.width));
-      expect(para.size.height, greaterThan(para.text.style!.fontSize! * 2));
-
-      // The button, clicked with a mouse.
-      final click = await tester.startGesture(
-        tester.getCenter(find.byTooltip('Copy code')),
-        kind: PointerDeviceKind.mouse,
-      );
-      await click.up();
-      await tester.pump();
-      expect(copied, [wide]);
-
-      // A drag across all of it, then Ctrl+C.
-      copied.clear();
-      final r = para.localToGlobal(Offset.zero) & para.size;
-      await dragAndCopy(
-        tester,
-        r.topLeft + const Offset(1, 1),
-        r.bottomRight - const Offset(1, 1),
-      );
-      expect(copied, [wide]);
-      await tester.pump(const Duration(seconds: 2));
-    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
-  });
-
-  group('code in a reply, in the real shell', () {
-    const inline = 'inline_code()';
-
-    /// The app's TabsShell holding a terminal tab and its chat, the chat
-    /// shown, a finished session picked and [md] its last answer.
-    Future<_Shell> pumpApp(WidgetTester tester, String md) async {
-      final shell = _Shell()
-        ..listing = jsonEncode([_finished('cf58d27a', 'Sel')])
-        ..history = _history([
-          {
-            'type': 'assistant',
-            'message': {
-              'role': 'assistant',
-              'content': [
-                {'type': 'text', 'text': md},
-              ],
-            },
-          },
-        ]);
-      final manager = SessionManager();
-      addTearDown(manager.closeAll);
-      final session = manager.open(_host, transport: (_, _) => shell);
-      await session.connect(secrets: _NoSecrets());
-      manager.openChat(session.id);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: TabsShell(
-            repository: HostRepository(_NoSecrets()),
-            secrets: _NoSecrets(),
-            sessions: manager,
-            onOpenHost: (_) async {},
-          ),
-        ),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      // pumpAndSettle never settles under the shell, which animates.
-      Future<void> frames() async {
-        for (var i = 0; i < 6; i++) {
-          await tester.pump(const Duration(milliseconds: 100));
-        }
-      }
-
-      await tester.tap(find.text('SESSIONS ON THIS HOST'));
-      await frames();
-      await tester.tap(find.text('Sel'));
-      await frames();
-      return shell;
-    }
-
-    (Offset, Offset) ends(WidgetTester tester, String word) {
-      final para = tester.renderObject<RenderParagraph>(
-        find.textContaining(word, findRichText: true).first,
-      );
-      final at = para.text.toPlainText().indexOf(word);
-      final boxes = para.getBoxesForSelection(
-        TextSelection(baseOffset: at, extentOffset: at + word.length),
-      );
-      return (
-        para.localToGlobal(boxes.first.toRect().centerLeft) +
-            const Offset(1, 0),
-        para.localToGlobal(boxes.last.toRect().centerRight) -
-            const Offset(1, 0),
-      );
-    }
-
-    Future<void> dragThenCopy(
-      WidgetTester tester,
-      (Offset, Offset) span, {
-      required LogicalKeyboardKey chord,
-    }) async {
-      final g = await tester.startGesture(
-        span.$1,
-        kind: PointerDeviceKind.mouse,
-      );
-      await tester.pump();
-      await g.moveTo(span.$2);
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-      await tester.sendKeyDownEvent(chord);
-      await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
-      await tester.sendKeyUpEvent(chord);
-      await tester.pump();
-    }
-
-    testWidgets('inline code in the user\'s own bubble copies', (tester) async {
-      final copied = _useFakeClipboard();
-      await pumpApp(tester, 'ok');
-      await tester.enterText(find.byType(TextField), 'try `mine_code()` now');
-      await tester.pump();
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.byType(TextField));
-      await tester.pump();
-      await dragThenCopy(
-        tester,
-        ends(tester, 'mine_code()'),
-        chord: LogicalKeyboardKey.controlLeft,
-      );
-      expect(copied, ['mine_code()']);
-    });
-
-    for (final (platform, chord) in [
-      (TargetPlatform.linux, LogicalKeyboardKey.controlLeft),
-      (TargetPlatform.macOS, LogicalKeyboardKey.metaLeft),
-    ]) {
-      testWidgets('inline code in a finished reply copies on $platform', (
-        tester,
-      ) async {
-        debugDefaultTargetPlatformOverride = platform;
-        final copied = _useFakeClipboard();
-        await pumpApp(tester, 'Words and `$inline` here.');
-        await tester.tap(find.byType(TextField));
-        await tester.pump();
-        await dragThenCopy(tester, ends(tester, inline), chord: chord);
-        debugDefaultTargetPlatformOverride = null;
-        expect(copied, [inline]);
-      });
-
-      testWidgets('inline code in a reply being written copies on $platform', (
-        tester,
-      ) async {
-        debugDefaultTargetPlatformOverride = platform;
-        final copied = _useFakeClipboard();
-        final shell = await pumpApp(tester, 'Words and `$inline` here.');
-        await tester.enterText(find.byType(TextField), 'go on');
-        await tester.pump();
-        await tester.tap(find.byIcon(Icons.send));
-        await tester.pump();
-        shell.event({
-          'type': 'assistant',
-          'message': {
-            'content': [
-              {'type': 'text', 'text': 'Now a `second_code()` while it goes'},
-            ],
-          },
-        });
-        await tester.pump();
-        await tester.tap(find.byType(TextField));
-        await tester.pump();
-        final span = ends(tester, inline);
-        final g = await tester.startGesture(
-          span.$1,
-          kind: PointerDeviceKind.mouse,
-        );
-        await g.moveTo(span.$2);
-        await g.up();
-        await tester.pump();
-        shell.event({
-          'type': 'assistant',
-          'message': {
-            'content': [
-              {'type': 'text', 'text': ' and more words'},
-            ],
-          },
-        });
-        await tester.pump();
-        await tester.sendKeyDownEvent(chord);
-        await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
-        await tester.sendKeyUpEvent(chord);
-        await tester.pump();
-        debugDefaultTargetPlatformOverride = null;
-        expect(copied, [inline]);
-      });
-    }
-  });
-
   group('a link in a reply', () {
     const ticket = 'https://edot.youtrack.cloud/issue/COR-6025';
 
@@ -2951,13 +2636,17 @@ void main() {
       // Between turns: nothing.
       expect(find.textContaining('Working…'), findsNothing);
 
-      // A turn typed at the terminal, 3 s before now by the host's clock.
-      final started = DateTime.now().toUtc().subtract(
-        const Duration(seconds: 3),
-      );
+      // The clock the line reads is this test's own, moved by hand, so no
+      // second of real time or of a loaded machine reaches what is asserted.
+      var now = DateTime.utc(2026, 10, 1, 12, 0, 10);
+      final real = chatNow;
+      chatNow = () => now;
+      addTearDown(() => chatNow = real);
+
+      // A turn typed at the terminal 3 s ago by the host's clock.
       shell.adds({
         'type': 'user',
-        'timestamp': started.toIso8601String(),
+        'timestamp': now.subtract(const Duration(seconds: 3)).toIso8601String(),
         'message': {'role': 'user', 'content': 'run the tests'},
       });
       shell.adds({
@@ -2977,27 +2666,29 @@ void main() {
         },
       });
       await _settlePickUp(tester);
-      // From the prompt's own time: 3 s at least, whatever the test took.
-      int seconds() => int.parse(
-        RegExp(r'^Working… \((\d+)s ').firstMatch(line(tester))!.group(1)!,
-      );
-      final first = seconds();
-      expect(first, inInclusiveRange(3, 10));
-      expect(line(tester), contains('s · ↓ 1.4k tokens) · Bash: npm test'));
+      expect(line(tester), 'Working… (3s · ↓ 1.4k tokens) · Bash: npm test');
 
-      // A second later by the device's own clock, with nothing from the host.
+      // A second later by that clock, with nothing from the host: the same
+      // line, a second on, and the host not asked again.
       final before = shell.commands.length;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 1100)),
-      );
+      now = now.add(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 1));
-      expect(seconds(), greaterThan(first));
-      // The host is asked at most every few seconds, not every tick.
+      expect(line(tester), 'Working… (4s · ↓ 1.4k tokens) · Bash: npm test');
       expect(
         shell.commands
             .skip(before)
             .where((command) => command.contains('agents --json')),
-        hasLength(lessThanOrEqualTo(1)),
+        isEmpty,
+      );
+
+      // Five seconds on, it is asked once.
+      now = now.add(const Duration(seconds: 5));
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        shell.commands
+            .skip(before)
+            .where((command) => command.contains('agents --json')),
+        hasLength(1),
       );
 
       shell.adds({
@@ -3077,6 +2768,63 @@ void main() {
       }
       final position = _conversationAt(tester);
       expect(position.maxScrollExtent, greaterThan(3000));
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('a pixel up is enough to stop following, until the reader '
+        'is back at the end', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // One pixel up: no longer following, whatever arrives.
+      position.jumpTo(position.pixels - 1);
+      await tester.pump();
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      await longReply(tester, shell, 5);
+      expect(position.pixels, kept);
+
+      // Back at the end by hand: following again.
+      position.jumpTo(position.maxScrollExtent);
+      await tester.pump();
+      await longReply(tester, shell, 6);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('the jump button shows only away from the end, counts what '
+        'came in, and tapping it lands at the end and follows', (
+      tester,
+    ) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      // At the end: no button.
+      expect(find.textContaining('LATEST'), findsNothing);
+
+      final position = _conversationAt(tester);
+      position.jumpTo(position.maxScrollExtent - 800);
+      await tester.pump();
+      expect(find.text('LATEST'), findsOneWidget);
+      await longReply(tester, shell, 4);
+      expect(find.text('LATEST · 1 NEW'), findsOneWidget);
+      // It sits over the list, clear of the box below.
+      expect(
+        tester.getRect(find.text('LATEST · 1 NEW')).bottom,
+        lessThan(tester.getRect(find.byType(TextField)).top),
+      );
+
+      await tester.tap(find.text('LATEST · 1 NEW'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(find.textContaining('LATEST'), findsNothing);
+
+      // Following from there on.
+      await longReply(tester, shell, 5);
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 

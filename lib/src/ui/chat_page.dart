@@ -182,15 +182,46 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  /// Nearer the end than this, the reader is following: a new entry scrolls
-  /// into view.
-  static const _nearEnd = 240.0;
-
-  /// Nearer the end than this, a session is left at its bottom, and is come
-  /// back to at its end, however much it wrote meanwhile. Anything further up
-  /// is a place somebody scrolled to, kept however small: a few lines up is
-  /// still well inside [_nearEnd], and was once taken for the bottom.
+  /// Nearer the end than this, the view is at its end: left at the bottom, and
+  /// following. Anything further up is a place somebody scrolled to, kept
+  /// however small.
   static const _atEnd = 2.0;
+
+  /// Whether new output keeps the view at the latest reply. On while the view
+  /// is at its end, reached by hand or by the jump button; off the moment the
+  /// reader scrolls up, even a pixel and even mid-stream, and then the view
+  /// stays where it is, whatever arrives, until they are back at the end.
+  bool _follow = true;
+
+  /// Entries that arrived below the view while it was not following, for the
+  /// jump button to say.
+  int _arrived = 0;
+
+  /// What the list says it did. Upward is the reader's: Claude's output only
+  /// ever moves the view down, and a landing on a place is [_switching]'s.
+  bool _onScrollUpdate(ScrollUpdateNotification note) {
+    if (_switching) return false;
+    final metrics = note.metrics;
+    final follow = (note.scrollDelta ?? 0) < 0
+        ? false
+        : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
+    if (follow != _follow) {
+      setState(() {
+        _follow = follow;
+        if (follow) _arrived = 0;
+      });
+    }
+    return false;
+  }
+
+  /// To the latest reply, following it from there on.
+  void _jumpToEnd() {
+    setState(() {
+      _follow = true;
+      _arrived = 0;
+    });
+    _scrollToEnd();
+  }
 
   /// Where each session was left scrolled up, by host and session: kept for
   /// as long as the app runs, so picking one again, or closing the tab and
@@ -384,52 +415,52 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  /// Keeps the newest entry in view, unless the reader has scrolled up to
-  /// look at something — then it stays where they put it.
+  /// Keeps the newest entry in view while following; otherwise leaves the view
+  /// exactly where the reader put it, and counts what came in below it.
   void _followTranscript() {
     final entries = _below;
-    if (entries == _drawn) return;
+    final before = _drawn;
+    if (entries == before) return;
     _drawn = entries;
     if (_switching) return;
-    // Whether the reader is following is decided now, before the new entry
-    // is laid out, against the end as it was: measured after, one reply
-    // taller than [_nearEnd] put the end that far off and read as the reader
-    // having scrolled up, so a long answer stopped the following. Measured
-    // from where a scroll still in flight is going, too: on a hidden tab it
-    // is paused short of the end.
-    // A list not laid out yet has no end to measure: it is measured once it
-    // is, as it always was.
-    bool near(ScrollPosition position) =>
-        position.maxScrollExtent - (_following ?? position.pixels) <= _nearEnd;
-    final before = _scroll.hasClients ? near(_scroll.position) : null;
-    if (before == false) return;
+    if (!_scroll.hasClients) {
+      // Not laid out yet, so there is no end to be at: whether it follows is
+      // where it first lands. A list opened on a long transcript lands at its
+      // top, and holds there for whatever puts it somewhere; only one that
+      // fits, or sits at its end, follows.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _switching || !_scroll.hasClients) return;
+        final position = _scroll.position;
+        final atEnd = position.maxScrollExtent - position.pixels <= _atEnd;
+        if (atEnd != _follow) setState(() => _follow = atEnd);
+        if (atEnd) _scrollToEnd();
+      });
+      return;
+    }
+    if (!_follow) {
+      if (before >= 0 && entries > before) _arrived += entries - before;
+      return;
+    }
+    _scrollToEnd();
+  }
+
+  /// To the end once the entry just added is laid out. Hidden, the tab's
+  /// tickers are off and an animation would stand still, so it goes at once,
+  /// and is at the end when shown.
+  void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scroll.hasClients) return;
-      if (before == null && !near(_scroll.position)) return;
+      if (!mounted || !_scroll.hasClients || !_follow) return;
       final end = _scroll.position.maxScrollExtent;
-      // Hidden, the tab's tickers are off and an animation would stand
-      // still: it goes to the end at once, and is there when shown.
-      if (!TickerMode.valuesOf(context).enabled) {
-        _following = null;
-        return _scroll.jumpTo(end);
-      }
-      _following = end;
+      if (!TickerMode.valuesOf(context).enabled) return _scroll.jumpTo(end);
       unawaited(
-        _scroll
-            .animateTo(
-              end,
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOut,
-            )
-            .whenComplete(() {
-              if (_following == end) _following = null;
-            }),
+        _scroll.animateTo(
+          end,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        ),
       );
     });
   }
-
-  /// Where a scroll following the transcript is going, while it goes.
-  double? _following;
 
   /// Puts a session just picked where it was left, [at] — or, left at the
   /// bottom or never seen, at its bottom.
@@ -456,6 +487,17 @@ class _ChatPageState extends State<ChatPage> {
           }
         }
         _switching = false;
+        // Left at its end it follows; left anywhere above, it holds.
+        if (_scroll.hasClients) {
+          final position = _scroll.position;
+          final atEnd = position.maxScrollExtent - position.pixels <= _atEnd;
+          if (atEnd != _follow || (atEnd && _arrived != 0)) {
+            setState(() {
+              _follow = atEnd;
+              _arrived = 0;
+            });
+          }
+        }
       })
       // The frame to look again after: a jump to where the list already is
       // asks for none.
@@ -548,6 +590,8 @@ class _ChatPageState extends State<ChatPage> {
     final sent = _chat.send(text);
     _input.clear();
     // Whatever was said, the reader wants to be at the bottom again.
+    _follow = true;
+    _arrived = 0;
     _drawn = -1;
     _followTranscript();
     // A session this chat started is not in a list read before it was.
@@ -615,14 +659,19 @@ class _ChatPageState extends State<ChatPage> {
     return Column(
       children: [
         Expanded(
-          child: entries.isEmpty
-              ? _Empty(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: entries.isEmpty
+                    ? _Empty(
                   session: widget.session,
                   // Beside a sidebar already showing them, a button to show
                   // them would do nothing.
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
-              : CustomScrollView(
+              : NotificationListener<ScrollUpdateNotification>(
+                  onNotification: _onScrollUpdate,
+                  child: CustomScrollView(
                   // A list of its own for each session picked. The rows a
                   // lazy list has built keep where they were laid out, and
                   // another session's rows, of other heights, drawn into
@@ -662,6 +711,21 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                   ],
                 ),
+                ),
+              ),
+              // Over the list's own corner, so it covers neither the working
+              // line nor the box, which sit below the list.
+              if (!_follow && entries.isNotEmpty)
+                Positioned(
+                  right: 12,
+                  bottom: 8,
+                  child: _JumpToLatest(
+                    arrived: _arrived,
+                    onPressed: _jumpToEnd,
+                  ),
+                ),
+            ],
+          ),
         ),
         if (chat.progress case final progress?)
           _Progress(chat: chat, progress: progress)
@@ -1016,7 +1080,7 @@ class _Bubble extends StatelessWidget {
 /// what was answered alike: a ```mermaid fence as a diagram, its source
 /// copyable beside it, and any other code block with its copy button.
 final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
-  'code': CodeBlockBuilder(copyable: true, wrap: true),
+  'code': CodeBlockBuilder(copyable: true),
 };
 
 /// What Claude said, as Markdown: it writes lists, headings and code.
@@ -1642,6 +1706,31 @@ class _Notice extends StatelessWidget {
   }
 }
 
+/// The button over the conversation's corner that goes to the latest reply,
+/// with how many entries came in below the view since it left the end.
+class _JumpToLatest extends StatelessWidget {
+  const _JumpToLatest({required this.arrived, required this.onPressed});
+
+  final int arrived;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    button: true,
+    label: arrived > 0
+        ? 'Jump to latest, $arrived new'
+        : 'Jump to latest',
+    excludeSemantics: true,
+    child: TuiButton(
+      label: arrived > 0 ? 'Latest · $arrived new' : 'Latest',
+      prefix: '↓',
+      variant: TuiButtonVariant.ghost,
+      onPressed: onPressed,
+    ),
+  );
+}
+
 /// The line under the chat while a turn runs, shaped on Claude Code's own:
 /// `⠋ Working… (33s · ↓ 1.4k tokens) · Bash: npm test` — or, when the session
 /// waits at its terminal, what for and where to answer it, with no spinner.
@@ -1676,7 +1765,7 @@ class _ProgressState extends State<_Progress> {
 
   void _onTick() {
     if (!mounted || !TickerMode.valuesOf(context).enabled) return;
-    final now = DateTime.now();
+    final now = chatNow();
     final looked = _looked;
     if (looked == null || now.difference(looked) >= _look) {
       _looked = now;
@@ -1705,7 +1794,7 @@ class _ProgressState extends State<_Progress> {
           : 'Waiting for $waiting on the host. Open it in a terminal with '
                 '`claude attach ${agent.id ?? ''}` to answer it.';
     } else {
-      final time = ChatProgress.elapsed(DateTime.now().difference(p.started));
+      final time = ChatProgress.elapsed(chatNow().difference(p.started));
       final tokens = p.tokens > 0
           ? ' · ↓ ${ChatProgress.count(p.tokens)} tokens'
           : '';
