@@ -1134,7 +1134,6 @@ Future<void> _grab(WidgetTester tester, String name) async {
   ]);
 }
 
-
 /// Answers the desktop's save dialog as a person would, once it is up: saves
 /// to [path], or cancels it when [path] is null. A Mac's panel saves where it
 /// opens, so [path] there only says to save. Done outside Flutter, which the
@@ -2295,11 +2294,15 @@ touch '${done.path}'
       // Marked as from the internet, as Windows reads it, so a host's .bat
       // or .exe is not run unwarned.
       if (Platform.isWindows) {
-        final zone = await Process.run('powershell', [
-          '-NoProfile',
-          '-Command',
-          r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
-        ], environment: {'JEANSH_SAVED': kept.path});
+        final zone = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-Command',
+            r'Get-Content -LiteralPath $env:JEANSH_SAVED -Stream Zone.Identifier',
+          ],
+          environment: {'JEANSH_SAVED': kept.path},
+        );
         expect(zone.stdout, contains('ZoneId=3'), reason: '${zone.stderr}');
       }
 
@@ -2332,6 +2335,113 @@ touch '${done.path}'
       _standInClaudeFor();
       await _launch(tester);
       await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // "tab di session chat ketika di click kanan ada menu untuk merge dengan tab
+  // lain padahal ini nga bisa di merge": a chat tab's chip, right-clicked,
+  // grouped with its Local shell, both shown as panes and the chat still
+  // answering.
+  _test(
+    'a chat tab groups with its shell from a right-click',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      await _launch(tester);
+      await _chatAnswered(tester);
+      final chip = find.textContaining('Claude').first;
+      await tester.tapAt(
+        tester.getCenter(chip),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the chat tab's menu to offer Group with…",
+      );
+      await tester.tap(find.text('Group with…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Local shell').last);
+      await tester.pumpAndSettle();
+      await _until(
+        tester,
+        () =>
+            find.byTooltip('Tab group').evaluate().isNotEmpty &&
+            find.byType(TerminalView).evaluate().isNotEmpty &&
+            _composer.evaluate().isNotEmpty,
+        'the chat and its shell side by side in one group',
+      );
+      // The chat is the same one, its answer still there. (A second message
+      // would go through claude attach, which the stand-in does not answer.)
+      expect(_answer, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // The same report, as the user meant it: the right-click was on a session
+  // in chat's sidebar, which is no tab and has no menu. A real right-click
+  // there opens nothing, while one on the conversation still opens the tab's.
+  _test(
+    "a real right-click on a chat session is not the tab's",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final binding = IntegrationTestWidgetsFlutterBinding.instance;
+      binding.shouldPropagateDevicePointerEvents = true;
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
+      _standInClaudeFor();
+      await _launch(tester);
+      // Two tabs, so the tab's menu has a Group with… to offer.
+      await _chatAnswered(tester);
+      // The stand-in's own session, as `claude agents` lists it: in the
+      // sidebar on a wide window, in the drawer its button opens otherwise.
+      // The list may still be loading on a wide window, whose button then
+      // reads Hide…: wait for one or the other before choosing.
+      final row = find.text('e2e');
+      final drawer = find.byTooltip('Sessions on this host');
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty || drawer.evaluate().isNotEmpty,
+        'the sessions, or the button that shows them',
+      );
+      if (row.evaluate().isEmpty) {
+        await tester.tap(drawer);
+        await tester.pumpAndSettle();
+      }
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty,
+        "the stand-in's session in the sidebar",
+      );
+
+      await _realRightClick(tester, tester.getCenter(row.first));
+      await tester.pumpAndSettle();
+      expect(find.text('Group with…'), findsNothing);
+
+      // The tab's menu is still there, from the chat's chip. (The answer's
+      // text takes a right-click for its own Copy, as on main.)
+      await _escape(tester);
+      await _realRightClick(
+        tester,
+        tester.getCenter(find.textContaining('Claude').first),
+      );
+      await _until(
+        tester,
+        () => find.text('Group with…').evaluate().isNotEmpty,
+        "the tab's menu, from the chat's chip",
+      );
+      await _escape(tester);
+      binding.shouldPropagateDevicePointerEvents = false;
       await _closeTabs(tester);
     },
   );

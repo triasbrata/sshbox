@@ -164,6 +164,36 @@ class ChatQuestion extends ChatEntry {
   final ChatAsk ask;
 }
 
+/// One line of the session's checklist, as Claude Code's own view lists it:
+/// from TaskCreate and TaskUpdate, or TodoWrite's whole list. Host text, so
+/// it is drawn and never run.
+class ChatTask {
+  ChatTask({
+    required this.id,
+    required this.subject,
+    this.activeForm,
+    this.status = 'pending',
+  });
+
+  final String id;
+  String subject;
+
+  /// What it reads as while in progress — `Fixing the bug` for `Fix the bug`.
+  String? activeForm;
+
+  /// `pending`, `in_progress` or `completed`.
+  String status;
+
+  bool get done => status == 'completed';
+  bool get inProgress => status == 'in_progress';
+
+  /// What a row says: the active form while it is being done.
+  String get label =>
+      inProgress && (activeForm?.trim().isNotEmpty ?? false)
+      ? activeForm!.trim()
+      : subject.trim();
+}
+
 /// What Claude may do on the host without being asked.
 ///
 /// Nothing here can prompt: a prompt needs an SDK host on the other end of
@@ -460,6 +490,91 @@ class ClaudeChat extends ChangeNotifier {
   /// The tool calls still waiting for their result, by `tool_use_id`. Not
   /// final, for the same reason as [_entries].
   Map<String, ChatToolRun> _running = {};
+
+  /// The session's checklist, in the order its tasks were made, by task id.
+  /// Rebuilt from the transcript, which holds every TaskCreate, TaskUpdate and
+  /// TodoWrite — measured on 2.1.286: a TaskCreate carries no id, which only
+  /// its result gives (`Task #14 created successfully…`), so the call waits in
+  /// [_parked] for it. A task made before the part of the transcript read is
+  /// not known, and a TaskUpdate naming it is dropped.
+  final Map<String, ChatTask> _tasks = {};
+
+  /// Task calls waiting for their result, by `tool_use_id`: Claude Code's own
+  /// view changes only when the tool succeeded, so nothing is applied before
+  /// its result says so.
+  final Map<String, ({String name, Map<String, dynamic> input})> _parked = {};
+
+  /// The tasks still to do or being done, for the list under the working
+  /// line, in order. Completed ones are only counted, by [tasksDone].
+  List<ChatTask> get openTasks => [
+    for (final task in _tasks.values)
+      if (!task.done) task,
+  ];
+
+  int get tasksDone => _tasks.values.where((task) => task.done).length;
+
+  void _noteTaskCall(String name, Map<String, dynamic> input, String id) {
+    if (_pastOnly || !const {'TaskCreate', 'TaskUpdate', 'TodoWrite'}.contains(name)) {
+      return;
+    }
+    _parked[id] = (name: name, input: input);
+  }
+
+  /// A tool result: the one that lets a parked task call take effect, and, for
+  /// a TaskCreate, tells it its id.
+  void _noteTaskResult(Object? toolUseId, String result, bool failed) {
+    final call = _parked.remove(toolUseId);
+    if (call == null || failed || _pastOnly) return;
+    final input = call.input;
+    String? text(String key) => input[key] is String ? input[key] as String : null;
+    switch (call.name) {
+      case 'TaskCreate':
+        final subject = text('subject');
+        final id = RegExp(r'^Task #(\d+) created').firstMatch(result)?.group(1);
+        if (subject == null || id == null) return;
+        _tasks[id] = ChatTask(
+          id: id,
+          subject: subject,
+          activeForm: text('activeForm'),
+        );
+      case 'TaskUpdate':
+        final task = _tasks[text('taskId')];
+        if (task == null) return;
+        switch (text('status')) {
+          case 'deleted':
+            _tasks.remove(task.id);
+            return;
+          case final status? when const {
+            'pending',
+            'in_progress',
+            'completed',
+          }.contains(status):
+            task.status = status;
+        }
+        task.subject = text('subject') ?? task.subject;
+        task.activeForm = text('activeForm') ?? task.activeForm;
+      case 'TodoWrite':
+        final todos = input['todos'];
+        if (todos is! List) return;
+        // The whole list every time.
+        _tasks.clear();
+        for (final (i, todo) in todos.indexed) {
+          if (todo is! Map || todo['content'] is! String) continue;
+          _tasks['todo-$i'] = ChatTask(
+            id: 'todo-$i',
+            subject: todo['content'] as String,
+            activeForm: todo['activeForm'] is String
+                ? todo['activeForm'] as String
+                : null,
+            status: const {'pending', 'in_progress', 'completed'}.contains(
+                  todo['status'],
+                )
+                ? todo['status'] as String
+                : 'pending',
+          );
+        }
+    }
+  }
 
   /// When the turn in flight began, or null between turns.
   DateTime? _turnStart;
@@ -856,6 +971,8 @@ class ClaudeChat extends ChangeNotifier {
     _orphans.clear();
     _asks.clear();
     _orphanAnswers.clear();
+    _tasks.clear();
+    _parked.clear();
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
@@ -1791,11 +1908,14 @@ class ClaudeChat extends ChangeNotifier {
             },
           );
           _entries.add(run);
+          _noteTaskCall(run.name, run.input, run.id);
           // Its result may have been read already, before this call was.
           if (_orphans.remove(run.id) case final orphan?) {
             run
               ..result = orphan.result
               ..failed = orphan.failed;
+            // Its result was read before it was: a task call takes effect now.
+            _noteTaskResult(run.id, orphan.result, orphan.failed);
           } else {
             _running[run.id] = run;
           }
@@ -1821,6 +1941,7 @@ class ClaudeChat extends ChangeNotifier {
       final id = block['tool_use_id'];
       final result = _resultText(block['content']);
       final failed = block['is_error'] == true;
+      _noteTaskResult(id, result, failed);
       if (_asks[id] case final ask?) {
         _settle(ask, structured, failed: failed);
         changed = true;
