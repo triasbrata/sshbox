@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -176,6 +177,36 @@ void main() {
           expect(mode, 384, reason: '$name is 0600');
         }
       }
+    });
+
+    test('flushes when the window is hidden straight from resumed', () async {
+      final dir = Directory.systemTemp.createTempSync('applog');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      await appLog.load(dir: dir);
+      final saved = FlutterError.onError;
+      final print = debugPrint;
+      final dispatcher = PlatformDispatcher.instance.onError;
+      addTearDown(() {
+        unwatchAppLog();
+        TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        FlutterError.onError = saved;
+        debugPrint = print;
+        PlatformDispatcher.instance.onError = dispatcher;
+      });
+      watchAppLog();
+      appLog.add('hidden-flush-marker');
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      TestWidgetsFlutterBinding.ensureInitialized()
+          .handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(
+        File('${dir.path}/applog.current').readAsStringSync(),
+        contains('hidden-flush-marker'),
+      );
     });
 
     test('nothing typed or written to a terminal reaches it', () async {
@@ -515,6 +546,7 @@ void main() {
       final saved = FlutterError.onError;
       final print = debugPrint;
       addTearDown(() {
+        unwatchAppLog();
         FlutterError.onError = saved;
         debugPrint = print;
       });

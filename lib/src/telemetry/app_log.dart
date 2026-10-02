@@ -3,7 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart' show AppLifecycleListener;
+import 'package:flutter/widgets.dart'
+    show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
 import 'package:path_provider/path_provider.dart';
 
 import 'scrub.dart';
@@ -175,10 +176,30 @@ void watchAppLog() {
     if (message != null) appLog.add('print $message');
     print(message, wrapWidth: wrapWidth);
   };
-  AppLifecycleListener(
-    onPause: () => unawaited(appLog.flush()),
-    onDetach: () => unawaited(appLog.flush()),
-  );
+  // An observer, not an AppLifecycleListener: that one asserts on a state
+  // jump such as resumed to hidden, which a real minimize on Linux makes.
+  WidgetsBinding.instance.addObserver(_observer = _FlushOnLeave());
+}
+
+_FlushOnLeave? _observer;
+
+/// Undoes [watchAppLog]'s observer and once-only guard, for a test that
+/// watches more than once. The handlers it chained the test restores itself.
+@visibleForTesting
+void unwatchAppLog() {
+  final observer = _observer;
+  if (observer != null) WidgetsBinding.instance.removeObserver(observer);
+  _observer = null;
+  _watching = false;
+}
+
+/// Flushes the log whenever the app leaves the foreground, by any route.
+/// Lives as long as the app, so it is never removed.
+class _FlushOnLeave with WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) unawaited(appLog.flush());
+  }
 }
 
 /// An error as one line: its text, then the first frames, in the same shape a
