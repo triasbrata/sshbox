@@ -78,20 +78,21 @@ env:
 - takeScreenshot: chat-follow-jump-2-held
 
 # 3. Back at the end by hand: the button goes, and the next turn is followed.
-- scrollUntilVisible:
-    element: "(?s).*Second answer 6 end.*"
-    direction: DOWN
-    timeout: 60000
-- swipe:
-    start: 50%, 50%
-    end: 50%, 20%
-    duration: 300
-- swipe:
-    start: 50%, 50%
-    end: 50%, 20%
-    duration: 300
+# The view is six answers short of the end, and Flutter's accessibility text
+# for a whole reply counts as visible however far down its end is, so no
+# element is waited for: fast flings, more than enough, are the reader's hand.
+- repeat:
+    times: 14
+    commands:
+      - swipe:
+          start: 50%, 55%
+          end: 50%, 15%
+          duration: 120
 - extendedWaitUntil:
     notVisible: "(?s).*Jump to latest.*"
+    timeout: 8000
+- extendedWaitUntil:
+    visible: "(?s).*Second answer 6 end.*"
     timeout: 5000
 - tapOn: "Message “E2E live session”…"
 - inputText: "long3: go"
