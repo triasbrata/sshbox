@@ -724,6 +724,13 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
     final focused = FocusManager.instance.primaryFocus?.context;
+    // A question Claude asked is where the user is: its options, buttons and
+    // field of their own keep every key, characters included, which would
+    // otherwise be typed into the box behind it.
+    if (focused != null &&
+        focused.findAncestorWidgetOfExactType<ChatAskCard>() != null) {
+      return false;
+    }
     return focused == null ||
         (focused.widget is! EditableText &&
             focused.findAncestorWidgetOfExactType<EditableText>() == null);

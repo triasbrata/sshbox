@@ -1143,6 +1143,196 @@ void main() {
     expect(find.bySemanticsLabel('Retry'), findsNothing);
   });
 
+  // #171 hands the keys typed anywhere on the chat to the box; a question
+  // Claude asked is where the user is, and keeps all of them.
+  group('a question card under the chat\'s key capture', () {
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+
+    Future<_Shell> asked(WidgetTester tester) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      shell.event({
+        'type': 'assistant',
+        'message': {
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_ask',
+              'name': 'AskUserQuestion',
+              'input': input,
+            },
+          ],
+        },
+      });
+      shell.event({
+        'type': 'control_request',
+        'request_id': 'req-1',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'AskUserQuestion',
+          'input': input,
+          'tool_use_id': 'toolu_ask',
+        },
+      });
+      await tester.pump();
+      await tester.pump();
+      return shell;
+    }
+
+    /// Focus on the control that holds [inside], as Tab would leave it.
+    Future<void> focusOn(WidgetTester tester, Finder inside) async {
+      Focus.of(tester.element(inside)).requestFocus();
+      await tester.pump();
+    }
+
+    /// What is inside the card's button called [label]: the text it draws,
+    /// under the button's own focus.
+    Finder insideButton(String label) => find
+        .descendant(
+          of: find.ancestor(
+            of: find.text(label.toUpperCase()),
+            matching: find.byType(FocusableActionDetector),
+          ),
+          matching: find.text(label.toUpperCase()),
+        )
+        .first;
+
+    String composer(WidgetTester tester) => tester
+        .widget<TextField>(find.byType(TextField).last)
+        .controller!
+        .text;
+
+    Map<String, dynamic>? reply(_Shell shell) {
+      for (final line in shell.written) {
+        final m = jsonDecode(line.trim()) as Map<String, dynamic>;
+        if (m['type'] == 'control_response') return m;
+      }
+      return null;
+    }
+
+    testWidgets('an option row keeps Space and Enter: they choose it, and '
+        'no key lands in the composer', (tester) async {
+      await asked(tester);
+      await focusOn(tester, find.byType(TuiCheckbox).last);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      // Chosen: Send answers is on now.
+      expect(find.bySemanticsLabel('Send answers'), findsOneWidget);
+      await focusOn(tester, find.byType(TuiCheckbox).first);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(composer(tester), isEmpty);
+      // Red now, by Enter, and not Blue by Space: one answer.
+      await tester.tap(find.bySemanticsLabel('Send answers'));
+      await tester.pump();
+    });
+
+    testWidgets('Send answers works by keyboard, and sends the choice made '
+        'by keyboard', (tester) async {
+      final shell = await asked(tester);
+      await focusOn(tester, find.byType(TuiCheckbox).last);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      await focusOn(tester, insideButton('Send answers'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      final decision = (reply(shell)!['response'] as Map)['response'] as Map;
+      expect(decision['behavior'], 'allow');
+      expect((decision['updatedInput'] as Map)['answers'], {
+        'Which colour?': 'Blue',
+      });
+      expect(composer(tester), isEmpty);
+    });
+
+    testWidgets('Dismiss works by keyboard', (tester) async {
+      final shell = await asked(tester);
+      await focusOn(tester, insideButton('Dismiss'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+
+      final decision = (reply(shell)!['response'] as Map)['response'] as Map;
+      expect(decision['behavior'], 'deny');
+      expect(composer(tester), isEmpty);
+    });
+
+    testWidgets('the Other field keeps every key, characters and Backspace '
+        'among them', (tester) async {
+      await asked(tester);
+      // The card's field is the first, the composer's the last.
+      final other = find.byType(TextField).first;
+      await tester.tap(other);
+      await tester.pump();
+      await tester.enterText(other, 'teal');
+      await tester.pump();
+      for (final key in [
+        LogicalKeyboardKey.keyH,
+        LogicalKeyboardKey.backspace,
+        LogicalKeyboardKey.space,
+        LogicalKeyboardKey.arrowLeft,
+        LogicalKeyboardKey.delete,
+      ]) {
+        await tester.sendKeyEvent(key);
+        await tester.pump();
+      }
+      expect(composer(tester), isEmpty);
+      // The field acted on its own keys — Backspace and Delete edited it —
+      // and the composer behind it heard none of them.
+      expect(tester.widget<TextField>(other).controller!.text, 'te');
+    });
+
+    testWidgets('a character typed with focus on the card never leaks into '
+        'the composer', (tester) async {
+      await asked(tester);
+      await focusOn(tester, find.byType(TuiCheckbox).first);
+      for (final key in [
+        LogicalKeyboardKey.keyH,
+        LogicalKeyboardKey.keyI,
+        LogicalKeyboardKey.digit1,
+      ]) {
+        await tester.sendKeyEvent(key);
+        await tester.pump();
+      }
+      await focusOn(tester, insideButton('Dismiss'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.pump();
+      expect(composer(tester), isEmpty);
+    });
+
+    testWidgets('and off the card the same key is still the box\'s', (
+      tester,
+    ) async {
+      await asked(tester);
+      await focusOn(
+        tester,
+        find.byIcon(Icons.view_sidebar_outlined),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
+      await tester.pump();
+      expect(composer(tester), 'h');
+    });
+  });
+
   testWidgets('a question in a session being watched is shown with where to '
       'answer it, and nothing is sent', (tester) async {
     const input = {
