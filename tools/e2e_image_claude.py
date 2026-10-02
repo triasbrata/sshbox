@@ -25,6 +25,7 @@ import glob
 import json
 import os
 import select
+import signal
 import struct
 import sys
 import termios
@@ -199,6 +200,7 @@ def tui(args):
     def draw():
         write('\r\x1b[K❯ ' + buf)
 
+    signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
     old = termios.tcgetattr(0)
     tty.setraw(0)
     decoder = codecs.getincrementaldecoder('utf-8')('replace')
@@ -272,7 +274,10 @@ def tui(args):
                 log('text', v=typed)
             draw()
     finally:
-        termios.tcsetattr(0, termios.TCSADRAIN, old)
+        try:
+            termios.tcsetattr(0, termios.TCSADRAIN, old)
+        except termios.error:
+            pass  # The terminal went with the hang-up.
         if state:
             try:
                 os.remove(state)
