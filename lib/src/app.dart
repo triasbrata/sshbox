@@ -96,7 +96,7 @@ class _SshboxAppState extends State<SshboxApp> {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
     }
     if (defaultTargetPlatform != TargetPlatform.iOS) {
-      FocusManager.instance.addEarlyKeyEventHandler(_zoomKeys.handle);
+      // MUTATION: the zoom chords are not handled
     }
     if (isDesktop) {
       _menuChannel.setMethodCallHandler((call) async {
