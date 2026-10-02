@@ -1,6 +1,7 @@
 # Copy code on a chat tool row's blocks (#163): an opened Bash row has two,
 # its command's and its result's, and each puts exactly its block's text on
-# the clipboard, with a "Copied code block" toast.
+# the clipboard. Its "Copied code block" toast lasts the app's 1 s, gone
+# before Maestro looks on CI's emulator, so what was copied is the proof.
 #
 # The session is a stand-in's, from tools/e2e_android.sh's chat_stand_in:
 # "E2E tool rows" ran `echo hi`, which answered `hi from e2e`. What a button
@@ -57,9 +58,6 @@ env:
           text: "Copy code"
           index: 0
       - extendedWaitUntil:
-          visible: "(?s).*Copied code block.*"
-          timeout: 5000
-      - extendedWaitUntil:
           visible: "Ask Claude…"
           timeout: 20000
       - longPressOn: "Ask Claude…"
@@ -73,9 +71,6 @@ env:
       - tapOn:
           text: "Copy code"
           index: 1
-      - extendedWaitUntil:
-          visible: "(?s).*Copied code block.*"
-          timeout: 5000
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"
 
@@ -91,13 +86,10 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E code reply.*"
       - extendedWaitUntil:
-          visible: "e2eword"
+          visible: "(?s).*e2eword.*"
           timeout: 20000
       - takeScreenshot: chat-code-copy-reply
       - tapOn: "Copy code"
-      - extendedWaitUntil:
-          visible: "(?s).*Copied code block.*"
-          timeout: 5000
       - extendedWaitUntil:
           visible: "Ask Claude…"
           timeout: 20000
@@ -111,7 +103,7 @@ env:
       true: ${STEP == 'select'}
     commands:
       - eraseText: 40
-      - longPressOn: "e2eword"
+      - longPressOn: "(?s).*e2eword.*"
       - tapOn: "Copy"
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"

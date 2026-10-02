@@ -222,7 +222,11 @@ chat_code_copy() {
   flow chat_code_copy -e STEP=select || status=1
   got=$(code_box)
   echo "a long press and Copy pasted: '$got'"
-  [ "$got" = 'e2eword' ] || { echo "::error::a long press copied '$got'"; status=1; }
+  # A word of the reply, whichever the press landed on.
+  case " e2eword printf e2e-reply " in
+    *" $got "*) [ -n "$got" ] ;;
+    *) false ;;
+  esac || { echo "::error::a long press copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=done || status=1
   adb shell settings put global animator_duration_scale 0
   return "$status"
