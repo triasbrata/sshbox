@@ -3600,6 +3600,27 @@ void main() {
       expect(labels(chat), ['pending:From the transcript']);
     });
 
+    test('an id too long to be a number is left out, and the others load, '
+        'with controls cleaned from what is drawn', () {
+      final tasks = ClaudeChat.tasksFrom([
+        jsonEncode({
+          'id': '99999999999999999999',
+          'subject': 'huge',
+          'status': 'pending',
+        }),
+        jsonEncode({
+          'id': '1',
+          'subject': 'esc\u001b[31mred\u009b and \u0007bell',
+          'activeForm': 'doing\u001b[0m it',
+          'status': 'pending',
+        }),
+        stored(2, 'two', 'pending'),
+      ].join('\n'));
+      expect([for (final t in tasks) t.id], ['1', '2']);
+      expect(tasks.first.subject, 'esc[31mred and bell');
+      expect(tasks.first.activeForm, 'doing[0m it');
+    });
+
     test('only a task as the CLI writes one is read, in the order of its '
         'number', () {
       final tasks = ClaudeChat.tasksFrom([
