@@ -596,17 +596,21 @@ class ClaudeChat extends ChangeNotifier {
       final subject = json['subject'];
       final status = json['status'];
       if (id is! String ||
-          !RegExp(r'^\d+$').hasMatch(id) ||
+          // Digits, and few enough to be a number: the sort parses it.
+          !RegExp(r'^\d{1,9}$').hasMatch(id) ||
           subject is! String ||
           !const {'pending', 'in_progress', 'completed'}.contains(status)) {
         continue;
       }
+      // Host text: no control or escape reaches the screen, as in a message.
+      String clean(String text) =>
+          text.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]'), '').trim();
       tasks.add(
         ChatTask(
           id: id,
-          subject: subject,
+          subject: clean(subject),
           activeForm: json['activeForm'] is String
-              ? json['activeForm'] as String
+              ? clean(json['activeForm'] as String)
               : null,
           status: status as String,
         ),
