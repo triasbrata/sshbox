@@ -61,7 +61,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// Draws what is typed as Markdown; its colours are set from the theme
   /// each time the box is built.
   final _input = MarkdownEditingController(
@@ -299,6 +299,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.session.addListener(_onChanged);
     _chat.addListener(_onChanged);
     _scroll.addListener(_onScrolled);
@@ -309,6 +310,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     for (final level in _subs) {
       level.chat.dispose();
     }
@@ -551,7 +553,22 @@ class _ChatPageState extends State<ChatPage> {
       });
     }
     _shown = shown;
+    _reportSeen();
   }
+
+  bool _appFront = true;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appFront = state == AppLifecycleState.resumed;
+    if (mounted) _reportSeen();
+  }
+
+  /// Tells the chat whether anyone can see it — its tab in front and the app
+  /// too — which it asks before asking the host anything on its own.
+  void _reportSeen() => _chat.setSeen(
+    _appFront && TickerMode.valuesOf(context).enabled && Visibility.of(context),
+  );
 
   /// Enter in the box: ⌘+Enter on Apple's keyboards, Ctrl+Enter on the
   /// rest, sends; a plain Enter is a new line, or sends where Settings says

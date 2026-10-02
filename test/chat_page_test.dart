@@ -6457,6 +6457,45 @@ void main() {
       expect(reads(shell), greaterThan(asked + 1));
     });
 
+    testWidgets('a retry for a sub-agent with no files yet waits while the '
+        'tab is hidden, and asks when it is shown', (tester) async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 500);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      final shell = await watching(
+        tester,
+        wrap: (page) => ValueListenableBuilder<bool>(
+          valueListenable: shown,
+          builder: (context, on, _) => TickerMode(enabled: on, child: page),
+        ),
+      );
+      int lists() =>
+          shell.commands.where((c) => c.contains('ls "\$dir"')).length;
+      // A call whose sub-agent the host does not list, so it is retried.
+      shell.adds(agentCall('toolu_ghost', 'ghost'));
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      shown.value = false;
+      await tester.pump();
+      final before = lists();
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(lists(), before);
+      shown.value = true;
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      expect(lists(), before + 1);
+      // Out the rest of the retries, so no timer outlives the test.
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+    });
+
     testWidgets('an app that is not in front asks the host for nothing', (
       tester,
     ) async {
