@@ -5934,6 +5934,56 @@ void main() {
       await tester.pumpAndSettle(const Duration(seconds: 6));
     }, variant: linux);
 
+    testWidgets('a late upload goes in after a selection, never over it, '
+        'and a quote in a spaced path is escaped', (tester) async {
+      final shell = await chatOn(tester, _host);
+      final file = File('${dir.path}/my "q" notes.txt')..writeAsStringSync('x');
+      await tester.enterText(find.byType(TextField), 'keep this sentence');
+      await tester.pump();
+      final controller = tester
+          .widget<TextField>(find.byType(TextField))
+          .controller!;
+      controller.selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 18,
+      );
+      await drop(tester, [file.path]);
+      expect(shell.uploaded, ['my "q" notes.txt']);
+      expect(box(tester), r'keep this sentence "/tmp/my \"q\" notes.txt" ');
+    }, variant: linux);
+
+    for (final (label, host) in [
+      ('a Local drop uploads', local),
+      (
+        'a WSL host uploads',
+        const HostProfile(
+          id: 'wsl:Ubuntu',
+          label: 'WSL',
+          host: 'wsl',
+          username: 'me',
+        ),
+      ),
+    ]) {
+      testWidgets('on Windows $label', (tester) async {
+        final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+        final shell = await chatOn(tester, host);
+        await drop(tester, [file.path]);
+        expect(shell.uploaded, ['notes.txt']);
+        expect(box(tester), '/tmp/notes.txt ');
+      }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+    }
+
+    testWidgets('C1 and bidi controls in a name are refused', (tester) async {
+      final shell = await chatOn(tester, local);
+      final spoof = File('${dir.path}/a\u202egpj.txt')..writeAsStringSync('x');
+      final c1 = File('${dir.path}/a\u0085b.txt')..writeAsStringSync('x');
+      await drop(tester, [spoof.path, c1.path]);
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('holds a control character'), findsNWidgets(2));
+      expect(shell.uploaded, isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: linux);
+
     testWidgets('a name holding a control character is refused, and a '
         'picture is still a card', (tester) async {
       final shell = await chatOn(tester, local);
