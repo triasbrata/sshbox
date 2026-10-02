@@ -4548,9 +4548,11 @@ touch '${done.path}'
       final reply =
           'Echo from the stand-in.\n\nUse `inline_code()` here.\n\n'
           '```sh\n$words\n```\n\n'
+          'Before the table.\n\n'
           '| Name | Note |\n| --- | --- |\n'
           '| alpha | first `cell_code()` here |\n'
-          '| beta | second row words |\n';
+          '| beta | second row words |\n\n'
+          'After the table.\n';
       final answer = File('$home/.claude/e2e-answer.json')
         ..createSync(recursive: true)
         ..writeAsStringSync(
@@ -4743,6 +4745,29 @@ touch '${done.path}'
           chord,
         ]);
         await clipboardIs('alpha', '7. a double-click in a table cell');
+
+        // 8. A real drag from the paragraph before the table, across it, to
+        // the paragraph after: the blocks come apart by a newline and a
+        // row's cells by a tab.
+        await setClipboard('SENTINEL');
+        final (i, _) = ends('Before the table.');
+        final (_, j) = ends('After the table.');
+        await _osMouse(tester, [
+          'move ${xy(i)}',
+          'sleep 200',
+          'down',
+          'move ${xy(Offset.lerp(i, j, 0.5)!)}',
+          'move ${xy(j + const Offset(30, 0))}',
+          'sleep 200',
+          'up',
+          'sleep 300',
+          chord,
+        ]);
+        await clipboardIs(
+          'Before the table.\nName\tNote\nalpha\tfirst cell_code() here\n'
+          'beta\tsecond row words\nAfter the table.',
+          '8. a drag across a paragraph, a table and a paragraph',
+        );
       });
       await _grab(tester, 'chat-code-copy-end');
       await _closeTabs(tester);
