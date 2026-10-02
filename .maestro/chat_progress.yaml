@@ -1,0 +1,136 @@
+# #143: while a watched session's turn runs, chat shows a line under it
+# shaped on Claude Code's own: Working… (12s · ↓ 87 tokens) · Bash: … — its
+# seconds ticking on the device, the tokens and the tool from the transcript —
+# and gone once the turn ends. A turn stopped at a permission prompt says what
+# it waits for and where to answer it instead, with no Working….
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_two_way (tools/e2e_android.sh's chat_progress). A line starting slow:
+# plays a twelve-second turn: Bash called at 4 s, its result at 8 s, the
+# answer and turn_duration at 12 s. A line starting wait: stops at a
+# permission prompt, its listing row saying waiting, for twenty seconds.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "slow: run it"
+# Maestro waits for the screen to settle after a tap, and a ticking Working…
+# never does: kept short, or the slow turn is over before it is looked at.
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+
+# The line comes as the prompt lands, before anything else does.
+- extendedWaitUntil:
+    visible: "(?s).*Working… \\(\\d+s\\).*"
+    timeout: 8000
+- copyTextFrom:
+    text: "(?s).*Working… \\(.*"
+- evalScript: ${output.first = parseInt(maestro.copiedText.match(/Working… \((\d+)s/)[1])}
+
+# Bash called at 4 s: its tokens and the tool on the line.
+- extendedWaitUntil:
+    visible: "(?s).*Working… \\(\\d+s · ↓ 87 tokens\\) · Bash: sleep 2; echo done.*"
+    timeout: 10000
+- takeScreenshot: chat-progress-tool
+- copyTextFrom:
+    text: "(?s).*Working… \\(.*"
+- evalScript: ${output.later = parseInt(maestro.copiedText.match(/Working… \((\d+)s/)[1])}
+# The seconds ticked between the two looks, on the device.
+- assertTrue: ${output.later > output.first}
+
+# The turn ends: the answer is in, and the line went with it.
+- extendedWaitUntil:
+    visible: "(?i)Slow answer: done"
+    timeout: 20000
+# Gone with the turn's own end, not the 5 s look at the listing that would end
+# it later anyway: in under 3 s.
+- extendedWaitUntil:
+    notVisible: "(?s).*Working….*"
+    timeout: 3000
+- takeScreenshot: chat-progress-done
+
+# A turn stopped at a permission prompt: what for and where, no Working….
+- tapOn: "Message “E2E live session”…"
+- inputText: "wait: approve it"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*Waiting for permission prompt at its terminal\\. Answer it there\\..*"
+    timeout: 15000
+- assertNotVisible: "(?s).*Working….*"
+- takeScreenshot: chat-progress-waiting
+# Approved at the terminal twenty seconds on: done, and nothing left.
+- extendedWaitUntil:
+    visible: "(?i)Waited answer: done"
+    timeout: 40000
+- extendedWaitUntil:
+    notVisible: "(?s).*Waiting for permission prompt.*"
+    timeout: 3000
+- extendedWaitUntil:
+    notVisible: "(?s).*Working….*"
+    timeout: 3000
+
+# Hidden while Claude writes, the chat comes back still following: tabs_shell
+# turns a hidden page's TickerMode off, which pauses a scroll animating to
+# the end. The stand-in waits five seconds, then writes six long answers,
+# well over a screen, while the terminal's tab is on show.
+- tapOn: "Message “E2E live session”…"
+- inputText: "long: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- takeScreenshot: chat-progress-before-hide
+# The shell's chip is off the strip's left edge while the chat is on show on a
+# phone: dragged back into view before it is tapped.
+- swipe:
+    start: 30%, 7%
+    end: 95%, 7%
+    duration: 400
+- tapOn: "${HOST_LABEL} tailnet"
+- takeScreenshot: chat-progress-hidden
+# Fifteen seconds behind the terminal: a slow, tiny drag is the wait.
+- swipe:
+    start: 50%, 40%
+    end: 50%, 41%
+    duration: 15000
+# Back to the chat as a user would on a phone, where its chip may be off the
+# strip: the key bar's chat button, which returns to the tab already open.
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "(?s).*Long answer 6 end.*"
+    timeout: 5000
+- takeScreenshot: chat-progress-followed
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

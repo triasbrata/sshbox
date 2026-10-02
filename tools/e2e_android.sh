@@ -419,7 +419,33 @@ chat_markdown() {
   local status=0
   flow chat_markdown || status=1
   keep_shots 'chat-markdown-*.png'
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# The stand-in's pane killed, and the state file it leaves when killed rather
+# than ended: its own only, by its session id, so live_session can start again.
+end_live_session() {
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+
+# #143: the line chat shows while a watched turn runs -- Working… with its
+# seconds, tokens and tool, gone at the turn's end; what a turn stopped at a
+# permission prompt waits for; and a chat hidden while Claude writes coming
+# back still following. Against the stand-in's slow:, wait: and long: turns.
+chat_progress() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_progress || status=1
+  # Its screenshots, pass or fail, into the evidence folder (see chat_version_case).
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-progress-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
   stand_in ''
   return "$status"
 }
@@ -434,6 +460,59 @@ chat_version() {
     '(?s).*Could not tell which Claude Code this host has.*2\.1\.259.*' || status=1
   chat_version_case not-installed '' \
     '(?s).*Claude Code is not installed on this host.*' || status=1
+  return "$status"
+}
+
+# #159: the live marks in chat's sessions sidebar. One pinned background
+# session on the stand-in listing, its process a sleep of the host user's own,
+# rewritten between three flows that keep the app as it is: working, then
+# waiting for a permission prompt, then done -- marked "not opened since" until
+# its row is opened. The sidebar asks for the listing every 5 s while shown.
+STATUS_SID=e2e00008-0000-4000-8000-000000000008
+status_row() { # status state [waitingFor]
+  sudo -u "$SSH_USER" -H python3 - "$STATUS_SID" "$STATUS_PID" "$@" <<'PY'
+import json, os, sys
+sid, pid, status, state = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+row = {'id': 'e2es8', 'sessionId': sid, 'pid': pid, 'kind': 'background',
+       'name': 'E2E status session', 'cwd': os.environ['HOME'],
+       'startedAt': 1790000000200, 'status': status, 'state': state}
+if len(sys.argv) > 5:
+    row['waitingFor'] = sys.argv[5]
+json.dump([row], open(os.path.join(os.environ['HOME'], '.e2e-agents.json'), 'w'))
+PY
+}
+chat_session_status() {
+  local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H)
+  chat_stand_in
+  # Its process: something of the host user's own that lives through the run.
+  STATUS_PID=$("${as[@]}" sh -c 'sleep 900 >/dev/null 2>&1 & echo $!')
+  "${as[@]}" python3 - "$STATUS_SID" <<'PY'
+import json, os, sys
+home, sid = os.environ['HOME'], sys.argv[1]
+projects = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+os.makedirs(projects, exist_ok=True)
+with open(os.path.join(projects, sid + '.jsonl'), 'w') as f:
+    f.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'Status question'}}) + '\n')
+    f.write(json.dumps({'type': 'assistant', 'message': {'role': 'assistant',
+            'content': [{'type': 'text', 'text': 'Status answer'}]}}) + '\n')
+jobs = os.path.join(home, '.claude', 'jobs')
+os.makedirs(jobs, exist_ok=True)
+json.dump(['e2es8'], open(os.path.join(jobs, 'pins.json'), 'w'))
+PY
+  status_row busy working
+  flow chat_status_working || status=1
+  if [ "$status" -eq 0 ]; then
+    status_row waiting blocked 'permission prompt'
+    flow chat_status_waiting || status=1
+  fi
+  if [ "$status" -eq 0 ]; then
+    status_row idle done
+    flow chat_status_done || status=1
+  fi
+  keep_shots 'chat-status-*.png'
+  "${as[@]}" kill "$STATUS_PID" 2>/dev/null
+  sudo rm -f "$home/.claude/jobs/pins.json"
+  stand_in ''
   return "$status"
 }
 
@@ -556,9 +635,17 @@ echo "::endgroup::"
 echo "::group::chat_markdown (report only)"
 flow chat_markdown || echo "::warning::chat_markdown failed -- report only, not gating"
 keep_shots 'chat-markdown-*.png'
-sudo -u "$SSH_USER" -H tmux kill-session -t e2e-live 2>/dev/null
+end_live_session
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::chat_session_status (report only)"
+chat_session_status || echo "::warning::chat_session_status failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_progress (report only)"
+chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
