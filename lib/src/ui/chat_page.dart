@@ -226,7 +226,7 @@ class _ChatPageState extends State<ChatPage> {
     if (metrics.pixels - delta > metrics.maxScrollExtent + 0.5) {
       _runBack = true;
     }
-    final byReader = delta < 0 && !_pinning && !_runBack;
+    const byReader = false;
     final follow = byReader
         ? false
         : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
