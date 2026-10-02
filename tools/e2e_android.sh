@@ -213,19 +213,27 @@ code_at() {
 # What is on the clipboard, pasted into the chat's box: a tap to focus it,
 # found again once the keyboard has moved it, a long press, and Paste.
 code_paste() {
-  local at
-  at=$(code_at 'EditText') || return 1
-  [ -n "$at" ] || { echo "no chat box on screen"; return 1; }
-  adb shell input tap $at
-  sleep 1.5
-  at=$(code_at 'EditText')
-  # shellcheck disable=SC2086
-  adb shell input swipe $at $at 900
-  sleep 1.5
-  at=$(code_at 'text="Paste"|content-desc="Paste"')
-  [ -n "$at" ] || { echo "no Paste in the box's menu"; return 1; }
-  adb shell input tap $at
-  sleep 1.5
+  local at try
+  # Twice: a selection just copied out of the reply keeps its own toolbar
+  # up, and the first tap on the box only takes it down.
+  for try in 1 2; do
+    at=$(code_at 'EditText')
+    [ -n "$at" ] || { echo "no chat box on screen"; return 1; }
+    adb shell input tap $at
+    sleep 1.5
+    at=$(code_at 'EditText')
+    # shellcheck disable=SC2086
+    adb shell input swipe $at $at 900
+    sleep 1.5
+    at=$(code_at 'text="Paste"|content-desc="Paste"')
+    if [ -n "$at" ]; then
+      adb shell input tap $at
+      sleep 1.5
+      return 0
+    fi
+  done
+  echo "no Paste in the box's menu"
+  return 1
 }
 # The box's text, trimmed.
 code_box() {
