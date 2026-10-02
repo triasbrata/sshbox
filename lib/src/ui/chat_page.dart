@@ -2386,6 +2386,9 @@ class _Checklist extends StatelessWidget {
   }
 }
 
+// TODO(termul): a rich anchored popover — hover, tap to pin, tap outside to
+// close — holding any widgets; TuiTooltip takes a String only, so this builds
+// its own from OverlayPortal and TuiBox. Asked of termul in sshbox#195.
 /// "Context 45%" at the box's edge, in the warning colour from 80%, and the
 /// popup it opens: context used out of the window with a bar and the model, the
 /// plan's usage with each reset, and when it was read. Hover opens it, a tap
