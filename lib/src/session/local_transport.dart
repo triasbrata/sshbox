@@ -258,7 +258,8 @@ class LocalTransport implements SessionTransport {
     }
     // No shell: a session for tmux, whose panes come over [_LocalSession.open]
     // and which is up for as long as it is not disposed, as a connection is.
-    if (!shell) return _session(null);
+    final extra = _openEnv(environment);
+    if (!shell) return _session(null, extra);
     // This terminal shows an OSC 8 hyperlink and a Ctrl+tap opens it, which
     // Claude Code, and every program built on `supports-hyperlinks`, learns
     // from this: without it they write a link as `LABEL (URL)`. Set here
@@ -314,7 +315,7 @@ class LocalTransport implements SessionTransport {
         rows: rows,
         columns: columns,
       );
-      return _session(pty);
+      return _session(pty, extra);
     } catch (error) {
       throw SshSessionException('Cannot start $program: $error');
     }
@@ -326,39 +327,64 @@ class LocalTransport implements SessionTransport {
   /// outright will not find it. WSL and PowerShell are left as they are —
   /// the script would have to be inside the distro.
   Map<String, String> _withOpenCommand(Map<String, String> environment) {
+    final dir = _openBin();
+    if (dir == null) return environment;
+    final path = _env['PATH'];
+    return {
+      ...environment,
+      'PATH': path == null || path.isEmpty ? dir : '$dir:$path',
+    };
+  }
+
+  /// Where [installOpenCommand] put the script, or null where it is not
+  /// installed: Windows, no HOME, or a folder that cannot be written.
+  String? _openBin() {
     final home = _env['HOME'];
-    if (_windows || home == null) return environment;
+    if (_windows || home == null) return null;
     try {
       final dir = '$home/.local/state/jeansh/bin';
       installOpenCommand(dir);
-      final path = _env['PATH'];
-      return {
-        ...environment,
-        'PATH': path == null || path.isEmpty ? dir : '$dir:$path',
-      };
+      return dir;
     } on FileSystemException {
-      return environment;
+      return null;
     }
+  }
+
+  /// What this connection's tmux commands carry besides [_commandEnv]: the
+  /// secret, which tmux copies into the session's panes through its
+  /// `update-environment`. No PATH: tmux ignores a session's PATH when it
+  /// starts a pane, see the notes on `jeansh` in the feature table.
+  Map<String, String> _openEnv(Map<String, String> environment) {
+    final secret = environment[openSecretVariable];
+    return secret == null ? const {} : {openSecretVariable: secret};
   }
 
   /// A session over [pty], or with none one for tmux, taking a pasted
   /// picture either way — tmux's panes are pasted into as the shell is: on a
   /// Mac or Linux kept on this machine, on Windows put where the distro or
   /// PowerShell can open it, see [_upload].
-  _LocalSession _session(Pty? pty) {
+  _LocalSession _session(Pty? pty, Map<String, String> extra) {
+    Future<Process> process(String c) => _process(c, extra);
+    Pty terminal(String c, int cols, int rows) =>
+        _terminal(c, cols, rows, extra);
     final distro = wslDistro;
     if (!_windows) {
-      return _UnixLocalSession(pty, _process, _terminal, _env['HOME']);
+      return _UnixLocalSession(pty, process, terminal, _env['HOME']);
     }
     if (distro == null) {
-      return _WindowsLocalSession(pty, _process, _terminal, _upload);
+      return _WindowsLocalSession(pty, process, terminal, _upload);
     }
-    return _WslLocalSession(pty, _process, _terminal, _upload, distro);
+    return _WslLocalSession(pty, process, terminal, _upload, distro);
   }
 
   /// [command] on a pty of its own beside the shell, as [_commandLine] runs
   /// it and in [_process]'s environment: what `claude attach` runs in.
-  Pty _terminal(String command, int columns, int rows) {
+  Pty _terminal(
+    String command,
+    int columns,
+    int rows,
+    Map<String, String> extra,
+  ) {
     final line = _commandLine(command);
     if (line == null) {
       throw const SshSessionException(
@@ -369,7 +395,7 @@ class LocalTransport implements SessionTransport {
       line.first,
       arguments: line.sublist(1),
       workingDirectory: _windows ? null : _env['HOME'],
-      environment: _commandEnv(),
+      environment: _commandEnv(extra),
       rows: rows,
       columns: columns,
     );
@@ -377,12 +403,13 @@ class LocalTransport implements SessionTransport {
 
   /// The app's environment, but for where tmux says it is running inside one
   /// of the user's own sessions, and plus the tmux binary Settings gives.
-  Map<String, String> _commandEnv() {
+  Map<String, String> _commandEnv([Map<String, String> extra = const {}]) {
     final tmux = this.tmux;
     return {
       for (final MapEntry(:key, :value) in _env.entries)
         if (key != 'TMUX' && key != 'TMUX_PANE') key: value,
       'SSHBOX_TMUX': ?tmux,
+      ...extra,
     };
   }
 
@@ -394,7 +421,7 @@ class LocalTransport implements SessionTransport {
   /// running inside one of the user's own sessions, which would point this
   /// tmux at whichever server the app was started from, and plus the tmux
   /// binary Settings gives, for `TmuxSession`'s finder to take first.
-  Future<Process> _process(String command) {
+  Future<Process> _process(String command, Map<String, String> extra) {
     final line = _commandLine(command);
     if (line == null) {
       throw const SshSessionException(
@@ -405,7 +432,7 @@ class LocalTransport implements SessionTransport {
       line.first,
       line.sublist(1),
       workingDirectory: _windows ? null : _env['HOME'],
-      environment: _commandEnv(),
+      environment: _commandEnv(extra),
       includeParentEnvironment: false,
     );
   }

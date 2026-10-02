@@ -7,6 +7,7 @@ import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/open_command.dart';
 import 'package:sshbox/src/session/open_request.dart';
 import 'package:sshbox/src/session/tmux.dart';
+import 'package:xterm2/xterm.dart';
 
 const _path = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
 
@@ -93,4 +94,71 @@ void main() {
     },
     skip: hasTmux ? false : 'tmux is not installed here',
   );
+
+  test("on a tmux server that was already running, only the app's own session "
+      'gets the secret', () async {
+    final bin = '${dir.path}/bin';
+    installOpenCommand(bin);
+    File('${dir.path}/note.md').writeAsStringSync('hi');
+    final env = {
+      'HOME': dir.path,
+      'PATH': _path,
+      'SHELL': '/bin/sh',
+      'TMUX_TMPDIR': dir.path,
+    };
+    // The user's own session, on a server running before Jeansh comes.
+    await Process.run(
+      'tmux',
+      ['new-session', '-d', '-s', 'mine', '-x', '80', '-y', '20', 'sh'],
+      environment: env,
+      includeParentEnvironment: false,
+    );
+    final opened = <String>[];
+    final requests = OpenRequests(onOpen: opened.add, secret: 'the-secret');
+    final process = await Process.start(
+      '/bin/sh',
+      ['-c', 'exec ${TmuxSession.command('sshbox-jeansh-late')}'],
+      environment: {...env, openSecretVariable: 'the-secret'},
+      includeParentEnvironment: false,
+    );
+    unawaited(process.stdin.done.catchError((Object _) {}));
+    final tmux = TmuxSession(
+      name: 'sshbox-jeansh-late',
+      channel: (
+        output: process.stdout.map(Uint8List.fromList),
+        write: process.stdin.add,
+        close: process.kill,
+      ),
+      newTerminal: () => ClipboardTerminal(
+        onPrivateOSC: (code, args) => requests.handle(code, args),
+      ),
+      transform: (data) => data,
+      onChanged: () {},
+      onEnded: () {},
+      size: (80, 20),
+      record: false,
+    );
+    addTearDown(() async {
+      await tmux.kill();
+      tmux.dispose();
+    });
+    expect(await tmux.attached, isTrue);
+    for (var i = 0; i < 250 && tmux.panes.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    tmux.send("cd '${dir.path}' && sh bin/jeansh note.md\r");
+    for (var i = 0; i < 250 && opened.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(opened, ['${dir.resolveSymbolicLinksSync()}/note.md']);
+
+    // The user's own session never had it.
+    final shown = await Process.run(
+      'tmux',
+      ['show-environment', '-t', 'mine'],
+      environment: env,
+      includeParentEnvironment: false,
+    );
+    expect((shown.stdout as String).contains('the-secret'), isFalse);
+  }, skip: hasTmux ? false : 'tmux is not installed here');
 }
