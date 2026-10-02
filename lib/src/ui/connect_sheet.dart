@@ -163,12 +163,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   void initState() {
     super.initState();
     if (_gone) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final route = ModalRoute.of(context);
-        if (route == null || !route.isActive) return;
-        Navigator.of(context).removeRoute(route, false);
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _close());
       return;
     }
     _session.addListener(_onSessionChanged);
@@ -179,7 +174,18 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   }
 
   void _onSessionChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // Its tab closed under the sheet: nothing is left to connect.
+    if (_session.isDisposed) return _close();
+    setState(() {});
+  }
+
+  /// Closes this sheet, whatever else has opened over it since, answered no.
+  void _close() {
+    if (!mounted) return;
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isActive) return;
+    Navigator.of(context).removeRoute(route, false);
   }
 
   @override
@@ -203,6 +209,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
       pickTmux: _pick,
     );
     if (!mounted) return;
+    if (_session.isDisposed) return _close();
     final route = ModalRoute.of(context);
     if (route == null || !route.isActive || !_session.isConnected) return;
     // By route rather than a plain pop when another sheet has opened over

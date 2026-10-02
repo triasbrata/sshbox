@@ -225,6 +225,42 @@ void main() {
     expect(find.text('me@10.0.2.2:22'), findsNothing);
   });
 
+  testWidgets('a session disposed while its host key is being asked closes '
+      'the sheet, answered no', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TabsShell(
+          repository: HostRepository(_NoSecrets()),
+          secrets: _NoSecrets(),
+          sessions: manager,
+          onOpenHost: (_) async {},
+        ),
+      ),
+    );
+    final host = _Host(fingerprint: _key);
+    final session = LiveSession(
+      host: _box,
+      transport: (confirm, banner) => host
+        ..confirm = confirm
+        ..banner = banner,
+    );
+    final shown = connectInSheet(
+      tester.element(find.byType(TabsShell)),
+      session,
+      secrets: _NoSecrets(),
+      inTab: (_) {},
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Trust 10.0.2.2?'), findsOneWidget);
+
+    session.dispose();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(await shown, isFalse);
+    expect(find.text('Trust 10.0.2.2?'), findsNothing);
+  });
+
   testWidgets("a new host's key is asked about in the sheet; Trust opens its "
       'tab at the size it is shown at, and a changed key on Reconnect is '
       'asked about the same way', (tester) async {

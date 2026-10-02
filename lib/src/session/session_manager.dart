@@ -1313,6 +1313,9 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     // Flag first: teardown continues after this method returns, and anything
     // it triggers must not touch a disposed notifier.
     _disposed = true;
+    // Once, so what is showing the session — a connect sheet — learns it is
+    // gone: after this a notify is refused.
+    notifyListeners();
     // Closing the tab ends its tmux session — except where [detach] has
     // already let it go on purpose, or the session was never the app's.
     unawaited(_teardown(kill: _killsTmux));
