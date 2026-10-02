@@ -545,6 +545,18 @@ class _ChatPageState extends State<ChatPage> {
       );
       return;
     }
+    // Not while the chat has nothing to send to — Claude restarting, the
+    // session being replaced, its process gone: said, with what was typed
+    // left in the box.
+    if (_chat.unsendable case final why?) {
+      showToast(
+        context,
+        'Not sent: $why',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
     final starts = _chat.composing;
     final sent = _chat.send(text);
     _input.clear();
@@ -801,6 +813,8 @@ class _ChatPageState extends State<ChatPage> {
       child: SlashCommandMenu(
         controller: _input,
         commands: _commands,
+        // As the box is: a list over a box that cannot send picks nothing.
+        enabled: open,
         onOpen: _wantCommands,
         openState: _menuOpen,
         onRefresh: () => setState(_listCommands),

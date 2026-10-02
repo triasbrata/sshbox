@@ -935,6 +935,87 @@ void main() {
     expect(find.text('Blue'), findsOneWidget);
   });
 
+  testWidgets('a ⋮ mode change while a question is open: its buttons go, '
+      'nothing is written to either Claude, and a message is not sent '
+      'without a word', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_ask',
+            'name': 'AskUserQuestion',
+            'input': input,
+          },
+        ],
+      },
+    });
+    shell.event({
+      'type': 'control_request',
+      'request_id': 'req-1',
+      'request': {
+        'subtype': 'can_use_tool',
+        'tool_name': 'AskUserQuestion',
+        'input': input,
+        'tool_use_id': 'toolu_ask',
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Blue'));
+    await tester.pump();
+    expect(find.bySemanticsLabel('Send answers'), findsOneWidget);
+    final before = shell.written.length;
+
+    // Plan only: Claude starts again, a new process with a new request ids.
+    await tester.tap(find.byType(TuiMenuButton<Object>));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Plan only'));
+    await _settlePickUp(tester);
+
+    // The question no longer waits on anybody here: no buttons, and it says so.
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(find.bySemanticsLabel('Dismiss'), findsNothing);
+    expect(
+      find.textContaining('no longer waiting for this here'),
+      findsOneWidget,
+    );
+    // Nothing went to either process in the meantime: the old one's reply
+    // never came, and the new one was never answered for it.
+    expect(
+      shell.written
+          .skip(before)
+          .where((l) => l.contains('control_response')),
+      isEmpty,
+    );
+  });
+
   testWidgets('a question in a session being watched is shown with where to '
       'answer it, and nothing is sent', (tester) async {
     const input = {

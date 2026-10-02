@@ -24,7 +24,12 @@ class SlashCommandMenu extends StatefulWidget {
     this.onRefresh,
     this.onOpen,
     this.openState,
+    this.enabled = true,
   });
+
+  /// Whether the box under it takes input. The list is shut, and answers no
+  /// key, while it does not: what is picked from it would go nowhere.
+  final bool enabled;
 
   /// Set to whether the list is open, for the box under it to leave Enter
   /// and Tab to the list meanwhile.
@@ -84,8 +89,13 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
       old.controller.removeListener(_onText);
       widget.controller.addListener(_onText);
     }
-    // The commands may have come in, or gone: what there is to pick changed.
+    // The commands may have come in, or gone, and the box may have been shut
+    // or opened: what there is to pick changed. The overlay follows after
+    // this frame, not during it.
     _tellOpen();
+    if (old.enabled != widget.enabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showOrHide());
+    }
   }
 
   @override
@@ -120,7 +130,7 @@ class _SlashCommandMenuState extends State<SlashCommandMenu> {
     return rest.contains(RegExp(r'\s')) ? null : rest;
   }
 
-  bool get _open => _query != null && !_dismissed;
+  bool get _open => widget.enabled && _query != null && !_dismissed;
 
   /// Open with something to pick: only then does the list take Enter from
   /// the box. A list still reading, failed, or matching nothing leaves Enter

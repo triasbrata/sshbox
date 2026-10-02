@@ -695,6 +695,7 @@ class ClaudeChat extends ChangeNotifier {
         channel.close();
         return;
       }
+      _retarget();
       _channel = channel;
       _ready = true;
       _lines = utf8.decoder
@@ -719,16 +720,23 @@ class ClaudeChat extends ChangeNotifier {
   Future<void> send(String text) async {
     final message = text.trim();
     if (message.isEmpty) return;
+    final why = unsendable;
+    if (why != null) {
+      // Said where the user is looking, with what they wrote, so a message
+      // that cannot go is never lost without a word.
+      _say(ChatNotice('Not sent: $why What you wrote: “${_excerpt(message)}”',
+          failed: true));
+      return;
+    }
     final watching = _watching;
     if (watching != null) {
       _typeInto(watching, message);
       return;
     }
     if (_composing) {
-      if (!_busy) await _startInBackground(message);
+      await _startInBackground(message);
       return;
     }
-    if (!_ready || _busy) return;
     _write({
       'type': 'user',
       'message': {
@@ -743,6 +751,27 @@ class ClaudeChat extends ChangeNotifier {
     _startTurn(null);
     notifyListeners();
   }
+
+  /// Why a message cannot go anywhere now, or null when it can: what
+  /// disables the box's Send, and what [send] says when it is called anyway.
+  /// A watched session is typed into message by message, each of which says
+  /// for itself if it did not arrive.
+  String? get unsendable {
+    if (_disposed) return 'This chat is closed.';
+    if (_watching != null) return null;
+    if (_composing) return _busy ? 'A new chat is starting.' : null;
+    if (_starting) return 'Claude is starting on the host.';
+    if (!_ready) {
+      return 'Claude is not running on the host. Restart it from the menu '
+          'beside the box.';
+    }
+    if (_busy) return 'Claude is still answering.';
+    return null;
+  }
+
+  /// [text] shortened to what a notice can hold.
+  static String _excerpt(String text) =>
+      text.length > 200 ? '${text.substring(0, 200)}…' : text;
 
   /// Starts Claude again, resuming the same conversation when it got far
   /// enough to have one. What a changed permission mode needs, since the
@@ -928,6 +957,7 @@ class ClaudeChat extends ChangeNotifier {
       if (read == null) return;
       final pane = agent.interactive ? await _findPane(agent, pid) : null;
       if (_disposed) return;
+      _retarget();
       _watching = agent;
       _waitingFor = agent.waitingFor;
       _say(
@@ -965,7 +995,18 @@ class ClaudeChat extends ChangeNotifier {
   }
 
   Future<void> _reset() async {
+    // What was typed for the session being left and not recorded yet: its
+    // entry goes with the rest of the view, so it is said again, once the
+    // view is new, where the user will see it.
+    final unsent = [..._pending];
+    final leaving = _watching;
     await _stop();
+    // Those still in the view as it goes: a message the session recorded in
+    // the meantime has been replaced there by its own line, and was sent.
+    final gone = [
+      for (final said in unsent)
+        if (_entries.contains(said)) said,
+    ];
     _entries.clear();
     _running.clear();
     _orphans.clear();
@@ -985,7 +1026,23 @@ class ClaudeChat extends ChangeNotifier {
     _readOnly = null;
     _pending.clear();
     _endTurn();
+    for (final said in gone) {
+      _toldGone.add(said);
+      _say(ChatNotice(
+        leaving == null
+            ? 'Not sent: you moved to another session before it was '
+                  'delivered. What you wrote: “${_excerpt(said.text)}”'
+            : 'Not sent to “${leaving.name}”: you moved to another session '
+                  'before it was delivered. What you wrote: '
+                  '“${_excerpt(said.text)}”',
+        failed: true,
+      ));
+    }
   }
+
+  /// Messages [_reset] has already said were not sent, so [_movedOn] does
+  /// not say it twice.
+  final Set<ChatSaid> _toldGone = {};
 
   /// The tmux pane [agent], an interactive session, runs in — or null, with
   /// [_readOnly] saying why it cannot be typed into.
@@ -1171,6 +1228,7 @@ class ClaudeChat extends ChangeNotifier {
     }
     _sessionGone = false;
     _watching = null;
+    _retarget();
     // What was in flight when it stopped is history now, not a spinner.
     for (final run in _running.values) {
       run.result = '';
@@ -1222,16 +1280,56 @@ class ClaudeChat extends ChangeNotifier {
     _pending.add(said);
     _recorded[said] = Completer<void>();
     _say(said);
+    // For the session the user is looking at as they send: another picked
+    // before it goes in leaves it unsent, see [_movedOn].
+    final target = _target;
+    final replaced = _replaced.future;
     // Whatever goes wrong, the message says it was not delivered rather than
     // sitting at "sending", and the next one still gets its turn.
     _typing = _typing.then(
-      (_) => _deliver(said, agent).catchError(
+      (_) => _deliver(said, agent, target, replaced).catchError(
         (Object error) => _undelivered(said, 'Not delivered: $error'),
       ),
     );
   }
 
-  Future<void> _deliver(ChatSaid said, ClaudeAgent agent) async {
+  /// [said] was meant for [agent], and this chat has gone to another session
+  /// or process since: it is not typed anywhere. Told where the user now
+  /// looks, with what they wrote, since the view it was in may be gone.
+  ///
+  /// [typed] says it had already been typed into the session's input line,
+  /// and only the Enter that sends it was held back.
+  void _movedOn(ChatSaid said, ClaudeAgent agent, {bool typed = false}) {
+    final name = '“${agent.name}”';
+    _undelivered(
+      said,
+      typed
+          ? 'Typed into $name but not sent: this chat moved off it first. It '
+                'is in its input line at the terminal.'
+          : 'Not sent: this chat moved off $name first.',
+    );
+    if (_disposed) return;
+    // Said by [_reset] already, unless this adds what it could not know: that
+    // the text was typed into the session's input line.
+    if (_toldGone.remove(said) && !typed) return;
+    if (_entries.contains(said) && !typed) return;
+    _say(ChatNotice(
+      typed
+          ? 'Typed into $name but not sent: you moved to another session '
+                'first. It is in its input line at the terminal. What you '
+                'wrote: “${_excerpt(said.text)}”'
+          : 'Not sent to $name: you moved to another session before it was '
+                'delivered. What you wrote: “${_excerpt(said.text)}”',
+      failed: true,
+    ));
+  }
+
+  Future<void> _deliver(
+    ChatSaid said,
+    ClaudeAgent agent,
+    int target,
+    Future<void> replaced,
+  ) async {
     // What it is doing now, not what the list said when it was picked.
     final ClaudeAgent? now;
     try {
@@ -1241,10 +1339,11 @@ class ClaudeChat extends ChangeNotifier {
     } catch (error) {
       return _undelivered(said, 'Could not check on it first: $error');
     }
+    if (!_current(target)) return _movedOn(said, agent);
     if (now == null || !now.live) {
       return _undelivered(said, '“${agent.name}” is no longer running.');
     }
-    if (now.interactive) return _typeIntoPane(said, agent, now);
+    if (now.interactive) return _typeIntoPane(said, agent, now, target);
     final openTerminal = this.openTerminal;
     if (openTerminal == null) {
       return _undelivered(said, 'This connection cannot open a terminal on '
@@ -1286,15 +1385,22 @@ class ClaudeChat extends ChangeNotifier {
         );
     try {
       try {
-        await drawn.future.timeout(deliveryTimeout);
+        // Until its input line is drawn, or the chat moves on: an attach to
+        // a session nobody is looking at is not held for the timeout.
+        await Future.any([drawn.future, replaced]).timeout(deliveryTimeout);
       } catch (_) {
         return _undelivered(said, '“${agent.name}” did not come up to type '
             'into. Open it in a terminal with `claude attach $id`.');
       }
+      if (!_current(target)) return _movedOn(said, agent);
       // A moment for the rest of the screen to settle under the prompt.
       await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!_current(target)) return _movedOn(said, agent);
       terminal.write(Uint8List.fromList(utf8.encode(_keystrokes(said.text))));
       await Future<void>.delayed(const Duration(milliseconds: 500));
+      // Typed, and the chat has moved on since: not sent with Enter, which
+      // would answer in a session nobody is looking at.
+      if (!_current(target)) return _movedOn(said, agent, typed: true);
       terminal.write(Uint8List.fromList(const [13]));
       // Sent only once the session has it: recorded as its next turn, or
       // queued behind the one it is running.
@@ -1327,6 +1433,7 @@ class ClaudeChat extends ChangeNotifier {
     ChatSaid said,
     ClaudeAgent agent,
     ClaudeAgent now,
+    int target,
   ) async {
     final name = '“${agent.name}”';
     final readOnly = _readOnly;
@@ -1351,6 +1458,12 @@ class ClaudeChat extends ChangeNotifier {
         paneCommand(agent.sessionId, pid: now.pid!, typing: keys.length),
       );
       try {
+        // Opened, and the chat moved on meanwhile: nothing is written, so the
+        // host's script gets no keys and types none.
+        if (!_current(target)) {
+          _movedOn(said, agent);
+          return;
+        }
         channel.write(keys);
         answer = await utf8.decoder
             .bind(channel.output)
@@ -1407,7 +1520,7 @@ class ClaudeChat extends ChangeNotifier {
     _pending.remove(said);
     final recorded = _recorded.remove(said);
     if (recorded != null && !recorded.isCompleted) recorded.complete();
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   /// Up to this many characters are typed into the session as keys; more
@@ -1804,10 +1917,53 @@ class ClaudeChat extends ChangeNotifier {
   /// pasted is recognised as the one it sent.
   static final _pasteTag = RegExp(r'</?pasted_content id="[^"]*">');
 
-  void _write(Map<String, dynamic> message) {
+  /// THE INVARIANT, kept here and in [_current]: nothing this chat writes
+  /// reaches a process or session that has been replaced, and no write is
+  /// dropped without saying so.
+  ///
+  /// What a write is for is a number, [_target], that goes up whenever the
+  /// thing writes go to changes: the process stopped or restarted (a ⋮ mode
+  /// change, a reconnect), a new one started, another session picked or a
+  /// new chat begun, a watched session picked up or finished, the process
+  /// ending, the tab closing. A write is made for the target the user acted
+  /// on, which it captures when they act, and checks again right before it
+  /// goes out, after every wait in between: [_current] says no once the
+  /// target is another, and the write is told to the user instead
+  /// ([_movedOn], [send]).
+  ///
+  /// The writes that pass through it: a message, an answer or a dismissal
+  /// into this chat's own `claude -p` ([_write]); keys typed into a watched
+  /// session through `claude attach`, and into a tmux pane ([_deliver],
+  /// [_typeIntoPane]). A new chat's first message starts a session of its
+  /// own with `claude --bg`, which is not a write to an old one.
+  int _target = 0;
+
+  bool _current(int target) => !_disposed && target == _target;
+
+  /// Completes the next time the target changes, for a wait that has nothing
+  /// else to wake it: see [_deliver].
+  Completer<void> _replaced = Completer<void>();
+
+  /// The target is another from here on: whatever was captured before is
+  /// stale, and a question the old process asked can no longer be answered.
+  void _retarget() {
+    _target++;
+    final woken = _replaced;
+    _replaced = Completer<void>();
+    if (!woken.isCompleted) woken.complete();
+    for (final ask in _asks.values) {
+      ask.requestId = null;
+    }
+  }
+
+  /// Writes [message] to this chat's own process, for [target] — now, by
+  /// default. False, and nothing written, when that is no longer the process
+  /// there is.
+  bool _write(Map<String, dynamic> message, {int? target}) {
     final channel = _channel;
-    if (channel == null) return;
+    if (channel == null || !_current(target ?? _target)) return false;
     channel.write(Uint8List.fromList(utf8.encode('${jsonEncode(message)}\n')));
+    return true;
   }
 
   void _say(ChatEntry entry) {
@@ -1995,8 +2151,14 @@ class ClaudeChat extends ChangeNotifier {
   ///   about a tool; what Claude may do without being asked is the ⋮ menu's.
   void _onControlRequest(Map<String, dynamic> event) {
     final id = event['request_id'];
+    if (id is! String) return;
     final request = event['request'];
-    if (id is! String || request is! Map<String, dynamic>) return;
+    // The CLI waits for every request it sends: one this chat cannot read is
+    // answered with an error, not left.
+    if (request is! Map<String, dynamic>) {
+      _respondError(id, 'Not a request this chat can read.');
+      return;
+    }
     if (request['subtype'] != 'can_use_tool') {
       _respondError(id, 'Not a request this chat answers.');
       return;
@@ -2014,7 +2176,16 @@ class ClaudeChat extends ChangeNotifier {
       }
       // One that is open: a question settled already is not asked again.
       if (ask != null && ask.open) {
-        ask.requestId = id;
+        // Asked again while still open: the newer request is the one the
+        // CLI waits on, and the older is answered with an error rather than
+        // left waiting.
+        final older = ask.requestId;
+        if (older != null && older != id) {
+          _respondError(older, 'The question was asked again.');
+        }
+        ask
+          ..requestId = id
+          ..target = _target;
         notifyListeners();
         return;
       }
@@ -2036,14 +2207,18 @@ class ClaudeChat extends ChangeNotifier {
     return clean.length > 64 ? '${clean.substring(0, 64)}…' : clean;
   }
 
-  void _respond(String requestId, Map<String, Object?> response) => _write({
+  bool _respond(
+    String requestId,
+    Map<String, Object?> response, {
+    int? target,
+  }) => _write({
     'type': 'control_response',
     'response': {
       'subtype': 'success',
       'request_id': requestId,
       'response': response,
     },
-  });
+  }, target: target);
 
   void _respondError(String requestId, String message) => _write({
     'type': 'control_response',
@@ -2070,17 +2245,19 @@ class ClaudeChat extends ChangeNotifier {
   /// waits, or the process is gone — and nothing was sent.
   bool answer(ChatAsk ask, Map<String, String> answers) {
     final id = ask.requestId;
-    if (id == null || !ask.answerable || _channel == null) return false;
+    if (id == null || ask.target == null || !ask.answerable) return false;
     // An answer for each question and for nothing else.
     final texts = {for (final q in ask.questions) q.question};
     if (answers.length != texts.length || !texts.containsAll(answers.keys)) {
       return false;
     }
-    // The one `allow` this chat sends: see [_onControlRequest].
-    _respond(id, {
+    // The one `allow` this chat sends: see [_onControlRequest]. To the
+    // process that asked, and to no other.
+    final sent = _respond(id, {
       'behavior': 'allow',
       'updatedInput': {...ask.input, 'answers': answers},
-    });
+    }, target: ask.target);
+    if (!sent) return false;
     ask
       ..requestId = null
       ..answers = Map.of(answers);
@@ -2091,11 +2268,12 @@ class ClaudeChat extends ChangeNotifier {
   /// Dismisses [ask] without an answer, and tells Claude so.
   bool decline(ChatAsk ask) {
     final id = ask.requestId;
-    if (id == null || !ask.answerable || _channel == null) return false;
-    _respond(id, {
+    if (id == null || ask.target == null || !ask.answerable) return false;
+    final sent = _respond(id, {
       'behavior': 'deny',
       'message': 'The user dismissed the question without answering.',
-    });
+    }, target: ask.target);
+    if (!sent) return false;
     ask
       ..requestId = null
       ..declined = true;
@@ -2138,15 +2316,14 @@ class ClaudeChat extends ChangeNotifier {
         ..failed = true;
     }
     _running.clear();
-    for (final ask in _asks.values) {
-      ask.requestId = null;
-    }
+    _retarget();
     _endTurn();
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
     notifyListeners();
   }
 
   Future<void> _stop() async {
+    _retarget();
     await _stopFollowing();
     final lines = _lines;
     final channel = _channel;
