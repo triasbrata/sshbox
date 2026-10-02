@@ -48,10 +48,13 @@ env:
 
 # The Agent row, and the way into its sub-agent, once the host has told.
 - extendedWaitUntil:
-    visible: "(?s).*Open sub-agent: survey the repo.*"
+    visible: "(?s).*Open sub-agent\\. survey the repo.*"
     timeout: 20000
+# What it is and how it is doing: its type, running or done, and one tool call
+# (the sub-agent it started in turn), counted from its own transcript.
+- assertVisible: "(?s).*Open sub-agent\\. survey the repo\\. Explore · (running|done) · 1 tool.*"
 - takeScreenshot: chat-subagents-row
-- tapOn: "(?s).*Open sub-agent: survey the repo.*"
+- tapOn: "(?s).*Open sub-agent\\. survey the repo.*"
 
 # Its own conversation, in the chat tab under a breadcrumb, with no box to type in.
 - extendedWaitUntil:
@@ -68,7 +71,7 @@ env:
     timeout: 20000
 
 # Its own sub-agent, entered the same way, and the trail back to the session.
-- tapOn: "(?s).*Open sub-agent: dig deeper.*"
+- tapOn: "(?s).*Open sub-agent\\. dig deeper.*"
 - extendedWaitUntil:
     visible: "(?s).*Digging in the nested one.*"
     timeout: 15000
