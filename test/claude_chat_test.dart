@@ -4812,6 +4812,10 @@ void main() {
       expect(typed, isNot(contains('\r')));
       expect(typed.join(), isNot(contains('b.png')));
       expect(host.terminals.single.closed.single, isTrue);
+      // Said as what it is: part of it is in the session's input line.
+      final notice = chat.entries.whereType<ChatNotice>().last;
+      expect(notice.text, startsWith('Typed into “'));
+      expect(notice.text, contains('a [Image #1] b [Image #2] c'));
     });
 
     test('a tmux pane: moved off while its picture is uploading, no key '

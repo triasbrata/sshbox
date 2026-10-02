@@ -83,9 +83,30 @@ class _Shell
         SessionTransport,
         TerminalSession,
         ChannelCapable,
-        TerminalChannelCapable {
+        TerminalChannelCapable,
+        FileUploadCapable {
   /// What was typed into each terminal opened on the host.
   final typed = <List<String>>[];
+
+  /// Every file put on the host, by name; the first [failUploads] of them
+  /// fail, as a disk that is full does.
+  final uploaded = <String>[];
+  var failUploads = 0;
+
+  @override
+  Future<String> uploadToTmp({
+    required String localPath,
+    required String fileName,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    uploaded.add(fileName);
+    if (failUploads > 0) {
+      failUploads--;
+      throw const FileSystemException('disk full');
+    }
+    return '/tmp/${fileName.split('/').last}';
+  }
 
   @override
   Future<CommandChannel> openTerminal(
@@ -101,7 +122,19 @@ class _Shell
     scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))));
     return (
       output: screen.stream,
-      write: (Uint8List data) => keys.add(utf8.decode(data)),
+      write: (Uint8List data) {
+        final text = utf8.decode(data);
+        keys.add(text);
+        // A path pasted into `claude attach` becomes a chip, which the next
+        // part waits for.
+        if (text.startsWith('\x1b[200~/') && !screen.isClosed) {
+          Timer(const Duration(milliseconds: 20), () {
+            if (!screen.isClosed) {
+              screen.add(Uint8List.fromList(utf8.encode('\r\n❯ [Image #9] ')));
+            }
+          });
+        }
+      },
       close: () => unawaited(screen.close()),
     );
   }
@@ -4329,6 +4362,79 @@ void main() {
       });
       expect(find.bySemanticsLabel('Retry'), findsNothing);
       expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a picture message to a session being watched whose upload '
+        'failed is retried from its bubble: the upload runs again through '
+        'the page, and the message is sent once', (tester) async {
+      final next = clipboard(tester);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..failUploads = 1
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.pump();
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      Future<void> turns(int n) async {
+        for (var turn = 0; turn < n; turn++) {
+          await tester.pump(const Duration(milliseconds: 250));
+          await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        }
+      }
+
+      await turns(6);
+
+      // The first upload failed: said, with Retry, and nothing typed.
+      expect(shell.uploaded, hasLength(1));
+      expect(find.textContaining('could not be put on the host'), findsWidgets);
+      expect(shell.typed, isEmpty);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+
+      await tester.tap(find.bySemanticsLabel('Retry'));
+      await turns(24);
+
+      // Uploaded again through the page, pasted as a path, sent once.
+      expect(shell.uploaded, hasLength(2));
+      expect(shell.typed, hasLength(1));
+      expect(shell.typed.single.first, startsWith('\x1b[200~/tmp/'));
+      expect(shell.typed.single.where((k) => k == '\r'), hasLength(1));
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+
+      // The session records it, and the bubble is delivered.
+      shell.adds({
+        'type': 'user',
+        'message': {'role': 'user', 'content': '[Image #1] what is it?'},
+      });
+      await _settlePickUp(tester);
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
     });
 
     testWidgets('Ctrl+Enter in the box sends the message with its pictures', (
