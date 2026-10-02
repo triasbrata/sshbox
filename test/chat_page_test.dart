@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
@@ -2760,6 +2761,17 @@ void main() {
       await _frames(tester);
     }
 
+    /// The reader scrolling with a mouse wheel by [dy] (negative is up): the
+    /// one input here that is the reader's and moves as little as a pixel.
+    Future<void> wheel(WidgetTester tester, double dy) async {
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        pointer.hover(tester.getCenter(find.byType(CustomScrollView))),
+      );
+      await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+      await tester.pump();
+    }
+
     testWidgets('at the end, a reply taller than a screen is followed to '
         'its own end, one after another', (tester) async {
       final shell = await watchingOnScreen(tester);
@@ -2781,8 +2793,7 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
 
       // One pixel up: no longer following, whatever arrives.
-      position.jumpTo(position.pixels - 1);
-      await tester.pump();
+      await wheel(tester, -1);
       final kept = position.pixels;
       await longReply(tester, shell, 4);
       await longReply(tester, shell, 5);
@@ -2807,8 +2818,7 @@ void main() {
       expect(find.textContaining('LATEST'), findsNothing);
 
       final position = _conversationAt(tester);
-      position.jumpTo(position.maxScrollExtent - 800);
-      await tester.pump();
+      await wheel(tester, -800);
       expect(find.text('LATEST'), findsOneWidget);
       await longReply(tester, shell, 4);
       expect(find.text('LATEST · 1 NEW'), findsOneWidget);
@@ -2828,6 +2838,26 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 
+    testWidgets('a move the reader did not make is not the reader scrolling '
+        'up: the view put back from above leaves it following', (
+      tester,
+    ) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // Moved upward by the program, as a layout correction runs the view
+      // back, with no drag or wheel in it: its direction is idle.
+      position.jumpTo(position.maxScrollExtent - 300);
+      await tester.pump();
+      expect(find.textContaining('LATEST'), findsNothing);
+      await longReply(tester, shell, 4);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
     testWidgets('scrolled up, a long reply leaves the reader where they are',
         (tester) async {
       final shell = await watchingOnScreen(tester);
@@ -2836,8 +2866,7 @@ void main() {
       }
       final position = _conversationAt(tester);
       // Up well past where a new entry would still be followed.
-      position.jumpTo(position.maxScrollExtent - 900);
-      await tester.pump();
+      await wheel(tester, -900);
       final kept = position.pixels;
       await longReply(tester, shell, 4);
       expect(position.pixels, kept);

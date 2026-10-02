@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
@@ -197,12 +198,19 @@ class _ChatPageState extends State<ChatPage> {
   /// jump button to say.
   int _arrived = 0;
 
-  /// What the list says it did. Upward is the reader's: Claude's output only
-  /// ever moves the view down, and a landing on a place is [_switching]'s.
+  /// What the list says it did. Upward is the reader's only when the reader
+  /// is the one scrolling — a drag, the wheel, a fling after them, which set
+  /// the position's `userScrollDirection` — and not when the layout moved the
+  /// view: a keyboard going away or a window growing leaves the view past its
+  /// new end and the list runs back to it, upward and with no reader in it. A
+  /// landing on a place is [_switching]'s.
   bool _onScrollUpdate(ScrollUpdateNotification note) {
-    if (_switching) return false;
+    if (_switching || !_scroll.hasClients) return false;
     final metrics = note.metrics;
-    final follow = (note.scrollDelta ?? 0) < 0
+    final byReader =
+        (note.scrollDelta ?? 0) < 0 &&
+        _scroll.position.userScrollDirection == ScrollDirection.forward;
+    final follow = byReader
         ? false
         : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
     if (follow != _follow) {
