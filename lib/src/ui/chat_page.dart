@@ -240,6 +240,9 @@ class _ChatPageState extends State<ChatPage> {
   /// anyway. Our own pinning to the end is [_pinning], and a landing on a
   /// place is [_switching]'s.
   bool _onScrollUpdate(ScrollNotification note) {
+    // The conversation's own list only: a tool row's block scrolls inside it,
+    // and a reader moving that is not moving the conversation.
+    if (note.depth != 0) return false;
     if (note is ScrollEndNotification) _runBack = false;
     if (note is! ScrollUpdateNotification ||
         _switching ||
@@ -761,6 +764,7 @@ class _ChatPageState extends State<ChatPage> {
   /// appearing, a row growing in place — so while following, the end is kept
   /// in view for those too.
   bool _onScrollMetrics(ScrollMetricsNotification note) {
+    if (note.depth != 0) return false;
     final metrics = note.metrics;
     if (_follow &&
         !_switching &&

@@ -3219,6 +3219,62 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 
+    testWidgets('a reader scrolling inside a tool row\'s block is not '
+        'scrolling the conversation: following goes on', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      shell
+        ..adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'msg_tall',
+            'stop_reason': 'tool_use',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_tall',
+                'name': 'Bash',
+                'input': {
+                  'command': [for (var i = 0; i < 80; i++) 'echo tall $i'].join('\n'),
+                },
+              },
+            ],
+          },
+        })
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'tool_result', 'tool_use_id': 'toolu_tall', 'content': 'ok'},
+            ],
+          },
+        });
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // Opened: a block taller than its cap, scrolling inside the row.
+      await tester.tap(find.textContaining('echo tall 0'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      final block = find.byType(SingleChildScrollView).first;
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(pointer.hover(tester.getCenter(block)));
+      // Down inside it, then back up: an upward move in range, in the block.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 100)));
+      await tester.pump();
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, -40)));
+      await tester.pump();
+
+      expect(find.textContaining('LATEST'), findsNothing);
+      await longReply(tester, shell, 4);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
     testWidgets('a pixel up is enough to stop following, until the reader '
         'is back at the end', (tester) async {
       final shell = await watchingOnScreen(tester);
