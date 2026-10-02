@@ -177,6 +177,10 @@ sessions = {
     # #131: a mermaid fence in a reply is drawn as a diagram, not its source.
     'E2E diagram': [user('draw it'),
                     said('Diagram below\n\n```mermaid\ngraph TD\n  E2EA --> E2EB\n```\n\nDiagram above')],
+    # #163: a reply's code block, its Copy code beside it, and a word of its
+    # own a long press selects.
+    'E2E code reply': [user('show code'),
+                       said('e2eword\n\n```sh\nprintf e2e-reply\n```')],
 }
 rows = []
 for n, (name, events) in enumerate(sessions.items(), start=1):
@@ -211,6 +215,14 @@ chat_code_copy() {
   got=$(code_box)
   echo "the result's Copy code pasted: '$got'"
   [ "$got" = 'hi from e2e' ] || { echo "::error::the result's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=reply || status=1
+  got=$(code_box)
+  echo "the reply's Copy code pasted: '$got'"
+  [ "$got" = 'printf e2e-reply' ] || { echo "::error::the reply's block copied '$got'"; status=1; }
+  flow chat_code_copy -e STEP=select || status=1
+  got=$(code_box)
+  echo "a long press and Copy pasted: '$got'"
+  [ "$got" = 'e2eword' ] || { echo "::error::a long press copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=done || status=1
   adb shell settings put global animator_duration_scale 0
   return "$status"

@@ -8,7 +8,8 @@
 # the script from Android's view tree, since the row shows the same text.
 #
 # STEP comes from -e alone (see chat_images.yaml): `open` opens the row and
-# pastes the first block's copy; `second` the second's.
+# pastes the first block's copy; `second` the second's; `reply` a reply's
+# code block's; `select` a word of the reply, long-pressed and copied.
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -75,6 +76,43 @@ env:
       - extendedWaitUntil:
           visible: "(?s).*Copied code block.*"
           timeout: 5000
+      - longPressOn: "Ask Claude…"
+      - tapOn: "Paste"
+
+# reply: a code block in Claude's reply has its own Copy code.
+- runFlow:
+    when:
+      true: ${STEP == 'reply'}
+    commands:
+      - eraseText: 40
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E code reply.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E code reply.*"
+      - extendedWaitUntil:
+          visible: "e2eword"
+          timeout: 20000
+      - takeScreenshot: chat-code-copy-reply
+      - tapOn: "Copy code"
+      - extendedWaitUntil:
+          visible: "(?s).*Copied code block.*"
+          timeout: 5000
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 20000
+      - longPressOn: "Ask Claude…"
+      - tapOn: "Paste"
+
+# select: a long press on a word of the reply selects it, and the toolbar's
+# Copy copies it.
+- runFlow:
+    when:
+      true: ${STEP == 'select'}
+    commands:
+      - eraseText: 40
+      - longPressOn: "e2eword"
+      - tapOn: "Copy"
       - longPressOn: "Ask Claude…"
       - tapOn: "Paste"
 
