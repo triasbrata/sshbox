@@ -309,6 +309,9 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    for (final level in _subs) {
+      level.chat.dispose();
+    }
     _looking?.cancel();
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.session.removeListener(_onChanged);
@@ -1075,7 +1078,41 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
+  Widget build(BuildContext context) {
+    final session = _buildSession(context);
+    // The session's view is always built, in front or not, so its list keeps
+    // its place and its box its text while a sub-agent's work is on show; a
+    // view behind another has its tickers off, as a hidden tab does.
+    final crumbs = [
+      widget.session.host.displayName,
+      for (final level in _subs) level.crumb,
+    ];
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Visibility(
+          visible: _subs.isEmpty,
+          maintainState: true,
+          child: session,
+        ),
+        for (final (i, level) in _subs.indexed)
+          Visibility(
+            key: ObjectKey(level),
+            visible: i == _subs.length - 1,
+            maintainState: true,
+            child: _SubAgentView(
+              level: level,
+              crumbs: crumbs.sublist(0, i + 2),
+              onBackTo: _backTo,
+              onOpenSub: _openSubAgent,
+              onOpenWeb: widget.onOpenWeb,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSession(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
       final wide = box.maxWidth >= _wideFrom;
       _sidebarWide = wide;
@@ -1239,13 +1276,45 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  /// The sub-agent views opened over this chat, the first over the session
+  /// and each next over the one before; the last is the one in front. Held
+  /// here, in the chat tab, so the tab strip and the other tabs stay in reach,
+  /// and the tab comes back to them as they were left.
+  final _subs = <_SubLevel>[];
+
+  /// Goes into [sub], the sub-agent that [run] started in [parent].
+  void _openSubAgent(ClaudeChat parent, ChatToolRun run, SubAgent sub) {
+    final label = sub.description.isEmpty ? sub.type : sub.description;
+    final child = ClaudeChat.subAgent(
+      open: parent.open,
+      parent: parent,
+      agent: sub,
+      isRunning: () => !run.done,
+    );
+    setState(
+      () => _subs.add(_SubLevel(child, label.isEmpty ? 'Sub-agent' : label)),
+    );
+  }
+
+  /// Back to the crumb at [index]: 0 is the session, where it was left, and
+  /// anything else the sub-agent view at that depth. The levels left behind go.
+  void _backTo(int index) {
+    if (index < 0 || index >= _subs.length + 1) return;
+    final gone = _subs.sublist(index);
+    setState(() => _subs.removeRange(index, _subs.length));
+    // After the frame that stops drawing them.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final level in gone) {
+        level.chat.dispose();
+      }
+    });
+  }
+
   Widget _entry(ChatEntry entry) => _drawEntry(
     entry,
     chat: _chat,
     onTapLink: _openLink,
-    openSub: (run, sub) => _openSubAgent(context, _chat, run, sub, [
-      widget.session.host.displayName,
-    ], widget.onOpenWeb),
+    openSub: (run, sub) => _openSubAgent(_chat, run, sub),
     // A message of this chat's own can be tried again or taken back; a
     // sub-agent's view has none to send.
     onRetry: _retry,
@@ -1825,67 +1894,85 @@ Widget _drawEntry(
       : question(q),
 };
 
-/// Goes into [sub], the sub-agent [run] started in [chat]: a page over the
-/// conversation, so going back is the same conversation at the same place.
-void _openSubAgent(
-  BuildContext context,
-  ClaudeChat chat,
-  ChatToolRun run,
-  SubAgent sub,
-  List<String> crumbs,
-  void Function(Uri url)? onOpenWeb,
-) {
-  final label = sub.description.isEmpty ? sub.type : sub.description;
-  unawaited(
-    Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => _SubAgentPage(
-          child: ClaudeChat.subAgent(
-            open: chat.open,
-            parent: chat,
-            agent: sub,
-            isRunning: () => !run.done,
-          ),
-          crumbs: [...crumbs, label.isEmpty ? 'Sub-agent' : label],
-          onOpenWeb: onOpenWeb,
-        ),
-      ),
-    ),
-  );
+/// One level of sub-agent views over a chat: the view's own chat, and what the
+/// breadcrumb calls it.
+class _SubLevel {
+  _SubLevel(this.chat, this.crumb);
+
+  final ClaudeChat chat;
+  final String crumb;
 }
 
 /// A sub-agent's work, read-only and live while it runs: chat's own entries in
 /// a list, a breadcrumb over it that goes back to any level, and no box to type
-/// in, with the reason where the box would be.
-class _SubAgentPage extends StatefulWidget {
-  const _SubAgentPage({
-    required this.child,
+/// in, with the reason where the box would be. It is part of the chat tab, not
+/// a page over the tabs: the strip and the other tabs stay in reach, and the
+/// tab comes back to it as it was left.
+class _SubAgentView extends StatefulWidget {
+  const _SubAgentView({
+    required this.level,
     required this.crumbs,
+    required this.onBackTo,
+    required this.onOpenSub,
     required this.onOpenWeb,
   });
 
-  final ClaudeChat child;
+  final _SubLevel level;
+
+  /// The trail from the session to this view, the session first.
   final List<String> crumbs;
+
+  /// Back to the crumb at this index: 0 is the session.
+  final void Function(int index) onBackTo;
+  final void Function(ClaudeChat parent, ChatToolRun run, SubAgent sub)
+  onOpenSub;
   final void Function(Uri url)? onOpenWeb;
 
   @override
-  State<_SubAgentPage> createState() => _SubAgentPageState();
+  State<_SubAgentView> createState() => _SubAgentPageState();
 }
 
-class _SubAgentPageState extends State<_SubAgentPage> {
+class _SubAgentPageState extends State<_SubAgentView>
+    with WidgetsBindingObserver {
   final _scroll = ScrollController();
+
+  ClaudeChat get _chat => widget.level.chat;
+  bool _resumed = true;
 
   @override
   void initState() {
     super.initState();
-    widget.child.addListener(_onChanged);
-    unawaited(widget.child.openSubAgent());
+    WidgetsBinding.instance.addObserver(this);
+    _resumed = WidgetsBinding.instance.lifecycleState != AppLifecycleState.paused &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.hidden &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.inactive;
+    _chat.addListener(_onChanged);
+    unawaited(_chat.openSubAgent());
+  }
+
+  /// Shown only when this is the level on top, its tab is in front — a hidden
+  /// tab turns its tickers off — and the app is: otherwise the host is not
+  /// asked for anything, and it is asked once at once when it is shown again.
+  void _report() => _chat.setSubVisible(
+    _resumed && TickerMode.valuesOf(context).enabled,
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _report();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _resumed = state == AppLifecycleState.resumed;
+    if (mounted) _report();
   }
 
   @override
   void dispose() {
-    widget.child.removeListener(_onChanged);
-    widget.child.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _chat.removeListener(_onChanged);
     _scroll.dispose();
     super.dispose();
   }
@@ -1894,8 +1981,8 @@ class _SubAgentPageState extends State<_SubAgentPage> {
 
   void _onChanged() {
     if (!mounted) return;
-    final grew = widget.child.entries.length != _drawn;
-    _drawn = widget.child.entries.length;
+    final grew = _chat.entries.length != _drawn;
+    _drawn = _chat.entries.length;
     final following = !_scroll.hasClients ||
         _scroll.position.maxScrollExtent - _scroll.position.pixels <= 2;
     setState(() {});
@@ -1923,54 +2010,54 @@ class _SubAgentPageState extends State<_SubAgentPage> {
 
   @override
   Widget build(BuildContext context) {
-    final chat = widget.child;
+    final chat = _chat;
     final theme = Theme.of(context);
     final entries = chat.entries;
     final crumbs = widget.crumbs;
-    return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          reverse: true,
-          child: Row(
-            children: [
-              for (final (i, crumb) in crumbs.indexed) ...[
-                if (i > 0)
-                  Text(' › ', style: theme.textTheme.bodySmall),
-                InkWell(
-                  // Back to that level: this page is the last of them.
-                  onTap: i == crumbs.length - 1
-                      ? null
-                      : () {
-                          var pops = crumbs.length - 1 - i;
-                          Navigator.of(context).popUntil((_) => pops-- <= 0);
-                        },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(
-                      crumb,
-                      maxLines: 1,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: i == crumbs.length - 1
-                            ? FontWeight.w600
-                            : null,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-      body: ContentText(
+    return Material(
+      color: theme.scaffoldBackgroundColor,
+      child: ContentText(
         child: Column(
           children: [
+            // The trail: the session, then each sub-agent down to this one.
+            // Any crumb but the last goes back to that level; the first is
+            // the session itself, and where it was left.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                reverse: true,
+                child: Row(
+                  children: [
+                    for (final (i, crumb) in crumbs.indexed) ...[
+                      if (i > 0) Text(' › ', style: theme.textTheme.bodySmall),
+                      InkWell(
+                        onTap: i == crumbs.length - 1
+                            ? null
+                            : () => widget.onBackTo(i),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Text(
+                            crumb,
+                            maxLines: 1,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: i == crumbs.length - 1
+                                  ? FontWeight.w600
+                                  : null,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const Divider(height: 1),
             Expanded(
               child: entries.isEmpty
                   ? Center(
-                      child: chat.subAgent == null
+                      child: chat.subReplaced
                           ? const SizedBox.shrink()
                           : const TuiSpinner(),
                     )
@@ -1993,14 +2080,8 @@ class _SubAgentPageState extends State<_SubAgentPage> {
                           entry,
                           chat: chat,
                           onTapLink: _link,
-                          openSub: (run, sub) => _openSubAgent(
-                            context,
-                            chat,
-                            run,
-                            sub,
-                            crumbs,
-                            widget.onOpenWeb,
-                          ),
+                          openSub: (run, sub) =>
+                              widget.onOpenSub(chat, run, sub),
                         );
                       },
                     ),
@@ -2016,8 +2097,12 @@ class _SubAgentPageState extends State<_SubAgentPage> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Read-only: this is a sub-agent’s work. Go back to talk '
-                      'to the session.',
+                      chat.subReplaced
+                          ? 'This session was replaced, so this is as far as '
+                                'the sub-agent’s work was followed. Go back to '
+                                'the session.'
+                          : 'Read-only: this is a sub-agent’s work. Go back to '
+                                'talk to the session.',
                       style: theme.textTheme.bodySmall,
                     ),
                   ),

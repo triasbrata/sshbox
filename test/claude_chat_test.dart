@@ -5757,6 +5757,75 @@ void main() {
       );
     });
 
+    test('an Agent row whose sub-agent has no files yet is asked about again '
+        'until it has, and not for ever', () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 30);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_late',
+              'name': 'Agent',
+              'input': {'description': 'late'},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.subAgentOf('toolu_late'), isNull);
+      // Its files appear a moment after the call, as Claude Code writes them.
+      host.subAgentsOut = line('agent-late1', meta('toolu_late'));
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(chat.subAgentOf('toolu_late')!.file, 'agent-late1');
+      int asked() =>
+          host.commands.where((c) => c.contains('ls "\$dir"')).length;
+      final n = asked();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      // Found: no more asking.
+      expect(asked(), n);
+    });
+
+    test('a sub-agent that never gets files is asked about a handful of '
+        'times, then left', () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 10);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_none',
+              'name': 'Agent',
+              'input': {'description': 'none'},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final n = host.commands.where((c) => c.contains('ls "\$dir"')).length;
+      expect(n, lessThanOrEqualTo(10));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(host.commands.where((c) => c.contains('ls "\$dir"')).length, n);
+    });
+
     test('its view replays the sub-agent\'s own lines, read-only, and goes on '
         'reading while it runs, then stops', () async {
       final host = _LiveHost('0\n')
@@ -5836,6 +5905,75 @@ void main() {
       final asked = host.commands.where((c) => c.contains('tail -c +')).length;
       await Future<void>.delayed(ClaudeChat.subAgentEvery + const Duration(milliseconds: 200));
       expect(host.commands.where((c) => c.contains('tail -c +')).length, asked);
+    });
+
+    test('through a real shell, a link in the way is not followed: a linked '
+        'subagents folder, session folder or agent file', () async {
+      final dir = Directory.systemTemp.createTempSync('sshbox-sublink-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const sid = '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f';
+      final project = Directory('${dir.path}/projects/-srv-app')
+        ..createSync(recursive: true);
+      File('${project.path}/$sid.jsonl').writeAsStringSync('{"type":"mode"}\n');
+      // Somewhere else on the host, with a sub-agent in it that a link names.
+      final elsewhere = Directory('${dir.path}/elsewhere/subagents')
+        ..createSync(recursive: true);
+      File('${elsewhere.path}/agent-abc123.jsonl')
+          .writeAsStringSync('{"type":"assistant","secret":"private"}\n');
+      File('${elsewhere.path}/agent-abc123.meta.json')
+          .writeAsStringSync('{"toolUseId":"toolu_01A"}');
+
+      Future<String> run(String command) async {
+        final r = await Process.run(
+          'sh',
+          ['-c', command],
+          environment: {'CLAUDE_CONFIG_DIR': dir.path},
+          workingDirectory: dir.path,
+        );
+        return '${r.stdout}';
+      }
+
+      // Each case is a session of its own: its transcript, and the way in
+      // that a link takes somewhere else.
+      void session(String id) =>
+          File('${project.path}/$id.jsonl').writeAsStringSync('{"type":"mode"}\n');
+      const linkedSubs = '11111111-1111-4111-8111-111111111111';
+      const linkedFolder = '22222222-2222-4222-8222-222222222222';
+      const linkedFile = '33333333-3333-4333-8333-333333333333';
+
+      // The subagents folder is a link.
+      session(linkedSubs);
+      Directory('${project.path}/$linkedSubs').createSync();
+      Link('${project.path}/$linkedSubs/subagents').createSync(elsewhere.path);
+      expect(await run(ClaudeChat.subAgentsCommand(linkedSubs)), isEmpty);
+      expect(
+        await run(ClaudeChat.historyCommand(linkedSubs, agent: 'agent-abc123')),
+        isNot(contains('private')),
+      );
+
+      // The session's own folder is a link to a folder holding subagents.
+      session(linkedFolder);
+      Link('${project.path}/$linkedFolder').createSync('${dir.path}/elsewhere');
+      expect(await run(ClaudeChat.subAgentsCommand(linkedFolder)), isEmpty);
+      expect(
+        await run(ClaudeChat.historyCommand(linkedFolder, agent: 'agent-abc123')),
+        isNot(contains('private')),
+      );
+
+      // Only the agent file is a link, in folders that are real.
+      session(linkedFile);
+      final real = Directory('${project.path}/$linkedFile/subagents')
+        ..createSync(recursive: true);
+      Link('${real.path}/agent-abc123.jsonl')
+          .createSync('${elsewhere.path}/agent-abc123.jsonl');
+      File('${real.path}/agent-abc123.meta.json')
+          .writeAsStringSync('{"toolUseId":"toolu_01A"}');
+      expect(await run(ClaudeChat.subAgentsCommand(linkedFile)), isEmpty);
+      final read = await run(
+        ClaudeChat.historyCommand(linkedFile, agent: 'agent-abc123'),
+      );
+      expect(read, isNot(contains('private')));
+      expect(read, contains('No transcript for this sub-agent'));
     });
 
     test('a session\'s own view still leaves a sub-agent\'s lines out', () async {

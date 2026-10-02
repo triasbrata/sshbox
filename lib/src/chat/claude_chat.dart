@@ -761,11 +761,22 @@ class ClaudeChat extends ChangeNotifier {
        _sub = agent,
        _subRunning = isRunning {
     _composing = false;
+    _generation = parent._top._shown;
   }
 
   final ClaudeChat? _parent;
   final SubAgent? _sub;
   final bool Function()? _subRunning;
+
+  /// The session's generation when this view was opened: [_shown], which goes
+  /// up whenever what the session shows is thrown away — a new chat, another
+  /// session picked, a reconnect picking it up again.
+  late final int _generation;
+
+  /// Whether the session this view was opened over has been replaced, so that
+  /// the tool_use it came from is no longer in what is shown and nothing will
+  /// say when its sub-agent ends.
+  bool get subReplaced => _sub != null && _top._shown != _generation;
 
   /// The sub-agent this chat shows, or null for a session's own.
   SubAgent? get subAgent => _sub;
@@ -1235,10 +1246,14 @@ class ClaudeChat extends ChangeNotifier {
   /// and quoted as [historyCommand] does; only files named `agent-…` are read.
   static String subAgentsCommand(String sessionId) =>
       'sh -c ${_shellQuote('${_findTranscript(sessionId, quiet: true)}'
-          r'dir="${f%.jsonl}/subagents"; [ -d "$dir" ] || exit 0; '
+          // A link in the way — the session's folder, its subagents folder, a
+          // file in it — is not followed: it could name anything on the host.
+          r'dir="${f%.jsonl}/subagents"; '
+          r'[ -d "$dir" ] && [ ! -L "$dir" ] && [ ! -L "${f%.jsonl}" ] || exit 0; '
           r'ls "$dir" 2>/dev/null | grep "^agent-[0-9A-Za-z_-]*\.meta\.json$" '
           '| head -n 200 | while read m; do '
           r'b=${m%.meta.json}; t="$dir/$b.jsonl"; '
+          r'[ -L "$dir/$m" ] || [ -L "$t" ] && continue; '
           r's=$(wc -c < "$t" 2>/dev/null | tr -d " "); '
           r'n=$(tail -c 2097152 "$t" 2>/dev/null | grep -c "\"type\":\"tool_use\""); '
           r'l=$(tail -n 1 "$t" 2>/dev/null | grep -o "\"timestamp\":\"[^\"]*\"" | head -n 1 | cut -d "\"" -f4); '
@@ -1284,7 +1299,45 @@ class ClaudeChat extends ChangeNotifier {
     } finally {
       top._readingSubs = false;
     }
+    _askAgainForMissing();
   }
+
+  /// The row for an Agent call arrives before the sub-agent's files do — Claude
+  /// Code writes the tool_use, then starts the sub-agent — so a call still
+  /// running whose sub-agent the host has not listed is asked about again in a
+  /// couple of seconds, a handful of times, and then left to the next call or
+  /// result.
+  void _askAgainForMissing() {
+    final top = _top;
+    final missing = {..._runningAgentCalls, ...top._runningAgentCalls}.any(
+      (id) => !top._subAgents.containsKey(id),
+    );
+    if (!missing) {
+      top._subRetries = 0;
+      return;
+    }
+    if (top._subRetries >= 8 || _disposed) return;
+    top._subRetries++;
+    late final Timer timer;
+    timer = Timer(subAgentRetry, () {
+      _timers.remove(timer);
+      unawaited(refreshSubAgents());
+    });
+    _timers.add(timer);
+  }
+
+  int _subRetries = 0;
+
+  /// How long before a missing sub-agent is asked about again.
+  @visibleForTesting
+  static Duration subAgentRetry = const Duration(seconds: 2);
+
+  /// The ids of the Agent and Task calls of this chat's own still waiting for
+  /// their result, wherever they are among its entries.
+  Iterable<String> get _runningAgentCalls => [
+    for (final run in _running.values)
+      if (run.isSubAgentCall) run.id,
+  ];
 
   /// Opens a sub-agent view: its transcript's end, then the rest of what it
   /// writes while it runs. Only the view's own business, never a session's.
@@ -1297,9 +1350,34 @@ class ClaudeChat extends ChangeNotifier {
     final read = await _loadHistory(sessionId, keepRunning: _subRunning!());
     if (read == null || _disposed) return;
     _subFrom = read.from - read.carry.length;
-    _poll = Timer.periodic(subAgentEvery, (_) => unawaited(_readMoreOfSub()));
+    _subStarted = true;
+    if (_subVisible) _startPoll();
     // Its own sub-agents, for its rows to open.
     unawaited(refreshSubAgents());
+  }
+
+  void _startPoll() {
+    _poll?.cancel();
+    _poll = Timer.periodic(subAgentEvery, (_) => unawaited(_readMoreOfSub()));
+  }
+
+  bool _subStarted = false;
+  bool _subVisible = true;
+  bool _subDone = false;
+
+  /// Whether anyone can see this view: the page on top, its tab shown and the
+  /// app in front. Hidden, nothing is asked of the host; shown again, what was
+  /// missed is read at once and the regular reading goes on.
+  void setSubVisible(bool visible) {
+    if (_sub == null || _disposed || visible == _subVisible) return;
+    _subVisible = visible;
+    if (!visible) {
+      _poll?.cancel();
+      _poll = null;
+    } else if (_subStarted && !_subDone) {
+      _startPoll();
+      unawaited(_readMoreOfSub());
+    }
   }
 
   /// How often a running sub-agent's transcript is read for what it has added.
@@ -1324,6 +1402,16 @@ class ClaudeChat extends ChangeNotifier {
     final sub = _sub;
     final sessionId = _sessionId;
     if (sub == null || sessionId == null || _readingSub || _disposed) return;
+    if (!_subVisible) return;
+    if (subReplaced) {
+      // The session under this view is gone: no row will say when the
+      // sub-agent ends, so nothing goes on being asked for.
+      _poll?.cancel();
+      _poll = null;
+      _subDone = true;
+      notifyListeners();
+      return;
+    }
     _readingSub = true;
     // Asked before reading: a read that began after the end is the last.
     final running = _subRunning!();
@@ -1357,6 +1445,7 @@ class ClaudeChat extends ChangeNotifier {
       if (!running) {
         _poll?.cancel();
         _poll = null;
+        _subDone = true;
         // What was left running when it ended is history now.
         for (final run in _running.values) {
           run.result = '';
@@ -4098,9 +4187,13 @@ class ClaudeChat extends ChangeNotifier {
       inAgent = r'echo "No transcript for this sub-agent on the host."; exit 1; ';
     } else {
       inAgent =
-          'f="\${f%.jsonl}/subagents/"${_shellQuote('$agent.jsonl')}; '
-          r'[ -f "$f" ] || { echo "No transcript for this sub-agent on the '
-          r'host."; exit 1; }; ';
+          r'g="${f%.jsonl}"; '
+          'f="\$g/subagents/"${_shellQuote('$agent.jsonl')}; '
+          // Not through a link either: the session's folder, its subagents
+          // folder and the file must all be what they say.
+          r'[ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$g" ] && '
+          r'[ ! -L "$g/subagents" ] || { echo "No transcript for this '
+          r'sub-agent on the host."; exit 1; }; ';
     }
     return r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"; '
         '$find$again'
