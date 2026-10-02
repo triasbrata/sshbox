@@ -5,8 +5,10 @@
 #
 # The session is a stand-in's, from tools/e2e_android.sh's chat_stand_in:
 # "E2E tool rows" ran `echo hi`, which answered `hi from e2e`. What a button
-# copied is pasted into the chat's box, empty before each, and read back by
-# the script from Android's view tree, since the row shows the same text.
+# copied is pasted into the chat's box by the script, which finds the box,
+# long-presses it and taps Paste from Android's own view tree, and reads it
+# back the same way: Maestro's taps by point or hint missed the box once the
+# keyboard moved it.
 #
 # STEP comes from -e alone (see chat_images.yaml): `open` opens the row and
 # pastes the first block's copy; `second` the second's; `reply` a reply's
@@ -63,18 +65,6 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
-      # screen (its hint is cut short beside +, so no selector finds it
-      # reliably); the long press goes there.
-      - tapOn:
-          point: "62%,95%"
-      - extendedWaitUntil:
-          visible: "(?s).*(Paste|Ask Cla).*"
-          timeout: 3000
-          optional: true
-      - longPressOn:
-          point: "62%,59%"
-      - tapOn: "Paste"
 
 - runFlow:
     when:
@@ -88,18 +78,6 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
-      # screen (its hint is cut short beside +, so no selector finds it
-      # reliably); the long press goes there.
-      - tapOn:
-          point: "62%,95%"
-      - extendedWaitUntil:
-          visible: "(?s).*(Paste|Ask Cla).*"
-          timeout: 3000
-          optional: true
-      - longPressOn:
-          point: "62%,59%"
-      - tapOn: "Paste"
 
 # reply: a code block in Claude's reply has its own Copy code.
 - runFlow:
@@ -124,18 +102,6 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
-      # screen (its hint is cut short beside +, so no selector finds it
-      # reliably); the long press goes there.
-      - tapOn:
-          point: "62%,95%"
-      - extendedWaitUntil:
-          visible: "(?s).*(Paste|Ask Cla).*"
-          timeout: 3000
-          optional: true
-      - longPressOn:
-          point: "62%,59%"
-      - tapOn: "Paste"
 
 # select: a long press on a word of the reply selects it, and the toolbar's
 # Copy copies it.
@@ -150,18 +116,6 @@ env:
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
       # a tap on that text missed the field, so nothing opened. Focused
       # first, as a long press on a box with no focus opens no menu.
-      # The tap raises Gboard, which lifts the box to 59% of CI's emulator
-      # screen (its hint is cut short beside +, so no selector finds it
-      # reliably); the long press goes there.
-      - tapOn:
-          point: "62%,95%"
-      - extendedWaitUntil:
-          visible: "(?s).*(Paste|Ask Cla).*"
-          timeout: 3000
-          optional: true
-      - longPressOn:
-          point: "62%,59%"
-      - tapOn: "Paste"
 
 - runFlow:
     when:

@@ -199,10 +199,38 @@ PY
 # flow pastes what it copied into the chat's empty box, and the box is read
 # here off Android's view tree, the row showing the same text. A toast with
 # animations off is gone at once, so they are on meanwhile.
-code_box() {
+code_ui() {
   adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
-  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null | grep -o '<node [^>]*EditText[^>]*>' |
-    grep -o ' text="[^"]*"' | head -1 | sed 's/^ text="//; s/"$//'
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null
+}
+# The centre of the first node whose attributes match $1, as "x y".
+code_at() {
+  code_ui | grep -o '<node [^>]*>' | grep -E "$1" | head -1 |
+    grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' |
+    sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/' |
+    awk '{ print int(($1 + $3) / 2), int(($2 + $4) / 2) }'
+}
+# What is on the clipboard, pasted into the chat's box: a tap to focus it,
+# found again once the keyboard has moved it, a long press, and Paste.
+code_paste() {
+  local at
+  at=$(code_at 'EditText') || return 1
+  [ -n "$at" ] || { echo "no chat box on screen"; return 1; }
+  adb shell input tap $at
+  sleep 1.5
+  at=$(code_at 'EditText')
+  # shellcheck disable=SC2086
+  adb shell input swipe $at $at 900
+  sleep 1.5
+  at=$(code_at 'text="Paste"|content-desc="Paste"')
+  [ -n "$at" ] || { echo "no Paste in the box's menu"; return 1; }
+  adb shell input tap $at
+  sleep 1.5
+}
+# The box's text, trimmed.
+code_box() {
+  code_ui | grep -o '<node [^>]*EditText[^>]*>' |
+    grep -o ' text="[^"]*"' | head -1 | sed 's/^ text="//; s/"$//; s/^ *//; s/ *$//'
 }
 chat_code_copy() {
   local status=0 got
@@ -212,18 +240,22 @@ chat_code_copy() {
   # Share. Off for this block alone.
   adb shell device_config put systemui clipboard_overlay_enabled false
   flow chat_code_copy -e STEP=open || status=1
+  code_paste
   got=$(code_box)
   echo "the command's Copy code pasted: '$got'"
   [ "$got" = 'echo hi' ] || { echo "::error::the command's block copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=second || status=1
+  code_paste
   got=$(code_box)
   echo "the result's Copy code pasted: '$got'"
   [ "$got" = 'hi from e2e' ] || { echo "::error::the result's block copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=reply || status=1
+  code_paste
   got=$(code_box)
   echo "the reply's Copy code pasted: '$got'"
   [ "$got" = 'printf e2e-reply' ] || { echo "::error::the reply's block copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=select || status=1
+  code_paste
   got=$(code_box)
   echo "a long press and Copy pasted: '$got'"
   # A word of the reply, whichever the press landed on.
