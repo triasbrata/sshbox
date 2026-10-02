@@ -3230,8 +3230,29 @@ void main() {
       }),
       result('c$n', 'Task #$n created successfully: $subject'),
     ];
-    Map<String, Object?> update(int n, Map<String, Object?> input) =>
-        call('u$n${input.hashCode}', 'TaskUpdate', {'taskId': '$n', ...input});
+    // A TaskUpdate and its result, which says it took.
+    List<Map<String, Object?>> update(
+      int n,
+      Map<String, Object?> input, {
+      bool fails = false,
+    }) {
+      final id = 'u$n${input.hashCode}';
+      return [
+        call(id, 'TaskUpdate', {'taskId': '$n', ...input}),
+        result(id, fails ? 'Task not found' : 'Updated task #$n status', error: fails),
+      ];
+    }
+
+    void adds(_LiveHost host, List<Map<String, Object?>> lines) {
+      for (final line in lines) {
+        host.adds(line);
+      }
+    }
+
+    List<Map<String, Object?>> todo(String id, Map<String, Object?> input) => [
+      call(id, 'TodoWrite', input),
+      result(id, 'Todos have been modified successfully'),
+    ];
 
     Future<(ClaudeChat, _LiveHost)> watch([
       List<Object?> history = const [],
@@ -3264,7 +3285,7 @@ void main() {
       await _settle();
       expect(labels(chat), ['pending:Fix the bug', 'pending:Write the tests']);
 
-      host.adds(update(1, {'status': 'in_progress'}));
+      adds(host, update(1, {'status': 'in_progress'}));
       await _settle();
       // In progress, it reads as its active form.
       expect(labels(chat), [
@@ -3272,12 +3293,12 @@ void main() {
         'pending:Write the tests',
       ]);
 
-      host.adds(update(1, {'status': 'completed'}));
+      adds(host, update(1, {'status': 'completed'}));
       await _settle();
       expect(labels(chat), ['pending:Write the tests']);
       expect(chat.tasksDone, 1);
 
-      host.adds(update(2, {'status': 'deleted'}));
+      adds(host, update(2, {'status': 'deleted'}));
       await _settle();
       expect(chat.openTasks, isEmpty);
     });
@@ -3288,9 +3309,9 @@ void main() {
         final (chat, _) = await watch([
           ...made(1, 'One'),
           ...made(2, 'Two', form: 'Doing two'),
-          update(2, {'status': 'in_progress'}),
+          ...update(2, {'status': 'in_progress'}),
           ...made(3, 'Three'),
-          update(3, {'status': 'completed'}),
+          ...update(3, {'status': 'completed'}),
         ]);
         expect(labels(chat), ['pending:One', 'in_progress:Doing two']);
         expect(chat.tasksDone, 1);
@@ -3299,8 +3320,7 @@ void main() {
 
     test('TodoWrite carries the whole list every time', () async {
       final (chat, host) = await watch();
-      host.adds(
-        call('t1', 'TodoWrite', {
+      adds(host, todo('t1', {
           'todos': [
             {
               'content': 'First',
@@ -3313,12 +3333,10 @@ void main() {
               'activeForm': 'Seconding',
             },
           ],
-        }),
-      );
+        }));
       await _settle();
       expect(labels(chat), ['in_progress:Firsting', 'pending:Second']);
-      host.adds(
-        call('t2', 'TodoWrite', {
+      adds(host, todo('t2', {
           'todos': [
             {
               'content': 'Second',
@@ -3326,19 +3344,44 @@ void main() {
               'activeForm': 'Seconding',
             },
           ],
-        }),
-      );
+        }));
       await _settle();
       // The list shrank: what it no longer names is gone, not kept.
       expect(labels(chat), ['in_progress:Seconding']);
       expect(chat.tasksDone, 0);
     });
 
+    test('a failed TaskUpdate or TodoWrite leaves the list as it was', () async {
+      final (chat, host) = await watch();
+      for (final line in made(1, 'Keep me')) {
+        host.adds(line);
+      }
+      await _settle();
+      adds(host, update(1, {'status': 'completed'}, fails: true));
+      adds(host, update(1, {'status': 'deleted'}, fails: true));
+      host
+        ..adds(call('tw', 'TodoWrite', {'todos': <Object?>[]}))
+        ..adds(result('tw', 'refused', error: true));
+      await _settle();
+      expect(labels(chat), ['pending:Keep me']);
+      expect(chat.tasksDone, 0);
+    });
+
+    test('a result read before its call still makes the task', () async {
+      // The tail of a transcript cut mid-way: the result first.
+      final (chat, host) = await watch([
+        result('c1', 'Task #1 created successfully: Late'),
+        call('c1', 'TaskCreate', {'subject': 'Late', 'description': 'd'}),
+      ]);
+      expect(labels(chat), ['pending:Late']);
+      host.adds(result('x', 'unrelated'));
+    });
+
     test('a task it never saw made, and a create that failed, are not '
         'invented', () async {
       final (chat, host) = await watch();
       host
-        ..adds(update(9, {'status': 'in_progress'}))
+        ..adds(update(9, {'status': 'in_progress'}).first)
         ..adds(
           call('bad', 'TaskCreate', {'subject': 'Nope', 'description': 'd'}),
         )

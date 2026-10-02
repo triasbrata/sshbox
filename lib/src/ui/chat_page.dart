@@ -1666,9 +1666,14 @@ class _Checklist extends StatelessWidget {
       ...[...open.where((t) => t.inProgress), ...open.where((t) => !t.inProgress)]
           .take(_lines),
     };
-    final hidden = open.length - shown.length;
+    // Counted for what they are: more than the lines hold of the ones in
+    // progress is possible too.
+    final hidden = open.where((t) => !shown.contains(t));
+    final hiddenActive = hidden.where((t) => t.inProgress).length;
+    final hiddenPending = hidden.length - hiddenActive;
     final more = [
-      if (hidden > 0) '+$hidden pending',
+      if (hiddenActive > 0) '+$hiddenActive in progress',
+      if (hiddenPending > 0) '+$hiddenPending pending',
       if (done > 0) '$done completed',
     ];
     Widget line(String text, {bool bold = false, TuiTextTone? tone}) => Row(

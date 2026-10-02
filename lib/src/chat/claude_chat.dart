@@ -465,12 +465,14 @@ class ClaudeChat extends ChangeNotifier {
   /// Rebuilt from the transcript, which holds every TaskCreate, TaskUpdate and
   /// TodoWrite — measured on 2.1.286: a TaskCreate carries no id, which only
   /// its result gives (`Task #14 created successfully…`), so the call waits in
-  /// [_creating] for it. A task made before the part of the transcript read is
+  /// [_parked] for it. A task made before the part of the transcript read is
   /// not known, and a TaskUpdate naming it is dropped.
   final Map<String, ChatTask> _tasks = {};
 
-  /// TaskCreate calls waiting for their result, by `tool_use_id`.
-  final Map<String, ChatTask> _creating = {};
+  /// Task calls waiting for their result, by `tool_use_id`: Claude Code's own
+  /// view changes only when the tool succeeded, so nothing is applied before
+  /// its result says so.
+  final Map<String, ({String name, Map<String, dynamic> input})> _parked = {};
 
   /// The tasks still to do or being done, for the list under the working
   /// line, in order. Completed ones are only counted, by [tasksDone].
@@ -482,18 +484,29 @@ class ClaudeChat extends ChangeNotifier {
   int get tasksDone => _tasks.values.where((task) => task.done).length;
 
   void _noteTaskCall(String name, Map<String, dynamic> input, String id) {
-    if (_pastOnly) return;
+    if (_pastOnly || !const {'TaskCreate', 'TaskUpdate', 'TodoWrite'}.contains(name)) {
+      return;
+    }
+    _parked[id] = (name: name, input: input);
+  }
+
+  /// A tool result: the one that lets a parked task call take effect, and, for
+  /// a TaskCreate, tells it its id.
+  void _noteTaskResult(Object? toolUseId, String result, bool failed) {
+    final call = _parked.remove(toolUseId);
+    if (call == null || failed || _pastOnly) return;
+    final input = call.input;
     String? text(String key) => input[key] is String ? input[key] as String : null;
-    switch (name) {
+    switch (call.name) {
       case 'TaskCreate':
         final subject = text('subject');
-        if (subject != null) {
-          _creating[id] = ChatTask(
-            id: '',
-            subject: subject,
-            activeForm: text('activeForm'),
-          );
-        }
+        final id = RegExp(r'^Task #(\d+) created').firstMatch(result)?.group(1);
+        if (subject == null || id == null) return;
+        _tasks[id] = ChatTask(
+          id: id,
+          subject: subject,
+          activeForm: text('activeForm'),
+        );
       case 'TaskUpdate':
         final task = _tasks[text('taskId')];
         if (task == null) return;
@@ -531,19 +544,6 @@ class ClaudeChat extends ChangeNotifier {
           );
         }
     }
-  }
-
-  /// A tool result, for the one that tells a TaskCreate its id.
-  void _noteTaskResult(Object? toolUseId, String result, bool failed) {
-    final made = _creating.remove(toolUseId);
-    if (made == null || failed || _pastOnly) return;
-    final id = RegExp(r'^Task #(\d+) created').firstMatch(result)?.group(1);
-    if (id == null) return;
-    _tasks[id] = ChatTask(
-      id: id,
-      subject: made.subject,
-      activeForm: made.activeForm,
-    );
   }
 
   /// When the turn in flight began, or null between turns.
@@ -940,7 +940,7 @@ class ClaudeChat extends ChangeNotifier {
     _running.clear();
     _orphans.clear();
     _tasks.clear();
-    _creating.clear();
+    _parked.clear();
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
@@ -1861,6 +1861,8 @@ class ClaudeChat extends ChangeNotifier {
             run
               ..result = orphan.result
               ..failed = orphan.failed;
+            // Its result was read before it was: a task call takes effect now.
+            _noteTaskResult(run.id, orphan.result, orphan.failed);
           } else {
             _running[run.id] = run;
           }

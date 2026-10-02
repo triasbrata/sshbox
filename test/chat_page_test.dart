@@ -3060,6 +3060,25 @@ void main() {
       },
     };
 
+    /// A TaskUpdate, and its result: it takes effect when that says it did.
+    void update(_Shell shell, String id, Map<String, Object?> input) {
+      shell
+        ..adds(call(id, 'TaskUpdate', input))
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': id,
+                'content': 'Updated task #${input['taskId']} status',
+              },
+            ],
+          },
+        });
+    }
+
     Future<_Shell> watching(WidgetTester tester) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
@@ -3115,9 +3134,7 @@ void main() {
       expect(find.text('  □ Task 2'), findsOneWidget);
 
       // Live: one becomes in progress, and reads as its active form.
-      shell.adds(
-        call('u1', 'TaskUpdate', {'taskId': '1', 'status': 'in_progress'}),
-      );
+      update(shell, 'u1', {'taskId': '1', 'status': 'in_progress'});
       await _settlePickUp(tester);
       expect(find.text('⎿ ■ Doing 1'), findsOneWidget);
       expect(find.text('  □ Task 2'), findsOneWidget);
@@ -3127,17 +3144,13 @@ void main() {
       );
 
       // Completed ones are counted, not listed.
-      shell.adds(
-        call('u2', 'TaskUpdate', {'taskId': '1', 'status': 'completed'}),
-      );
+      update(shell, 'u2', {'taskId': '1', 'status': 'completed'});
       await _settlePickUp(tester);
       expect(find.textContaining('Doing 1'), findsNothing);
       expect(find.text('  … 1 completed'), findsOneWidget);
 
       // All done: nothing left to show.
-      shell.adds(
-        call('u3', 'TaskUpdate', {'taskId': '2', 'status': 'completed'}),
-      );
+      update(shell, 'u3', {'taskId': '2', 'status': 'completed'});
       await _settlePickUp(tester);
       expect(find.text('  … 2 completed'), findsNothing);
       expect(find.textContaining('□'), findsNothing);
@@ -3150,15 +3163,24 @@ void main() {
       for (var n = 1; n <= 10; n++) {
         await make(tester, shell, n);
       }
-      shell.adds(
-        call('u1', 'TaskUpdate', {'taskId': '1', 'status': 'completed'}),
-      );
+      update(shell, 'u1', {'taskId': '1', 'status': 'completed'});
       await _settlePickUp(tester);
       // 9 open, 6 shown, 3 more, 1 done.
       expect(find.text('  … +3 pending, 1 completed'), findsOneWidget);
       expect(find.text('⎿ □ Task 2'), findsOneWidget);
       expect(find.text('  □ Task 7'), findsOneWidget);
       expect(find.textContaining('Task 8'), findsNothing);
+    });
+
+    testWidgets('hidden rows are counted for what they are', (tester) async {
+      final shell = await watching(tester);
+      for (var n = 1; n <= 8; n++) {
+        await make(tester, shell, n);
+        update(shell, 'ip$n', {'taskId': '$n', 'status': 'in_progress'});
+      }
+      await _settlePickUp(tester);
+      // 8 in progress, 6 shown: the 2 more are not called pending.
+      expect(find.text('  … +2 in progress'), findsOneWidget);
     });
 
     testWidgets('its text is drawn as text, never read as anything else', (
