@@ -10,7 +10,9 @@ transcript. A line starting with `/` is a command instead, recorded as 2.1.286
 records one it runs itself: a `system` line of subtype `local_command` holding
 its name, message and arguments in tags, then another with what it printed.
 
-A line starting `slow:` plays a slow turn instead, shaped on one 2.1.286
+A line starting `tasks:` plays a turn that makes three tasks (TaskCreate, each
+with its result) and moves the first to in progress, then completed, so chat's
+checklist can be seen to follow. A line starting `slow:` plays a slow turn instead, shaped on one 2.1.286
 wrote: the prompt with its time, a message calling Bash with its usage four
 seconds later, the result four seconds after that, then a closing message of
 two lines sharing one message id and the turn's duration. Meanwhile its row
@@ -141,6 +143,53 @@ def long_turn(text):
     sys.stdout.write('Long answer 6 end\n')
 
 
+task_counter = [0]
+
+
+def task_turn(text):
+    """A line starting `tasks:` plays a turn that makes three tasks and works
+    through them, shaped like TaskCreate and TaskUpdate as 2.1.286 wrote them: a
+    TaskCreate has no id, its result gives it (`Task #N created successfully`).
+    """
+    listed_as('busy')
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+
+    def call(name, tid, tool_input):
+        record({'type': 'assistant', 'timestamp': now(), 'message': {
+            'id': 'msg_' + tid, 'role': 'assistant', 'stop_reason': 'tool_use',
+            'usage': {'output_tokens': 20},
+            'content': [{'type': 'tool_use', 'id': tid, 'name': name, 'input': tool_input}]}})
+
+    def result(tid, out):
+        record({'type': 'user', 'timestamp': now(), 'message': {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': tid, 'content': out}]}})
+
+    ids = []
+    for name in ('Check the stand-in', 'Write the report', 'Ship it'):
+        task_counter[0] += 1
+        n = task_counter[0]
+        ids.append(n)
+        call('TaskCreate', f'tc{n}', {'subject': name, 'description': name,
+                                       'activeForm': name.replace('Check', 'Checking')})
+        result(f'tc{n}', f'Task #{n} created successfully: {name}')
+    time.sleep(4)
+    call('TaskUpdate', f'tu{ids[0]}a', {'taskId': str(ids[0]), 'status': 'in_progress'})
+    result(f'tu{ids[0]}a', f'Updated task #{ids[0]} status')
+    time.sleep(6)
+    call('TaskUpdate', f'tu{ids[0]}b', {'taskId': str(ids[0]), 'status': 'completed'})
+    result(f'tu{ids[0]}b', f'Updated task #{ids[0]} status')
+    time.sleep(6)
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_tasks_end', 'role': 'assistant', 'stop_reason': 'end_turn',
+        'usage': {'output_tokens': 30},
+        'content': [{'type': 'text', 'text': 'Tasks played'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 16000,
+            'timestamp': now()})
+    listed_as('idle')
+    sys.stdout.write('Tasks played\n')
+
+
 def prompt():
     sys.stdout.write('❯ ')
     sys.stdout.flush()
@@ -154,6 +203,8 @@ while True:
     text = line.rstrip('\n')
     if text.startswith('slow:'):
         slow_turn(text)
+    elif text.startswith('tasks:'):
+        task_turn(text)
     elif text.startswith('wait:'):
         waiting_turn(text)
     elif text.startswith('long:'):
