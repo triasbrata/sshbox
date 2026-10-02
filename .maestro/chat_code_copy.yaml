@@ -74,6 +74,9 @@ env:
       true: ${STEP == 'second'}
     commands:
       - eraseText: 40
+      # The keyboard from the last paste is down, so the box is back where
+      # the taps below find it.
+      - hideKeyboard
       - tapOn:
           text: "Copy code"
           index: 1
@@ -92,6 +95,9 @@ env:
       true: ${STEP == 'reply'}
     commands:
       - eraseText: 40
+      # The keyboard from the last paste is down, so the box is back where
+      # the taps below find it.
+      - hideKeyboard
       - tapOn: "Sessions on this host"
       - extendedWaitUntil:
           visible: "(?s)\\W*E2E code reply.*"
@@ -121,6 +127,9 @@ env:
       true: ${STEP == 'select'}
     commands:
       - eraseText: 40
+      # The keyboard from the last paste is down, so the box is back where
+      # the taps below find it.
+      - hideKeyboard
       - longPressOn: "(?s).*e2eword.*"
       - tapOn: "Copy"
       # The box by where it is: beside + its hint is cut to "Ask Cla…", and
