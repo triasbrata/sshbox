@@ -77,7 +77,7 @@ env:
 # Completed at 24 s: counted, not listed. The others stay open.
 - extendedWaitUntil:
     visible: "(?s).*… 6 completed.*"
-    timeout: 15000
+    timeout: 30000
 - assertVisible: "10 tasks \\(6 done, 4 open\\)"
 - assertNotVisible: "(?s).*■ Checking the stand-in.*"
 - assertVisible: "(?s).*□ Write the report.*"
