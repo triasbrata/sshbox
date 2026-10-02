@@ -5977,9 +5977,10 @@ void main() {
       final shell = await chatOn(tester, local);
       final spoof = File('${dir.path}/a\u202egpj.txt')..writeAsStringSync('x');
       final c1 = File('${dir.path}/a\u0085b.txt')..writeAsStringSync('x');
-      await drop(tester, [spoof.path, c1.path]);
+      final png = File('${dir.path}/a\u202egnp.png')..writeAsBytesSync([1]);
+      await drop(tester, [spoof.path, c1.path, png.path]);
       expect(box(tester), isEmpty);
-      expect(find.textContaining('holds a control character'), findsNWidgets(2));
+      expect(find.textContaining('holds a control character'), findsNWidgets(3));
       expect(shell.uploaded, isEmpty);
       await tester.pumpAndSettle(const Duration(seconds: 6));
     }, variant: linux);
