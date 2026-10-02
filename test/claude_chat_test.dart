@@ -506,6 +506,9 @@ void main() {
       final chat = ClaudeChat(open: (_) => gate.future);
       final started = chat.start();
       expect(chat.modelStarting, isTrue);
+      await chat.setModel('haiku');
+      expect(chat.modelAlias, isNull);
+      expect(chat.modelName, isNull);
       gate.complete(_FakeClaude().channel);
       await started;
       expect(chat.modelStarting, isFalse);

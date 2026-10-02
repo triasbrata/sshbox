@@ -6290,9 +6290,17 @@ void main() {
       );
       await tester.pump();
       expect(find.textContaining('Usage'), findsNothing);
+      bool outlined() =>
+          tester
+              .widget<DecoratedBox>(find.byKey(const ValueKey('gauge-focus')))
+              .decoration
+              .toString()
+              .contains('Border');
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       expect(find.textContaining('Usage'), findsOneWidget);
+      // Focus came from the keyboard: it shows.
+      expect(outlined(), isTrue);
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pump();
       expect(find.textContaining('Usage'), findsNothing);

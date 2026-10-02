@@ -3163,6 +3163,7 @@ class _UsageChip extends StatefulWidget {
 class _UsageChipState extends State<_UsageChip> {
   final _link = LayerLink();
   bool _working = false;
+  bool _ring = false;
 
   @override
   void initState() {
@@ -3286,6 +3287,7 @@ class _UsageChipState extends State<_UsageChip> {
               _sync();
             },
             child: FocusableActionDetector(
+              onShowFocusHighlight: (on) => setState(() => _ring = on),
               // Enter and Space open and close the popup, as a tap does.
               actions: {
                 ActivateIntent: CallbackAction<ActivateIntent>(
@@ -3310,7 +3312,17 @@ class _UsageChipState extends State<_UsageChip> {
                 child: TuiTooltip(
                   message: label,
                   excludeFromSemantics: true,
-                  child: SizedBox(
+                  child: DecoratedBox(
+                    key: const ValueKey('gauge-focus'),
+                    // Where keyboard focus is, in termul's accent.
+                    decoration: BoxDecoration(
+                      border: _ring
+                          ? Border.all(
+                              color: TermulThemeData.of(context).palette.accent,
+                            )
+                          : null,
+                    ),
+                    child: SizedBox(
                     width: 32,
                     height: 32,
                     child: Center(
@@ -3319,6 +3331,7 @@ class _UsageChipState extends State<_UsageChip> {
                         warn: warn,
                       ),
                     ),
+                  ),
                   ),
                 ),
               ),

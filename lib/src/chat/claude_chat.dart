@@ -891,11 +891,10 @@ class ClaudeChat extends ChangeNotifier {
   /// message, measured; a new chat starts with it, and a restart keeps it.
   Future<void> setModel(String alias) async {
     final known = ChatModel.known(alias);
-    if (known == null || !canPickModel) return;
+    if (known == null || !canPickModel || modelStarting) return;
     if (!_composing && _ready && _channel != null) {
       // Taken as the chat's own only once the CLI accepts it: a refused or
       // unwritten pick must not be what the next start passes.
-      if (_starting) return;
       final id = 'sshbox-model-${++_modelRequests}';
       _modelAsks[id] = known;
       final sent = _write({
@@ -1951,6 +1950,8 @@ class ClaudeChat extends ChangeNotifier {
       appLog.add('chat: mode ${permission.name}');
     }
     appLog.add('chat: restart');
+    // Asked of the process being replaced: no answer will come.
+    _modelAsks.clear();
     if (permission != null) _permission = permission;
     // Watching runs no Claude of its own to restart: follow it afresh.
     final watching = _watching;
@@ -3886,6 +3887,7 @@ class ClaudeChat extends ChangeNotifier {
     // An error on the stream is followed by its close, and the run has only
     // ended once.
     if (_ended) return;
+    _modelAsks.clear();
     _ready = false;
     _busy = false;
     _ended = true;
