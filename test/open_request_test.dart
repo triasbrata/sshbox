@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/open_command.dart';
 import 'package:sshbox/src/session/open_request.dart';
@@ -116,6 +119,39 @@ void main() {
       expect(File('${home.path}/victim').readAsStringSync(), 'keep');
     },
   );
+
+  test('the Settings switch installs into ~/.local/bin, and only its own', () async {
+    SharedPreferences.setMockInitialValues({});
+    final home = Directory.systemTemp.createTempSync('jeansh-sw');
+    addTearDown(() => home.deleteSync(recursive: true));
+    final setting = LocalOpenCommandSetting(home: home.path);
+    final target = File('${home.path}/.local/bin/jeansh');
+
+    expect(setting.value, installOpenCommandDefault);
+    expect(await setting.choose(true), isTrue);
+    expect(target.readAsStringSync(), openCommandScript);
+    expect(target.statSync().mode & 0x1ed, 0x1ed); // 0755
+    expect(
+      (await SharedPreferences.getInstance()).getBool(
+        'sshbox.terminal.localOpenCommand',
+      ),
+      isTrue,
+    );
+
+    // Somebody else's file, and a link, are left alone and the switch says so.
+    target.writeAsStringSync('#!/bin/sh\necho mine\n');
+    expect(await setting.choose(true), isFalse);
+    expect(target.readAsStringSync(), contains('mine'));
+    target.deleteSync();
+    File('${home.path}/victim').writeAsStringSync('keep');
+    Link(target.path).createSync('${home.path}/victim');
+    expect(await setting.choose(true), isFalse);
+    expect(File('${home.path}/victim').readAsStringSync(), 'keep');
+
+    // Off writes nothing, and is saved.
+    expect(await setting.choose(false), isTrue);
+    expect(setting.value, isFalse);
+  });
 
   group('the jeansh script, run through a real sh', () {
     late Directory dir;

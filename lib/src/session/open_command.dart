@@ -76,6 +76,21 @@ void installOpenCommand(String dir) {
   temp.renameSync(target);
 }
 
+/// Puts `jeansh` in this computer's `~/.local/bin`, the folder a Debian or
+/// Ubuntu login adds to PATH once it exists: what the Settings switch does.
+/// True when it is there, false for a file or link that is not Jeansh's own,
+/// a missing HOME or a folder that cannot be written.
+bool installOpenCommandInHome([String? home]) {
+  home ??= Platform.environment['HOME'];
+  if (home == null || home.isEmpty) return false;
+  try {
+    installOpenCommand('$home/.local/bin');
+    return true;
+  } on FileSystemException {
+    return false;
+  }
+}
+
 /// What a host runs to put [openCommandScript] at `~/.local/bin/jeansh`, as
 /// one `sh -c` line. Written beside it under a name of its own and renamed
 /// into place, so a link planted at the name is replaced and never written
