@@ -26,7 +26,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show DropdownButton, IconButton, Icons, InkWell, TextField, Tooltip;
-import 'package:flutter/rendering.dart' show OffsetLayer;
+import 'package:flutter/rendering.dart' show OffsetLayer, RenderParagraph;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -781,8 +781,10 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `rdown`, `rup` (the
 /// secondary, #132's), `sleep ms`, or
-/// `shiftdown` and `shiftup` (Linux and macOS only), or `cmdc`, ⌘ held, C
-/// typed and ⌘ let go as three key events (macOS only). On Linux
+/// `shiftdown` and `shiftup` (Linux and macOS only), `dclick`, a double
+/// click (Linux and macOS, the second press carrying click state 2), `ctrlc`
+/// (Linux only), or `cmdc`, ⌘ held, C typed and ⌘ let go as three key events
+/// (macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
 /// Not pumped while it goes: the app takes the pointer on its own, and a
@@ -817,6 +819,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
           ['down'] => ['mousedown', '1'],
           ['rdown'] => ['mousedown', '3'],
           ['rup'] => ['mouseup', '3'],
+          ['dclick'] => ['click', '--repeat', '2', '--delay', '80', '1'],
+          ['ctrlc'] => ['key', 'ctrl+c'],
           ['shiftdown'] => ['keydown', 'Shift_L'],
           ['shiftup'] => ['keyup', 'Shift_L'],
           ['up'] => ['mouseup', '1'],
@@ -877,10 +881,12 @@ usleep(300_000)
 var at = CGPoint(x: bounds.midX, y: bounds.midY)
 var pressed = false
 var flags: CGEventFlags = []
+var clicks: Int64 = 0
 func post(_ type: CGEventType, _ button: CGMouseButton = .left) {
   let e = CGEvent(mouseEventSource: nil, mouseType: type,
                   mouseCursorPosition: at, mouseButton: button)!
   e.flags = flags
+  if clicks > 0 { e.setIntegerValueField(.mouseEventClickState, value: clicks) }
   e.post(tap: .cghidEventTap)
   usleep(10_000)
 }
@@ -913,6 +919,15 @@ for step in args[3].split(separator: ";") {
     post(pressed ? .leftMouseDragged : .mouseMoved)
   case "down": pressed = true; post(.leftMouseDown)
   case "up": pressed = false; post(.leftMouseUp)
+  case "dclick":
+    // Click state 1, then 2: what makes the second press a double-click.
+    for n in [Int64(1), Int64(2)] {
+      clicks = n
+      post(.leftMouseDown)
+      post(.leftMouseUp)
+      usleep(60_000)
+    }
+    clicks = 0
   case "rdown": post(.rightMouseDown, .right)
   case "rup": post(.rightMouseUp, .right)
   case "shiftdown": modifier(56, shiftLeft, true)
@@ -1088,6 +1103,8 @@ while [ $i -le 30 ]; do
   i=$((i + 1))
 done
 answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in'"$fences"'"}]}}'
+# A test that wants a particular answer leaves the whole event here.
+[ -f "$d/e2e-answer.json" ] && answer=$(cat "$d/e2e-answer.json")
 case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
@@ -3904,4 +3921,167 @@ touch '${done.path}'
     // In the body: the binding checks it is back before any tear-down runs.
     binding.shouldPropagateDevicePointerEvents = false;
   });
+
+  // Copying code out of a chat reply, with the real pointer and the real
+  // keyboard, read back off the system clipboard: a code line wider than the
+  // chat wraps rather than scrolling sideways, the Copy icon gives it
+  // unbroken, a drag over inline code and the copy chord copy it, and a
+  // double-click on a word in the block copies that word. Widget tests pass
+  // all of this; a user reported they could not copy, so this is the OS's
+  // word on it.
+  _test(
+    'code in a chat reply copies with the mouse and the keyboard',
+    skip: Platform.isWindows
+        ? 'no real clipboard reader here'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      final words = [for (var i = 0; i < 60; i++) 'wd$i'].join(' ');
+      final reply =
+          'Echo from the stand-in.\n\nUse `inline_code()` here.\n\n'
+          '```sh\n$words\n```\n';
+      final answer = File('$home/.claude/e2e-answer.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': reply},
+              ],
+            },
+          }),
+        );
+      addTearDown(() {
+        if (answer.existsSync()) answer.deleteSync();
+      });
+
+      Future<void> setClipboard(String text) async {
+        final put = Platform.isMacOS
+            ? await Process.run('sh', [
+                '-c',
+                r'printf %s "$1" | pbcopy',
+                'sh',
+                text,
+              ])
+            : await Process.run('sh', [
+                '-c',
+                r'printf %s "$1" | xclip -selection clipboard -i >/dev/null 2>&1',
+                'sh',
+                text,
+              ]);
+        expect(put.exitCode, 0, reason: 'clipboard set: ${put.stderr}');
+      }
+
+      Future<String> systemClipboard() async {
+        final got = Platform.isMacOS
+            ? await Process.run('pbpaste', [])
+            : await Process.run('xclip', ['-selection', 'clipboard', '-o']);
+        return '${got.stdout}';
+      }
+
+      // The clipboard to read [want], polled: the chord is pressed with the
+      // real keyboard and the answer comes when the app has handled it.
+      Future<void> clipboardIs(String want, String step) async {
+        final end = DateTime.now().add(const Duration(seconds: 8));
+        var got = '';
+        while (DateTime.now().isBefore(end)) {
+          got = await systemClipboard();
+          if (got == want) return;
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        fail('$step: the clipboard held "$got", not "$want"');
+      }
+
+      final chord = Platform.isMacOS ? 'cmdc' : 'ctrlc';
+
+      // Global ends, in logical pixels, of [word] in the paragraph that
+      // holds [within].
+      (Offset, Offset) ends(String word, {String? within}) {
+        final para = tester.renderObject<RenderParagraph>(
+          find.textContaining(within ?? word, findRichText: true).first,
+        );
+        final from = para.text.toPlainText().indexOf(word);
+        final boxes = para.getBoxesForSelection(
+          TextSelection(baseOffset: from, extentOffset: from + word.length),
+        );
+        return (
+          para.localToGlobal(boxes.first.toRect().centerLeft) +
+              const Offset(1, 0),
+          para.localToGlobal(boxes.last.toRect().centerRight) -
+              const Offset(1, 0),
+        );
+      }
+
+      String xy(Offset o) =>
+          '${o.dx.toStringAsFixed(1)} ${o.dy.toStringAsFixed(1)}';
+
+      await _launch(tester);
+      await _chatAnswered(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+      await _grab(tester, 'chat-code-copy-start');
+
+      await _realPointer(() async {
+        // 1. The line wraps: nothing in the chat scrolls sideways, and the
+        // block is several rows tall.
+        final sideways = find.descendant(
+          of: find.byType(ChatPage),
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is SingleChildScrollView &&
+                w.scrollDirection == Axis.horizontal,
+          ),
+        );
+        expect(sideways, findsNothing, reason: 'a code block scrolls sideways');
+        final block = tester.renderObject<RenderParagraph>(
+          find.textContaining('wd0 wd1', findRichText: true).first,
+        );
+        expect(
+          block.size.height,
+          greaterThan(block.text.style!.fontSize! * 2.5),
+          reason: 'the block grows downwards, in several rows',
+        );
+
+        // 2. A real click on the Copy icon.
+        await setClipboard('SENTINEL');
+        final copy = tester.getCenter(find.byTooltip('Copy code'));
+        await _osMouse(tester, ['move ${xy(copy)}', 'sleep 200', 'down', 'up']);
+        await clipboardIs(words, '2. the Copy icon');
+
+        // 3. A real drag over inline code, then the real chord.
+        await setClipboard('SENTINEL');
+        final (a, b) = ends('inline_code()');
+        await _osMouse(tester, [
+          'move ${xy(a)}',
+          'sleep 200',
+          'down',
+          'move ${xy(Offset.lerp(a, b, 0.5)!)}',
+          'move ${xy(b)}',
+          'sleep 200',
+          'up',
+          'sleep 300',
+          chord,
+        ]);
+        await clipboardIs('inline_code()', '3. a drag over inline code');
+
+        // 4. A real double-click on a word in the block, then the chord.
+        await setClipboard('SENTINEL');
+        final (w, x) = ends('wd7 ', within: 'wd0 wd1');
+        await _osMouse(tester, [
+          'move ${xy(Offset.lerp(w, x, 0.4)!)}',
+          'sleep 200',
+          'dclick',
+          'sleep 300',
+          chord,
+        ]);
+        await clipboardIs('wd7', '4. a double-click on a word');
+      });
+      await _grab(tester, 'chat-code-copy-end');
+      await _closeTabs(tester);
+    },
+  );
 }
