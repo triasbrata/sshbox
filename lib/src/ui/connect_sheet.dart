@@ -155,9 +155,22 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   LiveSession get _session => widget.session;
 
+  /// Handed a session already disposed — its tab closed while this sheet was
+  /// on its way: nothing is attached, and the sheet closes itself.
+  late final bool _gone = _session.isDisposed;
+
   @override
   void initState() {
     super.initState();
+    if (_gone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final route = ModalRoute.of(context);
+        if (route == null || !route.isActive) return;
+        Navigator.of(context).removeRoute(route, false);
+      });
+      return;
+    }
     _session.addListener(_onSessionChanged);
     // After the frame: connecting tells whatever shows the session — the
     // tabs, and a reconnecting tab's page — which must not hear of it while
@@ -171,7 +184,9 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   @override
   void dispose() {
-    _session.removeListener(_onSessionChanged);
+    if (!_gone && !_session.isDisposed) {
+      _session.removeListener(_onSessionChanged);
+    }
     // Closed with a question open: that is a no.
     _answer?.complete(false);
     _picked?.complete(null);
@@ -231,6 +246,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   @override
   Widget build(BuildContext context) {
+    if (_gone) return const SizedBox.shrink();
     final host = _session.host;
     final check = _check;
     final found = _found;

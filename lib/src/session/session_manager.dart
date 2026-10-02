@@ -317,6 +317,10 @@ class LiveSession extends ChangeNotifier {
   bool _connecting = false;
   bool _wired = false;
   bool _disposed = false;
+
+  /// Whether [dispose] has run: a listener must not be added to, or removed
+  /// from, a session that has.
+  bool get isDisposed => _disposed;
   (int columns, int rows) _size = (80, 24);
 
   /// Teardown is asynchronous but [dispose] is not, so every notify has to be
