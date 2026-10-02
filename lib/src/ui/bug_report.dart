@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:sentry_flutter/sentry_flutter.dart' show SentryId;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../telemetry/app_log.dart';
+import '../telemetry/bug_feedback.dart';
 import '../telemetry/scrub.dart';
 import '../telemetry/telemetry.dart';
 import 'toast.dart';
@@ -28,21 +31,30 @@ const maxIssueUrl = 6000;
 /// Deliberately reachable with telemetry off: this is the user deciding to
 /// send something, which is a different thing from Jeansh collecting it.
 ///
-/// [using] is the relay, for a test that must not reach the network.
+/// [using] is the relay, and [feedback] is where the log goes, for a test that
+/// must not reach the network.
+///
+/// The log, what the app did this run and the last, goes to Sentry alone,
+/// because this repository is public. The issue, on either route, carries the
+/// description, the version and the id of the Sentry event, and never a line
+/// of the log.
 Future<void> showBugReport(
   BuildContext context, {
   String? about,
   Telemetry? using,
+  BugFeedback? feedback,
 }) => showDialog<void>(
   context: context,
-  builder: (_) => _BugReportDialog(about: about, using: using),
+  builder: (_) =>
+      _BugReportDialog(about: about, using: using, feedback: feedback),
 );
 
 class _BugReportDialog extends StatefulWidget {
-  const _BugReportDialog({this.about, this.using});
+  const _BugReportDialog({this.about, this.using, this.feedback});
 
   final String? about;
   final Telemetry? using;
+  final BugFeedback? feedback;
 
   @override
   State<_BugReportDialog> createState() => _BugReportDialogState();
@@ -50,7 +62,18 @@ class _BugReportDialog extends StatefulWidget {
 
 class _BugReportDialogState extends State<_BugReportDialog> {
   late final Telemetry _relay = widget.using ?? telemetry;
+  late final BugFeedback _feedback = widget.feedback ?? sentryBugFeedback;
   final _what = TextEditingController();
+
+  /// The id of the Sentry event this report becomes, made now so the dialog
+  /// can show it; the event is sent when the report is, not before, so a
+  /// dialog that is cancelled uploads nothing.
+  final _eventId = SentryId.newId();
+
+  /// Whether the log goes. On with telemetry on; with it off the user is
+  /// asked, and the answer starts as no.
+  late bool _attach = telemetryOn.value;
+  bool _showLog = false;
 
   /// The version, build, platform and OS line, once it has been read.
   String _facts = '';
@@ -86,7 +109,11 @@ class _BugReportDialogState extends State<_BugReportDialog> {
   /// Scrubbed the same way a crash is: what the user typed goes through it
   /// too, since the quickest way to put a hostname in a bug report is to
   /// write one.
-  String get _body {
+  bool get _logGoes => _feedback.available && _attach;
+
+  String get _body => _bodyFor(_logGoes);
+
+  String _bodyFor(bool withEventId) {
     final what = scrub(_what.text.trim());
     final about = widget.about;
     final body = StringBuffer(what.isEmpty ? '(nothing written)' : what);
@@ -101,6 +128,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     }
     body.writeln();
     body.write(_facts);
+    if (withEventId) body.write('\nSentry event: $_eventId');
     return body.toString();
   }
 
@@ -110,9 +138,30 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     return line.length > 80 ? '${line.substring(0, 77)}…' : line;
   }
 
+  /// The log, to Sentry, under the id the dialog shows. True when it arrived;
+  /// said so when it did not, and the report goes on without the id.
+  Future<bool> _deliver() async {
+    if (!_logGoes) return false;
+    final sent = await _feedback.send(
+      id: _eventId,
+      message: _body,
+      log: appLog.render(),
+    );
+    if (!sent && mounted) {
+      showToast(
+        context,
+        'The log could not be attached, so the report goes without it',
+        type: TuiToastType.warning,
+      );
+    }
+    return sent;
+  }
+
   /// The named route: their browser, their account, their Submit.
   Future<void> _openGitHub() async {
-    var body = _body;
+    setState(() => _sending = true);
+    final sent = await _deliver();
+    var body = _bodyFor(sent);
     // The whole URL has to fit, and only the body can give: work out what
     // everything else costs and cut the body to what is left.
     final overhead = Uri.parse(issuesUrl)
@@ -151,11 +200,12 @@ class _BugReportDialogState extends State<_BugReportDialog> {
   /// says so, so nobody tries to reply to a reporter who left no name.
   Future<void> _sendAnonymously() async {
     setState(() => _sending = true);
+    final sent = await _deliver();
     final String where;
     try {
       where = await _relay.report(
         _title,
-        '$_body\n\nSent anonymously through Jeansh. There is no way to reply '
+        '${_bodyFor(sent)}\n\nSent anonymously through Jeansh. There is no way to reply '
         'to whoever sent it.',
       );
     } catch (error) {
@@ -176,6 +226,72 @@ class _BugReportDialogState extends State<_BugReportDialog> {
       duration: const Duration(seconds: 5),
     );
     Navigator.of(context).pop();
+  }
+
+  /// What the app did, for the developer: its own switch, the id it will be
+  /// found by, and the exact text, which is also what is sent.
+  List<Widget> _logSection(TermulPalette p) {
+    if (!_feedback.available) {
+      return const [
+        TuiText(
+          "The log can't be attached in this build, which has nowhere to send "
+          'it. The report goes without it.',
+          tone: TuiTextTone.dim,
+          size: 11,
+        ),
+      ];
+    }
+    final log = appLog.render();
+    return [
+      TuiSwitch(
+        value: _attach,
+        onChanged: _sending ? null : (on) => setState(() => _attach = on),
+        label: telemetryOn.value
+            ? 'Attach the app log'
+            : 'Send the app log with this report',
+        hint: telemetryOn.value
+            ? 'What the app did this run and the last, so the bug can be '
+                  'found. It goes to Sentry, never to the public issue.'
+            : 'Telemetry is off, so nothing is sent unless you say so here, '
+                  'for this report only. It goes to Sentry, never to the '
+                  'public issue.',
+      ),
+      if (_attach) ...[
+        const SizedBox(height: 8),
+        TuiText('Sentry event: $_eventId', size: 11),
+        const SizedBox(height: 4),
+        GestureDetector(
+          onTap: () => setState(() => _showLog = !_showLog),
+          child: TuiText(
+            _showLog ? "Hide what's attached" : "Show what's attached",
+            tone: TuiTextTone.muted,
+            size: 11,
+          ),
+        ),
+        if (_showLog) ...[
+          const SizedBox(height: 6),
+          Container(
+            constraints: const BoxConstraints(maxHeight: 180),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: p.bg,
+              border: Border.all(color: p.border),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                log.isEmpty ? '(empty)' : log,
+                style: TextStyle(
+                  fontFamily: TermulFonts.mono,
+                  fontSize: 10,
+                  color: p.text,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    ];
   }
 
   @override
@@ -248,6 +364,8 @@ class _BugReportDialogState extends State<_BugReportDialog> {
               tone: TuiTextTone.dim,
               size: 11,
             ),
+            const SizedBox(height: 16),
+            ..._logSection(p),
           ],
         ),
       ),

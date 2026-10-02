@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'termul/tui_toast.dart';
+import '../telemetry/app_log.dart';
 
 /// What a toast is about — info, success, warning or error — shown as
 /// termul's glyph mark, never as a colour.
@@ -113,6 +114,10 @@ void showToast(
   Duration? duration,
   bool low = false,
 }) {
+  appLog.add(
+    'toast ${type.name}: $message',
+    level: type == TuiToastType.error ? 'E' : 'I',
+  );
   final (top, bottom) = _stacksFor(context);
   final [title, ...rest] = message.split('\n');
   (low ? bottom : top).show(

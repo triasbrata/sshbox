@@ -6,6 +6,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'scrub.dart';
 import 'telemetry.dart';
+import 'app_log.dart';
 
 /// Whether this build knows where to send a crash at all: a DSN baked in with
 /// `--dart-define JEANSH_SENTRY_DSN`. A debug build has none, so nothing a
@@ -152,6 +153,7 @@ void _watchForFaults() {
     if (lastFault.value != null) return;
     lastFault.value = faultText(details);
   };
+  watchAppLog();
 }
 
 /// One fault, scrubbed, in the shape a bug report carries it: what it was, and
@@ -185,6 +187,9 @@ String faultText(FlutterErrorDetails details) {
 /// exception carries the stack that matters, and a thread dump is another
 /// place for a path to hide.
 SentryEvent? scrubEvent(SentryEvent event, Hint hint) {
+  // A bug report is the user's own act and is let through, rebuilt, even with
+  // the switch off; any other feedback event is not ours and goes nowhere.
+  if (event.type == 'feedback') return scrubFeedback(event, hint);
   // The switch, read at the moment of sending rather than at startup: turned
   // off while the app runs, nothing more goes out.
   if (!telemetryOn.value) return null;
@@ -214,6 +219,35 @@ SentryEvent? scrubEvent(SentryEvent event, Hint hint) {
     message: message == null ? null : SentryMessage(scrub(message.formatted)),
     exceptions: exceptions?.map(_exception).toList(),
     contexts: _contexts(event.contexts),
+  );
+}
+
+/// Marks the one event a bug report makes, in its [Hint]. [scrubEvent] lets
+/// a feedback event through on this and on nothing else.
+const reportHintKey = 'jeansh.bugReport';
+
+/// A bug report's event, rebuilt: the same allowlisted facts as any event,
+/// and the description, scrubbed, as its feedback context. Its attachment
+/// rides in the hint and is the app's own already-scrubbed log; nothing else
+/// reaches it, since a hint is built in one place (`sendFeedbackEvent`).
+SentryEvent? scrubFeedback(SentryEvent event, Hint hint) {
+  if (hint.get(reportHintKey) != true) return null;
+  final feedback = event.contexts.feedback;
+  final contexts = _contexts(event.contexts);
+  if (feedback != null) {
+    contexts.feedback = SentryFeedback(message: scrub(feedback.message));
+  }
+  return SentryEvent(
+    eventId: event.eventId,
+    timestamp: event.timestamp,
+    platform: event.platform,
+    level: event.level,
+    release: event.release,
+    dist: event.dist,
+    environment: event.environment,
+    sdk: event.sdk,
+    type: 'feedback',
+    contexts: contexts,
   );
 }
 
