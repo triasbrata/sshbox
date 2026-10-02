@@ -84,12 +84,11 @@ void _standInClaudeFor() {
   addTearDown(() {
     if (standIn.readAsStringSync() == _standInClaude) standIn.deleteSync();
     if (!hadBin) standIn.parent.deleteSync(recursive: true);
-    if (!hadConfig) {
-      config.deleteSync(recursive: true);
-    } else {
-      Directory('${config.path}/projects/jeansh-e2e')
-          .deleteSync(recursive: true);
-    }
+    // A chat that never started a session wrote nothing there.
+    final ours = hadConfig
+        ? Directory('${config.path}/projects/jeansh-e2e')
+        : config;
+    if (ours.existsSync()) ours.deleteSync(recursive: true);
   });
 }
 
@@ -472,12 +471,18 @@ window.show_all()
 Gtk.main()
 ''';
 
-/// Drags [path] from [_dragSource] onto the middle of Jeansh's window — the
-/// terminal of the tab showing — with the X pointer, as a hand would.
-Future<void> _drag(WidgetTester tester, String path, Directory dir) async {
+/// Drags [path], and [more] with it, from [_dragSource] onto the middle of
+/// Jeansh's window — the terminal of the tab showing — with the X pointer,
+/// as a hand would.
+Future<void> _drag(
+  WidgetTester tester,
+  String path,
+  Directory dir, {
+  List<String> more = const [],
+}) async {
   final source = File('${dir.path}/drag_source.py')
     ..writeAsStringSync(_dragSource);
-  final process = await Process.start('python3', [source.path, path]);
+  final process = await Process.start('python3', [source.path, path, ...more]);
   try {
     Future<void> xdo(List<String> args) async {
       final result = await Process.run('xdotool', args);
@@ -781,7 +786,9 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `rdown`, `rup` (the
 /// secondary, #132's), `sleep ms`, or
-/// `shiftdown` and `shiftup` (Linux and macOS only), or `cmdc`, ⌘ held, C
+/// `clickstate N` (what a Mac's events carry for the count of a double click,
+/// the app counting them itself elsewhere), `shiftdown` and `shiftup` (Linux
+/// and macOS only), or `cmdc`, ⌘ held, C
 /// typed and ⌘ let go as three key events (macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
@@ -793,7 +800,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
   if (Platform.isWindows) {
     run = _winMouse([
       for (final step in steps)
-        if (step.split(' ') case ['move', final x, final y])
+        if (step.startsWith('clickstate')) ...<String>[]
+        else if (step.split(' ') case ['move', final x, final y])
           'move ${(double.parse(x) * ratio).round()} '
               '${(double.parse(y) * ratio).round()}'
         else
@@ -821,6 +829,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
           ['shiftup'] => ['keyup', 'Shift_L'],
           ['up'] => ['mouseup', '1'],
           ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
+          // X carries no click count: the app counts them.
+          ['clickstate', _] => <String>[],
           _ => throw ArgumentError(step),
         },
     ]);
@@ -877,10 +887,16 @@ usleep(300_000)
 var at = CGPoint(x: bounds.midX, y: bounds.midY)
 var pressed = false
 var flags: CGEventFlags = []
+// What a real double click carries: kCGMouseEventClickState, 2 on the second
+// down and on its drags and its up.
+var clickState: Int64 = 0
 func post(_ type: CGEventType, _ button: CGMouseButton = .left) {
   let e = CGEvent(mouseEventSource: nil, mouseType: type,
                   mouseCursorPosition: at, mouseButton: button)!
   e.flags = flags
+  if clickState > 0 {
+    e.setIntegerValueField(.mouseEventClickState, value: clickState)
+  }
   e.post(tap: .cghidEventTap)
   usleep(10_000)
 }
@@ -926,6 +942,7 @@ for step in args[3].split(separator: ";") {
     }
     modifier(55, commandLeft, false)
   case "shiftup": modifier(56, shiftLeft, false)
+  case "clickstate": clickState = Int64(p[1])!
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
   }
@@ -2895,6 +2912,83 @@ touch '${done.path}'
     },
   );
 
+  // #146: files dropped from the file manager on a desktop chat. A picture
+  // becomes a card above the box and its [Image #1] in it; a folder dropped
+  // with it is refused, saying it is a folder, and so is a file that is no
+  // picture Claude reads. A real X drag, as the terminal's above.
+  _test(
+    'a picture dropped on a chat becomes a card, a folder is refused',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI it would drag with the user's own pointer"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final dir = _scratch();
+      // A 1x1 PNG.
+      final picture = File('${dir.path}/e2e-drop.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8Dw'
+            'HwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+          ),
+        );
+      final folder = Directory('${dir.path}/e2e-folder')..createSync();
+      final notes = File('${dir.path}/e2e-notes.txt')..writeAsStringSync('x');
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () => _composer.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+      );
+      Finder toast(String text) => find.descendant(
+        of: find.byType(TuiToastCard),
+        matching: find.textContaining(text, findRichText: true),
+      );
+      final cards = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Remove '),
+      );
+
+      await _drag(tester, picture.path, dir, more: [folder.path]);
+      await _until(
+        tester,
+        () =>
+            toast('A folder is not a picture: e2e-folder')
+                .evaluate()
+                .isNotEmpty,
+        'the folder refused, saying it is a folder',
+      );
+      await _until(
+        tester,
+        () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
+        "the picture's card",
+      );
+      expect(cards, findsOneWidget, reason: 'one card, for the picture alone');
+      expect(
+        tester.widget<TextField>(_composer).controller!.text,
+        '[Image #1] ',
+      );
+      await _shot(tester, 'desktop-chat-dropped-picture');
+
+      await _drag(tester, notes.path, dir);
+      await _until(
+        tester,
+        () =>
+            toast('Not a picture Claude can read: e2e-notes.txt')
+                .evaluate()
+                .isNotEmpty,
+        'the text file refused',
+      );
+      expect(cards, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
   // #14: a desktop's terminal can use a font the machine has, not only the
   // five the app bundles — listed from the machine itself, monospaced ones
   // marked, used by name. Menlo on a Mac, which every Mac has; on Linux the
@@ -3397,6 +3491,100 @@ touch '${done.path}'
         ], 'select');
         await copies(drag(0, 22, first), 'jeansh select me please');
         await copies(drag(0, 10, second), 'second line');
+      }
+      await _closeTabs(tester);
+    });
+  });
+
+  // The double click a Mac makes — the second press held, then dragged —
+  // grows the word selection word by word, as Terminal.app's and iTerm2's do.
+  // A trackpad's tap-to-click double tap and drag reaches Flutter as these
+  // same mouse events: only scrolling and pinching arrive as pans. xterm2
+  // dropped the word and selected characters from the press.
+  _test('a double click held and dragged selects by words, and the next drag '
+      'selects afresh', (tester) async {
+    await _realPointer(() async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      _run(view, "echo 'jeansh select me please'");
+      final lines = view.terminal.buffer.lines;
+      int row(String text) {
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].getText().startsWith(text)) return i;
+        }
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => row('jeansh select me please') >= 0,
+        'the line to be printed',
+      );
+      final line = row('jeansh select me please');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, line)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      Future<void> copies(List<String> steps, String text) async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, steps);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'something to be copied, expecting "$text"',
+        );
+        expect(await _clipboard(), text);
+      }
+
+      // The second click held on "select", dragged right across " me": a
+      // quick drag and a slow one.
+      for (final hold in [0, 300]) {
+        await copies([
+          cell(8),
+          'clickstate 1',
+          'down',
+          'sleep 30',
+          'up',
+          'sleep 60',
+          'clickstate 2',
+          'down',
+          if (hold > 0) 'sleep $hold',
+          for (var col = 9; col <= 15; col++) cell(col),
+          'up',
+          'clickstate 0',
+        ], 'select me');
+        // And leftwards, back across "jeansh".
+        await copies([
+          cell(8),
+          'sleep 700',
+          'clickstate 1',
+          'down',
+          'sleep 30',
+          'up',
+          'sleep 60',
+          'clickstate 2',
+          'down',
+          if (hold > 0) 'sleep $hold',
+          for (var col = 7; col >= 2; col--) cell(col),
+          'up',
+          'clickstate 0',
+        ], 'jeansh select');
+        // A plain drag after them is a fresh selection of characters.
+        await copies([
+          'sleep 700',
+          cell(2),
+          'down',
+          'sleep 300',
+          for (var col = 3; col <= 8; col++) cell(col),
+          'up',
+        ], 'ansh se');
       }
       await _closeTabs(tester);
     });

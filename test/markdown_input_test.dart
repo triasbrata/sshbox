@@ -180,4 +180,31 @@ void main() {
     final runs = markdownRuns('**ok**\n${'*a ' * 1000}', _controller());
     expect(runs.any((r) => r.$3?.fontWeight == FontWeight.bold), isTrue);
   });
+
+  test('an [Image #N] of a picture the message carries is a chip, and any '
+      'other is text', () {
+    final c = _controller()..pictures = {1};
+    const text = '[Image #1] and [Image #2]';
+    final runs = markdownRuns(text, c);
+    String of((int, int, TextStyle?) run) => text.substring(run.$1, run.$2);
+    final chip = runs.singleWhere((run) => of(run) == '[Image #1]');
+    expect(chip.$3?.color, _accent);
+    expect(chip.$3?.backgroundColor, isNotNull);
+    // The other is no picture's: it reads as typed, unstyled.
+    final other = runs.where((run) => of(run).contains('[Image #2]'));
+    expect(other.map((run) => run.$3?.backgroundColor), everyElement(isNull));
+    // Every character is still there.
+    expect(runs.map(of).join(), text);
+  });
+
+  testWidgets('an [Image #N] whose number no int holds is drawn as text, '
+      'never thrown on', (tester) async {
+    final c = _controller()..pictures = {1};
+    c.text = '[Image #99999999999999999999] and [Image #1]';
+    final spans = await _spans(tester, c);
+    expect(tester.takeException(), isNull);
+    expect(spans.map((span) => span.$1).join(), c.text);
+    final long = spans.where((span) => span.$1.contains('9999'));
+    expect(long.map((span) => span.$2?.backgroundColor), everyElement(isNull));
+  });
 }
