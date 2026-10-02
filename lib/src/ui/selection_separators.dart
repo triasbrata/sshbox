@@ -52,6 +52,7 @@ class _SeparatedDelegate extends StaticSelectionContainerDelegate {
     final buffer = StringBuffer();
     Rect? before;
     var lastText = '';
+    var endsNewline = false;
     var any = false;
     for (final selectable in selectables) {
       final content = selectable.getSelectedContent();
@@ -59,21 +60,23 @@ class _SeparatedDelegate extends StaticSelectionContainerDelegate {
       any = true;
       final where = _where(selectable);
       if (before != null && where != null && buffer.isNotEmpty) {
-        final text = buffer.toString();
         // Side by side, left to right: the cells of one row. Anything else
-        // is the next block, or the next row, below.
+        // is the next block, or the next row, below. A right-to-left table
+        // lays its cells out the other way, so there the cells come apart by
+        // a newline rather than a tab; acceptable for now.
         final overlap =
             where.top < before.bottom - 1 && where.bottom > before.top + 1;
         if (overlap && where.left >= before.right - 1) {
           // A list's marker and its item sit side by side too, and are one
           // line, not two cells.
           buffer.write(_marker.hasMatch(lastText) ? ' ' : '\t');
-        } else if (!text.endsWith('\n')) {
+        } else if (!endsNewline) {
           buffer.write('\n');
         }
       }
       buffer.write(content.plainText);
       lastText = content.plainText;
+      if (lastText.isNotEmpty) endsNewline = lastText.endsWith('\n');
       if (where != null) before = where;
     }
     return any ? SelectedContent(plainText: buffer.toString()) : null;
