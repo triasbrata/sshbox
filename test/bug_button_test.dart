@@ -411,6 +411,100 @@ void main() {
     });
   });
 
+  group('the log keeps no host text', () {
+    testWidgets('a toast leaves only its type and category', (tester) async {
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ToastLayer(
+            child: Builder(
+              builder: (c) {
+                context = c;
+                return const Scaffold();
+              },
+            ),
+          ),
+        ),
+      );
+      for (final message in [
+        'Failing row contains (42, Jane Doe, 1985-02-03)',
+        'session sshbox-work-acme-payroll is no longer on build-box',
+        r'Could not save C:\Users\Alice Smith\Quarterly Layoffs Draft.docx',
+        'IMG_mom_passport.HEIC',
+      ]) {
+        showToast(context, message, type: TuiToastType.error);
+      }
+      showToast(context, 'Upload of Jane.docx failed', logAs: 'upload failed');
+      final log = appLog.current;
+      for (final leak in [
+        'Jane',
+        'payroll',
+        'build-box',
+        'Smith',
+        'Layoffs',
+        'passport',
+        '1985',
+      ]) {
+        expect(log, isNot(contains(leak)), reason: leak);
+      }
+      expect(log, contains('toast error'));
+      expect(log, contains('toast info: upload failed'));
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    test('an error drops the message of a type that carries host text', () {
+      final before = appLog.length;
+      final saved = FlutterError.onError;
+      final print = debugPrint;
+      addTearDown(() {
+        FlutterError.onError = saved;
+        debugPrint = print;
+      });
+      FlutterError.onError = (_) {};
+      watchAppLog();
+      FlutterError.onError!(
+        FlutterErrorDetails(
+          exception: const FormatException('bad row Jane Doe, 1985-02-03'),
+        ),
+      );
+      final line = appLog.current.split('\n').last;
+      expect(appLog.length, greaterThan(before));
+      expect(line, contains('FormatException'));
+      expect(line, isNot(contains('Jane')));
+    });
+
+    testWidgets('the public issue leaves the fault to Sentry', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ToastLayer(
+            child: Builder(
+              builder: (context) => Scaffold(
+                body: ElevatedButton(
+                  onPressed: () => showBugReport(
+                    context,
+                    about: 'StateError: fault-text-marker',
+                    using: relay,
+                    feedback: feedback,
+                  ),
+                  child: const Text('go'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'froze');
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Under my name'));
+      await tester.pumpAndSettle();
+      final body = Uri.parse(launcher.opened.single).queryParameters['body']!;
+      expect(body, isNot(contains('fault-text-marker')));
+      expect(feedback.sent.single.message, contains('fault-text-marker'));
+    });
+  });
+
   group('what Sentry is handed', () {
     late _Wire wire;
 

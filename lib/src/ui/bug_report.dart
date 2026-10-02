@@ -117,7 +117,9 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     final what = scrub(_what.text.trim());
     final about = widget.about;
     final body = StringBuffer(what.isEmpty ? '(nothing written)' : what);
-    if (about != null && about.isNotEmpty) {
+    // With an event id the fault is in the Sentry event, privately; the
+    // public issue does not repeat it.
+    if (!withEventId && about != null && about.isNotEmpty) {
       body.writeln();
       body.writeln();
       body.writeln('What Jeansh caught:');
@@ -144,7 +146,7 @@ class _BugReportDialogState extends State<_BugReportDialog> {
     if (!_logGoes) return false;
     final sent = await _feedback.send(
       id: _eventId,
-      message: _body,
+      message: _bodyFor(false),
       log: appLog.render(),
     );
     if (!sent && mounted) {
