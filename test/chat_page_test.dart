@@ -6162,7 +6162,13 @@ void main() {
       },
     };
 
-    Future<_Shell> watching(WidgetTester tester) async {
+    /// The session the last [watching] opened, for a test to act on its chat.
+    LiveSession? current;
+
+    Future<_Shell> watching(
+      WidgetTester tester, {
+      Widget Function(Widget page)? wrap,
+    }) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
         ..devicePixelRatio = 1;
@@ -6215,8 +6221,10 @@ void main() {
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
+      current = session;
+      final page = ChatPage(session: session);
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(home: Scaffold(body: wrap == null ? page : wrap(page))),
       );
       await _frames(tester);
       await tester.tap(find.text('the nightly build'));
@@ -6287,7 +6295,8 @@ void main() {
       expect(find.text('Found the thing.'), findsOneWidget);
 
       // Back: the session, with its own box.
-      await tester.pageBack();
+      // Back: the breadcrumb's first crumb, the session.
+      await tester.tap(find.text('box'));
       await _frames(tester);
       expect(find.text('Found the thing.'), findsNothing);
       expect(find.byType(TextField), findsOneWidget);
@@ -6329,7 +6338,8 @@ void main() {
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.text('Surveying the repo now.'), findsOneWidget);
-      await tester.pageBack();
+      // Back: the breadcrumb's first crumb, the session.
+      await tester.tap(find.text('box'));
       await _frames(tester);
       expect(_conversationAt(tester).pixels, placed);
     });
@@ -6404,6 +6414,161 @@ void main() {
       expect(find.byType(TextField), findsOneWidget);
     });
 
+    int reads(_Shell shell) => shell.commands
+        .where((c) => c.contains('/subagents/') && c.contains('wc -c'))
+        .length;
+
+    Future<void> ticks(WidgetTester tester, int n) async {
+      for (var i = 0; i < n; i++) {
+        await tester.pump(
+          ClaudeChat.subAgentEvery + const Duration(milliseconds: 100),
+        );
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+    }
+
+    testWidgets('a hidden tab asks the host for nothing, and asks once at once '
+        'when it is shown again', (tester) async {
+      final shown = ValueNotifier(true);
+      addTearDown(shown.dispose);
+      final shell = await watching(
+        tester,
+        wrap: (page) => ValueListenableBuilder<bool>(
+          valueListenable: shown,
+          builder: (context, on, _) => TickerMode(enabled: on, child: page),
+        ),
+      );
+      await openFirst(tester);
+      await ticks(tester, 1);
+      final before = reads(shell);
+
+      shown.value = false;
+      await tester.pump();
+      final asked = reads(shell);
+      await ticks(tester, 3);
+      expect(reads(shell), asked);
+
+      shown.value = true;
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      expect(reads(shell), asked + 1);
+      expect(asked, greaterThanOrEqualTo(before));
+      await ticks(tester, 1);
+      expect(reads(shell), greaterThan(asked + 1));
+    });
+
+    testWidgets('an app that is not in front asks the host for nothing', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      await openFirst(tester);
+      await ticks(tester, 1);
+      // Away, the way an app goes: inactive, hidden, paused.
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pump();
+      final asked = reads(shell);
+      await ticks(tester, 3);
+      expect(reads(shell), asked);
+      for (final state in [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      expect(reads(shell), asked + 1);
+    });
+
+    testWidgets('a session that is replaced under its sub-agent view stops '
+        'being asked about, and the view says so', (tester) async {
+      final shell = await watching(tester);
+      await openFirst(tester);
+      await ticks(tester, 1);
+      expect(find.textContaining('Read-only'), findsOneWidget);
+
+      // Another chat started: the Agent row is gone, with no result.
+      var done = false;
+      unawaited(current!.chat.newChat().whenComplete(() => done = true));
+      for (var i = 0; i < 20 && !done; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(done, isTrue, reason: 'newChat did not complete');
+      await ticks(tester, 1);
+      await _frames(tester);
+      expect(find.textContaining('This session was replaced'), findsOneWidget);
+      final asked = reads(shell);
+      await ticks(tester, 3);
+      expect(reads(shell), asked);
+    });
+
+    testWidgets('the sub-agent view is part of the chat tab: the strip stays '
+        'in reach, and the tab comes back to the view as it was left', (
+      tester,
+    ) async {
+      final tab = ValueNotifier(0);
+      addTearDown(tab.dispose);
+      final shell = await watching(
+        tester,
+        wrap: (page) => Column(
+          children: [
+            // Stands for the tab strip.
+            ValueListenableBuilder<int>(
+              valueListenable: tab,
+              builder: (context, _, _) => Row(
+                children: [
+                  TextButton(
+                    onPressed: () => tab.value = 1,
+                    child: const Text('other tab'),
+                  ),
+                  TextButton(
+                    onPressed: () => tab.value = 0,
+                    child: const Text('chat tab'),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ValueListenableBuilder<int>(
+                valueListenable: tab,
+                builder: (context, index, _) => IndexedStack(
+                  index: index,
+                  children: [
+                    TickerMode(enabled: index == 0, child: page),
+                    const Center(child: Text('the other tab')),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+      await openFirst(tester);
+      expect(find.text('Surveying the repo now.'), findsOneWidget);
+      // The strip is on screen and answers while the sub-agent's work shows.
+      expect(find.text('other tab'), findsOneWidget);
+      await tester.tap(find.text('other tab'));
+      await _frames(tester);
+      expect(find.text('the other tab'), findsOneWidget);
+      expect(find.text('Surveying the repo now.'), findsNothing);
+
+      await tester.tap(find.text('chat tab'));
+      await _frames(tester);
+      expect(find.text('Surveying the repo now.'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      expect(reads(shell), greaterThan(0));
+    });
+
     testWidgets('a sub-agent\'s text is drawn as text, and a row for a '
         'sub-agent the host does not know offers nothing', (tester) async {
       final shell = await watching(tester);
@@ -6411,6 +6576,12 @@ void main() {
       await _settlePickUp(tester);
       expect(find.text('Open sub-agent: ghost'), findsNothing);
       expect(find.text('Open sub-agent: survey the repo'), findsOneWidget);
+      // The host is asked about it a handful of times, and then not any more.
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 2100));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(find.text('Open sub-agent: ghost'), findsNothing);
     });
   });
 }
