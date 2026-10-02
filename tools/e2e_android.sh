@@ -471,8 +471,10 @@ chat_version() {
 # once with adb and reported. The host's Claude is the stand-in in
 # tools/e2e_image_claude.py, which logs what it is given to ~/.e2e-pics.log;
 # what reached the host is read from there and from the transcripts.
-PICS_SIDS=(e2e00007-0000-4000-8000-000000000007 e2e00008-0000-4000-8000-000000000008
-  e2e00009-0000-4000-8000-000000000009)
+# Ids no other block uses: chat_stand_in counts up from 1, STATUS_SID is 8,
+# LIVE_SID 9, and the image stand-in's --bg and -p take a and b.
+PICS_SIDS=(e2e0000c-0000-4000-8000-00000000000c e2e0000d-0000-4000-8000-00000000000d
+  e2e0000e-0000-4000-8000-00000000000e)
 pics_pids=()
 
 # How many picture cards the screen shows, read off Android's own view tree.
@@ -545,7 +547,7 @@ def png(rgb, w=64, h=48):
 open(os.path.join(home, 'e2e-red.png'), 'wb').write(png((230, 20, 20)))
 d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
 os.makedirs(d, exist_ok=True)
-for n in (7, 8, 9):
+for n in 'cde':
     with open(os.path.join(d, f'e2e0000{n}-0000-4000-8000-00000000000{n}.jsonl'), 'w') as f:
         for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'Earlier question'}},
                   {'type': 'assistant', 'message': {'role': 'assistant',
@@ -589,9 +591,9 @@ except (OSError, ValueError):
     rows = []
 rows = [r for r in rows if r.get('sessionId') not in (own, live, inpane)]
 rows += [
-    {'id': 'e2e00007', 'sessionId': own, 'name': 'E2E pictures own', 'cwd': home,
+    {'id': 'e2e0000c', 'sessionId': own, 'name': 'E2E pictures own', 'cwd': home,
      'kind': 'background', 'state': 'done', 'startedAt': 1790000000200},
-    {'id': 'e2e00008', 'sessionId': live, 'pid': bg, 'name': 'E2E pictures live',
+    {'id': 'e2e0000d', 'sessionId': live, 'pid': bg, 'name': 'E2E pictures live',
      'cwd': home, 'kind': 'background', 'state': 'done', 'status': 'idle',
      'startedAt': 1790000000201},
     {'kind': 'interactive', 'pid': pane, 'sessionId': inpane, 'name': 'E2E pictures pane',
@@ -704,6 +706,8 @@ PY
   pics done
   # Only what this started: the tmux session, the sleeps, the stand-in.
   sudo -u "$SSH_USER" -H tmux kill-session -t e2e-pics 2>/dev/null
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l '"sessionId":"e2e0000e-' {} + 2>/dev/null | xargs -r sudo rm -f
   started=$(sudo python3 -c 'import json, sys
 print(" ".join(str(r["pid"]) for r in json.load(open(sys.argv[1]))
                if r.get("sessionId", "").startswith("e2e0000a") and r.get("pid")))' \
