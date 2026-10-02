@@ -350,8 +350,27 @@ class _LiveHost {
   /// How many chips each terminal had drawn when each of its writes came.
   final chipsWhenTyped = <int>[];
 
+  /// What listing the session's sub-agents prints, one line each; and the
+  /// lines of the sub-agent being read, whole, from which a read from a byte
+  /// is cut.
+  String subAgentsOut = '';
+  List<String> subAgentLines = [];
+
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('ls "\$dir"')) return _says(subAgentsOut);
+    if (command.contains('/subagents/') && command.contains('wc -c')) {
+      final all = subAgentLines.isEmpty ? '' : '${subAgentLines.join('\n')}\n';
+      final bytes = utf8.encode(all);
+      final from = int.tryParse(
+        RegExp(r'tail -c \+(\d+)').firstMatch(command)?.group(1) ?? '',
+      );
+      if (command.contains('head -c "\$s"') || from == null) {
+        // The history: its size, then its end.
+        return _says('${bytes.length}\n$all');
+      }
+      return _says('${bytes.length}\n${utf8.decode(bytes.sublist(from - 1))}');
+    }
     if (command.contains('list-panes')) {
       final stdin = <String>[];
       if (command.contains('load-buffer')) {
@@ -4320,6 +4339,254 @@ void main() {
       await chat.refreshQuota(force: true);
       expect(chat.quotaNotReported, isTrue);
       expect(chat.quota!.windows.single.percent, 10);
+    });
+  });
+
+  group('sub-agents', () {
+    // Shapes measured on 2.1.300 (words made up): the files are
+    // <session>/subagents/agent-<id>.jsonl and .meta.json, every line of a
+    // sub-agent's `isSidechain: true`, its meta naming the tool_use that
+    // started it.
+    String meta(String toolUseId, {String type = 'general-purpose', String description = 'look around'}) =>
+        jsonEncode({
+          'agentType': type,
+          'description': description,
+          'toolUseId': toolUseId,
+          'spawnDepth': 1,
+          'requestNonInteractive': false,
+        });
+    String line(String file, String json, {int tools = 2, int size = 1000, String last = '2026-10-02T08:23:25.503Z'}) =>
+        [file, json, '$tools', '$size', last].join('\t');
+    Map<String, Object?> side(Map<String, Object?> event) => {
+      ...event,
+      'isSidechain': true,
+      'agentId': 'xyz',
+    };
+
+    test('a sub-agent is linked to its tool_use by the meta, and what is not a '
+        'file or an id is left out', () {
+      final found = SubAgent.allIn([
+        line('agent-aaa111', meta('toolu_01A', description: 'esc\u001b[31m it')),
+        line('agent-bbb222', meta('toolu_02B'), tools: 7, size: 3 * 1024 * 1024),
+        line('agent-c c', meta('toolu_03C')),
+        line('agent-ddd', meta(r'toolu_$(touch pwned)')),
+        line('notagent', meta('toolu_04D')),
+        line('agent-eee', 'not json'),
+        'too\tfew',
+      ].join('\n'));
+      expect([for (final a in found) a.toolUseId], ['toolu_01A', 'toolu_02B']);
+      expect(found.first.description, 'esc[31m it');
+      expect(found.first.type, 'general-purpose');
+      expect(found.first.tools, 2);
+      expect(found.first.toolsAtLeast, isFalse);
+      expect(found.last.tools, 7);
+      expect(found.last.toolsAtLeast, isTrue);
+      expect(found.first.last, DateTime.utc(2026, 10, 2, 8, 23, 25, 503));
+    });
+
+    test('the session lists its sub-agents from the host, and an Agent row '
+        'finds its own', () async {
+      final host = _LiveHost('0\n')
+        ..subAgentsOut = line('agent-aaa111', meta('toolu_agent1'));
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_agent1',
+              'name': 'Agent',
+              'input': {'description': 'look around', 'prompt': 'p'},
+            },
+          ],
+        },
+      });
+      await _settle();
+      await _settle();
+      expect(chat.subAgentOf('toolu_agent1')!.file, 'agent-aaa111');
+      expect(chat.subAgentOf('toolu_other'), isNull);
+      expect(
+        host.commands.where((c) => c.contains('/subagents')),
+        isNotEmpty,
+      );
+    });
+
+    test('its view replays the sub-agent\'s own lines, read-only, and goes on '
+        'reading while it runs, then stops', () async {
+      final host = _LiveHost('0\n')
+        ..subAgentsOut = line('agent-aaa111', meta('toolu_agent1'));
+      final parent = ClaudeChat(open: host.open);
+      addTearDown(parent.dispose);
+      await parent.continueFrom(_live);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_agent1',
+              'name': 'Agent',
+              'input': {'description': 'look around'},
+            },
+          ],
+        },
+      });
+      await _settle();
+      await _settle();
+      final run = parent.entries.whereType<ChatToolRun>().single;
+      var running = true;
+      host.subAgentLines = [
+        side({
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'go and look'},
+        }),
+        side({
+          'type': 'assistant',
+          'message': {
+            'id': 'sa1',
+            'content': [
+              {'type': 'text', 'text': 'Looking now.'},
+            ],
+          },
+        }),
+      ].map(jsonEncode).toList();
+      final view = ClaudeChat.subAgent(
+        open: host.open,
+        parent: parent,
+        agent: parent.subAgentOf('toolu_agent1')!,
+        isRunning: () => running && !run.done,
+      );
+      addTearDown(view.dispose);
+      await view.openSubAgent();
+      expect([
+        for (final e in view.entries)
+          if (e is ChatSaid) e.text,
+      ], ['go and look', 'Looking now.']);
+      expect(view.subAgent!.file, 'agent-aaa111');
+
+      // The sub-agent writes more; the next look has it.
+      host.subAgentLines.add(
+        jsonEncode(side({
+          'type': 'assistant',
+          'message': {
+            'id': 'sa2',
+            'content': [
+              {'type': 'text', 'text': 'Found it.'},
+            ],
+          },
+        })),
+      );
+      await Future<void>.delayed(ClaudeChat.subAgentEvery + const Duration(milliseconds: 200));
+      expect(
+        [for (final e in view.entries) if (e is ChatSaid) e.text].last,
+        'Found it.',
+      );
+
+      // Done: one more look, and then it stops asking.
+      running = false;
+      await Future<void>.delayed(ClaudeChat.subAgentEvery + const Duration(milliseconds: 200));
+      final asked = host.commands.where((c) => c.contains('tail -c +')).length;
+      await Future<void>.delayed(ClaudeChat.subAgentEvery + const Duration(milliseconds: 200));
+      expect(host.commands.where((c) => c.contains('tail -c +')).length, asked);
+    });
+
+    test('a session\'s own view still leaves a sub-agent\'s lines out', () async {
+      final text = [
+        jsonEncode({
+          'type': 'assistant',
+          'isSidechain': true,
+          'message': {
+            'id': 'x',
+            'content': [
+              {'type': 'text', 'text': 'sub-agent chatter'},
+            ],
+          },
+        }),
+      ].join('\n');
+      final host = _LiveHost('${utf8.encode('$text\n').length}\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+    });
+
+    test('through a real shell: the sub-agents are listed from the session\'s '
+        'folder, read from a byte, bounded, and a bad name reads nothing',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('sshbox-sub-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const sid = '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f';
+      final project = Directory('${dir.path}/projects/-srv-app')
+        ..createSync(recursive: true);
+      File('${project.path}/$sid.jsonl').writeAsStringSync('{"type":"mode"}\n');
+      final subs = Directory('${project.path}/$sid/subagents')
+        ..createSync(recursive: true);
+      final lines = [
+        for (var n = 1; n <= 3; n++)
+          jsonEncode({
+            'type': 'assistant',
+            'timestamp': '2026-10-02T08:2$n:00.000Z',
+            'message': {
+              'content': [
+                {'type': 'tool_use', 'id': 't$n', 'name': 'Bash', 'input': {}},
+              ],
+            },
+          }),
+      ];
+      File('${subs.path}/agent-abc123.jsonl').writeAsStringSync('${lines.join('\n')}\n');
+      File('${subs.path}/agent-abc123.meta.json').writeAsStringSync(
+        '{\n  "agentType": "Explore",\n  "description": "it\'s \$(touch pwned-sub)",\n'
+        '  "toolUseId": "toolu_01A"\n}\n',
+      );
+      File('${subs.path}/notes.meta.json').writeAsStringSync('{"toolUseId":"x"}');
+
+      Future<String> run(String command) async {
+        final r = await Process.run(
+          'sh',
+          ['-c', command],
+          environment: {'CLAUDE_CONFIG_DIR': dir.path},
+          workingDirectory: dir.path,
+        );
+        return '${r.stdout}';
+      }
+
+      final listed = SubAgent.allIn(await run(ClaudeChat.subAgentsCommand(sid)));
+      expect(listed, hasLength(1));
+      expect(listed.single.toolUseId, 'toolu_01A');
+      expect(listed.single.type, 'Explore');
+      expect(listed.single.description, r"it's $(touch pwned-sub)");
+      expect(listed.single.tools, 3);
+      expect(listed.single.last, DateTime.utc(2026, 10, 2, 8, 23));
+      expect(File('${dir.path}/pwned-sub').existsSync(), isFalse);
+
+      // The whole history, and a read from a byte on.
+      final history = await run(ClaudeChat.historyCommand(sid, agent: 'agent-abc123'));
+      expect(history.split('\n').first, '${utf8.encode('${lines.join('\n')}\n').length}');
+      expect(history, contains('"id":"t1"'));
+      final from = utf8.encode('${lines.first}\n').length;
+      final tail = await run(
+        ClaudeChat.subAgentTailCommand(sid, 'agent-abc123', from: from),
+      );
+      expect(tail, isNot(contains('"id":"t1"')));
+      expect(tail, contains('"id":"t2"'));
+
+      // A name that is not a sub-agent's file reads nothing, and never the
+      // session's own transcript in its place.
+      for (final bad in [r'agent-$(touch pwned-name)', 'agent-', 'x', 'agent-a b']) {
+        final out = await run(ClaudeChat.historyCommand(sid, agent: bad));
+        expect(out, contains('No transcript for this sub-agent'));
+        expect(out, isNot(contains('"type":"mode"')));
+      }
+      expect(File('${dir.path}/pwned-name').existsSync(), isFalse);
+      // A session with none: nothing, and success.
+      expect(await run(ClaudeChat.subAgentsCommand('e2e00000-0000-4000-8000-000000000000')), isEmpty);
     });
   });
 }

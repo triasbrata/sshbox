@@ -197,6 +197,12 @@ class _Shell
   void adds(Map<String, Object?> line) =>
       follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
+  /// What listing the session's sub-agents prints, and the lines of each
+  /// sub-agent's transcript by file name, whole, from which a read from a byte
+  /// is cut.
+  String subAgentsOut = '';
+  final subAgentLines = <String, List<String>>{};
+
   /// What `claude -p /usage` prints on the host, for the plan's usage; nothing
   /// by default, which is Claude Code reporting no limit.
   String usageOut = '';
@@ -211,6 +217,32 @@ class _Shell
     if (command.contains('/tasks')) {
       return (
         output: Stream.value(Uint8List.fromList(utf8.encode(tasksOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    if (command.contains('ls "\$dir"')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(subAgentsOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
+    if (command.contains('/subagents/') && command.contains('wc -c')) {
+      final file = RegExp(
+        r'subagents/".{0,8}?(agent-[0-9A-Za-z_-]+)\.jsonl',
+      ).firstMatch(command)?.group(1);
+      final lines = subAgentLines[file] ?? const <String>[];
+      final all = lines.isEmpty ? '' : '${lines.join('\n')}\n';
+      final bytes = utf8.encode(all);
+      final from = int.tryParse(
+        RegExp(r'tail -c \+(\d+)').firstMatch(command)?.group(1) ?? '',
+      );
+      final out = command.contains('head -c "\$s"') || from == null
+          ? '${bytes.length}\n$all'
+          : '${bytes.length}\n${utf8.decode(bytes.sublist(from - 1))}';
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(out))),
         write: (Uint8List data) {},
         close: () {},
       );
@@ -5245,6 +5277,287 @@ void main() {
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.textContaining('resets [a](javascript:1)'), findsOneWidget);
+    });
+  });
+
+  group('a sub-agent\'s work', () {
+    String meta(String toolUseId, String description, {String type = 'Explore'}) =>
+        jsonEncode({
+          'agentType': type,
+          'description': description,
+          'toolUseId': toolUseId,
+        });
+    String listLine(String file, String json) =>
+        [file, json, '4', '2000', '2026-10-02T08:23:25.503Z'].join('\t');
+    Map<String, Object?> side(Map<String, Object?> event) => {
+      ...event,
+      'isSidechain': true,
+    };
+    Map<String, Object?> agentCall(String id, String description) => {
+      'type': 'assistant',
+      'message': {
+        'id': 'msg_$id',
+        'stop_reason': 'tool_use',
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': id,
+            'name': 'Agent',
+            'input': {'description': description, 'prompt': 'p'},
+          },
+        ],
+      },
+    };
+
+    Future<_Shell> watching(WidgetTester tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'busy',
+            'state': 'working',
+          },
+        ])
+        ..subAgentsOut = [
+          listLine('agent-aaa111', meta('toolu_one', 'survey the repo')),
+          listLine('agent-bbb222', meta('toolu_two', 'dig deeper', type: 'general-purpose')),
+        ].join('\n')
+        ..subAgentLines['agent-aaa111'] = [
+          side({
+            'type': 'user',
+            'message': {'role': 'user', 'content': 'survey it for me'},
+          }),
+          side(agentCall('toolu_two', 'dig deeper')),
+          side({
+            'type': 'assistant',
+            'message': {
+              'id': 'sa1',
+              'content': [
+                {'type': 'text', 'text': 'Surveying the repo now.'},
+              ],
+            },
+          }),
+        ].map(jsonEncode).toList()
+        ..subAgentLines['agent-bbb222'] = [
+          side({
+            'type': 'assistant',
+            'message': {
+              'id': 'sb1',
+              'content': [
+                {'type': 'text', 'text': 'Digging in the nested one.'},
+              ],
+            },
+          }),
+        ].map(jsonEncode).toList();
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      shell.adds(agentCall('toolu_one', 'survey the repo'));
+      await _settlePickUp(tester);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      return shell;
+    }
+
+    void fixedClock(WidgetTester tester) {
+      final real = chatNow;
+      chatNow = () => DateTime.utc(2026, 10, 2, 8, 25, 25, 503);
+      addTearDown(() => chatNow = real);
+    }
+
+    Future<void> openFirst(WidgetTester tester) async {
+      await tester.tap(find.text('Open sub-agent: survey the repo'));
+      await tester.pump();
+      await _frames(tester);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+    }
+
+    testWidgets('an Agent row offers the way into its sub-agent, with what it '
+        'is and how it is doing', (tester) async {
+      fixedClock(tester);
+      await watching(tester);
+      expect(find.text('Open sub-agent: survey the repo'), findsOneWidget);
+      expect(
+        find.text('Explore · running · 4 tools · 2m ago'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('opening it shows its work as chat draws one, read-only, under '
+        'a breadcrumb', (tester) async {
+      await watching(tester);
+      await openFirst(tester);
+      expect(find.text('Surveying the repo now.'), findsOneWidget);
+      expect(find.text('survey it for me'), findsOneWidget);
+      // The breadcrumb: the session, then this sub-agent.
+      expect(find.text('survey the repo'), findsOneWidget);
+      expect(find.textContaining('Read-only'), findsOneWidget);
+      // No box to type in.
+      expect(find.byType(TextField), findsNothing);
+    });
+
+    testWidgets('live: what the sub-agent adds while it runs shows, and back '
+        'is the conversation as it was left', (tester) async {
+      final shell = await watching(tester);
+      await openFirst(tester);
+      shell.subAgentLines['agent-aaa111']!.add(
+        jsonEncode(side({
+          'type': 'assistant',
+          'message': {
+            'id': 'sa2',
+            'content': [
+              {'type': 'text', 'text': 'Found the thing.'},
+            ],
+          },
+        })),
+      );
+      await tester.pump(ClaudeChat.subAgentEvery + const Duration(milliseconds: 100));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('Found the thing.'), findsOneWidget);
+
+      // Back: the session, with its own box.
+      await tester.pageBack();
+      await _frames(tester);
+      expect(find.text('Found the thing.'), findsNothing);
+      expect(find.byType(TextField), findsOneWidget);
+    });
+
+    testWidgets('back keeps the place the conversation was scrolled to', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      // Enough after the row that it is scrolled off, above the view.
+      for (var n = 1; n <= 4; n++) {
+        shell.adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'pad$n',
+            'stop_reason': 'end_turn',
+            'content': [
+              {
+                'type': 'text',
+                'text': List.filled(12, 'Padding $n goes on.').join('\n\n'),
+              },
+            ],
+          },
+        });
+      }
+      await _settlePickUp(tester);
+      // Up with the reader's own wheel until the row is on screen.
+      final row = find.text('Open sub-agent: survey the repo');
+      for (var i = 0; i < 40 && row.evaluate().isEmpty; i++) {
+        await _wheel(tester, -200);
+        await _frames(tester);
+      }
+      expect(row, findsOneWidget);
+      final placed = _conversationAt(tester).pixels;
+      expect(placed, greaterThan(0));
+      await tester.tap(row);
+      await tester.pump();
+      await _frames(tester);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('Surveying the repo now.'), findsOneWidget);
+      await tester.pageBack();
+      await _frames(tester);
+      expect(_conversationAt(tester).pixels, placed);
+    });
+
+    testWidgets('a sub-agent\'s view follows what it adds while the reader '
+        'is at its end, and leaves a reader who scrolled up where they are', (
+      tester,
+    ) async {
+      final shell = await watching(tester);
+      Map<String, Object?> tall(int n) => side({
+        'type': 'assistant',
+        'message': {
+          'id': 'tall$n',
+          'content': [
+            {
+              'type': 'text',
+              'text': List.filled(14, 'Tall $n goes on.').join('\n\n'),
+            },
+          ],
+        },
+      });
+      shell.subAgentLines['agent-aaa111']!
+        ..add(jsonEncode(tall(0)))
+        ..add(jsonEncode(tall(1)));
+      await openFirst(tester);
+      final view = find.byType(ListView).last;
+      ScrollPosition position() => tester.state<ScrollableState>(
+        find.descendant(of: view, matching: find.byType(Scrollable)).first,
+      ).position;
+      expect(position().maxScrollExtent - position().pixels, lessThan(2));
+
+      // More arrives while the reader is at the end: followed.
+      shell.subAgentLines['agent-aaa111']!.add(jsonEncode(tall(2)));
+      await tester.pump(ClaudeChat.subAgentEvery + const Duration(milliseconds: 100));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.textContaining('Tall 2 goes on.'), findsWidgets);
+      expect(position().maxScrollExtent - position().pixels, lessThan(2));
+
+      // Scrolled up: what arrives next leaves the view where it is.
+      position().jumpTo(position().pixels - 600);
+      await tester.pump();
+      final kept = position().pixels;
+      shell.subAgentLines['agent-aaa111']!.add(jsonEncode(tall(3)));
+      await tester.pump(ClaudeChat.subAgentEvery + const Duration(milliseconds: 100));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(position().pixels, kept);
+    });
+
+    testWidgets('a sub-agent\'s own sub-agent can be entered the same way, '
+        'with a breadcrumb back to any level', (tester) async {
+      await watching(tester);
+      await openFirst(tester);
+      expect(find.text('Open sub-agent: dig deeper'), findsOneWidget);
+      await tester.tap(find.text('Open sub-agent: dig deeper'));
+      await tester.pump();
+      await _frames(tester);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('Digging in the nested one.'), findsOneWidget);
+      // Three levels: the session, the sub-agent, its sub-agent.
+      expect(find.text('survey the repo'), findsOneWidget);
+      expect(find.text('dig deeper'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+
+      // The first level of the trail goes back to the session at once.
+      await tester.tap(find.text('box'));
+      await _frames(tester);
+      expect(find.text('Digging in the nested one.'), findsNothing);
+      expect(find.text('Surveying the repo now.'), findsNothing);
+      expect(find.byType(TextField), findsOneWidget);
+    });
+
+    testWidgets('a sub-agent\'s text is drawn as text, and a row for a '
+        'sub-agent the host does not know offers nothing', (tester) async {
+      final shell = await watching(tester);
+      shell.adds(agentCall('toolu_unknown', 'ghost'));
+      await _settlePickUp(tester);
+      expect(find.text('Open sub-agent: ghost'), findsNothing);
+      expect(find.text('Open sub-agent: survey the repo'), findsOneWidget);
     });
   });
 }
