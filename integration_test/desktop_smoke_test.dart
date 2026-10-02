@@ -48,6 +48,7 @@ import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart' show TuiChatBubble;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
+import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
 import 'package:sshbox/src/ui/settings_page.dart'
     show SettingsPage, localTmux, maxFontSize, terminalFonts, terminalSettings;
 import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
@@ -3410,6 +3411,135 @@ touch '${done.path}'
         () => opened.existsSync() && opened.readAsStringSync().contains(url),
         'Alt+click to hand the link to the browser',
       );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #187: Report a bug, after + in the strip. Its icon alone until a first
+  // click slides "Report a bug" out, which folds back by itself after 4 s or
+  // on a click elsewhere; a click on it then opens the report. CI's builds
+  // carry no Sentry DSN, so the dialog says the log can't go, offers no
+  // private route, and "Under my name" hands the browser a GitHub link that
+  // holds what was written and none of the log. The browser is the link-key
+  // test's stand-in, on CI alone for the same reason.
+  _test(
+    'Report a bug folds out on a click, opens on the next, and links no log',
+    skip: !Platform.isLinux
+        ? 'the stand-in browser is registered through XDG mime handlers, '
+              'which only Linux reads'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI the machine's own browser would open"
+        : null,
+    (tester) async {
+      final data = Platform.environment['XDG_DATA_HOME']!;
+      final opened = File('$data/e2e-opened-bug-links');
+      final browser = File('$data/e2e-bug-browser')
+        ..writeAsStringSync(
+          '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${opened.path}\'\n',
+        );
+      Process.runSync('chmod', ['755', browser.path]);
+      Directory('$data/applications').createSync(recursive: true);
+      File('$data/applications/e2e-bug-browser.desktop').writeAsStringSync(
+        '[Desktop Entry]\nType=Application\nName=e2e browser\nNoDisplay=true\n'
+        'Exec=${browser.path} %u\n'
+        'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n',
+      );
+      File('$data/applications/mimeapps.list').writeAsStringSync(
+        '[Default Applications]\n'
+        'x-scheme-handler/http=e2e-bug-browser.desktop\n'
+        'x-scheme-handler/https=e2e-bug-browser.desktop\n',
+      );
+      // A line of the log's own, which no link may carry.
+      const marker = 'e2e-log-marker-7f3a';
+      appLog.add(marker);
+
+      await _launch(tester);
+      final bug = find.byIcon(Icons.bug_report_outlined);
+      final label = find.text('Report a bug');
+      Future<void> settle() => tester.pump(const Duration(milliseconds: 400));
+
+      // 1. Right after +, folded to its icon.
+      expect(bug, findsOneWidget, reason: 'no bug icon in the strip');
+      final plus = tester.getRect(
+        find
+            .byWidgetPredicate(
+              (w) => w is Semantics && w.properties.label == 'New tab',
+            )
+            .first,
+      );
+      final icon = tester.getRect(bug);
+      expect(
+        icon.left >= plus.right - 1 && icon.left - plus.right < 48,
+        isTrue,
+        reason: 'the bug icon at $icon is not right after + at $plus',
+      );
+      expect(label, findsNothing, reason: 'the label showed before a click');
+
+      // 2. One click: the label, and no dialog.
+      await tester.tap(bug);
+      await settle();
+      expect(label, findsOneWidget, reason: 'a click did not show the label');
+      expect(find.byType(TuiDialog), findsNothing, reason: 'a dialog opened');
+
+      // 3. It folds back by itself, and on a click elsewhere.
+      await _until(
+        tester,
+        () => label.evaluate().isEmpty,
+        'the label to fold back by itself',
+        timeout: const Duration(seconds: 8),
+      );
+      await tester.tap(bug);
+      await settle();
+      expect(label, findsOneWidget);
+      final window = tester.view.physicalSize / tester.view.devicePixelRatio;
+      await tester.tapAt(Offset(window.width / 2, window.height - 8));
+      await settle();
+      expect(label, findsNothing, reason: 'a click elsewhere left it out');
+
+      // 4. Out, then on it: the report, with no log to attach in this build.
+      await tester.tap(bug);
+      await settle();
+      await tester.tap(label);
+      await _until(
+        tester,
+        () => find.byType(TuiDialog).evaluate().isNotEmpty,
+        'the report to open',
+      );
+      expect(
+        find.textContaining("can't be attached in this build"),
+        findsOneWidget,
+        reason: 'no word that the log cannot go',
+      );
+      expect(find.textContaining('Privately to the developer'), findsNothing);
+      expect(find.text('Under my name'), findsOneWidget);
+
+      // 5. Under my name: a GitHub link with what was written, no log.
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(TuiDialog),
+          matching: find.byType(TextField),
+        ),
+        'the e2e bug report',
+      );
+      await settle();
+      await tester.tap(find.text('Under my name'));
+      await _until(
+        tester,
+        () =>
+            opened.existsSync() && opened.readAsStringSync().trim().isNotEmpty,
+        'the report link to reach the browser',
+      );
+      final link = Uri.parse(opened.readAsStringSync().trim().split('\n').last);
+      final body = link.queryParameters['body'] ?? '';
+      debugPrint('Report link: $link');
+      expect(link.host, 'github.com');
+      expect(link.path, '/triasbrata/sshbox/issues/new');
+      expect(body, contains('the e2e bug report'));
+      expect(body, contains('Jeansh '), reason: 'no version line');
+      expect(body, isNot(contains(marker)), reason: 'the log is in the link');
+      expect(body, isNot(contains('--- this run ---')));
+      // No DSN in this build, so no event to name.
+      expect(body, isNot(contains('Sentry event')));
       await _closeTabs(tester);
     },
   );

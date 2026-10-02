@@ -1,0 +1,66 @@
+# #187: Report a bug, right after + in the tab strip. Its icon alone until a
+# first tap slides "Report a bug" out; that folds back by itself after about
+# 4 s, or on a tap anywhere else, and a tap on it while out opens the report.
+#
+# Folded and out are told apart by the button's own accessibility text: its
+# label is always "Report a bug", and while folded it adds a hint, "Tap once to
+# show, again to report", which Flutter puts after the label. Out, it is the
+# label alone.
+#
+# CI's builds carry no Sentry DSN, so the report says the log can't be attached
+# in this build, offers no private route, and still offers "Under my name".
+# The link that opens is the desktop test's to check (desktop_smoke_test.dart):
+# here a browser would only open over the app.
+appId: cloud.brata.terminal
+env:
+  FOLDED: "Report a bug\\W+Tap once.*"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "${FOLDED}"
+    timeout: 15000
+- assertNotVisible: "Report a bug"
+- takeScreenshot: bug-button-folded
+
+# One tap: the label out, and no report.
+- tapOn: "${FOLDED}"
+- extendedWaitUntil:
+    visible: "Report a bug"
+    timeout: 3000
+- assertNotVisible: "(?s).*What went wrong.*"
+- takeScreenshot: bug-button-out
+
+# Folded back by itself, with nothing tapped.
+- extendedWaitUntil:
+    visible: "${FOLDED}"
+    timeout: 8000
+
+# And on a tap elsewhere.
+- tapOn: "${FOLDED}"
+- extendedWaitUntil:
+    visible: "Report a bug"
+    timeout: 3000
+- tapOn: "Hosts"
+- extendedWaitUntil:
+    visible: "${FOLDED}"
+    timeout: 3000
+
+# Out, then on it: the report.
+- tapOn: "${FOLDED}"
+- extendedWaitUntil:
+    visible: "Report a bug"
+    timeout: 3000
+- tapOn: "Report a bug"
+- extendedWaitUntil:
+    visible: "(?s).*What went wrong.*"
+    timeout: 5000
+- scrollUntilVisible:
+    element: "(?s).*can't be attached in this build.*"
+    direction: DOWN
+    timeout: 10000
+- assertNotVisible: "(?s).*Privately to the developer.*"
+- assertVisible: "(?s).*Under my name.*"
+- takeScreenshot: bug-button-report
+- tapOn: "(?s).*Cancel.*"

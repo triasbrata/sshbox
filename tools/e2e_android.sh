@@ -798,6 +798,15 @@ JSON
   return "$status"
 }
 
+# #187: the bug button after +, and the report it opens (.maestro/bug_button).
+# Its screenshots, pass or fail, are evidence.
+bug_button() {
+  local status=0
+  flow bug_button || status=1
+  keep_shots 'bug-button-*.png'
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -901,6 +910,10 @@ echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::bug_button (report only)"
+bug_button || echo "::warning::bug_button failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"
