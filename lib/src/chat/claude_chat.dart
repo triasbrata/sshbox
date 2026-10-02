@@ -102,6 +102,50 @@ class ChatNotice extends ChatEntry {
   final bool failed;
 }
 
+/// A turn in flight, for the line under the chat that says the session is
+/// working rather than stuck — what Claude Code's own `✶ Zesting… (33s · ↓
+/// 1.4k tokens)` says at a terminal.
+class ChatProgress {
+  const ChatProgress({
+    required this.started,
+    required this.tokens,
+    this.tool,
+    this.waitingFor,
+  });
+
+  /// When the turn began: the transcript's own time on the line that
+  /// started it, so a session picked up mid-turn shows how long it has
+  /// really been at it. The host's clock, not this device's.
+  final DateTime started;
+
+  /// Output tokens of the turn's messages so far. A transcript gets a
+  /// message's line only once the message is whole — measured on 2.1.286 —
+  /// so this moves a message at a time, not a token at a time.
+  final int tokens;
+
+  /// The tool running now, if any.
+  final ChatToolRun? tool;
+
+  /// What the session waits for at its terminal — `permission prompt` — by
+  /// what `claude agents` says of it; null while it is working.
+  final String? waitingFor;
+
+  /// Seconds as Claude Code's line writes them: `33s`, `2m 5s`, `1h 4m`.
+  static String elapsed(Duration time) {
+    final s = math.max(0, time.inSeconds);
+    if (s < 60) return '${s}s';
+    if (s < 3600) return '${s ~/ 60}m ${s % 60}s';
+    return '${s ~/ 3600}h ${s % 3600 ~/ 60}m';
+  }
+
+  /// Tokens as Claude Code's line writes them: `87`, `1.4k`, `12k`.
+  static String count(int tokens) {
+    if (tokens < 1000) return '$tokens';
+    final k = tokens / 1000;
+    return '${k < 10 ? k.toStringAsFixed(1).replaceFirst('.0', '') : k.round()}k';
+  }
+}
+
 /// A slash command run in the session, as its transcript records it, and
 /// what it printed when it runs in the CLI rather than as a prompt.
 class ChatCommand extends ChatEntry {
@@ -212,9 +256,12 @@ class ClaudeAgent {
   /// `permission prompt` for a tool waiting to be approved.
   bool get asking => waitingFor == 'input needed';
 
-  /// What [waitingFor] says in words, for a sentence like "waiting for …".
-  String? get waitingText =>
-      asking ? 'an answer to a question' : waitingFor;
+  /// What [waitingFor] says in words, for a sentence like "waiting for …":
+  /// the CLI's `input needed` is a question waiting for its answer.
+  static String? waitingWords(String? waitingFor) =>
+      waitingFor == 'input needed' ? 'an answer' : waitingFor;
+
+  String? get waitingText => waitingWords(waitingFor);
 
   /// Whether the process is still running. Measured against the CLI: a live
   /// session is the one that refuses `-p --resume`, and a finished one is the
@@ -414,6 +461,106 @@ class ClaudeChat extends ChangeNotifier {
   /// final, for the same reason as [_entries].
   Map<String, ChatToolRun> _running = {};
 
+  /// When the turn in flight began, or null between turns.
+  DateTime? _turnStart;
+
+  /// Output tokens of the turn in flight, by message id: every content block
+  /// of a message gets a transcript line of its own, each repeating the
+  /// message's whole usage, so a message is counted once.
+  final Map<String, int> _turnTokens = {};
+
+  /// What the watched session waits for, from the listing: see [checkState].
+  String? _waitingFor;
+
+  /// Set while [loadEarlier] replays older turns, which are history and say
+  /// nothing about the turn in flight.
+  bool _pastOnly = false;
+
+  /// The turn in flight, or null when there is none — idle, or not begun.
+  ChatProgress? get progress {
+    final started = _turnStart;
+    if (started == null) return null;
+    return ChatProgress(
+      started: started,
+      tokens: _turnTokens.values.fold(0, (sum, n) => sum + n),
+      tool: _running.values.lastOrNull,
+      waitingFor: _watching == null ? null : _waitingFor,
+    );
+  }
+
+  void _startTurn(Object? timestamp) {
+    if (_pastOnly || _turnStart != null) return;
+    _turnStart =
+        (timestamp is String ? DateTime.tryParse(timestamp) : null) ??
+        DateTime.now();
+    _turnTokens.clear();
+    // What the last turn waited for, or was seen idle after, is not this
+    // one's.
+    _waitingFor = null;
+    _seenIdle = false;
+  }
+
+  void _endTurn() {
+    if (_pastOnly) return;
+    _turnStart = null;
+    _turnTokens.clear();
+    _waitingFor = null;
+    _seenIdle = false;
+  }
+
+  /// What an assistant line says of the turn: its tokens, and whether it is
+  /// the turn's last message. A line read with no turn open — the history cut
+  /// into one — opens it at its own time, the nearest there is.
+  void _onAssistantTurn(Map<String, dynamic> event) {
+    final message = event['message'];
+    if (_pastOnly || message is! Map<String, dynamic>) return;
+    final stop = message['stop_reason'];
+    if (stop is String && stop != 'tool_use') return _endTurn();
+    _startTurn(event['timestamp']);
+    final usage = message['usage'];
+    final id = message['id'];
+    final tokens = usage is Map ? usage['output_tokens'] : null;
+    if (id is String && tokens is int) _turnTokens[id] = tokens;
+  }
+
+  bool _checking = false;
+
+  /// The last look found the session idle: see [checkState].
+  bool _seenIdle = false;
+
+  /// Asks the host what the watched session is doing now, for what the
+  /// transcript cannot tell: a tool call waiting at a permission prompt
+  /// looks, there, just like one still running. The page asks this every
+  /// few seconds while a turn is open and the chat is on screen. Anything
+  /// going wrong costs only this look.
+  Future<void> checkState() async {
+    final watching = _watching;
+    final turn = _turnStart;
+    if (watching == null || turn == null || _checking) return;
+    _checking = true;
+    try {
+      final now = (await agents())
+          .where((row) => row.sessionId == watching.sessionId)
+          .firstOrNull;
+      // The turn looked at may have ended, and another begun, meanwhile.
+      if (_watching != watching || _turnStart != turn) return;
+      if (now == null || !now.live) return;
+      _waitingFor = now.waitingFor;
+      // Idle with nothing to wait for, twice running: the turn's end was
+      // missed, so it stops spinning rather than spinning for ever. Twice,
+      // since a turn just typed into is idle for a moment before the
+      // listing catches up.
+      final idle = now.status == 'idle' && now.waitingFor == null;
+      if (idle && _seenIdle) _endTurn();
+      _seenIdle = idle && _turnStart != null;
+      notifyListeners();
+    } catch (_) {
+      // Disconnected, or the host could not list them: the next look.
+    } finally {
+      _checking = false;
+    }
+  }
+
   /// Starts Claude on the host. Safe to call again: a chat already up, or on
   /// its way up, stays as it is.
   Future<void> start() async {
@@ -478,6 +625,7 @@ class ClaudeChat extends ChangeNotifier {
     });
     _entries.add(ChatSaid(message, mine: true));
     _busy = true;
+    _startTurn(null);
     notifyListeners();
   }
 
@@ -666,6 +814,7 @@ class ClaudeChat extends ChangeNotifier {
       final pane = agent.interactive ? await _findPane(agent, pid) : null;
       if (_disposed) return;
       _watching = agent;
+      _waitingFor = agent.waitingFor;
       _say(
         ChatNotice(
           !agent.interactive
@@ -718,6 +867,7 @@ class ClaudeChat extends ChangeNotifier {
     _watching = null;
     _readOnly = null;
     _pending.clear();
+    _endTurn();
   }
 
   /// The tmux pane [agent], an interactive session, runs in — or null, with
@@ -891,6 +1041,8 @@ class ClaudeChat extends ChangeNotifier {
   void _followDone(ClaudeAgent agent) {
     _followed = null;
     _follower = null;
+    // Not followed, nothing here can tell how the turn goes on.
+    _endTurn();
     if (!_sessionGone) {
       _say(
         ChatNotice(
@@ -1319,6 +1471,7 @@ class ClaudeChat extends ChangeNotifier {
         run.result = '';
       }
       _running.clear();
+      _endTurn();
     }
     notifyListeners();
     return (from: size, carry: body.sublist(whole));
@@ -1408,6 +1561,7 @@ class ClaudeChat extends ChangeNotifier {
         final shownRunning = _running;
         _entries = [];
         _running = running;
+        _pastOnly = true;
         try {
           for (final line in const LineSplitter().convert(
             const Utf8Decoder(
@@ -1421,6 +1575,7 @@ class ClaudeChat extends ChangeNotifier {
         } finally {
           _entries = shownEntries;
           _running = shownRunning;
+          _pastOnly = false;
         }
       }
     } finally {
@@ -1458,7 +1613,12 @@ class ClaudeChat extends ChangeNotifier {
     final message = event['message'];
     switch (event['type']) {
       case 'assistant':
+        _onAssistantTurn(event);
         _onAssistant(message);
+      // Written once the turn is over, measured; an assistant line that
+      // ends the turn has usually said so already.
+      case 'system' when event['subtype'] == 'turn_duration':
+        _endTurn();
       case 'system' when event['subtype'] == 'local_command':
         if (event['content'] case final String text) _onCommandLine(text);
       case 'user' when message is Map<String, dynamic>:
@@ -1472,6 +1632,11 @@ class ClaudeChat extends ChangeNotifier {
         // ponytail: a message the user typed that itself opens with `<` is
         // taken for one Claude Code wrote, and left out.
         if (text.isEmpty || text.startsWith('<')) return;
+        if (text.startsWith('[Request interrupted')) {
+          _endTurn();
+        } else {
+          _startTurn(event['timestamp']);
+        }
         _entries.add(
           text.startsWith('[Request interrupted')
               ? ChatNotice('The user interrupted this turn.')
@@ -1556,7 +1721,9 @@ class ClaudeChat extends ChangeNotifier {
         _sessionId = event['session_id'] as String?;
         notifyListeners();
       case 'assistant':
-        if (_onAssistant(event['message'])) notifyListeners();
+        _onAssistantTurn(event);
+        _onAssistant(event['message']);
+        notifyListeners();
       case 'user':
         if (_onToolResults(
           event['message'],
@@ -1570,6 +1737,7 @@ class ClaudeChat extends ChangeNotifier {
         _onControlCancel(event);
       case 'result':
         _busy = false;
+        _endTurn();
         final subtype = event['subtype'];
         if (subtype is String && subtype != 'success') {
           _entries.add(ChatNotice(_resultReason(subtype), failed: true));
@@ -1601,7 +1769,7 @@ class ClaudeChat extends ChangeNotifier {
           if (text.isEmpty) break;
           _entries.add(ChatSaid(text, mine: false));
           changed = true;
-        case 'tool_use' when block['name'] == 'AskUserQuestion':
+        case 'tool_use' when block['name'] == askTool:
           final id = block['id'] as String? ?? '';
           // The CLI's request for the answer may have come first.
           if (_asks.containsKey(id)) break;
@@ -1688,12 +1856,22 @@ class ClaudeChat extends ChangeNotifier {
     }
   }
 
+  /// The only tool this chat ever allows, matched by exactly this name.
+  static const askTool = 'AskUserQuestion';
+
   /// A request from the CLI for the host to decide. Only `can_use_tool` is
   /// known, and every one gets an answer: the CLI waits for it, so a request
-  /// left alone stops the turn. A question is shown for the user to answer;
-  /// anything else is refused, as with `--permission-prompts none`, since
-  /// this chat has no way to ask about it — what Claude may do without being
-  /// asked is the ⋮ menu's.
+  /// left alone stops the turn.
+  ///
+  /// THE PERMISSION POLICY, all of it in this method and [answer]:
+  /// - `allow` is sent in one place only, [answer]: for a question the CLI
+  ///   asked about as [askTool], spelt exactly so, once, and the user
+  ///   answered. Its `updatedInput` is that call's own input with `answers`
+  ///   added, and nothing else.
+  /// - Everything else is refused or errored here: any other tool, a
+  ///   lookalike name, a question this chat cannot show or that was settled
+  ///   already, a request kind it does not know. This chat has no way to ask
+  ///   about a tool; what Claude may do without being asked is the ⋮ menu's.
   void _onControlRequest(Map<String, dynamic> event) {
     final id = event['request_id'];
     final request = event['request'];
@@ -1702,7 +1880,8 @@ class ClaudeChat extends ChangeNotifier {
       _respondError(id, 'Not a request this chat answers.');
       return;
     }
-    if (request['tool_name'] == 'AskUserQuestion') {
+    final tool = request['tool_name'];
+    if (tool == askTool) {
       final callId = request['tool_use_id'];
       var ask = callId is String ? _asks[callId] : null;
       if (ask == null && callId is String) {
@@ -1712,7 +1891,8 @@ class ClaudeChat extends ChangeNotifier {
           _entries.add(ChatQuestion(ask));
         }
       }
-      if (ask != null) {
+      // One that is open: a question settled already is not asked again.
+      if (ask != null && ask.open) {
         ask.requestId = id;
         notifyListeners();
         return;
@@ -1721,10 +1901,18 @@ class ClaudeChat extends ChangeNotifier {
     _respond(id, {
       'behavior': 'deny',
       'message':
-          'This chat cannot approve a tool, so ${request['tool_name']} was '
+          'This chat cannot approve a tool, so ${_nameOf(tool)} was '
           'refused. What Claude may do without being asked is set in the '
           'menu beside the box.',
     });
+  }
+
+  /// A tool's name as host text, for a message: bounded, with control
+  /// characters out.
+  static String _nameOf(Object? tool) {
+    if (tool is! String || tool.isEmpty) return 'the tool';
+    final clean = tool.replaceAll(RegExp(r'[\x00-\x1f\x7f-\x9f]'), '');
+    return clean.length > 64 ? '${clean.substring(0, 64)}…' : clean;
   }
 
   void _respond(String requestId, Map<String, Object?> response) => _write({
@@ -1762,9 +1950,12 @@ class ClaudeChat extends ChangeNotifier {
   bool answer(ChatAsk ask, Map<String, String> answers) {
     final id = ask.requestId;
     if (id == null || !ask.answerable || _channel == null) return false;
-    if (ask.questions.any((q) => !answers.containsKey(q.question))) {
+    // An answer for each question and for nothing else.
+    final texts = {for (final q in ask.questions) q.question};
+    if (answers.length != texts.length || !texts.containsAll(answers.keys)) {
       return false;
     }
+    // The one `allow` this chat sends: see [_onControlRequest].
     _respond(id, {
       'behavior': 'allow',
       'updatedInput': {...ask.input, 'answers': answers},
@@ -1829,6 +2020,7 @@ class ClaudeChat extends ChangeNotifier {
     for (final ask in _asks.values) {
       ask.requestId = null;
     }
+    _endTurn();
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
     notifyListeners();
   }

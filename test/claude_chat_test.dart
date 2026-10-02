@@ -269,6 +269,10 @@ class _LiveHost {
   /// says: one it has just started.
   Map<String, Object?>? listed;
 
+  /// When set, `claude agents` answers only once it completes, as a slow
+  /// host answers: what the session does meanwhile goes on.
+  Future<void>? agentsGate;
+
   Future<CommandChannel> openTerminal(String command) async {
     commands.add(command);
     final typed = <String>[];
@@ -319,6 +323,8 @@ class _LiveHost {
       );
     }
     if (command.contains('agents --json')) {
+      final gate = agentsGate;
+      if (gate != null) await gate;
       final listed = jsonEncode([
         {
           'pid': _live.pid,
@@ -937,6 +943,142 @@ void main() {
       expect(response['message'], contains('Bash was refused'));
     });
 
+    test('only the tool spelt AskUserQuestion is ever allowed: a lookalike '
+        'name, even on a real question\'s id, is denied and opens nothing',
+        () async {
+      for (final name in <Object?>[
+        'askuserquestion',
+        'ASKUSERQUESTION',
+        'AskUserQuestion ',
+        ' AskUserQuestion',
+        'AskUserQuestion\u200b',
+        'AskUserQuestionX',
+        'Ask UserQuestion',
+        'mcp__srv__AskUserQuestion',
+        'Bash',
+        '',
+        null,
+        5,
+      ]) {
+        final (chat, claude) = await started();
+        // A genuine question, called but not yet asked about.
+        claude.event(toolUse());
+        // Then a request that carries its id and its input but another name.
+        claude.event({
+          'type': 'control_request',
+          'request_id': 'r-lookalike',
+          'request': {
+            'subtype': 'can_use_tool',
+            'tool_name': name,
+            'input': input,
+            'tool_use_id': callId,
+            'requires_user_interaction': true,
+          },
+        });
+        await _settle();
+
+        final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+        expect(ask.answerable, isFalse, reason: 'a request named "$name"');
+        expect(chat.answer(ask, {
+          'Which colours?': 'Red',
+          'Which size?': 'Small',
+        }), isFalse, reason: '"$name"');
+        final reply = (claude.sent.single['response'] as Map)['response'] as Map;
+        expect(reply['behavior'], 'deny', reason: '"$name"');
+        expect(claude.sent.single['response']['request_id'], 'r-lookalike');
+        // Nothing but that one refusal was ever written.
+        expect(claude.sent, hasLength(1), reason: '"$name"');
+      }
+    });
+
+    test('no response but the answer\'s is an allow, and that adds `answers` '
+        'to the call\'s own input and nothing else', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r-bash',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'Bash',
+          'input': {'command': 'id'},
+          'tool_use_id': 'toolu_bash',
+        },
+      });
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      chat.answer(ask, {'Which colours?': 'Red', 'Which size?': 'Small'});
+
+      final allows = [
+        for (final m in claude.sent)
+          if (((m['response'] as Map)['response'] as Map?)?['behavior'] ==
+              'allow')
+            m,
+      ];
+      expect(allows, hasLength(1));
+      final updated =
+          (((allows.single['response'] as Map)['response'] as Map)['updatedInput']
+              as Map);
+      expect(updated.keys.toSet(), {...input.keys, 'answers'});
+      expect(updated['questions'], input['questions']);
+      expect((allows.single['response'] as Map)['request_id'], 'r1');
+    });
+
+    test('an answer for a question that is not there, or short of one, is '
+        'not sent', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      expect(chat.answer(ask, {
+        'Which colours?': 'Red',
+        'Which size?': 'Small',
+        'Anything else?': 'rm -rf',
+      }), isFalse);
+      expect(claude.sent, isEmpty);
+      expect(ask.answerable, isTrue);
+    });
+
+    test('a question already answered is not asked about again', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      chat.answer(ask, {'Which colours?': 'Red', 'Which size?': 'Small'});
+      claude.written.clear();
+
+      claude.event(request(callId, 'r-again'));
+      await _settle();
+      expect(ask.answerable, isFalse);
+      final reply = (claude.sent.single['response'] as Map)['response'] as Map;
+      expect(reply['behavior'], 'deny');
+    });
+
+    test('a refusal names the tool only as bounded text', () async {
+      final (_, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r-long',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'X\x1b[31m\x07${'y' * 200}',
+          'input': const {},
+          'tool_use_id': 'toolu_x',
+        },
+      });
+      await _settle();
+      final message =
+          ((claude.sent.single['response'] as Map)['response'] as Map)['message']
+              as String;
+      expect(message, isNot(contains('\x1b')));
+      expect(message, isNot(contains('\x07')));
+      expect(message.length, lessThan(300));
+    });
+
     test('a request of a kind this chat does not know gets an error, and a '
         'malformed question is refused', () async {
       final (chat, claude) = await started();
@@ -1019,7 +1161,7 @@ void main() {
         'waitingFor': 'permission prompt',
       })!;
       expect(asking.asking, isTrue);
-      expect(asking.waitingText, 'an answer to a question');
+      expect(asking.waitingText, 'an answer');
       expect(approving.asking, isFalse);
       expect(approving.waitingText, 'permission prompt');
     });
@@ -3207,6 +3349,315 @@ void main() {
         chat.entries.whereType<ChatSaid>().map((e) => e.text),
         [...said, 'live 1', 'live 2'],
       );
+    });
+  });
+
+  group('the turn in flight', () {
+    // A turn as 2.1.286 wrote it, measured on a throwaway background
+    // session: the prompt, a message calling Bash, its result, and a
+    // message of two blocks — thinking, then text — each block on a line of
+    // its own repeating the message's usage, then the turn's duration.
+    Map<String, Object?> prompt() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:10.643Z',
+      'isSidechain': false,
+      'message': {'role': 'user', 'content': 'run the tests'},
+    };
+    Map<String, Object?> callsBash() => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:19.547Z',
+      'message': {
+        'id': 'msg_01ma8teqDx',
+        'role': 'assistant',
+        'stop_reason': 'tool_use',
+        'usage': {'input_tokens': 2, 'output_tokens': 87},
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_t1',
+            'name': 'Bash',
+            'input': {'command': 'npm test', 'description': 'Run the tests'},
+          },
+        ],
+      },
+    };
+    Map<String, Object?> bashResult() => {
+      'type': 'user',
+      'timestamp': '2026-10-01T12:06:28.899Z',
+      'message': {
+        'role': 'user',
+        'content': [
+          {'type': 'tool_result', 'tool_use_id': 'toolu_t1', 'content': 'ok'},
+        ],
+      },
+    };
+    Map<String, Object?> answers(String type, {String? stop = 'end_turn'}) => {
+      'type': 'assistant',
+      'timestamp': '2026-10-01T12:06:37.713Z',
+      'message': {
+        'id': 'msg_01ofPoDr74',
+        'role': 'assistant',
+        'stop_reason': stop,
+        'usage': {'input_tokens': 2, 'output_tokens': 1313},
+        'content': [
+          type == 'text'
+              ? {'type': 'text', 'text': 'All green.'}
+              : {'type': 'thinking', 'thinking': '', 'signature': 'CAQS'},
+        ],
+      },
+    };
+    const turnDuration = {
+      'type': 'system',
+      'subtype': 'turn_duration',
+      'durationMs': 29623,
+      'isMeta': false,
+    };
+
+    Future<(ClaudeChat, _LiveHost)> watch({
+      String? waitingFor,
+      String state = 'working',
+    }) async {
+      final host = _LiveHost(
+        '0\n',
+        state: state,
+        status: waitingFor == null ? null : 'waiting',
+        waitingFor: waitingFor,
+      );
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      return (chat, host);
+    }
+
+    test('starts at the prompt\'s own time, names the tool running, and '
+        'counts each message once', () async {
+      final (chat, host) = await watch();
+      expect(chat.progress, isNull);
+
+      host.adds(prompt());
+      await _settle();
+      expect(chat.progress?.started, DateTime.utc(2026, 10, 1, 12, 6, 10, 643));
+      expect(chat.progress?.tokens, 0);
+      expect(chat.progress?.tool, isNull);
+
+      host.adds(callsBash());
+      await _settle();
+      expect(chat.progress?.tool?.name, 'Bash');
+      expect(chat.progress?.tool?.summary, 'npm test');
+      expect(chat.progress?.tokens, 87);
+
+      host.adds(bashResult());
+      await _settle();
+      expect(chat.progress?.tool, isNull);
+      expect(chat.progress?.tokens, 87);
+
+      // Two lines of one message: its usage counted once, not twice. The
+      // first block of the last message says the turn is over, too, so
+      // here the message is still open: written with no stop yet.
+      host.adds(answers('thinking', stop: null));
+      host.adds(answers('text', stop: null));
+      await _settle();
+      expect(chat.progress?.tokens, 87 + 1313);
+      expect(ChatProgress.count(chat.progress!.tokens), '1.4k');
+
+      host.adds(turnDuration);
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('a message that ends the turn clears the line at once', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash())
+        ..adds(bashResult())
+        ..adds(answers('thinking'));
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a session picked up mid-turn shows the turn from its real start',
+      () async {
+        final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+        final size = utf8.encode('$text\n').length;
+        final host = _LiveHost('$size\n$text\n', state: 'working');
+        final chat = ClaudeChat(open: host.open);
+        addTearDown(chat.dispose);
+        await chat.continueFrom(_live);
+        expect(
+          chat.progress?.started,
+          DateTime.utc(2026, 10, 1, 12, 6, 10, 643),
+        );
+        expect(chat.progress?.tool?.summary, 'npm test');
+      },
+    );
+
+    test('a finished session\'s history leaves no turn open', () async {
+      final text = [prompt(), callsBash()].map(jsonEncode).join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      expect(chat.progress, isNull);
+    });
+
+    test('at a permission prompt it says what it waits for, from the '
+        'listing', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds(callsBash());
+      await _settle();
+      expect(chat.progress?.waitingFor, isNull);
+
+      host
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, 'permission prompt');
+
+      // Answered at the terminal: working again.
+      host
+        ..state = 'working'
+        ..status = null
+        ..waitingFor = null;
+      await chat.checkState();
+      expect(chat.progress?.waitingFor, isNull);
+      expect(chat.progress, isNotNull);
+    });
+
+    test('idle at two looks running, a turn whose end was missed stops '
+        'spinning', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+      await chat.checkState();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'idle shows nothing, and a turn that ends goes from the line',
+      () async {
+        final (chat, host) = await watch(state: 'done');
+        expect(chat.progress, isNull);
+        host.adds(prompt());
+        await _settle();
+        final started = chat.progress?.started;
+        expect(started, isNotNull);
+        host.adds(turnDuration);
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('an interrupted turn clears the line', () async {
+      final (chat, host) = await watch();
+      host
+        ..adds(prompt())
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': '[Request interrupted by user]'},
+            ],
+          },
+        });
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test('the session going clears the line', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.adds('sshbox:ended\n');
+      await host.follow!.close();
+      await _settle();
+      expect(chat.progress, isNull);
+    });
+
+    test(
+      'a turn of this chat\'s own runs from the send to the result',
+      () async {
+        final claude = _FakeClaude();
+        final chat = ClaudeChat(open: (_) async => claude.channel);
+        addTearDown(chat.dispose);
+        await chat.start();
+        final before = DateTime.now();
+        await chat.send('hello');
+        expect(chat.progress!.started.isBefore(before), isFalse);
+        claude.event(callsBash());
+        await _settle();
+        expect(chat.progress?.tokens, 87);
+        claude.event({'type': 'result', 'subtype': 'success'});
+        await _settle();
+        expect(chat.progress, isNull);
+      },
+    );
+
+    test('a look that comes back after its turn ended says nothing of the '
+        'next one', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'blocked'
+        ..status = 'waiting'
+        ..waitingFor = 'permission prompt';
+      final look = chat.checkState();
+      await _settle();
+      // Answered and finished meanwhile, and the next turn begun.
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      expect(chat.progress, isNotNull);
+      expect(chat.progress?.waitingFor, isNull);
+    });
+
+    test('an idle look from the last turn does not count against the next',
+        () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      final gate = Completer<void>();
+      host
+        ..agentsGate = gate.future
+        ..state = 'done';
+      final look = chat.checkState();
+      await _settle();
+      host
+        ..adds(turnDuration)
+        ..adds({...prompt(), 'timestamp': '2026-10-01T12:07:00.000Z'});
+      await _settle();
+      gate.complete();
+      await look;
+      host.agentsGate = null;
+      // One idle look at the new turn: not yet two.
+      await chat.checkState();
+      expect(chat.progress, isNotNull);
+    });
+
+    test('times and counts read as Claude Code writes them', () {
+      expect(ChatProgress.elapsed(const Duration(seconds: 33)), '33s');
+      expect(ChatProgress.elapsed(const Duration(seconds: 125)), '2m 5s');
+      expect(ChatProgress.elapsed(const Duration(minutes: 64)), '1h 4m');
+      expect(ChatProgress.elapsed(const Duration(seconds: -3)), '0s');
+      expect(ChatProgress.count(87), '87');
+      expect(ChatProgress.count(1000), '1k');
+      expect(ChatProgress.count(1400), '1.4k');
+      expect(ChatProgress.count(12345), '12k');
     });
   });
 }
