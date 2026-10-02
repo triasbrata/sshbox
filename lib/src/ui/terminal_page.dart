@@ -2026,6 +2026,8 @@ class _PaneViewState extends State<_PaneView> {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
+          // The wheel over a terminal is the program's, never the UI zoom's.
+          onPointerSignal: UiZoomWheel.keep,
           onPointerHover: _gestureHover,
           onPointerMove: (event) {
             _trackedMove(event);
