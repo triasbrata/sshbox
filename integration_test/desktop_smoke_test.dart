@@ -786,7 +786,9 @@ Future<({Rect rect, bool zoomed, bool iconic})> _winMouse(
 /// each step `move x y` to a point in the app (logical pixels, as a finder
 /// gives them), `down`, `up` (the primary button), `rdown`, `rup` (the
 /// secondary, #132's), `sleep ms`, or
-/// `shiftdown` and `shiftup` (Linux and macOS only), or `cmdc`, ⌘ held, C
+/// `clickstate N` (what a Mac's events carry for the count of a double click,
+/// the app counting them itself elsewhere), `shiftdown` and `shiftup` (Linux
+/// and macOS only), or `cmdc`, ⌘ held, C
 /// typed and ⌘ let go as three key events (macOS only). On Linux
 /// through xdotool on this run's Xvfb, on Windows through [_winMouse], on a
 /// Mac through CoreGraphics at the HID tap, as [_trackpad] posts its pan.
@@ -798,7 +800,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
   if (Platform.isWindows) {
     run = _winMouse([
       for (final step in steps)
-        if (step.split(' ') case ['move', final x, final y])
+        if (step.startsWith('clickstate')) ...<String>[]
+        else if (step.split(' ') case ['move', final x, final y])
           'move ${(double.parse(x) * ratio).round()} '
               '${(double.parse(y) * ratio).round()}'
         else
@@ -826,6 +829,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
           ['shiftup'] => ['keyup', 'Shift_L'],
           ['up'] => ['mouseup', '1'],
           ['sleep', final ms] => ['sleep', '${int.parse(ms) / 1000}'],
+          // X carries no click count: the app counts them.
+          ['clickstate', _] => <String>[],
           _ => throw ArgumentError(step),
         },
     ]);
@@ -882,10 +887,16 @@ usleep(300_000)
 var at = CGPoint(x: bounds.midX, y: bounds.midY)
 var pressed = false
 var flags: CGEventFlags = []
+// What a real double click carries: kCGMouseEventClickState, 2 on the second
+// down and on its drags and its up.
+var clickState: Int64 = 0
 func post(_ type: CGEventType, _ button: CGMouseButton = .left) {
   let e = CGEvent(mouseEventSource: nil, mouseType: type,
                   mouseCursorPosition: at, mouseButton: button)!
   e.flags = flags
+  if clickState > 0 {
+    e.setIntegerValueField(.mouseEventClickState, value: clickState)
+  }
   e.post(tap: .cghidEventTap)
   usleep(10_000)
 }
@@ -931,6 +942,7 @@ for step in args[3].split(separator: ";") {
     }
     modifier(55, commandLeft, false)
   case "shiftup": modifier(56, shiftLeft, false)
+  case "clickstate": clickState = Int64(p[1])!
   case "sleep": usleep(useconds_t(Int(p[1])! * 1000))
   default: print("unknown step \(step)"); exit(1)
   }
@@ -3479,6 +3491,100 @@ touch '${done.path}'
         ], 'select');
         await copies(drag(0, 22, first), 'jeansh select me please');
         await copies(drag(0, 10, second), 'second line');
+      }
+      await _closeTabs(tester);
+    });
+  });
+
+  // The double click a Mac makes — the second press held, then dragged —
+  // grows the word selection word by word, as Terminal.app's and iTerm2's do.
+  // A trackpad's tap-to-click double tap and drag reaches Flutter as these
+  // same mouse events: only scrolling and pinching arrive as pans. xterm2
+  // dropped the word and selected characters from the press.
+  _test('a double click held and dragged selects by words, and the next drag '
+      'selects afresh', (tester) async {
+    await _realPointer(() async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      _run(view, "echo 'jeansh select me please'");
+      final lines = view.terminal.buffer.lines;
+      int row(String text) {
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].getText().startsWith(text)) return i;
+        }
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => row('jeansh select me please') >= 0,
+        'the line to be printed',
+      );
+      final line = row('jeansh select me please');
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      String cell(int col) {
+        final at = render.localToGlobal(
+          render.getOffset(CellOffset(col, line)) +
+              Offset(render.cellSize.width / 2, render.lineHeight / 2),
+        );
+        return 'move ${at.dx} ${at.dy}';
+      }
+
+      Future<void> copies(List<String> steps, String text) async {
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await _osMouse(tester, steps);
+        await _until(
+          tester,
+          () async => await _clipboard() != 'untouched',
+          'something to be copied, expecting "$text"',
+        );
+        expect(await _clipboard(), text);
+      }
+
+      // The second click held on "select", dragged right across " me": a
+      // quick drag and a slow one.
+      for (final hold in [0, 300]) {
+        await copies([
+          cell(8),
+          'clickstate 1',
+          'down',
+          'sleep 30',
+          'up',
+          'sleep 60',
+          'clickstate 2',
+          'down',
+          if (hold > 0) 'sleep $hold',
+          for (var col = 9; col <= 15; col++) cell(col),
+          'up',
+          'clickstate 0',
+        ], 'select me');
+        // And leftwards, back across "jeansh".
+        await copies([
+          cell(8),
+          'sleep 700',
+          'clickstate 1',
+          'down',
+          'sleep 30',
+          'up',
+          'sleep 60',
+          'clickstate 2',
+          'down',
+          if (hold > 0) 'sleep $hold',
+          for (var col = 7; col >= 2; col--) cell(col),
+          'up',
+          'clickstate 0',
+        ], 'jeansh select');
+        // A plain drag after them is a fresh selection of characters.
+        await copies([
+          'sleep 700',
+          cell(2),
+          'down',
+          'sleep 300',
+          for (var col = 3; col <= 8; col++) cell(col),
+          'up',
+        ], 'ansh se');
       }
       await _closeTabs(tester);
     });
