@@ -37,7 +37,7 @@ runs:
         DIR: ${{ steps.key.outputs.dir }}
       run: |
         mkdir -p "$DIR/partial"
-        before=$(ls "$DIR"/*.deb 2>/dev/null | wc -l)
+        before=$(find "$DIR" -maxdepth 1 -name "*.deb" | wc -l)
         # Retries and a timeout per request, so a slow mirror fails the step
         # in minutes rather than holding it until the job's own timeout.
         apt=(sudo apt-get -o "Dir::Cache::Archives=$DIR"
@@ -54,7 +54,7 @@ runs:
         # Root wrote them; the cache is saved as this user.
         sudo chown -R "$(id -u):$(id -g)" "$DIR"
         sudo rm -f "$DIR/lock"
-        after=$(ls "$DIR"/*.deb 2>/dev/null | wc -l)
+        after=$(find "$DIR" -maxdepth 1 -name "*.deb" | wc -l)
         echo "apt: cache ${{ steps.restore.outputs.cache-hit == 'true' && 'hit' || 'miss' }}, .debs before $before, after $after, downloaded $((after - before))"
 
     - name: Save the .debs
