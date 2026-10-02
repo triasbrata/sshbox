@@ -235,6 +235,21 @@ code_paste() {
   echo "no Paste in the box's menu"
   return 1
 }
+# A long press on the reply's first word, e2eword, near the start of the
+# node that holds it, and the toolbar's Copy.
+code_select() {
+  local box
+  box=$(code_ui | grep -o '<node [^>]*>' | grep -E 'e2eword' | grep -v EditText | tail -1 |
+    grep -oE 'bounds="\[[0-9]+,[0-9]+\]' | grep -oE '[0-9]+,[0-9]+' | tr , ' ')
+  [ -n "$box" ] || { echo "no reply on screen"; return 1; }
+  set -- $box
+  adb shell input swipe $(($1 + 25)) $(($2 + 12)) $(($1 + 25)) $(($2 + 12)) 900
+  sleep 1.5
+  box=$(code_at 'text="Copy"|content-desc="Copy"')
+  [ -n "$box" ] || { echo "no Copy in the selection's toolbar"; return 1; }
+  adb shell input tap $box
+  sleep 1
+}
 # The box's text, trimmed.
 code_box() {
   code_ui | grep -o '<node [^>]*EditText[^>]*>' |
@@ -263,14 +278,11 @@ chat_code_copy() {
   echo "the reply's Copy code pasted: '$got'"
   [ "$got" = 'printf e2e-reply' ] || { echo "::error::the reply's block copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=select || status=1
+  code_select
   code_paste
   got=$(code_box)
   echo "a long press and Copy pasted: '$got'"
-  # A word of the reply, whichever the press landed on.
-  case " e2eword printf e2e-reply " in
-    *" $got "*) [ -n "$got" ] ;;
-    *) false ;;
-  esac || { echo "::error::a long press copied '$got'"; status=1; }
+  [ "$got" = e2eword ] || { echo "::error::a long press copied '$got'"; status=1; }
   flow chat_code_copy -e STEP=done || status=1
   adb shell device_config delete systemui clipboard_overlay_enabled
   adb shell settings put global animator_duration_scale 0
