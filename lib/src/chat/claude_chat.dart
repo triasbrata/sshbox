@@ -1255,8 +1255,8 @@ class ClaudeChat extends ChangeNotifier {
           r'b=${m%.meta.json}; t="$dir/$b.jsonl"; '
           r'[ -L "$dir/$m" ] || [ -L "$t" ] && continue; '
           r's=$(wc -c < "$t" 2>/dev/null | tr -d " "); '
-          r'n=$(tail -c 2097152 "$t" 2>/dev/null | grep -c "\"type\":\"tool_use\""); '
-          r'l=$(tail -n 1 "$t" 2>/dev/null | grep -o "\"timestamp\":\"[^\"]*\"" | head -n 1 | cut -d "\"" -f4); '
+          r'n=$(tail -c 2097152 "$t" 2>/dev/null | grep -c "\"type\": *\"tool_use\""); '
+          r'l=$(tail -n 1 "$t" 2>/dev/null | grep -o "\"timestamp\": *\"[^\"]*\"" | head -n 1 | cut -d "\"" -f4); '
           r'printf "%s\t%s\t%s\t%s\t%s\n" "$b" '
           r'"$(head -c 4096 "$dir/$m" | tr "\n\t" "  ")" "${n:-0}" "${s:-0}" "$l"; '
           'done')}';
@@ -1309,24 +1309,62 @@ class ClaudeChat extends ChangeNotifier {
   /// result.
   void _askAgainForMissing() {
     final top = _top;
-    final missing = {..._runningAgentCalls, ...top._runningAgentCalls}.any(
-      (id) => !top._subAgents.containsKey(id),
-    );
-    if (!missing) {
-      top._subRetries = 0;
-      return;
+    final running = {..._runningAgentCalls, ...top._runningAgentCalls};
+    final missing = {
+      for (final id in running)
+        if (!top._subAgents.containsKey(id)) id,
+    };
+    // A call's count goes when it is found or has its result.
+    top._subTries.removeWhere((id, _) => !missing.contains(id));
+    // Each call has its own eight: one that never appears holds nothing back
+    // from the next.
+    final due = [
+      for (final id in missing)
+        if ((top._subTries[id] ?? 0) < 8) id,
+    ];
+    if (due.isEmpty || _disposed) return;
+    for (final id in due) {
+      top._subTries[id] = (top._subTries[id] ?? 0) + 1;
     }
-    if (top._subRetries >= 8 || _disposed) return;
-    top._subRetries++;
+    final generation = top._shown;
     late final Timer timer;
     timer = Timer(subAgentRetry, () {
       _timers.remove(timer);
+      // Not for a session that has been replaced meanwhile, nor, as for the
+      // re-read of a sub-agent's work, while nobody can see it: it is asked
+      // once when it is seen again.
+      if (top._shown != generation || _disposed) return;
+      if (!_canAskForSubAgents) {
+        top._askWhenSeen = true;
+        return;
+      }
       unawaited(refreshSubAgents());
     });
     _timers.add(timer);
   }
 
-  int _subRetries = 0;
+  /// Whether the host may be asked about sub-agents now: the chat is on show
+  /// with the app in front — [setSeen] — and, for a sub-agent's view, so is it
+  /// ([setSubVisible]).
+  bool get _canAskForSubAgents => _top._seen && (_sub == null || _subVisible);
+
+  bool _seen = true;
+  bool _askWhenSeen = false;
+
+  /// The page tells whether the chat can be seen: its tab in front and the app
+  /// too. A retry that came due while it could not be waits for it to be.
+  void setSeen(bool seen) {
+    if (_sub != null || seen == _seen) return;
+    _seen = seen;
+    if (seen && _askWhenSeen && !_disposed) {
+      _askWhenSeen = false;
+      unawaited(refreshSubAgents());
+    }
+  }
+
+  /// How many times each Agent call still without its sub-agent has been asked
+  /// about again, by tool_use id.
+  final Map<String, int> _subTries = {};
 
   /// How long before a missing sub-agent is asked about again.
   @visibleForTesting

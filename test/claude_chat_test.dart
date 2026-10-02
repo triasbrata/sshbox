@@ -5795,6 +5795,116 @@ void main() {
       expect(asked(), n);
     });
 
+    test('each call has its own retries: one that never appears does not '
+        'hold back the next', () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 10);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      Map<String, Object?> call(String id) => {
+        'type': 'assistant',
+        'message': {
+          'id': 'm$id',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': id,
+              'name': 'Agent',
+              'input': {'description': id},
+            },
+          ],
+        },
+      };
+      // One whose files never come, until its retries are used up.
+      host.adds(call('toolu_never'));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      // A second, whose sub-agent appears late.
+      host.adds(call('toolu_second'));
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      host.subAgentsOut = line('agent-second1', meta('toolu_second'));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(chat.subAgentOf('toolu_second')!.file, 'agent-second1');
+      expect(chat.subAgentOf('toolu_never'), isNull);
+    });
+
+    test('the retry waits while the chat cannot be seen, and asks once when '
+        'it can', () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 30);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      int asked() => host.commands.where((c) => c.contains('ls "\$dir"')).length;
+      chat.setSeen(false);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_late',
+              'name': 'Agent',
+              'input': {'description': 'late'},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      // Asked once when the call arrived, and the retry that came due waits.
+      final n = asked();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(asked(), n);
+      host.subAgentsOut = line('agent-late1', meta('toolu_late'));
+      chat.setSeen(true);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(asked(), n + 1);
+      expect(chat.subAgentOf('toolu_late')!.file, 'agent-late1');
+    });
+
+    test('a retry that comes due after the session was replaced asks nothing',
+        () async {
+      final real = ClaudeChat.subAgentRetry;
+      ClaudeChat.subAgentRetry = const Duration(milliseconds: 60);
+      addTearDown(() => ClaudeChat.subAgentRetry = real);
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'tool_use',
+          'content': [
+            {
+              'type': 'tool_use',
+              'id': 'toolu_gone',
+              'name': 'Agent',
+              'input': {'description': 'gone'},
+            },
+          ],
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      int asked() => host.commands.where((c) => c.contains('ls "\$dir"')).length;
+      final n = asked();
+      // Picked again, as a reconnect does: what is shown is thrown away, and
+      // the session is the same one the retry would ask about.
+      await chat.continueFrom(_finished);
+      final after = asked();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(asked(), after);
+      expect(after, greaterThanOrEqualTo(n));
+    });
+
     test('a sub-agent that never gets files is asked about a handful of '
         'times, then left', () async {
       final real = ClaudeChat.subAgentRetry;
@@ -5905,6 +6015,35 @@ void main() {
       final asked = host.commands.where((c) => c.contains('tail -c +')).length;
       await Future<void>.delayed(ClaudeChat.subAgentEvery + const Duration(milliseconds: 200));
       expect(host.commands.where((c) => c.contains('tail -c +')).length, asked);
+    });
+
+    test('through a real shell, tools and the last time are read from JSON '
+        'with spaces after its colons too', () async {
+      final dir = Directory.systemTemp.createTempSync('sshbox-subsp-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const sid = '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f';
+      final project = Directory('${dir.path}/projects/-srv-app')
+        ..createSync(recursive: true);
+      File('${project.path}/$sid.jsonl').writeAsStringSync('{"type": "mode"}\n');
+      final subs = Directory('${project.path}/$sid/subagents')
+        ..createSync(recursive: true);
+      File('${subs.path}/agent-spaced1.jsonl').writeAsStringSync(
+        '{"type": "user", "timestamp": "2026-10-02T08:21:00.000Z"}\n'
+        '{"type": "assistant", "timestamp": "2026-10-02T08:22:00.000Z", '
+        '"message": {"content": [{"type": "tool_use", "id": "t1"}]}}\n'
+        '{"type": "assistant", "timestamp": "2026-10-02T08:23:00.000Z", '
+        '"message": {"content": [{"type": "tool_use", "id": "t2"}]}}\n',
+      );
+      File('${subs.path}/agent-spaced1.meta.json')
+          .writeAsStringSync('{"toolUseId": "toolu_01A", "agentType": "Explore"}');
+      final r = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.subAgentsCommand(sid)],
+        environment: {'CLAUDE_CONFIG_DIR': dir.path},
+      );
+      final listed = SubAgent.allIn('${r.stdout}');
+      expect(listed.single.tools, 2);
+      expect(listed.single.last, DateTime.utc(2026, 10, 2, 8, 23));
     });
 
     test('through a real shell, a link in the way is not followed: a linked '
