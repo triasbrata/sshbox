@@ -1,0 +1,89 @@
+# A sub-agent's work, opened from the Agent row that started it: chat draws the
+# sub-agent's own conversation, read-only and live while it runs, with a
+# breadcrumb, its own sub-agent entered the same way, and going back to the
+# session.
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_progress (tools/e2e_android.sh's chat_subagents). A line starting
+# agents: starts a sub-agent "survey the repo" with the Agent tool, which
+# starts "dig deeper"; their files are written as 2.1.300 writes them, the
+# first adds a line four seconds on, and the turn ends after ten.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "agents: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+
+# The Agent row, and the way into its sub-agent, once the host has told.
+- extendedWaitUntil:
+    visible: "(?s).*Open sub-agent\\. survey the repo.*"
+    timeout: 20000
+# What it is and how it is doing: its type, running or done, and one tool call
+# (the sub-agent it started in turn), counted from its own transcript.
+- assertVisible: "(?s).*Open sub-agent\\. survey the repo\\. Explore · (running|done) · 1 tool.*"
+- takeScreenshot: chat-subagents-row
+- tapOn: "(?s).*Open sub-agent\\. survey the repo.*"
+
+# Its own conversation, in the chat tab under a breadcrumb, with no box to type in.
+- extendedWaitUntil:
+    visible: "(?s).*Surveying the repo.*"
+    timeout: 15000
+- assertVisible: "survey it for me"
+- assertVisible: "(?s).*Read-only.*"
+- assertNotVisible: "(?s).*Message “E2E live session”….*"
+- takeScreenshot: chat-subagents-view
+
+# Live: four seconds on it writes one more line.
+- extendedWaitUntil:
+    visible: "(?s).*Found it, all done here.*"
+    timeout: 20000
+
+# Its own sub-agent, entered the same way, and the trail back to the session.
+- tapOn: "(?s).*Open sub-agent\\. dig deeper.*"
+- extendedWaitUntil:
+    visible: "(?s).*Digging in the nested one.*"
+    timeout: 15000
+- takeScreenshot: chat-subagents-nested
+# The first crumb is the session; the sub-agent view is part of the chat tab,
+# so the tab strip is still there.
+- assertVisible: "(?s).*Claude.*"
+- tapOn: "Back to WSL via.*"
+- extendedWaitUntil:
+    visible: "Message “E2E live session”…"
+    timeout: 10000
+- assertNotVisible: "(?s).*Digging in the nested one.*"
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
