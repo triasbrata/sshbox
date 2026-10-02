@@ -34,6 +34,12 @@ import sys
 import time
 
 session = sys.argv[1]
+# Pictures (#146): a raw-mode input line, `claude -p` and `claude --bg`, kept
+# apart in e2e_image_claude.py beside this file.
+if session in ('--tui', '--stream', '--bg'):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import e2e_image_claude
+    sys.exit(e2e_image_claude.main(sys.argv[1:]))
 config = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.environ['HOME'], '.claude')
 cwd = os.getcwd()
 transcript = os.path.join(
