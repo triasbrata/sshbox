@@ -101,6 +101,7 @@ jobs:
           java-version: '17'
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # compileSdk 37 resolves to the minor-versioned platform android-37.0.
       - name: Install Android platform 37
@@ -134,6 +135,7 @@ jobs:
       # them; a release bundle pulls more than a debug build, so its own key.
       - name: Restore Gradle's downloads
         id: gradle
+        timeout-minutes: 10
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -198,6 +200,7 @@ jobs:
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       - name: Install the Linux build's packages
         if: matrix.target == 'linux'

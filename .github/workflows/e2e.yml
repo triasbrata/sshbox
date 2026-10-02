@@ -108,6 +108,7 @@ jobs:
           java-version: '17'
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # Debug, not release: it carries every ABI, so the emulator's x86_64 is in
       # it without guessing, and it needs no signing key, since this build is
@@ -117,6 +118,7 @@ jobs:
       # run most of the 250-380 s the debug build takes.
       - name: Restore Gradle's downloads
         id: gradle
+        timeout-minutes: 10
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -186,6 +188,7 @@ jobs:
       # kept: its installer fetched the latest release on every run.
       - name: Restore Maestro
         id: maestro
+        timeout-minutes: 10
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -198,6 +201,13 @@ jobs:
         env:
           MAESTRO_VERSION: 2.11.0
         run: curl -Ls "https://get.maestro.mobile.dev" | bash
+
+      # The key names 2.11.0, so only 2.11.0 may be saved under it.
+      - name: Check Maestro's version
+        if: steps.maestro.outputs.cache-hit != 'true'
+        run: |
+          version=$("$HOME/.maestro/bin/maestro" --version 2>/dev/null | tail -1 | tr -d '[:space:]')
+          [ "$version" = 2.11.0 ] || { echo "::error::installed Maestro $version, not 2.11.0"; exit 1; }
 
       - name: Save Maestro
         if: github.ref == 'refs/heads/main' && steps.maestro.outputs.cache-hit != 'true'
@@ -217,6 +227,7 @@ jobs:
       # failed the gate, gone unpromoted and had an issue opened against it.
       - name: Restore the emulator's system image
         id: sysimg
+        timeout-minutes: 10
         uses: actions/cache/restore@v4
         with:
           path: /usr/local/lib/android/sdk/system-images/android-34/google_apis/x86_64
@@ -362,6 +373,7 @@ jobs:
             tmux xclip dunst xdotool python3-gi gir1.2-gtk-3.0 openbox x11-utils ffmpeg
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # Built to take updates from a feed the updater test serves on this
       # runner's loopback, as an older version, so there is something newer
@@ -418,6 +430,7 @@ jobs:
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       # tmux, which the Local shell uses where the machine has it: the image
       # has Homebrew but not tmux.
@@ -459,6 +472,7 @@ jobs:
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
 
       - name: Drive the desktop build
         timeout-minutes: 38

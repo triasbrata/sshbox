@@ -48,6 +48,7 @@ jobs:
         run: python3 tool/e2e_coverage.py
 
       - uses: ./.github/actions/flutter
+        timeout-minutes: 15
       - run: flutter analyze
       # The *_live_test files skip themselves: no SSH server, database or
       # tmux runs here.
