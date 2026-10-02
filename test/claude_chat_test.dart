@@ -180,6 +180,7 @@ _hostWithHistory(String? history) {
         );
       }
       if (command.contains('/usage')) return _says(usageOnHost);
+      if (command.contains('/tasks')) return _says(tasksOnHost);
       return _FakeClaude().channel;
     },
   );
@@ -195,11 +196,18 @@ CommandChannel _says(String text) => (
   close: () {},
 );
 
-/// [claude] for everything but a read of the plan's usage, which is answered
-/// from [usageOnHost] as the host would.
+/// What the session's task store holds on the host, for the next read of it.
+String tasksOnHost = '';
+
+/// [claude] for everything but a read of the plan's usage or of the task
+/// store, which are answered from [usageOnHost] and [tasksOnHost] as the host
+/// would.
 Future<CommandChannel> Function(String) _routed(_FakeClaude claude) =>
-    (command) async =>
-        command.contains('/usage') ? _says(usageOnHost) : claude.channel;
+    (command) async => command.contains('/usage')
+        ? _says(usageOnHost)
+        : command.contains('/tasks')
+        ? _says(tasksOnHost)
+        : claude.channel;
 
 const _live = ClaudeAgent(
   sessionId: '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f',
@@ -409,6 +417,7 @@ class _LiveHost {
       );
     }
     if (command.contains('/usage')) return _says(usageOnHost);
+    if (command.contains('/tasks')) return _says(tasksOnHost);
     return _FakeClaude().channel;
   }
 
@@ -974,6 +983,7 @@ void main() {
         commands.add(command);
         if (command.contains('.jsonl')) return _noHistory();
         if (command.contains('/usage')) return _says(usageOnHost);
+        if (command.contains('/tasks')) return _says(tasksOnHost);
         return _FakeClaude().channel;
       },
     );
@@ -1118,7 +1128,11 @@ void main() {
       contains('No transcript'),
     );
     expect(chat.watching, isNull);
-    expect(host.commands.single, contains('.jsonl'));
+    // Nothing but the history read and a read of the task store.
+    expect(
+      host.commands.where((c) => !c.contains('/tasks')).single,
+      contains('.jsonl'),
+    );
   });
 
   test('an id that is not a session id is never looked for on the host',
@@ -3477,6 +3491,196 @@ void main() {
       ]);
       expect(labels(chat), ['pending:Late']);
       host.adds(result('x', 'unrelated'));
+    });
+
+    // One task as the CLI's store holds it, a file of JSON.
+    String stored(int n, String subject, String status, {String? form}) =>
+        jsonEncode({
+          'id': '$n',
+          'subject': subject,
+          'description': 'd',
+          'activeForm': form ?? subject,
+          'status': status,
+          'blocks': <String>[],
+          'blockedBy': <String>[],
+        });
+
+    test('tasks made before the part of the transcript read are all there, '
+        'from the session\'s own store', () async {
+      tasksOnHost = [
+        stored(1, 'Early one', 'completed'),
+        stored(2, 'Early two', 'completed'),
+        stored(3, 'Early three', 'in_progress', form: 'Doing early three'),
+        stored(4, 'Early four', 'pending'),
+        stored(5, 'Recent', 'pending'),
+      ].join('\n');
+      addTearDown(() => tasksOnHost = '');
+      // The transcript read holds only the newest task, and an update of one
+      // it never saw made.
+      final (chat, _) = await watch([
+        ...made(5, 'Recent'),
+        ...update(3, {'status': 'in_progress'}),
+      ]);
+      await _settle();
+      expect(labels(chat), [
+        'in_progress:Doing early three',
+        'pending:Early four',
+        'pending:Recent',
+      ]);
+      expect(chat.tasksDone, 2);
+    });
+
+    test('the header\'s counts: all of them, done, in progress and open',
+        () async {
+      tasksOnHost = [
+        stored(1, 'a', 'completed'),
+        stored(2, 'b', 'completed'),
+        stored(3, 'c', 'in_progress'),
+        stored(4, 'd', 'pending'),
+        stored(5, 'e', 'pending'),
+        stored(6, 'f', 'pending'),
+      ].join('\n');
+      addTearDown(() => tasksOnHost = '');
+      final (chat, _) = await watch();
+      await _settle();
+      expect(
+        (
+          chat.tasksTotal,
+          chat.tasksDone,
+          chat.tasksInProgress,
+          chat.tasksPending,
+        ),
+        (6, 2, 1, 3),
+      );
+    });
+
+    test('a TaskCreate or TaskUpdate result makes it read the store again',
+        () async {
+      tasksOnHost = stored(1, 'One', 'pending');
+      addTearDown(() => tasksOnHost = '');
+      final (chat, host) = await watch();
+      await _settle();
+      int reads() => host.commands.where((c) => c.contains('/tasks')).length;
+      final before = reads();
+      expect(labels(chat), ['pending:One']);
+
+      // A create arrives, and the store has a task beside it that the
+      // transcript never carried.
+      tasksOnHost = [
+        stored(1, 'One', 'pending'),
+        stored(7, 'Seven', 'pending'),
+        stored(8, 'Eight', 'pending'),
+      ].join('\n');
+      for (final line in made(7, 'Seven')) {
+        host.adds(line);
+      }
+      await _settle();
+      await _settle();
+      expect(labels(chat), [
+        'pending:One',
+        'pending:Seven',
+        'pending:Eight',
+      ]);
+
+      // The store moved on, with a task the transcript never carried.
+      tasksOnHost = [
+        stored(1, 'One', 'completed'),
+        stored(2, 'Two', 'in_progress', form: 'Doing two'),
+        stored(9, 'Nine', 'pending'),
+      ].join('\n');
+      adds(host, update(1, {'status': 'completed'}));
+      await _settle();
+      await _settle();
+      expect(reads(), greaterThan(before));
+      expect(labels(chat), ['in_progress:Doing two', 'pending:Nine']);
+      expect(chat.tasksDone, 1);
+    });
+
+    test('a store with nothing readable leaves what the transcript made',
+        () async {
+      tasksOnHost = 'no such directory\nnot json';
+      addTearDown(() => tasksOnHost = '');
+      final (chat, host) = await watch();
+      for (final line in made(1, 'From the transcript')) {
+        host.adds(line);
+      }
+      await _settle();
+      await _settle();
+      expect(labels(chat), ['pending:From the transcript']);
+    });
+
+    test('an id too long to be a number is left out, and the others load, '
+        'with controls cleaned from what is drawn', () {
+      final tasks = ClaudeChat.tasksFrom([
+        jsonEncode({
+          'id': '99999999999999999999',
+          'subject': 'huge',
+          'status': 'pending',
+        }),
+        jsonEncode({
+          'id': '1',
+          'subject': 'esc\u001b[31mred\u009b and \u0007bell',
+          'activeForm': 'doing\u001b[0m it',
+          'status': 'pending',
+        }),
+        stored(2, 'two', 'pending'),
+      ].join('\n'));
+      expect([for (final t in tasks) t.id], ['1', '2']);
+      expect(tasks.first.subject, 'esc[31mred and bell');
+      expect(tasks.first.activeForm, 'doing[0m it');
+    });
+
+    test('only a task as the CLI writes one is read, in the order of its '
+        'number', () {
+      final tasks = ClaudeChat.tasksFrom([
+        stored(10, 'ten', 'pending'),
+        stored(2, 'two', 'completed'),
+        jsonEncode({'id': 'x1', 'subject': 'bad id', 'status': 'pending'}),
+        jsonEncode({'id': '3', 'subject': 'bad status', 'status': 'weird'}),
+        jsonEncode({'id': '4', 'status': 'pending'}),
+        jsonEncode(['not', 'a', 'task']),
+        'not json',
+      ].join('\n'));
+      expect([for (final t in tasks) t.id], ['2', '10']);
+    });
+
+    test('the store is read through a real shell: its files by number, the '
+        'id as a value, a cap on how many, nothing run', () async {
+      final dir = Directory.systemTemp.createTempSync('sshbox-tasks-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const id = "it's \$(touch pwned-sub) `touch pwned-tick`";
+      final tasks = Directory('${dir.path}/tasks/$id')
+        ..createSync(recursive: true);
+      for (var n = 1; n <= ClaudeChat.taskFiles + 20; n++) {
+        File('${tasks.path}/$n.json')
+            .writeAsStringSync('{\n  "id": "$n",\n  "subject": "t$n",\n'
+                '  "status": "pending"\n}\n');
+      }
+      // Not a task's file name: never read.
+      File('${tasks.path}/notes.txt').writeAsStringSync('{"id":"999"}');
+      final run = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.tasksCommand(id)],
+        environment: {'CLAUDE_CONFIG_DIR': dir.path},
+        workingDirectory: dir.path,
+      );
+      final lines = const LineSplitter().convert('${run.stdout}');
+      expect(lines.length, ClaudeChat.taskFiles);
+      expect(
+        lines.every((line) => !line.contains('999') && line.startsWith('{')),
+        isTrue,
+      );
+      expect(ClaudeChat.tasksFrom('${run.stdout}'), hasLength(ClaudeChat.taskFiles));
+      expect(File('${dir.path}/pwned-sub').existsSync(), isFalse);
+      expect(File('${dir.path}/pwned-tick').existsSync(), isFalse);
+      // And a session with no store says nothing, and succeeds.
+      final none = await Process.run(
+        'sh',
+        ['-c', ClaudeChat.tasksCommand('e2e00000-0000-4000-8000-000000000000')],
+        environment: {'CLAUDE_CONFIG_DIR': dir.path},
+      );
+      expect((none.stdout as String).trim(), isEmpty);
+      expect(none.exitCode, 0);
     });
 
     test('a task it never saw made, and a create that failed, are not '
