@@ -34,7 +34,8 @@ jobs:
       - name: Release flow
         run: |
           python3 -c 'import yaml' 2> /dev/null ||
-            { sudo apt-get update -q && sudo apt-get install -yq python3-yaml; } > /dev/null
+            { sudo apt-get install -yq python3-yaml ||
+              { sudo apt-get update -q && sudo apt-get install -yq python3-yaml; }; } > /dev/null
           tool/test_release_flow.sh
 
       # Every feature the user has passed in CLAUDE.md must say what guards it
