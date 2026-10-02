@@ -511,6 +511,26 @@ void main() {
       expect(selected(tester), 'this is a');
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    testWidgets('lets go of the selection when focus leaves mid-gesture, the '
+        'up never coming', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      final g = await secondClick(tester, col: 14, clicks: 2);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(selected(tester), 'this');
+
+      // The window blurred with the button down: no up, no cancel.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      // Select all, the menu's, and the clear a tracked press makes, both
+      // used to be ignored until the next press.
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNull);
+      await g.up();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets('a triple click drags by lines', (tester) async {
       await pumpPage(tester);
       session.terminal.write(text * 30);

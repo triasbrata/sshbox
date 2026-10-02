@@ -1289,6 +1289,8 @@ class _PaneViewState extends State<_PaneView> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _followFocus());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
     FocusManager.instance.addListener(_onFocusMoved);
+    // A window that blurs mid-gesture may never deliver the button's up.
+    _lifecycle = AppLifecycleListener(onInactive: _endGesture);
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
@@ -1325,6 +1327,7 @@ class _PaneViewState extends State<_PaneView> {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     FocusManager.instance.removeListener(_onFocusMoved);
+    _lifecycle.dispose();
     _clickTimer?.cancel();
     _focusNode.dispose();
     _scrollController.dispose();
@@ -1369,6 +1372,9 @@ class _PaneViewState extends State<_PaneView> {
   /// gives it to no one, and a menu opened from the pane then gave it back to
   /// the scope as it closed.
   void _onFocusMoved() {
+    // Focus gone from the pane in mid-gesture: the up may never come, and
+    // [selection] would go on ignoring everything but the gesture.
+    if (_gesture != null && !_focusNode.hasFocus) _endGesture();
     if (_shown == true &&
         FocusManager.instance.primaryFocus == _focusNode.enclosingScope) {
       _followFocus(keyboard: false);
@@ -1470,6 +1476,8 @@ class _PaneViewState extends State<_PaneView> {
   Offset _clickAt = Offset.zero;
   Timer? _clickTimer;
 
+  late final AppLifecycleListener _lifecycle;
+
   /// The mouse gesture that owns [selection] until its button comes up: the
   /// pointer, where it began, and how it selects.
   ({int pointer, Offset anchor, _Grain grain, BufferRange? base})? _gesture;
@@ -1486,6 +1494,10 @@ class _PaneViewState extends State<_PaneView> {
   /// characters from the press, `selectCharacters`. So the clicks are
   /// counted here, on the pointer events, which always arrive, and
   /// [selection] ignores xterm2 until the button is up.
+  ///
+  /// For the mouse, wherever there is one: a program tracking drags (see
+  /// [_tracksDrags], desktop alone) keeps the clicks for itself, so a mouse
+  /// on Android is counted too, a touch never.
   void _selectByClicks(PointerDownEvent event) {
     _endGesture();
     final render = _viewKey.currentState?.renderTerminal;
