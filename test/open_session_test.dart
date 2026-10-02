@@ -217,6 +217,22 @@ void main() {
     expect(session.openFiles, ['/mine.md']);
   });
 
+  test('a Local reconnect whose load times out again keeps the first '
+      "connect's secret", () async {
+    final secrets = _SlowSecrets(const Duration(milliseconds: 700));
+    final first = _Shell(), second = _Shell();
+    var shell = first;
+    final manager = SessionManager();
+    final session = manager.create(localHost(), transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: secrets);
+    final started = first.environment[openSecretVariable]!;
+    await session.disconnect();
+    shell = second;
+    await session.connect(secrets: secrets);
+    expect(second.environment[openSecretVariable], started);
+  });
+
   test('an absurd host clock is clamped, not overflowed', () async {
     final manager = SessionManager();
     final shell = _Shell()..hostAhead = 1 << 60;

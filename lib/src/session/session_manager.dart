@@ -724,7 +724,8 @@ class LiveSession extends ChangeNotifier {
             .load(secrets, host.id)
             .timeout(const Duration(milliseconds: 500))
             .then<String?>((v) => v, onError: (_) => null);
-        openRequests.secret = kept ?? OpenRequests.newSecret();
+        openRequests.secret =
+            kept ?? openRequests.secret ?? OpenRequests.newSecret();
       }
       Future<Map<String, String>> environment(ForwardCapable connection) async {
         final value = await key?.timeout(
