@@ -204,6 +204,7 @@ class _HostEditPageState extends State<HostEditPage> {
   late bool _forwardPorts;
   late bool _useTmux;
   late bool _recordPanes;
+  late bool _installOpenCommand;
   late String _jumpHostId;
 
   /// The hosts this one can jump through: every other saved host, once read.
@@ -226,6 +227,8 @@ class _HostEditPageState extends State<HostEditPage> {
     _forwardPorts = existing?.forwardPorts ?? false;
     _useTmux = existing?.useTmux ?? false;
     _recordPanes = existing?.recordPanes ?? true;
+    _installOpenCommand =
+        existing?.installOpenCommand ?? installOpenCommandDefault;
     _jumpHostId = existing?.jumpHostId ?? '';
     unawaited(_loadJumpHosts());
   }
@@ -335,6 +338,7 @@ class _HostEditPageState extends State<HostEditPage> {
       forwardPorts: _forwardPorts,
       useTmux: _useTmux,
       recordPanes: _recordPanes,
+      installOpenCommand: _installOpenCommand,
       jumpHostId: _jumpHostId,
       // Not the form's: the host says it again on its next connect.
       os: widget.existing?.os,
@@ -574,6 +578,20 @@ class _HostEditPageState extends State<HostEditPage> {
                               setState(() => _recordPanes = value),
                         ),
                       ],
+                      const SizedBox(height: 28),
+                      TuiSwitch(
+                        label: 'Add the jeansh command to this host',
+                        hint:
+                            'Writes ~/.local/bin/jeansh when the app '
+                            'connects, so "jeansh <file>" in a terminal '
+                            'opens that file in a tab here. It needs '
+                            '~/.local/bin on PATH, which a new login shell '
+                            'has once the folder exists. A file already '
+                            'there that is not the app\'s own is left alone.',
+                        value: _installOpenCommand,
+                        onChanged: (value) =>
+                            setState(() => _installOpenCommand = value),
+                      ),
                       if (_isEditing && widget.notifyKeys != null) ...[
                         const SizedBox(height: 28),
                         Align(

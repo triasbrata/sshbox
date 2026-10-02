@@ -12,6 +12,10 @@ enum SshAuthMethod {
   tailscale,
 }
 
+/// Whether a host gets the `jeansh` command without being asked to: the one
+/// place to change if the choice is "on, with a toast".
+const installOpenCommandDefault = false;
+
 /// A saved SSH destination. This object is safe to persist in plain storage:
 /// it deliberately holds no password, private key or passphrase.
 class HostProfile {
@@ -27,6 +31,7 @@ class HostProfile {
     this.forwardPorts = false,
     this.useTmux = false,
     this.recordPanes = true,
+    this.installOpenCommand = installOpenCommandDefault,
     this.jumpHostId = '',
     this.os,
   });
@@ -66,6 +71,11 @@ class HostProfile {
   /// whatever it is wanted for happens.
   final bool recordPanes;
 
+  /// Whether the app puts the `jeansh` command in `~/.local/bin` on this host
+  /// when it connects: see `openCommandInstallScript`. A write to somebody's
+  /// host, so it is the user's switch.
+  final bool installOpenCommand;
+
   /// The saved host this one is reached through, as OpenSSH's ProxyJump does:
   /// the app signs in there with that host's own login, and tunnels on from
   /// it. Blank connects directly. A jump host may have one of its own.
@@ -104,6 +114,7 @@ class HostProfile {
     bool? forwardPorts,
     bool? useTmux,
     bool? recordPanes,
+    bool? installOpenCommand,
     String? jumpHostId,
     OsInfo? os,
   }) {
@@ -119,6 +130,7 @@ class HostProfile {
       forwardPorts: forwardPorts ?? this.forwardPorts,
       useTmux: useTmux ?? this.useTmux,
       recordPanes: recordPanes ?? this.recordPanes,
+      installOpenCommand: installOpenCommand ?? this.installOpenCommand,
       jumpHostId: jumpHostId ?? this.jumpHostId,
       os: os ?? this.os,
     );
@@ -136,6 +148,7 @@ class HostProfile {
         'forwardPorts': forwardPorts,
         'useTmux': useTmux,
         'recordPanes': recordPanes,
+        'installOpenCommand': installOpenCommand,
         'jumpHostId': jumpHostId,
         'os': ?os?.toJson(),
       };
@@ -159,6 +172,8 @@ class HostProfile {
       forwardPorts: json['forwardPorts'] as bool? ?? false,
       useTmux: json['useTmux'] as bool? ?? false,
       recordPanes: json['recordPanes'] as bool? ?? true,
+      installOpenCommand:
+          json['installOpenCommand'] as bool? ?? installOpenCommandDefault,
       jumpHostId: json['jumpHostId'] as String? ?? '',
       os: switch (json['os']) {
         final Map<String, dynamic> os => OsInfo.fromJson(os),

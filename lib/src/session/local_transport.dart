@@ -11,6 +11,8 @@ import '../files/local_file_browser.dart';
 import '../files/sftp_file_browser.dart' show SftpFileBrowser;
 import '../models/host_profile.dart';
 import 'terminal_session.dart';
+import 'open_command.dart';
+import 'open_request.dart';
 
 /// The host a local shell runs on: this machine. Saved nowhere — it is made
 /// fresh each time and never reaches [HostRepository], so it cannot be edited,
@@ -263,6 +265,11 @@ class LocalTransport implements SessionTransport {
     // outright, the pty being ours — over SSH it cannot be, sshd refusing a
     // name `AcceptEnv` does not list (see `LiveSession.connect`).
     environment = {'FORCE_HYPERLINK': '1', ...environment};
+    // `jeansh <file>` where the app owns the shell's environment: see
+    // [_withOpenCommand].
+    if (environment.containsKey(openSecretVariable)) {
+      environment = _withOpenCommand(environment);
+    }
     final String program;
     final List<String> arguments;
     final String? home;
@@ -310,6 +317,27 @@ class LocalTransport implements SessionTransport {
       return _session(pty);
     } catch (error) {
       throw SshSessionException('Cannot start $program: $error');
+    }
+  }
+
+  /// [environment] with `jeansh` on PATH, on a Mac or Linux: the script is
+  /// written to `~/.local/state/jeansh/bin`, Jeansh's own folder, and that
+  /// folder put first on PATH. A login shell whose profile resets PATH
+  /// outright will not find it. WSL and PowerShell are left as they are —
+  /// the script would have to be inside the distro.
+  Map<String, String> _withOpenCommand(Map<String, String> environment) {
+    final home = _env['HOME'];
+    if (_windows || home == null) return environment;
+    try {
+      final dir = '$home/.local/state/jeansh/bin';
+      installOpenCommand(dir);
+      final path = _env['PATH'];
+      return {
+        ...environment,
+        'PATH': path == null || path.isEmpty ? dir : '$dir:$path',
+      };
+    } on FileSystemException {
+      return environment;
     }
   }
 

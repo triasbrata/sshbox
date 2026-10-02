@@ -21,6 +21,8 @@ import '../git/git_repo.dart';
 import 'clipboard_terminal.dart';
 import 'isolate_transport.dart';
 import 'local_transport.dart';
+import 'open_command.dart';
+import 'open_request.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 import 'tmux.dart';
@@ -155,8 +157,9 @@ class LiveSession extends ChangeNotifier {
   ///
   /// And a program may copy to the clipboard but never read it: see
   /// [ClipboardTerminal].
-  static Terminal _newTerminal() => ClipboardTerminal(
+  Terminal _newTerminal() => ClipboardTerminal(
     maxLines: 10000,
+    onPrivateOSC: (code, args) => openRequests.handle(code, args),
     inputHandler: const _ReleaseOnlyIfAsked(
       CascadeInputHandler([
         KittyKeyboardInputHandler(),
@@ -167,7 +170,15 @@ class LiveSession extends ChangeNotifier {
   );
 
   /// The shell's terminal, and in tmux mode the one shown until tmux is up.
-  final Terminal _terminal = _newTerminal();
+  late final Terminal _terminal = _newTerminal();
+
+  /// What a `jeansh <file>` in this session's terminals asks for, and the
+  /// secret that tells it from a program printing the same bytes: see
+  /// [OpenRequests]. [onOpenPath] is where an accepted path goes.
+  late final openRequests = OpenRequests(
+    onOpen: (path) => onOpenPath?.call(path),
+  );
+  void Function(String path)? onOpenPath;
 
   /// The terminal keystrokes go to: the shell's, or in tmux mode the focused
   /// pane's. What the key bar, the magic key and the upload all act on.
@@ -697,11 +708,23 @@ class LiveSession extends ChangeNotifier {
       final key = isLocalHostId(host.id)
           ? null
           : _notifyKeys?.forConnect(host.id);
+      // A shell on this machine has no connection to read a kept secret
+      // before: its own lasts for the run.
+      if (isLocalHostId(host.id)) {
+        openRequests.secret ??= OpenRequests.newSecret();
+      }
       Future<Map<String, String>> environment(ForwardCapable connection) async {
         final value = await key?.timeout(
           const Duration(seconds: 3),
           onTimeout: () => null,
         );
+        // Kept for the host, read once the connection is up. A secret store
+        // that fails costs `jeansh <file>` and nothing else.
+        final openSecret = isLocalHostId(host.id)
+            ? null
+            : await openRequests
+                  .load(secrets, host.id)
+                  .then<String?>((v) => v, onError: (_) => null);
         return {
           // That this terminal shows an OSC 8 hyperlink and a Ctrl+tap opens
           // it, for a profile to turn `FORCE_HYPERLINK` on from, so Claude
@@ -714,6 +737,9 @@ class LiveSession extends ChangeNotifier {
           // desktop without FCM never has. A tmux tab needs none of this:
           // its script sets `FORCE_HYPERLINK` itself (see [TmuxSession]).
           'LC_SSHBOX_HYPERLINKS': '1',
+          // The secret `jeansh <file>` signs its request with, so that only
+          // a command in this shell can open a tab: see [OpenRequests].
+          openSecretVariable: ?openSecret,
           if (value != null) ...{
             'LC_SSHBOX_KEY': value,
             'LC_SSHBOX_HOST_ID': host.id,
@@ -732,6 +758,11 @@ class LiveSession extends ChangeNotifier {
           columns: _size.$1,
           rows: _size.$2,
           shell: shell,
+          // A local shell has no connection to send variables over, so its
+          // transport is handed them here: see [LocalTransport.connect].
+          environment: isLocalHostId(host.id)
+              ? {openSecretVariable: ?openRequests.secret}
+              : const {},
           beforeShell: environment,
         );
       }
@@ -796,6 +827,11 @@ class LiveSession extends ChangeNotifier {
       _syncForwarding();
       unawaited(_fetchHostname());
       unawaited(_saveOs(secrets));
+      if (host.installOpenCommand &&
+          !isLocalHostId(host.id) &&
+          session is CommandCapable) {
+        unawaited(_installOpenCommand(session as CommandCapable));
+      }
       appLog.add('connect: session $id connected');
     } on SshSessionException catch (error) {
       appLog.warn('connect: session $id failed ${error.runtimeType}');
@@ -1161,6 +1197,23 @@ class LiveSession extends ChangeNotifier {
       _notify();
     } catch (_) {
       // Only a tab's name rides on it, and that has its fallback.
+    }
+  }
+
+  /// Puts `jeansh` on the host, when its switch is on: see
+  /// [openCommandInstallScript]. Silent like [_saveOs]; the log says what the
+  /// host answered and nothing else.
+  Future<void> _installOpenCommand(CommandCapable session) async {
+    try {
+      final lines = await session
+          .run(openCommandInstallScript())
+          .toList()
+          .timeout(const Duration(seconds: 10));
+      appLog.add(
+        'connect: session $id jeansh command ${lines.isEmpty ? '?' : lines.last}',
+      );
+    } catch (_) {
+      appLog.add('connect: session $id jeansh command failed');
     }
   }
 
@@ -1704,6 +1757,9 @@ class SessionManager extends ChangeNotifier {
       restored: restored,
       pickTmux: pickTmux,
     );
+    // A `jeansh <file>` typed in this session opens as the files drawer's
+    // pick does. The session may have closed since: openFile checks.
+    created.onOpenPath = (path) => openFile(created.id, path);
     return created;
   }
 
