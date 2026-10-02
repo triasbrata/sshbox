@@ -1105,6 +1105,8 @@ while [ $i -le 30 ]; do
   i=$((i + 1))
 done
 answer='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Echo from the stand-in'"$fences"'"}]}}'
+# A test that wants a particular answer leaves the whole event here.
+[ -f "$d/e2e-answer.json" ] && answer=$(cat "$d/e2e-answer.json")
 case "$1" in
   --version) echo "2.1.300 (Claude Code)" ;;
   --bg)
@@ -4510,6 +4512,102 @@ touch '${done.path}'
         'the chat, shown again, to be on the last answer',
         timeout: const Duration(seconds: 5),
       );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #180: tool rows read as words, not JSON, and open as a tree. A stand-in
+  // session makes a SendMessage, an MCP call with a nested input, and gets a
+  // JSON result back.
+  _test(
+    'tool rows have readable titles and open as a tree',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, and this stand-in is sh'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      final long = List.filled(40, 'abcdefghij').join();
+      final answer = File('$home/.claude/e2e-answer.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Echo from the stand-in.'},
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_msg',
+                  'name': 'SendMessage',
+                  'input': {'to': 'peer session', 'summary': 'review passed', 'message': 'Merge it.'},
+                },
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_mcp',
+                  'name': 'mcp__tracker__file_issue',
+                  'input': {
+                    'meta': {
+                      'inner': {'deep': 'value'},
+                    },
+                    'note': long,
+                  },
+                },
+              ],
+            },
+          })}\n'
+          '${jsonEncode({
+            'type': 'user',
+            'message': {
+              'role': 'user',
+              'content': [
+                {'type': 'tool_result', 'tool_use_id': 'toolu_msg', 'content': 'sent'},
+                {'type': 'tool_result', 'tool_use_id': 'toolu_mcp', 'content': jsonEncode({'rows': [1, 2], 'ok': true})},
+              ],
+            },
+          })}',
+        );
+      addTearDown(() {
+        if (answer.existsSync()) answer.deleteSync();
+      });
+
+      await _launch(tester);
+      await _chatAnswered(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.text('→ peer session: review passed'), findsOneWidget);
+      expect(find.text('tracker · file_issue'), findsOneWidget);
+      expect(find.text('mcp__tracker__file_issue'), findsNothing);
+      expect(find.textContaining('{"to"'), findsNothing);
+
+      Finder node(String text) => find.byWidgetPredicate(
+        (w) =>
+            (w is RichText && w.text.toPlainText() == text) ||
+            (w is EditableText && w.controller.text == text),
+      );
+
+      await tester.tap(find.text('tracker · file_issue'));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(node('meta: Object(1)'), findsOneWidget);
+      expect(node('deep: value'), findsNothing);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(node('inner: Object(1)'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(node('deep: value'), findsOneWidget);
+      await tester.tap(node('meta: Object(1)'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(node('deep: value'), findsNothing);
+
+      expect(find.text('show more'), findsOneWidget);
+      await tester.tap(find.text('show more'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(node('note: $long'), findsOneWidget);
+      expect(node('rows: Array(2)'), findsOneWidget);
+      await _grab(tester, 'chat-tool-rows');
       await _closeTabs(tester);
     },
   );

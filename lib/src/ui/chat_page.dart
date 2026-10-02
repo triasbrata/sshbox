@@ -18,6 +18,7 @@ import '../files/transfers.dart';
 import '../platform.dart';
 import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
+import 'chat_ask_card.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart'
     show
@@ -724,6 +725,13 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
     final focused = FocusManager.instance.primaryFocus?.context;
+    // A question Claude asked is where the user is: its options, buttons and
+    // field of their own keep every key, characters included, which would
+    // otherwise be typed into the box behind it.
+    if (focused != null &&
+        focused.findAncestorWidgetOfExactType<ChatAskCard>() != null) {
+      return false;
+    }
     return focused == null ||
         (focused.widget is! EditableText &&
             focused.findAncestorWidgetOfExactType<EditableText>() == null);
@@ -1025,6 +1033,18 @@ class _ChatPageState extends State<ChatPage> {
       );
       return;
     }
+    // Not while the chat has nothing to send to — Claude restarting, the
+    // session being replaced, its process gone: said, with what was typed
+    // left in the box.
+    if (_chat.unsendable case final why?) {
+      showToast(
+        context,
+        'Not sent: $why',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
     final starts = _chat.composing;
     final sent = _chat.send(
       text,
@@ -1226,7 +1246,65 @@ class _ChatPageState extends State<ChatPage> {
     openSub: (run, sub) => _openSubAgent(context, _chat, run, sub, [
       widget.session.host.displayName,
     ], widget.onOpenWeb),
+    // A message of this chat's own can be tried again or taken back; a
+    // sub-agent's view has none to send.
+    onRetry: _retry,
+    onRemove: _chat.remove,
+    question: (question) => ChatAskCard(
+      // One card for the question for as long as it is in the chat, so what
+      // is half chosen survives the list being redrawn.
+      key: ObjectKey(question.ask),
+      ask: question.ask,
+      hint: _askHint(question.ask),
+      onAnswer: _answerAsk,
+      onDecline: _declineAsk,
+    ),
   );
+
+  /// Where a question this chat cannot answer is to be answered instead: at
+  /// the terminal of the session being watched, which `claude attach` opens
+  /// for a background one. Nothing is typed there from here: a dialog's keys
+  /// are not something this can check before it sends them.
+  String? _askHint(ChatAsk ask) {
+    if (ask.answerable || !ask.open) return null;
+    final watching = _chat.watching;
+    if (watching == null) return 'Claude is no longer waiting for this here.';
+    final where = watching.id != null
+        ? 'claude attach ${watching.id}'
+        : 'its terminal';
+    return '“${watching.name}” waits for an answer. Answer it at $where.';
+  }
+
+  /// Sends a message that was not delivered again, to what this chat writes
+  /// to now. Said, and the message left as it is, when that cannot be done.
+  void _retry(ChatSaid said) {
+    final why = _chat.retry(
+      said,
+      upload: widget.session.canUploadFiles ? _upload : null,
+    );
+    if (why != null && mounted) {
+      showToast(
+        context,
+        'Not sent: $why',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+    }
+  }
+
+  bool _answerAsk(ChatAsk ask, Map<String, String> answers) {
+    final sent = _chat.answer(ask, answers);
+    if (!sent && mounted) {
+      showToast(
+        context,
+        'Claude is no longer waiting for an answer to this',
+        type: TuiToastType.warning,
+      );
+    }
+    return sent;
+  }
+
+  bool _declineAsk(ChatAsk ask) => _chat.decline(ask);
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
   /// a file, a web page, a tool's output — so it is somebody else's text, and
@@ -1312,6 +1390,8 @@ class _ChatPageState extends State<ChatPage> {
       child: SlashCommandMenu(
         controller: _input,
         commands: _commands,
+        // As the box is: a list over a box that cannot send picks nothing.
+        enabled: open,
         onOpen: _wantCommands,
         openState: _menuOpen,
         onRefresh: () => setState(_listCommands),
@@ -1719,8 +1799,17 @@ Widget _drawEntry(
   required ClaudeChat chat,
   required void Function(String text, String? href, String title) onTapLink,
   required void Function(ChatToolRun run, SubAgent sub) openSub,
+  void Function(ChatSaid said)? onRetry,
+  void Function(ChatSaid said)? onRemove,
+  Widget Function(ChatQuestion question)? question,
 }) => switch (entry) {
-  ChatSaid(mine: true) => _Bubble(said: entry, onTapLink: onTapLink),
+  ChatSaid(mine: true) => _Bubble(
+    said: entry,
+    onTapLink: onTapLink,
+    // A sub-agent's view has no message of its own to send again.
+    onRetry: () => onRetry?.call(entry),
+    onRemove: () => onRemove?.call(entry),
+  ),
   ChatSaid(:final text) => _Answer(text: text, onTapLink: onTapLink),
   final ChatToolRun run => _ToolRow(
     run: run,
@@ -1731,6 +1820,9 @@ Widget _drawEntry(
   ),
   final ChatNotice notice => _Notice(notice: notice),
   final ChatCommand command => _CommandRow(command: command),
+  final ChatQuestion q => question == null
+      ? const SizedBox.shrink()
+      : question(q),
 };
 
 /// Goes into [sub], the sub-agent [run] started in [chat]: a page over the
@@ -1975,20 +2067,29 @@ class _Earlier extends StatelessWidget {
 /// Markdown it was typed in — and, for a message typed into a session being
 /// watched, where it has got to, until that session has recorded it.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.said, required this.onTapLink});
+  const _Bubble({
+    required this.said,
+    required this.onTapLink,
+    required this.onRetry,
+    required this.onRemove,
+  });
 
   final ChatSaid said;
   final MarkdownTapLinkCallback onTapLink;
 
-  /// termul's bubble, with its note while it is not in the session yet, and
-  /// over it the pictures it carries.
+  /// Send it again, or drop it: offered once it is known not to have been
+  /// delivered.
+  final VoidCallback onRetry;
+  final VoidCallback onRemove;
+
+  /// termul's bubble, with its note while it is not in the session yet, over
+  /// it the pictures it carries, and under it what to do about it when it
+  /// never arrived.
   @override
-  Widget build(BuildContext context) {
-    final bubble = _bubble(context);
-    if (said.pictures.isEmpty) return bubble;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      if (said.pictures.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(top: 8, left: 48),
           child: Wrap(
@@ -2001,10 +2102,24 @@ class _Bubble extends StatelessWidget {
             ],
           ),
         ),
-        bubble,
-      ],
-    );
-  }
+      _bubble(context),
+      if (said.delivery == Delivery.failed)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Wrap(
+            spacing: 8,
+            children: [
+              TuiButton(label: 'Retry', prefix: '↻', onPressed: onRetry),
+              TuiButton(
+                label: 'Remove',
+                variant: TuiButtonVariant.ghost,
+                onPressed: onRemove,
+              ),
+            ],
+          ),
+        ),
+    ],
+  );
 
   Widget _bubble(BuildContext context) => TuiChatBubble(
     text: said.text,
@@ -2159,6 +2274,21 @@ class _ToolRow extends StatefulWidget {
     return result;
   }
 
+  /// A result of a tool with no renderer of its own that is a JSON object or
+  /// array, ready for a tree; null for any other, drawn as text.
+  static Object? _resultTree(ChatToolRun run) {
+    final result = run.result;
+    if (result == null || ChatToolRun.own.contains(run.name) || run.failed) {
+      return null;
+    }
+    try {
+      final value = jsonDecode(_unquoted(result));
+      return value is Map || value is List ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   State<_ToolRow> createState() => _ToolRowState();
 }
@@ -2300,7 +2430,7 @@ class _ToolRowState extends State<_ToolRow> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          run.name,
+                          run.title,
                           style: TextStyle(
                             fontFamily: TermulFonts.mono,
                             fontSize: 12,
@@ -2360,6 +2490,9 @@ class _ToolRowState extends State<_ToolRow> {
                         if (result != null && result.isNotEmpty) ...[
                           const SizedBox(height: 8),
                           _label(p, 'result'),
+                          if (_ToolRow._resultTree(run) case final tree?)
+                            _ToolInput._tree(context, 'result', tree)
+                          else
                           _block(
                             context,
                             'result',
@@ -2584,10 +2717,34 @@ class _ToolInput extends StatelessWidget {
           parts.add(_checklist(context, items));
         }
     }
-    if (rest.isNotEmpty) parts.add(code('fields', _fields(rest)));
+    if (rest.isNotEmpty) {
+      parts.add(
+        ChatToolRun.own.contains(run.name)
+            ? code('fields', _fields(rest))
+            : _tree(context, 'fields', rest),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: parts,
+    );
+  }
+
+  /// [value] as a tree that opens node by node, in a box with a button that
+  /// copies the whole of it as indented JSON.
+  static Widget _tree(BuildContext context, String slot, Object? value) {
+    String copy;
+    try {
+      copy = const JsonEncoder.withIndent('  ').convert(value);
+    } catch (_) {
+      // Too deep for the encoder, and for toString: nothing to copy but this.
+      copy = '(too deep to copy)';
+    }
+    return _block(
+      context,
+      slot,
+      TuiJsonTree(value: value, foldStrings: true),
+      copy: copy,
     );
   }
 
@@ -3176,7 +3333,7 @@ class _ProgressState extends State<_Progress> {
     final theme = Theme.of(context);
     final style = theme.textTheme.bodySmall;
     final p = widget.progress;
-    final waiting = p.waitingFor;
+    final waiting = ClaudeAgent.waitingWords(p.waitingFor);
     final String text;
     if (waiting != null) {
       final agent = widget.chat.watching;
@@ -3192,7 +3349,7 @@ class _ProgressState extends State<_Progress> {
       final tool = p.tool;
       final doing = tool == null
           ? ''
-          : ' · ${tool.name}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
+          : ' · ${tool.title}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
       text = 'Working… ($time$tokens)$doing';
     }
     return Padding(
@@ -3249,8 +3406,8 @@ class _SessionList extends StatelessWidget {
   final bool Function(ClaudeAgent agent) unseen;
 
   /// What [agent]'s mark says, from the listing alone: a `waitingFor` is the
-  /// session asking the user something — `permission prompt`, measured —
-  /// `working` or `busy` its turn, and a session whose process has gone is
+  /// session asking the user something — `permission prompt` for a tool,
+  /// `input needed` for a question, measured — `working` or `busy` its turn, and a session whose process has gone is
   /// finished, or `stopped` when the CLI says so.
   static TuiChatSessionStatus statusOf(ClaudeAgent agent) {
     if (!agent.live) {
@@ -3271,7 +3428,7 @@ class _SessionList extends StatelessWidget {
       switch (statusOf(agent)) {
         TuiChatSessionStatus.working => 'Working',
         TuiChatSessionStatus.waiting =>
-          'Waiting for ${agent.waitingFor ?? 'you'}',
+          'Waiting for ${agent.waitingText ?? 'you'}',
         TuiChatSessionStatus.done => agent.live ? 'Done, idle' : 'Finished',
         TuiChatSessionStatus.stopped => 'Stopped',
       };
@@ -3366,7 +3523,9 @@ class _SessionList extends StatelessWidget {
 
   /// Where [agent] is and how long it has been going.
   static String _where(ClaudeAgent agent) => [
-    if (agent.interactive)
+    if (agent.asking)
+      'waiting for an answer'
+    else if (agent.interactive)
       'at a terminal'
     else if (agent.busy)
       'working'

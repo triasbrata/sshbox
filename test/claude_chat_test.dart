@@ -9,6 +9,8 @@ import 'package:sshbox/src/session/terminal_session.dart';
 
 /// Claude Code's end of `claude -p --output-format stream-json`: whatever the
 /// test says it wrote, and whatever the app sent it.
+typedef OpenFor = Future<CommandChannel> Function(String command);
+
 class _FakeClaude {
   final _output = StreamController<Uint8List>();
   final written = <String>[];
@@ -774,6 +776,873 @@ void main() {
     expect(run.result, contains('6000 more characters'));
   });
 
+  group('a message typed for one session does not reach another', () {
+    ClaudeChat watching(_LiveHost host, {OpenFor? open}) {
+      final chat = ClaudeChat(
+        open: open ?? host.open,
+        openTerminal: host.openTerminal,
+        deliveryTimeout: const Duration(seconds: 30),
+      );
+      addTearDown(chat.dispose);
+      return chat;
+    }
+
+    /// The notice that says where the message went instead, with what was
+    /// written, since the view it was sent from is gone.
+    void expectToldWhere(ClaudeChat chat, String starts) {
+      final told = chat.entries
+          .whereType<ChatNotice>()
+          .where((n) => n.failed && n.text.startsWith(starts))
+          .toList();
+      // Once: said, and not twice over.
+      expect(told, hasLength(1), reason: 'a notice starting "$starts"');
+      expect(told.single.text, contains('hello'));
+    }
+
+    test('moved off before the host has said what it is doing: no terminal '
+        'is opened at all', () async {
+      final host = _LiveHost('0\n');
+      final chat = watching(host);
+      await chat.continueFrom(_live);
+
+      final gate = Completer<void>();
+      host.agentsGate = gate.future;
+      chat.send('hello');
+      await _settle();
+      await chat.newChat();
+      gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(host.terminals, isEmpty);
+      expect(host.paneTyping, isEmpty);
+      expectToldWhere(chat, 'Not sent to “');
+    });
+
+    test('moved off while the attach comes up: it types nothing and is let go',
+        () async {
+      final host = _LiveHost('0\n');
+      final chat = watching(host);
+      await chat.continueFrom(_live);
+
+      chat.send('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await chat.newChat();
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+      expect(host.terminals.single.typed, isEmpty);
+      expect(host.terminals.single.closed.single, isTrue);
+      expectToldWhere(chat, 'Not sent to “');
+    });
+
+    test('moved off while an attach that never draws is waited on: it is let '
+        'go at once, not after the delivery timeout', () async {
+      final host = _LiveHost('0\n')..terminalsDraw = false;
+      final chat = watching(host);
+      await chat.continueFrom(_live);
+
+      chat.send('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(host.terminals.single.closed.single, isFalse);
+      await chat.newChat();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // 30 s is the timeout: this is well inside it.
+      expect(host.terminals.single.closed.single, isTrue);
+      expect(host.terminals.single.typed, isEmpty);
+      expectToldWhere(chat, 'Not sent to “');
+    });
+
+    test('moved off after it was typed but before Enter: the Enter that '
+        'would send it is held back, and the text is said to be at the '
+        'terminal', () async {
+      final host = _LiveHost('0\n');
+      final chat = watching(host);
+      await chat.continueFrom(_live);
+
+      chat.send('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      expect(host.terminals.single.typed, ['hello']);
+      await chat.newChat();
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+      expect(host.terminals.single.typed, ['hello']);
+      expect(host.terminals.single.closed.single, isTrue);
+      expectToldWhere(chat, 'Typed into “');
+      expect(chat.entries.whereType<ChatNotice>().last.text,
+          contains('not sent'));
+    });
+
+    test('another session picked meanwhile', () async {
+      final host = _LiveHost('0\n');
+      final chat = watching(host);
+      await chat.continueFrom(_live);
+
+      final gate = Completer<void>();
+      host.agentsGate = gate.future;
+      chat.send('hello');
+      await _settle();
+      // Picked from the list while the message was on its way.
+      final other = chat.continueFrom(
+        const ClaudeAgent(
+          sessionId: 'cf58d27a-da65-4e9b-a896-078306134024',
+          name: 'Zsh config fix',
+          cwd: '/home/me',
+          kind: 'background',
+          id: 'cf58d27a',
+          state: 'done',
+        ),
+      );
+      gate.complete();
+      await other;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(host.terminals, isEmpty);
+      expectToldWhere(chat, 'Not sent to “');
+    });
+
+    test('a tmux pane: moved off while the host script opens, no key is '
+        'written to it', () async {
+      final host = _LiveHost('0\n', interactive: true);
+      late final ClaudeChat chat;
+      chat = watching(
+        host,
+        open: (command) async {
+          // Replaced at the very moment the pane's channel is being opened.
+          if (command.contains('load-buffer')) await chat.newChat();
+          return host.open(command);
+        },
+      );
+      await chat.continueFrom(_interactive);
+
+      chat.send('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      // The script was started, and given nothing on its stdin: no keys.
+      expect(host.paneTyping.single.stdin, isEmpty);
+      expect(host.terminals, isEmpty);
+      expectToldWhere(chat, 'Not sent to “');
+    });
+
+    test('the session ending before the message is typed, while the Claude '
+        'that takes over is still starting: it is not typed into the '
+        'finished session', () async {
+      final host = _LiveHost('0\n');
+      final starting = Completer<void>();
+      final chat = watching(
+        host,
+        open: (command) async {
+          // The resumed Claude that takes the session over, held back.
+          if (command.contains('stream-json')) await starting.future;
+          return host.open(command);
+        },
+      );
+      await chat.continueFrom(_live);
+
+      final gate = Completer<void>();
+      host.agentsGate = gate.future;
+      chat.send('hello');
+      await _settle();
+      host.adds('\nsshbox:ended\n');
+      await host.follow!.close();
+      await _settle();
+      gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      // The chat went on in place, as a Claude of its own; the old attach
+      // was never opened and the message says so.
+      expect(host.terminals, isEmpty);
+      final said = chat.entries.whereType<ChatSaid>().firstWhere(
+        (said) => said.text == 'hello',
+      );
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('moved off'));
+      starting.complete();
+      await _settle();
+    });
+  });
+
+  group('a question Claude asks', () {
+    // As 2.1.287 sent them, measured against a real claude -p on stdio.
+    const callId = 'toolu_014VYdGV2EsfHT7aXFQdgyu9';
+    const questions = [
+      {
+        'question': 'Which colours?',
+        'header': 'Colours',
+        'multiSelect': true,
+        'options': [
+          {'label': 'Red', 'description': 'A warm colour.'},
+          {'label': 'Blue', 'description': 'A cool colour.'},
+        ],
+      },
+      {
+        'question': 'Which size?',
+        'header': 'Size',
+        'multiSelect': false,
+        'options': [
+          {'label': 'Small', 'description': 'Small.'},
+          {'label': 'Large', 'description': 'Large.', 'preview': 'XL\n  L'},
+        ],
+      },
+    ];
+    const input = {'questions': questions};
+
+    Map<String, dynamic> toolUse([String id = callId]) => {
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': id,
+            'name': 'AskUserQuestion',
+            'input': input,
+          },
+        ],
+      },
+    };
+
+    Map<String, dynamic> request([String id = callId, String requestId = 'r1']) =>
+        {
+          'type': 'control_request',
+          'request_id': requestId,
+          'request': {
+            'subtype': 'can_use_tool',
+            'tool_name': 'AskUserQuestion',
+            'display_name': 'AskUserQuestion',
+            'input': input,
+            'tool_use_id': id,
+            'requires_user_interaction': true,
+          },
+        };
+
+    Future<(ClaudeChat, _FakeClaude)> started() async {
+      final claude = _FakeClaude();
+      final chat = ClaudeChat(open: (_) async => claude.channel);
+      addTearDown(chat.dispose);
+      await chat.start();
+      return (chat, claude);
+    }
+
+    test('shows as a question, which the CLI then asks this chat to answer, '
+        'and the answer goes back as allow with the answers added', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+
+      // One entry, a question and not a tool row, now waiting on the user.
+      expect(chat.entries.whereType<ChatToolRun>(), isEmpty);
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      expect(ask.questions.map((q) => q.header), ['Colours', 'Size']);
+      expect(ask.questions[0].multiSelect, isTrue);
+      expect(ask.questions[1].options[1].preview, 'XL\n  L');
+      expect(ask.answerable, isTrue);
+
+      final sent = chat.answer(ask, {
+        'Which colours?': 'Red, Blue',
+        'Which size?': 'Gigantic',
+      });
+      expect(sent, isTrue);
+      expect(claude.sent.single, {
+        'type': 'control_response',
+        'response': {
+          'subtype': 'success',
+          'request_id': 'r1',
+          'response': {
+            'behavior': 'allow',
+            'updatedInput': {
+              ...input,
+              'answers': {
+                'Which colours?': 'Red, Blue',
+                'Which size?': 'Gigantic',
+              },
+            },
+          },
+        },
+      });
+      // Shown answered at once, and not answerable twice.
+      expect(ask.answers!['Which size?'], 'Gigantic');
+      expect(ask.answerable, isFalse);
+      expect(chat.answer(ask, {'Which colours?': 'x', 'Which size?': 'y'}),
+          isFalse);
+      expect(claude.sent, hasLength(1));
+    });
+
+    test('an answer missing a question is not sent', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      expect(chat.answer(ask, {'Which colours?': 'Red'}), isFalse);
+      expect(claude.sent, isEmpty);
+      expect(ask.answerable, isTrue);
+    });
+
+    test('dismissing it denies the call with a message', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      expect(chat.decline(ask), isTrue);
+      final response = (claude.sent.single['response'] as Map)['response'] as Map;
+      expect(response['behavior'], 'deny');
+      expect(response['message'], contains('dismissed the question'));
+      expect(ask.declined, isTrue);
+      expect(ask.answerable, isFalse);
+    });
+
+    test('the request may come before the call, and still makes one entry',
+        () async {
+      final (chat, claude) = await started();
+      claude.event(request());
+      claude.event(toolUse());
+      await _settle();
+
+      expect(chat.entries.whereType<ChatQuestion>(), hasLength(1));
+      expect(
+        chat.entries.whereType<ChatQuestion>().single.ask.answerable,
+        isTrue,
+      );
+    });
+
+    test('the CLI taking its request back ends the chance to answer', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      claude.event({'type': 'control_cancel_request', 'request_id': 'r1'});
+      await _settle();
+      expect(ask.answerable, isFalse);
+      expect(chat.answer(ask, {
+        'Which colours?': 'Red',
+        'Which size?': 'Small',
+      }), isFalse);
+      expect(claude.sent, isEmpty);
+    });
+
+    test('the process going away ends it too', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      await claude.end();
+      await _settle();
+      expect(ask.answerable, isFalse);
+      expect(ask.open, isTrue);
+    });
+
+    test('the tool result settles it: the answers, or a dismissal', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      claude.event({
+        'type': 'user',
+        'message': {
+          'content': [
+            {
+              'type': 'tool_result',
+              'tool_use_id': callId,
+              'content': 'The user answered: "Which colours?"="Red".',
+            },
+          ],
+        },
+        'tool_use_result': {
+          'questions': questions,
+          'answers': {'Which colours?': 'Red', 'Which size?': 'Large'},
+        },
+      });
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      expect(ask.answers, {'Which colours?': 'Red', 'Which size?': 'Large'});
+      expect(ask.answerable, isFalse);
+
+      // A second question, dismissed elsewhere.
+      claude.event(toolUse('toolu_2'));
+      claude.event({
+        'type': 'user',
+        'message': {
+          'content': [
+            {
+              'type': 'tool_result',
+              'tool_use_id': 'toolu_2',
+              'content': 'The user dismissed the question without answering.',
+              'is_error': true,
+            },
+          ],
+        },
+        'tool_use_result': 'Error: The user dismissed the question.',
+      });
+      await _settle();
+      final second = chat.entries.whereType<ChatQuestion>().last.ask;
+      expect(second.declined, isTrue);
+      expect(second.answers, isNull);
+    });
+
+    test('any other tool the CLI asks about is refused at once, so it never '
+        'waits', () async {
+      final (_, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r9',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'Bash',
+          'input': {'command': 'rm -rf /srv'},
+          'tool_use_id': 'toolu_9',
+        },
+      });
+      await _settle();
+
+      final response = (claude.sent.single['response'] as Map)['response'] as Map;
+      expect(claude.sent.single['response']['request_id'], 'r9');
+      expect(response['behavior'], 'deny');
+      expect(response['message'], contains('Bash was refused'));
+    });
+
+    // THE INVARIANT: nothing chat writes reaches a process or session that
+    // has been replaced, and no write is dropped without saying so. One test
+    // for each event that replaces what chat writes to.
+    group('nothing is written to a process that has been replaced', () {
+      const answers = {'Which colours?': 'Red', 'Which size?': 'Small'};
+
+      /// A chat of its own, whose every Claude is a fake kept in [fakes], with
+      /// a question open in the first.
+      Future<(ClaudeChat, List<_FakeClaude>, ChatAsk)> asking({
+        Future<void>? hold,
+      }) async {
+        final fakes = <_FakeClaude>[];
+        final chat = ClaudeChat(
+          open: (command) async {
+            // Reads the chat makes beside its Claude — the transcript, its
+            // tasks, the plan's usage — are not one.
+            if (!command.contains('stream-json')) return _noHistory();
+            if (fakes.isNotEmpty && hold != null) await hold;
+            final fake = _FakeClaude();
+            fakes.add(fake);
+            return fake.channel;
+          },
+        );
+        await chat.start();
+        fakes.single.event(toolUse());
+        fakes.single.event(request());
+        await _settle();
+        return (chat, fakes, chat.entries.whereType<ChatQuestion>().single.ask);
+      }
+
+      /// The answer cannot be sent, whichever way it is tried, and not even
+      /// when the question still believes the old process is waiting.
+      void expectNothingReaches(
+        ClaudeChat chat,
+        List<_FakeClaude> fakes,
+        ChatAsk ask,
+      ) {
+        expect(ask.answerable, isFalse);
+        expect(chat.answer(ask, answers), isFalse);
+        expect(chat.decline(ask), isFalse);
+        // The clearing is the first line; the gate is the second: put the
+        // request id back, as if nothing had cleared it.
+        ask.requestId = 'r1';
+        expect(chat.answer(ask, answers), isFalse);
+        expect(chat.decline(ask), isFalse);
+        ask.requestId = null;
+        for (final fake in fakes) {
+          expect(fake.written, isEmpty);
+        }
+        expect(ask.answers, isNull);
+        expect(ask.declined, isFalse);
+      }
+
+      test('a question the CLI never asked about, whatever its request id '
+          'says, is not written for', () async {
+        final (chat, fakes, _) = await asking();
+        addTearDown(chat.dispose);
+        // Made here, not from a request: no process is its own.
+        final invented = ChatAsk.parse(callId, input)!..requestId = 'r-made-up';
+        expect(chat.answer(invented, answers), isFalse);
+        expect(chat.decline(invented), isFalse);
+        expect(fakes.single.written, isEmpty);
+      });
+
+      test('a ⋮ mode change and the restart it makes', () async {
+        final (chat, fakes, ask) = await asking();
+        addTearDown(chat.dispose);
+        await chat.restart(permission: ChatPermission.plan);
+        expect(fakes, hasLength(2));
+        expectNothingReaches(chat, fakes, ask);
+      });
+
+      test('a reconnect, which starts Claude again once the old one is gone',
+          () async {
+        final (chat, fakes, ask) = await asking();
+        addTearDown(chat.dispose);
+        await fakes.single.end();
+        await _settle();
+        await chat.resume();
+        expect(fakes, hasLength(2));
+        expectNothingReaches(chat, fakes, ask);
+      });
+
+      test('New chat', () async {
+        final (chat, fakes, ask) = await asking();
+        addTearDown(chat.dispose);
+        await chat.newChat();
+        expectNothingReaches(chat, fakes, ask);
+      });
+
+      test('another session picked in the sidebar', () async {
+        final (chat, fakes, ask) = await asking();
+        addTearDown(chat.dispose);
+        await chat.continueFrom(
+          const ClaudeAgent(
+            sessionId: 'cf58d27a-da65-4e9b-a896-078306134024',
+            name: 'Zsh config fix',
+            cwd: '/home/me',
+            kind: 'background',
+            id: 'cf58d27a',
+            state: 'done',
+          ),
+        );
+        expect(fakes, hasLength(2));
+        expectNothingReaches(chat, fakes, ask);
+      });
+
+      test('the process ending, after which a message is refused out loud',
+          () async {
+        final (chat, fakes, ask) = await asking();
+        addTearDown(chat.dispose);
+        await fakes.single.end();
+        await _settle();
+        expectNothingReaches(chat, fakes, ask);
+
+        await chat.send('are you there?');
+        expect(fakes.single.written, isEmpty);
+        final notice = chat.entries.whereType<ChatNotice>().last;
+        expect(notice.failed, isTrue);
+        expect(notice.text, contains('Not sent: Claude is not running'));
+        expect(notice.text, contains('are you there?'));
+      });
+
+      test('the tab closing', () async {
+        final (chat, fakes, ask) = await asking();
+        chat.dispose();
+        expect(chat.answer(ask, answers), isFalse);
+        expect(chat.decline(ask), isFalse);
+        ask.requestId = 'r1';
+        expect(chat.answer(ask, answers), isFalse);
+        expect(fakes.single.written, isEmpty);
+        expect(chat.unsendable, 'This chat is closed.');
+      });
+
+      test('a restart still under way: the box is not for sending, the old '
+          'process gets nothing, and a message is refused out loud', () async {
+        final release = Completer<void>();
+        final (chat, fakes, ask) = await asking(hold: release.future);
+        addTearDown(chat.dispose);
+        final restarting = chat.restart(permission: ChatPermission.bypass);
+        await _settle();
+
+        // Between the old process and the new one.
+        expect(chat.ready, isFalse);
+        expect(chat.unsendable, isNotNull);
+        await chat.send('hello');
+        expect(fakes.single.written, isEmpty);
+        expect(chat.entries.whereType<ChatNotice>().last.text,
+            contains('Not sent'));
+        expectNothingReaches(chat, fakes, ask);
+
+        release.complete();
+        await restarting;
+        expect(chat.unsendable, isNull);
+        // And the new process is written to as before.
+        await chat.send('now it is up');
+        expect(fakes.last.sent.single['type'], 'user');
+      });
+
+      test('a message while Claude is still answering is refused out loud, '
+          'not dropped', () async {
+        final (chat, fakes, _) = await asking();
+        addTearDown(chat.dispose);
+        await chat.send('first');
+        await chat.send('second');
+        expect(fakes.single.sent.where((m) => m['type'] == 'user'), hasLength(1));
+        expect(chat.entries.whereType<ChatNotice>().last.text,
+            allOf(contains('Not sent: Claude is still answering.'),
+                contains('second')));
+      });
+    });
+
+    test('only the tool spelt AskUserQuestion is ever allowed: a lookalike '
+        'name, even on a real question\'s id, is denied and opens nothing',
+        () async {
+      for (final name in <Object?>[
+        'askuserquestion',
+        'ASKUSERQUESTION',
+        'AskUserQuestion ',
+        ' AskUserQuestion',
+        'AskUserQuestion\u200b',
+        'AskUserQuestionX',
+        'Ask UserQuestion',
+        'mcp__srv__AskUserQuestion',
+        'Bash',
+        '',
+        null,
+        5,
+      ]) {
+        final (chat, claude) = await started();
+        // A genuine question, called but not yet asked about.
+        claude.event(toolUse());
+        // Then a request that carries its id and its input but another name.
+        claude.event({
+          'type': 'control_request',
+          'request_id': 'r-lookalike',
+          'request': {
+            'subtype': 'can_use_tool',
+            'tool_name': name,
+            'input': input,
+            'tool_use_id': callId,
+            'requires_user_interaction': true,
+          },
+        });
+        await _settle();
+
+        final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+        expect(ask.answerable, isFalse, reason: 'a request named "$name"');
+        expect(chat.answer(ask, {
+          'Which colours?': 'Red',
+          'Which size?': 'Small',
+        }), isFalse, reason: '"$name"');
+        final reply = (claude.sent.single['response'] as Map)['response'] as Map;
+        expect(reply['behavior'], 'deny', reason: '"$name"');
+        expect(claude.sent.single['response']['request_id'], 'r-lookalike');
+        // Nothing but that one refusal was ever written.
+        expect(claude.sent, hasLength(1), reason: '"$name"');
+      }
+    });
+
+    test('no response but the answer\'s is an allow, and that adds `answers` '
+        'to the call\'s own input and nothing else', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r-bash',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'Bash',
+          'input': {'command': 'id'},
+          'tool_use_id': 'toolu_bash',
+        },
+      });
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      chat.answer(ask, {'Which colours?': 'Red', 'Which size?': 'Small'});
+
+      final allows = [
+        for (final m in claude.sent)
+          if (((m['response'] as Map)['response'] as Map?)?['behavior'] ==
+              'allow')
+            m,
+      ];
+      expect(allows, hasLength(1));
+      final updated =
+          (((allows.single['response'] as Map)['response'] as Map)['updatedInput']
+              as Map);
+      expect(updated.keys.toSet(), {...input.keys, 'answers'});
+      expect(updated['questions'], input['questions']);
+      expect((allows.single['response'] as Map)['request_id'], 'r1');
+    });
+
+    test('an answer for a question that is not there, or short of one, is '
+        'not sent', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      expect(chat.answer(ask, {
+        'Which colours?': 'Red',
+        'Which size?': 'Small',
+        'Anything else?': 'rm -rf',
+      }), isFalse);
+      expect(claude.sent, isEmpty);
+      expect(ask.answerable, isTrue);
+    });
+
+    test('a question already answered is not asked about again', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      chat.answer(ask, {'Which colours?': 'Red', 'Which size?': 'Small'});
+      claude.written.clear();
+
+      claude.event(request(callId, 'r-again'));
+      await _settle();
+      expect(ask.answerable, isFalse);
+      final reply = (claude.sent.single['response'] as Map)['response'] as Map;
+      expect(reply['behavior'], 'deny');
+    });
+
+    test('a refusal names the tool only as bounded text', () async {
+      final (_, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r-long',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'X\x1b[31m\x07${'y' * 200}',
+          'input': const {},
+          'tool_use_id': 'toolu_x',
+        },
+      });
+      await _settle();
+      final message =
+          ((claude.sent.single['response'] as Map)['response'] as Map)['message']
+              as String;
+      expect(message, isNot(contains('\x1b')));
+      expect(message, isNot(contains('\x07')));
+      expect(message.length, lessThan(300));
+    });
+
+    test('a request that is not even an object gets an error, never silence',
+        () async {
+      final (chat, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r-bad',
+        'request': 'can_use_tool',
+      });
+      claude.event({'type': 'control_request', 'request_id': 'r-none'});
+      await _settle();
+
+      expect(claude.sent, hasLength(2));
+      for (final reply in claude.sent) {
+        expect((reply['response'] as Map)['subtype'], 'error');
+      }
+      expect(claude.sent.map((r) => (r['response'] as Map)['request_id']),
+          ['r-bad', 'r-none']);
+      expect(chat.entries.whereType<ChatQuestion>(), isEmpty);
+    });
+
+    test('asked again while still open: the older request gets an error and '
+        'the newer is the one answered', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request(callId, 'r-old'));
+      claude.event(request(callId, 'r-new'));
+      await _settle();
+
+      final older = claude.sent.single['response'] as Map;
+      expect(older['subtype'], 'error');
+      expect(older['request_id'], 'r-old');
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      expect(ask.requestId, 'r-new');
+      claude.written.clear();
+      expect(
+        chat.answer(ask, {'Which colours?': 'Red', 'Which size?': 'Small'}),
+        isTrue,
+      );
+      expect((claude.sent.single['response'] as Map)['request_id'], 'r-new');
+    });
+
+    test('a request of a kind this chat does not know gets an error, and a '
+        'malformed question is refused', () async {
+      final (chat, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r5',
+        'request': {'subtype': 'something_new'},
+      });
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r6',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'AskUserQuestion',
+          'input': {'questions': 'not a list'},
+          'tool_use_id': 'toolu_6',
+        },
+      });
+      await _settle();
+
+      expect(chat.entries.whereType<ChatQuestion>(), isEmpty);
+      expect(claude.sent, hasLength(2));
+      expect((claude.sent[0]['response'] as Map)['subtype'], 'error');
+      final refused = (claude.sent[1]['response'] as Map)['response'] as Map;
+      expect(refused['behavior'], 'deny');
+    });
+
+    test('read back from a transcript it shows the answer that was given, '
+        'and a question never answered stays open with nobody to ask',
+        () async {
+      // As the transcript file holds them: the call, then the user line with
+      // toolUseResult. The second call has no result yet.
+      final text = [
+        jsonEncode(toolUse()),
+        jsonEncode({
+          'type': 'user',
+          'message': {
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': callId,
+                'content': 'The user answered: …',
+              },
+            ],
+          },
+          'toolUseResult': {
+            'questions': questions,
+            'answers': {'Which colours?': 'Red, Blue', 'Which size?': 'XL'},
+          },
+        }),
+        jsonEncode(toolUse('toolu_open')),
+      ].join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final asks = [for (final q in chat.entries.whereType<ChatQuestion>()) q.ask];
+      expect(asks, hasLength(2));
+      expect(asks[0].answers, {'Which colours?': 'Red, Blue', 'Which size?': 'XL'});
+      expect(asks[1].open, isTrue);
+      expect(asks[1].answerable, isFalse);
+      // Nothing was sent: a watched session is answered at its terminal.
+      expect(host.startedClaude, isFalse);
+    });
+
+    test('a session held at a question says so, in its row and when typed '
+        'into', () {
+      final asking = ClaudeAgent.fromJson({
+        'sessionId': 'aaaa1111-0000-0000-0000-000000000000',
+        'id': 'aaaa1111',
+        'status': 'idle',
+        'state': 'blocked',
+        'waitingFor': 'input needed',
+      })!;
+      final approving = ClaudeAgent.fromJson({
+        'sessionId': 'bbbb2222-0000-0000-0000-000000000000',
+        'status': 'idle',
+        'waitingFor': 'permission prompt',
+      })!;
+      expect(asking.asking, isTrue);
+      expect(asking.waitingText, 'an answer');
+      expect(approving.asking, isFalse);
+      expect(approving.waitingText, 'permission prompt');
+    });
+  });
+
   test('the command finds Claude, starts where the files are, and '
       'resumes', () {
     final command = ClaudeChat.command(
@@ -781,12 +1650,14 @@ void main() {
       permission: ChatPermission.bypass,
       resume: 'f44e6c8b',
     );
-    // JSON both ways, and nothing that would wait for a prompt nobody can
-    // answer.
+    // JSON both ways, and permission prompts sent to this chat over stdio —
+    // which is what gets it the AskUserQuestion tool; --permission-prompts
+    // none withholds it.
     expect(command, contains('--input-format stream-json'));
     expect(command, contains('--output-format stream-json'));
     expect(command, contains('--permission-mode bypassPermissions'));
-    expect(command, contains('--permission-prompts none'));
+    expect(command, contains('--permission-prompt-tool stdio'));
+    expect(command, isNot(contains('--permission-prompts none')));
     // An exec channel's shell is not a login shell: PATH first, then the
     // installer's own places, then the login shell's PATH.
     expect(command, contains(r'command -v claude'));
@@ -1580,11 +2451,16 @@ void main() {
   });
 
   group('typing into the session being watched', () {
-    ClaudeChat watcher(_LiveHost host, {Duration? deliveryTimeout}) {
+    ClaudeChat watcher(
+      _LiveHost host, {
+      Duration? deliveryTimeout,
+      Duration? dropGrace,
+    }) {
       final chat = ClaudeChat(
         open: host.open,
         openTerminal: host.openTerminal,
         deliveryTimeout: deliveryTimeout ?? const Duration(seconds: 30),
+        dropGrace: dropGrace ?? const Duration(seconds: 10),
       );
       addTearDown(chat.dispose);
       return chat;
@@ -1777,6 +2653,274 @@ void main() {
         chat.entries.whereType<ChatSaid>().single.delivery,
         Delivery.queued,
       );
+    });
+
+    // How Claude Code records a message that was sent mid-turn, once it is
+    // delivered into the turn: an `attachment` of type `queued_command`.
+    Map<String, Object?> delivered(String prompt, {bool human = true}) => {
+      'type': 'attachment',
+      'attachment': {
+        'type': 'queued_command',
+        'prompt': prompt,
+        'delivery_id': 'd-1',
+        'humanTurn': human,
+        'origin': {'kind': 'human'},
+        'commandMode': 'prompt',
+      },
+    };
+
+    Map<String, Object?> enqueued(String text) => {
+      'type': 'queue-operation',
+      'operation': 'enqueue',
+      'content': text,
+    };
+
+    test('a queued message resolves when the session records it as delivered '
+        'into its turn, and is not drawn twice', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final queuedSaid = chat.entries.whereType<ChatSaid>().single;
+      expect(queuedSaid.delivery, Delivery.queued);
+
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      host.adds(delivered('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // The same bubble, where it was sent from, delivered, and no second
+      // one for the record.
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said, same(queuedSaid));
+      expect(said.text, 'then run the tests');
+      expect(said.delivery, isNull);
+      expect(said.why, isNull);
+    });
+
+    test('a message delivered into the turn that nobody typed here is a turn '
+        'of the user\'s, live and read back from the history', () async {
+      final text = [
+        jsonEncode({
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'start'},
+        }),
+        jsonEncode(delivered('typed at the terminal mid-turn')),
+        jsonEncode(delivered('a system one', human: false)),
+        jsonEncode(delivered('<task-notification>x</task-notification>')),
+      ].join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+
+      expect(
+        chat.entries.whereType<ChatSaid>().map((said) => said.text).toList(),
+        ['start', 'typed at the terminal mid-turn'],
+      );
+      host.adds(delivered('and one more, live'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(chat.entries.whereType<ChatSaid>().last.text, 'and one more, live');
+    });
+
+    test('a queued message the queue gives up without running it is said not '
+        'to have arrived, with Retry, which sends it once through the gate',
+        () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(
+        host,
+        dropGrace: const Duration(milliseconds: 200),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      // Within the grace it may still be delivered; none comes.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        chat.entries.whereType<ChatSaid>().single.delivery,
+        Delivery.queued,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+      expect(failed.why, contains('took it off its queue'));
+
+      // Retry: the same text, once, to the session as it is now.
+      host.state = 'done';
+      expect(chat.retry(failed), isNull);
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(chat.entries, isNot(contains(failed)));
+      expect(host.terminals, hasLength(2));
+      // Typed once, and sent with Enter once.
+      expect(host.terminals.last.typed, ['then run the tests', '\r']);
+      // The failed one is gone: a second Retry has nothing to send.
+      expect(chat.retry(failed), contains('no longer here'));
+      expect(host.terminals, hasLength(2));
+    });
+
+    test('a delivery that comes after the grace, with the message given up '
+        'for dropped, resolves the same bubble: one bubble, delivered, no '
+        'Retry', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(
+        host,
+        dropGrace: const Duration(milliseconds: 100),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+
+      // The delivery was only slow.
+      host.adds(delivered('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(chat.entries.whereType<ChatSaid>().single, same(said));
+      expect(said.delivery, isNull);
+      expect(said.why, isNull);
+      // Nothing to retry now: it would send the message twice.
+      expect(chat.retry(said), contains('no longer here'));
+      expect(host.terminals, hasLength(1));
+    });
+
+    test('a message the user removed after the grace is not matched by a '
+        'late delivery', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(
+        host,
+        dropGrace: const Duration(milliseconds: 100),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final said = chat.entries.whereType<ChatSaid>().single;
+      chat.remove(said);
+
+      host.adds(delivered('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // Removed means gone; the record is then drawn as the turn it is.
+      expect(chat.entries.whereType<ChatSaid>().single, isNot(same(said)));
+      expect(said.delivery, Delivery.failed);
+    });
+
+    test('a removal followed by its delivery is not a drop', () async {
+      final host = _LiveHost('0\n', state: 'working');
+      final chat = watcher(
+        host,
+        dropGrace: const Duration(milliseconds: 200),
+      );
+      await chat.continueFrom(_live);
+
+      chat.send('then run the tests');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      host.adds(enqueued('then run the tests'));
+      host.adds({'type': 'queue-operation', 'operation': 'remove'});
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      host.adds(delivered('then run the tests'));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+
+      expect(chat.entries.whereType<ChatSaid>().single.delivery, isNull);
+    });
+
+    test('Retry goes to what the chat writes to now, not to the session it '
+        'failed in: once that has ended and Claude has taken over, to Claude',
+        () async {
+      final host = _LiveHost('0\n')..terminalsDraw = false;
+      final claudes = <_FakeClaude>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          if (command.contains('stream-json')) {
+            final claude = _FakeClaude();
+            claudes.add(claude);
+            return claude.channel;
+          }
+          return host.open(command);
+        },
+        openTerminal: host.openTerminal,
+        deliveryTimeout: const Duration(milliseconds: 200),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      // It never comes up to type into: not delivered.
+      chat.send('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+      expect(host.terminals, hasLength(1));
+
+      // The session ends, and what is sent from here continues it.
+      host.adds('\nsshbox:ended\n');
+      await host.follow!.close();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.watching, isNull);
+      expect(claudes, hasLength(1));
+
+      expect(chat.retry(failed), isNull);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // To the new target, and not to the old session's terminal.
+      expect(host.terminals, hasLength(1));
+      final message = claudes.single.sent.single;
+      expect(message['type'], 'user');
+      expect(
+        (((message['message'] as Map)['content'] as List).single as Map)['text'],
+        'hello',
+      );
+    });
+
+    test('Retry is refused, with why, while there is nothing to send to, and '
+        'the failed message stays', () async {
+      final host = _LiveHost(
+        '0\n',
+        state: 'blocked',
+        status: 'waiting',
+        waitingFor: 'permission prompt',
+      );
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      chat.send('anything');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+
+      // Replaced, and the old bubble is gone with its view.
+      await chat.newChat();
+      expect(chat.retry(failed), contains('no longer here'));
+      expect(host.terminals, isEmpty);
+    });
+
+    test('Remove drops a failed message, and only a failed one', () async {
+      final host = _LiveHost(
+        '0\n',
+        state: 'blocked',
+        status: 'waiting',
+        waitingFor: 'permission prompt',
+      );
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      chat.send('anything');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+
+      chat.remove(failed);
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
     });
 
     // At a dialog as measured — blocked, waiting on a permission prompt —
@@ -2939,6 +4083,7 @@ void main() {
             ChatNotice(:final text) => text,
             ChatToolRun() => 'tool',
             ChatCommand(:final name) => '/$name',
+            ChatQuestion() => 'question',
           },
       ];
       final gap = texts.indexWhere((text) => text.contains('left out'));
@@ -3847,6 +4992,202 @@ void main() {
       ]);
       expect([for (final p in mine.pictures) p.number], [4, 5]);
       expect(chat.nextPicture, 6);
+    });
+
+    // The gate (see ClaudeChat._current) holds for a picture message as for
+    // any other: its upload and its writes are for the target it was sent
+    // for, and a failed one is retried with its pictures.
+    test('moved off while its picture is uploading: no terminal is opened '
+        'and nothing is typed, and it says so with what was written',
+        () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final upload = Completer<String>();
+      await chat.send(
+        'look at [Image #1]',
+        pictures: [picture('a.png', 1)],
+        upload: (_) => upload.future,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await chat.newChat();
+      upload.complete('/tmp/a.png');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      expect(host.terminals, isEmpty);
+      final told = chat.entries
+          .whereType<ChatNotice>()
+          .where((n) => n.failed && n.text.startsWith('Not sent to “'));
+      expect(told, hasLength(1));
+      expect(told.single.text, contains('look at [Image #1]'));
+    });
+
+    test('moved off between its parts: the text before a picture was typed, '
+        'the rest is not, and Enter is held back', () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      await chat.send(
+        'a [Image #1] b [Image #2] c',
+        pictures: [picture('a.png', 1), picture('b.png', 2)],
+        upload: (picture) async => '/tmp/${picture.name}',
+      );
+      // After the first picture's path is typed, before the second part.
+      while (host.terminals.isEmpty ||
+          host.terminals.single.typed.length < 2) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await chat.newChat();
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+      final typed = host.terminals.single.typed;
+      expect(typed, isNot(contains('\r')));
+      expect(typed.join(), isNot(contains('b.png')));
+      expect(host.terminals.single.closed.single, isTrue);
+      // Said as what it is: part of it is in the session's input line.
+      final notice = chat.entries.whereType<ChatNotice>().last;
+      expect(notice.text, startsWith('Typed into “'));
+      expect(notice.text, contains('a [Image #1] b [Image #2] c'));
+    });
+
+    test('a tmux pane: moved off while its picture is uploading, no key '
+        'reaches the pane', () async {
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_interactive);
+
+      final upload = Completer<String>();
+      await chat.send(
+        'look at [Image #1]',
+        pictures: [picture('a.png', 1)],
+        upload: (_) => upload.future,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await chat.newChat();
+      upload.complete('/tmp/a.png');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(host.paneTyping, isEmpty);
+      expect(host.terminals, isEmpty);
+    });
+
+    test('a failed picture message is retried with its pictures, uploaded '
+        'again, once, through the gate; the failed one is gone', () async {
+      final host = _LiveHost('0\n')..drawChips = true;
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        chipTimeout: const Duration(seconds: 10),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      var attempts = 0;
+      final uploaded = <String>[];
+      Future<String> upload(ChatPicture picture) async {
+        uploaded.add(picture.name);
+        if (++attempts == 1) throw const FileSystemException('disk full');
+        return '/tmp/${picture.name}';
+      }
+
+      await chat.send(
+        'look at [Image #1]',
+        pictures: [picture('a.png', 1)],
+        upload: upload,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+      expect(failed.why, contains('could not be put on the host'));
+      expect(host.terminals, isEmpty);
+
+      expect(chat.retry(failed, upload: upload), isNull);
+      final watch = Stopwatch()..start();
+      while (host.terminals.isEmpty ||
+          !host.terminals.single.typed.contains('\r')) {
+        if (watch.elapsed > const Duration(seconds: 8)) fail('never sent');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(uploaded, ['a.png', 'a.png']);
+      expect(host.terminals.single.typed, [
+        'look at ',
+        '\x1b[200~/tmp/a.png\x1b[201~',
+        '\r',
+      ]);
+      expect(chat.entries, isNot(contains(failed)));
+      expect(chat.entries.whereType<ChatSaid>().single.pictures, hasLength(1));
+    });
+
+    test('Retry of a picture message whose file has gone says so, and the '
+        'failed message stays', () async {
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final shot = picture('a.png', 1);
+      await chat.send(
+        'look at [Image #1]',
+        pictures: [shot],
+        upload: (_) async => throw const FileSystemException('disk full'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      File(shot.path!).deleteSync();
+
+      expect(chat.retry(failed, upload: (p) async => '/tmp/${p.name}'),
+          contains('no longer on this device'));
+      expect(chat.entries, contains(failed));
+      expect(host.terminals, isEmpty);
+    });
+
+    test('to this chat\'s own Claude: a picture message is written only to '
+        'the process it was sent for, and a failed one is retried to the '
+        'new one with its pictures', () async {
+      final claudes = <_FakeClaude>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          if (command.contains('.jsonl')) return _noHistory();
+          final claude = _FakeClaude();
+          claudes.add(claude);
+          return claude.channel;
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.start();
+      final shot = picture('a.png', 1);
+      await chat.send('what is [Image #1]?', pictures: [shot]);
+      expect(claudes.single.sent, hasLength(1));
+      // The process ends before it answers; the message did arrive there, so
+      // it is not failed. A new one is sent after a restart, and a picture
+      // message refused while Claude is down is not lost.
+      await claudes.single.end();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await chat.send('and [Image #2]?', pictures: [picture('b.png', 2)]);
+      expect(claudes.single.sent, hasLength(1));
+      final notice = chat.entries.whereType<ChatNotice>().last;
+      expect(notice.failed, isTrue);
+      expect(notice.text, startsWith('Not sent:'));
+      expect(notice.text, contains('and [Image #2]?'));
     });
 
     test('an [Image #N] typed as text does not stand for a chip: what '
