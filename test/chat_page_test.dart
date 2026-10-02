@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'fake_drop.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
@@ -20,6 +22,7 @@ import 'package:sshbox/src/ui/settings_page.dart'
     show TerminalSettings, terminalSettings, terminalStyleOf;
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:sshbox/src/ui/code_languages.dart';
+import 'package:sshbox/src/ui/file_editor_page.dart' show PictureView;
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart' show chatEnterSends;
 import 'package:sshbox/src/ui/terminal_schemes.dart';
@@ -194,9 +197,20 @@ class _Shell
   void adds(Map<String, Object?> line) =>
       follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
+  /// What the session's task store holds, as the host prints it: one line a
+  /// task. Empty, and the list is what the transcript made of it.
+  String tasksOut = '';
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('/tasks')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(tasksOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     // Before the rest: tmux's finder has a ` -f ` of its own.
     if (command.contains('list-panes')) {
       final typing = command.contains('load-buffer');
@@ -3440,12 +3454,13 @@ void main() {
         });
     }
 
-    Future<_Shell> watching(WidgetTester tester) async {
+    Future<_Shell> watching(WidgetTester tester, {String tasks = ''}) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final shell = _Shell()
+        ..tasksOut = tasks
         ..history = _nightlyHistory
         ..listing = jsonEncode([
           {
@@ -3544,6 +3559,35 @@ void main() {
       expect(find.text('  … +2 in progress'), findsOneWidget);
     });
 
+    testWidgets('lists the session\'s whole store under a header counting it, '
+        'tasks the transcript never carried among them', (tester) async {
+      String task(int n, String subject, String status) => jsonEncode({
+        'id': '$n',
+        'subject': subject,
+        'description': 'd',
+        'activeForm': 'Doing $subject',
+        'status': status,
+        'blocks': <String>[],
+        'blockedBy': <String>[],
+      });
+      // Eight tasks, none of them in the transcript the chat read.
+      final shell = await watching(
+        tester,
+        tasks: [
+          task(1, 'early a', 'completed'),
+          task(2, 'early b', 'completed'),
+          task(3, 'early c', 'in_progress'),
+          for (var n = 4; n <= 8; n++) task(n, 'early $n', 'pending'),
+        ].join('\n'),
+      );
+      await _settlePickUp(tester);
+      expect(shell.commands.any((c) => c.contains('/tasks')), isTrue);
+      expect(find.text('8 tasks (2 done, 1 in progress, 5 open)'), findsOneWidget);
+      expect(find.text('⎿ ■ Doing early c'), findsOneWidget);
+      expect(find.text('  □ early 4'), findsOneWidget);
+      expect(find.text('  … 2 completed'), findsOneWidget);
+    });
+
     testWidgets('its text is drawn as text, never read as anything else', (
       tester,
     ) async {
@@ -3562,5 +3606,412 @@ void main() {
         findsOneWidget,
       );
     });
+  });
+
+  group('pictures', () {
+    /// A real picture, one pixel, so it decodes as one.
+    final pixel = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA'
+      '60e6kgAAAABJRU5ErkJggg==',
+    );
+    late Directory dir;
+    setUp(
+      () => dir = Directory.systemTemp.createTempSync('chat-pictures-test'),
+    );
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    /// What the clipboard holds next, as MainActivity hands a picture over:
+    /// a file of the app's own, and its name. Null holds none.
+    List<String?> clipboard(WidgetTester tester) {
+      final next = <String?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('sshbox/share'),
+        (call) async {
+          if (call.method != 'clipboardImage' || next.isEmpty) return null;
+          final name = next.removeAt(0);
+          if (name == null) return null;
+          final file = File('${dir.path}/$name')..writeAsBytesSync(pixel);
+          return {'path': file.path, 'name': name};
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/share'),
+          null,
+        ),
+      );
+      return next;
+    }
+
+    /// Ctrl+V in the box, its file work let run.
+    Future<void> paste(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    Future<_Shell> continued(WidgetTester tester, {String? history}) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      if (history != null) shell.history = history;
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      return shell;
+    }
+
+    testWidgets('a picture pasted becomes a card and an [Image #N] at the '
+        'caret, and goes with the message as a picture', (tester) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '[Image #1] what is it?');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.byIcon(Icons.send));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] what is it?'});
+      expect((content.last as Map)['source'], {
+        'type': 'base64',
+        'media_type': 'image/png',
+        'data': base64Encode(pixel),
+      });
+      // The card went with it, and the bubble holds the picture.
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+      expect(find.bySemanticsLabel('View shot.png'), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+Enter in the box sends the message with its pictures', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      final shell = await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.enterText(find.byType(TextField), '[Image #1] look');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content.first, {'type': 'text', 'text': '[Image #1] look'});
+      expect((content.last as Map)['type'], 'image');
+      expect(box(tester), isEmpty);
+      expect(find.text('[Image #1] shot.png'), findsNothing);
+    });
+
+    testWidgets('an [Image #N] whose number no int holds draws, and is sent, '
+        'as text', (tester) async {
+      final shell = await continued(tester);
+      await tester.enterText(
+        find.byType(TextField),
+        'see [Image #99999999999999999999]',
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(box(tester), 'see [Image #99999999999999999999]');
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      final content =
+          ((jsonDecode(shell.written.single.trim()) as Map)['message']
+                  as Map)['content']
+              as List;
+      expect(content, [
+        {'type': 'text', 'text': 'see [Image #99999999999999999999]'},
+      ]);
+    });
+
+    testWidgets(
+      'a picture dropped before the chat is ready becomes a card, and '
+      'Send turns on once it is',
+      (tester) async {
+        final shell = _Shell();
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
+        );
+        await tester.pump();
+        final shot = File('${dir.path}/early.png')..writeAsBytesSync(pixel);
+
+        // Not connected: nothing to send to yet, but the picture is kept.
+        await tester.runAsync(() async {
+          await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        });
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        IconButton send() => tester.widget<IconButton>(
+          find.widgetWithIcon(IconButton, Icons.send),
+        );
+        expect(send().onPressed, isNull);
+
+        await tester.runAsync(() => session.connect(secrets: _NoSecrets()));
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('[Image #1] early.png'), findsOneWidget);
+        expect(send().onPressed, isNotNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.linux),
+    );
+
+    testWidgets('a session that is read-only from here refuses a picture, '
+        'saying why', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      final shot = File('${dir.path}/ro.png')..writeAsBytesSync(pixel);
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [shot.path], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      // A drop target is off there, so the refusal is the + button's route:
+      // no card either way.
+      expect(find.text('[Image #1] ro.png'), findsNothing);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.widgetWithIcon(
+                IconButton,
+                Icons.add_photo_alternate_outlined,
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('removing a card takes its token out, and deleting a token '
+        'takes its card', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.addAll(['a.png', 'b.png']);
+      await paste(tester);
+      await paste(tester);
+      expect(box(tester), '[Image #1] [Image #2] ');
+
+      await tester.tap(find.byTooltip('Remove a.png'));
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] b.png'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'no picture now');
+      await tester.pump();
+      expect(find.textContaining('b.png'), findsNothing);
+    });
+
+    testWidgets('a card opens its picture large, and text on the clipboard is '
+        'pasted as text', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      await paste(tester);
+      await tester.tap(find.bySemanticsLabel('View shot.png'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      // Its size read from the file before anything is drawn.
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(find.byType(PictureView), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      // No picture: the field's own paste, which asks for text.
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') return {'text': 'plain words'};
+        if (call.method == 'Clipboard.hasStrings') return {'value': true};
+        return null;
+      });
+      await paste(tester);
+      await tester.pump();
+      expect(box(tester), '[Image #1] plain words');
+    });
+
+    testWidgets('the selection menu offers Paste with only a picture on the '
+        'clipboard, and it takes the picture', (tester) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('shot.png');
+      tester
+          .state<EditableTextState>(
+            find.descendant(
+              of: find.byType(TextField),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .showToolbar();
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+    });
+
+    testWidgets('a transcript\'s picture that claims too many pixels is not '
+        'drawn in its bubble, and one that does not is, decoded small', (
+      tester,
+    ) async {
+      // 68 bytes of PNG that say they are 30000 × 30000.
+      final huge = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAdTAAAHUwCAYAAABmJ/i6AAAAC0lEQVR4nGNgQAUAABAA'
+        'ATm9j2UAAAAASUVORK5CYII=',
+      );
+      Map<String, Object?> said(String text, List<int> bytes) => {
+        'type': 'user',
+        'imagePasteIds': [1],
+        'message': {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': text},
+            {
+              'type': 'image',
+              'source': {'type': 'base64', 'data': base64Encode(bytes)},
+            },
+          ],
+        },
+      };
+      await continued(
+        tester,
+        history: _history([
+          said('[Image #1] the bomb', huge),
+          said('[Image #1] a pixel', pixel),
+        ]),
+      );
+      for (var turn = 0; turn < 10; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+
+      expect(find.text('[Image #1] the bomb'), findsOneWidget);
+      final drawn = tester
+          .widgetList<Image>(find.byType(Image))
+          .map((image) => image.image)
+          .whereType<ResizeImage>()
+          .map((resized) => (resized.imageProvider as MemoryImage).bytes)
+          .toList();
+      expect(drawn, [pixel]);
+      expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
+    });
+
+    testWidgets('a file that is not a picture is refused, saying why', (
+      tester,
+    ) async {
+      final next = clipboard(tester);
+      await continued(tester);
+
+      next.add('notes.txt');
+      await paste(tester);
+      await tester.pump();
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      expect(box(tester), isEmpty);
+      // Long enough to read and act on, not the second a notice gets.
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('files dropped on a desktop chat become cards, a folder '
+        'refused', (tester) async {
+      await continued(tester);
+      final shot = File('${dir.path}/drop.png')..writeAsBytesSync(pixel);
+      final folder = Directory('${dir.path}/pics')..createSync();
+
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, [
+          shot.path,
+          folder.path,
+        ], on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] drop.png'), findsOneWidget);
+      expect(
+        find.textContaining('A folder is not a picture: pics'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 }

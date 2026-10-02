@@ -12,7 +12,8 @@ its name, message and arguments in tags, then another with what it printed.
 
 A line starting `tasks:` plays a turn that makes three tasks (TaskCreate, each
 with its result) and moves the first to in progress, then completed, so chat's
-checklist can be seen to follow. A line starting `slow:` plays a slow turn instead, shaped on one 2.1.286
+checklist can be seen to follow; the session's task store, ~/.claude/tasks/<id>/,
+is written to match, with seven earlier tasks no transcript carries. A line starting `slow:` plays a slow turn instead, shaped on one 2.1.286
 wrote: the prompt with its time, a message calling Bash with its usage four
 seconds later, the result four seconds after that, then a closing message of
 two lines sharing one message id and the turn's duration. Meanwhile its row
@@ -34,6 +35,12 @@ import sys
 import time
 
 session = sys.argv[1]
+# Pictures (#146): a raw-mode input line, `claude -p` and `claude --bg`, kept
+# apart in e2e_image_claude.py beside this file.
+if session in ('--tui', '--stream', '--bg'):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import e2e_image_claude
+    sys.exit(e2e_image_claude.main(sys.argv[1:]))
 config = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.environ['HOME'], '.claude')
 cwd = os.getcwd()
 transcript = os.path.join(
@@ -146,6 +153,19 @@ def long_turn(text):
 task_counter = [0]
 
 
+store_dir = os.path.join(config, 'tasks', session)
+
+
+def store(n, subject, status, active_form=None):
+    """Task n in the session's own task store, as the CLI keeps it:
+    ~/.claude/tasks/<sessionId>/<n>.json."""
+    os.makedirs(store_dir, exist_ok=True)
+    with open(os.path.join(store_dir, f'{n}.json'), 'w') as f:
+        json.dump({'id': str(n), 'subject': subject, 'description': subject,
+                   'activeForm': active_form or subject, 'status': status,
+                   'blocks': [], 'blockedBy': []}, f, indent=2)
+
+
 def task_turn(text):
     """A line starting `tasks:` plays a turn that makes three tasks and works
     through them, shaped like TaskCreate and TaskUpdate as 2.1.286 wrote them: a
@@ -154,6 +174,12 @@ def task_turn(text):
     listed_as('busy')
     record({'type': 'user', 'timestamp': now(),
             'message': {'role': 'user', 'content': text}})
+    # Seven tasks from long before, in the store and in no transcript chat
+    # reads: a long session's, made early: five done and two still to do.
+    for n in range(101, 106):
+        store(n, f'Earlier done {n - 100}', 'completed')
+    store(106, 'Earlier open one', 'pending')
+    store(107, 'Earlier open two', 'pending')
 
     def call(name, tid, tool_input):
         record({'type': 'assistant', 'timestamp': now(), 'message': {
@@ -170,13 +196,17 @@ def task_turn(text):
         task_counter[0] += 1
         n = task_counter[0]
         ids.append(n)
+        form = name.replace('Check', 'Checking')
+        store(n, name, 'pending', form)
         call('TaskCreate', f'tc{n}', {'subject': name, 'description': name,
-                                       'activeForm': name.replace('Check', 'Checking')})
+                                       'activeForm': form})
         result(f'tc{n}', f'Task #{n} created successfully: {name}')
     time.sleep(4)
+    store(ids[0], 'Check the stand-in', 'in_progress', 'Checking the stand-in')
     call('TaskUpdate', f'tu{ids[0]}a', {'taskId': str(ids[0]), 'status': 'in_progress'})
     result(f'tu{ids[0]}a', f'Updated task #{ids[0]} status')
     time.sleep(6)
+    store(ids[0], 'Check the stand-in', 'completed', 'Checking the stand-in')
     call('TaskUpdate', f'tu{ids[0]}b', {'taskId': str(ids[0]), 'status': 'completed'})
     result(f'tu{ids[0]}b', f'Updated task #{ids[0]} status')
     time.sleep(6)

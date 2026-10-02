@@ -7,7 +7,10 @@
 # The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
 # chat_progress (tools/e2e_android.sh's chat_tasks). A line starting tasks:
 # plays a sixteen-second turn: three TaskCreate calls at once, #1 in progress
-# at 4 s, completed at 10 s, the answer and turn_duration at 16 s.
+# at 4 s, completed at 10 s, the answer and turn_duration at 16 s. It writes the
+# session's own task store beside the transcript, with seven earlier tasks
+# (five done, two open) that no transcript carries: the list and its header
+# come from that store, so they must be there.
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -57,6 +60,10 @@ env:
     timeout: 10000
 - assertVisible: "(?s).*□ Write the report.*"
 - assertVisible: "(?s).*□ Ship it.*"
+# The earlier ones, from the store alone, and the header counting all ten.
+- assertVisible: "(?s).*□ Earlier open one.*"
+- assertVisible: "(?s).*□ Earlier open two.*"
+- assertVisible: "10 tasks \\(5 done, 5 open\\)"
 - takeScreenshot: chat-tasks-pending
 
 # TaskUpdate #1 to in progress at 4 s: ■, and its active form.
@@ -64,12 +71,14 @@ env:
     visible: "(?s).*⎿ ■ Checking the stand-in.*"
     timeout: 10000
 - assertNotVisible: "(?s).*⎿ □ Check the stand-in.*"
+- assertVisible: "10 tasks \\(5 done, 1 in progress, 4 open\\)"
 - takeScreenshot: chat-tasks-in-progress
 
-# Completed at 10 s: counted, not listed. The other two stay open.
+# Completed at 10 s: counted, not listed. The others stay open.
 - extendedWaitUntil:
-    visible: "(?s).*… 1 completed.*"
+    visible: "(?s).*… 6 completed.*"
     timeout: 15000
+- assertVisible: "10 tasks \\(6 done, 4 open\\)"
 - assertNotVisible: "(?s).*■ Checking the stand-in.*"
 - assertVisible: "(?s).*□ Write the report.*"
 - takeScreenshot: chat-tasks-completed
@@ -84,6 +93,7 @@ env:
     timeout: 3000
 - assertVisible: "(?s).*□ Write the report.*"
 - assertVisible: "(?s).*□ Ship it.*"
+- assertVisible: "(?s).*□ Earlier open one.*"
 - takeScreenshot: chat-tasks-after
 
 - tapOn: "(?s)Close .*Claude.*"

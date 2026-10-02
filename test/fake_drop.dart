@@ -6,13 +6,15 @@ import 'package:xterm2/xterm.dart';
 /// reports one over its channel: the drag coming in over the terminal, then
 /// the drop.
 ///
-/// With [land] false the drag only hovers, for the highlight.
+/// With [land] false the drag only hovers, for the highlight. [on] is where
+/// it lands instead of the terminal.
 Future<void> dropOnTerminal(
   WidgetTester tester,
   List<String> paths, {
   bool land = true,
+  Finder? on,
 }) async {
-  final at = tester.getCenter(find.byType(TerminalView).first);
+  final at = tester.getCenter(on ?? find.byType(TerminalView).first);
   Future<void> call(String method, Object? arguments) =>
       tester.binding.defaultBinaryMessenger.handlePlatformMessage(
         'desktop_drop',
