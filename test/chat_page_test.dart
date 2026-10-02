@@ -15,6 +15,7 @@ import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/session/local_transport.dart' show localHostId;
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
@@ -5850,11 +5851,105 @@ void main() {
       expect(box(tester), '[Image #1] ');
       expect(find.text('[Image #1] drop.png'), findsOneWidget);
       expect(
-        find.textContaining('A folder is not a picture: pics'),
+        find.textContaining('A folder cannot be uploaded: pics'),
         findsOneWidget,
       );
       await tester.pumpAndSettle(const Duration(seconds: 6));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  group('a file dropped on a desktop chat goes into the box as a path', () {
+    const local = HostProfile(
+      id: localHostId,
+      label: 'Local',
+      host: 'local',
+      username: 'me',
+    );
+
+    Future<_Shell> chatOn(WidgetTester tester, HostProfile host) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      return shell;
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    Future<void> drop(WidgetTester tester, List<String> paths) async {
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, paths, on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('chat-drop'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    final linux = TargetPlatformVariant.only(TargetPlatform.linux);
+
+    testWidgets('in a Local shell its own path goes in at the caret, '
+        'nothing uploaded, and a folder too', (tester) async {
+      final shell = await chatOn(tester, local);
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      final spaced = File('${dir.path}/my notes.txt')..writeAsStringSync('x');
+      final folder = Directory('${dir.path}/sub')..createSync();
+      await tester.enterText(find.byType(TextField), 'read  now');
+      await tester.pump();
+      tester.widget<TextField>(find.byType(TextField)).controller!.selection =
+          const TextSelection.collapsed(offset: 5);
+      await drop(tester, [file.path, spaced.path, folder.path]);
+      expect(
+        box(tester),
+        'read ${file.path} "${spaced.path}" ${folder.path}  now',
+      );
+      expect(shell.uploaded, isEmpty);
+    }, variant: linux);
+
+    testWidgets('on an SSH host it is uploaded and the uploaded path goes '
+        'in; a folder is refused', (tester) async {
+      final shell = await chatOn(tester, _host);
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      final folder = Directory('${dir.path}/sub')..createSync();
+      await drop(tester, [file.path, folder.path]);
+      expect(shell.uploaded, ['notes.txt']);
+      expect(box(tester), '/tmp/notes.txt ');
+      expect(
+        find.textContaining('A folder cannot be uploaded: sub'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: linux);
+
+    testWidgets('a name holding a control character is refused, and a '
+        'picture is still a card', (tester) async {
+      final shell = await chatOn(tester, local);
+      final odd = File('${dir.path}/a\nb.txt')..writeAsStringSync('x');
+      final shot = File('${dir.path}/shot.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+          ),
+        );
+      await drop(tester, [odd.path, shot.path]);
+      expect(box(tester), '[Image #1] ');
+      expect(find.textContaining('holds a control character'), findsOneWidget);
+      expect(shell.uploaded, isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: linux);
   });
 
   group('the usage chip and its popup', () {
