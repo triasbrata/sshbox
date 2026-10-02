@@ -1958,7 +1958,7 @@ class ClaudeChat extends ChangeNotifier {
     // The one `allow` this chat sends: see [_onControlRequest].
     _respond(id, {
       'behavior': 'allow',
-      'updatedInput': {...ask.input, 'answers': answers},
+      'updatedInput': {...ask.input},
     });
     ask
       ..requestId = null
