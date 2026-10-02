@@ -60,9 +60,13 @@ env:
       - extendedWaitUntil:
           visible: "Ask Claude…"
           timeout: 20000
-      # Focused first: a long press on a box with no focus opens no menu.
-      - tapOn: "Ask Claude…"
-      - longPressOn: "Ask Claude…"
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+      - tapOn:
+          point: "62%,95%"
+      - longPressOn:
+          point: "62%,95%"
       - tapOn: "Paste"
 
 - runFlow:
@@ -73,9 +77,13 @@ env:
       - tapOn:
           text: "Copy code"
           index: 1
-      # Focused first: a long press on a box with no focus opens no menu.
-      - tapOn: "Ask Claude…"
-      - longPressOn: "Ask Claude…"
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+      - tapOn:
+          point: "62%,95%"
+      - longPressOn:
+          point: "62%,95%"
       - tapOn: "Paste"
 
 # reply: a code block in Claude's reply has its own Copy code.
@@ -97,9 +105,13 @@ env:
       - extendedWaitUntil:
           visible: "Ask Claude…"
           timeout: 20000
-      # Focused first: a long press on a box with no focus opens no menu.
-      - tapOn: "Ask Claude…"
-      - longPressOn: "Ask Claude…"
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+      - tapOn:
+          point: "62%,95%"
+      - longPressOn:
+          point: "62%,95%"
       - tapOn: "Paste"
 
 # select: a long press on a word of the reply selects it, and the toolbar's
@@ -111,9 +123,13 @@ env:
       - eraseText: 40
       - longPressOn: "(?s).*e2eword.*"
       - tapOn: "Copy"
-      # Focused first: a long press on a box with no focus opens no menu.
-      - tapOn: "Ask Claude…"
-      - longPressOn: "Ask Claude…"
+      # The box by where it is: beside + its hint is cut to "Ask Cla…", and
+      # a tap on that text missed the field, so nothing opened. Focused
+      # first, as a long press on a box with no focus opens no menu.
+      - tapOn:
+          point: "62%,95%"
+      - longPressOn:
+          point: "62%,95%"
       - tapOn: "Paste"
 
 - runFlow:
