@@ -411,6 +411,7 @@ jobs:
             (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null && break
             sleep 1
           done
+          (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null || { echo "::error::sshd did not start"; exit 1; }
           echo "sshd answers on 127.0.0.1:22"
 
       - uses: ./.github/actions/flutter
