@@ -545,6 +545,134 @@ class ClaudeChat extends ChangeNotifier {
 
   int get tasksDone => _tasks.values.where((task) => task.done).length;
 
+  /// Every task the session has, for the header Claude Code's view puts over
+  /// its list: `19 tasks (11 done, 3 in progress, 5 open)`.
+  int get tasksTotal => _tasks.length;
+  int get tasksInProgress => _tasks.values.where((task) => task.inProgress).length;
+  int get tasksPending =>
+      _tasks.values.where((task) => !task.done && !task.inProgress).length;
+
+  /// How much of the session's task store is read: this many files, this many
+  /// bytes of each, this many in all. A task is a few hundred bytes; a session
+  /// with thousands is not one to hand over whole.
+  static const taskFiles = 300;
+  static const taskFileBytes = 16 * 1024;
+  static const taskTotalBytes = 1024 * 1024;
+
+  /// What the host runs to hand over the session's own task store,
+  /// `${CLAUDE_CONFIG_DIR:-~/.claude}/tasks/<sessionId>/<N>.json` — the whole
+  /// list as it is, where the transcript read holds only its last 512 KB and
+  /// so misses every task a long session made early. One line a task, its
+  /// JSON with the line breaks between its tokens taken out.
+  ///
+  /// The id is quoted as [historyCommand] quotes it, and only a file named by
+  /// digits is read, so nothing from the host reaches a command.
+  static String tasksCommand(String sessionId) =>
+      'sh -c '
+      '${_shellQuote(r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tasks"; '
+          'd="\$d"/${_shellQuote(sessionId)}; '
+          r'[ -d "$d" ] || exit 0; '
+          r'ls "$d" 2>/dev/null | grep "^[0-9][0-9]*\.json\$" '
+          '| head -n $taskFiles | while read n; do '
+          'head -c $taskFileBytes "\$d/\$n" | tr "\n" " "; echo; '
+          'done | head -c $taskTotalBytes')}';
+
+  /// The tasks in what [tasksCommand] printed, by number. A line that is not a
+  /// task as Claude Code writes one — an id that is digits, a subject, a status
+  /// of pending, in_progress or completed — is left out, and anything else in
+  /// it is not read.
+  @visibleForTesting
+  static List<ChatTask> tasksFrom(String output) {
+    final tasks = <ChatTask>[];
+    for (final line in const LineSplitter().convert(output)) {
+      final Object? json;
+      try {
+        json = jsonDecode(line);
+      } catch (_) {
+        continue;
+      }
+      if (json is! Map) continue;
+      final id = json['id'];
+      final subject = json['subject'];
+      final status = json['status'];
+      if (id is! String ||
+          // Digits, and few enough to be a number: the sort parses it.
+          !RegExp(r'^\d{1,9}$').hasMatch(id) ||
+          subject is! String ||
+          !const {'pending', 'in_progress', 'completed'}.contains(status)) {
+        continue;
+      }
+      // Host text: no control or escape reaches the screen, as in a message.
+      String clean(String text) =>
+          text.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]'), '').trim();
+      tasks.add(
+        ChatTask(
+          id: id,
+          subject: clean(subject),
+          activeForm: json['activeForm'] is String
+              ? clean(json['activeForm'] as String)
+              : null,
+          status: status as String,
+        ),
+      );
+    }
+    return tasks..sort((a, b) => int.parse(a.id).compareTo(int.parse(b.id)));
+  }
+
+  void _wantTasks() {
+    if (!_replayingHistory) unawaited(_readTasks());
+  }
+
+  bool _readingTasks = false;
+  bool _rereadTasks = false;
+
+  /// True while a transcript is being replayed: its task calls and results are
+  /// not each a reason to read the store, which is read once after.
+  bool _replayingHistory = false;
+
+  /// Reads the session's task store, in place of what the transcript made of
+  /// it. Asked when a session is opened and again whenever a TaskCreate or
+  /// TaskUpdate result arrives — the transcript is the trigger, not the
+  /// source. One read at a time: one asked for during another is made when it
+  /// ends. A store that is not there, or empty, leaves what the transcript
+  /// made of the list, which is what a TodoWrite session has.
+  Future<void> _readTasks() async {
+    final id = _sessionId;
+    if (id == null || !_sessionIdShape.hasMatch(id)) return;
+    if (_readingTasks) {
+      _rereadTasks = true;
+      return;
+    }
+    _readingTasks = true;
+    final shown = _shown;
+    try {
+      do {
+        _rereadTasks = false;
+        final String output;
+        try {
+          output = utf8.decode(
+            await _readAll(tasksCommand(id), const Duration(seconds: 15)),
+            allowMalformed: true,
+          );
+        } catch (_) {
+          // No connection, or a host that would not: the list as it was.
+          return;
+        }
+        // Another session picked meanwhile: this one's tasks are not its.
+        if (shown != _shown) return;
+        final read = tasksFrom(output);
+        if (read.isNotEmpty) {
+          _tasks
+            ..clear()
+            ..addEntries([for (final task in read) MapEntry(task.id, task)]);
+          notifyListeners();
+        }
+      } while (_rereadTasks);
+    } finally {
+      _readingTasks = false;
+    }
+  }
+
   void _noteTaskCall(String name, Map<String, dynamic> input, String id) {
     if (_pastOnly || !const {'TaskCreate', 'TaskUpdate', 'TodoWrite'}.contains(name)) {
       return;
@@ -569,7 +697,10 @@ class ClaudeChat extends ChangeNotifier {
           subject: subject,
           activeForm: text('activeForm'),
         );
+        _wantTasks();
       case 'TaskUpdate':
+        // A reason to read the store even for a task not known yet.
+        _wantTasks();
         final task = _tasks[text('taskId')];
         if (task == null) return;
         switch (text('status')) {
@@ -1004,6 +1135,8 @@ class ClaudeChat extends ChangeNotifier {
       wait: waitForTranscript,
     );
     if (_disposed) return;
+    // The task list, from the session's own store, whatever the history said.
+    unawaited(_readTasks());
     if (pid != null) {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
@@ -1840,10 +1973,15 @@ class ClaudeChat extends ChangeNotifier {
     // Only whole lines are drawn; what follows the last one is a line still
     // being written, for the follow to finish.
     final whole = body.lastIndexOf(10) + 1;
-    for (final line in const LineSplitter().convert(
-      text.convert(body.sublist(0, whole)),
-    )) {
-      _replay(line);
+    _replayingHistory = true;
+    try {
+      for (final line in const LineSplitter().convert(
+        text.convert(body.sublist(0, whole)),
+      )) {
+        _replay(line);
+      }
+    } finally {
+      _replayingHistory = false;
     }
     if (!keepRunning) {
       for (final run in _running.values) {
@@ -2144,6 +2282,7 @@ class ClaudeChat extends ChangeNotifier {
       case 'system' when event['subtype'] == 'init':
         _sessionId = event['session_id'] as String?;
         notifyListeners();
+        unawaited(_readTasks());
       case 'assistant':
         _onAssistantTurn(event);
         _onAssistant(event['message']);

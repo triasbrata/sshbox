@@ -197,9 +197,20 @@ class _Shell
   void adds(Map<String, Object?> line) =>
       follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
+  /// What the session's task store holds, as the host prints it: one line a
+  /// task. Empty, and the list is what the transcript made of it.
+  String tasksOut = '';
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('/tasks')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(tasksOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     // Before the rest: tmux's finder has a ` -f ` of its own.
     if (command.contains('list-panes')) {
       final typing = command.contains('load-buffer');
@@ -4137,12 +4148,13 @@ void main() {
         });
     }
 
-    Future<_Shell> watching(WidgetTester tester) async {
+    Future<_Shell> watching(WidgetTester tester, {String tasks = ''}) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final shell = _Shell()
+        ..tasksOut = tasks
         ..history = _nightlyHistory
         ..listing = jsonEncode([
           {
@@ -4239,6 +4251,35 @@ void main() {
       await _settlePickUp(tester);
       // 8 in progress, 6 shown: the 2 more are not called pending.
       expect(find.text('  … +2 in progress'), findsOneWidget);
+    });
+
+    testWidgets('lists the session\'s whole store under a header counting it, '
+        'tasks the transcript never carried among them', (tester) async {
+      String task(int n, String subject, String status) => jsonEncode({
+        'id': '$n',
+        'subject': subject,
+        'description': 'd',
+        'activeForm': 'Doing $subject',
+        'status': status,
+        'blocks': <String>[],
+        'blockedBy': <String>[],
+      });
+      // Eight tasks, none of them in the transcript the chat read.
+      final shell = await watching(
+        tester,
+        tasks: [
+          task(1, 'early a', 'completed'),
+          task(2, 'early b', 'completed'),
+          task(3, 'early c', 'in_progress'),
+          for (var n = 4; n <= 8; n++) task(n, 'early $n', 'pending'),
+        ].join('\n'),
+      );
+      await _settlePickUp(tester);
+      expect(shell.commands.any((c) => c.contains('/tasks')), isTrue);
+      expect(find.text('8 tasks (2 done, 1 in progress, 5 open)'), findsOneWidget);
+      expect(find.text('⎿ ■ Doing early c'), findsOneWidget);
+      expect(find.text('  □ early 4'), findsOneWidget);
+      expect(find.text('  … 2 completed'), findsOneWidget);
     });
 
     testWidgets('its text is drawn as text, never read as anything else', (
