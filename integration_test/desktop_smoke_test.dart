@@ -2276,9 +2276,17 @@ touch '${done.path}'
       await _chatAnswered(tester);
       // The stand-in's own session, as `claude agents` lists it: in the
       // sidebar on a wide window, in the drawer its button opens otherwise.
+      // The list may still be loading on a wide window, whose button then
+      // reads Hide…: wait for one or the other before choosing.
       final row = find.text('e2e');
+      final drawer = find.byTooltip('Sessions on this host');
+      await _until(
+        tester,
+        () => row.evaluate().isNotEmpty || drawer.evaluate().isNotEmpty,
+        'the sessions, or the button that shows them',
+      );
       if (row.evaluate().isEmpty) {
-        await tester.tap(find.byTooltip('Sessions on this host'));
+        await tester.tap(drawer);
         await tester.pumpAndSettle();
       }
       await _until(
