@@ -2950,6 +2950,12 @@ void main() {
         findsOneWidget,
       );
       expect(box(tester), isEmpty);
+      // Long enough to read and act on, not the second a notice gets.
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        find.textContaining('Not a picture Claude can read: notes.txt'),
+        findsOneWidget,
+      );
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 

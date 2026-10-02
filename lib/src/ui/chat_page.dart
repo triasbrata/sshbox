@@ -294,8 +294,17 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  /// A picture refused is one the user has to do something about, so it
+  /// stays the 5 s such refusals get, as the slash command refusal does.
   void _refuse(String why) {
-    if (mounted) showToast(context, why, type: TuiToastType.warning);
+    if (mounted) {
+      showToast(
+        context,
+        why,
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+    }
   }
 
   /// A paste into the box: a picture on the clipboard becomes a card, and
