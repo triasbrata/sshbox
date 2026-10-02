@@ -1129,7 +1129,7 @@ class _Bubble extends StatelessWidget {
 /// what was answered alike: a ```mermaid fence as a diagram, its source
 /// copyable beside it, and any other code block with its copy button.
 final chatMarkdownBuilders = <String, MarkdownElementBuilder>{
-  'code': CodeBlockBuilder(copyable: true),
+  'code': CodeBlockBuilder(copyable: true, wrap: true),
 };
 
 /// What Claude said, as Markdown: it writes lists, headings and code.
