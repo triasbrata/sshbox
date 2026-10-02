@@ -1,23 +1,39 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
+
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
+import '../chat/picture_draft.dart';
+import '../files/transfers.dart';
 import '../platform.dart';
 import '../session/session_manager.dart';
+import '../session/terminal_session.dart' show uploadName;
 import 'code_languages.dart';
-import 'file_editor_page.dart' show CodeBlockBuilder, copyAndSay;
+import 'file_editor_page.dart'
+    show
+        CodeBlockBuilder,
+        copyAndSay,
+        pictureMaxPixels,
+        pictureSize,
+        showPicture;
 import 'markdown_input.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
 import 'slash_command_menu.dart';
 import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
+import 'terminal_paste.dart'
+    show clipboardImage, insertedImage, pasteImageLimit;
 import 'toast.dart';
 import 'tui.dart';
 
@@ -52,13 +68,27 @@ class _ChatPageState extends State<ChatPage> {
     accent: Colors.blue,
     panel: Colors.black12,
   );
+
+  /// The pictures the message being written carries: a card each above the
+  /// box, and an `[Image #N]` each in its text.
+  final _draft = PictureDraft();
+
+  /// Where each picture added is copied, under a name of its own: the
+  /// clipboard's and the keyboard's copies are emptied at the next paste,
+  /// and two pictures of one name would be one file on the host. Gone with
+  /// the page; a bubble whose copy has gone shows that it has.
+  Directory? _picturesDir;
+
+  /// True while files are dragged over the page on a desktop.
+  bool _dropping = false;
   final _scroll = ScrollController();
   late final _inputFocus = FocusNode(onKeyEvent: _onBoxKey);
 
   /// Whether the box may send now, as it was last drawn.
   bool _canSend = false;
 
-  bool get _sendable => _canSend && _input.text.trim().isNotEmpty;
+  bool get _sendable =>
+      _canSend && (_input.text.trim().isNotEmpty || !_draft.isEmpty);
 
   /// True while a menu over the box — a list of slash commands — is open:
   /// the box then leaves its keys to the menu, which sits above it in the
@@ -182,15 +212,73 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  /// Nearer the end than this, the reader is following: a new entry scrolls
-  /// into view.
-  static const _nearEnd = 240.0;
-
-  /// Nearer the end than this, a session is left at its bottom, and is come
-  /// back to at its end, however much it wrote meanwhile. Anything further up
-  /// is a place somebody scrolled to, kept however small: a few lines up is
-  /// still well inside [_nearEnd], and was once taken for the bottom.
+  /// Nearer the end than this, the view is at its end: left at the bottom, and
+  /// following. Anything further up is a place somebody scrolled to, kept
+  /// however small.
   static const _atEnd = 2.0;
+
+  /// Whether new output keeps the view at the latest reply. On while the view
+  /// is at its end, reached by hand or by the jump button; off the moment the
+  /// reader scrolls up, even a pixel and even mid-stream, and then the view
+  /// stays where it is, whatever arrives, until they are back at the end.
+  bool _follow = true;
+
+  /// Entries that arrived below the view while it was not following, for the
+  /// jump button to say.
+  int _arrived = 0;
+
+  /// True while the list runs the view back into range after the layout left
+  /// it past its end; see [_onScrollUpdate].
+  bool _runBack = false;
+
+  /// What the list says it did. Upward is the reader's unless the layout did
+  /// it: a keyboard going away or a window growing leaves the view past its
+  /// new end and the list runs back to it, upward and with no reader in it.
+  /// That run starts out of range; anything upward that starts in range is
+  /// the reader's, PageUp and the arrows included, which scroll by animateTo
+  /// or jumpTo. Under bouncing physics an overscroll at the bottom is the end
+  /// anyway. Our own pinning to the end is [_pinning], and a landing on a
+  /// place is [_switching]'s.
+  bool _onScrollUpdate(ScrollNotification note) {
+    // The conversation's own list only: a tool row's block scrolls inside it,
+    // and a reader moving that is not moving the conversation.
+    if (note.depth != 0) return false;
+    if (note is ScrollEndNotification) _runBack = false;
+    if (note is! ScrollUpdateNotification ||
+        _switching ||
+        !_scroll.hasClients) {
+      return false;
+    }
+    final metrics = note.metrics;
+    // Where the move started: the layout's run-back starts out of range, the
+    // viewport having grown under a view left at its old end, and the
+    // reader's move up starts in range. A run-back, once seen to start out of
+    // range, is one until it ends, its last steps being in range.
+    final delta = note.scrollDelta ?? 0;
+    if (metrics.pixels - delta > metrics.maxScrollExtent + 0.5) {
+      _runBack = true;
+    }
+    final byReader = delta < 0 && !_pinning && !_runBack;
+    final follow = byReader
+        ? false
+        : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
+    if (follow != _follow) {
+      setState(() {
+        _follow = follow;
+        if (follow) _arrived = 0;
+      });
+    }
+    return false;
+  }
+
+  /// To the latest reply, following it from there on.
+  void _jumpToEnd() {
+    setState(() {
+      _follow = true;
+      _arrived = 0;
+    });
+    _scrollToEnd();
+  }
 
   /// Where each session was left scrolled up, by host and session: kept for
   /// as long as the app runs, so picking one again, or closing the tab and
@@ -227,7 +315,222 @@ class _ChatPageState extends State<ChatPage> {
     _inputFocus.dispose();
     _menuOpen.dispose();
     _scroll.dispose();
+    try {
+      _picturesDir?.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Already gone.
+    }
     super.dispose();
+  }
+
+  /// The kinds of picture Claude's API reads.
+  static final _pictureNames = RegExp(
+    r'\.(png|jpe?g|gif|webp)$',
+    caseSensitive: false,
+  );
+
+  /// Adds [file] to the message being written, at the caret: a picture
+  /// Claude can read, no bigger than a paste into the terminal may be.
+  /// Anything else is refused, saying why.
+  Future<void> _addPicture(({String path, String name}) file) async {
+    final why = _readOnlyWhy;
+    if (why != null) {
+      return _refuse('Not added: this session is read-only from here — $why');
+    }
+    if (!_pictureNames.hasMatch(file.name)) {
+      return _refuse(
+        'Not a picture Claude can read: ${file.name}. A PNG, '
+        'JPEG, GIF or WebP is.',
+      );
+    }
+    final source = File(file.path);
+    final File copy;
+    try {
+      if (await source.length() > pasteImageLimit) {
+        return _refuse(
+          '${file.name} is bigger than '
+          '${pasteImageLimit ~/ (1024 * 1024)} MB, the most a picture may '
+          'be.',
+        );
+      }
+      final dir = _picturesDir ??= Directory.systemTemp.createTempSync(
+        'chat-pictures',
+      );
+      copy = await source.copy(
+        '${dir.path}/${DateTime.now().microsecondsSinceEpoch}-'
+        '${uploadName(file.name)}',
+      );
+    } on FileSystemException catch (error) {
+      return _refuse('${file.name} could not be read: ${error.message}');
+    }
+    if (!mounted) return;
+    setState(() {
+      _input.value = _draft.add(
+        _input.value,
+        ChatPicture(path: copy.path, name: file.name),
+        _chat.nextPicture,
+      );
+    });
+  }
+
+  /// The box's selection menu, its Paste taking a picture first — the only
+  /// paste a touch screen with no keyboard has. Offered even when the
+  /// clipboard holds no text, which is when the field's own leaves it out:
+  /// a picture alone is exactly that.
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final paste = ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
+      onPressed: () {
+        editable.hideToolbar();
+        unawaited(
+          _pastePicture().then((took) {
+            if (!took) editable.pasteText(SelectionChangedCause.toolbar);
+          }),
+        );
+      },
+    );
+    final items = [...editable.contextMenuButtonItems];
+    final at = items.indexWhere(
+      (item) => item.type == ContextMenuButtonType.paste,
+    );
+    if (at >= 0) {
+      items[at] = paste;
+    } else if (_attachable) {
+      items.add(paste);
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: editable.contextMenuAnchors,
+      buttonItems: items,
+    );
+  }
+
+  /// A picture refused is one the user has to do something about, so it
+  /// stays the 5 s such refusals get, as the slash command refusal does.
+  void _refuse(String why) {
+    if (mounted) {
+      showToast(
+        context,
+        why,
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+    }
+  }
+
+  /// A paste into the box: a picture on the clipboard becomes a card, and
+  /// anything else is pasted as text, as it always was. True when the
+  /// clipboard held a picture, taken or not.
+  Future<bool> _pastePicture() async {
+    try {
+      final image = await clipboardImage();
+      if (image == null) return false;
+      await _addPicture(image);
+    } on PlatformException catch (error) {
+      _refuse(
+        error.message ??
+            'The picture on the clipboard could not be '
+                'taken.',
+      );
+    }
+    return true;
+  }
+
+  /// A picture Gboard's clipboard strip put in.
+  Future<void> _inserted(KeyboardInsertedContent content) async {
+    try {
+      final image = await insertedImage(content);
+      if (image == null) {
+        return _refuse('Only a picture can go into a chat this way.');
+      }
+      await _addPicture(image);
+    } on PlatformException catch (error) {
+      _refuse(error.message ?? 'That picture could not be taken.');
+    }
+  }
+
+  Future<void> _pickPictures() async {
+    for (final file in await FilePicker.pickFiles(type: FileType.image)) {
+      // Something picked from a cloud provider has no path to read.
+      final path = file.path;
+      if (path == null) {
+        _refuse('${file.name} is not on this device to send.');
+        continue;
+      }
+      await _addPicture((path: path, name: file.name));
+    }
+  }
+
+  /// Files dropped from the OS file manager on a desktop, in order.
+  Future<void> _dropped(DropDoneDetails details) async {
+    setState(() => _dropping = false);
+    for (final item in details.files) {
+      if (FileSystemEntity.isDirectorySync(item.path)) {
+        _refuse('A folder is not a picture: ${item.name}');
+        continue;
+      }
+      await _addPicture((path: item.path, name: item.name));
+      if (!mounted) return;
+    }
+  }
+
+  /// Puts [picture] on the host for a session there, through the upload the
+  /// terminal's paste uses: in the Transfers tab, made 0600 and named by
+  /// [uploadName] — here after the copy's own name, which is unique — or
+  /// copied on this machine for a Local shell.
+  Future<String> _upload(ChatPicture picture) => transfers.run(
+    name: picture.name,
+    host: widget.session.host.displayName,
+    direction: TransferDirection.upload,
+    work: (transfer) => widget.session.uploadToTmp(
+      localPath: picture.path!,
+      fileName: picture.path!,
+      onProgress: transfer.report,
+      cancel: transfer.cancelled,
+    ),
+  );
+
+  /// Why nothing can be sent to this chat, or null: only a session that is
+  /// read-only from here. A picture is taken whenever that is null, ready
+  /// yet or not — the box may be up before Claude is, and a picture pasted
+  /// then is a card, sent when Send turns on. Only Send is gated.
+  String? get _readOnlyWhy => _chat.watching != null ? _chat.readOnly : null;
+
+  bool get _attachable => _readOnlyWhy == null;
+
+  /// On a desktop, files dropped on the chat: see [_dropped]. Only while this
+  /// tab is the one showing and nothing covers it, as the terminal's.
+  Widget _dropTarget(Widget child) {
+    if (!isDesktop) return child;
+    final enable =
+        _attachable &&
+        Visibility.of(context) &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
+    final theme = Theme.of(context);
+    return DropTarget(
+      enable: enable,
+      onDragEntered: (_) => setState(() => _dropping = true),
+      onDragExited: (_) => setState(() => _dropping = false),
+      onDragDone: _dropped,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          if (_dropping && enable)
+            IgnorePointer(
+              child: DecoratedBox(
+                key: const ValueKey('drop-highlight'),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                  border: Border.all(
+                    color: theme.colorScheme.primary,
+                    width: 2,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -256,11 +559,24 @@ class _ChatPageState extends State<ChatPage> {
         _input.value.isComposingRangeValid) {
       return KeyEventResult.ignored;
     }
+    return _enterKey();
+  }
+
+  /// Whether the key held with Enter is the send chord: ⌘ on Apple's
+  /// keyboards, Ctrl on the rest.
+  bool get _sendChord {
     final keys = HardwareKeyboard.instance;
-    final chord = switch (defaultTargetPlatform) {
+    return switch (defaultTargetPlatform) {
       TargetPlatform.macOS || TargetPlatform.iOS => keys.isMetaPressed,
       _ => keys.isControlPressed,
     };
+  }
+
+  /// What an Enter does in the box: send, or, left to the platform, a new
+  /// line.
+  KeyEventResult _enterKey() {
+    final keys = HardwareKeyboard.instance;
+    final chord = _sendChord;
     // An open menu takes every other Enter, to pick; the chord still sends.
     if (_menuOpen.value && !chord) return KeyEventResult.ignored;
     if (chord ||
@@ -294,34 +610,106 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {});
   }
 
-  /// Typing in a chat whose box does not have the focus types into the box,
-  /// as Discord does: a hardware key is heard here before the focus chain,
-  /// focused or not, as the terminal's pane hears one.
+  /// What is typed or pasted in a chat goes into its box without the box being
+  /// clicked first, as Discord's does: a hardware key is heard here before the
+  /// focus chain, focused or not, as the terminal's pane hears one.
   ///
-  /// The key that moves the focus is typed into the box here and kept from
-  /// going on: the box had no text input connection when the platform read
-  /// it, so where that key's character would land is each platform's own
-  /// affair — dropped on one, typed once the connection opens on another.
-  /// Taken here, it lands once on every one.
+  /// - A key that types a character is typed into the box here and kept from
+  ///   going on: the box had no text input connection when the platform read
+  ///   it, so where that character would land is each platform's own affair —
+  ///   dropped on one, typed once the connection opens on another. Taken here
+  ///   it lands once on every one.
+  /// - Enter, Backspace, Delete, the arrows, Home and End, and a paste, Ctrl or
+  ///   ⌘+V or Shift+Insert, only move the focus to the box and go on: the
+  ///   focus chain, which starts at the focus as it is by then, hands them to
+  ///   the box's own shortcuts, so a paste is the box's own paste, a picture's
+  ///   included. Enter is the exception, which has no shortcut of its own: it
+  ///   is the box's send, or a new line typed here.
   ///
-  /// Only a key that types something, with no Ctrl, ⌘ or Alt — so shortcuts,
-  /// Ctrl+C on a selection among them, and Tab, arrows, Escape, Enter and the
-  /// F-keys go where they were going — and only while this chat is on screen,
-  /// the page on top, and no text field anywhere has the focus.
+  /// Left to go where they were going: every other Ctrl, ⌘ or Alt chord — so
+  /// ⌘, and Ctrl+C on a selection in a reply — and Tab, Escape and the F-keys;
+  /// and nothing is taken while the chat is hidden or covered by a route, a
+  /// drawer or another text field, or while the `/` menu is open. The focus
+  /// the box takes on a touch screen is only ever for a hardware key: no tap,
+  /// and no chat shown, focuses it there.
   bool _onHardwareKey(KeyEvent event) {
-    if (event is! KeyDownEvent || _inputFocus.hasFocus || _shown != true) {
-      return false;
-    }
-    final character = event.character;
-    if (character == null ||
-        character.isEmpty ||
-        character.codeUnits.any((u) => u < 0x20 || u == 0x7f)) {
+    if (event is! KeyDownEvent || _inputFocus.hasFocus || _menuOpen.value) {
       return false;
     }
     final keys = HardwareKeyboard.instance;
-    if (keys.isControlPressed || keys.isMetaPressed || keys.isAltPressed) {
+    final key = event.logicalKey;
+    final character = event.character;
+    final chorded =
+        keys.isControlPressed || keys.isMetaPressed || keys.isAltPressed;
+    final typesCharacter =
+        !chorded &&
+        character != null &&
+        character.isNotEmpty &&
+        !character.codeUnits.any((u) => u < 0x20 || u == 0x7f);
+    final enter =
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+    final plainEdit =
+        !chorded &&
+        (key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete ||
+            (!keys.isShiftPressed &&
+                (key == LogicalKeyboardKey.arrowLeft ||
+                    key == LogicalKeyboardKey.arrowRight ||
+                    key == LogicalKeyboardKey.arrowUp ||
+                    key == LogicalKeyboardKey.arrowDown ||
+                    key == LogicalKeyboardKey.home ||
+                    key == LogicalKeyboardKey.end)));
+    final paste = switch (defaultTargetPlatform) {
+      TargetPlatform.macOS =>
+        keys.isMetaPressed &&
+            !keys.isControlPressed &&
+            key == LogicalKeyboardKey.keyV,
+      _ =>
+        (keys.isControlPressed &&
+                !keys.isMetaPressed &&
+                !keys.isAltPressed &&
+                key == LogicalKeyboardKey.keyV) ||
+            (keys.isShiftPressed &&
+                !chorded &&
+                key == LogicalKeyboardKey.insert &&
+                defaultTargetPlatform != TargetPlatform.android),
+    };
+    // Enter with the send chord is a send; any other Ctrl, ⌘ or Alt Enter is
+    // somebody else's.
+    final sendsEnter = enter && (!chorded || _sendChord);
+    if (!(typesCharacter || plainEdit || paste || sendsEnter)) return false;
+    if (!_captureAllowed()) return false;
+    // On a control somebody tabbed to, Space, Enter, the arrows, Home, End,
+    // Backspace and Delete are the control's: they press it and move between
+    // controls. Characters and a paste go to the box from anywhere.
+    if ((!typesCharacter || character == ' ') &&
+        !paste &&
+        _onControl(FocusManager.instance.primaryFocus)) {
       return false;
     }
+    _focusBox();
+    // A box shut, or in a group's pane not focused, cannot take it.
+    if (!_inputFocus.hasFocus) return false;
+    if (typesCharacter) {
+      _type(character);
+      return true;
+    }
+    if (sendsEnter) {
+      // A plain Enter into an empty box would only start it with a blank
+      // line: it moves the focus and no more.
+      if (_enterKey() == KeyEventResult.ignored && _input.text.isNotEmpty) {
+        _type('\n');
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /// Whether a key may be taken for the box now: this chat is on screen, the
+  /// page on top, no drawer is open over it, and no text field has the focus.
+  bool _captureAllowed() {
+    if (_shown != true || !mounted) return false;
     if (ModalRoute.of(context)?.isCurrent == false) return false;
     // A drawer open over the chat, its own sessions or a page's around it,
     // is no route but is where the user is.
@@ -334,23 +722,62 @@ class _ChatPageState extends State<ChatPage> {
         return false;
       }
     }
-    // Space on a focused button or row has already pressed it.
-    final primary = FocusManager.instance.primaryFocus;
-    if (character == ' ' && primary != null && primary is! FocusScopeNode) {
-      return false;
-    }
     final focused = FocusManager.instance.primaryFocus?.context;
-    if (focused != null &&
-        (focused.widget is EditableText ||
-            focused.findAncestorWidgetOfExactType<EditableText>() != null)) {
-      return false;
-    }
+    return focused == null ||
+        (focused.widget is! EditableText &&
+            focused.findAncestorWidgetOfExactType<EditableText>() == null);
+  }
+
+  /// Whether [node] is a control the user moved to: a button, a row, a
+  /// checkbox, any focus that is not nothing, the page's own scope or a
+  /// selection in a reply. The last three are where a click leaves the focus,
+  /// and where a key has no other meaning.
+  ///
+  /// Decided from what the node sits in, nearest first: a button's own ink
+  /// response, or a focus of another widget, makes it a control even inside a
+  /// reply's selection area, as a code block's Copy button is; reaching the
+  /// selection area first means it is the selection itself.
+  static bool _onControl(FocusNode? node) {
+    if (node == null || node is FocusScopeNode) return false;
+    var control = true;
+    node.context?.visitAncestorElements((element) {
+      final widget = element.widget;
+      if (widget is SelectableRegion) {
+        control = false;
+        return false;
+      }
+      if (widget is InkResponse ||
+          widget is FocusableActionDetector ||
+          widget is Focus) {
+        return false;
+      }
+      return true;
+    });
+    return control;
+  }
+
+  /// The box takes the focus now, so that the key being heard lands in it.
+  /// The focus carries the keyboard token, which the box needs to open the
+  /// text input connection every later key is typed through; Android draws no
+  /// soft keyboard while a hardware keyboard is attached, which is the only
+  /// way this is reached on a touch screen.
+  void _focusBox() {
     _inputFocus.requestFocus();
     FocusManager.instance.applyFocusChangesIfNeeded();
-    // A box shut, or in a group's pane not focused, cannot take it.
-    if (!_inputFocus.hasFocus) return false;
-    _type(character);
-    return true;
+  }
+
+  /// Whether the box is to take the focus back once a send is over: a click
+  /// on the Send button, or on anything outside the box, takes it away on a
+  /// desktop, and the next message would go nowhere.
+  bool _keepFocus = false;
+
+  void _refocus() {
+    if (!_keepFocus) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_keepFocus) return;
+      _keepFocus = false;
+      if (!_inputFocus.hasFocus && _captureAllowed()) _focusBox();
+    });
   }
 
   void _onChanged() {
@@ -384,36 +811,49 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  /// Keeps the newest entry in view, unless the reader has scrolled up to
-  /// look at something — then it stays where they put it.
+  /// Keeps the newest entry in view while following; otherwise leaves the view
+  /// exactly where the reader put it, and counts what came in below it.
   void _followTranscript() {
     final entries = _below;
-    if (entries == _drawn) return;
+    final before = _drawn;
+    if (entries == before) return;
     _drawn = entries;
     if (_switching) return;
-    // Whether the reader is following is decided now, before the new entry
-    // is laid out, against the end as it was: measured after, one reply
-    // taller than [_nearEnd] put the end that far off and read as the reader
-    // having scrolled up, so a long answer stopped the following. Measured
-    // from where a scroll still in flight is going, too: on a hidden tab it
-    // is paused short of the end.
-    // A list not laid out yet has no end to measure: it is measured once it
-    // is, as it always was.
-    bool near(ScrollPosition position) =>
-        position.maxScrollExtent - (_following ?? position.pixels) <= _nearEnd;
-    final before = _scroll.hasClients ? near(_scroll.position) : null;
-    if (before == false) return;
+    if (!_scroll.hasClients) {
+      // Not laid out yet, so there is no end to be at: whether it follows is
+      // where it first lands. A list opened on a long transcript lands at its
+      // top, and holds there for whatever puts it somewhere; only one that
+      // fits, or sits at its end, follows.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _switching || !_scroll.hasClients) return;
+        final position = _scroll.position;
+        final atEnd = position.maxScrollExtent - position.pixels <= _atEnd;
+        if (atEnd != _follow) setState(() => _follow = atEnd);
+        if (atEnd) _scrollToEnd();
+      });
+      return;
+    }
+    if (!_follow) {
+      if (before >= 0 && entries > before) _arrived += entries - before;
+      return;
+    }
+    _scrollToEnd();
+  }
+
+  /// To the end once what changed is laid out. Hidden, the tab's tickers are
+  /// off and an animation would stand still, so it goes at once, and is at the
+  /// end when shown.
+  void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scroll.hasClients) return;
-      if (before == null && !near(_scroll.position)) return;
-      final end = _scroll.position.maxScrollExtent;
-      // Hidden, the tab's tickers are off and an animation would stand
-      // still: it goes to the end at once, and is there when shown.
-      if (!TickerMode.valuesOf(context).enabled) {
-        _following = null;
-        return _scroll.jumpTo(end);
-      }
-      _following = end;
+      if (!mounted || !_scroll.hasClients || !_follow) return;
+      final position = _scroll.position;
+      final end = position.maxScrollExtent;
+      if (end - position.pixels <= _atEnd) return;
+      if (!TickerMode.valuesOf(context).enabled) return _scroll.jumpTo(end);
+      _pinning = true;
+      // A run begun over this one ends it, and its late end is not this
+      // run's to act on.
+      final run = ++_pinRun;
       unawaited(
         _scroll
             .animateTo(
@@ -422,14 +862,42 @@ class _ChatPageState extends State<ChatPage> {
               curve: Curves.easeOut,
             )
             .whenComplete(() {
-              if (_following == end) _following = null;
+              if (run != _pinRun) return;
+              _pinning = false;
+              // What grew meanwhile, or came back from a reader's hand, is
+              // not for this to chase: only an idle list is pinned again.
+              if (mounted &&
+                  _follow &&
+                  _scroll.hasClients &&
+                  _scroll.position.userScrollDirection ==
+                      ScrollDirection.idle) {
+                _scrollToEnd();
+              }
             }),
       );
     });
   }
 
-  /// Where a scroll following the transcript is going, while it goes.
-  double? _following;
+  /// True while the view runs to the end, which is not to be started again
+  /// by each frame of its own run.
+  bool _pinning = false;
+  int _pinRun = 0;
+
+  /// The end slips below the fold with no new entry whenever the room or the
+  /// content changes size — the keyboard, a shorter window, the working line
+  /// appearing, a row growing in place — so while following, the end is kept
+  /// in view for those too.
+  bool _onScrollMetrics(ScrollMetricsNotification note) {
+    if (note.depth != 0) return false;
+    final metrics = note.metrics;
+    if (_follow &&
+        !_switching &&
+        !_pinning &&
+        metrics.maxScrollExtent - metrics.pixels > _atEnd) {
+      _scrollToEnd();
+    }
+    return false;
+  }
 
   /// Puts a session just picked where it was left, [at] — or, left at the
   /// bottom or never seen, at its bottom.
@@ -456,6 +924,17 @@ class _ChatPageState extends State<ChatPage> {
           }
         }
         _switching = false;
+        // Left at its end it follows; left anywhere above, it holds.
+        if (_scroll.hasClients) {
+          final position = _scroll.position;
+          final atEnd = position.maxScrollExtent - position.pixels <= _atEnd;
+          if (atEnd != _follow || (atEnd && _arrived != 0)) {
+            setState(() {
+              _follow = atEnd;
+              _arrived = 0;
+            });
+          }
+        }
       })
       // The frame to look again after: a jump to where the list already is
       // asks for none.
@@ -531,8 +1010,9 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _send() {
-    final text = _input.text;
-    if (text.trim().isEmpty) return;
+    // Numbered as Claude will number them, now that it is going.
+    final text = _draft.sync(_input.value, _chat.nextPicture).text;
+    if (text.trim().isEmpty && _draft.isEmpty) return;
     // A dialog in a terminal chat cannot see takes the next Enter as a
     // choice, so a command that may open one is not typed at all.
     if (SlashCommand.refusal(text, _commands.data) case final why?) {
@@ -545,9 +1025,22 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
     final starts = _chat.composing;
-    final sent = _chat.send(text);
+    final sent = _chat.send(
+      text,
+      pictures: _draft.pictures,
+      upload: widget.session.canUploadFiles ? _upload : null,
+    );
+    _draft.clear();
     _input.clear();
+    // Sent from the box, or from a click on Send that took the focus off it
+    // on a desktop: either way the next message goes into the box. On a
+    // touch screen a box that was not being typed in stays as it was, so a
+    // send never raises the soft keyboard.
+    _keepFocus = isDesktop || _inputFocus.hasFocus;
+    _refocus();
     // Whatever was said, the reader wants to be at the bottom again.
+    _follow = true;
+    _arrived = 0;
     _drawn = -1;
     _followTranscript();
     // A session this chat started is not in a list read before it was.
@@ -603,8 +1096,10 @@ class _ChatPageState extends State<ChatPage> {
               const VerticalDivider(width: 1),
             ],
             Expanded(
-              child: ContentText(
-                child: _conversation(wide: wide, sidebar: sidebar),
+              child: _dropTarget(
+                ContentText(
+                  child: _conversation(wide: wide, sidebar: sidebar),
+                ),
               ),
             ),
           ],
@@ -621,14 +1116,21 @@ class _ChatPageState extends State<ChatPage> {
     return Column(
       children: [
         Expanded(
-          child: entries.isEmpty
-              ? _Empty(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: entries.isEmpty
+                    ? _Empty(
                   session: widget.session,
                   // Beside a sidebar already showing them, a button to show
                   // them would do nothing.
                   onPickSession: sidebar ? null : () => _showSessions(wide),
                 )
-              : CustomScrollView(
+              : NotificationListener<ScrollMetricsNotification>(
+                  onNotification: _onScrollMetrics,
+                  child: NotificationListener<ScrollNotification>(
+                  onNotification: _onScrollUpdate,
+                  child: CustomScrollView(
                   // A list of its own for each session picked. The rows a
                   // lazy list has built keep where they were laid out, and
                   // another session's rows, of other heights, drawn into
@@ -668,6 +1170,22 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                   ],
                 ),
+                ),
+                ),
+              ),
+              // Over the list's own corner, so it covers neither the working
+              // line nor the box, which sit below the list.
+              if (!_follow && entries.isNotEmpty)
+                Positioned(
+                  right: 12,
+                  bottom: 8,
+                  child: _JumpToLatest(
+                    arrived: _arrived,
+                    onPressed: _jumpToEnd,
+                  ),
+                ),
+            ],
+          ),
         ),
         if (chat.progress case final progress?)
           _Progress(chat: chat, progress: progress)
@@ -691,6 +1209,7 @@ class _ChatPageState extends State<ChatPage> {
         // still open, as Claude Code's own view keeps it.
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
         const Divider(height: 1),
+        if (!_draft.isEmpty) _pictureCards(),
         _composer(theme, wide: wide, sidebar: sidebar),
       ],
     );
@@ -729,6 +1248,29 @@ class _ChatPageState extends State<ChatPage> {
     showToast(context, 'Not opened: $address is on the host. Copied it');
   }
 
+  /// A card for each picture the message being written carries, above the
+  /// box.
+  Widget _pictureCards() => SizedBox(
+    height: 138,
+    child: ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(12, 6, 0, 0),
+      children: [
+        for (final picture in _draft.pictures)
+          _PictureCard(
+            picture: picture,
+            onRemove: () => setState(() {
+              _input.value = _draft.remove(
+                _input.value,
+                picture,
+                _chat.nextPicture,
+              );
+            }),
+          ),
+      ],
+    ),
+  );
+
   Widget _composer(
     ThemeData theme, {
     required bool wide,
@@ -755,7 +1297,9 @@ class _ChatPageState extends State<ChatPage> {
       ..dim = palette.dim
       ..accent = palette.accent
       // The selection colour: the field itself is drawn on the panel.
-      ..panel = palette.selection;
+      ..panel = palette.selection
+      // Its pictures' tokens drawn as chips.
+      ..pictures = {for (final picture in _draft.pictures) picture.number};
     // The list of commands goes above the whole row, as wide as the page:
     // the box alone is too narrow for it on a phone.
     return SafeArea(
@@ -767,121 +1311,324 @@ class _ChatPageState extends State<ChatPage> {
         openState: _menuOpen,
         onRefresh: () => setState(_listCommands),
         child: Padding(
-        padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            IconButton(
-              tooltip: sidebar
-                  ? 'Hide the sessions on this host'
-                  : 'Sessions on this host',
-              isSelected: sidebar,
-              onPressed: () => _toggleSessions(wide),
-              icon: const Icon(Icons.view_sidebar_outlined),
-              selectedIcon: const Icon(Icons.view_sidebar),
-            ),
-            MenuButton<Object>(
-              tooltip: 'Chat settings',
-              onSelected: (choice) {
-                if (choice is ChatPermission) {
-                  unawaited(chat.restart(permission: choice));
-                } else if (choice == 'new') {
-                  unawaited(_newChat());
-                } else {
-                  unawaited(chat.restart());
-                }
-              },
-              entries: [
-                TuiMenuItem(
-                  value: 'new',
-                  label: 'New chat',
-                  enabled: connected,
-                ),
-                const TuiMenuDivider(),
-                for (final mode in ChatPermission.values)
-                  TuiMenuItem(
-                    value: mode,
-                    label: mode.label,
-                    checked: chat.permission == mode,
-                  ),
-                const TuiMenuDivider(),
-                const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
-              ],
-            ),
-            Expanded(
-              child: TextField(
-                controller: _input,
-                focusNode: _inputFocus,
-                // Gboard's own Enter sends too when Enter is what sends.
-                textInputAction: chatEnterSends.value
-                    ? TextInputAction.send
-                    : null,
-                onSubmitted: (_) {
-                  // Not while the list of commands is open: a half-typed
-                  // /com is a pick still being made.
-                  if (_sendable && !_menuOpen.value) _send();
+          padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              IconButton(
+                tooltip: sidebar
+                    ? 'Hide the sessions on this host'
+                    : 'Sessions on this host',
+                isSelected: sidebar,
+                onPressed: () => _toggleSessions(wide),
+                icon: const Icon(Icons.view_sidebar_outlined),
+                selectedIcon: const Icon(Icons.view_sidebar),
+              ),
+              IconButton(
+                tooltip: 'Add a picture',
+                onPressed: readOnly ? null : _pickPictures,
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+              ),
+              MenuButton<Object>(
+                tooltip: 'Chat settings',
+                onSelected: (choice) {
+                  if (choice is ChatPermission) {
+                    unawaited(chat.restart(permission: choice));
+                  } else if (choice == 'new') {
+                    unawaited(_newChat());
+                  } else {
+                    unawaited(chat.restart());
+                  }
                 },
-                // Shut only for a session that cannot be typed into at all. A
-                // box shut for a moment between turns drops keys and loses
-                // the focus, so what is typed then went nowhere; the text
-                // waits instead, and [open] gates only Send.
-                enabled: !readOnly,
-                minLines: 1,
-                // Room for a short code block before it scrolls.
-                maxLines: 8,
-                keyboardType: TextInputType.multiline,
-                textCapitalization: TextCapitalization.sentences,
-                // termul's TuiInput look — its ❯ prompt in the accent — on
-                // a field that takes several lines and can be shut, which
-                // TuiInput does not.
-                decoration: InputDecoration(
-                  isDense: true,
-                  // One line, cut: at a large text size on a phone a hint
-                  // that wraps grows the box past the room the keyboard
-                  // leaves.
-                  hintMaxLines: 1,
-                  prefixText: '❯ ',
-                  prefixStyle: TextStyle(
-                    fontFamily: TermulFonts.mono,
-                    color: TermulThemeData.of(context).palette.accent,
+                entries: [
+                  TuiMenuItem(
+                    value: 'new',
+                    label: 'New chat',
+                    enabled: connected,
                   ),
-                  hintText: readOnly
-                      ? 'Read-only: “${watching.name}” cannot be typed into '
-                            'from here'
-                      : watching != null
-                      ? 'Message “${watching.name}”…'
-                      : composing
-                      ? 'Start a new chat…'
-                      : chat.ready
-                      ? 'Ask Claude…'
-                      : connected
-                      ? 'Starting Claude on the host…'
-                      : 'Connect this session first',
+                  const TuiMenuDivider(),
+                  for (final mode in ChatPermission.values)
+                    TuiMenuItem(
+                      value: mode,
+                      label: mode.label,
+                      checked: chat.permission == mode,
+                    ),
+                  const TuiMenuDivider(),
+                  const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
+                ],
+              ),
+              Expanded(
+                // A picture pasted goes in as a card rather than as nothing:
+                // see [_pastePicture]. The field's own menu Paste is offered
+                // only for text, and takes text — so it is replaced by one
+                // that takes a picture first, offered with a picture alone.
+                // Enter and the slash menu stay [_onBoxKey]'s: only a paste is
+                // taken here.
+                child: Actions(
+                  actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
+                  child: TextField(
+                    contextMenuBuilder: _contextMenu,
+                    contentInsertionConfiguration:
+                        ContentInsertionConfiguration(
+                          allowedMimeTypes: const [
+                            'image/png',
+                            'image/jpeg',
+                            'image/gif',
+                            'image/webp',
+                          ],
+                          onContentInserted: (content) =>
+                              unawaited(_inserted(content)),
+                        ),
+                    controller: _input,
+                    focusNode: _inputFocus,
+                    // Gboard's own Enter sends too when Enter is what sends.
+                    textInputAction: chatEnterSends.value
+                        ? TextInputAction.send
+                        : null,
+                    onSubmitted: (_) {
+                      // Not while the list of commands is open: a half-typed
+                      // /com is a pick still being made.
+                      if (_sendable && !_menuOpen.value) _send();
+                    },
+                    // Shut only for a session that cannot be typed into at
+                    // all. A box shut for a moment between turns drops keys
+                    // and loses the focus, so what is typed then went
+                    // nowhere; the text waits instead, and [open] gates only
+                    // Send.
+                    enabled: !readOnly,
+                    minLines: 1,
+                    // Room for a short code block before it scrolls.
+                    maxLines: 8,
+                    keyboardType: TextInputType.multiline,
+                    textCapitalization: TextCapitalization.sentences,
+                    // termul's TuiInput look — its ❯ prompt in the accent — on
+                    // a field that takes several lines and can be shut, which
+                    // TuiInput does not.
+                    decoration: InputDecoration(
+                      isDense: true,
+                      // One line, cut: at a large text size on a phone a hint
+                      // that wraps grows the box past the room the keyboard
+                      // leaves.
+                      hintMaxLines: 1,
+                      prefixText: '❯ ',
+                      prefixStyle: TextStyle(
+                        fontFamily: TermulFonts.mono,
+                        color: TermulThemeData.of(context).palette.accent,
+                      ),
+                      hintText: readOnly
+                          ? 'Read-only: “${watching.name}” cannot be typed into '
+                                'from here'
+                          : watching != null
+                          ? 'Message “${watching.name}”…'
+                          : composing
+                          ? 'Start a new chat…'
+                          : chat.ready
+                          ? 'Ask Claude…'
+                          : connected
+                          ? 'Starting Claude on the host…'
+                          : 'Connect this session first',
+                    ),
+                    // A token deleted takes its card with it.
+                    onChanged: (_) => setState(() {
+                      final synced = _draft.sync(
+                        _input.value,
+                        _chat.nextPicture,
+                      );
+                      if (synced != _input.value) _input.value = synced;
+                    }),
+                  ),
                 ),
-                onChanged: (_) => setState(() {}),
               ),
-            ),
-            const SizedBox(width: 4),
-            IconButton.filled(
-              tooltip: 'Send',
-              // The app's iconButtonTheme gives every IconButton an accent
-              // foreground, which beats the filled variant's own onPrimary:
-              // an accent arrow on an accent fill. Black or white, whichever
-              // reads on the fill.
-              style: IconButton.styleFrom(
-                backgroundColor: palette.accent,
-                foregroundColor:
-                    tuiContrast(Colors.black, palette.accent) >=
-                        tuiContrast(Colors.white, palette.accent)
-                    ? Colors.black
-                    : Colors.white,
+              const SizedBox(width: 4),
+              IconButton.filled(
+                tooltip: 'Send',
+                // The app's iconButtonTheme gives every IconButton an accent
+                // foreground, which beats the filled variant's own onPrimary:
+                // an accent arrow on an accent fill. Black or white, whichever
+                // reads on the fill.
+                style: IconButton.styleFrom(
+                  backgroundColor: palette.accent,
+                  foregroundColor:
+                      tuiContrast(Colors.black, palette.accent) >=
+                          tuiContrast(Colors.white, palette.accent)
+                      ? Colors.black
+                      : Colors.white,
+                ),
+                onPressed: _sendable ? _send : null,
+                icon: const Icon(Icons.send),
               ),
-              onPressed: _sendable ? _send : null,
-              icon: const Icon(Icons.send),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+/// Paste in the box: [take] first, which takes a picture from the clipboard,
+/// and the field's own text paste only when there was none.
+class _PictureOrText extends Action<PasteTextIntent> {
+  _PictureOrText(this.take);
+
+  final Future<bool> Function() take;
+
+  @override
+  Object? invoke(PasteTextIntent intent) {
+    final text = callingAction;
+    unawaited(
+      take().then((took) {
+        if (!took) text?.invoke(intent);
+      }),
+    );
+    return null;
+  }
+}
+
+/// What a picture is drawn from: the copy sent from here, or the bytes the
+/// transcript holds.
+ImageProvider _pictureImage(ChatPicture picture) => picture.path != null
+    ? FileImage(File(picture.path!))
+    : MemoryImage(picture.bytes!);
+
+/// A picture's small copy, which a tap opens large.
+class _Thumbnail extends StatefulWidget {
+  const _Thumbnail({required this.picture, this.width = 112, this.height = 84});
+
+  final ChatPicture picture;
+  final double width;
+  final double height;
+
+  @override
+  State<_Thumbnail> createState() => _ThumbnailState();
+}
+
+class _ThumbnailState extends State<_Thumbnail> {
+  late final ImageProvider _image = _pictureImage(widget.picture);
+
+  /// Whether it may be drawn: its size read from its header first, since a
+  /// PNG or GIF is decoded whole before it is scaled down, and a transcript's
+  /// picture can claim a size that whole would not fit in memory. Null while
+  /// that is being read.
+  bool? _drawable;
+
+  @override
+  void initState() {
+    super.initState();
+    pictureSize(_image).then(
+      (size) {
+        if (mounted) {
+          setState(
+            () => _drawable = size.width * size.height <= pictureMaxPixels,
+          );
+        }
+      },
+      onError: (Object _) {
+        if (mounted) setState(() => _drawable = false);
+      },
+    );
+  }
+
+  String get _label => widget.picture.name.isNotEmpty
+      ? widget.picture.name
+      : '[Image #${widget.picture.number}]';
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = TermulThemeData.of(context).palette;
+    final width = widget.width;
+    final height = widget.height;
+    final unshown = SizedBox(
+      width: width,
+      height: height,
+      child: _drawable == false
+          ? Icon(Icons.broken_image_outlined, color: palette.dim)
+          : null,
+    );
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'View $_label',
+      child: GestureDetector(
+        // The whole of it, drawn yet or not.
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(showPicture(context, _image, _label)),
+        child: _drawable != true
+            ? unshown
+            : Image(
+                // Decoded small: a thumbnail of a 20 MB photo need not hold
+                // it all.
+                image: ResizeImage(_image, width: (width * 2).round()),
+                width: width,
+                height: height,
+                fit: BoxFit.cover,
+                errorBuilder: (context, _, _) => SizedBox(
+                  width: width,
+                  height: height,
+                  child: Icon(Icons.broken_image_outlined, color: palette.dim),
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+/// A picture going with the message being written: its thumbnail, which a
+/// tap opens, its token and name, and a button to take it out.
+///
+/// TODO(termul): termul has no attachment card; this is its panel, border
+/// and mono caption around a thumbnail.
+class _PictureCard extends StatelessWidget {
+  const _PictureCard({required this.picture, required this.onRemove});
+
+  final ChatPicture picture;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = TermulThemeData.of(context).palette;
+    return Container(
+      width: 114,
+      margin: const EdgeInsets.only(right: 8),
+      decoration: BoxDecoration(
+        color: palette.panel,
+        border: Border.all(color: palette.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Stack(
+            children: [
+              _Thumbnail(picture: picture),
+              Positioned(
+                top: 0,
+                right: 0,
+                child: Material(
+                  color: palette.panel.withValues(alpha: 0.85),
+                  child: IconButton(
+                    tooltip: 'Remove ${picture.name}',
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 16,
+                    onPressed: onRemove,
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
+            child: Text(
+              '[Image #${picture.number}] ${picture.name}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: TermulFonts.mono,
+                fontSize: 11,
+                color: palette.dim,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1000,9 +1747,33 @@ class _Bubble extends StatelessWidget {
   final ChatSaid said;
   final MarkdownTapLinkCallback onTapLink;
 
-  /// termul's bubble, with its note while it is not in the session yet.
+  /// termul's bubble, with its note while it is not in the session yet, and
+  /// over it the pictures it carries.
   @override
-  Widget build(BuildContext context) => TuiChatBubble(
+  Widget build(BuildContext context) {
+    final bubble = _bubble(context);
+    if (said.pictures.isEmpty) return bubble;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 8, left: 48),
+          child: Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final picture in said.pictures)
+                _Thumbnail(picture: picture, width: 160, height: 120),
+            ],
+          ),
+        ),
+        bubble,
+      ],
+    );
+  }
+
+  Widget _bubble(BuildContext context) => TuiChatBubble(
     text: said.text,
     delivery: switch (said.delivery) {
       Delivery.sending => TuiChatDelivery.sending,
@@ -1692,6 +2463,31 @@ class _Notice extends StatelessWidget {
   }
 }
 
+/// The button over the conversation's corner that goes to the latest reply,
+/// with how many entries came in below the view since it left the end.
+class _JumpToLatest extends StatelessWidget {
+  const _JumpToLatest({required this.arrived, required this.onPressed});
+
+  final int arrived;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    button: true,
+    label: arrived > 0
+        ? 'Jump to latest, $arrived new'
+        : 'Jump to latest',
+    excludeSemantics: true,
+    child: TuiButton(
+      label: arrived > 0 ? 'Latest · $arrived new' : 'Latest',
+      prefix: '↓',
+      variant: TuiButtonVariant.ghost,
+      onPressed: onPressed,
+    ),
+  );
+}
+
 /// The session's tasks, as Claude Code's view draws them under its spinner:
 /// `⎿` then the ones in progress, bold with a filled square, and the ones
 /// pending with an empty one; completed ones are only counted, in a last
@@ -1743,6 +2539,17 @@ class _Checklist extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // As Claude Code's view heads its list: 19 tasks (11 done, 3 in
+          // progress, 5 open), the empty counts left out.
+          line(
+            '${chat.tasksTotal} ${chat.tasksTotal == 1 ? 'task' : 'tasks'} (${[
+              if (done > 0) '$done done',
+              if (chat.tasksInProgress > 0)
+                '${chat.tasksInProgress} in progress',
+              if (chat.tasksPending > 0) '${chat.tasksPending} open',
+            ].join(', ')})',
+            tone: TuiTextTone.muted,
+          ),
           for (final (i, task) in open.where(shown.contains).indexed)
             line(
               '${i == 0 ? '⎿ ' : '  '}${task.inProgress ? '■' : '□'} '
@@ -1792,7 +2599,7 @@ class _ProgressState extends State<_Progress> {
 
   void _onTick() {
     if (!mounted || !TickerMode.valuesOf(context).enabled) return;
-    final now = DateTime.now();
+    final now = chatNow();
     final looked = _looked;
     if (looked == null || now.difference(looked) >= _look) {
       _looked = now;
@@ -1821,7 +2628,7 @@ class _ProgressState extends State<_Progress> {
           : 'Waiting for $waiting on the host. Open it in a terminal with '
                 '`claude attach ${agent.id ?? ''}` to answer it.';
     } else {
-      final time = ChatProgress.elapsed(DateTime.now().difference(p.started));
+      final time = ChatProgress.elapsed(chatNow().difference(p.started));
       final tokens = p.tokens > 0
           ? ' · ↓ ${ChatProgress.count(p.tokens)} tokens'
           : '';

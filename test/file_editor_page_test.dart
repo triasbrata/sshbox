@@ -1483,4 +1483,57 @@ After it.
       expect(copy.parent.existsSync(), isFalse);
     });
   });
+
+  group('a picture opened large', () {
+    /// 68 bytes of PNG that say they are 30000 × 30000: decoded, 3.6 GB.
+    final huge = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAdTAAAHUwCAYAAABmJ/i6AAAAC0lEQVR4nGNgQAUAABAA'
+      'ATm9j2UAAAAASUVORK5CYII=',
+    );
+
+    /// One pixel.
+    final pixel = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA'
+      '60e6kgAAAABJRU5ErkJggg==',
+    );
+
+    Future<void> open(WidgetTester tester, Uint8List bytes) async {
+      await tester.pumpWidget(
+        MaterialApp(home: PictureView(image: MemoryImage(bytes))),
+      );
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 200)),
+      );
+      await tester.pump();
+    }
+
+    test('its size is read from its header, not by decoding it', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      expect(
+        await pictureSize(MemoryImage(huge)),
+        const Size(30000, 30000),
+      );
+    });
+
+    testWidgets('one claiming more pixels than may be drawn is refused, never '
+        'decoded', (tester) async {
+      await open(tester, huge);
+      expect(find.textContaining('too large to show'), findsOneWidget);
+      expect(find.textContaining('30000 × 30000'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+    });
+
+    testWidgets('one that may be drawn is decoded no larger than twice the '
+        'screen', (tester) async {
+      await open(tester, pixel);
+      final image = tester.widget<Image>(find.byType(Image)).image;
+      expect(image, isA<ResizeImage>());
+      final view = tester.view;
+      final most =
+          (view.physicalSize.longestSide * 2).ceil();
+      expect((image as ResizeImage).width, most);
+      expect(image.height, most);
+      expect(image.allowUpscaling, isFalse);
+    });
+  });
 }
