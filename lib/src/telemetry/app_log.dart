@@ -95,8 +95,12 @@ class AppLog {
       _previousFile = File('${dir.path}/applog.previous');
       if (await _file!.exists()) {
         _previous = await _file!.readAsString();
+        // Created and made private before a byte is written.
+        if (!await _previousFile!.exists()) {
+          await _previousFile!.create();
+          await _private(_previousFile!);
+        }
         await _previousFile!.writeAsString(_previous);
-        await _private(_previousFile!);
       } else if (await _previousFile!.exists()) {
         // Opened twice with nothing run between: still the run before.
         _previous = await _previousFile!.readAsString();

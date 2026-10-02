@@ -395,6 +395,19 @@ void main() {
       expect(feedback.sent, isEmpty);
     });
 
+    testWidgets('a description over the link limit previews as it opens', (
+      tester,
+    ) async {
+      await open(tester, write: 'froze ${'word ' * 1500}');
+      final public = tester
+          .widget<SelectableText>(find.byKey(const ValueKey('preview-public')))
+          .data!;
+      expect(public, contains('cut short to fit in a link'));
+      await tester.tap(find.bySemanticsLabel('Under my name'));
+      await tester.pumpAndSettle();
+      expect(Uri.parse(launcher.opened.single).queryParameters['body'], public);
+    });
+
     testWidgets('with telemetry off it asks, and the answer starts as no', (
       tester,
     ) async {
