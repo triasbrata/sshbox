@@ -463,6 +463,54 @@ void main() {
       }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
     }
 
+    testWidgets('copies what it selected as the button comes up, spaces '
+        'kept', (tester) async {
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied = (call.arguments as Map)['text'] as String?;
+          }
+          return null;
+        },
+      );
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      final g = await secondClick(tester, col: 14, clicks: 2);
+      await tester.pump(const Duration(milliseconds: 200));
+      await g.moveTo(cellAt(tester, 20, 10));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(copied, isNull);
+      await g.up();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(copied, 'this is a');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('under a program tracking the mouse, Shift keeps it the '
+        "terminal's: the word grows and the program hears nothing", (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      session.terminal.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
+      await tester.pump();
+      shell.sent.clear();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      final g = await secondClick(tester, col: 14, clicks: 2);
+      await tester.pump(const Duration(milliseconds: 200));
+      await g.moveTo(cellAt(tester, 20, 10));
+      await tester.pump(const Duration(milliseconds: 16));
+      await g.up();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(shell.sent, isEmpty);
+      expect(selected(tester), 'this is a');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets('a triple click drags by lines', (tester) async {
       await pumpPage(tester);
       session.terminal.write(text * 30);
