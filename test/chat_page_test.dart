@@ -197,9 +197,20 @@ class _Shell
   void adds(Map<String, Object?> line) =>
       follow!.add(Uint8List.fromList(utf8.encode('${jsonEncode(line)}\n')));
 
+  /// What `claude -p /usage` prints on the host, for the plan's usage; nothing
+  /// by default, which is Claude Code reporting no limit.
+  String usageOut = '';
+
   @override
   Future<CommandChannel> open(String command) async {
     commands.add(command);
+    if (command.contains('/usage')) {
+      return (
+        output: Stream.value(Uint8List.fromList(utf8.encode(usageOut))),
+        write: (Uint8List data) {},
+        close: () {},
+      );
+    }
     // Before the rest: tmux's finder has a ` -f ` of its own.
     if (command.contains('list-panes')) {
       final typing = command.contains('load-buffer');
@@ -4237,5 +4248,230 @@ void main() {
       );
       await tester.pumpAndSettle(const Duration(seconds: 6));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  group('the usage chip and its popup', () {
+    setUp(ClaudeChat.forgetQuotas);
+    String history(int tokens) {
+      final body = [
+        {
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'is the nightly build green?'},
+        },
+        {
+          'type': 'assistant',
+          'message': {
+            'id': 'm1',
+            'model': 'claude-opus-5-5',
+            'stop_reason': 'end_turn',
+            'usage': {'input_tokens': 1, 'cache_read_input_tokens': tokens},
+            'content': [
+              {'type': 'text', 'text': 'It failed at the lint step.'},
+            ],
+          },
+        },
+        {'type': 'system', 'subtype': 'turn_duration', 'durationMs': 9000},
+      ].map(jsonEncode).join('\n');
+      return '${utf8.encode(body).length}\n$body\n';
+    }
+
+    Future<_Shell> watching(
+      WidgetTester tester, {
+      int tokens = 90000,
+      String usage = '',
+    }) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..usageOut = usage
+        ..history = history(tokens)
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    Future<void> hover(WidgetTester tester, Finder at) async {
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(tester.getCenter(at));
+      await tester.pump();
+      await _frames(tester);
+    }
+
+    testWidgets('shows how much of the window the session uses', (
+      tester,
+    ) async {
+      await watching(tester, tokens: 90000);
+      // 90,001 of 200,000.
+      expect(find.text('Context 45%'), findsOneWidget);
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
+    testWidgets('hovering opens the popup: context with its model, the plan '
+        'with its resets, and when it was read', (tester) async {
+      final shell = await watching(
+        tester,
+        usage:
+            'Current session: 65% used · resets Oct 2, 3:59pm (Asia/Example)\n'
+            'Current week (all models): 28% used · resets Oct 9, 2:59am '
+            '(Asia/Example)\n',
+      );
+      await hover(tester, find.text('Context 45%'));
+      expect(find.textContaining('Usage'), findsOneWidget);
+      expect(find.text('Context  90k / 200k (45%)'), findsOneWidget);
+      expect(find.text('claude-opus-5-5'), findsOneWidget);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('Current session  65% used'), findsOneWidget);
+      expect(find.text('Current week (all models)  28% used'), findsOneWidget);
+      expect(
+        find.text('resets Oct 2, 3:59pm (Asia/Example)'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('as of '), findsOneWidget);
+      expect(
+        shell.commands.where((c) => c.contains('/usage')),
+        hasLength(1),
+      );
+    });
+
+    for (final shown in [true, false]) {
+      testWidgets('a turn ending ${shown ? 'on a chat on show asks' : 'in a '
+          'chat nobody is looking at does not ask'} for the plan\'s usage', (
+        tester,
+      ) async {
+        tester.view
+          ..physicalSize = const Size(1280, 800)
+          ..devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        final shell = _Shell()
+          ..usageOut = 'Current session: 10% used'
+          ..history = history(90000)
+          ..listing = jsonEncode([
+            {
+              'pid': 4079548,
+              'id': '81badf4a',
+              'cwd': '/srv/app',
+              'kind': 'background',
+              'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+              'name': 'the nightly build',
+              'status': 'busy',
+              'state': 'working',
+            },
+          ]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TickerMode(
+                enabled: shown,
+                child: ChatPage(session: session),
+              ),
+            ),
+          ),
+        );
+        await _frames(tester);
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        int asked() => shell.commands.where((c) => c.contains('/usage')).length;
+        expect(asked(), 0);
+
+        // A turn, and its end.
+        shell
+          ..adds({
+            'type': 'user',
+            'message': {'role': 'user', 'content': 'run it'},
+          })
+          ..adds({
+            'type': 'system',
+            'subtype': 'turn_duration',
+            'durationMs': 1000,
+          });
+        await _settlePickUp(tester);
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        expect(asked(), shown ? 1 : 0);
+      });
+    }
+
+    testWidgets('a tap opens it on touch, and a tap elsewhere closes it', (
+      tester,
+    ) async {
+      await watching(tester);
+      await tester.tap(find.text('Context 45%'));
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsOneWidget);
+      await tester.tapAt(const Offset(40, 300));
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
+    testWidgets('past 80% the chip is in the warning colour', (tester) async {
+      await watching(tester, tokens: 170000);
+      final chip = tester.widget<TuiText>(find.widgetWithText(TuiText, 'Context 85%'));
+      expect(chip.tone, TuiTextTone.yellow);
+      expect(chip.bold, isTrue);
+    });
+
+    testWidgets('a plan reading that is old says how old', (tester) async {
+      var now = DateTime(2026, 10, 2, 12, 0);
+      final real = chatNow;
+      chatNow = () => now;
+      addTearDown(() => chatNow = real);
+      await watching(tester, usage: 'Current session: 10% used');
+      await tester.tap(find.text('Context 45%'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text('as of 12:00'), findsOneWidget);
+      now = DateTime(2026, 10, 2, 12, 5);
+      await tester.pump(const Duration(seconds: 1));
+      await _frames(tester);
+      expect(find.text('as of 12:00 · 5 min ago'), findsOneWidget);
+    });
+
+    testWidgets('when Claude Code reports no usage, it says so', (
+      tester,
+    ) async {
+      await watching(tester, usage: 'Usage is not available.');
+      await tester.tap(find.text('Context 45%'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.text("Claude Code didn't report plan usage."), findsOneWidget);
+      expect(find.text('Context  90k / 200k (45%)'), findsOneWidget);
+    });
+
+    testWidgets('what the host says is drawn as text', (tester) async {
+      await watching(
+        tester,
+        usage: 'Current <b>session</b> **x**: 5% used · resets [a](javascript:1)',
+      );
+      await tester.tap(find.text('Context 45%'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.textContaining('resets [a](javascript:1)'), findsOneWidget);
+    });
   });
 }

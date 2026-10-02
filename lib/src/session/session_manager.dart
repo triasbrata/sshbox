@@ -463,6 +463,8 @@ class LiveSession extends ChangeNotifier {
       return (session as TerminalChannelCapable).openTerminal(command);
     },
     cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
+    // The plan's usage is the host account's: chats on one host share it.
+    hostKey: host.id,
   );
 
   void openChat() {

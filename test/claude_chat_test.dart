@@ -179,10 +179,27 @@ _hostWithHistory(String? history) {
           close: () {},
         );
       }
+      if (command.contains('/usage')) return _says(usageOnHost);
       return _FakeClaude().channel;
     },
   );
 }
+
+/// What `claude -p /usage` prints, for the next ask; empty reports no limit.
+String usageOnHost = '';
+
+/// A channel that says one thing and is then done.
+CommandChannel _says(String text) => (
+  output: Stream.value(Uint8List.fromList(utf8.encode(text))),
+  write: (Uint8List data) {},
+  close: () {},
+);
+
+/// [claude] for everything but a read of the plan's usage, which is answered
+/// from [usageOnHost] as the host would.
+Future<CommandChannel> Function(String) _routed(_FakeClaude claude) =>
+    (command) async =>
+        command.contains('/usage') ? _says(usageOnHost) : claude.channel;
 
 const _live = ClaudeAgent(
   sessionId: '3cae97ea-5874-4a0b-b8bd-6ad88edf0e2f',
@@ -391,6 +408,7 @@ class _LiveHost {
         close: () {},
       );
     }
+    if (command.contains('/usage')) return _says(usageOnHost);
     return _FakeClaude().channel;
   }
 
@@ -510,7 +528,7 @@ void main() {
     await sent;
 
     final claude = _FakeClaude();
-    final running = ClaudeChat(open: (_) async => claude.channel);
+    final running = ClaudeChat(open: _routed(claude));
     await running.start();
     running.dispose();
     // A line Claude was writing as the tab closed.
@@ -524,7 +542,7 @@ void main() {
 
   test('a turn becomes bubbles, and its tools fold their results in', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     expect(chat.ready, isTrue);
@@ -605,7 +623,7 @@ void main() {
 
   test('a refused tool shows as one, and the turn still ends', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     chat.send('fetch example.com');
@@ -647,7 +665,7 @@ void main() {
 
   test('a host with no Claude on it says so', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
 
@@ -665,7 +683,7 @@ void main() {
 
   test('a tool left running when Claude goes is not left spinning', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     chat.send('build it');
@@ -694,7 +712,7 @@ void main() {
 
   test('a big result is cut rather than kept whole', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     await chat.start();
     claude.event({
@@ -828,7 +846,7 @@ void main() {
   test('the sessions on the host come back however each row is shaped',
       () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     // Exactly the shapes the CLI prints: a background session at work, one
     // sitting idle, an interactive one — which carries no id and no state —
@@ -906,7 +924,7 @@ void main() {
   test('a word from the host beside the list does not cost the list',
       () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     // stderr is folded into stdout, so a warning can sit in front of it.
     claude.line('warning: something the host wanted to say');
@@ -929,7 +947,7 @@ void main() {
   test('a host whose Claude has no agents command says what it said',
       () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     claude.line("error: unknown command 'agents'");
     // The expectation is attached before the stream ends, so the throw has
@@ -955,6 +973,7 @@ void main() {
       open: (command) async {
         commands.add(command);
         if (command.contains('.jsonl')) return _noHistory();
+        if (command.contains('/usage')) return _says(usageOnHost);
         return _FakeClaude().channel;
       },
     );
@@ -1293,7 +1312,7 @@ void main() {
   test('pinned sessions come first, in the order they were pinned, and are '
       'marked', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     Map<String, Object?> bg(String id, String name) => {
       'pid': 1,
@@ -1325,7 +1344,7 @@ void main() {
 
   test('a host with no pins file has nothing pinned', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     claude.line(jsonEncode([
       {
@@ -2641,7 +2660,7 @@ void main() {
   test('the listing puts pinned ones first, then running, then finished, '
       'each newest first', () async {
     final claude = _FakeClaude();
-    final chat = ClaudeChat(open: (_) async => claude.channel);
+    final chat = ClaudeChat(open: _routed(claude));
     addTearDown(chat.dispose);
     Map<String, Object?> row(String id, int started, {bool live = false}) => {
       if (live) 'pid': 1,
@@ -3198,7 +3217,7 @@ void main() {
       'a turn of this chat\'s own runs from the send to the result',
       () async {
         final claude = _FakeClaude();
-        final chat = ClaudeChat(open: (_) async => claude.channel);
+        final chat = ClaudeChat(open: _routed(claude));
         addTearDown(chat.dispose);
         await chat.start();
         final before = DateTime.now();
@@ -3477,7 +3496,7 @@ void main() {
       'this chat\'s own turns fill it too, and a new chat empties it',
       () async {
         final claude = _FakeClaude();
-        final chat = ClaudeChat(open: (_) async => claude.channel);
+        final chat = ClaudeChat(open: _routed(claude));
         addTearDown(chat.dispose);
         await chat.start();
         for (final line in made(1, 'Own task')) {
@@ -3506,7 +3525,7 @@ void main() {
     test('to this chat\'s own Claude they go as image blocks after the text, '
         'read from here', () async {
       final claude = _FakeClaude();
-      final chat = ClaudeChat(open: (_) async => claude.channel);
+      final chat = ClaudeChat(open: _routed(claude));
       addTearDown(chat.dispose);
       await chat.start();
 
@@ -3806,6 +3825,267 @@ void main() {
         3,
       );
       expect(ClaudeChat.chipsIn(['no prompt here [Image #1]']), 0);
+    });
+  });
+
+  group('context and plan usage', () {
+    setUp(ClaudeChat.forgetQuotas);
+    // Shapes measured on 2.1.300 (numbers made up): an assistant message's
+    // usage, a result's modelUsage, a rate_limit_event, and /usage under -p.
+    Map<String, Object?> said(
+      Map<String, Object?> usage, {
+      String model = 'claude-opus-5-5',
+    }) => {
+      'type': 'assistant',
+      'message': {
+        'id': 'm${usage.hashCode}',
+        'model': model,
+        'stop_reason': 'tool_use',
+        'usage': usage,
+        'content': [
+          {'type': 'text', 'text': 'x'},
+        ],
+      },
+    };
+
+    test('context is what the last request carried: input, cache and output',
+        () {
+      final context = ChatContext.from({
+        'model': 'claude-opus-5-5',
+        'usage': {
+          'input_tokens': 10,
+          'cache_creation_input_tokens': 1000,
+          'cache_read_input_tokens': 90000,
+          'output_tokens': 500,
+        },
+      })!;
+      expect(context.tokens, 91510);
+      expect(context.window, 200000);
+      expect(context.fraction, closeTo(0.45755, 1e-9));
+    });
+
+    test('the window is a million past 200k or for a [1m] model, and what a '
+        'result reported wins', () {
+      expect(
+        const ChatContext(tokens: 250000, model: 'claude-opus-5-5').window,
+        1000000,
+      );
+      expect(const ChatContext(tokens: 1000, model: 'x[1m]').window, 1000000);
+      expect(
+        const ChatContext(tokens: 250000, reportedWindow: 400000).window,
+        400000,
+      );
+    });
+
+    test('a synthetic message, an odd shape and zeros say nothing', () {
+      expect(
+        ChatContext.from({
+          'model': '<synthetic>',
+          'usage': {'input_tokens': 5},
+        }),
+        isNull,
+      );
+      expect(ChatContext.from({'usage': 'lots'}), isNull);
+      expect(ChatContext.from({'usage': {'input_tokens': -4}}), isNull);
+      expect(ChatContext.from('nope'), isNull);
+    });
+
+    test('a session\'s context is its last request, from history and live',
+        () async {
+      final text = [
+        said({
+          'input_tokens': 1,
+          'cache_read_input_tokens': 50000,
+          'output_tokens': 10,
+        }),
+        said({
+          'input_tokens': 1,
+          'cache_read_input_tokens': 120000,
+          'output_tokens': 40,
+        }),
+      ].map(jsonEncode).join('\n');
+      final host = _LiveHost('${utf8.encode('$text\n').length}\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      expect(chat.context!.tokens, 120041);
+
+      host.adds(
+        said({
+          'input_tokens': 1,
+          'cache_read_input_tokens': 130000,
+          'output_tokens': 5,
+        }),
+      );
+      await _settle();
+      expect(chat.context!.tokens, 130006);
+    });
+
+    test('a result gives the window, and a new chat clears the context',
+        () async {
+      final claude = _FakeClaude();
+      final chat = ClaudeChat(open: _routed(claude));
+      addTearDown(chat.dispose);
+      await chat.start();
+      claude.event(said({'input_tokens': 3, 'output_tokens': 2}));
+      await _settle();
+      expect(chat.context!.window, 200000);
+      claude.event({
+        'type': 'result',
+        'subtype': 'success',
+        'modelUsage': {
+          'claude-opus-5-5': {'contextWindow': 1000000},
+        },
+      });
+      await _settle();
+      expect(chat.context!.window, 1000000);
+      await chat.newChat();
+      expect(chat.context, isNull);
+    });
+
+    test('a rate_limit_event of the stream gives the windows, utilization as '
+        'a fraction and the reset in epoch seconds', () {
+      final quota = ChatQuota.fromRateLimitEvent({
+        'type': 'rate_limit_event',
+        'rate_limit_info': {
+          'status': 'allowed',
+          'utilization': 0.28,
+          'unifiedWindows': {
+            'five_hour': {'utilization': 0.64, 'resetsAt': 1790931600},
+            'seven_day': {'utilization': 0.28, 'resetsAt': 1791489600},
+          },
+        },
+      }, asOf: DateTime.utc(2026, 10, 2))!;
+      expect([for (final w in quota.windows) w.label], [
+        'Session (5 h)',
+        'Weekly',
+      ]);
+      expect(quota.windows.first.percent, closeTo(64, 1e-9));
+      expect(
+        quota.windows.first.resetsAt,
+        DateTime.fromMillisecondsSinceEpoch(1790931600 * 1000, isUtc: true),
+      );
+    });
+
+    test('a rate_limit_event arriving in a turn of the chat\'s own sets the '
+        'quota with no ask of the host', () async {
+      final claude = _FakeClaude();
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          return claude.channel;
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.start();
+      claude.event({
+        'type': 'rate_limit_event',
+        'rate_limit_info': {
+          'unifiedWindows': {
+            'seven_day': {'utilization': 0.5, 'resetsAt': 1791489600},
+          },
+        },
+      });
+      await _settle();
+      expect(chat.quota!.windows.single.label, 'Weekly');
+      expect(chat.quota!.windows.single.percent, 50);
+      expect(commands.where((c) => c.contains('/usage')), isEmpty);
+    });
+
+    test('/usage as Claude Code prints it under -p: each limit, its percent '
+        'and its reset as printed; the rest is ignored', () {
+      final quota = ChatQuota.fromUsageText(
+        'You are currently using your subscription to power Claude Code\n'
+        '\n'
+        'Current session: 65% used · resets Oct 2, 3:59pm (Asia/Example)\n'
+        'Current week (all models): 28% used · resets Oct 9, 2:59am (Asia/Example)\n'
+        'Current week (Fable): 0% used · resets Oct 9, 3am (Asia/Example)\n'
+        'Extra usage this month: 54% used · resets Nov 1\n'
+        '\n'
+        "What's contributing to your limits usage?\n"
+        'Last 24h · 5689 requests · 47 sessions\n'
+        '  100% of your usage was at >150k context\n',
+        asOf: DateTime.utc(2026, 10, 2),
+      )!;
+      expect([for (final w in quota.windows) w.label], [
+        'Current session',
+        'Current week (all models)',
+        'Current week (Fable)',
+        'Extra usage this month',
+      ]);
+      expect([for (final w in quota.windows) w.percent], [65, 28, 0, 54]);
+      expect(quota.windows.first.resetsText, 'Oct 2, 3:59pm (Asia/Example)');
+    });
+
+    test('usage nobody can read is no quota, and never throws', () {
+      final at = DateTime.utc(2026);
+      expect(ChatQuota.fromUsageText('', asOf: at), isNull);
+      expect(ChatQuota.fromUsageText('Error: not logged in', asOf: at), isNull);
+      expect(
+        ChatQuota.fromUsageText('Current session: lots% used', asOf: at),
+        isNull,
+      );
+      expect(ChatQuota.fromJson({'rate_limits': 'x'}, asOf: at), isNull);
+      expect(
+        ChatQuota.fromJson({
+          'five_hour': {'used_percentage': 'many', 'resets_at': 'soon'},
+          'seven_day': {'used_percentage': 12.5, 'resets_at': 'never'},
+        }, asOf: at)!.windows.single.percent,
+        12.5,
+      );
+    });
+
+    test('the plan is asked once a minute at most for a host, and what it '
+        'said is shared between the chats of the host', () async {
+      usageOnHost = 'Current session: 10% used · resets later';
+      addTearDown(() => usageOnHost = '');
+      var now = DateTime.utc(2026, 10, 2, 12);
+      final real = chatNow;
+      chatNow = () => now;
+      addTearDown(() => chatNow = real);
+      final commands = <String>[];
+      Future<CommandChannel> open(String command) async {
+        commands.add(command);
+        return command.contains('/usage') ? _says(usageOnHost) : _noHistory();
+      }
+
+      final one = ClaudeChat(open: open, hostKey: 'box');
+      final two = ClaudeChat(open: open, hostKey: 'box');
+      addTearDown(one.dispose);
+      addTearDown(two.dispose);
+      int asked() => commands.where((c) => c.contains('/usage')).length;
+
+      await one.refreshQuota();
+      await two.refreshQuota();
+      expect(asked(), 1);
+      expect(one.quota!.windows.single.percent, 10);
+      expect(two.quota, same(one.quota));
+
+      now = now.add(const Duration(seconds: 59));
+      await one.refreshQuota();
+      expect(asked(), 1);
+      now = now.add(const Duration(seconds: 2));
+      usageOnHost = 'Current session: 40% used';
+      await two.refreshQuota();
+      expect(asked(), 2);
+      expect(one.quota!.windows.single.percent, 40);
+    });
+
+    test('an answer with no limit says it was not reported and keeps the '
+        'last', () async {
+      usageOnHost = 'Current session: 10% used';
+      addTearDown(() => usageOnHost = '');
+      final chat = ClaudeChat(
+        open: (c) async => _says(usageOnHost),
+        hostKey: 'unreported-box',
+      );
+      addTearDown(chat.dispose);
+      await chat.refreshQuota(force: true);
+      usageOnHost = 'Usage is not available.';
+      await chat.refreshQuota(force: true);
+      expect(chat.quotaNotReported, isTrue);
+      expect(chat.quota!.windows.single.percent, 10);
     });
   });
 }
