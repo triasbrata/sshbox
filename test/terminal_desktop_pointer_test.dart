@@ -528,10 +528,24 @@ void main() {
       controller(tester).clearSelection();
       expect(controller(tester).selection, isNotNull);
 
+      // Another device hovering — a pen, a second mouse — is no word of this
+      // one's button.
+      tester.binding.handlePointerEvent(
+        PointerHoverEvent(
+          kind: PointerDeviceKind.stylus,
+          device: 7,
+          position: cellAt(tester, 20, 10),
+        ),
+      );
+      await tester.pump();
+      controller(tester).clearSelection();
+      expect(controller(tester).selection, isNotNull);
+
+      // The mouse's own is: a mouse test pointer is device 1.
       tester.binding.handlePointerEvent(
         PointerHoverEvent(
           kind: PointerDeviceKind.mouse,
-          device: 7,
+          device: 1,
           position: cellAt(tester, 20, 10),
         ),
       );

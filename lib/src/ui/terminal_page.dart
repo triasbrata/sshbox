@@ -1472,7 +1472,8 @@ class _PaneViewState extends State<_PaneView> {
 
   /// The mouse gesture that owns [selection] until its button comes up: the
   /// pointer, where it began, and how it selects.
-  ({int pointer, Offset anchor, _Grain grain, BufferRange? base})? _gesture;
+  ({int pointer, int device, Offset anchor, _Grain grain, BufferRange? base})?
+  _gesture;
 
   /// A double click selects the word under the pointer, a triple click its
   /// line, and a drag held from that click goes on word by word, line by
@@ -1511,6 +1512,7 @@ class _PaneViewState extends State<_PaneView> {
       final grain = _clicks == 2 ? _Grain.word : _Grain.line;
       _gesture = (
         pointer: event.pointer,
+        device: event.device,
         anchor: anchor,
         grain: grain,
         base: null,
@@ -1520,6 +1522,7 @@ class _PaneViewState extends State<_PaneView> {
     } else if (HardwareKeyboard.instance.isShiftPressed && base != null) {
       _gesture = (
         pointer: event.pointer,
+        device: event.device,
         anchor: anchor,
         grain: _Grain.extend,
         base: base,
@@ -1564,12 +1567,14 @@ class _PaneViewState extends State<_PaneView> {
   /// is one whose up never came — the window blurred mid-drag, or the
   /// platform dropped it — and [selection] would go on ignoring everything
   /// but the gesture. A drag always has its button down and never hovers.
+  /// Only the device that began the gesture counts: a pen or a second mouse
+  /// hovering over the pane says nothing of this one's button.
   ///
   /// This, and not a focus or an app lifecycle change, which a click itself
   /// can bring on: on a Mac the first click that activates the window did,
   /// and ended the gesture it began.
   void _gestureHover(PointerHoverEvent event) {
-    if (_gesture != null) _endGesture();
+    if (_gesture?.device == event.device) _endGesture();
   }
 
   /// Gives [selection] back to xterm2 once the tap that ends the gesture has
