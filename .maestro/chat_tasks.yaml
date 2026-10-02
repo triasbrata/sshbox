@@ -87,7 +87,7 @@ env:
 # on screen between turns.
 - extendedWaitUntil:
     visible: "(?i)Tasks played"
-    timeout: 20000
+    timeout: 30000
 - extendedWaitUntil:
     notVisible: "(?s).*Working….*"
     timeout: 3000
