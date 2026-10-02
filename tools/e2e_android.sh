@@ -136,9 +136,24 @@ case "$1" in
   # until stdin ends, as before.
   # `claude -p /usage`, which Claude Code answers itself with no model call:
   # what a flow put in ~/.e2e-usage.txt, or nothing.
+  # `--bg`, a new chat's first message: its arguments kept for a flow to read
+  # (the model chosen shows in them), and the line a real one prints, naming a
+  # session the agents list holds.
+  --bg) printf '%s\n' "$*" >"$HOME/.e2e-bg-args"
+    echo 'backgrounded · e2e2 · New chat' ;;
   -p) if [ "$2" = /usage ]; then cat "$HOME/.e2e-usage.txt" 2>/dev/null; else
+    # Chat's own claude, where a flow asked for a model (~/.e2e-model): the
+    # init a real one writes, naming it; a set_model request is kept for the
+    # flow to read and answered with success.
+    case "$*" in *permission-prompt-tool*) [ -f "$HOME/.e2e-model" ] &&
+      printf '%s\n' '{"type":"system","subtype":"init","session_id":"e2e00002-0000-4000-8000-000000000002","model":"claude-opus-5-5"}' ;; esac
     while IFS= read -r line; do
-      case $line in *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;; esac
+      case $line in
+        *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;;
+        *'"set_model"'*) printf '%s\n' "$line" >>"$HOME/.e2e-model-requests"
+          id=${line#*'"request_id":"'}; id=${id%%'"'*}
+          printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id" ;;
+      esac
     done; fi ;;
   *) exec cat >/dev/null ;;
 esac
@@ -596,6 +611,41 @@ TXT
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-usage-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   sudo rm -f "$home/.e2e-usage.txt"
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# #214: the model chip over chat's box. A new chat started on Sonnet runs
+# `claude --bg --model sonnet`; chat's own claude, continuing a finished
+# session, is sent set_model and its chip follows the answer; a watched session
+# only says how to change its model. Against the stand-in's --bg and -p, which
+# keep what they were sent in ~/.e2e-bg-args and ~/.e2e-model-requests.
+chat_model() {
+  local status=0 home=/home/$SSH_USER
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests"
+  sudo -u "$SSH_USER" touch "$home/.e2e-model"
+  # With the emulator's animations off a toast is gone at once.
+  adb shell settings put global animator_duration_scale 1
+  flow chat_model || status=1
+  adb shell settings put global animator_duration_scale 0
+  if ! sudo grep -q -- '--model sonnet' "$home/.e2e-bg-args" 2>/dev/null; then
+    echo "::error::the new chat's claude --bg was not given --model sonnet:" \
+      "$(sudo cat "$home/.e2e-bg-args" 2>/dev/null)" >&2
+    status=1
+  fi
+  if ! sudo grep -q '"subtype":"set_model","model":"haiku"' \
+    "$home/.e2e-model-requests" 2>/dev/null; then
+    echo "::error::chat's claude was never sent set_model haiku" >&2
+    status=1
+  fi
+  echo "set_model requests: $(sudo cat "$home/.e2e-model-requests" 2>/dev/null)"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-model-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests" "$home/.e2e-model"
   end_live_session
   stand_in ''
   return "$status"
@@ -1063,6 +1113,10 @@ echo "::endgroup::"
 
 echo "::group::chat_usage (report only)"
 chat_usage || echo "::warning::chat_usage failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_model (report only)"
+chat_model || echo "::warning::chat_model failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
