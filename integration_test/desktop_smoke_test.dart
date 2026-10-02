@@ -3510,8 +3510,8 @@ touch '${done.path}'
         findsOneWidget,
         reason: 'no word that the log cannot go',
       );
-      expect(find.textContaining('Privately to the developer'), findsNothing);
-      expect(find.text('Under my name'), findsOneWidget);
+      expect(_label('Privately to the developer'), findsNothing);
+      expect(_label('Under my name'), findsOneWidget);
 
       // 5. Under my name: a GitHub link with what was written, no log.
       await tester.enterText(
@@ -3522,7 +3522,7 @@ touch '${done.path}'
         'the e2e bug report',
       );
       await settle();
-      await tester.tap(find.text('Under my name'));
+      await tester.tap(_label('Under my name'));
       await _until(
         tester,
         () =>
