@@ -74,6 +74,10 @@ class ChatAsk {
   /// What was answered, by question text, once it was.
   Map<String, String>? answers;
 
+  /// Which process asked, as `ClaudeChat` numbers them: an answer goes only
+  /// to that one.
+  int? target;
+
   /// Whether the question was dismissed without an answer.
   bool declined = false;
 

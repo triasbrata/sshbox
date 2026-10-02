@@ -253,6 +253,9 @@ class _ChatAskCardState extends State<ChatAskCard> {
       button: true,
       checked: chosen,
       label: option.label,
+      // Read with it: what the option means is part of choosing it, and the
+      // text under ExcludeSemantics below is not in the tree.
+      hint: option.description.isEmpty ? null : option.description,
       child: InkWell(
         onTap: () => _pick(q, o, !chosen),
         child: Padding(

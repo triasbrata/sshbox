@@ -165,6 +165,17 @@ void main() {
       expect(find.text('XL\n  L'), findsOneWidget);
     });
 
+    testWidgets('an option is read with what it means, as one node a screen '
+        'reader and a flow can find', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await pump(tester, _ask());
+
+      final blue = tester.getSemantics(find.bySemanticsLabel('Blue'));
+      expect(blue.label, 'Blue');
+      expect(blue.hint, 'A cool colour.');
+      semantics.dispose();
+    });
+
     testWidgets('Send waits for every question to have an answer, then '
         'sends a multiple choice joined and a single one alone', (
       tester,
