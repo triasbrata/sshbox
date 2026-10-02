@@ -587,6 +587,7 @@ class _SshboxAppState extends State<SshboxApp> {
         return MaterialApp(
           title: 'Jeansh',
           debugShowCheckedModeBanner: false,
+          scrollBehavior: const ZoomScrollBehavior(),
           navigatorKey: _navigator,
           themeMode: look.mode,
           theme: themeOf(Brightness.light),

@@ -236,3 +236,23 @@ class _UiZoomWheelState extends State<UiZoomWheel> {
   Widget build(BuildContext context) =>
       Listener(onPointerSignal: _signal, child: widget.child);
 }
+
+/// Under the app's root, so a list, the file tree or the editor does not
+/// scroll as Ctrl or ⌘ with the wheel zooms. A scrollable claims a wheel turn
+/// before the zoom's root Listener can, but reads it along the other axis
+/// when one of [pointerAxisModifiers] is held, as Shift does, and a vertical
+/// list finds nothing there to claim. A terminal opts out.
+class ZoomScrollBehavior extends MaterialScrollBehavior {
+  const ZoomScrollBehavior();
+
+  @override
+  Set<LogicalKeyboardKey> get pointerAxisModifiers => {
+    ...super.pointerAxisModifiers,
+    LogicalKeyboardKey.control,
+    LogicalKeyboardKey.controlLeft,
+    LogicalKeyboardKey.controlRight,
+    LogicalKeyboardKey.meta,
+    LogicalKeyboardKey.metaLeft,
+    LogicalKeyboardKey.metaRight,
+  };
+}

@@ -436,6 +436,27 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    testWidgets('Ctrl with the wheel over a scrollable list zooms and does '
+        'not scroll it', (tester) async {
+      await _start(tester, _Box(), const Size(800, 400));
+      await tester.tap(find.byTooltip('Settings'));
+      await _settle(tester);
+      final list = find
+          .byType(Scrollable)
+          .evaluate()
+          .map((e) => (e as StatefulElement).state as ScrollableState)
+          .firstWhere((s) => s.position.maxScrollExtent > 0);
+      await wheel(tester, const Offset(400, 200), 100);
+      expect(uiTextSize.value, 0.9);
+      expect(list.position.pixels, 0, reason: 'Ctrl+wheel only zooms');
+
+      // The same list does scroll with the wheel alone.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 100)));
+      await tester.pump();
+      expect(list.position.pixels, greaterThan(0));
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets("the desktop menu's View items arrive over sshbox/menu", (
       tester,
     ) async {
