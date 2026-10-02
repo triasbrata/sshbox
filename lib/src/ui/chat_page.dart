@@ -170,7 +170,6 @@ class _ChatPageState extends State<ChatPage> {
 
   /// A list asked for and not back yet: no second one goes after it.
   bool _asking = false;
-
   /// Whether the last layout had the sidebar beside the chat, not a drawer.
   bool _sidebarWide = false;
 
@@ -1123,64 +1122,57 @@ class _ChatPageState extends State<ChatPage> {
               Positioned.fill(
                 child: entries.isEmpty
                     ? _Empty(
-                        session: widget.session,
-                        // Beside a sidebar already showing them, a button to show
-                        // them would do nothing.
-                        onPickSession: sidebar
-                            ? null
-                            : () => _showSessions(wide),
-                      )
-                    : NotificationListener<ScrollMetricsNotification>(
-                        onNotification: _onScrollMetrics,
-                        child: NotificationListener<ScrollNotification>(
-                          onNotification: _onScrollUpdate,
-                          child: CustomScrollView(
-                            // A list of its own for each session picked. The rows a
-                            // lazy list has built keep where they were laid out, and
-                            // another session's rows, of other heights, drawn into
-                            // them put what a session was left at somewhere else.
-                            key: ValueKey(chat.pickedFrom),
-                            controller: _scroll,
-                            center: _opened,
-                            slivers: [
-                              // Above [_opened], slivers grow upwards: the nearest to it
-                              // is the list of earlier turns, newest of them first, and
-                              // over them what says there are more.
-                              if (chat.hasEarlier)
-                                SliverToBoxAdapter(
-                                  child: _Earlier(
-                                    chat: chat,
-                                    onLoad: _loadEarlier,
-                                  ),
-                                ),
-                              SliverPadding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                ),
-                                sliver: SliverList.builder(
-                                  itemCount: chat.earlier,
-                                  itemBuilder: (context, index) =>
-                                      _entry(entries[chat.earlier - 1 - index]),
-                                ),
-                              ),
-                              SliverPadding(
-                                key: _opened,
-                                padding: EdgeInsets.fromLTRB(
-                                  12,
-                                  chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
-                                  12,
-                                  4,
-                                ),
-                                sliver: SliverList.builder(
-                                  itemCount: entries.length - chat.earlier,
-                                  itemBuilder: (context, index) =>
-                                      _entry(entries[chat.earlier + index]),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                  session: widget.session,
+                  // Beside a sidebar already showing them, a button to show
+                  // them would do nothing.
+                  onPickSession: sidebar ? null : () => _showSessions(wide),
+                )
+              : NotificationListener<ScrollMetricsNotification>(
+                  onNotification: _onScrollMetrics,
+                  child: NotificationListener<ScrollNotification>(
+                  onNotification: _onScrollUpdate,
+                  child: CustomScrollView(
+                  // A list of its own for each session picked. The rows a
+                  // lazy list has built keep where they were laid out, and
+                  // another session's rows, of other heights, drawn into
+                  // them put what a session was left at somewhere else.
+                  key: ValueKey(chat.pickedFrom),
+                  controller: _scroll,
+                  center: _opened,
+                  slivers: [
+                    // Above [_opened], slivers grow upwards: the nearest to it
+                    // is the list of earlier turns, newest of them first, and
+                    // over them what says there are more.
+                    if (chat.hasEarlier)
+                      SliverToBoxAdapter(
+                        child: _Earlier(chat: chat, onLoad: _loadEarlier),
                       ),
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      sliver: SliverList.builder(
+                        itemCount: chat.earlier,
+                        itemBuilder: (context, index) =>
+                            _entry(entries[chat.earlier - 1 - index]),
+                      ),
+                    ),
+                    SliverPadding(
+                      key: _opened,
+                      padding: EdgeInsets.fromLTRB(
+                        12,
+                        chat.hasEarlier || chat.earlier > 0 ? 0 : 12,
+                        12,
+                        4,
+                      ),
+                      sliver: SliverList.builder(
+                        itemCount: entries.length - chat.earlier,
+                        itemBuilder: (context, index) =>
+                            _entry(entries[chat.earlier + index]),
+                      ),
+                    ),
+                  ],
+                ),
+                ),
+                ),
               ),
               // Over the list's own corner, so it covers neither the working
               // line nor the box, which sit below the list.
@@ -1839,8 +1831,12 @@ class _ChatMarkdown extends StatelessWidget {
   /// would not show; null on the page's own ground.
   final TextStyle? ink;
 
+  /// Inside a selection container that copies blocks and cells apart.
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      SeparatedSelection(child: _markdown(context));
+
+  Widget _markdown(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final ink = this.ink;
@@ -1851,53 +1847,49 @@ class _ChatMarkdown extends StatelessWidget {
         ink?.color?.withValues(alpha: 0.14) ?? scheme.surfaceContainerHighest;
     TextStyle? heading(double size) =>
         ink?.copyWith(fontSize: size, fontWeight: FontWeight.bold);
-    return SeparatedSelection(
-      child: ValueListenableBuilder(
-        valueListenable: terminalSettings,
-        builder: (context, terminal, _) => MarkdownBody(
-          // A ```mermaid fence is a diagram, as in the Markdown preview,
-          // once it has closed.
-          data: holdOpenMermaid(text),
-          onTapLink: onTapLink,
-          builders: chatMarkdownBuilders,
-          // A message is text, and any picture in it lives on a server we do
-          // not fetch from: its alt text says what was meant.
-          imageBuilder: (uri, title, alt) =>
-              Text(alt == null || alt.isEmpty ? '$uri' : alt),
-          styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-            p: body,
-            h1: heading(20),
-            h2: heading(18),
-            h3: heading(16),
-            listBullet: ink,
-            blockquote: ink,
-            a: TextStyle(
-              color: link,
-              decoration: TextDecoration.underline,
-              decorationColor: link,
-              fontWeight: ink == null ? null : FontWeight.bold,
-            ),
-            code: body.copyWith(
-              fontFamily: terminal.fontFamily,
-              fontFamilyFallback: terminal.fontFamilyFallback,
-              fontSize: body.fontSize! * 0.9,
-              backgroundColor: panel,
-            ),
-            codeblockDecoration: BoxDecoration(
-              color: panel,
-              border: Border.all(
-                color:
-                    ink?.color?.withValues(alpha: 0.3) ?? scheme.outlineVariant,
-              ),
-            ),
-            blockquoteDecoration: ink == null
-                ? null
-                : BoxDecoration(
-                    border: Border(
-                      left: BorderSide(color: ink.color!, width: 3),
-                    ),
-                  ),
+    return ValueListenableBuilder(
+      valueListenable: terminalSettings,
+      builder: (context, terminal, _) => MarkdownBody(
+        // A ```mermaid fence is a diagram, as in the Markdown preview,
+        // once it has closed.
+        data: holdOpenMermaid(text),
+        onTapLink: onTapLink,
+        builders: chatMarkdownBuilders,
+        // A message is text, and any picture in it lives on a server we do
+        // not fetch from: its alt text says what was meant.
+        imageBuilder: (uri, title, alt) =>
+            Text(alt == null || alt.isEmpty ? '$uri' : alt),
+        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+          p: body,
+          h1: heading(20),
+          h2: heading(18),
+          h3: heading(16),
+          listBullet: ink,
+          blockquote: ink,
+          a: TextStyle(
+            color: link,
+            decoration: TextDecoration.underline,
+            decorationColor: link,
+            fontWeight: ink == null ? null : FontWeight.bold,
           ),
+          code: body.copyWith(
+            fontFamily: terminal.fontFamily,
+            fontFamilyFallback: terminal.fontFamilyFallback,
+            fontSize: body.fontSize! * 0.9,
+            backgroundColor: panel,
+          ),
+          codeblockDecoration: BoxDecoration(
+            color: panel,
+            border: Border.all(
+              color:
+                  ink?.color?.withValues(alpha: 0.3) ?? scheme.outlineVariant,
+            ),
+          ),
+          blockquoteDecoration: ink == null
+              ? null
+              : BoxDecoration(
+                  border: Border(left: BorderSide(color: ink.color!, width: 3)),
+                ),
         ),
       ),
     );
@@ -2447,7 +2439,9 @@ class _JumpToLatest extends StatelessWidget {
   Widget build(BuildContext context) => Semantics(
     container: true,
     button: true,
-    label: arrived > 0 ? 'Jump to latest, $arrived new' : 'Jump to latest',
+    label: arrived > 0
+        ? 'Jump to latest, $arrived new'
+        : 'Jump to latest',
     excludeSemantics: true,
     child: TuiButton(
       label: arrived > 0 ? 'Latest · $arrived new' : 'Latest',
@@ -2476,10 +2470,8 @@ class _Checklist extends StatelessWidget {
     final done = chat.tasksDone;
     // The ones in progress first, then the pending, shown in task order.
     final shown = {
-      ...[
-        ...open.where((t) => t.inProgress),
-        ...open.where((t) => !t.inProgress),
-      ].take(_lines),
+      ...[...open.where((t) => t.inProgress), ...open.where((t) => !t.inProgress)]
+          .take(_lines),
     };
     // Counted for what they are: more than the lines hold of the ones in
     // progress is possible too.
@@ -2682,12 +2674,14 @@ class _SessionList extends StatelessWidget {
     return TuiChatSessionStatus.done;
   }
 
-  static String _statusLabel(ClaudeAgent agent) => switch (statusOf(agent)) {
-    TuiChatSessionStatus.working => 'Working',
-    TuiChatSessionStatus.waiting => 'Waiting for ${agent.waitingFor ?? 'you'}',
-    TuiChatSessionStatus.done => agent.live ? 'Done, idle' : 'Finished',
-    TuiChatSessionStatus.stopped => 'Stopped',
-  };
+  static String _statusLabel(ClaudeAgent agent) =>
+      switch (statusOf(agent)) {
+        TuiChatSessionStatus.working => 'Working',
+        TuiChatSessionStatus.waiting =>
+          'Waiting for ${agent.waitingFor ?? 'you'}',
+        TuiChatSessionStatus.done => agent.live ? 'Done, idle' : 'Finished',
+        TuiChatSessionStatus.stopped => 'Stopped',
+      };
 
   /// As the page last asked for them; null before the session first came
   /// up.
