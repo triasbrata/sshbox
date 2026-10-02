@@ -629,6 +629,7 @@ class ClaudeChat extends ChangeNotifier {
   /// ends. A store that is not there, or empty, leaves what the transcript
   /// made of the list, which is what a TodoWrite session has.
   Future<void> _readTasks() async {
+    return;
     final id = _sessionId;
     if (id == null || !_sessionIdShape.hasMatch(id)) return;
     if (_readingTasks) {
