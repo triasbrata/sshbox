@@ -340,6 +340,18 @@ Future<void> _settlePickUp(WidgetTester tester) async {
   await tester.pump();
 }
 
+/// The reader scrolling the conversation with a mouse wheel by [dy] (negative
+/// is up): the reader's own move, as against the program's jumpTo, which
+/// the chat does not take for the reader.
+Future<void> _wheel(WidgetTester tester, double dy) async {
+  final pointer = TestPointer(1, PointerDeviceKind.mouse);
+  await tester.sendEventToBinding(
+    pointer.hover(tester.getCenter(find.byType(CustomScrollView))),
+  );
+  await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+  await tester.pump();
+}
+
 /// What [WidgetTester.pumpAndSettle] does, less the wait for every animation
 /// to stop: a second of frames, enough for a drawer or a scroll to finish.
 Future<void> _frames(WidgetTester tester) async {
@@ -1819,8 +1831,7 @@ void main() {
 
     // Up at the top of what the first read brought, the offer of more.
     final at = _conversationAt(tester);
-    at.jumpTo(at.minScrollExtent);
-    await tester.pump();
+    await _wheel(tester, -1e6);
     expect(find.text('turn ${first - 1}'), findsNothing);
     final y = tester.getTopLeft(find.text('turn $first')).dy;
     final pixels = at.pixels;
@@ -1834,8 +1845,7 @@ void main() {
     expect(at.pixels, pixels);
     expect(find.text('Load earlier turns'), findsNothing);
     expect(tester.getTopLeft(find.text('turn ${first - 1}')).dy, lessThan(y));
-    at.jumpTo(at.minScrollExtent);
-    await tester.pump();
+    await _wheel(tester, -1e6);
     expect(find.text('turn 0'), findsOneWidget);
   });
 
@@ -2997,13 +3007,17 @@ void main() {
       // Between turns: nothing.
       expect(find.textContaining('Working…'), findsNothing);
 
-      // A turn typed at the terminal, 3 s before now by the host's clock.
-      final started = DateTime.now().toUtc().subtract(
-        const Duration(seconds: 3),
-      );
+      // The clock the line reads is this test's own, moved by hand, so no
+      // second of real time or of a loaded machine reaches what is asserted.
+      var now = DateTime.utc(2026, 10, 1, 12, 0, 10);
+      final real = chatNow;
+      chatNow = () => now;
+      addTearDown(() => chatNow = real);
+
+      // A turn typed at the terminal 3 s ago by the host's clock.
       shell.adds({
         'type': 'user',
-        'timestamp': started.toIso8601String(),
+        'timestamp': now.subtract(const Duration(seconds: 3)).toIso8601String(),
         'message': {'role': 'user', 'content': 'run the tests'},
       });
       shell.adds({
@@ -3023,27 +3037,29 @@ void main() {
         },
       });
       await _settlePickUp(tester);
-      // From the prompt's own time: 3 s at least, whatever the test took.
-      int seconds() => int.parse(
-        RegExp(r'^Working… \((\d+)s ').firstMatch(line(tester))!.group(1)!,
-      );
-      final first = seconds();
-      expect(first, inInclusiveRange(3, 10));
-      expect(line(tester), contains('s · ↓ 1.4k tokens) · Bash: npm test'));
+      expect(line(tester), 'Working… (3s · ↓ 1.4k tokens) · Bash: npm test');
 
-      // A second later by the device's own clock, with nothing from the host.
+      // A second later by that clock, with nothing from the host: the same
+      // line, a second on, and the host not asked again.
       final before = shell.commands.length;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 1100)),
-      );
+      now = now.add(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 1));
-      expect(seconds(), greaterThan(first));
-      // The host is asked at most every few seconds, not every tick.
+      expect(line(tester), 'Working… (4s · ↓ 1.4k tokens) · Bash: npm test');
       expect(
         shell.commands
             .skip(before)
             .where((command) => command.contains('agents --json')),
-        hasLength(lessThanOrEqualTo(1)),
+        isEmpty,
+      );
+
+      // Five seconds on, it is asked once.
+      now = now.add(const Duration(seconds: 5));
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        shell.commands
+            .skip(before)
+            .where((command) => command.contains('agents --json')),
+        hasLength(1),
       );
 
       shell.adds({
@@ -3115,6 +3131,17 @@ void main() {
       await _frames(tester);
     }
 
+    /// The reader scrolling with a mouse wheel by [dy] (negative is up): the
+    /// one input here that is the reader's and moves as little as a pixel.
+    Future<void> wheel(WidgetTester tester, double dy) async {
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        pointer.hover(tester.getCenter(find.byType(CustomScrollView))),
+      );
+      await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+      await tester.pump();
+    }
+
     testWidgets('at the end, a reply taller than a screen is followed to '
         'its own end, one after another', (tester) async {
       final shell = await watchingOnScreen(tester);
@@ -3126,6 +3153,144 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 
+    testWidgets('following keeps the end in view when the room shrinks, the '
+        'keyboard coming up', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // The keyboard: the box and the list lose 300 px, no entry is added.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(find.textContaining('LATEST'), findsNothing);
+    });
+
+    testWidgets('following keeps the end in view when the last row grows in '
+        'place, a tool row opened', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      shell
+        ..adds({
+          'type': 'assistant',
+          'message': {
+            'id': 'msg_tool',
+            'stop_reason': 'tool_use',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_grow',
+                'name': 'Bash',
+                'input': {'command': 'echo grow'},
+              },
+            ],
+          },
+        })
+        ..adds({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': 'toolu_grow',
+                'content': [for (var i = 0; i < 40; i++) 'out $i'].join('\n'),
+              },
+            ],
+          },
+        });
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // Opened: the row grows under a view already at the end.
+      await tester.tap(find.text('echo grow'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('a pixel up is enough to stop following, until the reader '
+        'is back at the end', (tester) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // One pixel up: no longer following, whatever arrives.
+      await wheel(tester, -1);
+      final kept = position.pixels;
+      await longReply(tester, shell, 4);
+      await longReply(tester, shell, 5);
+      expect(position.pixels, kept);
+
+      // Back at the end by hand: following again.
+      position.jumpTo(position.maxScrollExtent);
+      await tester.pump();
+      await longReply(tester, shell, 6);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('the jump button shows only away from the end, counts what '
+        'came in, and tapping it lands at the end and follows', (
+      tester,
+    ) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      // At the end: no button.
+      expect(find.textContaining('LATEST'), findsNothing);
+
+      final position = _conversationAt(tester);
+      await wheel(tester, -800);
+      expect(find.text('LATEST'), findsOneWidget);
+      await longReply(tester, shell, 4);
+      expect(find.text('LATEST · 1 NEW'), findsOneWidget);
+      // It sits over the list, clear of the box below.
+      expect(
+        tester.getRect(find.text('LATEST · 1 NEW')).bottom,
+        lessThan(tester.getRect(find.byType(TextField)).top),
+      );
+
+      await tester.tap(find.text('LATEST · 1 NEW'));
+      await _frames(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(find.textContaining('LATEST'), findsNothing);
+
+      // Following from there on.
+      await longReply(tester, shell, 5);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
+    testWidgets('a move the reader did not make is not the reader scrolling '
+        'up: the view put back from above leaves it following', (
+      tester,
+    ) async {
+      final shell = await watchingOnScreen(tester);
+      for (var n = 1; n <= 3; n++) {
+        await longReply(tester, shell, n);
+      }
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+
+      // Moved upward by the program, as a layout correction runs the view
+      // back, with no drag or wheel in it: its direction is idle.
+      position.jumpTo(position.maxScrollExtent - 300);
+      await tester.pump();
+      expect(find.textContaining('LATEST'), findsNothing);
+      await longReply(tester, shell, 4);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+    });
+
     testWidgets('scrolled up, a long reply leaves the reader where they are',
         (tester) async {
       final shell = await watchingOnScreen(tester);
@@ -3134,8 +3299,7 @@ void main() {
       }
       final position = _conversationAt(tester);
       // Up well past where a new entry would still be followed.
-      position.jumpTo(position.maxScrollExtent - 900);
-      await tester.pump();
+      await wheel(tester, -900);
       final kept = position.pixels;
       await longReply(tester, shell, 4);
       expect(position.pixels, kept);
