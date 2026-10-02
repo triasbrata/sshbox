@@ -28,6 +28,7 @@ import 'file_editor_page.dart'
         pictureSize,
         showPicture;
 import 'markdown_input.dart';
+import 'selection_separators.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
 import 'slash_command_menu.dart';
@@ -1937,8 +1938,12 @@ class _ChatMarkdown extends StatelessWidget {
   /// would not show; null on the page's own ground.
   final TextStyle? ink;
 
+  /// Inside a selection container that copies blocks and cells apart.
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      SeparatedSelection(child: _markdown(context));
+
+  Widget _markdown(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final ink = this.ink;
