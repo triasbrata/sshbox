@@ -1206,14 +1206,23 @@ Future<ProcessResult> _answerSaveDialog(String? path) {
     // Focused rather than activated: Xvfb has no window manager to ask.
     // Return in a call of its own: xdotool's type takes every word after it
     // as text to type.
+    //
+    // Waited on until the window is viewable, not merely created: focus set
+    // on a window still unmapped fails with BadMatch (X_SetInputFocus), which
+    // is what sank this on a slow runner. And tried again a few times, since
+    // viewable and focusable are not quite the same moment.
     const dialog =
-        r'timeout 60 xdotool search --sync --name "^Save File$" '
-        r'windowfocus --sync %1 sleep 1';
+        r'w=$(timeout 60 xdotool search --sync --onlyvisible '
+        r'--name "^Save File$" | head -n 1) && [ -n "$w" ] && '
+        r'{ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do '
+        r'xdotool windowfocus --sync "$w" && ok=1 && break; sleep 0.5; done; '
+        r'[ -n "$ok" ] && sleep 1; }';
     return Process.run('sh', [
       '-c',
       path == null
           ? '$dialog && xdotool key Escape'
-          : '$dialog key ctrl+a type "\$1" && xdotool key Return',
+          : '$dialog && xdotool key ctrl+a && '
+                'xdotool type "\$1" && xdotool key Return',
       if (path != null) ...['sh', path],
     ]);
   }
