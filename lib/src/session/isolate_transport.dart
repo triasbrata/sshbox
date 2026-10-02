@@ -663,7 +663,7 @@ class _ProxySession
         // Said out loud in a debug build only: an isolate that swallows its
         // errors is the worst thing to be handed at three in the morning.
         assert(() {
-          debugPrint('session isolate: ${message.first}');
+          debugPrint('session isolate: ${message.first.runtimeType}');
           return true;
         }());
         return;

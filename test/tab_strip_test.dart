@@ -132,7 +132,10 @@ void main() {
     expect(pill.left - hosts.right, lessThan(8));
     expect(add.left - pill.right, lessThan(8));
     expect(pill.right - close.right, lessThan(16));
-    expect(strip.right - add.right, lessThan(10));
+    // The bug button follows +, so it is what ends the strip.
+    final bug = tester.getRect(find.bySemanticsLabel('Report a bug'));
+    expect(bug.left, add.right);
+    expect(strip.right - bug.right, lessThan(10));
   });
 
   testWidgets('two tabs keep their width and "+" follows the last one', (

@@ -24,6 +24,7 @@ import 'local_transport.dart';
 import 'tailnet_forwarder.dart';
 import 'terminal_session.dart';
 import 'tmux.dart';
+import '../telemetry/app_log.dart';
 
 /// A local file waiting to go to the host — from the picker, or handed to us
 /// by another app through the share sheet.
@@ -463,6 +464,8 @@ class LiveSession extends ChangeNotifier {
       return (session as TerminalChannelCapable).openTerminal(command);
     },
     cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
+    // The plan's usage is the host account's: chats on one host share it.
+    hostKey: host.id,
   );
 
   void openChat() {
@@ -654,6 +657,10 @@ class LiveSession extends ChangeNotifier {
     final attempt = ++_attempt;
     bool current() => attempt == _attempt && !_disposed;
     _connecting = true;
+    appLog.add(
+      'connect: session $id start'
+      '${isLocalHostId(host.id) ? ' local' : ' ssh'}${host.useTmux ? ' tmux' : ''}',
+    );
     _error = null;
     _authBanner = null;
     _authUrl = null;
@@ -665,10 +672,16 @@ class LiveSession extends ChangeNotifier {
         if (current()) _onAuthBanner(text);
       }
 
+      final askedKey = confirmHostKey == null
+          ? null
+          : (HostKeyCheck check) {
+              appLog.add('connect: session $id host key prompt shown');
+              return confirmHostKey(check);
+            };
       final transport =
-          _transport?.call(confirmHostKey, banner) ??
+          _transport?.call(askedKey, banner) ??
           IsolateTransport(
-            confirmHostKey: confirmHostKey,
+            confirmHostKey: askedKey,
             onAuthBanner: banner,
           );
       // The key this host's servers sign a push to the relay with, and the
@@ -783,9 +796,12 @@ class LiveSession extends ChangeNotifier {
       _syncForwarding();
       unawaited(_fetchHostname());
       unawaited(_saveOs(secrets));
+      appLog.add('connect: session $id connected');
     } on SshSessionException catch (error) {
+      appLog.warn('connect: session $id failed ${error.runtimeType}');
       if (current()) _error = error.message;
     } catch (error) {
+      appLog.warn('connect: session $id failed ${error.runtimeType}');
       if (current()) _error = error.toString();
     } finally {
       if (current()) {
@@ -953,8 +969,10 @@ class LiveSession extends ChangeNotifier {
     _syncForwarding();
     final status = _session?.status.value;
     if (status == SessionStatus.closed) {
+      appLog.add('connect: session $id closed');
       _terminal.write('\r\n\x1b[2m[session closed]\x1b[0m\r\n');
     } else if (status == SessionStatus.failed) {
+      appLog.warn('connect: session $id dropped');
       _error = _session?.failure;
     }
     _notify();
@@ -1264,6 +1282,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     Future<bool> Function(HostKeyCheck check)? confirmHostKey,
     Future<String?> Function(List<TmuxSessionInfo> found)? pickTmux,
   }) async {
+    appLog.add('connect: session $id reconnect');
     await disconnect();
     _terminal.write('\x1b[2J\x1b[H');
     await connect(
@@ -1480,7 +1499,10 @@ class SessionManager extends ChangeNotifier {
   /// and shows it. A database already open just goes back to its tab.
   void openDb(DbConnection db, String title) {
     var tab = _dbTabs.where((tab) => tab.db.id == db.id).firstOrNull;
-    if (tab == null) _dbTabs.add(tab = DbTab._(db, title));
+    if (tab == null) {
+      appLog.add('tab: opened database tab');
+      _dbTabs.add(tab = DbTab._(db, title));
+    }
     select(null, db: tab);
   }
 
@@ -1490,6 +1512,7 @@ class SessionManager extends ChangeNotifier {
   void closeDb(DbTab tab) {
     final index = _dbTabs.indexOf(tab);
     if (index < 0) return;
+    appLog.add('tab: closed database tab');
     _dbTabs.removeAt(index);
     if (_activeDb != tab) {
       notifyListeners();
@@ -1533,6 +1556,7 @@ class SessionManager extends ChangeNotifier {
   void openFile(int id, String path, {int? line}) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: opened file tab on session $id');
     session.openFile(path);
     select(id, kind: TabKind.file, path: path);
     if (line != null) {
@@ -1546,6 +1570,7 @@ class SessionManager extends ChangeNotifier {
   void closeFile(int id, String path) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: closed file tab on session $id');
     session.closeFile(path);
     if (_activeId == id && _activeKind == TabKind.file && _activePath == path) {
       select(id);
@@ -1557,6 +1582,7 @@ class SessionManager extends ChangeNotifier {
   void openChat(int id) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: opened chat tab on session $id');
     session.openChat();
     select(id, kind: TabKind.chat);
   }
@@ -1566,6 +1592,7 @@ class SessionManager extends ChangeNotifier {
   void closeChat(int id) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: closed chat tab on session $id');
     session.closeChat();
     if (_activeId == id && _activeKind == TabKind.chat) select(id);
   }
@@ -1575,6 +1602,7 @@ class SessionManager extends ChangeNotifier {
   void openGit(int id) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: opened repository tab on session $id');
     session.openGit();
     select(id, kind: TabKind.git);
   }
@@ -1584,6 +1612,7 @@ class SessionManager extends ChangeNotifier {
   void openDiff(int id, GitDiff diff) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: opened diff tab on session $id');
     session.openDiff(diff);
     select(id, kind: TabKind.diff, path: diff.key);
   }
@@ -1593,6 +1622,7 @@ class SessionManager extends ChangeNotifier {
   void closeDiff(int id, String key) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: closed diff tab on session $id');
     session.closeDiff(key);
     if (_activeId == id && _activeKind == TabKind.diff && _activePath == key) {
       select(id);
@@ -1604,6 +1634,7 @@ class SessionManager extends ChangeNotifier {
   void closeGit(int id) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: closed repository tab on session $id');
     session.closeGit();
     if (_activeId == id && _activeKind == TabKind.git) select(id);
   }
@@ -1613,6 +1644,7 @@ class SessionManager extends ChangeNotifier {
   void openWeb(int id, Uri url) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: opened web tab on session $id');
     select(id, kind: TabKind.web, web: session.openWeb(url));
   }
 
@@ -1620,6 +1652,7 @@ class SessionManager extends ChangeNotifier {
   void closeWeb(int id, WebTab web) {
     final session = _sessions[id];
     if (session == null) return;
+    appLog.add('tab: closed web tab on session $id');
     session.closeWeb(web);
     if (_activeWeb == web) select(id);
   }
@@ -1693,6 +1726,7 @@ class SessionManager extends ChangeNotifier {
   @visibleForTesting
   LiveSession open(HostProfile host, {TransportMaker? transport}) {
     final session = create(host, transport: transport);
+    appLog.add('tab: opened terminal for session ${session.id}');
     add(session);
     return session;
   }
@@ -1734,6 +1768,7 @@ class SessionManager extends ChangeNotifier {
     final index = ids.indexOf(id);
     final session = _sessions.remove(id);
     if (session == null) return;
+    appLog.add('tab: closed terminal for session $id');
     session.removeListener(_onSessionChanged);
     session.dispose();
 

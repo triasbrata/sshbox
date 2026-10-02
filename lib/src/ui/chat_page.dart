@@ -18,6 +18,7 @@ import '../files/transfers.dart';
 import '../platform.dart';
 import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
+import 'chat_ask_card.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart'
     show
@@ -27,6 +28,7 @@ import 'file_editor_page.dart'
         pictureSize,
         showPicture;
 import 'markdown_input.dart';
+import 'selection_separators.dart';
 import 'mermaid_view.dart';
 import 'settings_page.dart' show chatEnterSends, terminalSettings;
 import 'slash_command_menu.dart';
@@ -723,6 +725,13 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
     final focused = FocusManager.instance.primaryFocus?.context;
+    // A question Claude asked is where the user is: its options, buttons and
+    // field of their own keep every key, characters included, which would
+    // otherwise be typed into the box behind it.
+    if (focused != null &&
+        focused.findAncestorWidgetOfExactType<ChatAskCard>() != null) {
+      return false;
+    }
     return focused == null ||
         (focused.widget is! EditableText &&
             focused.findAncestorWidgetOfExactType<EditableText>() == null);
@@ -1024,6 +1033,18 @@ class _ChatPageState extends State<ChatPage> {
       );
       return;
     }
+    // Not while the chat has nothing to send to — Claude restarting, the
+    // session being replaced, its process gone: said, with what was typed
+    // left in the box.
+    if (_chat.unsendable case final why?) {
+      showToast(
+        context,
+        'Not sent: $why',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+      return;
+    }
     final starts = _chat.composing;
     final sent = _chat.send(
       text,
@@ -1208,6 +1229,9 @@ class _ChatPageState extends State<ChatPage> {
         // Under the working line, and alone between turns while a task is
         // still open, as Claude Code's own view keeps it.
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
+        // How much of the context window the session uses, with the plan's
+        // quota in a popup: hover on a desktop, a tap on touch.
+        if (chat.context != null) _UsageChip(chat: chat),
         const Divider(height: 1),
         if (!_draft.isEmpty) _pictureCards(),
         _composer(theme, wide: wide, sidebar: sidebar),
@@ -1216,12 +1240,71 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _entry(ChatEntry entry) => switch (entry) {
-    ChatSaid(mine: true) => _Bubble(said: entry, onTapLink: _openLink),
+    ChatSaid(mine: true) => _Bubble(
+      said: entry,
+      onTapLink: _openLink,
+      onRetry: () => _retry(entry),
+      onRemove: () => _chat.remove(entry),
+    ),
     ChatSaid(:final text) => _Answer(text: text, onTapLink: _openLink),
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
     final ChatCommand command => _CommandRow(command: command),
+    final ChatQuestion question => ChatAskCard(
+      // One card for the question for as long as it is in the chat, so what
+      // is half chosen survives the list being redrawn.
+      key: ObjectKey(question.ask),
+      ask: question.ask,
+      hint: _askHint(question.ask),
+      onAnswer: _answerAsk,
+      onDecline: _declineAsk,
+    ),
   };
+
+  /// Where a question this chat cannot answer is to be answered instead: at
+  /// the terminal of the session being watched, which `claude attach` opens
+  /// for a background one. Nothing is typed there from here: a dialog's keys
+  /// are not something this can check before it sends them.
+  String? _askHint(ChatAsk ask) {
+    if (ask.answerable || !ask.open) return null;
+    final watching = _chat.watching;
+    if (watching == null) return 'Claude is no longer waiting for this here.';
+    final where = watching.id != null
+        ? 'claude attach ${watching.id}'
+        : 'its terminal';
+    return '“${watching.name}” waits for an answer. Answer it at $where.';
+  }
+
+  /// Sends a message that was not delivered again, to what this chat writes
+  /// to now. Said, and the message left as it is, when that cannot be done.
+  void _retry(ChatSaid said) {
+    final why = _chat.retry(
+      said,
+      upload: widget.session.canUploadFiles ? _upload : null,
+    );
+    if (why != null && mounted) {
+      showToast(
+        context,
+        'Not sent: $why',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+    }
+  }
+
+  bool _answerAsk(ChatAsk ask, Map<String, String> answers) {
+    final sent = _chat.answer(ask, answers);
+    if (!sent && mounted) {
+      showToast(
+        context,
+        'Claude is no longer waiting for an answer to this',
+        type: TuiToastType.warning,
+      );
+    }
+    return sent;
+  }
+
+  bool _declineAsk(ChatAsk ask) => _chat.decline(ask);
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
   /// a file, a web page, a tool's output — so it is somebody else's text, and
@@ -1307,6 +1390,8 @@ class _ChatPageState extends State<ChatPage> {
       child: SlashCommandMenu(
         controller: _input,
         commands: _commands,
+        // As the box is: a list over a box that cannot send picks nothing.
+        enabled: open,
         onOpen: _wantCommands,
         openState: _menuOpen,
         onRefresh: () => setState(_listCommands),
@@ -1742,20 +1827,29 @@ class _Earlier extends StatelessWidget {
 /// Markdown it was typed in — and, for a message typed into a session being
 /// watched, where it has got to, until that session has recorded it.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.said, required this.onTapLink});
+  const _Bubble({
+    required this.said,
+    required this.onTapLink,
+    required this.onRetry,
+    required this.onRemove,
+  });
 
   final ChatSaid said;
   final MarkdownTapLinkCallback onTapLink;
 
-  /// termul's bubble, with its note while it is not in the session yet, and
-  /// over it the pictures it carries.
+  /// Send it again, or drop it: offered once it is known not to have been
+  /// delivered.
+  final VoidCallback onRetry;
+  final VoidCallback onRemove;
+
+  /// termul's bubble, with its note while it is not in the session yet, over
+  /// it the pictures it carries, and under it what to do about it when it
+  /// never arrived.
   @override
-  Widget build(BuildContext context) {
-    final bubble = _bubble(context);
-    if (said.pictures.isEmpty) return bubble;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      if (said.pictures.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(top: 8, left: 48),
           child: Wrap(
@@ -1768,10 +1862,24 @@ class _Bubble extends StatelessWidget {
             ],
           ),
         ),
-        bubble,
-      ],
-    );
-  }
+      _bubble(context),
+      if (said.delivery == Delivery.failed)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Wrap(
+            spacing: 8,
+            children: [
+              TuiButton(label: 'Retry', prefix: '↻', onPressed: onRetry),
+              TuiButton(
+                label: 'Remove',
+                variant: TuiButtonVariant.ghost,
+                onPressed: onRemove,
+              ),
+            ],
+          ),
+        ),
+    ],
+  );
 
   Widget _bubble(BuildContext context) => TuiChatBubble(
     text: said.text,
@@ -1830,8 +1938,12 @@ class _ChatMarkdown extends StatelessWidget {
   /// would not show; null on the page's own ground.
   final TextStyle? ink;
 
+  /// Inside a selection container that copies blocks and cells apart.
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      SeparatedSelection(child: _markdown(context));
+
+  Widget _markdown(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final ink = this.ink;
@@ -1917,6 +2029,21 @@ class _ToolRow extends StatefulWidget {
     return result;
   }
 
+  /// A result of a tool with no renderer of its own that is a JSON object or
+  /// array, ready for a tree; null for any other, drawn as text.
+  static Object? _resultTree(ChatToolRun run) {
+    final result = run.result;
+    if (result == null || ChatToolRun.own.contains(run.name) || run.failed) {
+      return null;
+    }
+    try {
+      final value = jsonDecode(_unquoted(result));
+      return value is Map || value is List ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   State<_ToolRow> createState() => _ToolRowState();
 }
@@ -1984,7 +2111,7 @@ class _ToolRowState extends State<_ToolRow> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          run.name,
+                          run.title,
                           style: TextStyle(
                             fontFamily: TermulFonts.mono,
                             fontSize: 12,
@@ -2038,6 +2165,9 @@ class _ToolRowState extends State<_ToolRow> {
                         if (result != null && result.isNotEmpty) ...[
                           const SizedBox(height: 8),
                           _label(p, 'result'),
+                          if (_ToolRow._resultTree(run) case final tree?)
+                            _ToolInput._tree(context, 'result', tree)
+                          else
                           _block(
                             context,
                             'result',
@@ -2262,10 +2392,34 @@ class _ToolInput extends StatelessWidget {
           parts.add(_checklist(context, items));
         }
     }
-    if (rest.isNotEmpty) parts.add(code('fields', _fields(rest)));
+    if (rest.isNotEmpty) {
+      parts.add(
+        ChatToolRun.own.contains(run.name)
+            ? code('fields', _fields(rest))
+            : _tree(context, 'fields', rest),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: parts,
+    );
+  }
+
+  /// [value] as a tree that opens node by node, in a box with a button that
+  /// copies the whole of it as indented JSON.
+  static Widget _tree(BuildContext context, String slot, Object? value) {
+    String copy;
+    try {
+      copy = const JsonEncoder.withIndent('  ').convert(value);
+    } catch (_) {
+      // Too deep for the encoder, and for toString: nothing to copy but this.
+      copy = '(too deep to copy)';
+    }
+    return _block(
+      context,
+      slot,
+      TuiJsonTree(value: value, foldStrings: true),
+      copy: copy,
     );
   }
 
@@ -2524,6 +2678,282 @@ class _Checklist extends StatelessWidget {
   }
 }
 
+// TODO(termul): a rich anchored popover — hover, tap to pin, tap outside to
+// close — holding any widgets; TuiTooltip takes a String only, so this builds
+// its own from OverlayPortal and TuiBox. Asked of termul in sshbox#195.
+/// "Context 45%" at the box's edge, in the warning colour from 80%, and the
+/// popup it opens: context used out of the window with a bar and the model, the
+/// plan's usage with each reset, and when it was read. Hover opens it, a tap
+/// pins it open, and a tap anywhere else closes it. Everything the host said is
+/// drawn as plain text.
+class _UsageChip extends StatefulWidget {
+  const _UsageChip({required this.chat});
+
+  final ClaudeChat chat;
+
+  @override
+  State<_UsageChip> createState() => _UsageChipState();
+}
+
+class _UsageChipState extends State<_UsageChip> {
+  final _link = LayerLink();
+  bool _working = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _working = widget.chat.progress != null;
+    widget.chat.addListener(_onChat);
+  }
+
+  @override
+  void dispose() {
+    widget.chat.removeListener(_onChat);
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Hidden under the pointer, the chat gets no exit: the popup goes with it,
+    // and is not there again when the tab comes back.
+    if (!TickerMode.valuesOf(context).enabled && (_hover || _pinned)) {
+      _hover = false;
+      _pinned = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _portal.isShowing) _portal.hide();
+      });
+    }
+  }
+
+  /// A turn ended: what it used of the plan has moved, and Claude Code is
+  /// asked once, as often as the minute allows — and only while the tab shows,
+  /// so a chat in the background spawns nothing.
+  void _onChat() {
+    final working = widget.chat.progress != null;
+    final ended = _working && !working;
+    _working = working;
+    if (ended && mounted && TickerMode.valuesOf(context).enabled) {
+      unawaited(widget.chat.refreshQuota());
+    }
+  }
+
+  final _portal = OverlayPortalController();
+  bool _hover = false;
+  bool _pinned = false;
+
+  bool get _shown => _hover || _pinned;
+
+  void _sync() {
+    if (_shown) {
+      if (!_portal.isShowing) _portal.show();
+      // The first look at it asks for the plan's usage, if a minute has
+      // passed since anyone did.
+      unawaited(widget.chat.refreshQuota());
+    } else if (_portal.isShowing) {
+      _portal.hide();
+    }
+  }
+
+  static const _months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+
+  static String _two(int n) => n.toString().padLeft(2, '0');
+
+  /// A moment in the device's own time: `Oct 2, 15:59`, or just `15:59` today.
+  static String _local(DateTime at, DateTime now) {
+    final local = at.toLocal();
+    final time = '${_two(local.hour)}:${_two(local.minute)}';
+    final today =
+        local.year == now.year &&
+        local.month == now.month &&
+        local.day == now.day;
+    return today ? time : '${_months[local.month - 1]} ${local.day}, $time';
+  }
+
+  static String _count(int tokens) => ChatProgress.count(tokens);
+
+  @override
+  Widget build(BuildContext context) {
+    final context_ = widget.chat.context!;
+    final percent = (context_.fraction * 100).round();
+    final warn = context_.fraction >= 0.8;
+    final label = 'Context $percent%';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 12, 2),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: CompositedTransformTarget(
+          link: _link,
+          child: OverlayPortal(
+            controller: _portal,
+            overlayChildBuilder: (_) => CompositedTransformFollower(
+              link: _link,
+              targetAnchor: Alignment.topRight,
+              followerAnchor: Alignment.bottomRight,
+              child: Align(
+                alignment: Alignment.bottomRight,
+                child: _UsagePopup(
+                  chat: widget.chat,
+                  local: _local,
+                  count: _count,
+                ),
+              ),
+            ),
+            child: TapRegion(
+              onTapOutside: (_) {
+                if (_pinned) {
+                  _pinned = false;
+                  _sync();
+                }
+              },
+              child: MouseRegion(
+                onEnter: (_) {
+                  _hover = true;
+                  _sync();
+                },
+                onExit: (_) {
+                  _hover = false;
+                  _sync();
+                },
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    _pinned = !_pinned;
+                    _sync();
+                  },
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    label: '$label used. Usage details',
+                    excludeSemantics: true,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: TuiText(
+                        label,
+                        size: 11,
+                        tone: warn ? TuiTextTone.yellow : TuiTextTone.dim,
+                        bold: warn,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UsagePopup extends StatelessWidget {
+  const _UsagePopup({
+    required this.chat,
+    required this.local,
+    required this.count,
+  });
+
+  final ClaudeChat chat;
+  final String Function(DateTime, DateTime) local;
+  final String Function(int) count;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: chat,
+    builder: (context, _) {
+      final used = chat.context;
+      final quota = chat.quota;
+      final now = chatNow();
+      Widget bar(double fraction) => Padding(
+        padding: const EdgeInsets.only(top: 3, bottom: 6),
+        child: TuiProgressBar(
+          value: fraction.clamp(0.0, 1.0),
+          height: 4,
+          tone: fraction >= 0.8
+              ? TuiProgressTone.danger
+              : TuiProgressTone.accent,
+        ),
+      );
+      Widget row(
+        String text, {
+        TuiTextTone tone = TuiTextTone.normal,
+        bool bold = false,
+      }) => TuiText(
+        text,
+        size: 11,
+        tone: tone,
+        bold: bold,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      );
+      final age = quota == null ? null : now.difference(quota.asOf);
+      return ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 300),
+        child: TuiBox(
+          expanded: false,
+          title: 'Usage',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (used != null) ...[
+                row(
+                  'Context  ${count(used.tokens)} / ${count(used.window)} '
+                  '(${(used.fraction * 100).round()}%)',
+                  bold: used.fraction >= 0.8,
+                ),
+                bar(used.fraction),
+                if (used.model != null) row(used.model!, tone: TuiTextTone.dim),
+                const SizedBox(height: 6),
+              ],
+              if (quota != null)
+                for (final window in quota.windows) ...[
+                  row('${window.label}  ${window.percent.round()}% used'),
+                  bar(window.percent / 100),
+                  if (window.resetsAt != null)
+                    row(
+                      'resets ${local(window.resetsAt!, now)}',
+                      tone: TuiTextTone.dim,
+                    )
+                  else if (window.resetsText != null)
+                    row('resets ${window.resetsText}', tone: TuiTextTone.dim),
+                ]
+              else
+                row(
+                  chat.quotaNotReported
+                      ? "Claude Code didn't report plan usage."
+                      : 'Reading plan usage…',
+                  tone: TuiTextTone.dim,
+                ),
+              if (quota != null) ...[
+                const SizedBox(height: 4),
+                row(
+                  'as of ${local(quota.asOf, now)}'
+                  '${age! >= ClaudeChat.quotaEvery * 2 ? ' · ${age.inMinutes} min ago' : ''}',
+                  tone: TuiTextTone.dim,
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
 /// The line under the chat while a turn runs, shaped on Claude Code's own:
 /// `⠋ Working… (33s · ↓ 1.4k tokens) · Bash: npm test` — or, when the session
 /// waits at its terminal, what for and where to answer it, with no spinner.
@@ -2578,7 +3008,7 @@ class _ProgressState extends State<_Progress> {
     final theme = Theme.of(context);
     final style = theme.textTheme.bodySmall;
     final p = widget.progress;
-    final waiting = p.waitingFor;
+    final waiting = ClaudeAgent.waitingWords(p.waitingFor);
     final String text;
     if (waiting != null) {
       final agent = widget.chat.watching;
@@ -2594,7 +3024,7 @@ class _ProgressState extends State<_Progress> {
       final tool = p.tool;
       final doing = tool == null
           ? ''
-          : ' · ${tool.name}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
+          : ' · ${tool.title}${tool.summary.isEmpty ? '' : ': ${tool.summary}'}';
       text = 'Working… ($time$tokens)$doing';
     }
     return Padding(
@@ -2651,8 +3081,8 @@ class _SessionList extends StatelessWidget {
   final bool Function(ClaudeAgent agent) unseen;
 
   /// What [agent]'s mark says, from the listing alone: a `waitingFor` is the
-  /// session asking the user something — `permission prompt`, measured —
-  /// `working` or `busy` its turn, and a session whose process has gone is
+  /// session asking the user something — `permission prompt` for a tool,
+  /// `input needed` for a question, measured — `working` or `busy` its turn, and a session whose process has gone is
   /// finished, or `stopped` when the CLI says so.
   static TuiChatSessionStatus statusOf(ClaudeAgent agent) {
     if (!agent.live) {
@@ -2673,7 +3103,7 @@ class _SessionList extends StatelessWidget {
       switch (statusOf(agent)) {
         TuiChatSessionStatus.working => 'Working',
         TuiChatSessionStatus.waiting =>
-          'Waiting for ${agent.waitingFor ?? 'you'}',
+          'Waiting for ${agent.waitingText ?? 'you'}',
         TuiChatSessionStatus.done => agent.live ? 'Done, idle' : 'Finished',
         TuiChatSessionStatus.stopped => 'Stopped',
       };
@@ -2768,7 +3198,9 @@ class _SessionList extends StatelessWidget {
 
   /// Where [agent] is and how long it has been going.
   static String _where(ClaudeAgent agent) => [
-    if (agent.interactive)
+    if (agent.asking)
+      'waiting for an answer'
+    else if (agent.interactive)
       'at a terminal'
     else if (agent.busy)
       'working'
