@@ -12,7 +12,6 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart'
     show
         GestureBinding,
-        kDoubleTapTimeout,
         kDoubleTapTouchSlop,
         kMiddleMouseButton,
         kPrimaryMouseButton,
@@ -1465,6 +1464,13 @@ class _PaneViewState extends State<_PaneView> {
     }
   }
 
+  /// How long after a press the next still counts as the same run of
+  /// clicks: macOS's and Windows's default double-click interval. Flutter's
+  /// own 300 ms, [kDoubleTapTimeout], is a touch's, and a mouse's second
+  /// press on a loaded machine, or a slower hand, comes later: it was
+  /// counted as a first click and xterm2's drag of characters took over.
+  static const _doubleClickInterval = Duration(milliseconds: 500);
+
   /// Clicks in a row on one spot, and the timer that ends the run.
   int _clicks = 0;
   Offset _clickAt = Offset.zero;
@@ -1501,7 +1507,7 @@ class _PaneViewState extends State<_PaneView> {
     _clickTimer?.cancel();
     _clicks = near ? math.min(_clicks + 1, 3) : 1;
     _clickAt = event.position;
-    _clickTimer = Timer(kDoubleTapTimeout, () {
+    _clickTimer = Timer(_doubleClickInterval, () {
       _clicks = 0;
       _clickTimer = null;
     });

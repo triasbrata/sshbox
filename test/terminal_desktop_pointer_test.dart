@@ -590,6 +590,29 @@ void main() {
       expect(selected(tester), 'this is a');
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    // The second press of a double click comes later on a loaded machine, or
+    // from a slower hand, than Flutter's 300 ms for a touch.
+    testWidgets('counts a second press 400 ms after the first as a double '
+        'click', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 30);
+      await tester.pump();
+
+      await tester.tapAt(cellAt(tester, 14, 10), kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 400));
+      final g = await tester.startGesture(
+        cellAt(tester, 14, 10),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      for (var col = 15; col <= 20; col++) {
+        await g.moveTo(cellAt(tester, col, 10));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(selected(tester), 'this is a');
+      await g.up();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets('a triple click drags by lines', (tester) async {
       await pumpPage(tester);
       session.terminal.write(text * 30);
