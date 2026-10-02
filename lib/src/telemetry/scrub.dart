@@ -176,6 +176,8 @@ const droppedValues = {
   'HttpException',
   'OSError',
   'PlatformException',
+  // Carries the text it failed to parse.
+  'FormatException',
   'MissingPluginException',
 };
 

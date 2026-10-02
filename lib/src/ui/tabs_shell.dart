@@ -14,6 +14,7 @@ import '../session/pane_record.dart';
 import '../session/port_forwards.dart';
 import '../session/session_manager.dart';
 import '../session/tmux.dart';
+import 'bug_report.dart';
 import 'chat_page.dart';
 import 'connect_sheet.dart';
 import 'db_browser_page.dart';
@@ -1030,7 +1031,11 @@ class _TabStripState extends State<TabStrip> {
     // cut short the one name on the strip.
     final single = ids.length == 1;
 
-    final addTab = _AddTab(onTap: () => widget.onSelect(null));
+    // + and then the bug button, both at the strip's left, as one unit.
+    final addTab = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [_AddTab(onTap: () => widget.onSelect(null)), const _BugButton()],
+    );
 
     // Each tab's chip, name and tap, by id: a group gathers its tabs' chips
     // into one, and its menu asks for their names.
@@ -1460,6 +1465,107 @@ class _AddTab extends StatelessWidget {
               '+',
               style: Theme.of(context).textTheme.titleMedium!
                   .copyWith(color: p.accent),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Report a bug, tucked after +: an icon alone, which on its first press only
+/// slides its label out, and which opens the report on the next. It folds
+/// back after a few seconds or on a press anywhere else, so it takes no room
+/// from the tabs until it is asked for.
+///
+/// Reachable from the keyboard through Tab, Enter and Space, but never
+/// focused by itself, so a terminal keeps every key it is typed.
+class _BugButton extends StatefulWidget {
+  const _BugButton();
+
+  @override
+  State<_BugButton> createState() => _BugButtonState();
+}
+
+class _BugButtonState extends State<_BugButton> {
+  static const _label = 'Report a bug';
+  bool _open = false;
+  Timer? _fold;
+
+  void _collapse() {
+    _fold?.cancel();
+    if (_open) setState(() => _open = false);
+  }
+
+  void _press() {
+    if (!_open) {
+      setState(() => _open = true);
+      _fold?.cancel();
+      _fold = Timer(const Duration(seconds: 4), _collapse);
+      return;
+    }
+    _collapse();
+    showBugReport(context);
+  }
+
+  @override
+  void dispose() {
+    _fold?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    return TapRegion(
+      onTapOutside: (_) => _collapse(),
+      child: Semantics(
+        container: true,
+        button: true,
+        label: _label,
+        hint: _open ? null : 'Tap once to show, again to report',
+        onTap: _press,
+        excludeSemantics: true,
+        child: FocusableActionDetector(
+          descendantsAreFocusable: false,
+          actions: {
+            ActivateIntent: CallbackAction<ActivateIntent>(
+              onInvoke: (_) {
+                _press();
+                return null;
+              },
+            ),
+          },
+          child: GestureDetector(
+            onTap: _press,
+            behavior: HitTestBehavior.opaque,
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              alignment: Alignment.centerLeft,
+              child: Container(
+                height: _TabChip._height,
+                constraints: const BoxConstraints(minWidth: _TabChip._height),
+                padding: EdgeInsets.symmetric(horizontal: _open ? 12 : 0),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  border: Border(left: BorderSide(color: p.border)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.bug_report_outlined, size: 16, color: p.accent),
+                    if (_open) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        _label,
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(color: p.text, fontSize: 12),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
         ),
