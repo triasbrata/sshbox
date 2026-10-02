@@ -1080,7 +1080,7 @@ class _ChatPageState extends State<ChatPage> {
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
         // How much of the context window the session uses, with the plan's
         // quota in a popup: hover on a desktop, a tap on touch.
-        if (chat.context != null) _UsageChip(chat: chat),
+        if (false) _UsageChip(chat: chat),
         const Divider(height: 1),
         if (!_draft.isEmpty) _pictureCards(),
         _composer(theme, wide: wide, sidebar: sidebar),
