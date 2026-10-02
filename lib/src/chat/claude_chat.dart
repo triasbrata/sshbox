@@ -892,8 +892,10 @@ class ClaudeChat extends ChangeNotifier {
   Future<void> setModel(String alias) async {
     final known = ChatModel.known(alias);
     if (known == null || !canPickModel) return;
-    _alias = known == ChatModel.defaultAlias ? null : known;
     if (!_composing && _ready && _channel != null) {
+      // Taken as the chat's own only once the CLI accepts it: a refused or
+      // unwritten pick must not be what the next start passes.
+      if (_starting) return;
       final id = 'sshbox-model-${++_modelRequests}';
       _modelAsks[id] = known;
       final sent = _write({
@@ -915,10 +917,15 @@ class ClaudeChat extends ChangeNotifier {
         return;
       }
     } else {
+      _alias = known == ChatModel.defaultAlias ? null : known;
       _model = null;
     }
     notifyListeners();
   }
+
+  /// Claude is on its way up: a pick now would apply only at the next start,
+  /// so the picker waits.
+  bool get modelStarting => _watching == null && !_composing && _starting;
 
   ChatPermission _permission = ChatPermission.acceptEdits;
 
@@ -3549,6 +3556,7 @@ class ClaudeChat extends ChangeNotifier {
         if (asked != null) {
           if (response['subtype'] == 'success') {
             _model = asked;
+            _alias = asked == ChatModel.defaultAlias ? null : asked;
           } else {
             _say(
               ChatNotice(

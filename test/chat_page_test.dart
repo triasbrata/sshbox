@@ -6198,6 +6198,106 @@ void main() {
       });
     }
 
+    testWidgets('a refused pick is not what the menu marks or a restart '
+        'passes', (tester) async {
+      final shell = await open(
+        tester,
+        finished: _finished('cf58d27a', 'Zsh'),
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'Zsh');
+      shell.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': 'cf58d27a-0000-4000-8000-000000000000',
+        'model': 'claude-sonnet-5-5',
+      });
+      await tester.pump();
+      // Opus is accepted, then Haiku is refused.
+      await pick(tester, 'Opus');
+      var sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {'subtype': 'success', 'request_id': sent['request_id']},
+      });
+      await tester.pump();
+      await pick(tester, 'Haiku');
+      sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {
+          'subtype': 'error',
+          'request_id': sent['request_id'],
+          'error': 'not allowed',
+        },
+      });
+      await tester.pump();
+      expect(find.text('Opus ▾'), findsOneWidget);
+      // The menu marks Opus, not Haiku.
+      await tester.tap(find.text('Opus ▾'));
+      await tester.pump();
+      await _frames(tester);
+      Finder mark(String label) => find.descendant(
+        of: find.ancestor(
+          of: find.text(label),
+          matching: find.byType(PopupMenuItem<String>),
+        ),
+        matching: find.text('✓'),
+      );
+      expect(mark('Opus'), findsOneWidget);
+      expect(mark('Haiku'), findsNothing);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pump();
+      await _frames(tester);
+      // And a restart starts on Opus.
+      await tester.tap(find.byType(MenuButton<Object>));
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(find.text('Restart Claude'));
+      await _settlePickUp(tester);
+      final restarted = shell.commands.last;
+      expect(restarted, contains('--model opus'));
+      expect(restarted, isNot(contains('haiku')));
+    });
+
+    testWidgets('a read-only chip carries its hint for a screen reader', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(
+        tester.getSemantics(find.text('Opus 5.5')).hint,
+        ClaudeChat.modelReadOnlyHint,
+      );
+      semantics.dispose();
+    });
+
+    testWidgets('the gauge takes focus, and Enter and Space open and close '
+        'the usage popup', (tester) async {
+      await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final gauge = find.ancestor(
+        of: find.byType(ContextGauge),
+        matching: find.byType(FocusableActionDetector),
+      );
+      Focus.of(tester.element(find.byType(ContextGauge))).requestFocus();
+      final detector = tester.element(gauge);
+      FocusScope.of(detector).requestFocus(
+        Focus.of(detector, scopeOk: false),
+      );
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
     test('a model id reads as a short name', () {
       expect(ChatModel.shortName('claude-opus-5-5'), 'Opus 5.5');
       expect(ChatModel.shortName('claude-haiku-4-5-20251001'), 'Haiku 4.5');

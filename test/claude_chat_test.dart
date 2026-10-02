@@ -501,6 +501,17 @@ void main() {
       expect(opened, hasLength(1), reason: 'opened after dispose: $opened');
     });
 
+    test('the model is not picked while Claude is starting', () async {
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => gate.future);
+      final started = chat.start();
+      expect(chat.modelStarting, isTrue);
+      gate.complete(_FakeClaude().channel);
+      await started;
+      expect(chat.modelStarting, isFalse);
+      chat.dispose();
+    });
+
     test('a claude -p whose open lands after dispose is closed', () async {
       final gate = Completer<CommandChannel>();
       final chat = ClaudeChat(open: (_) => gate.future);

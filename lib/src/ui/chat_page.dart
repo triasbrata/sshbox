@@ -3285,7 +3285,18 @@ class _UsageChipState extends State<_UsageChip> {
               _hover = false;
               _sync();
             },
-            child: GestureDetector(
+            child: FocusableActionDetector(
+              // Enter and Space open and close the popup, as a tap does.
+              actions: {
+                ActivateIntent: CallbackAction<ActivateIntent>(
+                  onInvoke: (_) {
+                    _pinned = !_pinned;
+                    _sync();
+                    return null;
+                  },
+                ),
+              },
+              child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {
                 _pinned = !_pinned;
@@ -3311,6 +3322,7 @@ class _UsageChipState extends State<_UsageChip> {
                   ),
                 ),
               ),
+            ),
             ),
           ),
         ),
@@ -3387,17 +3399,27 @@ class _ModelChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
-    final can = chat.canPickModel;
+    final starting = chat.modelStarting;
+    final can = chat.canPickModel && !starting;
     final name = chat.modelName;
     final label = name ?? 'Model';
     return Builder(
       builder: (chipContext) => TuiTooltip(
-        message: can ? 'Model: $label' : ClaudeChat.modelReadOnlyHint,
+        message: can
+            ? 'Model: $label'
+            : starting
+            ? 'Claude is starting; pick a model once it is up.'
+            : ClaudeChat.modelReadOnlyHint,
         excludeFromSemantics: true,
         child: Semantics(
           container: true,
           button: can,
           label: 'Model $label',
+          hint: can
+              ? null
+              : starting
+              ? 'Claude is starting; pick a model once it is up.'
+              : ClaudeChat.modelReadOnlyHint,
           excludeSemantics: true,
           child: InkWell(
             hoverColor: p.selection,
@@ -3419,6 +3441,8 @@ class _ModelChip extends StatelessWidget {
                     );
                     if (picked != null) unawaited(chat.setModel(picked));
                   }
+                : starting
+                ? null
                 : () => showToast(context, ClaudeChat.modelReadOnlyHint),
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 32, maxWidth: 120),
