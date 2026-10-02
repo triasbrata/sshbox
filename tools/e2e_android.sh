@@ -134,9 +134,12 @@ case "$1" in
   # The SDK's `initialize` on stdin, as chat lists the slash commands with it:
   # answered with ~/.e2e-commands.json where a flow put one; the rest read
   # until stdin ends, as before.
-  -p) while IFS= read -r line; do
+  # `claude -p /usage`, which Claude Code answers itself with no model call:
+  # what a flow put in ~/.e2e-usage.txt, or nothing.
+  -p) if [ "$2" = /usage ]; then cat "$HOME/.e2e-usage.txt" 2>/dev/null; else
+    while IFS= read -r line; do
       case $line in *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;; esac
-    done ;;
+    done; fi ;;
   *) exec cat >/dev/null ;;
 esac
 SH
@@ -569,6 +572,30 @@ chat_subagents() {
   flow chat_subagents || status=1
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-subagents-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# The usage chip over chat's box and its popup: the context of the last request
+# the session made, and the plan's usage as the host's `claude -p /usage`
+# prints it, against the stand-in's usage: turn and a ~/.e2e-usage.txt.
+chat_usage() {
+  local status=0 home=/home/$SSH_USER
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo -u "$SSH_USER" tee "$home/.e2e-usage.txt" >/dev/null <<'TXT'
+You are currently using your subscription to power your Claude Code usage
+
+Current session: 65% used · resets Oct 2, 3:59pm (Asia/Example)
+Current week (all models): 28% used · resets Oct 9, 2:59am (Asia/Example)
+Current week (Fable): 0% used · resets Oct 9, 3am (Asia/Example)
+TXT
+  flow chat_usage || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-usage-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$home/.e2e-usage.txt"
   end_live_session
   stand_in ''
   return "$status"
@@ -1032,6 +1059,10 @@ echo "::endgroup::"
 
 echo "::group::chat_subagents (report only)"
 chat_subagents || echo "::warning::chat_subagents failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_usage (report only)"
+chat_usage || echo "::warning::chat_usage failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
