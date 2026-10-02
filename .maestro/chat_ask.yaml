@@ -50,15 +50,16 @@ env:
 - extendedWaitUntil:
     visible: "Which colour\\?"
     timeout: 30000
-- assertVisible: "Red"
-- assertVisible: "A cool colour."
+# An option is one node, its label and then what it means: "Red, A warm colour."
+- assertVisible: "(?s)Red.*"
+- assertVisible: "(?s).*A cool colour\\..*"
 - assertNotVisible: "AskUserQuestion"
 - takeScreenshot: chat-ask-card
 
 # Picked and sent: the card shows what was given, and Claude carries on with it.
 - scrollUntilVisible:
-    element: "Blue"
-- tapOn: "Blue"
+    element: "(?s)Blue.*"
+- tapOn: "(?s)Blue.*"
 - scrollUntilVisible:
     element: "Send answers"
 - tapOn: "Send answers"
