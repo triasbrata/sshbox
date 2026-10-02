@@ -1208,6 +1208,9 @@ class _ChatPageState extends State<ChatPage> {
         // Under the working line, and alone between turns while a task is
         // still open, as Claude Code's own view keeps it.
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
+        // How much of the context window the session uses, with the plan's
+        // quota in a popup: hover on a desktop, a tap on touch.
+        if (chat.context != null) _UsageChip(chat: chat),
         const Divider(height: 1),
         if (!_draft.isEmpty) _pictureCards(),
         _composer(theme, wide: wide, sidebar: sidebar),
@@ -2522,6 +2525,282 @@ class _Checklist extends StatelessWidget {
       ),
     );
   }
+}
+
+// TODO(termul): a rich anchored popover — hover, tap to pin, tap outside to
+// close — holding any widgets; TuiTooltip takes a String only, so this builds
+// its own from OverlayPortal and TuiBox. Asked of termul in sshbox#195.
+/// "Context 45%" at the box's edge, in the warning colour from 80%, and the
+/// popup it opens: context used out of the window with a bar and the model, the
+/// plan's usage with each reset, and when it was read. Hover opens it, a tap
+/// pins it open, and a tap anywhere else closes it. Everything the host said is
+/// drawn as plain text.
+class _UsageChip extends StatefulWidget {
+  const _UsageChip({required this.chat});
+
+  final ClaudeChat chat;
+
+  @override
+  State<_UsageChip> createState() => _UsageChipState();
+}
+
+class _UsageChipState extends State<_UsageChip> {
+  final _link = LayerLink();
+  bool _working = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _working = widget.chat.progress != null;
+    widget.chat.addListener(_onChat);
+  }
+
+  @override
+  void dispose() {
+    widget.chat.removeListener(_onChat);
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Hidden under the pointer, the chat gets no exit: the popup goes with it,
+    // and is not there again when the tab comes back.
+    if (!TickerMode.valuesOf(context).enabled && (_hover || _pinned)) {
+      _hover = false;
+      _pinned = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _portal.isShowing) _portal.hide();
+      });
+    }
+  }
+
+  /// A turn ended: what it used of the plan has moved, and Claude Code is
+  /// asked once, as often as the minute allows — and only while the tab shows,
+  /// so a chat in the background spawns nothing.
+  void _onChat() {
+    final working = widget.chat.progress != null;
+    final ended = _working && !working;
+    _working = working;
+    if (ended && mounted && TickerMode.valuesOf(context).enabled) {
+      unawaited(widget.chat.refreshQuota());
+    }
+  }
+
+  final _portal = OverlayPortalController();
+  bool _hover = false;
+  bool _pinned = false;
+
+  bool get _shown => _hover || _pinned;
+
+  void _sync() {
+    if (_shown) {
+      if (!_portal.isShowing) _portal.show();
+      // The first look at it asks for the plan's usage, if a minute has
+      // passed since anyone did.
+      unawaited(widget.chat.refreshQuota());
+    } else if (_portal.isShowing) {
+      _portal.hide();
+    }
+  }
+
+  static const _months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+
+  static String _two(int n) => n.toString().padLeft(2, '0');
+
+  /// A moment in the device's own time: `Oct 2, 15:59`, or just `15:59` today.
+  static String _local(DateTime at, DateTime now) {
+    final local = at.toLocal();
+    final time = '${_two(local.hour)}:${_two(local.minute)}';
+    final today =
+        local.year == now.year &&
+        local.month == now.month &&
+        local.day == now.day;
+    return today ? time : '${_months[local.month - 1]} ${local.day}, $time';
+  }
+
+  static String _count(int tokens) => ChatProgress.count(tokens);
+
+  @override
+  Widget build(BuildContext context) {
+    final context_ = widget.chat.context!;
+    final percent = (context_.fraction * 100).round();
+    final warn = context_.fraction >= 0.8;
+    final label = 'Context $percent%';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 12, 2),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: CompositedTransformTarget(
+          link: _link,
+          child: OverlayPortal(
+            controller: _portal,
+            overlayChildBuilder: (_) => CompositedTransformFollower(
+              link: _link,
+              targetAnchor: Alignment.topRight,
+              followerAnchor: Alignment.bottomRight,
+              child: Align(
+                alignment: Alignment.bottomRight,
+                child: _UsagePopup(
+                  chat: widget.chat,
+                  local: _local,
+                  count: _count,
+                ),
+              ),
+            ),
+            child: TapRegion(
+              onTapOutside: (_) {
+                if (_pinned) {
+                  _pinned = false;
+                  _sync();
+                }
+              },
+              child: MouseRegion(
+                onEnter: (_) {
+                  _hover = true;
+                  _sync();
+                },
+                onExit: (_) {
+                  _hover = false;
+                  _sync();
+                },
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    _pinned = !_pinned;
+                    _sync();
+                  },
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    label: '$label used. Usage details',
+                    excludeSemantics: true,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: TuiText(
+                        label,
+                        size: 11,
+                        tone: warn ? TuiTextTone.yellow : TuiTextTone.dim,
+                        bold: warn,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UsagePopup extends StatelessWidget {
+  const _UsagePopup({
+    required this.chat,
+    required this.local,
+    required this.count,
+  });
+
+  final ClaudeChat chat;
+  final String Function(DateTime, DateTime) local;
+  final String Function(int) count;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: chat,
+    builder: (context, _) {
+      final used = chat.context;
+      final quota = chat.quota;
+      final now = chatNow();
+      Widget bar(double fraction) => Padding(
+        padding: const EdgeInsets.only(top: 3, bottom: 6),
+        child: TuiProgressBar(
+          value: fraction.clamp(0.0, 1.0),
+          height: 4,
+          tone: fraction >= 0.8
+              ? TuiProgressTone.danger
+              : TuiProgressTone.accent,
+        ),
+      );
+      Widget row(
+        String text, {
+        TuiTextTone tone = TuiTextTone.normal,
+        bool bold = false,
+      }) => TuiText(
+        text,
+        size: 11,
+        tone: tone,
+        bold: bold,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      );
+      final age = quota == null ? null : now.difference(quota.asOf);
+      return ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 300),
+        child: TuiBox(
+          expanded: false,
+          title: 'Usage',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (used != null) ...[
+                row(
+                  'Context  ${count(used.tokens)} / ${count(used.window)} '
+                  '(${(used.fraction * 100).round()}%)',
+                  bold: used.fraction >= 0.8,
+                ),
+                bar(used.fraction),
+                if (used.model != null) row(used.model!, tone: TuiTextTone.dim),
+                const SizedBox(height: 6),
+              ],
+              if (quota != null)
+                for (final window in quota.windows) ...[
+                  row('${window.label}  ${window.percent.round()}% used'),
+                  bar(window.percent / 100),
+                  if (window.resetsAt != null)
+                    row(
+                      'resets ${local(window.resetsAt!, now)}',
+                      tone: TuiTextTone.dim,
+                    )
+                  else if (window.resetsText != null)
+                    row('resets ${window.resetsText}', tone: TuiTextTone.dim),
+                ]
+              else
+                row(
+                  chat.quotaNotReported
+                      ? "Claude Code didn't report plan usage."
+                      : 'Reading plan usage…',
+                  tone: TuiTextTone.dim,
+                ),
+              if (quota != null) ...[
+                const SizedBox(height: 4),
+                row(
+                  'as of ${local(quota.asOf, now)}'
+                  '${age! >= ClaudeChat.quotaEvery * 2 ? ' · ${age.inMinutes} min ago' : ''}',
+                  tone: TuiTextTone.dim,
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
+  );
 }
 
 /// The line under the chat while a turn runs, shaped on Claude Code's own:
