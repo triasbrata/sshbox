@@ -137,7 +137,12 @@ class _ChatAskCardState extends State<ChatAskCard> {
             ],
             if (footer != null) ...[
               const SizedBox(height: 8),
-              TuiText(footer, tone: TuiTextTone.dim, size: 12),
+              // A node of its own: inside the card's, plain text is merged into
+              // one label, and what it says would not be found by itself.
+              Semantics(
+                container: true,
+                child: TuiText(footer, tone: TuiTextTone.dim, size: 12),
+              ),
             ],
           ],
         ),
