@@ -374,6 +374,55 @@ void main() {
       expect(find.text('/compact'), findsOneWidget);
     });
 
+    testWidgets('a list over a box that cannot send is shut, and answers no '
+        'key, until the box is open again', (tester) async {
+      final enabled = ValueNotifier(true);
+      final open = ValueNotifier(false);
+      addTearDown(enabled.dispose);
+      addTearDown(open.dispose);
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: enabled,
+                builder: (context, on, _) => SlashCommandMenu(
+                  controller: controller,
+                  enabled: on,
+                  openState: open,
+                  commands: AsyncSnapshot.withData(ConnectionState.done, all),
+                  child: TextField(controller: controller, autofocus: true),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.enterText(find.byType(TextField), '/co');
+      await tester.pump();
+      expect(find.text('/compact'), findsOneWidget);
+      expect(open.value, isTrue);
+
+      // The box is shut — Claude restarting, the session being replaced.
+      enabled.value = false;
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('/compact'), findsNothing);
+      expect(open.value, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(controller.text, '/co');
+
+      enabled.value = true;
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('/compact'), findsOneWidget);
+      expect(open.value, isTrue);
+    });
+
     testWidgets('a tap picks', (tester) async {
       final controller = await pump(tester);
       await tester.enterText(find.byType(TextField), '/');
