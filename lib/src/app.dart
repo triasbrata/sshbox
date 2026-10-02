@@ -59,7 +59,21 @@ class _SshboxAppState extends State<SshboxApp> {
   late final SessionManager _sessions = SessionManager(
     notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
+    onOpenRefused: _openRefused,
   );
+  /// A `jeansh` request a terminal refused: its key is out of date, in a pane
+  /// started before the host's secret changed. Never says which check.
+  void _openRefused() {
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    showToast(
+      context,
+      'jeansh was refused: this pane\'s key is out of date. Open a new pane '
+      'or tab and try again.',
+      type: TuiToastType.warning,
+    );
+  }
+
   late final HostRepository _repository = HostRepository(_secrets);
 
   final AppLinks _appLinks = AppLinks();

@@ -392,7 +392,13 @@ void main() {
     final from = SecretKeys.allFor('box');
     final to = SecretKeys.allFor(copy.id);
     for (var i = 0; i < from.length; i++) {
-      expect(await secrets.read(to[i]), 'secret at ${from[i]}');
+      // Not the `jeansh` secret: it is the host's own, and a copy makes one.
+      expect(
+        await secrets.read(to[i]),
+        from[i] == SecretKeys.openSecret('box')
+            ? isNull
+            : 'secret at ${from[i]}',
+      );
     }
 
     // A second copy of the same host takes the next name free.

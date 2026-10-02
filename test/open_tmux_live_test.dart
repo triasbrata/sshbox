@@ -7,7 +7,6 @@ import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/open_command.dart';
 import 'package:sshbox/src/session/open_request.dart';
 import 'package:sshbox/src/session/tmux.dart';
-import 'package:xterm2/xterm.dart';
 
 const _path = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
 
@@ -41,7 +40,7 @@ void main() {
       installOpenCommand('${dir.path}/bin');
       File('${dir.path}/note.md').writeAsStringSync('hi');
       File('${dir.path}/forged')
-          .writeAsStringSync('\x1b]7733;open;wrong;${'L2V0Yy9wYXNzd2Q='}\x07');
+          .writeAsStringSync('\x1b]7733;open;wrong;1;abcdef012;${'L2V0Yy9wYXNzd2Q='}\x07');
       final opened = <String>[];
       final requests = OpenRequests(onOpen: opened.add, secret: 'the-secret');
 

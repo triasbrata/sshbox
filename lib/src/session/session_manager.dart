@@ -177,8 +177,12 @@ class LiveSession extends ChangeNotifier {
   /// [OpenRequests]. [onOpenPath] is where an accepted path goes.
   late final openRequests = OpenRequests(
     onOpen: (path) => onOpenPath?.call(path),
+    onRefused: () => onOpenRefused?.call(),
   );
   void Function(String path)? onOpenPath;
+
+  /// Said when a request has the command's shape and fails its checks.
+  void Function()? onOpenRefused;
 
   /// The terminal keystrokes go to: the shell's, or in tmux mode the focused
   /// pane's. What the key bar, the magic key and the upload all act on.
@@ -708,9 +712,16 @@ class LiveSession extends ChangeNotifier {
       final key = isLocalHostId(host.id)
           ? null
           : _notifyKeys?.forConnect(host.id);
-      // A shell on this machine has no connection to read a kept secret
-      // before: its own lasts for the run.
+      // A shell on this machine is kept a secret too, under its own id, so
+      // that the panes of a tmux session restored after a restart still
+      // match. A store that is slow or fails costs only that: this run gets
+      // one of its own. Its clock is ours.
       if (isLocalHostId(host.id)) {
+        openRequests.clockOffset = 0;
+        await openRequests
+            .load(secrets, host.id)
+            .timeout(const Duration(milliseconds: 500))
+            .then<void>((_) {}, onError: (_) {});
         openRequests.secret ??= OpenRequests.newSecret();
       }
       Future<Map<String, String>> environment(ForwardCapable connection) async {
@@ -831,6 +842,9 @@ class LiveSession extends ChangeNotifier {
           !isLocalHostId(host.id) &&
           session is CommandCapable) {
         unawaited(_installOpenCommand(session as CommandCapable));
+      }
+      if (!isLocalHostId(host.id) && session is CommandCapable) {
+        unawaited(_measureClock(session as CommandCapable));
       }
       appLog.add('connect: session $id connected');
     } on SshSessionException catch (error) {
@@ -1204,17 +1218,57 @@ class LiveSession extends ChangeNotifier {
   /// [openCommandInstallScript]. Silent like [_saveOs]; the log says what the
   /// host answered and nothing else.
   Future<void> _installOpenCommand(CommandCapable session) async {
+    final lines = <String>[];
+    final done = Completer<void>();
+    final subscription = session
+        .run(openCommandInstallScript())
+        .listen(
+          lines.add,
+          onDone: done.complete,
+          onError: (_) => done.complete(),
+        );
     try {
-      final lines = await session
-          .run(openCommandInstallScript())
-          .toList()
-          .timeout(const Duration(seconds: 10));
-      appLog.add(
-        'connect: session $id jeansh command ${lines.isEmpty ? '?' : lines.last}',
-      );
+      await done.future.timeout(const Duration(seconds: 10));
     } catch (_) {
-      appLog.add('connect: session $id jeansh command failed');
+      // Gives the channel back, whatever the host was doing with it.
+    } finally {
+      await subscription.cancel();
     }
+    final answer = lines.isEmpty ? '' : lines.last.trim();
+    const known = {'installed', 'current', 'left alone'};
+    appLog.add(
+      'connect: session $id jeansh command '
+      '${known.contains(answer) ? answer : 'other'}',
+    );
+  }
+
+  /// How far the host's clock is from ours, from its own `date +%s` over the
+  /// command channel, taking the middle of the round trip as when it was
+  /// read: a host's clock can be minutes off, and `jeansh` requests are
+  /// timed on it. Until it answers, or if it cannot, only a request's nonce
+  /// guards against a replay: see [OpenRequests].
+  Future<void> _measureClock(CommandCapable session) async {
+    final lines = <String>[];
+    final done = Completer<void>();
+    final started = DateTime.now().millisecondsSinceEpoch;
+    final subscription = session
+        .run('date +%s')
+        .listen(
+          lines.add,
+          onDone: done.complete,
+          onError: (_) => done.complete(),
+        );
+    try {
+      await done.future.timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // No offset.
+    } finally {
+      await subscription.cancel();
+    }
+    final host = lines.isEmpty ? null : int.tryParse(lines.last.trim());
+    if (host == null) return;
+    final ended = DateTime.now().millisecondsSinceEpoch;
+    openRequests.clockOffset = host - ((started + ended) ~/ 2000);
   }
 
   /// Asks the host what it runs and saves that on its profile for the host
@@ -1435,7 +1489,10 @@ class DbTab {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
-  SessionManager({this.notifyKeys, this.onNotify});
+  SessionManager({this.notifyKeys, this.onNotify, this.onOpenRefused});
+
+  /// Handed to every session: what to say when a `jeansh` request is refused.
+  final void Function()? onOpenRefused;
 
   /// The relay keys, one per host: what each connection hands its host as
   /// `LC_SSHBOX_KEY`, what a host's edit page copies and what Settings
@@ -1760,6 +1817,7 @@ class SessionManager extends ChangeNotifier {
     // A `jeansh <file>` typed in this session opens as the files drawer's
     // pick does. The session may have closed since: openFile checks.
     created.onOpenPath = (path) => openFile(created.id, path);
+    created.onOpenRefused = onOpenRefused;
     return created;
   }
 

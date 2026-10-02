@@ -36,6 +36,11 @@ for a in "$@"; do
     rc=1
     continue
   fi
+  if [ ! -f "$p" ]; then
+    echo "jeansh: $a: is not a regular file" >&2
+    rc=1
+    continue
+  fi
   d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || {
     echo "jeansh: $a: cannot resolve" >&2
     rc=1
@@ -50,8 +55,12 @@ for a in "$@"; do
       ;;
   esac
   b=$(printf %s "$p" | base64 | tr -d '\n')
-  printf '\033]7733;open;%s;%s\007' "$LC_SSHBOX_OPEN_SECRET" "$b" >>"$tty" ||
-    rc=1
+  # The time and a nonce, so that this exact output, replayed from a record
+  # or a log, is refused.
+  t=$(date +%s)
+  n=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  printf '\033]7733;open;%s;%s;%s;%s\007' \
+    "$LC_SSHBOX_OPEN_SECRET" "$t" "$n" "$b" >>"$tty" || rc=1
 done
 exit $rc
 ''';
@@ -70,7 +79,8 @@ void installOpenCommand(String dir) {
   } else if (type != FileSystemEntityType.notFound) {
     throw FileSystemException('not Jeansh\'s own', target);
   }
-  final temp = File('$target.$pid.new');
+  // Exclusive, so a name planted there is an error and never written through.
+  final temp = File('$target.$pid.new')..createSync(exclusive: true);
   temp.writeAsStringSync(openCommandScript, flush: true);
   Process.runSync('chmod', ['755', temp.path]);
   temp.renameSync(target);
@@ -101,14 +111,15 @@ String openCommandInstallScript() {
       r'''
 d="$HOME/.local/bin"; t="$d/jeansh"
 mkdir -p "$d" || exit 1
-if [ -L "$t" ] || { [ -e "$t" ] && ! grep -q '^# jeansh-open: installed by Jeansh' "$t"; }; then
+if [ -L "$t" ] || { [ -e "$t" ] && { [ ! -f "$t" ] || ! grep -q '^# jeansh-open: installed by Jeansh' "$t"; }; }; then
   echo "left alone"; exit 0
 fi
-n="$t.$$.new"; umask 022
+n="$t.$$.new"; umask 022; set -C
 cat > "$n" <<'JEANSH_OPEN_EOF'
 ''' +
       openCommandScript +
       r'''JEANSH_OPEN_EOF
+set +C
 if [ -e "$t" ] && cmp -s "$n" "$t"; then rm -f "$n"; echo current; exit 0; fi
 chmod 755 "$n" && mv -f "$n" "$t" && echo installed
 ''';

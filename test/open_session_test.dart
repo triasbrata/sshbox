@@ -13,7 +13,20 @@ import 'package:sshbox/src/session/open_request.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 
-class _Shell implements SessionTransport, TerminalSession, ForwardCapable {
+class _Shell
+    implements
+        SessionTransport,
+        TerminalSession,
+        ForwardCapable,
+        CommandCapable {
+  /// How far this host's clock is ahead, as its `date +%s` answers.
+  int hostAhead = 0;
+
+  @override
+  Stream<String> run(String command, {bool pty = false}) => Stream.value(
+    '${DateTime.now().millisecondsSinceEpoch ~/ 1000 + hostAhead}',
+  );
+
   final out = StreamController<String>.broadcast();
   Map<String, String> environment = const {};
 
@@ -63,8 +76,12 @@ class _Pty implements Pty {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
-String _osc(String secret, String path) =>
-    '\x1b]7733;open;$secret;${base64.encode(utf8.encode(path))}\x07';
+var _nonce = 0;
+String _osc(String secret, String path, {String? nonce, int ahead = 0}) =>
+    '\x1b]7733;open;$secret;'
+    '${DateTime.now().millisecondsSinceEpoch ~/ 1000 + ahead};'
+    '${nonce ?? (0x20000000 + _nonce++).toRadixString(16)};'
+    '${base64.encode(utf8.encode(path))}\x07';
 
 void main() {
   const host = HostProfile(
@@ -104,6 +121,13 @@ void main() {
     shell.out.add(_osc(secret, '/srv/app/notes.md'));
     await Future<void>.delayed(Duration.zero);
     expect(session.openFiles, hasLength(1));
+
+    // The same bytes again, from a record or a log, open nothing more.
+    final replay = _osc(secret, '/srv/app/other.md', nonce: 'feedface99');
+    shell.out.add(replay);
+    shell.out.add(replay);
+    await Future<void>.delayed(Duration.zero);
+    expect(session.openFiles, ['/srv/app/notes.md', '/srv/app/other.md']);
   });
 
   test(
@@ -142,6 +166,41 @@ void main() {
       expect(File('$bin/jeansh').readAsStringSync(), openCommandScript);
     },
   );
+
+  test("a host's clock ten minutes ahead is measured at connect", () async {
+    final manager = SessionManager();
+    final secrets = _Secrets();
+    final shell = _Shell()..hostAhead = 600;
+    final session = manager.create(host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: secrets);
+    manager.add(session);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    final secret = shell.environment[openSecretVariable]!;
+    shell.out.add(_osc(secret, '/skewed.md', ahead: 600));
+    await Future<void>.delayed(Duration.zero);
+    expect(session.openFiles, ['/skewed.md']);
+    // And one with the device's own time is now the stale one.
+    shell.out.add(_osc(secret, '/stale.md'));
+    await Future<void>.delayed(Duration.zero);
+    expect(session.openFiles, hasLength(1));
+  });
+
+  test('a Local shell keeps its secret across runs, as a restored tmux '
+      "session's panes need", () async {
+    final secrets = _Secrets();
+    final first = _Shell(), second = _Shell();
+    final a = SessionManager().create(localHost(), transport: (_, _) => first);
+    await a.connect(secrets: secrets);
+    final b = SessionManager().create(localHost(), transport: (_, _) => second);
+    await b.connect(secrets: secrets);
+    addTearDown(a.dispose);
+    addTearDown(b.dispose);
+    final kept = secrets.map[SecretKeys.openSecret('local')];
+    expect(kept, isNotNull);
+    expect(first.environment[openSecretVariable], kept);
+    expect(second.environment[openSecretVariable], kept);
+  });
 
   test("one host's secret opens nothing on another host's tab", () async {
     final manager = SessionManager();

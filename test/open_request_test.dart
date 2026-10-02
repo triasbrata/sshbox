@@ -10,21 +10,35 @@ import 'package:sshbox/src/session/open_command.dart';
 import 'package:sshbox/src/session/open_request.dart';
 
 String _b64(String s) => base64.encode(utf8.encode(s));
-String _osc(String secret, String path) =>
-    '\x1b]7733;open;$secret;${_b64(path)}\x07';
+
+var _nonces = 0;
+
+/// What the script writes: the secret, the time, a nonce and the path.
+String _osc(
+  String secret,
+  String path, {
+  required DateTime at,
+  String? nonce,
+}) =>
+    '\x1b]7733;open;$secret;${at.millisecondsSinceEpoch ~/ 1000};'
+    '${nonce ?? (0x10000000 + _nonces++).toRadixString(16)};${_b64(path)}\x07';
 
 void main() {
   late List<String> opened;
+  late int refused;
   late OpenRequests requests;
   late ClipboardTerminal terminal;
   var clock = DateTime(2026);
 
   setUp(() {
     opened = [];
+    refused = 0;
     clock = DateTime(2026);
     requests = OpenRequests(
       onOpen: opened.add,
+      onRefused: () => refused++,
       secret: 'sek-ret',
+      clockOffset: 0,
       now: () => clock,
     );
     terminal = ClipboardTerminal(
@@ -32,19 +46,22 @@ void main() {
     );
   });
 
+  String osc(String secret, String path, {String? nonce, DateTime? at}) =>
+      _osc(secret, path, at: at ?? clock, nonce: nonce);
+
   test('the right secret opens the path', () {
-    terminal.write('a${_osc('sek-ret', '/home/me/notes.md')}b');
+    terminal.write('a${osc('sek-ret', '/home/me/notes.md')}b');
     expect(opened, ['/home/me/notes.md']);
     expect(terminal.buffer.lines[0].getText().trimRight(), 'ab');
   });
 
   test('a wrong, missing or empty secret opens nothing', () {
-    terminal.write(_osc('sek-reT', '/etc/passwd'));
-    terminal.write(_osc('', '/etc/passwd'));
-    terminal.write(_osc('sek-ret-and-more', '/etc/passwd'));
+    terminal.write(osc('sek-reT', '/etc/passwd'));
+    terminal.write(osc('', '/etc/passwd'));
+    terminal.write(osc('sek-ret-and-more', '/etc/passwd'));
     terminal.write('\x1b]7733;open;${_b64('/etc/passwd')}\x07');
     requests.secret = null;
-    terminal.write(_osc('sek-ret', '/etc/passwd'));
+    terminal.write(osc('sek-ret', '/etc/passwd'));
     expect(opened, isEmpty);
   });
 
@@ -55,22 +72,86 @@ void main() {
       '/a\x1bb',
       '/a\x7fb',
       '/a\u0085b',
+      '/a‮b',
+      '/a‏b',
+      '/a⁧b',
       '',
       '/${'x' * 5000}',
     ]) {
-      terminal.write(_osc('sek-ret', path));
+      terminal.write(osc('sek-ret', path));
     }
-    terminal.write('\x1b]7733;open;sek-ret;not base64!\x07');
+    terminal.write('\x1b]7733;open;sek-ret;1;abcdef012;not base64!\x07');
     expect(opened, isEmpty);
+  });
+
+  test('a replayed sequence opens nothing, once', () {
+    final once = osc('sek-ret', '/srv/a.md', nonce: 'deadbeef01');
+    terminal.write(once);
+    terminal.write(once);
+    clock = clock.add(const Duration(seconds: 30));
+    terminal.write(once);
+    expect(opened, ['/srv/a.md']);
+  });
+
+  test('a stale or future time opens nothing', () {
+    terminal.write(
+      osc('sek-ret', '/old', at: clock.subtract(const Duration(minutes: 3))),
+    );
+    terminal.write(
+      osc('sek-ret', '/future', at: clock.add(const Duration(minutes: 3))),
+    );
+    expect(opened, isEmpty);
+    terminal.write(
+      osc(
+        'sek-ret',
+        '/fresh',
+        at: clock.subtract(const Duration(seconds: 100)),
+      ),
+    );
+    expect(opened, ['/fresh']);
+  });
+
+  test('a host clock ten minutes off works once its offset is known', () {
+    final host = clock.add(const Duration(minutes: 10));
+    terminal.write(osc('sek-ret', '/skewed', at: host));
+    expect(opened, isEmpty);
+    requests.clockOffset = 600;
+    terminal.write(osc('sek-ret', '/skewed', at: host));
+    expect(opened, ['/skewed']);
+  });
+
+  test('with no offset measured, a nonce still opens only once', () {
+    requests.clockOffset = null;
+    final old = osc(
+      'sek-ret',
+      '/x',
+      at: clock.subtract(const Duration(days: 2)),
+      nonce: 'cafe0123',
+    );
+    terminal.write(old);
+    terminal.write(old);
+    expect(opened, ['/x']);
+  });
+
+  test('a refused request says so at most every ten seconds, and only for '
+      'the command\'s own shape', () {
+    terminal.write(osc('wrong', '/a'));
+    terminal.write(osc('wrong', '/b'));
+    terminal.write('\x1b]7733;something;else\x07');
+    terminal.write('\x1b]7733;open;wrong\x07');
+    expect(refused, 1);
+    clock = clock.add(OpenRequests.refusedEvery);
+    terminal.write(osc('wrong', '/c'));
+    expect(refused, 2);
   });
 
   test('a burst is bounded, and the allowance comes back', () {
     for (var i = 0; i < 9; i++) {
-      terminal.write(_osc('sek-ret', '/f$i'));
+      terminal.write(osc('sek-ret', '/f$i'));
     }
     expect(opened, hasLength(OpenRequests.burst));
-    clock = clock.add(OpenRequests.window);
-    terminal.write(_osc('sek-ret', '/later'));
+    clock = clock.add(OpenRequests.burstWindow);
+    terminal.write(osc('sek-ret', '/later'));
     expect(opened.last, '/later');
   });
 
@@ -117,6 +198,19 @@ void main() {
       Link(target).createSync('${home.path}/victim');
       expect(run(), 'left alone');
       expect(File('${home.path}/victim').readAsStringSync(), 'keep');
+
+      // A link at the name is left alone even when what it points at is
+      // Jeansh's own.
+      File('${home.path}/own').writeAsStringSync(openCommandScript);
+      Link(target).deleteSync();
+      Link(target).createSync('${home.path}/own');
+      expect(run(), 'left alone');
+      expect(Link(target).targetSync(), '${home.path}/own');
+
+      // A FIFO is not read, which would hang: left alone.
+      Link(target).deleteSync();
+      Process.runSync('mkfifo', [target]);
+      expect(run(), 'left alone');
     },
   );
 
@@ -177,20 +271,43 @@ void main() {
           includeParentEnvironment: false,
         );
 
-    test('writes exactly the sequence, for each file that is there', () {
-      final result = run(['a b\'s.txt', 'missing', 'folder', './a b\'s.txt']);
+    test('writes the sequence, for each file that is there', () {
+      final result = run([
+        'a b\'s.txt',
+        'missing',
+        'folder',
+        '/dev/zero',
+        './a b\'s.txt',
+      ]);
       final real = dir.resolveSymbolicLinksSync();
-      final one = '\x1b]7733;open;sek-ret;${_b64('$real/a b\'s.txt')}\x07';
-      expect(tty.readAsStringSync(), '$one$one');
+      final written = tty.readAsStringSync();
+      final pattern = RegExp(
+        '\x1b\\]7733;open;sek-ret;(\\d{10});([0-9a-f]{16});'
+        '${RegExp.escape(_b64('$real/a b\'s.txt'))}\x07',
+      );
+      final both = pattern.allMatches(written).toList();
+      expect(both, hasLength(2));
+      expect(written, '${both[0][0]}${both[1][0]}');
+      // A fresh time near now, and a nonce of its own every time.
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      expect((int.parse(both[0][1]!) - now).abs(), lessThan(60));
+      expect(both[0][2], isNot(both[1][2]));
       expect(result.exitCode, 1);
       expect(result.stderr, contains('missing: no such file'));
       expect(result.stderr, contains('folder: is a folder'));
-      // And the app takes what it wrote.
+      expect(result.stderr, contains('/dev/zero: is not a regular file'));
+      // And the app takes what it wrote, each once.
       final seen = <String>[];
-      ClipboardTerminal(
-        onPrivateOSC: OpenRequests(onOpen: seen.add, secret: 'sek-ret').handle,
-      ).write(tty.readAsStringSync());
+      final requests = OpenRequests(
+        onOpen: seen.add,
+        secret: 'sek-ret',
+        clockOffset: 0,
+      );
+      final terminal = ClipboardTerminal(onPrivateOSC: requests.handle);
+      terminal.write(written);
       expect(seen, ['$real/a b\'s.txt', '$real/a b\'s.txt']);
+      terminal.write(written);
+      expect(seen, hasLength(2));
     });
 
     test('says so, and writes nothing, outside a Jeansh terminal', () {
