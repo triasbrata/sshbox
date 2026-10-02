@@ -1,0 +1,250 @@
+# Pictures in chat (#146): pasted into the box as a card and an [Image #N],
+# sent to this chat's own Claude as image blocks, and into a running session
+# as a path pasted on its own, the CLI's chip awaited before the text after it.
+#
+# One file, a section a STEP: tools/e2e_android.sh's chat_images runs a
+# section, checks on the host what it sent there, and runs the next. Only
+# `open` launches the app; every other section goes on from where the last
+# stopped. Pictures go in by the box's own Paste, by touch, and by + —
+# Maestro can press no Ctrl+V, which the script tries once with adb.
+#
+# STEP, SESSION and SHOT come from -e alone: Maestro 2.10 lets a flow's own
+# env: block win over -e (see tools/e2e_android.sh), so they have no default.
+#
+# The host's Claude is the stand-in, tools/e2e_image_claude.py: its `-p`
+# answers "The picture is <colour>" from the image block, and its input line
+# turns a pasted picture's path into [Image #N] about a second later, as
+# Claude Code 2.1.286 does. What reached the host is checked by the script.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+# open: a host's terminal, e2e-red.png copied as a picture from its image tab
+# (the file tab's Copy image), and the chat on SESSION, its box focused.
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "(?s).*e2e-red\\.png.*"
+          timeout: 20000
+      - tapOn: "(?s).*e2e-red\\.png.*"
+      - extendedWaitUntil:
+          visible: "More"
+          timeout: 20000
+      - tapOn: "More"
+      - tapOn: "Copy image"
+      - tapOn: "(?s)Close .*e2e-red.*"
+      - extendedWaitUntil:
+          visible: "Chat with Claude"
+          timeout: 10000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*${SESSION}.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*${SESSION}.*"
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 30000
+      - tapOn: "Ask Claude…"
+
+
+# own: step 1's card and the box's token. tools/e2e_android.sh tries a Ctrl+V
+# first and says whether it made a card; with none, the picture goes in by
+# touch, as a phone with no keyboard pastes: a long press on the empty box,
+# and its menu's Paste. Then step 5, the card opens large and Close comes
+# back; and step 4, a Backspace into the token takes the card away. The box
+# is emptied after.
+- runFlow:
+    when:
+      true: ${STEP == 'own'}
+    commands:
+      - runFlow:
+          when:
+            notVisible: "(?s)\\[Image #1\\] .*\\.png"
+          commands:
+            - longPressOn: "Ask Claude…"
+            - tapOn: "Paste"
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - assertVisible: "\\[Image #1\\] "
+      - takeScreenshot: chat-images-card
+      - tapOn: "View .*"
+      - extendedWaitUntil:
+          visible: "Close"
+          timeout: 10000
+      - takeScreenshot: chat-images-viewer
+      - tapOn: "Close"
+      - assertVisible: "\\[Image #1\\] "
+      - eraseText: 2
+      - extendedWaitUntil:
+          notVisible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 5000
+      - assertNotVisible: "View .*"
+      - eraseText: 20
+
+# remove: pasted by touch again, then step 4 the other way: the card's own
+# button takes its token out of the box.
+- runFlow:
+    when:
+      true: ${STEP == 'remove'}
+    commands:
+      - longPressOn: "Ask Claude…"
+      - tapOn: "Paste"
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - tapOn: "Remove .*"
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 5000
+      - assertNotVisible: "(?s).*\\[Image #1\\].*"
+
+# send: step 1 sent to this chat's own Claude: the bubble draws the picture
+# and the answer names its colour, read from the image block.
+- runFlow:
+    when:
+      true: ${STEP == 'send'}
+    commands:
+      - longPressOn: "Ask Claude…"
+      - tapOn: "Paste"
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - inputText: "what colour?"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*The picture is red.*"
+          timeout: 30000
+      - assertVisible: "View .*"
+      - takeScreenshot: chat-images-own-answer
+
+# watch: step 2, into the running session SESSION: the red picture pasted,
+# text, the blue one picked with +, text, sent. Its answer names both, in
+# order; the script reads what reached the host.
+- runFlow:
+    when:
+      true: ${STEP == 'watch'}
+    commands:
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*${SESSION}.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*${SESSION}.*"
+      - extendedWaitUntil:
+          visible: "Message “${SESSION}”…"
+          timeout: 30000
+      - longPressOn: "Message “${SESSION}”…"
+      - tapOn: "Paste"
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - inputText: "between "
+      - runFlow:
+          file: chat_images_pick.yaml
+          env:
+            FILE: e2e-blue.png
+      - extendedWaitUntil:
+          visible: "(?s).*between \\[Image #2\\].*"
+          timeout: 10000
+      - inputText: "after"
+      - tapOn: "Send"
+      # Two pictures make a tall bubble, which leaves the answer under the
+      # keyboard; the keyboard goes, and the answer is scrolled to.
+      - hideKeyboard
+      - scrollUntilVisible:
+          element: "(?s).*Seen 2: red, blue.*"
+          direction: DOWN
+          timeout: 60000
+      - takeScreenshot: chat-images-${SHOT}
+
+# new: step 3, a new chat whose first message carries a picture.
+- runFlow:
+    when:
+      true: ${STEP == 'new'}
+    commands:
+      - tapOn: "Chat settings"
+      - tapOn: "New chat"
+      - extendedWaitUntil:
+          visible: "Start a new chat…"
+          timeout: 10000
+      - longPressOn: "Start a new chat…"
+      - tapOn: "Paste"
+      - extendedWaitUntil:
+          visible: "(?s)\\[Image #1\\] .*\\.png"
+          timeout: 10000
+      - inputText: "new one"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*The picture is red. Echo: .*new one.*"
+          timeout: 60000
+      - takeScreenshot: chat-images-new-chat
+
+# refuse: step 6, a file the + button's picker offers that Claude cannot read.
+# Android's picker for pictures offers pictures alone, so a .txt never shows
+# there; a BMP is a picture to Android and not to Claude.
+- runFlow:
+    when:
+      true: ${STEP == 'refuse'}
+    commands:
+      - runFlow:
+          file: chat_images_pick.yaml
+          env:
+            FILE: e2e-old.bmp
+      - extendedWaitUntil:
+          visible: "(?s).*Not a picture Claude can read: e2e-old\\.bmp.*"
+          timeout: 10000
+      - takeScreenshot: chat-images-refused
+
+# probe-*: where a hardware Ctrl+V goes, the script pressing it with adb after
+# each and reading the box and the clipboard reader's log. probe-picture: the
+# box focused, a picture still on the clipboard. probe-text: text on it
+# instead. probe-terminal: the terminal tab focused, which shuts its IME
+# connection at a hardware key, as the chat's box does not.
+- runFlow:
+    when:
+      true: ${STEP == 'probe-picture'}
+    commands:
+      - tapOn: "(Message .*|Ask Claude…|Start a new chat…)"
+- runFlow:
+    when:
+      true: ${STEP == 'probe-text'}
+    commands:
+      - eraseText: 40
+      - setClipboard: "e2e clip text"
+      - tapOn: "(Message .*|Ask Claude…|Start a new chat…)"
+- runFlow:
+    when:
+      true: ${STEP == 'probe-terminal'}
+    commands:
+      - eraseText: 40
+      - tapOn: "(?s)Close .*Claude.*"
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 10000
+      - tapOn:
+          point: "50%,35%"
+- runFlow:
+    when:
+      true: ${STEP == 'done'}
+    commands:
+      - tapOn: "Close ${HOST_LABEL}.*"

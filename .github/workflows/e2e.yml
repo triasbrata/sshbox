@@ -125,10 +125,14 @@ jobs:
       # A throwaway user with a throwaway password, both made here and gone
       # with the runner. tmux for the chat flow that types into a session's
       # pane.
+      - name: Install the sshd, sshpass and tmux
+        timeout-minutes: 10
+        uses: ./.github/actions/apt-install
+        with:
+          args: -y -qq openssh-server sshpass tmux
+
       - name: Start an sshd for the flows
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq openssh-server sshpass tmux
           password="$(openssl rand -hex 16)"
           echo "::add-mask::$password"
           sudo useradd -m -s /bin/bash e2e
@@ -275,7 +279,7 @@ jobs:
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'linux-desktop' }}
     # The release's Linux build runs on 22.04 (release.yml), so this does too.
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -301,10 +305,12 @@ jobs:
       # x11-utils' xwininfo to find where the window is, and ffmpeg, which
       # grabs the display as evidence for a person to look at.
       - name: Install the Linux build and Xvfb
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq clang cmake ninja-build pkg-config libgtk-3-dev \
-            liblzma-dev libstdc++-12-dev libsecret-1-dev xvfb dbus-x11 gnome-keyring \
+        timeout-minutes: 10
+        uses: ./.github/actions/apt-install
+        with:
+          args: >-
+            -yq clang cmake ninja-build pkg-config libgtk-3-dev
+            liblzma-dev libstdc++-12-dev libsecret-1-dev xvfb dbus-x11 gnome-keyring
             tmux xclip dunst xdotool python3-gi gir1.2-gtk-3.0 openbox x11-utils ffmpeg
 
       - uses: subosito/flutter-action@v2
@@ -320,6 +326,7 @@ jobs:
       # to offer. The feed override is read by debug builds alone, never a
       # release.
       - name: Drive the desktop build
+        timeout-minutes: 22
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
         run: |
@@ -332,6 +339,7 @@ jobs:
       # #136: Download once more on a session bus with no XDG portal at all,
       # as on a desktop that runs none, where file_picker could not save.
       - name: Download with no XDG portal
+        timeout-minutes: 5
         if: always()
         run: |
           JEANSH_E2E_NO_PORTAL=1 tools/e2e_desktop.sh linux \
@@ -378,10 +386,12 @@ jobs:
       # tmux, which the Local shell uses where the machine has it: the image
       # has Homebrew but not tmux.
       - run: brew install tmux
+        timeout-minutes: 5
 
       # The same feed as Linux, so the updater and the Jeansh menu's Check for
       # Updates… have a newer release to find.
       - name: Drive the desktop build
+        timeout-minutes: 30
         run: |
           feed=http://127.0.0.1:47719
           tools/e2e_desktop.sh macos \
@@ -421,6 +431,7 @@ jobs:
       - run: flutter pub get
 
       - name: Drive the desktop build
+        timeout-minutes: 38
         run: |
           feed=http://127.0.0.1:47719
           tools/e2e_desktop.sh windows \
