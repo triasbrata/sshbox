@@ -744,6 +744,155 @@ void main() {
     expect(find.text('Lint fixed, build running again.'), findsOneWidget);
   });
 
+  testWidgets('a question Claude asks is answered from its card, and the '
+      'answer reaches the CLI as the reply it waits for', (tester) async {
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+    shell.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_ask',
+            'name': 'AskUserQuestion',
+            'input': input,
+          },
+        ],
+      },
+    });
+    shell.event({
+      'type': 'control_request',
+      'request_id': 'req-1',
+      'request': {
+        'subtype': 'can_use_tool',
+        'tool_name': 'AskUserQuestion',
+        'input': input,
+        'tool_use_id': 'toolu_ask',
+        'requires_user_interaction': true,
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+
+    // The question, not a tool row for it.
+    expect(find.text('Which colour?'), findsOneWidget);
+    expect(find.text('A cool colour.'), findsOneWidget);
+    expect(find.text('AskUserQuestion'), findsNothing);
+
+    await tester.tap(find.text('Blue'));
+    await tester.pump();
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await tester.pump();
+
+    final reply = shell.written
+        .map((line) => jsonDecode(line.trim()) as Map)
+        .singleWhere((m) => m['type'] == 'control_response');
+    final response = (reply['response'] as Map)['response'] as Map;
+    expect((reply['response'] as Map)['request_id'], 'req-1');
+    expect(response['behavior'], 'allow');
+    expect((response['updatedInput'] as Map)['answers'], {
+      'Which colour?': 'Blue',
+    });
+    // Answered on the card, which now shows what was given.
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(find.text('Blue'), findsOneWidget);
+  });
+
+  testWidgets('a question in a session being watched is shown with where to '
+      'answer it, and nothing is sent', (tester) async {
+    const input = {
+      'questions': [
+        {
+          'question': 'Deploy now?',
+          'header': 'Deploy',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Yes', 'description': 'Ship it.'},
+            {'label': 'No', 'description': 'Wait.'},
+          ],
+        },
+      ],
+    };
+    final shell = _Shell()
+      ..history = _history([
+        {
+          'type': 'assistant',
+          'message': {
+            'role': 'assistant',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'toolu_ask',
+                'name': 'AskUserQuestion',
+                'input': input,
+              },
+            ],
+          },
+        },
+      ])
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the deploy',
+          'status': 'idle',
+          'state': 'blocked',
+          'waitingFor': 'input needed',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await tester.tap(find.text('SESSIONS ON THIS HOST'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    // The row says it waits for an answer.
+    expect(find.textContaining('waiting for an answer'), findsOneWidget);
+
+    await tester.tap(find.text('the deploy'));
+    await _settlePickUp(tester);
+
+    expect(find.text('Deploy now?'), findsOneWidget);
+    expect(find.text('Ship it.'), findsOneWidget);
+    expect(
+      find.textContaining('Answer it at claude attach 81badf4a'),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(shell.written, isEmpty);
+    expect(shell.paneTyped, isEmpty);
+  });
+
   testWidgets('a host that cannot list its sessions says what it said', (
     tester,
   ) async {

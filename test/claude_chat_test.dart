@@ -692,6 +692,339 @@ void main() {
     expect(run.result, contains('6000 more characters'));
   });
 
+  group('a question Claude asks', () {
+    // As 2.1.287 sent them, measured against a real claude -p on stdio.
+    const callId = 'toolu_014VYdGV2EsfHT7aXFQdgyu9';
+    const questions = [
+      {
+        'question': 'Which colours?',
+        'header': 'Colours',
+        'multiSelect': true,
+        'options': [
+          {'label': 'Red', 'description': 'A warm colour.'},
+          {'label': 'Blue', 'description': 'A cool colour.'},
+        ],
+      },
+      {
+        'question': 'Which size?',
+        'header': 'Size',
+        'multiSelect': false,
+        'options': [
+          {'label': 'Small', 'description': 'Small.'},
+          {'label': 'Large', 'description': 'Large.', 'preview': 'XL\n  L'},
+        ],
+      },
+    ];
+    const input = {'questions': questions};
+
+    Map<String, dynamic> toolUse([String id = callId]) => {
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': id,
+            'name': 'AskUserQuestion',
+            'input': input,
+          },
+        ],
+      },
+    };
+
+    Map<String, dynamic> request([String id = callId, String requestId = 'r1']) =>
+        {
+          'type': 'control_request',
+          'request_id': requestId,
+          'request': {
+            'subtype': 'can_use_tool',
+            'tool_name': 'AskUserQuestion',
+            'display_name': 'AskUserQuestion',
+            'input': input,
+            'tool_use_id': id,
+            'requires_user_interaction': true,
+          },
+        };
+
+    Future<(ClaudeChat, _FakeClaude)> started() async {
+      final claude = _FakeClaude();
+      final chat = ClaudeChat(open: (_) async => claude.channel);
+      addTearDown(chat.dispose);
+      await chat.start();
+      return (chat, claude);
+    }
+
+    test('shows as a question, which the CLI then asks this chat to answer, '
+        'and the answer goes back as allow with the answers added', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+
+      // One entry, a question and not a tool row, now waiting on the user.
+      expect(chat.entries.whereType<ChatToolRun>(), isEmpty);
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      expect(ask.questions.map((q) => q.header), ['Colours', 'Size']);
+      expect(ask.questions[0].multiSelect, isTrue);
+      expect(ask.questions[1].options[1].preview, 'XL\n  L');
+      expect(ask.answerable, isTrue);
+
+      final sent = chat.answer(ask, {
+        'Which colours?': 'Red, Blue',
+        'Which size?': 'Gigantic',
+      });
+      expect(sent, isTrue);
+      expect(claude.sent.single, {
+        'type': 'control_response',
+        'response': {
+          'subtype': 'success',
+          'request_id': 'r1',
+          'response': {
+            'behavior': 'allow',
+            'updatedInput': {
+              ...input,
+              'answers': {
+                'Which colours?': 'Red, Blue',
+                'Which size?': 'Gigantic',
+              },
+            },
+          },
+        },
+      });
+      // Shown answered at once, and not answerable twice.
+      expect(ask.answers!['Which size?'], 'Gigantic');
+      expect(ask.answerable, isFalse);
+      expect(chat.answer(ask, {'Which colours?': 'x', 'Which size?': 'y'}),
+          isFalse);
+      expect(claude.sent, hasLength(1));
+    });
+
+    test('an answer missing a question is not sent', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      expect(chat.answer(ask, {'Which colours?': 'Red'}), isFalse);
+      expect(claude.sent, isEmpty);
+      expect(ask.answerable, isTrue);
+    });
+
+    test('dismissing it denies the call with a message', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      expect(chat.decline(ask), isTrue);
+      final response = (claude.sent.single['response'] as Map)['response'] as Map;
+      expect(response['behavior'], 'deny');
+      expect(response['message'], contains('dismissed the question'));
+      expect(ask.declined, isTrue);
+      expect(ask.answerable, isFalse);
+    });
+
+    test('the request may come before the call, and still makes one entry',
+        () async {
+      final (chat, claude) = await started();
+      claude.event(request());
+      claude.event(toolUse());
+      await _settle();
+
+      expect(chat.entries.whereType<ChatQuestion>(), hasLength(1));
+      expect(
+        chat.entries.whereType<ChatQuestion>().single.ask.answerable,
+        isTrue,
+      );
+    });
+
+    test('the CLI taking its request back ends the chance to answer', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      claude.event({'type': 'control_cancel_request', 'request_id': 'r1'});
+      await _settle();
+      expect(ask.answerable, isFalse);
+      expect(chat.answer(ask, {
+        'Which colours?': 'Red',
+        'Which size?': 'Small',
+      }), isFalse);
+      expect(claude.sent, isEmpty);
+    });
+
+    test('the process going away ends it too', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+
+      await claude.end();
+      await _settle();
+      expect(ask.answerable, isFalse);
+      expect(ask.open, isTrue);
+    });
+
+    test('the tool result settles it: the answers, or a dismissal', () async {
+      final (chat, claude) = await started();
+      claude.event(toolUse());
+      claude.event(request());
+      claude.event({
+        'type': 'user',
+        'message': {
+          'content': [
+            {
+              'type': 'tool_result',
+              'tool_use_id': callId,
+              'content': 'The user answered: "Which colours?"="Red".',
+            },
+          ],
+        },
+        'tool_use_result': {
+          'questions': questions,
+          'answers': {'Which colours?': 'Red', 'Which size?': 'Large'},
+        },
+      });
+      await _settle();
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      expect(ask.answers, {'Which colours?': 'Red', 'Which size?': 'Large'});
+      expect(ask.answerable, isFalse);
+
+      // A second question, dismissed elsewhere.
+      claude.event(toolUse('toolu_2'));
+      claude.event({
+        'type': 'user',
+        'message': {
+          'content': [
+            {
+              'type': 'tool_result',
+              'tool_use_id': 'toolu_2',
+              'content': 'The user dismissed the question without answering.',
+              'is_error': true,
+            },
+          ],
+        },
+        'tool_use_result': 'Error: The user dismissed the question.',
+      });
+      await _settle();
+      final second = chat.entries.whereType<ChatQuestion>().last.ask;
+      expect(second.declined, isTrue);
+      expect(second.answers, isNull);
+    });
+
+    test('any other tool the CLI asks about is refused at once, so it never '
+        'waits', () async {
+      final (_, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r9',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'Bash',
+          'input': {'command': 'rm -rf /srv'},
+          'tool_use_id': 'toolu_9',
+        },
+      });
+      await _settle();
+
+      final response = (claude.sent.single['response'] as Map)['response'] as Map;
+      expect(claude.sent.single['response']['request_id'], 'r9');
+      expect(response['behavior'], 'deny');
+      expect(response['message'], contains('Bash was refused'));
+    });
+
+    test('a request of a kind this chat does not know gets an error, and a '
+        'malformed question is refused', () async {
+      final (chat, claude) = await started();
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r5',
+        'request': {'subtype': 'something_new'},
+      });
+      claude.event({
+        'type': 'control_request',
+        'request_id': 'r6',
+        'request': {
+          'subtype': 'can_use_tool',
+          'tool_name': 'AskUserQuestion',
+          'input': {'questions': 'not a list'},
+          'tool_use_id': 'toolu_6',
+        },
+      });
+      await _settle();
+
+      expect(chat.entries.whereType<ChatQuestion>(), isEmpty);
+      expect(claude.sent, hasLength(2));
+      expect((claude.sent[0]['response'] as Map)['subtype'], 'error');
+      final refused = (claude.sent[1]['response'] as Map)['response'] as Map;
+      expect(refused['behavior'], 'deny');
+    });
+
+    test('read back from a transcript it shows the answer that was given, '
+        'and a question never answered stays open with nobody to ask',
+        () async {
+      // As the transcript file holds them: the call, then the user line with
+      // toolUseResult. The second call has no result yet.
+      final text = [
+        jsonEncode(toolUse()),
+        jsonEncode({
+          'type': 'user',
+          'message': {
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': callId,
+                'content': 'The user answered: …',
+              },
+            ],
+          },
+          'toolUseResult': {
+            'questions': questions,
+            'answers': {'Which colours?': 'Red, Blue', 'Which size?': 'XL'},
+          },
+        }),
+        jsonEncode(toolUse('toolu_open')),
+      ].join('\n');
+      final size = utf8.encode('$text\n').length;
+      final host = _LiveHost('$size\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final asks = [for (final q in chat.entries.whereType<ChatQuestion>()) q.ask];
+      expect(asks, hasLength(2));
+      expect(asks[0].answers, {'Which colours?': 'Red, Blue', 'Which size?': 'XL'});
+      expect(asks[1].open, isTrue);
+      expect(asks[1].answerable, isFalse);
+      // Nothing was sent: a watched session is answered at its terminal.
+      expect(host.startedClaude, isFalse);
+    });
+
+    test('a session held at a question says so, in its row and when typed '
+        'into', () {
+      final asking = ClaudeAgent.fromJson({
+        'sessionId': 'aaaa1111-0000-0000-0000-000000000000',
+        'id': 'aaaa1111',
+        'status': 'idle',
+        'state': 'blocked',
+        'waitingFor': 'input needed',
+      })!;
+      final approving = ClaudeAgent.fromJson({
+        'sessionId': 'bbbb2222-0000-0000-0000-000000000000',
+        'status': 'idle',
+        'waitingFor': 'permission prompt',
+      })!;
+      expect(asking.asking, isTrue);
+      expect(asking.waitingText, 'an answer to a question');
+      expect(approving.asking, isFalse);
+      expect(approving.waitingText, 'permission prompt');
+    });
+  });
+
   test('the command finds Claude, starts where the files are, and '
       'resumes', () {
     final command = ClaudeChat.command(
@@ -699,12 +1032,14 @@ void main() {
       permission: ChatPermission.bypass,
       resume: 'f44e6c8b',
     );
-    // JSON both ways, and nothing that would wait for a prompt nobody can
-    // answer.
+    // JSON both ways, and permission prompts sent to this chat over stdio —
+    // which is what gets it the AskUserQuestion tool; --permission-prompts
+    // none withholds it.
     expect(command, contains('--input-format stream-json'));
     expect(command, contains('--output-format stream-json'));
     expect(command, contains('--permission-mode bypassPermissions'));
-    expect(command, contains('--permission-prompts none'));
+    expect(command, contains('--permission-prompt-tool stdio'));
+    expect(command, isNot(contains('--permission-prompts none')));
     // An exec channel's shell is not a login shell: PATH first, then the
     // installer's own places, then the login shell's PATH.
     expect(command, contains(r'command -v claude'));
@@ -2798,6 +3133,7 @@ void main() {
             ChatNotice(:final text) => text,
             ChatToolRun() => 'tool',
             ChatCommand(:final name) => '/$name',
+            ChatQuestion() => 'question',
           },
       ];
       final gap = texts.indexWhere((text) => text.contains('left out'));

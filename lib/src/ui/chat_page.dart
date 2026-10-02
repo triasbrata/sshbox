@@ -10,6 +10,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../chat/claude_chat.dart';
 import '../platform.dart';
 import '../session/session_manager.dart';
+import 'chat_ask_card.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart' show CodeBlockBuilder, copyAndSay;
 import 'markdown_input.dart';
@@ -606,7 +607,44 @@ class _ChatPageState extends State<ChatPage> {
     final ChatToolRun run => _ToolRow(run: run),
     final ChatNotice notice => _Notice(notice: notice),
     final ChatCommand command => _CommandRow(command: command),
+    final ChatQuestion question => ChatAskCard(
+      // One card for the question for as long as it is in the chat, so what
+      // is half chosen survives the list being redrawn.
+      key: ObjectKey(question.ask),
+      ask: question.ask,
+      hint: _askHint(question.ask),
+      onAnswer: _answerAsk,
+      onDecline: _declineAsk,
+    ),
   };
+
+  /// Where a question this chat cannot answer is to be answered instead: at
+  /// the terminal of the session being watched, which `claude attach` opens
+  /// for a background one. Nothing is typed there from here: a dialog's keys
+  /// are not something this can check before it sends them.
+  String? _askHint(ChatAsk ask) {
+    if (ask.answerable || !ask.open) return null;
+    final watching = _chat.watching;
+    if (watching == null) return 'Claude is no longer waiting for this here.';
+    final where = watching.id != null
+        ? 'claude attach ${watching.id}'
+        : 'its terminal';
+    return '“${watching.name}” waits for an answer. Answer it at $where.';
+  }
+
+  bool _answerAsk(ChatAsk ask, Map<String, String> answers) {
+    final sent = _chat.answer(ask, answers);
+    if (!sent && mounted) {
+      showToast(
+        context,
+        'Claude is no longer waiting for an answer to this',
+        type: TuiToastType.warning,
+      );
+    }
+    return sent;
+  }
+
+  bool _declineAsk(ChatAsk ask) => _chat.decline(ask);
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
   /// a file, a web page, a tool's output — so it is somebody else's text, and
@@ -1658,7 +1696,9 @@ class _SessionList extends StatelessWidget {
 
   /// Where [agent] is and how long it has been going.
   static String _where(ClaudeAgent agent) => [
-    if (agent.interactive)
+    if (agent.asking)
+      'waiting for an answer'
+    else if (agent.interactive)
       'at a terminal'
     else if (agent.busy)
       'working'

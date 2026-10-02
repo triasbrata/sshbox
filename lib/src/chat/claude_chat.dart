@@ -7,8 +7,10 @@ import 'package:flutter/foundation.dart';
 
 import '../session/terminal_session.dart';
 import '../session/tmux.dart';
+import 'chat_ask.dart';
 import 'slash_commands.dart';
 
+export 'chat_ask.dart';
 export 'slash_commands.dart';
 
 /// How much of a tool's result is kept for the transcript. A `cat` of a large
@@ -110,6 +112,14 @@ class ChatCommand extends ChatEntry {
   String? output;
 }
 
+/// A question Claude asked with the AskUserQuestion tool, in the transcript:
+/// see [ChatAsk]. What it says is Claude's, so it is only ever drawn.
+class ChatQuestion extends ChatEntry {
+  ChatQuestion(this.ask);
+
+  final ChatAsk ask;
+}
+
 /// What Claude may do on the host without being asked.
 ///
 /// Nothing here can prompt: a prompt needs an SDK host on the other end of
@@ -195,6 +205,16 @@ class ClaudeAgent {
   /// measured `permission prompt` while a tool waits to be approved. Absent
   /// when nothing is being asked.
   final String? waitingFor;
+
+  /// Whether it is held at a question of Claude's, not a tool to approve.
+  /// Measured on 2.1.287: `waitingFor` reads `input needed` for the
+  /// AskUserQuestion tool, and for a dialog a tool of its own puts up, and
+  /// `permission prompt` for a tool waiting to be approved.
+  bool get asking => waitingFor == 'input needed';
+
+  /// What [waitingFor] says in words, for a sentence like "waiting for …".
+  String? get waitingText =>
+      asking ? 'an answer to a question' : waitingFor;
 
   /// Whether the process is still running. Measured against the CLI: a live
   /// session is the one that refuses `-p --resume`, and a finished one is the
@@ -318,6 +338,13 @@ class ClaudeChat extends ChangeNotifier {
   /// call, by `tool_use_id`: filled in when [loadEarlier] reaches the call,
   /// rather than the call opening to nothing.
   final Map<String, ({String result, bool failed})> _orphans = {};
+
+  /// The questions Claude asked, by the tool call that asked.
+  final Map<String, ChatAsk> _asks = {};
+
+  /// The structured answer of a question read before its call was, as with
+  /// [_orphans], for when [loadEarlier] reaches the call.
+  final Map<String, Object?> _orphanAnswers = {};
 
   /// Bumped whenever what is shown is thrown away, so an earlier part still
   /// on its way for the old session is dropped rather than drawn into the new.
@@ -678,6 +705,8 @@ class ClaudeChat extends ChangeNotifier {
     _entries.clear();
     _running.clear();
     _orphans.clear();
+    _asks.clear();
+    _orphanAnswers.clear();
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
@@ -959,7 +988,7 @@ class ClaudeChat extends ChangeNotifier {
     }
     if (!_typeable(now)) {
       return _undelivered(said, '“${agent.name}” is waiting for '
-          '${now.waitingFor ?? 'something'} on the host'
+          '${now.waitingText ?? 'something'} on the host'
           '${now.state == null ? '' : ' (${now.state})'}. Open it in a '
           'terminal with `claude attach $id` to answer it.');
     }
@@ -1035,8 +1064,8 @@ class ClaudeChat extends ChangeNotifier {
     if (readOnly != null) return _undelivered(said, 'Not typed: $readOnly');
     final waitingFor = now.waitingFor;
     if (waitingFor != null) {
-      return _undelivered(said, '$name is waiting for $waitingFor at its '
-          'terminal. Answer it there, then send this again.');
+      return _undelivered(said, '$name is waiting for ${now.waitingText} at '
+          'its terminal. Answer it there, then send this again.');
     }
     if (now.status != 'idle') {
       return _undelivered(said, '$name is in the middle of a turn. Send this '
@@ -1435,7 +1464,7 @@ class ClaudeChat extends ChangeNotifier {
       case 'user' when message is Map<String, dynamic>:
         final said = _userText(message['content']);
         if (said == null) {
-          _onToolResults(message);
+          _onToolResults(message, structured: event['toolUseResult']);
           return;
         }
         final text = said.trim();
@@ -1529,7 +1558,16 @@ class ClaudeChat extends ChangeNotifier {
       case 'assistant':
         if (_onAssistant(event['message'])) notifyListeners();
       case 'user':
-        if (_onToolResults(event['message'])) notifyListeners();
+        if (_onToolResults(
+          event['message'],
+          structured: event['tool_use_result'],
+        )) {
+          notifyListeners();
+        }
+      case 'control_request':
+        _onControlRequest(event);
+      case 'control_cancel_request':
+        _onControlCancel(event);
       case 'result':
         _busy = false;
         final subtype = event['subtype'];
@@ -1563,6 +1601,18 @@ class ClaudeChat extends ChangeNotifier {
           if (text.isEmpty) break;
           _entries.add(ChatSaid(text, mine: false));
           changed = true;
+        case 'tool_use' when block['name'] == 'AskUserQuestion':
+          final id = block['id'] as String? ?? '';
+          // The CLI's request for the answer may have come first.
+          if (_asks.containsKey(id)) break;
+          final ask = ChatAsk.parse(id, block['input']);
+          if (ask == null) break;
+          _asks[id] = ask;
+          _entries.add(ChatQuestion(ask));
+          if (_orphans.remove(id) case final orphan?) {
+            _settle(ask, _orphanAnswers.remove(id), failed: orphan.failed);
+          }
+          changed = true;
         case 'tool_use':
           final run = ChatToolRun(
             id: block['id'] as String? ?? '',
@@ -1589,7 +1639,10 @@ class ClaudeChat extends ChangeNotifier {
 
   /// A `user` event is not the user: it is what the tools Claude ran gave
   /// back, which folds into the call that asked for it.
-  bool _onToolResults(Object? message) {
+  ///
+  /// [structured] is the event's own `tool_use_result`, which is where a
+  /// question's answers are.
+  bool _onToolResults(Object? message, {Object? structured}) {
     if (message is! Map<String, dynamic>) return false;
     final content = message['content'];
     if (content is! List) return false;
@@ -1600,11 +1653,19 @@ class ClaudeChat extends ChangeNotifier {
       final id = block['tool_use_id'];
       final result = _resultText(block['content']);
       final failed = block['is_error'] == true;
+      if (_asks[id] case final ask?) {
+        _settle(ask, structured, failed: failed);
+        changed = true;
+        continue;
+      }
       final run = _running.remove(id);
       if (run == null) {
         // Its call is further back than anything read yet: kept for when
         // [loadEarlier] reaches it.
-        if (id is String) _orphans[id] = (result: result, failed: failed);
+        if (id is String) {
+          _orphans[id] = (result: result, failed: failed);
+          _orphanAnswers[id] = structured;
+        }
         continue;
       }
       run
@@ -1613,6 +1674,121 @@ class ClaudeChat extends ChangeNotifier {
       changed = true;
     }
     return changed;
+  }
+
+  /// A question's end: answered, with [structured] holding the answers, or
+  /// dismissed. Nothing asks for it any more either way.
+  void _settle(ChatAsk ask, Object? structured, {required bool failed}) {
+    ask.requestId = null;
+    final answers = ChatAsk.answersIn(structured);
+    if (answers != null && !failed) {
+      ask.answers = answers;
+    } else {
+      ask.declined = true;
+    }
+  }
+
+  /// A request from the CLI for the host to decide. Only `can_use_tool` is
+  /// known, and every one gets an answer: the CLI waits for it, so a request
+  /// left alone stops the turn. A question is shown for the user to answer;
+  /// anything else is refused, as with `--permission-prompts none`, since
+  /// this chat has no way to ask about it — what Claude may do without being
+  /// asked is the ⋮ menu's.
+  void _onControlRequest(Map<String, dynamic> event) {
+    final id = event['request_id'];
+    final request = event['request'];
+    if (id is! String || request is! Map<String, dynamic>) return;
+    if (request['subtype'] != 'can_use_tool') {
+      _respondError(id, 'Not a request this chat answers.');
+      return;
+    }
+    if (request['tool_name'] == 'AskUserQuestion') {
+      final callId = request['tool_use_id'];
+      var ask = callId is String ? _asks[callId] : null;
+      if (ask == null && callId is String) {
+        ask = ChatAsk.parse(callId, request['input']);
+        if (ask != null) {
+          _asks[callId] = ask;
+          _entries.add(ChatQuestion(ask));
+        }
+      }
+      if (ask != null) {
+        ask.requestId = id;
+        notifyListeners();
+        return;
+      }
+    }
+    _respond(id, {
+      'behavior': 'deny',
+      'message':
+          'This chat cannot approve a tool, so ${request['tool_name']} was '
+          'refused. What Claude may do without being asked is set in the '
+          'menu beside the box.',
+    });
+  }
+
+  void _respond(String requestId, Map<String, Object?> response) => _write({
+    'type': 'control_response',
+    'response': {
+      'subtype': 'success',
+      'request_id': requestId,
+      'response': response,
+    },
+  });
+
+  void _respondError(String requestId, String message) => _write({
+    'type': 'control_response',
+    'response': {
+      'subtype': 'error',
+      'request_id': requestId,
+      'error': message,
+    },
+  });
+
+  /// The CLI withdrew a request, as it does when the turn is interrupted: a
+  /// question it no longer waits on cannot be answered.
+  void _onControlCancel(Map<String, dynamic> event) {
+    for (final ask in _asks.values) {
+      if (ask.requestId != null && ask.requestId == event['request_id']) {
+        ask.requestId = null;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Answers [ask] with [answers], by question text, and goes on with the
+  /// turn. False when it cannot be answered — it was, or the CLI no longer
+  /// waits, or the process is gone — and nothing was sent.
+  bool answer(ChatAsk ask, Map<String, String> answers) {
+    final id = ask.requestId;
+    if (id == null || !ask.answerable || _channel == null) return false;
+    if (ask.questions.any((q) => !answers.containsKey(q.question))) {
+      return false;
+    }
+    _respond(id, {
+      'behavior': 'allow',
+      'updatedInput': {...ask.input, 'answers': answers},
+    });
+    ask
+      ..requestId = null
+      ..answers = Map.of(answers);
+    notifyListeners();
+    return true;
+  }
+
+  /// Dismisses [ask] without an answer, and tells Claude so.
+  bool decline(ChatAsk ask) {
+    final id = ask.requestId;
+    if (id == null || !ask.answerable || _channel == null) return false;
+    _respond(id, {
+      'behavior': 'deny',
+      'message': 'The user dismissed the question without answering.',
+    });
+    ask
+      ..requestId = null
+      ..declined = true;
+    notifyListeners();
+    return true;
   }
 
   /// A result is a string, or the blocks a tool answered with. Either way
@@ -1650,6 +1826,9 @@ class ClaudeChat extends ChangeNotifier {
         ..failed = true;
     }
     _running.clear();
+    for (final ask in _asks.values) {
+      ask.requestId = null;
+    }
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
     notifyListeners();
   }
@@ -1697,6 +1876,13 @@ class ClaudeChat extends ChangeNotifier {
   /// stderr is folded into stdout because [ChannelCapable.open] carries only
   /// stdout, and without it the host saying Claude is not installed would be
   /// silence. A line that is not an event shows as a notice.
+  ///
+  /// Permission prompts go to this chat over stdio, as the SDK's hosts get
+  /// them, rather than being turned off with `--permission-prompts none`:
+  /// measured, `none` also withholds the AskUserQuestion tool, which only a
+  /// host that can answer it is given. So every `can_use_tool` request must
+  /// be answered, or the CLI waits for ever: [_onControlRequest] shows the
+  /// question and refuses everything else, as `none` did.
   static String command({
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
@@ -1713,7 +1899,7 @@ class ClaudeChat extends ChangeNotifier {
     final script = '$_findClaude$start'
         r'exec "$c" -p --input-format stream-json --output-format stream-json '
         '--verbose --permission-mode ${permission.flag} '
-        '--permission-prompts none$again 2>&1';
+        '--permission-prompt-tool stdio$again 2>&1';
     return 'sh -c ${_shellQuote(script)}';
   }
 
@@ -1874,8 +2060,9 @@ class ClaudeChat extends ChangeNotifier {
 
   /// The oldest Claude Code that has everything chat mode uses, read off the
   /// CLI's own changelog (CHANGELOG.md in github.com/anthropics/claude-code):
-  /// - `--permission-prompts none`, which every `claude -p` this chat runs
-  ///   starts with: 2.1.259. The newest of them all, so the minimum.
+  /// - `--permission-prompts none`, which this chat's `claude --bg` sessions
+  ///   no longer need and its `claude -p` once started with: 2.1.259. The
+  ///   newest of them all, so it stays the minimum.
   /// - `claude agents --json`: 2.1.145; its `waitingFor`: 2.1.162; its `id`,
   ///   `state` and `--all`: 2.1.169.
   /// - `claude --bg`: 2.1.140 names it; `claude attach`: 2.1.198 is the
