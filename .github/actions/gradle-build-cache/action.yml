@@ -5,7 +5,8 @@ description: >
   this run's from main alone. Measured on the Android debug build: 474 MB,
   338 s with it empty and 213 s with it restored. Its keys carry the commit,
   since the outputs change with the code, so each main push adds one; the
-  older ones are deleted by the caller's `prune` job, keeping one per name.
+  older ones are deleted by cache-prune.yml, keeping one per name. For e2e
+  builds only: a release is built clean, with no task outputs reused.
 inputs:
   name:
     description: Which build this is, as in gradle-build-<name>-.

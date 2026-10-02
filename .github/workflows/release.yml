@@ -146,11 +146,6 @@ jobs:
             gradle-release-${{ runner.os }}-
             gradle-${{ runner.os }}-
 
-      - uses: ./.github/actions/gradle-build-cache
-        timeout-minutes: 10
-        with:
-          name: release-Linux
-
       - name: Build and publish
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play.json
@@ -158,14 +153,7 @@ jobs:
           # Crash reporting's DSN, baked in by tool/release.sh. Unset leaves
           # crash reporting off, and Settings says so.
           JEANSH_SENTRY_DSN: ${{ secrets.JEANSH_SENTRY_DSN }}
-          GRADLE_OPTS: -Dorg.gradle.caching=true
         run: tool/release.sh --publish $DRY_RUN
-
-      - uses: ./.github/actions/gradle-build-cache
-        timeout-minutes: 10
-        with:
-          name: release-Linux
-          save: 'true'
 
 
       - name: Save Gradle's downloads

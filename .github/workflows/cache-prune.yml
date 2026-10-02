@@ -1,4 +1,5 @@
-# Keeps one Gradle build cache per build on main.
+# Keeps one Gradle build cache on main: the e2e debug build's. Releases are
+# built clean, with no task outputs reused, so they have none.
 #
 # A build cache is keyed on its commit (.github/actions/gradle-build-cache),
 # since its outputs change with the code, and actions/cache cannot overwrite
@@ -34,7 +35,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for build in Linux release-Linux; do
+          for build in Linux; do
             gh cache list --ref refs/heads/main --key "gradle-build-$build-" \
               --sort created_at --order desc --limit 100 \
               --json id,key,sizeInBytes \
