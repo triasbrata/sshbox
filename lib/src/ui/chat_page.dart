@@ -377,12 +377,12 @@ class _ChatPageState extends State<ChatPage> {
     final sendsEnter = enter && (!chorded || _sendChord);
     if (!(typesCharacter || plainEdit || paste || sendsEnter)) return false;
     if (!_captureAllowed()) return false;
-    // Space or Enter on a focused button or row presses it: somebody who
-    // tabbed to a control must still be able to use it.
-    final primary = FocusManager.instance.primaryFocus;
-    if ((character == ' ' || enter) &&
-        primary != null &&
-        _isPressable(primary)) {
+    // On a control somebody tabbed to, Space, Enter, the arrows, Home, End,
+    // Backspace and Delete are the control's: they press it and move between
+    // controls. Characters and a paste go to the box from anywhere.
+    if ((!typesCharacter || character == ' ') &&
+        !paste &&
+        _onControl(FocusManager.instance.primaryFocus)) {
       return false;
     }
     _focusBox();
@@ -393,7 +393,11 @@ class _ChatPageState extends State<ChatPage> {
       return true;
     }
     if (sendsEnter) {
-      if (_enterKey() == KeyEventResult.ignored) _type('\n');
+      // A plain Enter into an empty box would only start it with a blank
+      // line: it moves the focus and no more.
+      if (_enterKey() == KeyEventResult.ignored && _input.text.isNotEmpty) {
+        _type('\n');
+      }
       return true;
     }
     return false;
@@ -421,19 +425,20 @@ class _ChatPageState extends State<ChatPage> {
             focused.findAncestorWidgetOfExactType<EditableText>() == null);
   }
 
-  /// Whether [node] is a button or a row, which Space and Enter press: a node inside
-  /// an ink response, as every Material button and list row is. A selection
-  /// in a reply is no such thing, and Space and Enter there are the box's.
-  static bool _isPressable(FocusNode node) {
-    var found = false;
+  /// Whether [node] is a control the user moved to: any focus that is not
+  /// nothing, the page's own scope or a selection in a reply. Those are where
+  /// a click leaves the focus, and where a key has no other meaning.
+  static bool _onControl(FocusNode? node) {
+    if (node == null || node is FocusScopeNode) return false;
+    var selection = false;
     node.context?.visitAncestorElements((element) {
-      if (element.widget is InkResponse) {
-        found = true;
+      if (element.widget is SelectableRegion) {
+        selection = true;
         return false;
       }
       return true;
     });
-    return found;
+    return !selection;
   }
 
   /// The box takes the focus now, so that the key being heard lands in it.

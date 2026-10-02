@@ -3246,20 +3246,51 @@ void main() {
       expect(box(tester).focusNode!.hasFocus, isTrue);
     });
 
-    testWidgets('Backspace, with focus on a button, deletes in the box', (
-      tester,
-    ) async {
+    testWidgets('Backspace and the arrows, with focus on a button, are the '
+        'button\'s: the box is left alone', (tester) async {
       await pumpChat(tester);
       await tester.enterText(find.byType(TextField), 'abc');
       await tester.pump();
       await focusAButton(tester);
+      final button = FocusManager.instance.primaryFocus;
 
       await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
       await tester.pump();
+      expect(typed(tester), 'abc');
+      expect(box(tester).focusNode!.hasFocus, isFalse);
 
+      // The arrow moves between controls, as Flutter's own does.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(typed(tester), 'abc');
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      expect(FocusManager.instance.primaryFocus, isNot(same(button)));
+    });
+
+    testWidgets('Backspace and an arrow, from a selection in a reply, go to '
+        'the box', (tester) async {
+      await pumpChat(tester);
+      await tester.enterText(find.byType(TextField), 'abc');
+      await tester.pump();
+      await selectTheAnswer(tester);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.pump();
       expect(typed(tester), 'ab');
       expect(box(tester).focusNode!.hasFocus, isTrue);
-    });
+
+      await selectTheAnswer(tester);
+      expect(box(tester).focusNode!.hasFocus, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(box(tester).focusNode!.hasFocus, isTrue);
+      expect(
+        box(tester).controller!.selection.baseOffset,
+        lessThan(2),
+        reason: 'the arrow moved the caret',
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     testWidgets('Enter, with focus on a button, presses it and is not the '
         'box\'s', (tester) async {
@@ -3297,6 +3328,19 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       expect(shell.written, hasLength(1));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Enter from a selection into an empty box only focuses it', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      await selectTheAnswer(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(typed(tester), isEmpty);
+      expect(box(tester).focusNode!.hasFocus, isTrue);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     testWidgets('Ctrl+V of text, with the box unfocused, pastes into it', (
