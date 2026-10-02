@@ -2255,7 +2255,7 @@ class ClaudeChat extends ChangeNotifier {
     // process that asked, and to no other.
     final sent = _respond(id, {
       'behavior': 'allow',
-      'updatedInput': {...ask.input, 'answers': answers},
+      'updatedInput': {...ask.input},
     }, target: ask.target);
     if (!sent) return false;
     ask
