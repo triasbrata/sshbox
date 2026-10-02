@@ -2241,6 +2241,235 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 
+  group('a table in a reply', () {
+    const table =
+        'Before the table.\n\n'
+        '| Name | Note |\n| --- | --- |\n'
+        '| alpha | first `code_one()` cell |\n'
+        '| beta | second row |\n\n'
+        'After the table.\n';
+
+    Future<void> pump(WidgetTester tester, String md) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Sel')])
+        ..history = _history([
+          {
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': md},
+              ],
+            },
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Sel');
+    }
+
+    (Offset, Offset) ends(WidgetTester tester, String word, {String? within}) {
+      final para = tester.renderObject<RenderParagraph>(
+        find.textContaining(within ?? word, findRichText: true).first,
+      );
+      final from = para.text.toPlainText().indexOf(word);
+      final boxes = para.getBoxesForSelection(
+        TextSelection(baseOffset: from, extentOffset: from + word.length),
+      );
+      return (
+        para.localToGlobal(boxes.first.toRect().centerLeft) +
+            const Offset(1, 0),
+        para.localToGlobal(boxes.last.toRect().centerRight) -
+            const Offset(1, 0),
+      );
+    }
+
+    Future<void> dragThenCopy(
+      WidgetTester tester,
+      Offset from,
+      Offset to,
+    ) async {
+      final g = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await g.moveTo(Offset.lerp(from, to, 0.5)!);
+      await g.moveTo(to);
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+    }
+
+    testWidgets('a drag within one cell copies what it covers', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second row');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['second row']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag within a cell holding inline code copies it', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'code_one()');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['code_one()']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag from the text before the table to the text after '
+        'copies the cells between, in reading order', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'Before');
+      final (_, b) = ends(tester, 'After the table.');
+      await dragThenCopy(tester, a, b);
+      expect(copied, hasLength(1));
+      final text = copied.single;
+      for (final part in [
+        'Before the table.',
+        'Name',
+        'Note',
+        'alpha',
+        'code_one()',
+        'beta',
+        'second row',
+        'After the table.',
+      ]) {
+        expect(text, contains(part));
+      }
+      expect(text.indexOf('alpha'), lessThan(text.indexOf('beta')));
+      expect(text.indexOf('first'), lessThan(text.indexOf('second row')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    final wide =
+        '| ${[for (var i = 0; i < 8; i++) 'Column$i'].join(' | ')} |\n'
+        '| ${List.filled(8, '---').join(' | ')} |\n'
+        '| ${[for (var i = 0; i < 8; i++) 'cell_$i has quite a lot of words in it'].join(' | ')} |\n';
+
+    testWidgets('a wide table, scrolling sideways, still copies a drag in '
+        'a cell', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Intro.\n\n$wide');
+      final (a, b) = ends(tester, 'cell_0');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['cell_0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a wide table: a long press in a cell then Copy', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Intro.\n\n$wide');
+      final (a, b) = ends(tester, 'cell_0');
+      await tester.longPressAt(Offset.lerp(a, b, 0.5)!);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, ['cell_0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('a double-click on a word in a cell, then Ctrl+C', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second');
+      final at = Offset.lerp(a, b, 0.5)!;
+      await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(copied, ['second']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a drag down a column from one cell to the next copies both, '
+        'one after the other', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'alpha');
+      final (_, b) = ends(tester, 'beta');
+      await dragThenCopy(tester, a, b);
+      expect(copied, hasLength(1));
+      expect(copied.single, contains('alpha'));
+      expect(copied.single, contains('beta'));
+      expect(copied.single.indexOf('alpha'), lessThan(copied.single.indexOf('beta')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('cells copy apart: a tab between the cells of a row and a '
+        'newline between rows', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, _) = ends(tester, 'Name');
+      final (_, b) = ends(tester, 'second row');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single, 'Name\tNote\nalpha\tfirst code_one() cell\nbeta\tsecond row');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('two paragraphs copy with a newline between them', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'First paragraph.\n\nSecond paragraph.\n');
+      final (a, _) = ends(tester, 'First');
+      final (_, b) = ends(tester, 'Second paragraph.');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single, 'First paragraph.\nSecond paragraph.');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a list copies a line per item', (tester) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, '- one\n- two\n- three\n');
+      final (a, _) = ends(tester, 'one');
+      final (_, b) = ends(tester, 'three');
+      await dragThenCopy(tester, a, b);
+      expect(copied.single.split('\n').map((l) => l.trim()).toList(), [
+        'one',
+        '• two',
+        '• three',
+      ]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('part of one paragraph copies with no separator added', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, 'Alpha beta gamma.\n\nOther.\n');
+      final (a, b) = ends(tester, 'beta gamma');
+      await dragThenCopy(tester, a, b);
+      expect(copied, ['beta gamma']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Android: a long press in a cell then Copy copies the word', (
+      tester,
+    ) async {
+      final copied = _useFakeClipboard();
+      await pump(tester, table);
+      final (a, b) = ends(tester, 'second row');
+      await tester.longPressAt(a + const Offset(6, 0));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, ['second']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  });
+
   group('code in a reply, in the real shell', () {
     const inline = 'inline_code()';
 
