@@ -11,6 +11,7 @@ import '../session/terminal_session.dart';
 import '../session/tmux.dart';
 import 'chat_ask.dart';
 import 'slash_commands.dart';
+import '../telemetry/app_log.dart';
 
 export 'chat_ask.dart';
 export 'slash_commands.dart';
@@ -142,6 +143,202 @@ DateTime Function() chatNow = DateTime.now;
 /// A turn in flight, for the line under the chat that says the session is
 /// working rather than stuck — what Claude Code's own `✶ Zesting… (33s · ↓
 /// 1.4k tokens)` says at a terminal.
+/// How much of its context window a session uses, from the usage of the last
+/// request it made: what went in, whether new or read from the cache, plus what
+/// came out, which is what the next request carries. The window is not in a
+/// transcript — `[1m]` is not in the model id a message records — so it is
+/// 1,000,000 where the id says so or the request was already past 200,000, and
+/// 200,000 otherwise.
+class ChatContext {
+  const ChatContext({required this.tokens, this.model, this.reportedWindow});
+
+  final int tokens;
+  final String? model;
+
+  /// The window as Claude Code reported it, where a stream did; else guessed.
+  final int? reportedWindow;
+
+  int get window =>
+      reportedWindow ??
+      (tokens > 200000 || (model?.contains('[1m]') ?? false)
+          ? 1000000
+          : 200000);
+
+  /// 0 to 1, or more once past the window.
+  double get fraction => tokens / window;
+
+  /// From one message's `usage`, or null where it carries none a request
+  /// made — a synthetic message has zeros, and a shape this does not know says
+  /// nothing rather than a wrong number.
+  static ChatContext? from(Object? message) {
+    if (message is! Map) return null;
+    final usage = message['usage'];
+    final model = message['model'] is String ? message['model'] as String : null;
+    if (usage is! Map || (model?.startsWith('<') ?? false)) return null;
+    int count(String key) {
+      final value = usage[key];
+      return value is int && value > 0 ? value : 0;
+    }
+
+    final tokens = count('input_tokens') +
+        count('cache_creation_input_tokens') +
+        count('cache_read_input_tokens') +
+        count('output_tokens');
+    return tokens == 0 ? null : ChatContext(tokens: tokens, model: model);
+  }
+}
+
+/// One limit of the plan, as Claude Code reports it: how much is used and when
+/// the window resets.
+class QuotaWindow {
+  const QuotaWindow({
+    required this.label,
+    required this.percent,
+    this.resetsAt,
+    this.resetsText,
+  });
+
+  /// The reset as the host printed it, where it is not an instant.
+  final String? resetsText;
+
+  /// `Session (5 h)`, `Weekly`, `Weekly · Opus`, `Monthly spend`.
+  final String label;
+
+  /// 0 to 100, or more once exceeded.
+  final double percent;
+  final DateTime? resetsAt;
+}
+
+/// The plan's usage limits as the host's Claude Code reports them, with when
+/// they were read. Quota belongs to the account on the host, not to a session,
+/// and is only ever what Claude Code itself prints: no credential is read here.
+class ChatQuota {
+  const ChatQuota({required this.windows, required this.asOf});
+
+  final List<QuotaWindow> windows;
+  final DateTime asOf;
+
+  /// The limits in a JSON object shaped as Claude Code's `rate_limits`: each
+  /// window an object with `used_percentage` and `resets_at`, whatever the
+  /// window is called — `five_hour`, `seven_day`, a per-model one — and a
+  /// `spend_limit`, a monthly one. Anything else in it is not read. Null when
+  /// it holds no limit at all, so the popup can say Claude Code did not report
+  /// any rather than show an empty list; numbers that are not numbers are left
+  /// out, never thrown on.
+  static ChatQuota? fromJson(Object? json, {required DateTime asOf}) {
+    final limits = json is Map && json['rate_limits'] is Map
+        ? json['rate_limits'] as Map
+        : json;
+    if (limits is! Map) return null;
+    const names = {
+      'five_hour': 'Session (5 h)',
+      'seven_day': 'Weekly',
+      'seven_day_opus': 'Weekly · Opus',
+      'seven_day_sonnet': 'Weekly · Sonnet',
+      'spend_limit': 'Monthly spend',
+    };
+    final order = [
+      'five_hour',
+      'seven_day',
+      ...limits.keys.whereType<String>().where(
+        (key) => !const {'five_hour', 'seven_day', 'spend_limit'}.contains(key),
+      ),
+      'spend_limit',
+    ];
+    final windows = <QuotaWindow>[];
+    for (final key in order) {
+      final window = limits[key];
+      if (window is! Map) continue;
+      final percent = window['used_percentage'];
+      if (percent is! num || !percent.isFinite) continue;
+      final resets = window['resets_at'];
+      windows.add(
+        QuotaWindow(
+          label: names[key] ?? _plainName(key),
+          percent: percent.toDouble(),
+          resetsAt: switch (resets) {
+            // Seconds, and a date this side of the year 5000: a larger one is
+            // milliseconds sent for seconds, or nonsense, and DateTime throws.
+            final num seconds when seconds.isFinite &&
+                seconds > 0 &&
+                seconds < 1e11 =>
+              DateTime.fromMillisecondsSinceEpoch(
+                (seconds * 1000).round(),
+                isUtc: true,
+              ),
+            final String text => DateTime.tryParse(text)?.toUtc(),
+            _ => null,
+          },
+        ),
+      );
+    }
+    return windows.isEmpty ? null : ChatQuota(windows: windows, asOf: asOf);
+  }
+
+  /// The windows of a `rate_limit_event` of the stream: `unifiedWindows`, each
+  /// `utilization` a fraction, with `resetsAt` in epoch seconds. A turn of the
+  /// chat's own carries one for free.
+  static ChatQuota? fromRateLimitEvent(
+    Map<String, dynamic> event, {
+    required DateTime asOf,
+  }) {
+    final info = event['rate_limit_info'];
+    final windows = info is Map ? info['unifiedWindows'] : null;
+    if (windows is! Map) return null;
+    return fromJson({
+      for (final entry in windows.entries)
+        if (entry.value is Map && (entry.value as Map)['utilization'] is num)
+          entry.key: {
+            'used_percentage':
+                ((entry.value as Map)['utilization'] as num) * 100,
+            'resets_at': (entry.value as Map)['resetsAt'],
+          },
+    }, asOf: asOf);
+  }
+
+  /// The lines of `/usage` under `-p`, which Claude Code prints as text:
+  /// `Current session: 65% used · resets Oct 2, 3:59pm (Asia/Bangkok)`,
+  /// `Current week (all models): 28% used · resets …`, and whatever other
+  /// limit it names — a monthly one among them, where it reports one. The
+  /// reset is kept as printed, in the host's own time and zone, since the zone
+  /// is a name and not an offset. Any other line is ignored, so a changed
+  /// output costs the popup its numbers and nothing else.
+  static ChatQuota? fromUsageText(String text, {required DateTime asOf}) {
+    final line = RegExp(
+      r'^\s*(Current [^:\n]{1,60}|[^:\n]{1,60}(?:month|week|session|day)[^:\n]{0,40}):\s*'
+      r'(\d+(?:\.\d+)?)%\s*used(?:\s*[·•-]\s*resets\s+([^\n]{1,60}))?',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    final windows = <QuotaWindow>[];
+    for (final match in line.allMatches(text)) {
+      final percent = double.tryParse(match.group(2)!);
+      if (percent == null || !percent.isFinite) continue;
+      // Host text: no control or escape reaches the screen.
+      String clean(String text) =>
+          text.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]'), '').trim();
+      final label = clean(match.group(1)!);
+      final resets = match.group(3) == null ? null : clean(match.group(3)!);
+      windows.add(
+        QuotaWindow(
+          label: label.isEmpty ? 'Limit' : label,
+          percent: percent,
+          resetsText: resets == null || resets.isEmpty ? null : resets,
+        ),
+      );
+    }
+    return windows.isEmpty ? null : ChatQuota(windows: windows, asOf: asOf);
+  }
+
+  /// A host's own key, made readable and kept short: `seven_day_x` as
+  /// `Seven day x`. Drawn as text, never read.
+  static String _plainName(String key) {
+    final words = key.replaceAll(RegExp(r'[^A-Za-z0-9]+'), ' ').trim();
+    final short = words.length > 24 ? words.substring(0, 24) : words;
+    return short.isEmpty ? 'Limit' : short[0].toUpperCase() + short.substring(1);
+  }
+}
+
 class ChatProgress {
   const ChatProgress({
     required this.started,
@@ -386,7 +583,13 @@ class ClaudeChat extends ChangeNotifier {
     this.deliveryTimeout = const Duration(seconds: 30),
     this.dropGrace = const Duration(seconds: 10),
     this.chipTimeout = const Duration(seconds: 15),
+    this.hostKey,
   });
+
+  /// What names the host's account, so chats on one host share what is known of
+  /// its plan usage and ask for it once a minute between them. Without one a
+  /// chat keeps its own.
+  final String? hostKey;
 
   /// How long a picture pasted into a session's input line has to become
   /// its `[Image #N]` before the text after it is typed. Measured on
@@ -576,6 +779,134 @@ class ClaudeChat extends ChangeNotifier {
 
   int get tasksDone => _tasks.values.where((task) => task.done).length;
 
+  /// Every task the session has, for the header Claude Code's view puts over
+  /// its list: `19 tasks (11 done, 3 in progress, 5 open)`.
+  int get tasksTotal => _tasks.length;
+  int get tasksInProgress => _tasks.values.where((task) => task.inProgress).length;
+  int get tasksPending =>
+      _tasks.values.where((task) => !task.done && !task.inProgress).length;
+
+  /// How much of the session's task store is read: this many files, this many
+  /// bytes of each, this many in all. A task is a few hundred bytes; a session
+  /// with thousands is not one to hand over whole.
+  static const taskFiles = 300;
+  static const taskFileBytes = 16 * 1024;
+  static const taskTotalBytes = 1024 * 1024;
+
+  /// What the host runs to hand over the session's own task store,
+  /// `${CLAUDE_CONFIG_DIR:-~/.claude}/tasks/<sessionId>/<N>.json` — the whole
+  /// list as it is, where the transcript read holds only its last 512 KB and
+  /// so misses every task a long session made early. One line a task, its
+  /// JSON with the line breaks between its tokens taken out.
+  ///
+  /// The id is quoted as [historyCommand] quotes it, and only a file named by
+  /// digits is read, so nothing from the host reaches a command.
+  static String tasksCommand(String sessionId) =>
+      'sh -c '
+      '${_shellQuote(r'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tasks"; '
+          'd="\$d"/${_shellQuote(sessionId)}; '
+          r'[ -d "$d" ] || exit 0; '
+          r'ls "$d" 2>/dev/null | grep "^[0-9][0-9]*\.json\$" '
+          '| head -n $taskFiles | while read n; do '
+          'head -c $taskFileBytes "\$d/\$n" | tr "\n" " "; echo; '
+          'done | head -c $taskTotalBytes')}';
+
+  /// The tasks in what [tasksCommand] printed, by number. A line that is not a
+  /// task as Claude Code writes one — an id that is digits, a subject, a status
+  /// of pending, in_progress or completed — is left out, and anything else in
+  /// it is not read.
+  @visibleForTesting
+  static List<ChatTask> tasksFrom(String output) {
+    final tasks = <ChatTask>[];
+    for (final line in const LineSplitter().convert(output)) {
+      final Object? json;
+      try {
+        json = jsonDecode(line);
+      } catch (_) {
+        continue;
+      }
+      if (json is! Map) continue;
+      final id = json['id'];
+      final subject = json['subject'];
+      final status = json['status'];
+      if (id is! String ||
+          // Digits, and few enough to be a number: the sort parses it.
+          !RegExp(r'^\d{1,9}$').hasMatch(id) ||
+          subject is! String ||
+          !const {'pending', 'in_progress', 'completed'}.contains(status)) {
+        continue;
+      }
+      // Host text: no control or escape reaches the screen, as in a message.
+      String clean(String text) =>
+          text.replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]'), '').trim();
+      tasks.add(
+        ChatTask(
+          id: id,
+          subject: clean(subject),
+          activeForm: json['activeForm'] is String
+              ? clean(json['activeForm'] as String)
+              : null,
+          status: status as String,
+        ),
+      );
+    }
+    return tasks..sort((a, b) => int.parse(a.id).compareTo(int.parse(b.id)));
+  }
+
+  void _wantTasks() {
+    if (!_replayingHistory) unawaited(_readTasks());
+  }
+
+  bool _readingTasks = false;
+  bool _rereadTasks = false;
+
+  /// True while a transcript is being replayed: its task calls and results are
+  /// not each a reason to read the store, which is read once after.
+  bool _replayingHistory = false;
+
+  /// Reads the session's task store, in place of what the transcript made of
+  /// it. Asked when a session is opened and again whenever a TaskCreate or
+  /// TaskUpdate result arrives — the transcript is the trigger, not the
+  /// source. One read at a time: one asked for during another is made when it
+  /// ends. A store that is not there, or empty, leaves what the transcript
+  /// made of the list, which is what a TodoWrite session has.
+  Future<void> _readTasks() async {
+    final id = _sessionId;
+    if (id == null || !_sessionIdShape.hasMatch(id)) return;
+    if (_readingTasks) {
+      _rereadTasks = true;
+      return;
+    }
+    _readingTasks = true;
+    final shown = _shown;
+    try {
+      do {
+        _rereadTasks = false;
+        final String output;
+        try {
+          output = utf8.decode(
+            await _readAll(tasksCommand(id), const Duration(seconds: 15)),
+            allowMalformed: true,
+          );
+        } catch (_) {
+          // No connection, or a host that would not: the list as it was.
+          return;
+        }
+        // Another session picked meanwhile: this one's tasks are not its.
+        if (shown != _shown) return;
+        final read = tasksFrom(output);
+        if (read.isNotEmpty) {
+          _tasks
+            ..clear()
+            ..addEntries([for (final task in read) MapEntry(task.id, task)]);
+          notifyListeners();
+        }
+      } while (_rereadTasks);
+    } finally {
+      _readingTasks = false;
+    }
+  }
+
   void _noteTaskCall(String name, Map<String, dynamic> input, String id) {
     if (_pastOnly || !const {'TaskCreate', 'TaskUpdate', 'TodoWrite'}.contains(name)) {
       return;
@@ -600,7 +931,10 @@ class ClaudeChat extends ChangeNotifier {
           subject: subject,
           activeForm: text('activeForm'),
         );
+        _wantTasks();
       case 'TaskUpdate':
+        // A reason to read the store even for a task not known yet.
+        _wantTasks();
         final task = _tasks[text('taskId')];
         if (task == null) return;
         switch (text('status')) {
@@ -690,9 +1024,105 @@ class ClaudeChat extends ChangeNotifier {
   /// What an assistant line says of the turn: its tokens, and whether it is
   /// the turn's last message. A line read with no turn open — the history cut
   /// into one — opens it at its own time, the nearest there is.
+  /// The most Claude Code is asked how much of the plan is used: once a
+  /// minute for a host, when the popup opens and when a turn ends in a chat on
+  /// show, never in a loop and never for a chat nobody is looking at. Between
+  /// those the last answer is shown with its age.
+  static const quotaEvery = Duration(minutes: 1);
+
+  static final Map<String, ChatQuota> _quotaOfHost = {};
+  static final Map<String, DateTime> _quotaAsked = {};
+
+  /// Forgets what is known of every host's plan, for a test to start clean.
+  @visibleForTesting
+  static void forgetQuotas() {
+    _quotaOfHost.clear();
+    _quotaAsked.clear();
+  }
+  ChatQuota? _ownQuota;
+  DateTime? _ownQuotaAsked;
+  bool _askingQuota = false;
+
+  /// Set once Claude Code has answered and had no limit to report, so the popup
+  /// can say so; cleared by a later answer that has some.
+  bool _quotaNotReported = false;
+  bool get quotaNotReported => _quotaNotReported;
+
+  ChatQuota? get quota => hostKey == null ? _ownQuota : _quotaOfHost[hostKey];
+
+  void _setQuota(ChatQuota quota) {
+    if (hostKey == null) {
+      _ownQuota = quota;
+    } else {
+      _quotaOfHost[hostKey!] = quota;
+    }
+    _quotaNotReported = false;
+  }
+
+  /// What the host runs for the plan's usage: Claude Code's own `/usage`,
+  /// which under `-p` is a local command — no model call, no session left,
+  /// nothing run, measured on 2.1.300 — and prints plain text. Only that is
+  /// read; no credential and no usage endpoint is touched. Found as
+  /// [command] finds Claude.
+  static String usageCommand() =>
+      'sh -c ${_shellQuote('${_findClaude}cd "\$HOME" 2>/dev/null; '
+          r'"$c" -p /usage --no-session-persistence --tools "" --max-turns 1 '
+          '</dev/null 2>&1')}';
+
+  /// Asks Claude Code on the host for the plan's usage, at most once a minute
+  /// for a host unless [force]. A failure, or an answer with no limit in it,
+  /// leaves what was known and says Claude Code did not report any.
+  Future<void> refreshQuota({bool force = false}) async {
+    if (_askingQuota) return;
+    final key = hostKey;
+    final last = key == null ? _ownQuotaAsked : _quotaAsked[key];
+    final now = chatNow();
+    if (!force && last != null && now.difference(last) < quotaEvery) return;
+    _askingQuota = true;
+    if (key == null) {
+      _ownQuotaAsked = now;
+    } else {
+      _quotaAsked[key] = now;
+    }
+    try {
+      final output = utf8.decode(
+        await _readAll(usageCommand(), const Duration(seconds: 25)),
+        allowMalformed: true,
+      );
+      final read = ChatQuota.fromUsageText(output, asOf: chatNow());
+      if (read != null) {
+        _setQuota(read);
+      } else {
+        _quotaNotReported = true;
+      }
+    } catch (_) {
+      _quotaNotReported = quota == null;
+    } finally {
+      _askingQuota = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// What the last request this session made used of its context window, for
+  /// the chip over the box; null before there is one.
+  ChatContext? get context => _context;
+  ChatContext? _context;
+
+  /// The window `result.modelUsage` reports for the model, the one place a
+  /// stream carries it.
+  static int? _windowOf(Object? modelUsage) {
+    if (modelUsage is! Map) return null;
+    for (final usage in modelUsage.values) {
+      final window = usage is Map ? usage['contextWindow'] : null;
+      if (window is int && window > 0) return window;
+    }
+    return null;
+  }
+
   void _onAssistantTurn(Map<String, dynamic> event) {
     final message = event['message'];
     if (_pastOnly || message is! Map<String, dynamic>) return;
+    _context = ChatContext.from(message) ?? _context;
     final stop = message['stop_reason'];
     if (stop is String && stop != 'tool_use') return _endTurn();
     _startTurn(event['timestamp']);
@@ -744,6 +1174,7 @@ class ClaudeChat extends ChangeNotifier {
   /// its way up, stays as it is.
   Future<void> start() async {
     if (_starting || _ready) return;
+    appLog.add('chat: start (${_permission.name})');
     // A Claude of this chat's own: its messages go to it, not into a new
     // session.
     _composing = false;
@@ -929,6 +1360,10 @@ class ClaudeChat extends ChangeNotifier {
   /// mode is fixed when the process starts, and what a dropped connection
   /// needs once the session is back.
   Future<void> restart({ChatPermission? permission}) async {
+    if (permission != null && permission != _permission) {
+      appLog.add('chat: mode ${permission.name}');
+    }
+    appLog.add('chat: restart');
     if (permission != null) _permission = permission;
     // Watching runs no Claude of its own to restart: follow it afresh.
     final watching = _watching;
@@ -1102,6 +1537,8 @@ class ClaudeChat extends ChangeNotifier {
       wait: waitForTranscript,
     );
     if (_disposed) return;
+    // The task list, from the session's own store, whatever the history said.
+    unawaited(_readTasks());
     if (pid != null) {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
@@ -1165,6 +1602,7 @@ class ClaudeChat extends ChangeNotifier {
     _orphanAnswers.clear();
     _tasks.clear();
     _parked.clear();
+    _context = null;
     _shown++;
     _earlier = 0;
     _shownFrom = 0;
@@ -2125,10 +2563,15 @@ class ClaudeChat extends ChangeNotifier {
     // Only whole lines are drawn; what follows the last one is a line still
     // being written, for the follow to finish.
     final whole = body.lastIndexOf(10) + 1;
-    for (final line in const LineSplitter().convert(
-      text.convert(body.sublist(0, whole)),
-    )) {
-      _replay(line);
+    _replayingHistory = true;
+    try {
+      for (final line in const LineSplitter().convert(
+        text.convert(body.sublist(0, whole)),
+      )) {
+        _replay(line);
+      }
+    } finally {
+      _replayingHistory = false;
     }
     if (!keepRunning) {
       for (final run in _running.values) {
@@ -2491,6 +2934,7 @@ class ClaudeChat extends ChangeNotifier {
       case 'system' when event['subtype'] == 'init':
         _sessionId = event['session_id'] as String?;
         notifyListeners();
+        unawaited(_readTasks());
       case 'assistant':
         _onAssistantTurn(event);
         _onAssistant(event['message']);
@@ -2506,7 +2950,23 @@ class ClaudeChat extends ChangeNotifier {
         _onControlRequest(event);
       case 'control_cancel_request':
         _onControlCancel(event);
+      case 'rate_limit_event':
+        // Free with a turn of this chat's own: the account's windows, as the
+        // CLI sends them, with their reset as epoch seconds.
+        final read = ChatQuota.fromRateLimitEvent(event, asOf: chatNow());
+        if (read != null) {
+          _setQuota(read);
+          notifyListeners();
+        }
       case 'result':
+        final window = _windowOf(event['modelUsage']);
+        if (window != null && _context != null) {
+          _context = ChatContext(
+            tokens: _context!.tokens,
+            model: _context!.model,
+            reportedWindow: window,
+          );
+        }
         _busy = false;
         _endTurn();
         final subtype = event['subtype'];
