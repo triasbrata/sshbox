@@ -1210,7 +1210,8 @@ Future<ProcessResult> _answerSaveDialog(String? path) {
       '-c',
       path == null
           ? '$dialog && xdotool key Escape'
-          : '$dialog key ctrl+a type "\$1" && xdotool key Return',
+          : '$dialog && xdotool key ctrl+a && '
+                'xdotool type "\$1" && xdotool key Return',
       if (path != null) ...['sh', path],
     ]);
   }
