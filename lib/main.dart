@@ -11,6 +11,7 @@ import 'src/ui/settings_page.dart';
 import 'src/ui/text_size.dart';
 import 'src/ui/title_bar.dart';
 import 'src/ui/tui.dart';
+import 'src/telemetry/app_log.dart';
 
 Future<void> main() async {
   JeanshBinding.ensureInitialized(
@@ -46,5 +47,7 @@ Future<void> main() async {
   // it: turned off, `SentryFlutter.init` is never called and no crash handler
   // is ever installed. See `runWithCrashReporting`.
   await telemetryOn.load();
+  // Last run's log becomes the previous one a bug report can carry.
+  await appLog.load();
   await runWithCrashReporting(() => runApp(const SshboxApp()));
 }

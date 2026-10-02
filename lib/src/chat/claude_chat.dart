@@ -10,6 +10,7 @@ import 'package:xterm2/xterm.dart' show Terminal;
 import '../session/terminal_session.dart';
 import '../session/tmux.dart';
 import 'slash_commands.dart';
+import '../telemetry/app_log.dart';
 
 export 'slash_commands.dart';
 
@@ -1141,6 +1142,7 @@ class ClaudeChat extends ChangeNotifier {
   /// its way up, stays as it is.
   Future<void> start() async {
     if (_starting || _ready) return;
+    appLog.add('chat: start (${_permission.name})');
     // A Claude of this chat's own: its messages go to it, not into a new
     // session.
     _composing = false;
@@ -1260,6 +1262,10 @@ class ClaudeChat extends ChangeNotifier {
   /// mode is fixed when the process starts, and what a dropped connection
   /// needs once the session is back.
   Future<void> restart({ChatPermission? permission}) async {
+    if (permission != null && permission != _permission) {
+      appLog.add('chat: mode ${permission.name}');
+    }
+    appLog.add('chat: restart');
     if (permission != null) _permission = permission;
     // Watching runs no Claude of its own to restart: follow it afresh.
     final watching = _watching;
