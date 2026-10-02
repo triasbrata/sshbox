@@ -12,8 +12,6 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart'
     show
         GestureBinding,
-        kDoubleTapTimeout,
-        kDoubleTapTouchSlop,
         kMiddleMouseButton,
         kPrimaryMouseButton,
         kSecondaryMouseButton,
@@ -1181,46 +1179,6 @@ class _SettledHeightState extends State<_SettledHeight> {
 /// keyboard's input, the swipe pad, and xterm2's view. A plain session shows
 /// one; tmux shows one per pane, each with its own focus, scroll position and
 /// selection.
-/// How a mouse gesture holding the selection grows: by words from a double
-/// click, by lines from a triple click, or from the end of one already made
-/// by a click with Shift.
-enum _Grain { word, line, extend }
-
-/// The pane's selection. While a mouse gesture [owned] it — see
-/// [_PaneViewState._selectByClicks] — xterm2's own recognizers, which select
-/// and clear on the same presses, are ignored, and only [own] changes it.
-class _PaneSelection extends TerminalController {
-  _PaneSelection({super.pointerInputs});
-
-  bool owned = false;
-  bool _own = false;
-
-  void own(void Function() body) {
-    _own = true;
-    try {
-      body();
-    } finally {
-      _own = false;
-    }
-  }
-
-  @override
-  void setSelection(CellAnchor base, CellAnchor extent, {SelectionMode? mode}) {
-    if (owned && !_own) {
-      base.dispose();
-      extent.dispose();
-      return;
-    }
-    super.setSelection(base, extent, mode: mode);
-  }
-
-  @override
-  void clearSelection() {
-    if (owned && !_own) return;
-    super.clearSelection();
-  }
-}
-
 class _PaneView extends StatefulWidget {
   const _PaneView({
     super.key,
@@ -1274,7 +1232,7 @@ class _PaneViewState extends State<_PaneView> {
   /// every link, and keeps a Ctrl+tap from a program that reads the mouse.
   /// What xterm2 itself sends a program that reads the mouse: see
   /// [_pointerInputs].
-  final selection = _PaneSelection(pointerInputs: _pointerInputs(false));
+  final selection = TerminalController(pointerInputs: _pointerInputs(false));
 
   /// A press [_mouseDown] sent and whose release has not gone yet, with where
   /// the pointer last was: xterm2 sends the moves between them.
@@ -1325,7 +1283,6 @@ class _PaneViewState extends State<_PaneView> {
     _letGoOfClipboard(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     FocusManager.instance.removeListener(_onFocusMoved);
-    _clickTimer?.cancel();
     _focusNode.dispose();
     _scrollController.dispose();
     // Takes the underlines with it.
@@ -1451,9 +1408,6 @@ class _PaneViewState extends State<_PaneView> {
       kMiddleMouseButton => TerminalMouseButton.middle,
       _ => null,
     };
-    if (button == TerminalMouseButton.left && !_tracksDrags) {
-      _selectByClicks(event);
-    }
     if (button == null || !_tracksDrags) return;
     if (_send(button, TerminalMouseButtonState.down, event.position)) {
       _tracked = (
@@ -1463,111 +1417,6 @@ class _PaneViewState extends State<_PaneView> {
       );
       selection.setPointerInputs(_pointerInputs(true));
     }
-  }
-
-  /// Clicks in a row on one spot, and the timer that ends the run.
-  int _clicks = 0;
-  Offset _clickAt = Offset.zero;
-  Timer? _clickTimer;
-
-  /// The mouse gesture that owns [selection] until its button comes up: the
-  /// pointer, where it began, and how it selects.
-  ({int pointer, Offset anchor, _Grain grain, BufferRange? base})? _gesture;
-
-  /// A double click selects the word under the pointer, a triple click its
-  /// line, and a drag held from that click goes on word by word, line by
-  /// line, as Terminal.app's and iTerm2's do. A click with Shift held
-  /// extends the selection already there to the cell clicked, and a drag
-  /// from it moves that end.
-  ///
-  /// xterm2 does this itself only while its tap recognizer wins: its press
-  /// becomes a tap down after 100 ms, so a drag begun sooner never selects
-  /// the word, and one begun later has its word replaced by a selection of
-  /// characters from the press, `selectCharacters`. So the clicks are
-  /// counted here, on the pointer events, which always arrive, and
-  /// [selection] ignores xterm2 until the button is up.
-  void _selectByClicks(PointerDownEvent event) {
-    _endGesture();
-    final render = _viewKey.currentState?.renderTerminal;
-    if (render == null || _ctrlArmed) return;
-    final near =
-        _clickTimer != null &&
-        (event.position - _clickAt).distance <= kDoubleTapTouchSlop;
-    _clickTimer?.cancel();
-    _clicks = near ? math.min(_clicks + 1, 3) : 1;
-    _clickAt = event.position;
-    _clickTimer = Timer(kDoubleTapTimeout, () {
-      _clicks = 0;
-      _clickTimer = null;
-    });
-
-    final anchor = render.globalToLocal(event.position);
-    final base = selection.selection?.normalized;
-    if (_clicks >= 2) {
-      final grain = _clicks == 2 ? _Grain.word : _Grain.line;
-      _gesture = (
-        pointer: event.pointer,
-        anchor: anchor,
-        grain: grain,
-        base: null,
-      );
-      selection.owned = true;
-      _selectTo(anchor);
-    } else if (HardwareKeyboard.instance.isShiftPressed && base != null) {
-      _gesture = (
-        pointer: event.pointer,
-        anchor: anchor,
-        grain: _Grain.extend,
-        base: base,
-      );
-      selection.owned = true;
-      _selectTo(anchor);
-    }
-  }
-
-  void _selectTo(Offset to) {
-    final gesture = _gesture;
-    final render = _viewKey.currentState?.renderTerminal;
-    if (gesture == null || render == null) return;
-    selection.own(() {
-      switch (gesture.grain) {
-        case _Grain.word:
-          render.selectWord(gesture.anchor, to);
-        case _Grain.line:
-          render.selectLine(gesture.anchor, to);
-        case _Grain.extend:
-          final base = gesture.base!;
-          final target = render.getCellOffset(to);
-          final cell = target.isAfterOrSame(base.end)
-              ? CellOffset(target.x + 1, target.y)
-              : target;
-          final range = base.extend(cell);
-          final buffer = widget.terminal.buffer;
-          selection.setSelection(
-            buffer.createAnchorFromOffset(range.begin),
-            buffer.createAnchorFromOffset(range.end),
-          );
-      }
-    });
-  }
-
-  void _gestureMove(PointerMoveEvent event) {
-    if (_gesture?.pointer != event.pointer) return;
-    _selectTo(_local(event.position));
-  }
-
-  /// Gives [selection] back to xterm2 once the tap that ends the gesture has
-  /// been dealt with: its tap down, which clears a selection, can come in
-  /// the same dispatch as the button going up.
-  void _gestureUp(PointerEvent event) {
-    if (_gesture?.pointer != event.pointer) return;
-    _gesture = null;
-    scheduleMicrotask(() => selection.owned = false);
-  }
-
-  void _endGesture() {
-    _gesture = null;
-    selection.owned = false;
   }
 
   /// The press a program tracking drags has been sent, until its release:
@@ -1693,7 +1542,6 @@ class _PaneViewState extends State<_PaneView> {
   /// The text is what every other copy takes: see [selectedText].
   void _mouseUp(PointerUpEvent event) {
     _rightUp(event);
-    _gestureUp(event);
     _trackedUp(event);
     if (_tracked != null) {
       // The program selects: a double or triple click's word or line, which
@@ -1985,12 +1833,8 @@ class _PaneViewState extends State<_PaneView> {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
-          onPointerMove: (event) {
-            _trackedMove(event);
-            _gestureMove(event);
-          },
+          onPointerMove: _trackedMove,
           onPointerCancel: (event) {
-            _gestureUp(event);
             _trackedUp(event);
             _rightUp(event);
           },
