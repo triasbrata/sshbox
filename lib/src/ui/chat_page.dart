@@ -205,11 +205,24 @@ class _ChatPageState extends State<ChatPage> {
         _input.value.isComposingRangeValid) {
       return KeyEventResult.ignored;
     }
+    return _enterKey();
+  }
+
+  /// Whether the key held with Enter is the send chord: ⌘ on Apple's
+  /// keyboards, Ctrl on the rest.
+  bool get _sendChord {
     final keys = HardwareKeyboard.instance;
-    final chord = switch (defaultTargetPlatform) {
+    return switch (defaultTargetPlatform) {
       TargetPlatform.macOS || TargetPlatform.iOS => keys.isMetaPressed,
       _ => keys.isControlPressed,
     };
+  }
+
+  /// What an Enter does in the box: send, or, left to the platform, a new
+  /// line.
+  KeyEventResult _enterKey() {
+    final keys = HardwareKeyboard.instance;
+    final chord = _sendChord;
     // An open menu takes every other Enter, to pick; the chord still sends.
     if (_menuOpen.value && !chord) return KeyEventResult.ignored;
     if (chord ||
@@ -243,34 +256,99 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {});
   }
 
-  /// Typing in a chat whose box does not have the focus types into the box,
-  /// as Discord does: a hardware key is heard here before the focus chain,
-  /// focused or not, as the terminal's pane hears one.
+  /// What is typed or pasted in a chat goes into its box without the box being
+  /// clicked first, as Discord's does: a hardware key is heard here before the
+  /// focus chain, focused or not, as the terminal's pane hears one.
   ///
-  /// The key that moves the focus is typed into the box here and kept from
-  /// going on: the box had no text input connection when the platform read
-  /// it, so where that key's character would land is each platform's own
-  /// affair — dropped on one, typed once the connection opens on another.
-  /// Taken here, it lands once on every one.
+  /// - A key that types a character is typed into the box here and kept from
+  ///   going on: the box had no text input connection when the platform read
+  ///   it, so where that character would land is each platform's own affair —
+  ///   dropped on one, typed once the connection opens on another. Taken here
+  ///   it lands once on every one.
+  /// - Enter, Backspace, Delete, the arrows, Home and End, and a paste, Ctrl or
+  ///   ⌘+V or Shift+Insert, only move the focus to the box and go on: the
+  ///   focus chain, which starts at the focus as it is by then, hands them to
+  ///   the box's own shortcuts, so a paste is the box's own paste, a picture's
+  ///   included. Enter is the exception, which has no shortcut of its own: it
+  ///   is the box's send, or a new line typed here.
   ///
-  /// Only a key that types something, with no Ctrl, ⌘ or Alt — so shortcuts,
-  /// Ctrl+C on a selection among them, and Tab, arrows, Escape, Enter and the
-  /// F-keys go where they were going — and only while this chat is on screen,
-  /// the page on top, and no text field anywhere has the focus.
+  /// Left to go where they were going: every other Ctrl, ⌘ or Alt chord — so
+  /// ⌘, and Ctrl+C on a selection in a reply — and Tab, Escape and the F-keys;
+  /// and nothing is taken while the chat is hidden or covered by a route, a
+  /// drawer or another text field, or while the `/` menu is open. The focus
+  /// the box takes on a touch screen is only ever for a hardware key: no tap,
+  /// and no chat shown, focuses it there.
   bool _onHardwareKey(KeyEvent event) {
-    if (event is! KeyDownEvent || _inputFocus.hasFocus || _shown != true) {
-      return false;
-    }
-    final character = event.character;
-    if (character == null ||
-        character.isEmpty ||
-        character.codeUnits.any((u) => u < 0x20 || u == 0x7f)) {
+    if (event is! KeyDownEvent || _inputFocus.hasFocus || _menuOpen.value) {
       return false;
     }
     final keys = HardwareKeyboard.instance;
-    if (keys.isControlPressed || keys.isMetaPressed || keys.isAltPressed) {
+    final key = event.logicalKey;
+    final character = event.character;
+    final chorded =
+        keys.isControlPressed || keys.isMetaPressed || keys.isAltPressed;
+    final typesCharacter =
+        !chorded &&
+        character != null &&
+        character.isNotEmpty &&
+        !character.codeUnits.any((u) => u < 0x20 || u == 0x7f);
+    final enter =
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+    final plainEdit =
+        !chorded &&
+        (key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete ||
+            (!keys.isShiftPressed &&
+                (key == LogicalKeyboardKey.arrowLeft ||
+                    key == LogicalKeyboardKey.arrowRight ||
+                    key == LogicalKeyboardKey.arrowUp ||
+                    key == LogicalKeyboardKey.arrowDown ||
+                    key == LogicalKeyboardKey.home ||
+                    key == LogicalKeyboardKey.end)));
+    final paste = switch (defaultTargetPlatform) {
+      TargetPlatform.macOS =>
+        keys.isMetaPressed &&
+            !keys.isControlPressed &&
+            key == LogicalKeyboardKey.keyV,
+      _ =>
+        (keys.isControlPressed &&
+                !keys.isMetaPressed &&
+                !keys.isAltPressed &&
+                key == LogicalKeyboardKey.keyV) ||
+            (keys.isShiftPressed &&
+                !chorded &&
+                key == LogicalKeyboardKey.insert &&
+                defaultTargetPlatform != TargetPlatform.android),
+    };
+    // Enter with the send chord is a send; any other Ctrl, ⌘ or Alt Enter is
+    // somebody else's.
+    final sendsEnter = enter && (!chorded || _sendChord);
+    if (!(typesCharacter || plainEdit || paste || sendsEnter)) return false;
+    if (!_captureAllowed()) return false;
+    // Space on a focused button or row has already pressed it.
+    final primary = FocusManager.instance.primaryFocus;
+    if (character == ' ' && primary != null && _isPressable(primary)) {
       return false;
     }
+    _focusBox();
+    // A box shut, or in a group's pane not focused, cannot take it.
+    if (!_inputFocus.hasFocus) return false;
+    if (typesCharacter) {
+      _type(character);
+      return true;
+    }
+    if (sendsEnter) {
+      if (_enterKey() == KeyEventResult.ignored) _type('\n');
+      return true;
+    }
+    return false;
+  }
+
+  /// Whether a key may be taken for the box now: this chat is on screen, the
+  /// page on top, no drawer is open over it, and no text field has the focus.
+  bool _captureAllowed() {
+    if (_shown != true || !mounted) return false;
     if (ModalRoute.of(context)?.isCurrent == false) return false;
     // A drawer open over the chat, its own sessions or a page's around it,
     // is no route but is where the user is.
@@ -283,23 +361,49 @@ class _ChatPageState extends State<ChatPage> {
         return false;
       }
     }
-    // Space on a focused button or row has already pressed it.
-    final primary = FocusManager.instance.primaryFocus;
-    if (character == ' ' && primary != null && primary is! FocusScopeNode) {
-      return false;
-    }
     final focused = FocusManager.instance.primaryFocus?.context;
-    if (focused != null &&
-        (focused.widget is EditableText ||
-            focused.findAncestorWidgetOfExactType<EditableText>() != null)) {
-      return false;
-    }
+    return focused == null ||
+        (focused.widget is! EditableText &&
+            focused.findAncestorWidgetOfExactType<EditableText>() == null);
+  }
+
+  /// Whether [node] is a button or a row, which Space presses: a node inside
+  /// an ink response, as every Material button and list row is. A selection
+  /// in a reply is no such thing, and Space there is the box's.
+  static bool _isPressable(FocusNode node) {
+    var found = false;
+    node.context?.visitAncestorElements((element) {
+      if (element.widget is InkResponse) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
+  /// The box takes the focus now, so that the key being heard lands in it.
+  /// The focus carries the keyboard token, which the box needs to open the
+  /// text input connection every later key is typed through; Android draws no
+  /// soft keyboard while a hardware keyboard is attached, which is the only
+  /// way this is reached on a touch screen.
+  void _focusBox() {
     _inputFocus.requestFocus();
     FocusManager.instance.applyFocusChangesIfNeeded();
-    // A box shut, or in a group's pane not focused, cannot take it.
-    if (!_inputFocus.hasFocus) return false;
-    _type(character);
-    return true;
+  }
+
+  /// Whether the box is to take the focus back once a send is over: a click
+  /// on the Send button, or on anything outside the box, takes it away on a
+  /// desktop, and the next message would go nowhere.
+  bool _keepFocus = false;
+
+  void _refocus() {
+    if (!_keepFocus) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_keepFocus) return;
+      _keepFocus = false;
+      if (!_inputFocus.hasFocus && _captureAllowed()) _focusBox();
+    });
   }
 
   void _onChanged() {
@@ -466,6 +570,12 @@ class _ChatPageState extends State<ChatPage> {
     final starts = _chat.composing;
     final sent = _chat.send(text);
     _input.clear();
+    // Sent from the box, or from a click on Send that took the focus off it
+    // on a desktop: either way the next message goes into the box. On a
+    // touch screen a box that was not being typed in stays as it was, so a
+    // send never raises the soft keyboard.
+    _keepFocus = isDesktop || _inputFocus.hasFocus;
+    _refocus();
     // Whatever was said, the reader wants to be at the bottom again.
     _drawn = -1;
     _followTranscript();
@@ -778,10 +888,10 @@ class _ChatPageState extends State<ChatPage> {
               ),
               onPressed: _sendable ? _send : null,
               icon: const Icon(Icons.send),
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
