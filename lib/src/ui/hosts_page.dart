@@ -19,6 +19,7 @@ import 'os_icon.dart';
 import 'port_forwarding_page.dart';
 import 'right_click.dart';
 import 'settings_page.dart';
+import 'text_size_control.dart';
 import 'tui.dart';
 import 'update_dialog.dart';
 
@@ -288,6 +289,11 @@ class _HostsPageState extends State<HostsPage> {
                   ),
                 ),
                 (
+                  'Text size',
+                  Icons.text_fields,
+                  () => showTextSizeControl(context),
+                ),
+                (
                   'Settings',
                   Icons.settings_outlined,
                   () => openSettings(
@@ -492,27 +498,39 @@ class _HomeHeader extends StatelessWidget {
                   ),
                 ),
               ),
-              const Spacer(),
-              for (final (tooltip, icon, onTap) in actions) ...[
-                // Left of Settings, while a newer release is out.
-                if (tooltip == 'Settings') const UpdateChip(),
-                TuiTooltip(
-                  message: tooltip,
-                  child: Semantics(
-                    container: true,
-                    button: true,
-                    label: tooltip,
-                    child: GestureDetector(
-                      onTap: onTap,
-                      behavior: HitTestBehavior.opaque,
-                      child: Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Icon(icon, size: 20, color: p.accent),
-                      ),
-                    ),
+              // The actions scroll, from the right, when a large UI text size
+              // leaves them no room.
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  reverse: true,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final (tooltip, icon, onTap) in actions) ...[
+                        // Left of Settings, while a newer release is out.
+                        if (tooltip == 'Settings') const UpdateChip(),
+                        TuiTooltip(
+                          message: tooltip,
+                          child: Semantics(
+                            container: true,
+                            button: true,
+                            label: tooltip,
+                            child: GestureDetector(
+                              onTap: onTap,
+                              behavior: HitTestBehavior.opaque,
+                              child: Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Icon(icon, size: 20, color: p.accent),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              ],
+              ),
             ],
           ),
           const SizedBox(height: 4),

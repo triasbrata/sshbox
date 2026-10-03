@@ -3768,6 +3768,238 @@ touch '${done.path}'
     },
   );
 
+  // #216: the UI text size from the keyboard, the wheel and the in-frame Help
+  // menu, as a person would, through X: Ctrl with = − 0 steps it 10% at a
+  // time and back to 100%, Ctrl+wheel over the UI grows it and over a
+  // terminal leaves it, and Ctrl+Shift+− still reaches a program as ^_.
+  _test(
+    'Ctrl with = − 0, Ctrl+wheel and Help zoom the UI text, never a terminal',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys and the wheel go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      await _launch(tester);
+      await uiTextSize.choose(1);
+      await tester.pump();
+
+      Future<void> keys(String chord) async {
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo(['key', '--clearmodifiers', chord]);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      Future<void> sizeIs(int percent, String what) => _until(
+        tester,
+        () => (uiTextSize.value * 100).round() == percent,
+        '$what: the UI text size to be $percent% '
+            '(it is ${(uiTextSize.value * 100).round()}%)',
+        timeout: const Duration(seconds: 5),
+      );
+
+      // 1 and 2: the keys.
+      await keys('ctrl+equal');
+      await keys('ctrl+equal');
+      await sizeIs(120, 'Ctrl+= twice');
+      expect(
+        find.textContaining('UI text size 120%'),
+        findsWidgets,
+        reason: 'no toast with the size',
+      );
+      await _settings(tester);
+      final slider = find.byWidgetPredicate(
+        (w) => w is Semantics && w.properties.label == 'Set the UI text size',
+      );
+      await tester.scrollUntilVisible(
+        slider,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('120%'), findsOneWidget, reason: 'Settings disagrees');
+      await _backHome(tester);
+      await keys('ctrl+minus');
+      await sizeIs(110, 'Ctrl+−');
+      await keys('ctrl+0');
+      await sizeIs(100, 'Ctrl+0');
+
+      // Where a point of the app is on the X screen.
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      Future<void> ctrlWheelUp(Offset at) async {
+        final x = (window.left + frame + at.dx * ratio).round();
+        final y = (window.top + frame + at.dy * ratio).round();
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        // The real pointer, which flutter_test drops unless let through.
+        await _realPointer(() async {
+          await _xdo([
+            'mousemove', '$x', '$y', 'sleep', '0.2', //
+            'keydown', 'Control_L', 'click', '4', 'sleep', '0.2', 'click', '4',
+            'sleep', '0.2', 'keyup', 'Control_L',
+          ]);
+          await tester.pump(const Duration(milliseconds: 400));
+        });
+      }
+
+      // 3: the wheel over Home grows it; over a terminal it does not.
+      final home = tester.view.physicalSize / ratio;
+      await ctrlWheelUp(Offset(home.width / 2, home.height * 0.6));
+      await _until(
+        tester,
+        () => uiTextSize.value > 1.001,
+        'Ctrl+wheel up over Home to grow the UI text',
+        timeout: const Duration(seconds: 5),
+      );
+      await uiTextSize.choose(1);
+      await tester.pump();
+
+      // Over a long list, Settings', Ctrl+wheel zooms and leaves where the
+      // list was; a plain wheel would have scrolled it.
+      await _settings(tester);
+      final list = find.byType(Scrollable).first;
+      await tester.drag(list, const Offset(0, -200));
+      await tester.pumpAndSettle();
+      final position = tester.state<ScrollableState>(list).position;
+      final before = position.pixels;
+      expect(before, greaterThan(0), reason: 'Settings did not scroll at all');
+      await ctrlWheelUp(tester.getCenter(list));
+      await _until(
+        tester,
+        () => uiTextSize.value > 1.001,
+        'Ctrl+wheel up over Settings to grow the UI text',
+        timeout: const Duration(seconds: 5),
+      );
+      expect(
+        position.pixels,
+        before,
+        reason: 'Ctrl+wheel scrolled Settings as well as zooming',
+      );
+      await uiTextSize.choose(1);
+      await tester.pump();
+      await _backHome(tester);
+
+      final view = await _localShell(tester);
+      final terminal = tester.getCenter(find.byWidget(view));
+      await ctrlWheelUp(terminal);
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        (uiTextSize.value * 100).round(),
+        100,
+        reason: 'Ctrl+wheel over the terminal zoomed the UI',
+      );
+
+      // 4: Ctrl+Shift+− reaches the program, as ^_.
+      _run(view, 'cat -v');
+      await tester.pump(const Duration(seconds: 1));
+      await keys('ctrl+shift+minus');
+      await keys('Return');
+      final lines = view.terminal.buffer.lines;
+      await _until(tester, () {
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].getText().contains('^_')) return true;
+        }
+        return false;
+      }, 'cat -v to print ^_ for Ctrl+Shift+−');
+      expect((uiTextSize.value * 100).round(), 100);
+      await keys('ctrl+c');
+
+      // 5: Help's Zoom in, Zoom out and Actual size.
+      // Each time with the last menu gone, so a tap never lands on one
+      // still fading out.
+      Future<void> help(String item, int percent) async {
+        await _until(
+          tester,
+          () => _label('Actual size').evaluate().isEmpty,
+          'the Help menu to be closed',
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.tap(_named('Help'));
+        await _pick(tester, item);
+        await sizeIs(percent, 'Help › $item');
+      }
+
+      await help('Zoom in', 110);
+      await help('Zoom in', 120);
+      await help('Zoom out', 110);
+      await help('Actual size', 100);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #216, the other negative: a Ctrl+wheel over a picture zooms the picture
+  // and leaves the UI text size alone. Positive pair: the UI wheel test above.
+  _test(
+    'Ctrl+wheel over an image tab leaves the UI text size unchanged',
+    skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const name = 'e2e-zoom.png';
+      File('${dir.path}/$name').writeAsBytesSync(
+        base64.decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+          'CB0C8AAAAASUVORK5CYII=',
+        ),
+      );
+      await _launch(tester);
+      await uiTextSize.choose(1);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name).evaluate().isNotEmpty,
+        'the drawer to show the picture',
+      );
+      await tester.tap(find.text(name));
+      await _until(
+        tester,
+        () => find.byType(InteractiveViewer).evaluate().isNotEmpty,
+        'the picture to open in a tab',
+      );
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      final at = tester.getCenter(find.byType(InteractiveViewer));
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      // That the wheel arrived at all, or "unchanged" below proves nothing.
+      var wheels = 0;
+      void heard(PointerEvent e) => e is PointerScrollEvent ? wheels++ : null;
+      GestureBinding.instance.pointerRouter.addGlobalRoute(heard);
+      addTearDown(
+        () => GestureBinding.instance.pointerRouter.removeGlobalRoute(heard),
+      );
+      await _realPointer(() async {
+        await _xdo([
+          'mousemove',
+          '${(window.left + frame + at.dx * ratio).round()}',
+          '${(window.top + frame + at.dy * ratio).round()}',
+          'sleep', '0.2', 'keydown', 'Control_L', 'click', '4', 'sleep', '0.2',
+          'click', '4', 'sleep', '0.2', 'keyup', 'Control_L',
+        ]);
+        await tester.pump(const Duration(milliseconds: 400));
+      });
+      expect(wheels, greaterThan(0), reason: 'no wheel reached the app');
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        (uiTextSize.value * 100).round(),
+        100,
+        reason: 'Ctrl+wheel over the picture zoomed the UI text',
+      );
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
   // #126, with the real pointer. In a shell: a double click selects a word,
   // and selecting more after it — a longer drag, then a fresh one elsewhere
   // — copies each, a few times over, the user having seen it fail often and

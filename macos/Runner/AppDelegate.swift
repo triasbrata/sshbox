@@ -21,6 +21,12 @@ class AppDelegate: FlutterAppDelegate {
   /// Settings runs, and answers.
   @IBAction func checkForUpdates(_ sender: Any?) { menu("checkForUpdates") }
 
+  /// View › Zoom In, Zoom Out and Actual Size (⌘+, ⌘− and ⌘0): the UI text
+  /// size's steps. Dart takes the keys first, so a click is what lands here.
+  @IBAction func zoomIn(_ sender: Any?) { menu("zoomIn") }
+  @IBAction func zoomOut(_ sender: Any?) { menu("zoomOut") }
+  @IBAction func zoomReset(_ sender: Any?) { menu("zoomReset") }
+
   private func menu(_ method: String) {
     guard let flutter = mainFlutterWindow?.contentViewController as? FlutterViewController
     else { return }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -17,6 +18,8 @@ import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:sshbox/src/ui/tui.dart';
 import 'package:xterm2/xterm.dart';
+
+import 'tui_finders.dart';
 
 const _host = HostProfile(
   id: 'h1',
@@ -50,8 +53,10 @@ class _Box implements SessionTransport, TerminalSession {
   @override
   String? get failure => null;
 
+  final sent = <String>[];
+
   @override
-  void send(String data) {}
+  void send(String data) => sent.add(data);
 
   @override
   void resize(int columns, int rows, int pixelWidth, int pixelHeight) =>
@@ -309,6 +314,214 @@ void main() {
       // Any overflow on the way failed the test as it was laid out.
     }, variant: TargetPlatformVariant.only(platform));
   }
+
+  group('more ways to change the UI text size', () {
+    Future<void> chord(
+      WidgetTester tester,
+      LogicalKeyboardKey key, {
+      LogicalKeyboardKey? hold,
+      bool shift = false,
+    }) async {
+      if (hold != null) await tester.sendKeyDownEvent(hold);
+      if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(key);
+      if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      if (hold != null) await tester.sendKeyUpEvent(hold);
+      await tester.pump();
+    }
+
+    const ctrl = LogicalKeyboardKey.controlLeft;
+    const meta = LogicalKeyboardKey.metaLeft;
+    const minus = LogicalKeyboardKey.minus;
+
+    for (final (platform, held, wrong) in [
+      (TargetPlatform.macOS, meta, ctrl),
+      (TargetPlatform.linux, ctrl, meta),
+      (TargetPlatform.windows, ctrl, meta),
+      (TargetPlatform.android, ctrl, meta),
+    ]) {
+      testWidgets('${platform.name}: the zoom chord steps the one setting, '
+          'says the size, and the other modifier does nothing', (tester) async {
+        await _start(tester, _Box(), const Size(800, 1280));
+        await chord(tester, LogicalKeyboardKey.equal, hold: held);
+        expect(uiTextSize.value, 1.1);
+        expect(find.text('UI text size 110%'), findsOneWidget);
+        await chord(tester, LogicalKeyboardKey.equal, hold: held, shift: true);
+        expect(uiTextSize.value, 1.2, reason: '+ needs Shift on most layouts');
+        await chord(tester, minus, hold: held);
+        await chord(tester, minus, hold: held);
+        expect(uiTextSize.value, 1.0);
+        await chord(tester, LogicalKeyboardKey.equal, hold: held);
+        await chord(tester, LogicalKeyboardKey.digit0, hold: held);
+        expect(uiTextSize.value, 1);
+        expect(
+          (await SharedPreferences.getInstance()).getDouble(
+            'sshbox.ui.textScale',
+          ),
+          1,
+        );
+
+        await chord(tester, LogicalKeyboardKey.equal, hold: wrong);
+        await chord(tester, LogicalKeyboardKey.equal);
+        expect(uiTextSize.value, 1, reason: "not this platform's chord");
+        await tester.pump(const Duration(seconds: 2));
+      }, variant: TargetPlatformVariant.only(platform));
+    }
+
+    testWidgets("the bounds are the slider's", (tester) async {
+      await _start(tester, _Box(), const Size(800, 1280));
+      for (var i = 0; i < 12; i++) {
+        await chord(tester, LogicalKeyboardKey.equal, hold: ctrl);
+      }
+      expect(uiTextSize.value, UiTextSize.max);
+      for (var i = 0; i < 12; i++) {
+        await chord(tester, minus, hold: ctrl);
+      }
+      expect(uiTextSize.value, UiTextSize.min);
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('a terminal still gets every key the zoom leaves it, '
+        'Ctrl+Shift+- as ^_ included, and loses only Ctrl+-', (tester) async {
+      final box = _Box();
+      await _start(tester, box, const Size(800, 1280));
+      await _open(tester);
+      box.sent.clear();
+
+      await chord(tester, minus, hold: ctrl, shift: true);
+      await chord(tester, LogicalKeyboardKey.slash, hold: ctrl);
+      await chord(tester, LogicalKeyboardKey.keyC, hold: ctrl);
+      await chord(
+        tester,
+        LogicalKeyboardKey.equal,
+        hold: LogicalKeyboardKey.altLeft,
+      );
+      expect(uiTextSize.value, 1);
+      expect(box.sent, contains('\x1f'), reason: '^_ still reachable');
+      expect(box.sent, contains('\x03'));
+      final before = box.sent.length;
+
+      await chord(tester, minus, hold: ctrl);
+      expect(uiTextSize.value, 0.9);
+      expect(box.sent.length, before, reason: "Ctrl+- is the zoom's");
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    final pointer = TestPointer(1, PointerDeviceKind.mouse);
+    Future<void> wheel(WidgetTester tester, Offset at, double dy) async {
+      await tester.sendKeyDownEvent(ctrl);
+      await tester.sendEventToBinding(pointer.hover(at));
+      await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+      await tester.sendKeyUpEvent(ctrl);
+      await tester.pump();
+    }
+
+    testWidgets('Ctrl with the wheel over the UI zooms, wheel up bigger; '
+        'inside a terminal it is left to the program', (tester) async {
+      await _start(tester, _Box(), const Size(800, 1280));
+      await wheel(tester, const Offset(400, 600), -100);
+      expect(uiTextSize.value, 1.1);
+      await wheel(tester, const Offset(400, 600), 100);
+      await wheel(tester, const Offset(400, 600), 100);
+      expect(uiTextSize.value, 0.9);
+
+      await _open(tester);
+      await wheel(tester, tester.getCenter(find.byType(TerminalView)), -100);
+      expect(uiTextSize.value, 0.9, reason: "the terminal's wheel");
+
+      // And without Ctrl, nothing zooms anywhere.
+      await tester.sendEventToBinding(pointer.hover(const Offset(400, 20)));
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, -100)));
+      expect(uiTextSize.value, 0.9);
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Ctrl with the wheel over a scrollable list zooms and does '
+        'not scroll it', (tester) async {
+      await _start(tester, _Box(), const Size(800, 400));
+      await tester.tap(find.byTooltip('Settings'));
+      await _settle(tester);
+      final list = find
+          .byType(Scrollable)
+          .evaluate()
+          .map((e) => (e as StatefulElement).state as ScrollableState)
+          .firstWhere((s) => s.position.maxScrollExtent > 0);
+      await wheel(tester, const Offset(400, 200), 100);
+      expect(uiTextSize.value, 0.9);
+      expect(list.position.pixels, 0, reason: 'Ctrl+wheel only zooms');
+
+      // The same list does scroll with the wheel alone.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 100)));
+      await tester.pump();
+      expect(list.position.pixels, greaterThan(0));
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets("the desktop menu's View items arrive over sshbox/menu", (
+      tester,
+    ) async {
+      await _start(tester, _Box(), const Size(800, 1280));
+      Future<void> click(String method) =>
+          tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+            'sshbox/menu',
+            const StandardMethodCodec().encodeMethodCall(MethodCall(method)),
+            (_) {},
+          );
+      await click('zoomIn');
+      await click('zoomIn');
+      expect(uiTextSize.value, 1.2);
+      await click('zoomOut');
+      expect(uiTextSize.value, 1.1);
+      await click('zoomReset');
+      expect(uiTextSize.value, 1);
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets("Windows and Linux: the window buttons' menu has the zoom "
+        'items', (tester) async {
+      await _start(tester, _Box(), const Size(800, 1280));
+      await tester.tap(find.bySemanticsLabel('Help'));
+      await _settle(tester);
+      await tester.tap(find.text('Zoom in'));
+      await _settle(tester);
+      expect(uiTextSize.value, 1.1);
+      await tester.tap(find.bySemanticsLabel('Help'));
+      await _settle(tester);
+      await tester.tap(find.text('Actual size'));
+      await _settle(tester);
+      expect(uiTextSize.value, 1);
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets("Home's Text size control, for touch, steps the same "
+        'setting', (tester) async {
+      await _start(tester, _Box(), const Size(800, 1280));
+      Finder inDialog(String text) => find.descendant(
+        of: find.byType(TuiDialog),
+        matching: find.text(text),
+      );
+      await tester.tap(find.byTooltip('Text size'));
+      await _settle(tester);
+      expect(find.text('100%'), findsOneWidget);
+      await tester.tap(inDialog('+'));
+      await _settle(tester);
+      expect(uiTextSize.value, 1.1);
+      expect(find.text('110%'), findsOneWidget);
+      await tester.tap(inDialog('−'));
+      await tester.tap(inDialog('−'));
+      await _settle(tester);
+      expect(uiTextSize.value, 0.9);
+      await tester.tap(findTuiButton('Reset'));
+      await _settle(tester);
+      expect(uiTextSize.value, 1);
+      expect(
+        (await SharedPreferences.getInstance()).getDouble(
+          'sshbox.ui.textScale',
+        ),
+        1,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  });
 }
 
 /// The host delete confirmation, termul's TuiDialog, left open.
