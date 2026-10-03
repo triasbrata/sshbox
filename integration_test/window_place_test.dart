@@ -98,7 +98,7 @@ Future<void> _launch(WidgetTester tester) async {
     'Home, or the first-run slides',
   );
   if (skip.evaluate().isNotEmpty) await tester.tap(skip.first);
-  await tester.pumpAndSettle(const Duration(seconds: 5));
+  await tester.pumpAndSettle(const Duration(milliseconds: 100));
 }
 
 Future<void> _until(
