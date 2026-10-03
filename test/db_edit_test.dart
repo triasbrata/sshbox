@@ -6,6 +6,7 @@ import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/tui.dart';
+import 'log_messages.dart';
 
 /// How many times the app log holds [line]: a test compares before and after.
 int _logged(String line) => line.allMatches(appLog.current).length;
@@ -224,7 +225,7 @@ void main() {
     expect(db.runs, [_query, _query]);
     expect(_logged('action database run postgres'), runs + 1);
     // The query itself is never in the log.
-    expect(appLog.current, isNot(contains(_query)));
+    expect(logMessages(appLog.current), isNot(contains(_query)));
   });
 
   testWidgets('the Discard button drops the changes and logs it by kind', (

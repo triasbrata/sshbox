@@ -25,6 +25,7 @@ import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 
 import 'tui_finders.dart';
+import 'log_messages.dart';
 
 /// How many times the app log holds [line]: a test compares before and after.
 int _logged(String line) => line.allMatches(appLog.current).length;
@@ -855,7 +856,7 @@ void main() {
 
     expect(picker.saved?.name, 'notes.txt');
     expect(_logged('action files download'), downloads + 1);
-    expect(appLog.current, isNot(contains('notes.txt')));
+    expect(logMessages(appLog.current), isNot(contains('notes.txt')));
     expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
     // Handed over as the app's own copy, which goes once it is saved.
     expect(File(picker.savedFrom!).existsSync(), isFalse);

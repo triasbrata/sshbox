@@ -9,6 +9,7 @@ import 'package:sshbox/src/ui/termul/tui_filter_chip.dart';
 import 'package:sshbox/src/ui/termul/tui_menu.dart';
 import 'package:sshbox/src/ui/termul/tui_switch.dart';
 import 'package:sshbox/src/ui/termul/tui_tabs.dart';
+import 'log_messages.dart';
 
 /// What the log gained since [mark], without timestamps and levels.
 List<String> since(int mark) => appLog.current
@@ -188,7 +189,7 @@ void main() {
   });
 
   test('none of the names a host, a file or a commit carry reach the log', () {
-    final text = appLog.current;
+    final text = logMessages(appLog.current);
     for (final secret in [
       hostLabel,
       fileName,
