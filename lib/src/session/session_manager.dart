@@ -159,7 +159,7 @@ class LiveSession extends ChangeNotifier {
   /// [ClipboardTerminal].
   Terminal _newTerminal() => ClipboardTerminal(
     maxLines: 10000,
-    onPrivateOSC: (code, args) => openRequests.handle(code, args),
+    // MUTATION: onPrivateOSC unwired
     inputHandler: const _ReleaseOnlyIfAsked(
       CascadeInputHandler([
         KittyKeyboardInputHandler(),
