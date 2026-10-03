@@ -38,6 +38,7 @@ trap 'kill $SINK 2>/dev/null' EXIT
 sleep 1
 
 status=0
+"$WORK/check" hang "$DSN" "$WORK/cache-hang" || status=1
 for mode in raw scrubbed; do
   : >"$WORK/sent"
   cache="$WORK/cache-$mode"

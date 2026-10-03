@@ -52,6 +52,37 @@ case "send":
   PrivateSentrySDKOnly.capture(PrivateSentrySDKOnly.envelope(with: Data(envelope.utf8))!)
   SentrySDK.flush(timeout: 10)
   SentrySDK.close()
+case "hang":
+  // Which App Hangs go out: the verdicts of NativeCrashes.isIdleHang, with no
+  // hang and no network. 2x2: an awake hang is sent whatever its frames, and
+  // any hang is dropped while the Mac sleeps, then sent again after.
+  func hang(_ functions: [String]) -> Event {
+    let e = Event(level: .error)
+    let x = Exception(value: "", type: "App Hanging")
+    x.mechanism = Mechanism(type: "AppHang")
+    x.stacktrace = SentryStacktrace(
+      frames: functions.map { f in
+        let frame = Frame()
+        frame.function = f
+        return frame
+      }, registers: [:])
+    e.exceptions = [x]
+    return e
+  }
+  let withRunner = hang(["start", "main", "NSApplicationMain", "-[TitleBar layout]"])
+  let systemOnly = hang(["start", "NSApplicationMain", "kevent_id"])
+  var bad: [String] = []
+  func expect(_ name: String, _ got: Bool, _ want: Bool) { if got != want { bad.append(name) } }
+  let now = Date()
+  expect("awake, Runner frame sent", NativeCrashes.isIdleHang(withRunner, now: now), false)
+  expect("awake, system frames only sent", NativeCrashes.isIdleHang(systemOnly, now: now), false)
+  NativeCrashes.quiet(until: .distantFuture)
+  expect("asleep dropped", NativeCrashes.isIdleHang(systemOnly, now: now), true)
+  expect("asleep, Runner frame dropped", NativeCrashes.isIdleHang(withRunner, now: now), true)
+  NativeCrashes.quiet(until: .distantPast)
+  expect("awake again sent", NativeCrashes.isIdleHang(systemOnly, now: now), false)
+  print(bad.isEmpty ? "hang verdicts ok" : "hang verdicts wrong: \(bad)")
+  exit(bad.isEmpty ? 0 : 1)
 default:
-  fatalError("crash or send")
+  fatalError("crash, send or hang")
 }
