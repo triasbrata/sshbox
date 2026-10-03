@@ -71,13 +71,14 @@ jobs:
           echo "Line coverage of \`lib/\`: **${pct:-unmeasured}%**" >> "$GITHUB_STEP_SUMMARY"
 
       # A pull request's changed lib/ lines that no test hits, for the e2e
-      # steps to reach. A report: it never fails the job.
+      # steps to reach. A report: it never fails the job. Printed to the log
+      # too, since the API gives no way to read a job summary.
       - name: Changed lines no test runs
         if: github.event_name == 'pull_request'
         continue-on-error: true
         run: |
           git diff -U0 HEAD^1 HEAD -- lib > "$RUNNER_TEMP/pr.diff"
-          python3 tool/uncovered_changed_lines.py coverage/lcov.info "$RUNNER_TEMP/pr.diff" >> "$GITHUB_STEP_SUMMARY"
+          python3 tool/uncovered_changed_lines.py coverage/lcov.info "$RUNNER_TEMP/pr.diff" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The README's coverage badge. shields.io draws it from coverage.json on the
   # `badges` branch, which holds nothing else and which this job replaces
