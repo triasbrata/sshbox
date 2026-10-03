@@ -724,6 +724,22 @@ class ClaudeAgent {
 
   String? get waitingText => waitingWords(waitingFor);
 
+  /// Everything a row of the sessions list shows, as one string: two rows
+  /// with the same signature draw the same.
+  String get signature => [
+    sessionId,
+    id,
+    name,
+    cwd,
+    kind,
+    status,
+    state,
+    pinned,
+    pid != null,
+    startedAt?.millisecondsSinceEpoch,
+    waitingFor,
+  ].join('\u0000');
+
   /// Whether the process is still running. Measured against the CLI: a live
   /// session is the one that refuses `-p --resume`, and a finished one is the
   /// one that takes it.

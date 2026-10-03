@@ -6,7 +6,8 @@ import 'dart:math' as math;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -136,7 +137,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// the list, which goes whenever the sidebar is hidden or the drawer shut:
   /// held there, it came back empty. Asked for when the connection comes up,
   /// and again only by Refresh or when this chat starts a session of its own.
-  Future<List<ClaudeAgent>>? _agents;
+  final _listing = ValueNotifier<AsyncSnapshot<List<ClaudeAgent>>>(
+    const AsyncSnapshot.nothing(),
+  );
 
   /// Sessions, by host and session id, seen working since last opened here,
   /// and those that have finished since: the dot on their row. Kept for as
@@ -162,15 +165,50 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   // error is the list's to show, and it may not be showing yet.
   void _listAgents() {
     final agents = _chat.agents(all: true);
-    _agents = agents..ignore();
+    // The rows it had stay while it is asked again.
+    final had = _listing.value.data;
+    _listing.value = had == null
+        ? const AsyncSnapshot.waiting()
+        : AsyncSnapshot.withData(ConnectionState.waiting, had);
     _asking = true;
     unawaited(
       agents.whenComplete(() => _asking = false).then((rows) {
         if (!mounted) return;
         rows.forEach(_note);
-        setState(() {});
-      }, onError: (Object _) {}),
+        _listing.value = AsyncSnapshot.withData(ConnectionState.done, rows);
+      }, onError: (Object error) {
+        if (mounted) {
+          _listing.value = AsyncSnapshot.withError(
+            ConnectionState.done,
+            error,
+          );
+        }
+      }),
     );
+  }
+
+  /// The list again, for what its rows say of each session now: the page and
+  /// the sidebar are told only when a row has changed, so a poll that finds
+  /// nothing new redraws nothing.
+  Future<void> _poll() async {
+    _asking = true;
+    try {
+      final rows = await _chat.agents(all: true);
+      if (!mounted) return;
+      final before = _listing.value.data;
+      if (before != null &&
+          before.length == rows.length &&
+          [for (final row in before) row.signature].join('\n') ==
+              [for (final row in rows) row.signature].join('\n')) {
+        return;
+      }
+      rows.forEach(_note);
+      _listing.value = AsyncSnapshot.withData(ConnectionState.done, rows);
+    } catch (_) {
+      // The list keeps what it had; Refresh shows the error.
+    } finally {
+      _asking = false;
+    }
   }
 
   /// Asks for the list again every [_look] while it is on screen — the
@@ -190,7 +228,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final shown = _sidebarWide
         ? _sidebarOpen
         : _scaffoldKey.currentState?.isDrawerOpen ?? false;
-    if (shown && !_asking) setState(_listAgents);
+    if (shown && !_asking) unawaited(_poll());
   }
 
   /// The slash commands the host's Claude Code takes, read the first time
@@ -359,15 +397,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// Lets the user pick the folder a new chat starts in, and remembers it.
   /// [after] is a start that was refused: said so that Retry is the next step.
   Future<void> _chooseFolder({ChatSaid? after}) async {
-    final recent = <String>{};
-    try {
-      for (final agent in await (_agents ?? Future.value(<ClaudeAgent>[]))) {
-        if (agent.cwd.isNotEmpty) recent.add(agent.cwd);
-      }
-    } catch (_) {
-      // No list of sessions: no suggestions.
-    }
-    if (!mounted) return;
+    // The sessions as last listed: none yet, or a failed list, suggests none.
+    final recent = <String>{
+      for (final agent in _listing.value.data ?? const <ClaudeAgent>[])
+        if (agent.cwd.isNotEmpty) agent.cwd,
+    };
     final chosen = await showDialog<String>(
       context: context,
       builder: (_) => _FolderPicker(
@@ -411,6 +445,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.session.removeListener(_onChanged);
     _chat.removeListener(_onChanged);
+    _listing.dispose();
     _input.dispose();
     _inputFocus.dispose();
     _menuOpen.dispose();
@@ -1308,7 +1343,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         child: ContentText(
           child: _SessionList(
             chat: _chat,
-            agents: _agents,
+            listing: _listing,
             connected: widget.session.isConnected,
             onPick: _pick,
             onRefresh: () => setState(_listAgents),
@@ -2505,7 +2540,7 @@ class _Answer extends StatelessWidget {
 /// The one Markdown setup a chat draws with, what was asked and what was
 /// answered alike: the renderer the Markdown preview uses, its code blocks
 /// with their copy buttons, and every link through the same [onTapLink].
-class _ChatMarkdown extends StatelessWidget {
+class _ChatMarkdown extends StatefulWidget {
   const _ChatMarkdown({required this.text, required this.onTapLink, this.ink});
 
   final String text;
@@ -2517,15 +2552,44 @@ class _ChatMarkdown extends StatelessWidget {
   /// would not show; null on the page's own ground.
   final TextStyle? ink;
 
+  @override
+  State<_ChatMarkdown> createState() => _ChatMarkdownState();
+}
+
+/// Hands back the very widget it built until the text, the ink, the link
+/// handler or the theme changes, so a page that redraws on every event does
+/// not parse each Markdown reply on screen again: an identical widget is not
+/// rebuilt, however often its parent is.
+class _ChatMarkdownState extends State<_ChatMarkdown> {
+  Widget? _built;
+  String? _text;
+  TextStyle? _ink;
+  MarkdownTapLinkCallback? _onTapLink;
+  ThemeData? _theme;
+
   /// Inside a selection container that copies blocks and cells apart.
   @override
-  Widget build(BuildContext context) =>
-      SeparatedSelection(child: _markdown(context));
-
-  Widget _markdown(BuildContext context) {
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (_built == null ||
+        _text != widget.text ||
+        _ink != widget.ink ||
+        _onTapLink != widget.onTapLink ||
+        _theme != theme) {
+      _text = widget.text;
+      _ink = widget.ink;
+      _onTapLink = widget.onTapLink;
+      _theme = theme;
+      _built = SeparatedSelection(child: _markdown(theme));
+    }
+    return _built!;
+  }
+
+  Widget _markdown(ThemeData theme) {
+    final text = widget.text;
+    final onTapLink = widget.onTapLink;
     final scheme = theme.colorScheme;
-    final ink = this.ink;
+    final ink = widget.ink;
     final body = ink ?? theme.textTheme.bodyMedium!;
     final link = ink?.color ?? scheme.primary;
     // On the accent, code sits on a shade of the text's own colour.
@@ -3900,8 +3964,15 @@ class _UsagePopup extends StatelessWidget {
   final String Function(DateTime, DateTime) local;
   final String Function(int) count;
 
+  /// Redrawn every second while it is open, so how old the plan's reading is
+  /// keeps up with the clock without the page behind it being redrawn.
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) => StreamBuilder<void>(
+    stream: Stream<void>.periodic(const Duration(seconds: 1)),
+    builder: (context, _) => _body(),
+  );
+
+  Widget _body() => ListenableBuilder(
     listenable: chat,
     builder: (context, _) {
       final used = chat.context;
@@ -4097,7 +4168,7 @@ class _ProgressState extends State<_Progress> {
 class _SessionList extends StatelessWidget {
   const _SessionList({
     required this.chat,
-    required this.agents,
+    required this.listing,
     required this.connected,
     required this.onPick,
     required this.onRefresh,
@@ -4140,7 +4211,7 @@ class _SessionList extends StatelessWidget {
 
   /// As the page last asked for them; null before the session first came
   /// up.
-  final Future<List<ClaudeAgent>>? agents;
+  final ValueListenable<AsyncSnapshot<List<ClaudeAgent>>> listing;
 
   /// Whether the session is up: the list is asked for over its connection.
   final bool connected;
@@ -4203,13 +4274,14 @@ class _SessionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final agents = this.agents;
-    if (agents == null) {
-      return _list(empty: 'Connect this session to see its Claude sessions.');
-    }
-    return FutureBuilder<List<ClaudeAgent>>(
-      future: agents,
-      builder: (context, snapshot) {
+    return ValueListenableBuilder<AsyncSnapshot<List<ClaudeAgent>>>(
+      valueListenable: listing,
+      builder: (context, snapshot, _) {
+        if (snapshot.connectionState == ConnectionState.none) {
+          return _list(
+            empty: 'Connect this session to see its Claude sessions.',
+          );
+        }
         if (snapshot.connectionState != ConnectionState.done) {
           // Asked again while on show: the rows it had stay meanwhile,
           // rather than flashing loading every few seconds.
