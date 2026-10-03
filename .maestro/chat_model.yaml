@@ -1,0 +1,86 @@
+# #214: the model chip in chat's composer. A new chat's model is picked before
+# the first message and reaches `claude --bg` as --model; once chat's own
+# Claude is up for a finished session, picking another sends it set_model and
+# the chip follows its answer; a session watched on the host only says how to
+# change its model there, and nothing is sent.
+#
+# The host's stand-in (tools/e2e_android.sh's chat_model) keeps the --bg
+# arguments and every set_model it is sent, which the runner checks after the
+# flow, and names claude-opus-5-5 in its init.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# A new chat: the chip offers the five, and Sonnet is the pick.
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Start a new chat…"
+    timeout: 20000
+- tapOn: "Model.*"
+- extendedWaitUntil:
+    visible: "Opus"
+    timeout: 5000
+- assertVisible: "(?s)\\W*Default.*"
+- assertVisible: "Fable"
+- assertVisible: "Haiku"
+- tapOn: "Sonnet"
+- extendedWaitUntil:
+    visible: "Model Sonnet.*"
+    timeout: 5000
+- takeScreenshot: chat-model-sonnet
+
+# Sent: the runner finds --model sonnet in what `claude --bg` was given. The
+# stand-in's session then carries on as chat's own Claude, which names Opus 5.5.
+- tapOn: "Start a new chat…"
+- inputText: "hello model"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "Model Opus 5.5.*"
+    timeout: 60000
+
+# Chat's own Claude: Haiku is sent as set_model, and the chip reads it once
+# the stand-in has answered with success.
+- tapOn: "Model.*"
+- extendedWaitUntil:
+    visible: "Haiku"
+    timeout: 5000
+- tapOn: "Haiku"
+- extendedWaitUntil:
+    visible: "Model Haiku.*"
+    timeout: 20000
+- assertNotVisible: "Model Opus 5.5.*"
+- takeScreenshot: chat-model-haiku
+
+# A watched session: the chip says how, and changes nothing.
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+- tapOn: "Model.*"
+- extendedWaitUntil:
+    visible: "(?s).*in its own terminal with /model.*"
+    timeout: 5000
+- assertNotVisible: "Sonnet"
+- takeScreenshot: chat-model-watched
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
