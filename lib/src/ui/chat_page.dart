@@ -393,7 +393,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         unawaited(
           _pastePicture().then((took) {
             if (!took) {
-              unawaited(inputLog.pasteFromClipboard('chat'));
+              logPaste('chat', 'text');
               editable.pasteText(SelectionChangedCause.toolbar);
             }
           }),
@@ -1654,7 +1654,7 @@ class _PictureOrText extends Action<PasteTextIntent> {
     unawaited(
       take().then((took) {
         if (!took) {
-          unawaited(inputLog.pasteFromClipboard('chat'));
+          logPaste('chat', 'text');
           text?.invoke(intent);
         }
       }),

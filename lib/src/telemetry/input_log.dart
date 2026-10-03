@@ -152,7 +152,7 @@ class InputLog {
     if (label == null) return false;
     final where = whereOf(focus);
     if (_pasteChord(event, keys) && (where == 'field' || where == 'editor')) {
-      unawaited(pasteFromClipboard(where));
+      paste(where, 'text');
     }
     _note('$label ($where)');
     return false;
@@ -184,19 +184,11 @@ class InputLog {
   }
 
   /// A paste: where it went, what kind and how much. [amount] is characters
-  /// for text and a count for pictures and files.
-  void paste(String where, String kind, int amount) {
+  /// for text and a count for pictures and files. A paste the app does not do
+  /// itself has none: the clipboard is never read for the log.
+  void paste(String where, String kind, [int? amount]) {
     flush();
-    log.add('paste $kind $amount ($where)');
-  }
-
-  /// A text paste into a field the app does not paste itself: the clipboard's
-  /// length is read for the count and nothing of it is kept.
-  Future<void> pasteFromClipboard(String where) async {
-    try {
-      final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-      if (text != null && text.isNotEmpty) paste(where, 'text', text.length);
-    } catch (_) {}
+    log.add('paste $kind${amount == null ? '' : ' $amount'} ($where)');
   }
 }
 
@@ -206,7 +198,7 @@ final inputLog = InputLog(appLog);
 var _muted = 0;
 
 /// Records a paste, unless inside [mutePasteLog].
-void logPaste(String where, String kind, int amount) {
+void logPaste(String where, String kind, [int? amount]) {
   if (_muted == 0) inputLog.paste(where, kind, amount);
 }
 

@@ -194,14 +194,17 @@ void main() {
       expect(appLog.length, before);
     });
 
-    testWidgets('Ctrl+V in a field logs the clipboard text length only', (
+    testWidgets('Ctrl+V in a field logs the paste with no amount and no read', (
       tester,
     ) async {
+      var reads = 0;
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         SystemChannels.platform,
-        (call) async => call.method == 'Clipboard.getData'
-            ? <String, dynamic>{'text': 'password123'}
-            : null,
+        (call) async {
+          if (call.method != 'Clipboard.getData') return null;
+          reads++;
+          return <String, dynamic>{'text': 'password123'};
+        },
       );
       addTearDown(
         () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -209,14 +212,25 @@ void main() {
           null,
         ),
       );
-      await pump(tester, const TextField(autofocus: true));
+      // The field's own paste reads the clipboard; only the log's read counts.
+      await pump(
+        tester,
+        Shortcuts(
+          shortcuts: const {
+            SingleActivator(LogicalKeyboardKey.keyV, control: true):
+                DoNothingIntent(),
+          },
+          child: const TextField(autofocus: true),
+        ),
+      );
       await tester.pump();
       await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await settle(tester);
-      expect(lines(), contains('paste text 11 (field)'));
+      expect(lines(), contains('paste text (field)'));
+      expect(reads, 0, reason: 'the log must not read the clipboard');
     });
   });
 
