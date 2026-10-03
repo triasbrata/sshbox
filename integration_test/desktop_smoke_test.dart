@@ -3503,7 +3503,7 @@ touch '${done.path}'
       await sizeIs(100, 'Ctrl+0');
 
       GestureBinding.instance.pointerRouter.addGlobalRoute((e) {
-        if (e is PointerScrollEvent || e is PointerDownEvent) {
+        if (e is! PointerMoveEvent) {
           debugPrint(
             'DIAG event ${e.runtimeType} at ${e.position} '
             '${e is PointerScrollEvent ? e.scrollDelta : ''} '
