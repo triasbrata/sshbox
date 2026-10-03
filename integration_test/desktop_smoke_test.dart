@@ -3516,6 +3516,12 @@ touch '${done.path}'
           'sleep', '0.2', 'keyup', 'Control_L',
         ]);
         await tester.pump(const Duration(milliseconds: 400));
+        final loc = await _xdo(['getmouselocation']);
+        debugPrint(
+          'DIAG wheel at ($x,$y) of window $window ratio $ratio frame $frame '
+          'xdotool says $loc; size now ${uiTextSize.value}; '
+          'ctrl=${HardwareKeyboard.instance.isControlPressed}',
+        );
       }
 
       // 3: the wheel over Home grows it; over a terminal it does not.
