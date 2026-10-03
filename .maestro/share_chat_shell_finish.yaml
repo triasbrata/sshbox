@@ -1,0 +1,21 @@
+# The negative: a text shared while the shell tab was showing went to the
+# shell, as share_text has it, so the chat opened afterwards has an empty box.
+# Enter hands `cat` the pasted line; TEXT comes from -e.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 15000
+- tapOn:
+    point: 50%, 40%
+- pressKey: Enter
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Start a new chat…"
+    timeout: 20000
+- assertNotVisible: "(?s).*${TEXT}.*"
+- takeScreenshot: chat-share-shell-empty
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

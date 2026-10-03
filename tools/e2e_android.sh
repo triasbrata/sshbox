@@ -449,6 +449,91 @@ share_text() {
   [ "$got" = "$text" ] && [ "$records" -eq 1 ]
 }
 
+# #251: a share into Jeansh while a chat tab is showing goes into that chat's
+# box, and nothing is sent. The stand-in keeps every `--bg` and `-p` it is run
+# with, so a message or session started by the share would show in its count;
+# `cat` on the shell tab shows the terminal got nothing. Three cases, each with
+# its own text: the chat showing (the box holds it, the file stays empty), the
+# shell showing (the text reaches the file, as share_text has it, and a chat
+# opened after has an empty box) and a picture (an [Image #1] card). The
+# picture is put where the app's own provider serves it, since a shell-owned
+# path is not readable by the app.
+share_chat() {
+  local status=0 out=/tmp/e2e-shared.txt calls=/home/$SSH_USER/.e2e-share-calls
+  local main=cloud.brata.terminal/dev.triasbrata.sshbox.MainActivity
+  local share="am start -W -a android.intent.action.SEND -n cloud.brata.terminal/dev.triasbrata.sshbox.ShareActivity"
+  local text got records before after png=$ROOT/build/e2e-share.png
+  chat_stand_in
+  end_live_session
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  --bg) printf '%s\n' "$*" >>"$HOME/.e2e-share-calls"; exec cat >/dev/null ;;
+  -p) printf '%s\n' "$*" >>"$HOME/.e2e-share-calls"
+    while IFS= read -r line; do :; done ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$calls" "$out"
+
+  # Positive: the chat showing.
+  text="shared into the chat $(date +%s%N)"
+  flow share_chat_open || return 1
+  before=$(sudo wc -l <"$calls" 2>/dev/null || echo 0)
+  adb shell "$share -t text/plain --es android.intent.extra.TEXT '$text'" >/dev/null || return 1
+  sleep 3
+  records=$(adb shell dumpsys activity activities |
+    grep -oE "ActivityRecord\{[0-9a-f]+ u0 $main" | sort -u | wc -l | tr -d ' ')
+  flow share_chat_text_finish -e "TEXT=$text" || status=1
+  sleep 1
+  after=$(sudo wc -l <"$calls" 2>/dev/null || echo 0)
+  got=$(sudo cat "$out" 2>/dev/null)
+  echo "chat showing: the file holds '$got'; MainActivity records: $records; stand-in calls $before -> $after"
+  [ -z "$got" ] || { echo "::error::the terminal got '$got' of a share meant for the chat"; status=1; }
+  [ "$records" -eq 1 ] || { echo "::error::$records MainActivity records"; status=1; }
+  [ "$before" = "$after" ] || { echo "::error::the share sent something to claude"; status=1; }
+
+  # Negative: the shell showing.
+  sudo rm -f "$out"
+  text="shared into the shell $(date +%s%N)"
+  flow share_text_start || return 1
+  adb shell "$share -t text/plain --es android.intent.extra.TEXT '$text'" >/dev/null || return 1
+  sleep 3
+  flow share_chat_shell_finish -e "TEXT=$text" || status=1
+  sleep 1
+  got=$(sudo cat "$out" 2>/dev/null)
+  echo "shell showing: the file holds '$got'"
+  [ "$got" = "$text" ] || { echo "::error::the shell's share did not reach the file"; status=1; }
+
+  # A picture, with the chat showing.
+  python3 - "$png" <<'PY' || return 1
+import struct, sys, zlib
+def chunk(k, d):
+    c = struct.pack('>I', len(d)) + k + d
+    return c + struct.pack('>I', zlib.crc32(k + d))
+raw = b'\x00' + bytes((230, 20, 20)) * 8
+png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 8, 1, 8, 2, 0, 0, 0)) \
+    + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+open(sys.argv[1], 'wb').write(png)
+PY
+  adb push "$png" /data/local/tmp/e2e-share.png >/dev/null || return 1
+  adb shell run-as cloud.brata.terminal sh -c \
+    'mkdir -p cache/clip && cp /data/local/tmp/e2e-share.png cache/clip/e2e-share.png' || return 1
+  flow share_chat_open || return 1
+  adb shell "$share -t image/png --eu android.intent.extra.STREAM content://cloud.brata.terminal.files/clip/e2e-share.png" >/dev/null || return 1
+  sleep 3
+  flow share_chat_pic_finish || status=1
+
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-share-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$calls" "$out"
+  adb shell rm -f /data/local/tmp/e2e-share.png
+  adb shell run-as cloud.brata.terminal rm -f cache/clip/e2e-share.png
+  stand_in ''
+  return "$status"
+}
+
 # The chat button's Claude Code check, UAT issue #22: one flow, three hosts, the
 # stand-in swapped between them. Report-only until it has earned the gate. Each
 # expected toast is the app's own wording (ClaudeChat.versionRefusal).
@@ -1149,6 +1234,9 @@ echo "::endgroup::"
 
 echo "::group::share_text (report only)"
 share_text || echo "::warning::share_text failed -- report only, not gating"
+echo "::endgroup::"
+echo "::group::share_chat (report only)"
+share_chat || echo "::warning::share_chat failed -- report only, not gating"
 echo "::endgroup::"
 
 chat_version || true
