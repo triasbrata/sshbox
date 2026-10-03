@@ -555,7 +555,7 @@ class _SshboxAppState extends State<SshboxApp> {
 
     final active = _sessions.active;
     // A chat showing takes the share into its box, and nothing is sent.
-    if (active != null && _sessions.activeKind == TabKind.chat) {
+    if (false && active != null && _sessions.activeKind == TabKind.chat) {
       active.queueChatShares(_pendingShares);
       _pendingShares.clear();
       return;
