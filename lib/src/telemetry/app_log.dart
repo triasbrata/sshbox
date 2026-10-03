@@ -148,6 +148,8 @@ var _watching = false;
 /// pattern scrubber cannot know a file name or a session name, so a
 /// `debugPrint` must never carry host text: print a type or a fixed phrase.
 void watchAppLog() {
+  // Again on every start: see [watchKeys].
+  watchKeys();
   if (_watching) return;
   _watching = true;
   final inner = FlutterError.onError;
@@ -181,7 +183,6 @@ void watchAppLog() {
   // An observer, not an AppLifecycleListener: that one asserts on a state
   // jump such as resumed to hidden, which a real minimize on Linux makes.
   WidgetsBinding.instance.addObserver(_observer = _FlushOnLeave());
-  watchKeys();
   appLog.add('app: started');
 }
 

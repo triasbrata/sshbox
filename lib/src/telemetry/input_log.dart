@@ -213,13 +213,12 @@ T mutePasteLog<T>(T Function() body) {
   }
 }
 
-var _keysWatched = false;
-
-/// Starts the key log, once.
+/// Starts the key log. Safe to call again: a test binding drops the
+/// keyboard's handlers between tests, and `main` runs once in each.
 void watchKeys() {
-  if (_keysWatched) return;
-  _keysWatched = true;
-  HardwareKeyboard.instance.addHandler(inputLog.onKey);
+  HardwareKeyboard.instance
+    ..removeHandler(inputLog.onKey)
+    ..addHandler(inputLog.onKey);
 }
 
 /// Logs the route a dialog, menu or sheet opens as, never what it shows.
