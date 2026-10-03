@@ -1234,13 +1234,14 @@ class LiveSession extends ChangeNotifier {
   Future<void> _installOpenCommand(CommandCapable session) async {
     final lines = <String>[];
     final done = Completer<void>();
+    // A stream that errors goes on to finish, which calls both.
+    void finish([Object? _]) {
+      if (!done.isCompleted) done.complete();
+    }
+
     final subscription = session
         .run(openCommandInstallScript())
-        .listen(
-          lines.add,
-          onDone: done.complete,
-          onError: (_) => done.complete(),
-        );
+        .listen(lines.add, onDone: finish, onError: finish);
     try {
       await done.future.timeout(const Duration(seconds: 10));
     } catch (_) {
@@ -1264,14 +1265,15 @@ class LiveSession extends ChangeNotifier {
   Future<void> _measureClock(CommandCapable session) async {
     final lines = <String>[];
     final done = Completer<void>();
+    // A stream that errors goes on to finish, which calls both.
+    void finish([Object? _]) {
+      if (!done.isCompleted) done.complete();
+    }
+
     final started = DateTime.now().millisecondsSinceEpoch;
     final subscription = session
         .run('date +%s')
-        .listen(
-          lines.add,
-          onDone: done.complete,
-          onError: (_) => done.complete(),
-        );
+        .listen(lines.add, onDone: finish, onError: finish);
     try {
       await done.future.timeout(const Duration(seconds: 5));
     } catch (_) {
