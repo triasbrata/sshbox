@@ -3521,7 +3521,8 @@ touch '${done.path}'
         final y = (window.top + frame + at.dy * ratio).round();
         await _xdo(['windowfocus', '--sync', await _window()]);
         await _xdo([
-          'mousemove', '$x', '$y', 'sleep', '0.2', //
+          'mousemove', '$x', '$y', 'sleep', '0.2', 'mousemove_relative', '3',
+          '3', 'sleep', '0.2', 'click', '4', 'sleep', '0.3', //
           'keydown', 'Control_L', 'click', '4', 'sleep', '0.2', 'click', '4',
           'sleep', '0.2', 'keyup', 'Control_L',
         ]);
