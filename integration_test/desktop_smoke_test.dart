@@ -3502,6 +3502,16 @@ touch '${done.path}'
       await keys('ctrl+0');
       await sizeIs(100, 'Ctrl+0');
 
+      GestureBinding.instance.pointerRouter.addGlobalRoute((e) {
+        if (e is PointerScrollEvent || e is PointerDownEvent) {
+          debugPrint(
+            'DIAG event ${e.runtimeType} at ${e.position} '
+            '${e is PointerScrollEvent ? e.scrollDelta : ''} '
+            'ctrl=${HardwareKeyboard.instance.isControlPressed} '
+            'pressed=${HardwareKeyboard.instance.logicalKeysPressed}',
+          );
+        }
+      });
       // Where a point of the app is on the X screen.
       final window = await _windowRect();
       final ratio = tester.view.devicePixelRatio;
