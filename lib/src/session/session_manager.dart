@@ -705,10 +705,7 @@ class LiveSession extends ChangeNotifier {
             };
       final transport =
           _transport?.call(askedKey, banner) ??
-          IsolateTransport(
-            confirmHostKey: askedKey,
-            onAuthBanner: banner,
-          );
+          IsolateTransport(confirmHostKey: askedKey, onAuthBanner: banner);
       // The key this host's servers sign a push to the relay with, and the
       // host a tap opens, for a script on the host to read rather than anyone
       // copying them over by hand; never the FCM token. A host's first
@@ -1353,6 +1350,24 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
   List<Object> takePendingUploads() {
     final taken = List<Object>.of(_pendingUploads);
     _pendingUploads.clear();
+    return taken;
+  }
+
+  /// Shares that arrived while a chat tab was the one showing: they go into
+  /// that chat's box rather than to the terminal — see [queueUploads].
+  final List<Object> _pendingChatShares = [];
+
+  bool get hasPendingChatShares => _pendingChatShares.isNotEmpty;
+
+  void queueChatShares(Iterable<Object> shares) {
+    if (shares.isEmpty) return;
+    _pendingChatShares.addAll(shares);
+    _notify();
+  }
+
+  List<Object> takePendingChatShares() {
+    final taken = List<Object>.of(_pendingChatShares);
+    _pendingChatShares.clear();
     return taken;
   }
 

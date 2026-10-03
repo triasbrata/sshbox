@@ -6572,6 +6572,97 @@ void main() {
     }, variant: linux);
   });
 
+  group('a share arriving while a chat shows goes into its box', () {
+    final pixel = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA'
+      '60e6kgAAAABJRU5ErkJggg==',
+    );
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('chat-share'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    Future<(_Shell, LiveSession)> chatOn(WidgetTester tester) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      return (shell, session);
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    /// The share, and the file work it starts let run.
+    Future<void> share(
+      WidgetTester tester,
+      LiveSession session,
+      List<Object> shares,
+    ) async {
+      await tester.runAsync(() async {
+        session.queueChatShares(shares);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    testWidgets('a picture becomes a card and an [Image #N], and nothing '
+        'is sent', (tester) async {
+      final (shell, session) = await chatOn(tester);
+      final before = shell.commands.length;
+      final file = File('${dir.path}/shot.png')..writeAsBytesSync(pixel);
+      await share(tester, session, [(path: file.path, name: 'shot.png')]);
+      expect(box(tester), '[Image #1] ');
+      expect(find.text('[Image #1] shot.png'), findsOneWidget);
+      expect(shell.commands.length, before);
+      expect(session.hasPendingChatShares, isFalse);
+    });
+
+    testWidgets('a text lands at the caret, trimmed, and is not sent', (
+      tester,
+    ) async {
+      final (shell, session) = await chatOn(tester);
+      final before = shell.commands.length;
+      await tester.enterText(find.byType(TextField), 'look:');
+      await tester.pump();
+      await share(tester, session, ['\nhttps://example.com/a\n']);
+      expect(box(tester), 'look: https://example.com/a ');
+      expect(shell.commands.length, before);
+    });
+
+    testWidgets('a file that is not a picture goes in as its uploaded path', (
+      tester,
+    ) async {
+      final (shell, session) = await chatOn(tester);
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, ['notes.txt']);
+      expect(box(tester), '/tmp/notes.txt ');
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('a text over the limit and a name with a control character '
+        'are refused, and add nothing', (tester) async {
+      final (_, session) = await chatOn(tester);
+      final odd = File('${dir.path}/a\u0085b.png')..writeAsBytesSync(pixel);
+      await share(tester, session, [
+        'x' * (64 * 1024 + 1),
+        (path: odd.path, name: 'a\u0085b.png'),
+      ]);
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('too long to add'), findsOneWidget);
+      expect(find.textContaining('control character'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+  });
+
   // Measurements for #215, run with CHAT_BENCH=1: debug-mode (JIT, asserts on)
   // widget-test numbers, so only their ratios and counts carry over to a
   // release build. No raster time is included.

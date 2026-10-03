@@ -45,7 +45,7 @@ import 'slash_command_menu.dart';
 import 'text_size.dart';
 import 'terminal_page.dart' show openUrl;
 import 'terminal_paste.dart'
-    show clipboardImage, insertedImage, pasteImageLimit;
+    show clipboardImage, insertedImage, pasteImageLimit, shareTextLimit;
 import 'toast.dart';
 import '../telemetry/input_log.dart';
 import 'tui.dart';
@@ -609,9 +609,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// wrapped in double quotes so where it ends is plain.
   Future<void> _dropped(DropDoneDetails details) async {
     setState(() => _dropping = false);
-    final here =
-        widget.session.host.id == localHostId &&
-        defaultTargetPlatform != TargetPlatform.windows;
     for (final item in details.files) {
       final path = item.path;
       final isDir = FileSystemEntity.isDirectorySync(path);
@@ -619,33 +616,74 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         _refuse('Not added: the name holds a control character: ${item.name}');
       } else if (!isDir && _pictureNames.hasMatch(item.name)) {
         await _addPicture((path: path, name: item.name));
-      } else if (here) {
-        _typePath(path);
-      } else if (isDir) {
-        _refuse('A folder cannot be uploaded: ${item.name}');
-      } else if (!widget.session.canUploadFiles) {
-        _refuse('This session cannot take ${item.name}.');
       } else {
-        try {
-          final remote = await transfers.run(
-            name: item.name,
-            host: widget.session.host.displayName,
-            direction: TransferDirection.upload,
-            work: (transfer) => widget.session.uploadToTmp(
-              localPath: path,
-              fileName: item.name,
-              onProgress: transfer.report,
-              cancel: transfer.cancelled,
-            ),
-          );
-          if (mounted) _typePath(remote);
-        } catch (error) {
-          // Cancelled from the Transfers tab, which says so itself.
-          final cancelled =
-              error is FileBrowserException &&
-              error.fault == FileBrowserFault.cancelled;
-          if (mounted && !cancelled) _refuse('Upload failed: $error');
-        }
+        await _addFile(path, item.name, isDir);
+      }
+      if (!mounted) return;
+    }
+  }
+
+  /// A file that is not a picture, as [_dropped] and [_drainShared] take it.
+  Future<void> _addFile(String path, String name, bool isDir) async {
+    final here =
+        widget.session.host.id == localHostId &&
+        defaultTargetPlatform != TargetPlatform.windows;
+    if (here) {
+      _typePath(path);
+    } else if (isDir) {
+      _refuse('A folder cannot be uploaded: $name');
+    } else if (!widget.session.canUploadFiles) {
+      _refuse('This session cannot take $name.');
+    } else {
+      try {
+        final remote = await transfers.run(
+          name: name,
+          host: widget.session.host.displayName,
+          direction: TransferDirection.upload,
+          work: (transfer) => widget.session.uploadToTmp(
+            localPath: path,
+            fileName: name,
+            onProgress: transfer.report,
+            cancel: transfer.cancelled,
+          ),
+        );
+        if (mounted) _typePath(remote);
+      } catch (error) {
+        // Cancelled from the Transfers tab, which says so itself.
+        final cancelled =
+            error is FileBrowserException &&
+            error.fault == FileBrowserFault.cancelled;
+        if (mounted && !cancelled) _refuse('Upload failed: $error');
+      }
+    }
+  }
+
+  /// What another app shared while this chat showed: a picture becomes a
+  /// card, another file its path and a text itself, at the caret. Never
+  /// sent: Send is the user's.
+  Future<void> _drainShared() async {
+    if (!widget.session.hasPendingChatShares) return;
+    for (final share in widget.session.takePendingChatShares()) {
+      switch (share) {
+        case String text:
+          if (!_attachable) {
+            _refuse('Not added: this session is read-only from here.');
+          } else if (text.length > shareTextLimit) {
+            _refuse(
+              'The shared text is too long to add: '
+              '${shareTextLimit ~/ 1024} KB at most',
+            );
+          } else {
+            _typeText(text.trim());
+          }
+        case SharedFile file:
+          if (_misleading.hasMatch(file.path)) {
+            _refuse('Not added: the name holds a control character.');
+          } else if (_pictureNames.hasMatch(file.name)) {
+            await _addPicture(file);
+          } else {
+            await _addFile(file.path, file.name, false);
+          }
       }
       if (!mounted) return;
     }
@@ -662,10 +700,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// the user may have selected a sentence meanwhile. Not at all once the
   /// chat has turned read-only.
   void _typePath(String path) {
+    _typeText(
+      path.contains(RegExp(r'\s'))
+          ? '"${path.replaceAll('"', r'\"')}"'
+          : path,
+    );
+  }
+
+  /// [quoted] at the caret, a space before it unless one is there and one
+  /// after; not at all once the chat has turned read-only.
+  void _typeText(String quoted) {
     if (!_attachable) return;
-    final quoted = path.contains(RegExp(r'\s'))
-        ? '"${path.replaceAll('"', r'\"')}"'
-        : path;
     final value = _input.value;
     final at = value.selection.isValid
         ? value.selection.end
@@ -1024,6 +1069,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     setState(() {});
     _followTranscript();
+    unawaited(_drainShared());
   }
 
   /// Notes where the session showing was left: as it is scrolled, since by
