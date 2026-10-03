@@ -91,7 +91,7 @@ bool isImageFile(String path) => _imageNames.hasMatch(path);
 
 final _htmlNames = RegExp(r'\.html?$', caseSensitive: false);
 
-bool isHtmlFile(String path) => _htmlNames.hasMatch(path);
+bool isHtmlFile(String path) => false && _htmlNames.hasMatch(path);
 
 /// The most of an HTML file a web tab takes: the editor's own ceiling.
 const htmlLimit = FileBrowser.defaultReadLimit;
