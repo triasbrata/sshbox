@@ -13,11 +13,11 @@ Future<void> showTextSizeControl(BuildContext context) => showDialog<void>(
     maxWidth: 320,
     actions: [
       TuiButton(
-        label: 'Reset',
+        label: 'Reset', logName: 'Text size reset',
         variant: TuiButtonVariant.ghost,
         onPressed: () => zoomUiText(context, 0),
       ),
-      TuiButton(label: 'Done', onPressed: () => Navigator.of(context).pop()),
+      TuiButton(label: 'Done', logName: 'Done', onPressed: () => Navigator.of(context).pop()),
     ],
     child: ValueListenableBuilder(
       valueListenable: uiTextSize,
@@ -27,7 +27,7 @@ Future<void> showTextSizeControl(BuildContext context) => showDialog<void>(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             TuiButton(
-              label: '−',
+              label: '−', logName: 'Text size −',
               variant: TuiButtonVariant.ghost,
               onPressed: scale > UiTextSize.min + 0.001
                   ? () => zoomUiText(context, -1)
@@ -35,7 +35,7 @@ Future<void> showTextSizeControl(BuildContext context) => showDialog<void>(
             ),
             Text('$percent%', semanticsLabel: 'UI text size $percent percent'),
             TuiButton(
-              label: '+',
+              label: '+', logName: 'Text size +',
               variant: TuiButtonVariant.ghost,
               onPressed: scale < UiTextSize.max - 0.001
                   ? () => zoomUiText(context, 1)

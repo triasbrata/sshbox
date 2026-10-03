@@ -242,23 +242,23 @@ class WindowButtons extends StatelessWidget {
                 [
                   TuiMenuItem(
                     value: () => zoomUiText(inside, 1),
-                    label: 'Zoom in',
+                    label: 'Zoom in', logName: 'Zoom in',
                     shortcut: 'Ctrl+=',
                   ),
                   TuiMenuItem(
                     value: () => zoomUiText(inside, -1),
-                    label: 'Zoom out',
+                    label: 'Zoom out', logName: 'Zoom out',
                     shortcut: 'Ctrl+-',
                   ),
                   TuiMenuItem(
                     value: () => zoomUiText(inside, 0),
-                    label: 'Actual size',
+                    label: 'Actual size', logName: 'Actual size',
                     shortcut: 'Ctrl+0',
                   ),
                   const TuiMenuDivider(),
                   TuiMenuItem(
                     value: () => checkForUpdates(inside),
-                    label: 'Check for updates…',
+                    label: 'Check for updates…', logName: 'Check for updates',
                   ),
                 ],
               );
