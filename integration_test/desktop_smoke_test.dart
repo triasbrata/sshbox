@@ -3759,8 +3759,8 @@ touch '${done.path}'
         () => target.existsSync(),
         '~/.local/bin/jeansh to be written',
       );
-      final mode = await Process.run('stat', ['-c', '%a', target.path]);
-      expect((mode.stdout as String).trim(), '755');
+      // Read in Dart: macOS's stat takes no -c.
+      expect(target.statSync().mode & 0x1ff, 0x1ed, reason: 'not mode 755');
       expect(target.readAsStringSync(), contains('jeansh-open: installed'));
       await _backHome(tester);
     },
