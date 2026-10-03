@@ -227,11 +227,11 @@ class _DbEditorState extends State<_DbEditor> {
             maxWidth: 420,
             actions: [
               TuiButton(
-                label: 'Cancel',
+                label: 'Cancel', logName: 'Cancel',
                 variant: TuiButtonVariant.ghost,
                 onPressed: () => Navigator.of(context).pop(),
               ),
-              TuiButton(label: 'Import', onPressed: submit),
+              TuiButton(label: 'Import', logName: 'Import', onPressed: submit),
             ],
             child: TuiField(
               label: 'URI',
@@ -335,7 +335,7 @@ class _DbEditorState extends State<_DbEditor> {
                       Align(
                         alignment: AlignmentDirectional.centerStart,
                         child: TuiButton(
-                          label: 'Import URI',
+                          label: 'Import URI', logName: 'Import URI',
                           prefix: '↓',
                           variant: TuiButtonVariant.ghost,
                           onPressed: _importUri,

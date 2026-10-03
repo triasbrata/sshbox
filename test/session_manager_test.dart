@@ -543,7 +543,9 @@ void main() {
       final session = manager.create(_host, transport: (_, _) => connection);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
-      return connection.environment;
+      // The jeansh secret rides with every connect too; open_session_test
+      // checks it, so these see the notification names alone.
+      return connection.environment?..remove('LC_SSHBOX_OPEN_SECRET');
     }
 
     /// The relay keys, once FCM has given its token.

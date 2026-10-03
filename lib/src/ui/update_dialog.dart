@@ -80,7 +80,7 @@ class _UpdateTileState extends State<UpdateTile> {
         Row(
           children: [
             TuiButton(
-              label: 'Check for updates',
+              label: 'Check for updates', logName: 'Check for updates',
               prefix: '↻',
               variant: TuiButtonVariant.ghost,
               onPressed: enabled && !_checking ? _check : null,
@@ -321,7 +321,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           actions: [
             close('Later'),
             TuiButton(
-              label: 'Restart to update',
+              label: 'Restart to update', logName: 'Restart to update',
               prefix: '↻',
               onPressed: () => unawaited(_restart()),
             ),
@@ -336,7 +336,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           detail: '${shown.handOver}\n\n${file.path}\n\n$_howToInstall',
           actions: [
             TuiButton(
-              label: 'Open folder',
+              label: 'Open folder', logName: 'Open folder',
               variant: TuiButtonVariant.ghost,
               onPressed: () => unawaited(launchUrl(Uri.file(file.parent.path))),
             ),
@@ -352,7 +352,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           actions: [
             close('Not now'),
             TuiButton(
-              label: 'Try again',
+              label: 'Try again', logName: 'Try again',
               prefix: '↻',
               onPressed: retryDownload,
             ),
@@ -368,7 +368,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             // Cancel stays up until the next chunk arrives, so it can be
             // tapped again in that window; cancelDownload takes that.
             TuiButton(
-              label: 'Cancel',
+              label: 'Cancel', logName: 'Cancel',
               variant: TuiButtonVariant.ghost,
               onPressed: cancelDownload,
             ),
@@ -388,7 +388,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           actions: [
             close('Not now'),
             TuiButton(
-              label: 'Download',
+              label: 'Download', logName: 'Download',
               prefix: '↓',
               onPressed: () => startDownload(update, widget.updater),
             ),
@@ -473,7 +473,7 @@ class _DownloadRow extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: TuiButton(
-              label: 'Cancel',
+              label: 'Cancel', logName: 'Cancel',
               variant: TuiButtonVariant.ghost,
               onPressed: cancelDownload,
             ),
@@ -491,7 +491,7 @@ class _DownloadRow extends StatelessWidget {
         'Jeansh $version is downloaded and checked.',
         [
           TuiButton(
-            label: 'Restart to update',
+            label: 'Restart to update', logName: 'Restart to update',
             prefix: '↻',
             onPressed: () => unawaited(_restart(context)),
           ),
@@ -501,7 +501,7 @@ class _DownloadRow extends StatelessWidget {
         'Jeansh $version was downloaded to ${d.file!.path}',
         [
           TuiButton(
-            label: 'Open folder',
+            label: 'Open folder', logName: 'Open folder',
             variant: TuiButtonVariant.ghost,
             onPressed: () =>
                 unawaited(launchUrl(Uri.file(d.file!.parent.path))),
@@ -510,7 +510,7 @@ class _DownloadRow extends StatelessWidget {
       ),
       DownloadPhase.failed => row(
         'Jeansh $version did not download: ${d.error}',
-        [TuiButton(label: 'Try again', prefix: '↻', onPressed: retryDownload)],
+        [TuiButton(label: 'Try again', logName: 'Try again', prefix: '↻', onPressed: retryDownload)],
       ),
     };
     return Padding(padding: const EdgeInsets.only(bottom: 16), child: body);

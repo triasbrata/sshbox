@@ -6,7 +6,8 @@ import 'dart:math' as math;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -14,12 +15,20 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
 import '../chat/picture_draft.dart';
-import '../files/file_browser.dart' show FileBrowserException, FileBrowserFault;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../files/file_browser.dart'
+    show
+        FileBrowser,
+        FileBrowserException,
+        FileBrowserFault,
+        RemoteEntryKind;
 import '../files/transfers.dart';
 import '../platform.dart';
 import '../session/local_transport.dart' show localHostId;
 import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
+import '../telemetry/tap_log.dart';
 import 'chat_ask_card.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart'
@@ -39,6 +48,7 @@ import 'terminal_page.dart' show openUrl;
 import 'terminal_paste.dart'
     show clipboardImage, insertedImage, pasteImageLimit;
 import 'toast.dart';
+import '../telemetry/input_log.dart';
 import 'tui.dart';
 
 /// A conversation with Claude Code running on the host, beside that host's
@@ -128,7 +138,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// the list, which goes whenever the sidebar is hidden or the drawer shut:
   /// held there, it came back empty. Asked for when the connection comes up,
   /// and again only by Refresh or when this chat starts a session of its own.
-  Future<List<ClaudeAgent>>? _agents;
+  final _listing = ValueNotifier<AsyncSnapshot<List<ClaudeAgent>>>(
+    const AsyncSnapshot.nothing(),
+  );
 
   /// Sessions, by host and session id, seen working since last opened here,
   /// and those that have finished since: the dot on their row. Kept for as
@@ -154,15 +166,50 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   // error is the list's to show, and it may not be showing yet.
   void _listAgents() {
     final agents = _chat.agents(all: true);
-    _agents = agents..ignore();
+    // The rows it had stay while it is asked again.
+    final had = _listing.value.data;
+    _listing.value = had == null
+        ? const AsyncSnapshot.waiting()
+        : AsyncSnapshot.withData(ConnectionState.waiting, had);
     _asking = true;
     unawaited(
       agents.whenComplete(() => _asking = false).then((rows) {
         if (!mounted) return;
         rows.forEach(_note);
-        setState(() {});
-      }, onError: (Object _) {}),
+        _listing.value = AsyncSnapshot.withData(ConnectionState.done, rows);
+      }, onError: (Object error) {
+        if (mounted) {
+          _listing.value = AsyncSnapshot.withError(
+            ConnectionState.done,
+            error,
+          );
+        }
+      }),
     );
+  }
+
+  /// The list again, for what its rows say of each session now: the page and
+  /// the sidebar are told only when a row has changed, so a poll that finds
+  /// nothing new redraws nothing.
+  Future<void> _poll() async {
+    _asking = true;
+    try {
+      final rows = await _chat.agents(all: true);
+      if (!mounted) return;
+      final before = _listing.value.data;
+      if (before != null &&
+          before.length == rows.length &&
+          [for (final row in before) row.signature].join('\n') ==
+              [for (final row in rows) row.signature].join('\n')) {
+        return;
+      }
+      rows.forEach(_note);
+      _listing.value = AsyncSnapshot.withData(ConnectionState.done, rows);
+    } catch (_) {
+      // The list keeps what it had; Refresh shows the error.
+    } finally {
+      _asking = false;
+    }
   }
 
   /// Asks for the list again every [_look] while it is on screen — the
@@ -182,7 +229,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final shown = _sidebarWide
         ? _sidebarOpen
         : _scaffoldKey.currentState?.isDrawerOpen ?? false;
-    if (shown && !_asking) setState(_listAgents);
+    if (shown && !_asking) unawaited(_poll());
   }
 
   /// The slash commands the host's Claude Code takes, read the first time
@@ -308,6 +355,85 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _looking = Timer.periodic(_look, (_) => _onLook());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
     _onChanged();
+    unawaited(_loadFolder());
+  }
+
+  /// The folder a new chat starts in is remembered for each host.
+  String get _folderKey => 'sshbox.chat.folder.${widget.session.host.id}';
+
+  /// The login folder, where Claude Code refuses to start: asked once, from
+  /// the host.
+  String? _home;
+
+  /// Reads what was remembered for this host and where its home is. Neither
+  /// is needed for the chat to work, so a failure of either is let go.
+  Future<void> _loadFolder() async {
+    try {
+      final saved = (await SharedPreferences.getInstance()).getString(
+        _folderKey,
+      );
+      if (saved != null) _chat.startIn(saved);
+    } catch (_) {
+      // Nothing remembered.
+    }
+    try {
+      if (!widget.session.canBrowseFiles) return;
+      final home = await widget.session.fileBrowser.resolveHome();
+      if (mounted) setState(() => _home = home);
+    } catch (_) {
+      // Home unknown: no warning, and the start's own refusal still says.
+    }
+  }
+
+  static String _bare(String path) =>
+      path.length > 1 ? path.replaceFirst(RegExp(r'/+$'), '') : path;
+
+  /// Whether a new chat would start in the login folder.
+  bool get _atHome {
+    final home = _home;
+    final folder = _chat.startFolder;
+    return home != null && folder != null && _bare(folder) == _bare(home);
+  }
+
+  /// Lets the user pick the folder a new chat starts in, and remembers it.
+  /// [after] is a start that was refused: said so that Retry is the next step.
+  Future<void> _chooseFolder({ChatSaid? after}) async {
+    // The sessions as last listed: none yet, or a failed list, suggests none.
+    final recent = <String>{
+      for (final agent in _listing.value.data ?? const <ClaudeAgent>[])
+        if (agent.cwd.isNotEmpty) agent.cwd,
+    };
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (_) => _FolderPicker(
+        start: _chat.startFolder ?? _home ?? '/',
+        browser: widget.session.canBrowseFiles
+            ? widget.session.fileBrowser
+            : null,
+        recent: recent.take(8).toList(),
+        home: _home,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final problem = _chat.startIn(chosen);
+    if (problem != null) {
+      showToast(context, problem, type: TuiToastType.warning);
+      return;
+    }
+    try {
+      await (await SharedPreferences.getInstance()).setString(
+        _folderKey,
+        _chat.startFolder!,
+      );
+    } catch (_) {
+      // Used for this chat, though not remembered.
+    }
+    if (after != null && mounted) {
+      showToast(
+        context,
+        'New chats start in ${_chat.startFolder}. Retry to start it there.',
+      );
+    }
   }
 
   @override
@@ -320,6 +446,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.session.removeListener(_onChanged);
     _chat.removeListener(_onChanged);
+    _listing.dispose();
     _input.dispose();
     _inputFocus.dispose();
     _menuOpen.dispose();
@@ -393,7 +520,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         editable.hideToolbar();
         unawaited(
           _pastePicture().then((took) {
-            if (!took) editable.pasteText(SelectionChangedCause.toolbar);
+            if (!took) {
+              logPaste('chat', 'text');
+              editable.pasteText(SelectionChangedCause.toolbar);
+            }
           }),
         );
       },
@@ -433,6 +563,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     try {
       final image = await clipboardImage();
       if (image == null) return false;
+      logPaste('chat', 'image', 1);
       await _addPicture(image);
     } on PlatformException catch (error) {
       _refuse(
@@ -1242,7 +1373,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         child: ContentText(
           child: _SessionList(
             chat: _chat,
-            agents: _agents,
+            listing: _listing,
             connected: widget.session.isConnected,
             onPick: _pick,
             onRefresh: () => setState(_listAgents),
@@ -1383,6 +1514,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
         const Divider(height: 1),
         if (!_draft.isEmpty) _pictureCards(),
+        if (chat.composing && chat.watching == null && _atHome)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 6, 16, 0),
+            child: TuiText(
+              'Claude Code will not start in the home folder. Pick a project '
+              'folder with the folder chip.',
+              size: 11,
+              tone: TuiTextTone.yellow,
+            ),
+          ),
         _composer(theme, wide: wide, sidebar: sidebar),
       ],
     );
@@ -1432,6 +1573,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     onRetry: _retry,
     onRemove: _chat.remove,
     onEdit: _editPrevious,
+    onChooseFolder: (said) => unawaited(_chooseFolder(after: said)),
     question: (question) => ChatAskCard(
       // One card for the question for as long as it is in the chat, so what
       // is half chosen survives the list being redrawn.
@@ -1594,7 +1736,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 // that takes a picture first, offered with a picture alone.
                 // Enter and the slash menu stay [_onBoxKey]'s: only a paste is
                 // taken here.
-                Actions(
+                // Its own semantics node: without one the field's merges up
+                // into the whole box's, so a press at the centre of that node,
+                // where a screen reader or a flow aims, lands between controls.
+                Semantics(
+                  container: true,
+                  child: Actions(
                   actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
                   child: TextField(
                     contextMenuBuilder: _contextMenu,
@@ -1673,7 +1820,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       if (synced != _input.value) _input.value = synced;
                     }),
                   ),
-                ),
+                )),
                 Row(
                   children: [
                     IconButton(
@@ -1730,6 +1877,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             if (chat.context != null) _UsageChip(chat: chat),
+                            if (chat.composing && chat.watching == null)
+                              Flexible(
+                                child: _FolderChip(
+                                  folder: chat.startFolder,
+                                  warn: _atHome,
+                                  onTap: _chooseFolder,
+                                ),
+                              ),
                             Flexible(child: _ModelChip(chat: chat)),
                           ],
                         ),
@@ -1776,7 +1931,10 @@ class _PictureOrText extends Action<PasteTextIntent> {
     final text = callingAction;
     unawaited(
       take().then((took) {
-        if (!took) text?.invoke(intent);
+        if (!took) {
+          logPaste('chat', 'text');
+          text?.invoke(intent);
+        }
       }),
     );
     return null;
@@ -1988,7 +2146,7 @@ class _Empty extends StatelessWidget {
               FittedBox(
                 fit: BoxFit.scaleDown,
                 child: TuiButton(
-                  label: 'Sessions on this host',
+                  label: 'Sessions on this host', logName: 'Sessions on this host',
                   prefix: '▸',
                   variant: TuiButtonVariant.ghost,
                   onPressed: show,
@@ -2016,6 +2174,7 @@ Widget _drawEntry(
   void Function(ChatSaid said)? onRetry,
   void Function(ChatSaid said)? onRemove,
   VoidCallback? onEdit,
+  void Function(ChatSaid said)? onChooseFolder,
   Widget Function(ChatQuestion question)? question,
 }) => switch (entry) {
   ChatSaid(mine: true) => _Bubble(
@@ -2030,6 +2189,9 @@ Widget _drawEntry(
     // A sub-agent's view has no message of its own to send again.
     onRetry: () => onRetry?.call(entry),
     onRemove: () => onRemove?.call(entry),
+    onChooseFolder: entry.refusedFolder == null
+        ? null
+        : () => onChooseFolder?.call(entry),
   ),
   ChatSaid(:final text) => _Answer(text: text, onTapLink: onTapLink),
   final ChatToolRun run => _ToolRow(
@@ -2318,7 +2480,11 @@ class _Bubble extends StatelessWidget {
     required this.onRetry,
     required this.onRemove,
     this.onEdit,
+    this.onChooseFolder,
   });
+
+  /// Offered beside Retry when the start was refused in its folder.
+  final VoidCallback? onChooseFolder;
 
   final ChatSaid said;
 
@@ -2367,7 +2533,10 @@ class _Bubble extends StatelessWidget {
               label: 'Edit this message',
               excludeSemantics: true,
               child: InkWell(
-                onTap: onEdit,
+                onTap: () {
+                  logTap(context, 'Edit message', 'button');
+                  onEdit!();
+                },
                 child: const SizedBox(
                   width: 36,
                   height: 28,
@@ -2383,9 +2552,15 @@ class _Bubble extends StatelessWidget {
           child: Wrap(
             spacing: 8,
             children: [
-              TuiButton(label: 'Retry', prefix: '↻', onPressed: onRetry),
+              TuiButton(label: 'Retry', logName: 'Retry', prefix: '↻', onPressed: onRetry),
+              if (onChooseFolder != null)
+                TuiButton(
+                  label: 'Choose another folder', logName: 'Choose another folder',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: onChooseFolder,
+                ),
               TuiButton(
-                label: 'Remove',
+                label: 'Remove', logName: 'Remove',
                 variant: TuiButtonVariant.ghost,
                 onPressed: onRemove,
               ),
@@ -2440,7 +2615,7 @@ class _Answer extends StatelessWidget {
 /// The one Markdown setup a chat draws with, what was asked and what was
 /// answered alike: the renderer the Markdown preview uses, its code blocks
 /// with their copy buttons, and every link through the same [onTapLink].
-class _ChatMarkdown extends StatelessWidget {
+class _ChatMarkdown extends StatefulWidget {
   const _ChatMarkdown({required this.text, required this.onTapLink, this.ink});
 
   final String text;
@@ -2452,15 +2627,44 @@ class _ChatMarkdown extends StatelessWidget {
   /// would not show; null on the page's own ground.
   final TextStyle? ink;
 
+  @override
+  State<_ChatMarkdown> createState() => _ChatMarkdownState();
+}
+
+/// Hands back the very widget it built until the text, the ink, the link
+/// handler or the theme changes, so a page that redraws on every event does
+/// not parse each Markdown reply on screen again: an identical widget is not
+/// rebuilt, however often its parent is.
+class _ChatMarkdownState extends State<_ChatMarkdown> {
+  Widget? _built;
+  String? _text;
+  TextStyle? _ink;
+  MarkdownTapLinkCallback? _onTapLink;
+  ThemeData? _theme;
+
   /// Inside a selection container that copies blocks and cells apart.
   @override
-  Widget build(BuildContext context) =>
-      SeparatedSelection(child: _markdown(context));
-
-  Widget _markdown(BuildContext context) {
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (_built == null ||
+        _text != widget.text ||
+        _ink != widget.ink ||
+        _onTapLink != widget.onTapLink ||
+        _theme != theme) {
+      _text = widget.text;
+      _ink = widget.ink;
+      _onTapLink = widget.onTapLink;
+      _theme = theme;
+      _built = SeparatedSelection(child: _markdown(theme));
+    }
+    return _built!;
+  }
+
+  Widget _markdown(ThemeData theme) {
+    final text = widget.text;
+    final onTapLink = widget.onTapLink;
     final scheme = theme.colorScheme;
-    final ink = this.ink;
+    final ink = widget.ink;
     final body = ink ?? theme.textTheme.bodyMedium!;
     final link = ink?.color ?? scheme.primary;
     // On the accent, code sits on a shade of the text's own colour.
@@ -3615,6 +3819,215 @@ class _ModelChip extends StatelessWidget {
   }
 }
 
+// TODO(termul): a compact chip that opens a picker; see _ModelChip.
+/// The folder a new chat will start in, in the composer's row: the last part
+/// of its path, in the warning colour when Claude Code will refuse it.
+class _FolderChip extends StatelessWidget {
+  const _FolderChip({
+    required this.folder,
+    required this.warn,
+    required this.onTap,
+  });
+
+  final String? folder;
+  final bool warn;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final path = folder ?? 'login folder';
+    final parts = path.split('/').where((part) => part.isNotEmpty).toList();
+    final short = parts.isEmpty ? '/' : parts.last;
+    final hint = warn
+        ? 'Claude Code will not start in the home folder.'
+        : 'New chat starts in $path';
+    return TuiTooltip(
+      message: '$hint Tap to choose another folder.',
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        button: true,
+        label: 'Folder $path',
+        hint: warn ? hint : null,
+        excludeSemantics: true,
+        child: InkWell(
+          hoverColor: p.selection,
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 32, maxWidth: 120),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Center(
+                widthFactor: 1,
+                child: TuiText(
+                  '${warn ? '⚠ ' : ''}▸ $short',
+                  size: 12,
+                  tone: warn ? TuiTextTone.yellow : TuiTextTone.dim,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Browse the host's folders, type a path, or take one an earlier session ran
+/// in; pops with the path chosen. [browser] is null where the connection
+/// cannot list a filesystem, and then only typing and the earlier folders
+/// remain.
+class _FolderPicker extends StatefulWidget {
+  const _FolderPicker({
+    required this.start,
+    required this.browser,
+    required this.recent,
+    required this.home,
+  });
+
+  final String start;
+  final FileBrowser? browser;
+  final List<String> recent;
+  final String? home;
+
+  @override
+  State<_FolderPicker> createState() => _FolderPickerState();
+}
+
+class _FolderPickerState extends State<_FolderPicker> {
+  late final _path = TextEditingController(text: widget.start);
+  List<({String name, String path})> _folders = const [];
+  String? _error;
+  String _at = '/';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_open(widget.start));
+  }
+
+  @override
+  void dispose() {
+    _path.dispose();
+    super.dispose();
+  }
+
+  Future<void> _open(String path) async {
+    final browser = widget.browser;
+    if (browser == null) return;
+    try {
+      final entries = await browser.list(path);
+      if (!mounted) return;
+      setState(() {
+        _at = path;
+        _path.text = path;
+        _error = null;
+        _folders = [
+          for (final entry in entries)
+            if (entry.kind == RemoteEntryKind.directory ||
+                (entry.kind == RemoteEntryKind.symlink &&
+                    entry.targetIsDirectory == true))
+              (name: entry.name, path: entry.path),
+        ];
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not list $path: $error');
+    }
+  }
+
+  void _use() {
+    final problem = ClaudeChat.folderProblem(_path.text);
+    if (problem != null) {
+      setState(() => _error = problem);
+      return;
+    }
+    Navigator.pop(context, _path.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget row(String label, VoidCallback onTap, {String? key}) => InkWell(
+      key: key == null ? null : ValueKey(key),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+        child: TuiText(label, size: 12, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+    );
+    final up = _at == '/'
+        ? '/'
+        : (_at.substring(0, _at.lastIndexOf('/')).isEmpty
+              ? '/'
+              : _at.substring(0, _at.lastIndexOf('/')));
+    return TuiDialog(
+      title: 'Start the chat in',
+      maxWidth: 440,
+      actions: [
+        TuiButton(
+          label: 'Cancel', logName: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.pop(context),
+        ),
+        TuiButton(label: 'Use this folder', logName: 'Use this folder', onPressed: _use),
+      ],
+      child: SizedBox(
+        height: 340,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TuiInput(
+              controller: _path,
+              hint: '/path/to/project',
+              onSubmitted: (_) => _use(),
+              textInputAction: TextInputAction.done,
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: TuiText(_error!, size: 11, tone: TuiTextTone.red),
+              ),
+            if (widget.home != null && _path.text.trim() == widget.home)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: TuiText(
+                  'Claude Code will not start in the home folder.',
+                  size: 11,
+                  tone: TuiTextTone.yellow,
+                ),
+              ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView(
+                children: [
+                  if (widget.recent.isNotEmpty) ...[
+                    const TuiText('Earlier sessions ran in', size: 11, tone: TuiTextTone.dim),
+                    for (final folder in widget.recent)
+                      row(folder, () => Navigator.pop(context, folder)),
+                    const SizedBox(height: 8),
+                  ],
+                  if (widget.browser != null) ...[
+                    TuiText('In $_at', size: 11, tone: TuiTextTone.dim),
+                    row('..', () => unawaited(_open(up)), key: 'folder-up'),
+                    for (final folder in _folders)
+                      row(
+                        '▸ ${folder.name}',
+                        () => unawaited(_open(folder.path)),
+                        key: 'folder-${folder.name}',
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _UsagePopup extends StatelessWidget {
   const _UsagePopup({
     required this.chat,
@@ -3626,8 +4039,15 @@ class _UsagePopup extends StatelessWidget {
   final String Function(DateTime, DateTime) local;
   final String Function(int) count;
 
+  /// Redrawn every second while it is open, so how old the plan's reading is
+  /// keeps up with the clock without the page behind it being redrawn.
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) => StreamBuilder<void>(
+    stream: Stream<void>.periodic(const Duration(seconds: 1)),
+    builder: (context, _) => _body(),
+  );
+
+  Widget _body() => ListenableBuilder(
     listenable: chat,
     builder: (context, _) {
       final used = chat.context;
@@ -3823,7 +4243,7 @@ class _ProgressState extends State<_Progress> {
 class _SessionList extends StatelessWidget {
   const _SessionList({
     required this.chat,
-    required this.agents,
+    required this.listing,
     required this.connected,
     required this.onPick,
     required this.onRefresh,
@@ -3866,7 +4286,7 @@ class _SessionList extends StatelessWidget {
 
   /// As the page last asked for them; null before the session first came
   /// up.
-  final Future<List<ClaudeAgent>>? agents;
+  final ValueListenable<AsyncSnapshot<List<ClaudeAgent>>> listing;
 
   /// Whether the session is up: the list is asked for over its connection.
   final bool connected;
@@ -3929,13 +4349,14 @@ class _SessionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final agents = this.agents;
-    if (agents == null) {
-      return _list(empty: 'Connect this session to see its Claude sessions.');
-    }
-    return FutureBuilder<List<ClaudeAgent>>(
-      future: agents,
-      builder: (context, snapshot) {
+    return ValueListenableBuilder<AsyncSnapshot<List<ClaudeAgent>>>(
+      valueListenable: listing,
+      builder: (context, snapshot, _) {
+        if (snapshot.connectionState == ConnectionState.none) {
+          return _list(
+            empty: 'Connect this session to see its Claude sessions.',
+          );
+        }
         if (snapshot.connectionState != ConnectionState.done) {
           // Asked again while on show: the rows it had stay meanwhile,
           // rather than flashing loading every few seconds.

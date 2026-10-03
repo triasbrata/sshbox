@@ -204,6 +204,7 @@ class _HostEditPageState extends State<HostEditPage> {
   late bool _forwardPorts;
   late bool _useTmux;
   late bool _recordPanes;
+  late bool _installOpenCommand;
   late String _jumpHostId;
 
   /// The hosts this one can jump through: every other saved host, once read.
@@ -226,6 +227,8 @@ class _HostEditPageState extends State<HostEditPage> {
     _forwardPorts = existing?.forwardPorts ?? false;
     _useTmux = existing?.useTmux ?? false;
     _recordPanes = existing?.recordPanes ?? true;
+    _installOpenCommand =
+        existing?.installOpenCommand ?? installOpenCommandDefault;
     _jumpHostId = existing?.jumpHostId ?? '';
     unawaited(_loadJumpHosts());
   }
@@ -335,6 +338,7 @@ class _HostEditPageState extends State<HostEditPage> {
       forwardPorts: _forwardPorts,
       useTmux: _useTmux,
       recordPanes: _recordPanes,
+      installOpenCommand: _installOpenCommand,
       jumpHostId: _jumpHostId,
       // Not the form's: the host says it again on its next connect.
       os: widget.existing?.os,
@@ -532,7 +536,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       ),
                       const SizedBox(height: 28),
                       TuiSwitch(
-                        label: 'Forward ports to the tailnet',
+                        label: 'Forward ports to the tailnet', logName: 'Forward ports to the tailnet',
                         hint:
                             'A server you start in a session goes on the '
                             'tailnet by itself: vite on port 3000 shows up at '
@@ -546,7 +550,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       ),
                       const SizedBox(height: 28),
                       TuiSwitch(
-                        label: 'Use tmux',
+                        label: 'Use tmux', logName: 'Use tmux',
                         hint:
                             'Each tab runs in its own tmux session. Split it '
                             'into panes from the tab\'s '
@@ -561,7 +565,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       if (_useTmux) ...[
                         const SizedBox(height: 28),
                         TuiSwitch(
-                          label: 'Keep a record of each pane',
+                          label: 'Keep a record of each pane', logName: 'Keep a record of each pane',
                           hint:
                               'The host writes all a pane prints to a file '
                               'under ~/.local/state/jeansh, even with the app '
@@ -574,12 +578,26 @@ class _HostEditPageState extends State<HostEditPage> {
                               setState(() => _recordPanes = value),
                         ),
                       ],
+                      const SizedBox(height: 28),
+                      TuiSwitch(
+                        label: 'Add the jeansh command to this host', logName: 'Add the jeansh command to this host',
+                        hint:
+                            'Writes ~/.local/bin/jeansh when the app '
+                            'connects, so "jeansh <file>" in a terminal '
+                            'opens that file in a tab here. It needs '
+                            '~/.local/bin on PATH, which a new login shell '
+                            'has once the folder exists. A file already '
+                            'there that is not the app\'s own is left alone.',
+                        value: _installOpenCommand,
+                        onChanged: (value) =>
+                            setState(() => _installOpenCommand = value),
+                      ),
                       if (_isEditing && widget.notifyKeys != null) ...[
                         const SizedBox(height: 28),
                         Align(
                           alignment: Alignment.centerLeft,
                           child: TuiButton(
-                            label: 'Copy notification key',
+                            label: 'Copy notification key', logName: 'Copy notification key',
                             prefix: '⧉',
                             variant: TuiButtonVariant.ghost,
                             onPressed: _copyNotifyKey,
@@ -638,7 +656,7 @@ class _HostEditPageState extends State<HostEditPage> {
                         Align(
                           alignment: Alignment.centerLeft,
                           child: TuiButton(
-                            label: 'Choose file',
+                            label: 'Choose file', logName: 'Choose file',
                             prefix: '+',
                             variant: TuiButtonVariant.ghost,
                             onPressed: _chooseKeyFile,
@@ -656,7 +674,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       Align(
                         alignment: Alignment.centerLeft,
                         child: TuiButton(
-                          label: 'Save host',
+                          label: 'Save host', logName: 'Save host',
                           prefix: '▸',
                           onPressed: _saving ? null : _save,
                         ),

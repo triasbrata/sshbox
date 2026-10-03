@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/forward_setting.dart';
@@ -12,6 +13,9 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/local_forwarder.dart';
 import 'package:sshbox/src/session/port_forwards.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+
+/// How many times the app log holds [line]: a test compares before and after.
+int _logged(String line) => line.allMatches(appLog.current).length;
 
 /// A host whose end of each tunnel the test holds.
 class _Host implements ForwardCapable {
@@ -301,7 +305,12 @@ void main() {
     // Everything it was saved with, and the alternative address it was saved
     // before: blank, so it is dialled at the one address it has. Pane records
     // came after it too, and are on, as for a host saved since.
-    expect(hosts.first.toJson(), {...db, 'altHost': '', 'recordPanes': true});
+    expect(hosts.first.toJson(), {
+      ...db,
+      'altHost': '',
+      'recordPanes': true,
+      'installOpenCommand': false,
+    });
 
     // Once: a setting deleted since stays deleted.
     await forwards.delete(run.setting.id);
@@ -443,7 +452,10 @@ void main() {
 
     test('switching on opens a connection with no shell and binds every port '
         'on loopback; switching off closes them all', () async {
-      await forwards.start('f');
+      final ons = _logged('action port forward on');
+    final offs = _logged('action port forward off');
+    await forwards.start('f');
+    expect(_logged('action port forward on'), ons + 1);
       final run = forwards.runs.single;
       expect(run.status, ForwardStatus.running);
       expect(forwards.onCount, 1);
@@ -470,6 +482,7 @@ void main() {
       expect(connection.opened, ['localhost:5432', 'localhost:5432']);
 
       await forwards.stop('f');
+    expect(_logged('action port forward off'), offs + 1);
       expect(run.status, ForwardStatus.stopped);
       expect(forwards.onCount, 0);
       expect(connection.disposed, isTrue);

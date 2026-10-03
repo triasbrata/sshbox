@@ -7,9 +7,12 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
+import '../models/host_profile.dart' show installOpenCommandDefault;
 import '../notifications/notify_key.dart';
 import '../platform.dart';
+import '../session/open_command.dart';
 import '../system_fonts.dart';
+import '../telemetry/app_log.dart';
 import '../telemetry/crash_reporting.dart';
 import '../telemetry/telemetry.dart';
 import 'bug_report.dart';
@@ -159,6 +162,13 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose({String? family, double? size}) async {
     value = terminalStyleOf(family ?? value.fontFamily, size ?? value.fontSize);
+    // A family installed on the machine is its own name, so only a bundled
+    // one is said.
+    final bundled = terminalFonts.any((f) => f.family == value.fontFamily);
+    appLog.add(
+      'setting terminal font ${bundled ? value.fontFamily : 'system'} '
+      '${value.fontSize}',
+    );
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_familyKey, value.fontFamily);
     await prefs.setDouble(_sizeKey, value.fontSize);
@@ -201,6 +211,7 @@ class AppTheme
   /// Applies at once, and is saved for the next start.
   Future<void> choose({ThemeMode? mode, TerminalScheme? scheme}) async {
     value = (mode: mode ?? value.mode, scheme: scheme ?? value.scheme);
+    appLog.add('setting theme ${value.mode.name} ${value.scheme.id}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_modeKey, value.mode.name);
     await prefs.setString(_schemeKey, value.scheme.id);
@@ -249,6 +260,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   /// Saved for the next key, and the next start.
   Future<void> chooseLayout({required bool mac}) async {
     macLayout = mac;
+    appLog.add('setting key layout ${mac ? 'mac' : 'pc'}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_layoutKey, mac ? 'mac' : 'pc');
   }
@@ -324,6 +336,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose(List<KeyBarItem> items) async {
     value = items;
+    appLog.add('setting key bar ${items.length} items');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _key,
@@ -380,6 +393,7 @@ class GitPanelSetting extends ValueNotifier<bool> {
   /// Applies to the next tap, and is saved for the next start.
   Future<void> choose(bool drawer) async {
     value = drawer;
+    appLog.add('setting panel ${drawer ? 'drawer' : 'tab'}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, drawer);
   }
@@ -406,6 +420,7 @@ class ChatEnterSetting extends ValueNotifier<bool> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose(bool enter) async {
     value = enter;
+    appLog.add('setting chat enter sends $enter');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, enter);
   }
@@ -451,6 +466,7 @@ class LocalTmuxSetting extends ValueNotifier<({bool on, String path})> {
     final problem = path == null ? null : tmuxPathProblem(path);
     if (problem != null) return problem;
     value = (on: on ?? value.on, path: path ?? value.path);
+    appLog.add('setting local tmux ${value.on}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_onKey, value.on);
     await prefs.setString(_pathKey, value.path);
@@ -491,6 +507,7 @@ class DotfilesSetting extends ValueNotifier<bool> {
   /// Shows or hides them at once, and is saved for the next start.
   Future<void> choose(bool show) async {
     value = show;
+    appLog.add('setting dotfiles $show');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, show);
   }
@@ -516,6 +533,7 @@ class CopyOnSelectSetting extends ValueNotifier<bool> {
   /// Applies to the next selection, and is saved for the next start.
   Future<void> choose(bool on) async {
     value = on;
+    appLog.add('setting copy on select $on');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, on);
   }
@@ -523,6 +541,40 @@ class CopyOnSelectSetting extends ValueNotifier<bool> {
 
 /// The app's one; `main` reads the saved choice into it.
 final copyOnSelect = CopyOnSelectSetting();
+
+/// Whether this computer's `~/.local/bin` holds the `jeansh` command, which a
+/// terminal here opens a file in a tab with. A write to the user's own
+/// folder, so their switch; desktop alone, and not on Windows, whose shells
+/// are PowerShell and WSL.
+class LocalOpenCommandSetting extends ValueNotifier<bool> {
+  LocalOpenCommandSetting({this.home}) : super(installOpenCommandDefault);
+
+  /// Where `~` is, when a test says; otherwise HOME.
+  final String? home;
+
+  static const _key = 'sshbox.terminal.localOpenCommand';
+
+  /// Reads the saved choice, and puts the command back if it is on and has
+  /// gone.
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    value = prefs.getBool(_key) ?? installOpenCommandDefault;
+    if (value) installOpenCommandInHome(home);
+  }
+
+  /// Saves the choice and, turned on, installs now. False when the install
+  /// found something there that is not Jeansh's own: the switch stays on, the
+  /// file is left alone.
+  Future<bool> choose(bool on) async {
+    value = on;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, on);
+    return !on || installOpenCommandInHome(home);
+  }
+}
+
+/// The app's one; `main` reads the saved choice into it.
+final localOpenCommand = LocalOpenCommandSetting();
 
 /// The Settings route open on each navigator, for [openSettings] to find.
 final _openSettings = Expando<Route<void>>();
@@ -597,6 +649,7 @@ class LinkModifierSetting extends ValueNotifier<LinkModifier?> {
   /// Applies to the next click, and is saved for the next start.
   Future<void> choose(LinkModifier key) async {
     value = key;
+    appLog.add('setting link key ${key.name}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, key.name);
   }
@@ -1159,7 +1212,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
               ValueListenableBuilder(
                 valueListenable: copyOnSelect,
                 builder: (context, on, _) => TuiSwitch(
-                  label: 'Copy on select',
+                  label: 'Copy on select', logName: 'Copy on select',
                   value: on,
                   onChanged: copyOnSelect.choose,
                 ),
@@ -1168,6 +1221,35 @@ class _TerminalSectionState extends State<_TerminalSection> {
                 'Text selected with the mouse goes to the clipboard as the '
                 'button comes up.',
               ),
+              if (!Platform.isWindows) ...[
+                const SizedBox(height: 28),
+                ValueListenableBuilder(
+                  valueListenable: localOpenCommand,
+                  builder: (context, on, _) => TuiSwitch(
+                    label: 'Add the jeansh command to this computer', logName: 'Add the jeansh command to this computer',
+                    value: on,
+                    onChanged: (value) async {
+                      final ok = await localOpenCommand.choose(value);
+                      if (!ok && context.mounted) {
+                        showToast(
+                          context,
+                          '~/.local/bin/jeansh is not the app\'s own, so it '
+                          'was left alone.',
+                          type: TuiToastType.warning,
+                        );
+                      }
+                    },
+                  ),
+                ),
+                const _Note(
+                  'Writes ~/.local/bin/jeansh, so "jeansh <file>" in a '
+                  'terminal here opens that file in a tab. It is found from '
+                  'the next login shell, once ~/.local/bin is on PATH: Debian '
+                  'and Ubuntu add it themselves when the folder exists; on a '
+                  'profile that does not, add export '
+                  'PATH="\$HOME/.local/bin:\$PATH".',
+                ),
+              ],
             ],
           ],
         );
@@ -1222,13 +1304,13 @@ class _InstalledFontPickerState extends State<_InstalledFontPicker> {
       maxWidth: 520,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),
         if (fonts == null)
           TuiButton(
-            label: 'Use',
+            label: 'Use', logName: 'Use',
             onPressed: typed.isEmpty ? null : () => pick(typed),
           ),
       ],
@@ -1443,13 +1525,13 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                   runSpacing: 8,
                   children: [
                     TuiButton(
-                      label: 'Divider',
+                      label: 'Divider', logName: 'Divider',
                       prefix: '│',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => pick(keyBarDivider),
                     ),
                     TuiButton(
-                      label: 'Custom key…',
+                      label: 'Custom key…', logName: 'Custom key…',
                       prefix: '+',
                       onPressed: () => pick(customKeyPrefix),
                     ),
@@ -1536,7 +1618,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                         ),
                       ),
                     ),
-                    TuiButton(label: 'Add key', prefix: '+', onPressed: _add),
+                    TuiButton(label: 'Add key', logName: 'Add key', prefix: '+', onPressed: _add),
                   ],
                 ),
               ),
@@ -1901,13 +1983,13 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                 child: Row(
                   children: [
                     TuiButton(
-                      label: 'Clear',
+                      label: 'Clear', logName: 'Clear',
                       variant: TuiButtonVariant.ghost,
                       onPressed: _clear,
                     ),
                     const Spacer(),
                     TuiButton(
-                      label: 'Cancel',
+                      label: 'Cancel', logName: 'Cancel',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
@@ -2151,7 +2233,7 @@ class _PrivacySection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             TuiSwitch(
-              label: 'Telemetry',
+              label: 'Telemetry', logName: 'Telemetry',
               value: on,
               onChanged: (want) => _choose(context, want),
             ),

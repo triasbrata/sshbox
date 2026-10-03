@@ -1,0 +1,160 @@
+# #230: the folder a new chat starts in. The chip beside the box opens a
+# dialog; the chosen folder is where `claude --bg` runs, is remembered across
+# a relaunch, and a start the host refuses as an untrusted workspace offers
+# to choose another folder.
+#
+# Against the stand-in in tools/e2e_android.sh's chat_cwd, whose `--bg` keeps
+# the folder it ran in (~/.e2e-bg-runs, read by the runner afterwards), says
+# "Workspace not trusted" in a folder called untrusted and "boom" in one called
+# broken. -e PROJ, BAD and BROKEN name those folders on the host.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Start a new chat…"
+    timeout: 20000
+
+# Negative: a path without a leading / is refused in the dialog, and nothing
+# is saved.
+- tapOn: "Folder.*"
+- extendedWaitUntil:
+    visible: "Start the chat in"
+    timeout: 10000
+- tapOn:
+    point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
+- eraseText: 120
+- inputText: "relative/dir"
+- tapOn: "Use this folder"
+- assertVisible: "(?s).*Use a full path.*"
+- assertVisible: "Start the chat in"
+- eraseText: 120
+- inputText: "${PROJ}"
+- tapOn: "Use this folder"
+- extendedWaitUntil:
+    visible: "Folder ${PROJ}"
+    timeout: 10000
+- takeScreenshot: chat-cwd-chosen
+
+# Sent: the runner finds --bg ran in PROJ and not in the root.
+- tapOn: "Start a new chat…"
+- inputText: "hello cwd"
+- tapOn: "Send"
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+- assertNotVisible: "(?s).*Not started.*"
+
+# Remembered across a relaunch: the tabs closed first, so none is restored.
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Folder ${PROJ}"
+    timeout: 20000
+- takeScreenshot: chat-cwd-remembered
+
+# Negative: a start that fails for another reason has no way to choose
+# another folder offered.
+- tapOn: "Folder.*"
+- tapOn:
+    point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
+- eraseText: 120
+- inputText: "${BROKEN}"
+- tapOn: "Use this folder"
+- tapOn: "Start a new chat…"
+- inputText: "hello broken"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "(?s).*Not started.*boom.*"
+    timeout: 30000
+- assertNotVisible: "(?i)choose another folder"
+- tapOn: "(?i)remove"
+
+# Recovery: the untrusted folder is refused, the failed bubble offers Retry,
+# Remove and Choose another folder; a good folder and Retry start the chat.
+- tapOn: "Folder.*"
+- tapOn:
+    point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
+- eraseText: 120
+- inputText: "${BAD}"
+- tapOn: "Use this folder"
+- tapOn: "Start a new chat…"
+- inputText: "hello bad"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "(?s).*Workspace not trusted.*"
+    timeout: 30000
+- assertVisible: "(?i)retry"
+- assertVisible: "(?i)remove"
+- assertVisible: "(?i)choose another folder"
+- takeScreenshot: chat-cwd-refused
+- tapOn: "(?i)choose another folder"
+- tapOn:
+    point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
+- eraseText: 120
+- inputText: "${PROJ}"
+- tapOn: "Use this folder"
+- tapOn: "(?i)retry"
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+- assertNotVisible: "(?s).*Not started.*"
+- assertNotVisible: "(?s).*Workspace not trusted.*"
+- takeScreenshot: chat-cwd-recovered
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

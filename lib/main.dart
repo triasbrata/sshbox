@@ -34,6 +34,7 @@ Future<void> main() async {
   await localTmux.load();
   await showDotfiles.load();
   await copyOnSelect.load();
+  await localOpenCommand.load();
   await linkModifier.load();
   // Likewise, so the first tab is never drawn under the Mac's window buttons.
   await watchTitleBar();

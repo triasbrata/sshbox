@@ -1,0 +1,100 @@
+# #218: `jeansh <file>` in a terminal opens that file in a file tab.
+#
+# The host editor's "Add the jeansh command to this host" is turned on and the
+# host connected, which writes ~/.local/bin/jeansh; the runner checks its mode
+# and marker afterwards. It starts with the switch off and puts it back off at the end.
+#
+# Refused first, so nothing opened yet can be what a later check sees:
+#  - a forged request (a cat of a file holding an ESC ]7733;open line with a
+#    wrong secret, made by the runner) opens no file tab and says it was
+#    refused;
+#  - `jeansh missing` writes nothing to the terminal and opens no file tab.
+# Then the real thing: a file tab opens. The editor draws its text itself, so
+# the tab is told by its "Save to host", which only a file tab has.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+
+- tapOn: "Show menu"
+- tapOn: "Edit"
+- extendedWaitUntil:
+    visible: "Edit host"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: "Add the jeansh command to this host"
+    direction: DOWN
+    centerElement: true
+- tapOn: "Add the jeansh command to this host"
+- takeScreenshot: jeansh-switch-on
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# Terminal text is drawn, not in the accessibility tree, so what each command
+# did is left on the host for the runner to read (~/jeansh-forged.done, and
+# ~/jeansh-missing.rc), and the pause after each is an optional tap on text
+# that never shows, which waits several seconds.
+# Negative: forged secret, refused, nothing opened.
+- tapOn:
+    point: 50%, 40%
+- inputText: "cat ~/jeansh-forged.txt; echo ran > ~/jeansh-forged.done"
+- pressKey: Enter
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+- assertNotVisible: "Save to host"
+- takeScreenshot: jeansh-forged-refused
+
+# Negative: a file that is not there. The script refuses it and sends
+# nothing.
+- inputText: "PATH=$HOME/.local/bin:$PATH jeansh missing-e2e-file; echo $? > ~/jeansh-missing.rc"
+- pressKey: Enter
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+- assertNotVisible: "Save to host"
+
+# Positive: the command opens the file.
+- inputText: "PATH=$HOME/.local/bin:$PATH jeansh ~/jeansh-target.txt"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "Save to host"
+    timeout: 20000
+- takeScreenshot: jeansh-opened
+
+- tapOn: "(?s)Close .*file.*"
+- tapOn: "Close ${HOST_LABEL}.*"
+
+# Put the switch back off, so a later flow sees the host as it was.
+- tapOn: "Show menu"
+- tapOn: "Edit"
+- extendedWaitUntil:
+    visible: "Edit host"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: "Add the jeansh command to this host"
+    direction: DOWN
+    centerElement: true
+- tapOn: "Add the jeansh command to this host"
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000

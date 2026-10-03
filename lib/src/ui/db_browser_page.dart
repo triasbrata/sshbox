@@ -14,6 +14,7 @@ import 'terminal_page.dart' show ConnectionError, openUrl;
 import 'toast.dart';
 import 'tui.dart';
 import 'text_size.dart';
+import '../telemetry/app_log.dart';
 
 /// Opens [db], asking about a host key through [confirmHostKey] and
 /// telling of a sign-in to finish through [onSignIn]: [DbSession.open], or
@@ -386,6 +387,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
 
   /// Runs [query], or what the box holds, once whatever is not saved may go.
   Future<void> _run([String? query]) async {
+    appLog.add('action database run ${widget.db.kind.name}');
     if (await mayDrop()) await _read(query);
   }
 
@@ -480,6 +482,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
     if (edit == null || changes == null || changes.isEmpty || _running) {
       return;
     }
+    appLog.add('action database save ${widget.db.kind.name}');
     setState(() => _running = true);
     final String? missed;
     try {
@@ -902,15 +905,20 @@ class DbBrowserPageState extends State<DbBrowserPage> {
                     ),
                   if (!changes.isEmpty)
                     TuiButton(
-                      label: 'Discard',
+                      label: 'Discard', logName: 'Discard',
                       variant: TuiButtonVariant.ghost,
                       onPressed: _running
                           ? null
-                          : () => setState(() => _changes = DbChanges()),
+                          : () {
+                              appLog.add(
+                                'action database discard ${widget.db.kind.name}',
+                              );
+                              setState(() => _changes = DbChanges());
+                            },
                     ),
                   const SizedBox(width: 4),
                   TuiButton(
-                    label: 'Save',
+                    label: 'Save', logName: 'Save',
                     prefix: '✓',
                     onPressed: _running || changes.isEmpty ? null : _save,
                   ),
@@ -1037,7 +1045,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
         Row(
           children: [
             TuiButton(
-              label: 'Add condition',
+              label: 'Add condition', logName: 'Add condition',
               prefix: '+',
               variant: TuiButtonVariant.ghost,
               onPressed: () => setState(() => _pgConditions.add(_Condition())),
@@ -1247,7 +1255,7 @@ class DbBrowserPageState extends State<DbBrowserPage> {
             builder: (anchor) => TuiTooltip(
               message: 'Add a stage',
               child: TuiButton(
-                label: 'Add stage',
+                label: 'Add stage', logName: 'Add stage',
                 prefix: '+',
                 variant: TuiButtonVariant.ghost,
                 onPressed: () async {
@@ -1368,7 +1376,7 @@ class _ResultGrid extends StatefulWidget {
           maxWidth: 520,
           actions: [
             TuiButton(
-              label: 'Copy',
+              label: 'Copy', logName: 'Copy',
               variant: TuiButtonVariant.ghost,
               onPressed: () {
                 unawaited(Clipboard.setData(ClipboardData(text: text)));
@@ -1376,7 +1384,7 @@ class _ResultGrid extends StatefulWidget {
               },
             ),
             TuiButton(
-              label: 'Close',
+              label: 'Close', logName: 'Close',
               onPressed: () => Navigator.of(context).pop(),
             ),
           ],
@@ -1629,17 +1637,17 @@ class _CellEditorState extends State<_CellEditor> {
       maxWidth: 420,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),
         if (widget.nulls)
           TuiButton(
-            label: 'Set NULL',
+            label: 'Set NULL', logName: 'Set NULL',
             variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop((null,)),
           ),
-        TuiButton(label: 'OK', onPressed: _ok),
+        TuiButton(label: 'OK', logName: 'OK', onPressed: _ok),
       ],
       child: TuiField(
         label: widget.column,

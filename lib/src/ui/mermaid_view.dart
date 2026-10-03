@@ -185,12 +185,12 @@ Future<void> showMermaidDialog(BuildContext context, String source) =>
         maxWidth: 720,
         actions: [
           TuiButton(
-            label: 'Close',
+            label: 'Close', logName: 'Close',
             variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.pop(dialog),
           ),
           TuiButton(
-            label: 'Copy source',
+            label: 'Copy source', logName: 'Copy source',
             onPressed: () => copyMermaid(dialog, source),
           ),
         ],
