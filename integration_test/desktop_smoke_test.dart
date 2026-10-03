@@ -71,6 +71,14 @@ import 'package:xterm2/xterm.dart';
 /// on CI, writes nothing.
 const _shots = String.fromEnvironment('JEANSH_SHOTS');
 
+final _clock = Stopwatch()..start();
+int _lapAt = 0;
+void _lap(String what) {
+  final now = _clock.elapsedMilliseconds;
+  debugPrint('LAP ${now - _lapAt} ms: $what');
+  _lapAt = now;
+}
+
 /// The window as drawn, as [name].png in [_shots], for a person to look at.
 Future<void> _shot(WidgetTester tester, String name) async {
   if (_shots.isEmpty) return;
@@ -142,7 +150,9 @@ Future<void> _chatAnswered(WidgetTester tester) async {
 /// preferences off disk, asking the keychain, starting notifications — not a
 /// widget tree pumped in memory.
 Future<void> _launch(WidgetTester tester) async {
+  _lap('before app.main');
   await app.main();
+  _lap('app.main');
   // A fresh install opens on the redesign's first-run slides, which animate,
   // so nothing settles until they are skipped; main has none and opens on
   // Home. Waited for rather than settled, for either.
@@ -154,8 +164,10 @@ Future<void> _launch(WidgetTester tester) async {
         find.byTooltip('Settings').evaluate().isNotEmpty,
     'Home, or the first-run slides',
   );
+  _lap('Home visible');
   if (skip.evaluate().isNotEmpty) await tester.tap(skip.first);
   await tester.pumpAndSettle(const Duration(seconds: 5));
+  _lap('launch settled');
 }
 
 /// Pumps until [done] says so, failing with [what] after [timeout]. A live
@@ -345,6 +357,7 @@ Future<void> _backHome(WidgetTester tester) async {
 /// lands whenever it lands — before or after the next test taps the card or
 /// counts its tabs — which made a test pass or fail by timing alone.
 Future<void> _closeTabs(WidgetTester tester) async {
+  _lap('closeTabs begin');
   final close = find.byWidgetPredicate(
     (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
   );
@@ -353,6 +366,7 @@ Future<void> _closeTabs(WidgetTester tester) async {
     await tester.tap(close.first);
     await tester.pump(const Duration(milliseconds: 300));
   }
+  _lap('closeTabs end');
 }
 
 Future<String?> _clipboard() async =>
@@ -575,7 +589,12 @@ void _test(String name, WidgetTesterCallback body, {String? skip}) {
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(name, (tester) async {
+    _lap('--- start: $name');
+    await body(tester);
+    _lap('--- body done: $name');
+    addTearDown(() => _lap('--- teardown done: $name'));
+  }, skip: skip != null);
 }
 
 const _powershell =

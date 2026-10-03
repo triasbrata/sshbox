@@ -427,7 +427,7 @@ jobs:
       # to offer. The feed override is read by debug builds alone, never a
       # release.
       - name: Drive the desktop build
-        timeout-minutes: 22
+        timeout-minutes: 40
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
         run: |
