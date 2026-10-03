@@ -1047,6 +1047,12 @@ class ClaudeChat extends ChangeNotifier {
   /// mark as the one showing.
   String? _pickedFrom;
 
+  /// The directory the picked session ran in, as `claude agents` reports it.
+  /// `--resume` only finds a transcript from the directory it was written
+  /// under: from any other, the CLI starts a copy with a new session id, and
+  /// what is sent never reaches the session that was picked.
+  String? _sessionCwd;
+
   String? get pickedFrom => _pickedFrom;
 
   /// The highest `[Image #N]` the conversation has given out, as far as this
@@ -1366,9 +1372,13 @@ class ClaudeChat extends ChangeNotifier {
     _seenIdle = false;
   }
 
+  /// Tools refused this turn that the user has been told about once.
+  final Set<String> _refused = {};
+
   void _endTurn() {
     if (_pastOnly) return;
     _dropped.clear();
+    _refused.clear();
     _turnStart = null;
     _turnTokens.clear();
     _waitingFor = null;
@@ -1814,7 +1824,7 @@ class ClaudeChat extends ChangeNotifier {
     try {
       final channel = await open(
         command(
-          cwd: cwd,
+          cwd: _sessionCwd ?? cwd,
           permission: _permission,
           resume: _sessionId,
           model: _alias,
@@ -2084,7 +2094,7 @@ class ClaudeChat extends ChangeNotifier {
   Future<List<SlashCommand>> slashCommands() async {
     final output = const Utf8Decoder(allowMalformed: true).convert(
       await _readAll(
-        slashCommandsCommand(cwd: cwd),
+        slashCommandsCommand(cwd: _sessionCwd ?? cwd),
         const Duration(seconds: 30),
       ),
     );
@@ -2179,6 +2189,7 @@ class ClaudeChat extends ChangeNotifier {
     _composing = false;
     _sessionId = agent.sessionId;
     _pickedFrom = agent.sessionId;
+    _sessionCwd = agent.cwd.trim().isEmpty ? null : agent.cwd;
     final pid = agent.pid;
     final read = await _loadHistory(
       agent.sessionId,
@@ -2227,6 +2238,7 @@ class ClaudeChat extends ChangeNotifier {
     await _reset();
     _sessionId = null;
     _pickedFrom = null;
+    _sessionCwd = null;
     _composing = true;
     notifyListeners();
   }
@@ -3837,10 +3849,22 @@ class ClaudeChat extends ChangeNotifier {
         return;
       }
     }
+    final name = _nameOf(tool);
+    // Claude gets the refusal as a tool result; the user would otherwise only
+    // learn of it if Claude chose to say so.
+    if (_refused.add(name)) {
+      _say(
+        ChatNotice(
+          '$name was refused: this chat cannot approve a tool. Pick what '
+          'Claude may do without asking in the ⋮ menu beside the box.',
+          failed: true,
+        ),
+      );
+    }
     _respond(id, {
       'behavior': 'deny',
       'message':
-          'This chat cannot approve a tool, so ${_nameOf(tool)} was '
+          'This chat cannot approve a tool, so $name was '
           'refused. What Claude may do without being asked is set in the '
           'menu beside the box.',
     });
