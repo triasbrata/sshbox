@@ -26,6 +26,10 @@ jobs:
       coverage: ${{ steps.coverage.outputs.pct }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # A pull request is checked out as a merge commit: its first parent
+          # is the base the diff below is taken against.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
 
       # The release flow's own steps, and every call of one workflow from
       # another that GitHub would refuse to start. A workflow GitHub refuses
@@ -65,6 +69,15 @@ jobs:
             END { if (lf) printf "%.1f", 100 * lh / lf }' coverage/lcov.info)
           echo "pct=$pct" >> "$GITHUB_OUTPUT"
           echo "Line coverage of \`lib/\`: **${pct:-unmeasured}%**" >> "$GITHUB_STEP_SUMMARY"
+
+      # A pull request's changed lib/ lines that no test hits, for the e2e
+      # steps to reach. A report: it never fails the job.
+      - name: Changed lines no test runs
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          git diff -U0 HEAD^1 HEAD -- lib > "$RUNNER_TEMP/pr.diff"
+          python3 tool/uncovered_changed_lines.py coverage/lcov.info "$RUNNER_TEMP/pr.diff" >> "$GITHUB_STEP_SUMMARY"
 
   # The README's coverage badge. shields.io draws it from coverage.json on the
   # `badges` branch, which holds nothing else and which this job replaces

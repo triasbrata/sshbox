@@ -416,4 +416,44 @@ void main() {
     expect(saved.useTmux, isTrue);
     expect(saved.recordPanes, isFalse);
   });
+
+  testWidgets('the jeansh command is only put on a host when its switch is '
+      'on, which it is not until asked, and says what it writes', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.binding.setSurfaceSize(const Size(800, 2000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final secrets = InMemorySecretStore();
+    final repository = HostRepository(secrets);
+    const box = HostProfile(
+      id: 'box',
+      label: 'box',
+      host: '10.0.0.5',
+      username: 'me',
+    );
+    await repository.upsert(box);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HostEditPage(
+          repository: repository,
+          secrets: secrets,
+          existing: box,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    const label = 'Add the jeansh command to this host';
+    final toggle = findTuiSwitch(label);
+    await tester.ensureVisible(findTuiSwitchTrack(label));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TuiSwitch>(toggle).value, isFalse);
+    expect(find.textContaining('Writes ~/.local/bin/jeansh'), findsOneWidget);
+
+    await tester.tap(findTuiSwitchTrack(label));
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+    expect((await repository.load()).single.installOpenCommand, isTrue);
+  });
 }

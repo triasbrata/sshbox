@@ -84,6 +84,10 @@ class ChatSaid extends ChatEntry {
 
   /// Why it was not delivered, when [delivery] is [Delivery.failed].
   String? why;
+
+  /// The folder a new chat's start was refused in as not trusted by Claude
+  /// Code, so the bubble can offer another.
+  String? refusedFolder;
 }
 
 /// A tool Claude asked for, and what came back — one entry rather than two,
@@ -875,6 +879,35 @@ class ClaudeChat extends ChangeNotifier {
   /// it reads are the ones the drawer shows. Null starts it in the login
   /// directory.
   final String? cwd;
+
+  String? _folder;
+
+  /// Where a new chat's `claude --bg` starts: the folder chosen for it, else
+  /// the host's file-tree root.
+  String? get startFolder => _folder ?? cwd;
+
+  /// Why [folder] cannot be a start folder, or null. Absolute, and no
+  /// control character, which a shell would act on even quoted.
+  static String? folderProblem(String folder) {
+    final path = folder.trim();
+    if (path.isEmpty) return 'Type or pick a folder.';
+    if (RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(path)) {
+      return 'A folder name with a control character is not used.';
+    }
+    if (!path.startsWith('/')) return 'Use a full path, starting with /.';
+    return null;
+  }
+
+  /// Makes [folder] where the next new chat starts. Null when taken, else
+  /// why not, and nothing changes.
+  String? startIn(String folder) {
+    final problem = folderProblem(folder);
+    if (problem != null) return problem;
+    final path = folder.trim();
+    _folder = path.length > 1 ? path.replaceFirst(RegExp(r'/+$'), '') : path;
+    notifyListeners();
+    return null;
+  }
 
   /// The model alias picked for what this chat starts, or null for the host's
   /// own default. Kept across [restart], which would otherwise start Claude on
@@ -2306,7 +2339,7 @@ class ClaudeChat extends ChangeNotifier {
       final channel = await open(
         backgroundCommand(
           pictures.isEmpty ? message : '',
-          cwd: cwd,
+          cwd: startFolder,
           permission: _permission,
           model: _alias,
         ),
@@ -2366,9 +2399,15 @@ class ClaudeChat extends ChangeNotifier {
       _busy = false;
       await continueFrom(agent, waitForTranscript: true);
     } catch (error) {
+      final refused = '$error'.contains('Workspace not trusted');
       said
         ..delivery = Delivery.failed
-        ..why = 'Not started: $error';
+        ..why = refused
+            ? 'Not started in ${startFolder ?? 'the login folder'}: $error '
+                  'Trusting a folder is done in Claude Code itself; or choose '
+                  'another folder.'
+            : 'Not started: $error'
+        ..refusedFolder = refused ? (startFolder ?? '') : null;
     } finally {
       if (_composing) _busy = false;
       notifyListeners();

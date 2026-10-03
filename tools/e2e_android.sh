@@ -1014,6 +1014,91 @@ JSON
   return "$status"
 }
 
+# #230: the folder a new chat starts in (.maestro/chat_cwd.yaml). The stand-in's
+# `--bg` keeps the folder it ran in, since chat `cd`s there first, refuses a
+# folder called untrusted as Claude Code does an untrusted workspace, and
+# fails in one called broken for another reason. Read afterwards: the first
+# start ran in proj, not the root; each refused folder was tried; and the
+# host's ~/.claude.json, where trust is kept, was not written.
+chat_cwd() {
+  local status=0 home=/home/$SSH_USER runs=/home/$SSH_USER/.e2e-bg-runs
+  local before after
+  chat_stand_in
+  end_live_session
+  sudo -u "$SSH_USER" mkdir -p "$home/e2e-cwd/proj" "$home/e2e-cwd/untrusted" "$home/e2e-cwd/broken"
+  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
+import json, os
+path = os.path.join(os.environ['HOME'], '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'id': 'e2e0newd', 'cwd': os.environ['HOME'] + '/e2e-cwd/proj', 'kind': 'background',
+             'startedAt': 1790000000100, 'sessionId': 'e2e00003-0000-4000-8000-000000000003',
+             'name': 'New chat', 'state': 'done'})
+json.dump(rows, open(path, 'w'))
+PY
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  --bg) printf '%s\n' "$PWD" >>"$HOME/.e2e-bg-runs"
+    case "$PWD" in
+      */untrusted) echo "Workspace not trusted: $PWD"; exit 1 ;;
+      */broken) echo "boom: could not start"; exit 1 ;;
+    esac
+    echo 'backgrounded · e2e0newd · New chat' ;;
+  -p) while IFS= read -r line; do :; done ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$runs"
+  before=$(sudo sha256sum "$home/.claude.json" 2>/dev/null | cut -d' ' -f1)
+  flow chat_cwd -e "PROJ=$home/e2e-cwd/proj" -e "BAD=$home/e2e-cwd/untrusted" \
+    -e "BROKEN=$home/e2e-cwd/broken" || status=1
+  after=$(sudo sha256sum "$home/.claude.json" 2>/dev/null | cut -d' ' -f1)
+  [ "$before" = "$after" ] ||
+    { echo "::error::~/.claude.json on the host changed"; status=1; }
+  echo "--bg ran in: $(sudo cat "$runs" 2>/dev/null | tr '\n' ' ')"
+  [ "$(sudo head -n1 "$runs" 2>/dev/null)" = "$home/e2e-cwd/proj" ] ||
+    { echo "::error::the first --bg did not run in the chosen folder"; status=1; }
+  sudo grep -qx "$home/e2e-cwd/untrusted" "$runs" 2>/dev/null ||
+    { echo "::error::the untrusted folder was never tried"; status=1; }
+  [ "$(sudo tail -n1 "$runs" 2>/dev/null)" = "$home/e2e-cwd/proj" ] ||
+    { echo "::error::the retry did not run in the chosen folder"; status=1; }
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-cwd-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$runs" "$home/e2e-cwd"
+  stand_in ''
+  return "$status"
+}
+
+# #218: `jeansh <file>` (.maestro/jeansh_open.yaml). The runner makes the file
+# to open and a forged request, an OSC 7733 line with the right shape and
+# time and a wrong secret, for a `cat` to print; afterwards it reads the
+# command's mode and marker, which the host editor's switch had the app write.
+jeansh_open() {
+  local status=0 home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local b64
+  sudo -u "$SSH_USER" rm -f "$bin" "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
+  printf 'jeansh e2e target\n' | sudo -u "$SSH_USER" tee "$home/jeansh-target.txt" >/dev/null
+  b64=$(printf %s "$home/jeansh-target.txt" | base64 | tr -d '\n')
+  printf '\033]7733;open;wrong-secret;%s;%s;%s\007' "$(date +%s)" \
+    "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" "$b64" |
+    sudo -u "$SSH_USER" tee "$home/jeansh-forged.txt" >/dev/null
+  flow jeansh_open || status=1
+  sudo test -f "$home/jeansh-forged.done" ||
+    { echo "::error::the forged request's cat never ran"; status=1; }
+  [ "$(sudo cat "$home/jeansh-missing.rc" 2>/dev/null)" = 1 ] ||
+    { echo "::error::jeansh missing-e2e-file did not exit 1"; status=1; }
+  [ "$(sudo stat -c %a "$bin" 2>/dev/null)" = 755 ] ||
+    { echo "::error::$bin is not mode 755"; status=1; }
+  sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" 2>/dev/null ||
+    { echo "::error::$bin lacks the marker line"; status=1; }
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'jeansh-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$bin" "$home/jeansh-target.txt" "$home/jeansh-forged.txt" \
+    "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -1046,6 +1131,9 @@ done
 
 echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
+echo "::endgroup::"
+echo "::group::jeansh_open (report only)"
+jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::share_text (report only)"
@@ -1128,6 +1216,10 @@ echo "::endgroup::"
 
 echo "::group::chat_model (report only)"
 chat_model || echo "::warning::chat_model failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_cwd (report only)"
+chat_cwd || echo "::warning::chat_cwd failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"

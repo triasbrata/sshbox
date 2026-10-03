@@ -6326,4 +6326,68 @@ void main() {
       expect(await run(ClaudeChat.subAgentsCommand('e2e00000-0000-4000-8000-000000000000')), isEmpty);
     });
   });
+
+  group('the folder a new chat starts in', () {
+    test('only an absolute path with no control character is a folder', () {
+      expect(ClaudeChat.folderProblem('/srv/app'), isNull);
+      expect(ClaudeChat.folderProblem('  /srv/my app '), isNull);
+      expect(ClaudeChat.folderProblem(''), isNotNull);
+      expect(ClaudeChat.folderProblem('srv/app'), isNotNull);
+      expect(ClaudeChat.folderProblem('/srv/a\nb'), contains('control'));
+      expect(ClaudeChat.folderProblem('/srv/a\x1bb'), contains('control'));
+    });
+
+    test('the chosen folder is where --bg starts, quoted once, and a bad one '
+        'changes nothing', () async {
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        cwd: '/home/me',
+        open: (command) async {
+          commands.add(command);
+          return _says('');
+        },
+      );
+      addTearDown(chat.dispose);
+      expect(chat.startFolder, '/home/me');
+      expect(chat.startIn('/srv/it\'s \$(touch pwned)/'), isNull);
+      expect(chat.startFolder, "/srv/it's \$(touch pwned)");
+      expect(chat.startIn('/srv/a\nb'), isNotNull);
+      expect(chat.startFolder, "/srv/it's \$(touch pwned)");
+      expect(chat.startIn('/'), isNull);
+      expect(chat.startFolder, '/');
+
+      chat.startIn('/srv/proj');
+      await chat.send('hello');
+      final started = commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, contains('/srv/proj'));
+      expect(started, isNot(contains('/home/me')));
+    });
+
+    test('a start refused as untrusted names the folder, and says which '
+        'folder, where another start does not', () async {
+      final chat = ClaudeChat(
+        cwd: '/home/me',
+        open: (command) async => _says(
+          'Workspace not trusted. The home directory is trusted one session '
+          'at a time.\n',
+        ),
+      );
+      addTearDown(chat.dispose);
+      await chat.send('hello');
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.refusedFolder, '/home/me');
+      expect(said.why, contains('Not started in /home/me'));
+      expect(said.why, contains('Claude Code itself'));
+
+      final other = ClaudeChat(
+        open: (command) async => _says('claude: command not found\n'),
+      );
+      addTearDown(other.dispose);
+      await other.send('hello');
+      final failed = other.entries.whereType<ChatSaid>().single;
+      expect(failed.refusedFolder, isNull);
+      expect(failed.why, startsWith('Not started: '));
+    });
+  });
 }

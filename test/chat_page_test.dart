@@ -5,6 +5,9 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'fake_drop.dart';
+import 'fake_file_browser.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/files/file_browser.dart' show FileBrowser;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
@@ -67,6 +70,14 @@ List<String> _useFakeClipboard() {
     () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
   );
   return copied;
+}
+
+/// A host whose files can be browsed, as the folder picker needs.
+class _BrowseShell extends _Shell implements FileBrowseCapable {
+  final browser = FakeFileBrowser();
+
+  @override
+  FileBrowser openFileBrowser() => browser;
 }
 
 class _NoSecrets implements SecretStore {
@@ -6787,6 +6798,173 @@ void main() {
       print('BENCH idle 60s: frames ${stats(us)} host commands=${polled.length} '
           '$kinds\nBENCH idle rebuilds: ${top()}');
     }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+  });
+
+  group('the folder a new chat starts in', () {
+    const trust =
+        'Workspace not trusted. The home directory is trusted one session at '
+        'a time — start this from an interactive terminal there, or from a '
+        'project directory.\n';
+
+    Future<_BrowseShell> page(
+      WidgetTester tester, {
+      Map<String, Object> saved = const {},
+      Size size = const Size(1280, 800),
+      String? background,
+      List<Map<String, Object?>> sessions = const [],
+    }) async {
+      SharedPreferences.setMockInitialValues(saved);
+      tester.view
+        ..physicalSize = size
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _BrowseShell()..listing = jsonEncode(sessions);
+      if (background != null) shell.background = background;
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      return shell;
+    }
+
+    Finder dialogField() => find.descendant(
+      of: find.byType(TuiDialog),
+      matching: find.byType(EditableText),
+    );
+
+    Future<void> openPicker(WidgetTester tester) async {
+      await tester.tap(find.textContaining('▸ '));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+    }
+
+    testWidgets('a new chat shows the host root as its folder', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await page(tester);
+      expect(find.text('▸ app'), findsOneWidget);
+      expect(find.bySemanticsLabel('Folder /srv/app'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('a typed path is where the chat starts, remembered for the '
+        'host', (tester) async {
+      final shell = await page(tester);
+      await openPicker(tester);
+      await tester.enterText(dialogField(), '/srv/proj');
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await _frames(tester);
+      expect(find.text('▸ proj'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      final started = shell.commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, contains('/srv/proj'));
+      expect(
+        (await SharedPreferences.getInstance()).getString(
+          'sshbox.chat.folder.host-1',
+        ),
+        '/srv/proj',
+      );
+    });
+
+    testWidgets('what was remembered for this host is used', (tester) async {
+      await page(tester, saved: {'sshbox.chat.folder.host-1': '/srv/proj'});
+      expect(find.text('▸ proj'), findsOneWidget);
+    });
+
+    testWidgets('what was remembered for another host is not', (tester) async {
+      await page(tester, saved: {'sshbox.chat.folder.host-2': '/srv/proj'});
+      expect(find.text('▸ app'), findsOneWidget);
+      expect(find.text('▸ proj'), findsNothing);
+    });
+
+    testWidgets('the home folder is warned about beforehand, and browsing '
+        'to a project folder clears it', (tester) async {
+      await page(tester, saved: {'sshbox.chat.folder.host-1': '/home/me'});
+      expect(find.text('⚠ ▸ me'), findsOneWidget);
+      expect(
+        find.textContaining('will not start in the home folder'),
+        findsOneWidget,
+      );
+      await openPicker(tester);
+      expect(find.byKey(const ValueKey('folder-dev')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('folder-dev')));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(
+        tester.widget<EditableText>(dialogField()).controller.text,
+        '/home/me/dev',
+      );
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await _frames(tester);
+      expect(find.text('▸ dev'), findsOneWidget);
+      expect(find.textContaining('will not start in the home folder'),
+          findsNothing);
+    });
+
+    testWidgets('a folder an earlier session ran in is offered', (
+      tester,
+    ) async {
+      await page(
+        tester,
+        sessions: [
+          {..._finished('cf58d27a', 'Zsh'), 'cwd': '/srv/other'},
+        ],
+      );
+      await openPicker(tester);
+      expect(find.text('Earlier sessions ran in'), findsOneWidget);
+      await tester.tap(find.text('/srv/other'));
+      await _frames(tester);
+      expect(find.text('▸ other'), findsOneWidget);
+    });
+
+    testWidgets('a path with a control character is not taken', (tester) async {
+      await page(tester);
+      await openPicker(tester);
+      await tester.enterText(dialogField(), '/srv/a\x07b');
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await tester.pump();
+      expect(find.textContaining('control character'), findsOneWidget);
+      expect(find.byType(TuiDialog), findsOneWidget);
+    });
+
+    testWidgets('a start refused as untrusted offers another folder beside '
+        'Retry and Remove', (tester) async {
+      await page(tester, background: trust);
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      expect(find.textContaining('Not started in /srv/app'), findsOneWidget);
+      expect(find.text('RETRY'), findsOneWidget);
+      expect(find.text('REMOVE'), findsOneWidget);
+      await tester.tap(find.text('CHOOSE ANOTHER FOLDER'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.byType(TuiDialog), findsOneWidget);
+      await tester.enterText(dialogField(), '/srv/proj');
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await _frames(tester);
+      expect(find.textContaining('Retry to start it there'), findsOneWidget);
+      expect(find.text('▸ proj'), findsOneWidget);
+    });
+
+    testWidgets('any other failed start has no folder button', (tester) async {
+      await page(tester, background: 'claude: command not found\n');
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      expect(find.text('RETRY'), findsOneWidget);
+      expect(find.text('CHOOSE ANOTHER FOLDER'), findsNothing);
+    });
   });
 
   group('the usage chip and its popup', () {

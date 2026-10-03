@@ -15,7 +15,14 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
 import '../chat/picture_draft.dart';
-import '../files/file_browser.dart' show FileBrowserException, FileBrowserFault;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../files/file_browser.dart'
+    show
+        FileBrowser,
+        FileBrowserException,
+        FileBrowserFault,
+        RemoteEntryKind;
 import '../files/transfers.dart';
 import '../platform.dart';
 import '../session/local_transport.dart' show localHostId;
@@ -346,6 +353,85 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _looking = Timer.periodic(_look, (_) => _onLook());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
     _onChanged();
+    unawaited(_loadFolder());
+  }
+
+  /// The folder a new chat starts in is remembered for each host.
+  String get _folderKey => 'sshbox.chat.folder.${widget.session.host.id}';
+
+  /// The login folder, where Claude Code refuses to start: asked once, from
+  /// the host.
+  String? _home;
+
+  /// Reads what was remembered for this host and where its home is. Neither
+  /// is needed for the chat to work, so a failure of either is let go.
+  Future<void> _loadFolder() async {
+    try {
+      final saved = (await SharedPreferences.getInstance()).getString(
+        _folderKey,
+      );
+      if (saved != null) _chat.startIn(saved);
+    } catch (_) {
+      // Nothing remembered.
+    }
+    try {
+      if (!widget.session.canBrowseFiles) return;
+      final home = await widget.session.fileBrowser.resolveHome();
+      if (mounted) setState(() => _home = home);
+    } catch (_) {
+      // Home unknown: no warning, and the start's own refusal still says.
+    }
+  }
+
+  static String _bare(String path) =>
+      path.length > 1 ? path.replaceFirst(RegExp(r'/+$'), '') : path;
+
+  /// Whether a new chat would start in the login folder.
+  bool get _atHome {
+    final home = _home;
+    final folder = _chat.startFolder;
+    return home != null && folder != null && _bare(folder) == _bare(home);
+  }
+
+  /// Lets the user pick the folder a new chat starts in, and remembers it.
+  /// [after] is a start that was refused: said so that Retry is the next step.
+  Future<void> _chooseFolder({ChatSaid? after}) async {
+    // The sessions as last listed: none yet, or a failed list, suggests none.
+    final recent = <String>{
+      for (final agent in _listing.value.data ?? const <ClaudeAgent>[])
+        if (agent.cwd.isNotEmpty) agent.cwd,
+    };
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (_) => _FolderPicker(
+        start: _chat.startFolder ?? _home ?? '/',
+        browser: widget.session.canBrowseFiles
+            ? widget.session.fileBrowser
+            : null,
+        recent: recent.take(8).toList(),
+        home: _home,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final problem = _chat.startIn(chosen);
+    if (problem != null) {
+      showToast(context, problem, type: TuiToastType.warning);
+      return;
+    }
+    try {
+      await (await SharedPreferences.getInstance()).setString(
+        _folderKey,
+        _chat.startFolder!,
+      );
+    } catch (_) {
+      // Used for this chat, though not remembered.
+    }
+    if (after != null && mounted) {
+      showToast(
+        context,
+        'New chats start in ${_chat.startFolder}. Retry to start it there.',
+      );
+    }
   }
 
   @override
@@ -1393,6 +1479,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
         const Divider(height: 1),
         if (!_draft.isEmpty) _pictureCards(),
+        if (chat.composing && chat.watching == null && _atHome)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 6, 16, 0),
+            child: TuiText(
+              'Claude Code will not start in the home folder. Pick a project '
+              'folder with the folder chip.',
+              size: 11,
+              tone: TuiTextTone.yellow,
+            ),
+          ),
         _composer(theme, wide: wide, sidebar: sidebar),
       ],
     );
@@ -1441,6 +1537,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     // sub-agent's view has none to send.
     onRetry: _retry,
     onRemove: _chat.remove,
+    onChooseFolder: (said) => unawaited(_chooseFolder(after: said)),
     question: (question) => ChatAskCard(
       // One card for the question for as long as it is in the chat, so what
       // is half chosen survives the list being redrawn.
@@ -1739,6 +1836,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             if (chat.context != null) _UsageChip(chat: chat),
+                            if (chat.composing && chat.watching == null)
+                              Flexible(
+                                child: _FolderChip(
+                                  folder: chat.startFolder,
+                                  warn: _atHome,
+                                  onTap: _chooseFolder,
+                                ),
+                              ),
                             Flexible(child: _ModelChip(chat: chat)),
                           ],
                         ),
@@ -2024,6 +2129,7 @@ Widget _drawEntry(
   required void Function(ChatToolRun run, SubAgent sub) openSub,
   void Function(ChatSaid said)? onRetry,
   void Function(ChatSaid said)? onRemove,
+  void Function(ChatSaid said)? onChooseFolder,
   Widget Function(ChatQuestion question)? question,
 }) => switch (entry) {
   ChatSaid(mine: true) => _Bubble(
@@ -2032,6 +2138,9 @@ Widget _drawEntry(
     // A sub-agent's view has no message of its own to send again.
     onRetry: () => onRetry?.call(entry),
     onRemove: () => onRemove?.call(entry),
+    onChooseFolder: entry.refusedFolder == null
+        ? null
+        : () => onChooseFolder?.call(entry),
   ),
   ChatSaid(:final text) => _Answer(text: text, onTapLink: onTapLink),
   final ChatToolRun run => _ToolRow(
@@ -2319,7 +2428,11 @@ class _Bubble extends StatelessWidget {
     required this.onTapLink,
     required this.onRetry,
     required this.onRemove,
+    this.onChooseFolder,
   });
+
+  /// Offered beside Retry when the start was refused in its folder.
+  final VoidCallback? onChooseFolder;
 
   final ChatSaid said;
   final MarkdownTapLinkCallback onTapLink;
@@ -2357,6 +2470,12 @@ class _Bubble extends StatelessWidget {
             spacing: 8,
             children: [
               TuiButton(label: 'Retry', prefix: '↻', onPressed: onRetry),
+              if (onChooseFolder != null)
+                TuiButton(
+                  label: 'Choose another folder',
+                  variant: TuiButtonVariant.ghost,
+                  onPressed: onChooseFolder,
+                ),
               TuiButton(
                 label: 'Remove',
                 variant: TuiButtonVariant.ghost,
@@ -3611,6 +3730,215 @@ class _ModelChip extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// TODO(termul): a compact chip that opens a picker; see _ModelChip.
+/// The folder a new chat will start in, in the composer's row: the last part
+/// of its path, in the warning colour when Claude Code will refuse it.
+class _FolderChip extends StatelessWidget {
+  const _FolderChip({
+    required this.folder,
+    required this.warn,
+    required this.onTap,
+  });
+
+  final String? folder;
+  final bool warn;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final path = folder ?? 'login folder';
+    final parts = path.split('/').where((part) => part.isNotEmpty).toList();
+    final short = parts.isEmpty ? '/' : parts.last;
+    final hint = warn
+        ? 'Claude Code will not start in the home folder.'
+        : 'New chat starts in $path';
+    return TuiTooltip(
+      message: '$hint Tap to choose another folder.',
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        button: true,
+        label: 'Folder $path',
+        hint: warn ? hint : null,
+        excludeSemantics: true,
+        child: InkWell(
+          hoverColor: p.selection,
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 32, maxWidth: 120),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Center(
+                widthFactor: 1,
+                child: TuiText(
+                  '${warn ? '⚠ ' : ''}▸ $short',
+                  size: 12,
+                  tone: warn ? TuiTextTone.yellow : TuiTextTone.dim,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Browse the host's folders, type a path, or take one an earlier session ran
+/// in; pops with the path chosen. [browser] is null where the connection
+/// cannot list a filesystem, and then only typing and the earlier folders
+/// remain.
+class _FolderPicker extends StatefulWidget {
+  const _FolderPicker({
+    required this.start,
+    required this.browser,
+    required this.recent,
+    required this.home,
+  });
+
+  final String start;
+  final FileBrowser? browser;
+  final List<String> recent;
+  final String? home;
+
+  @override
+  State<_FolderPicker> createState() => _FolderPickerState();
+}
+
+class _FolderPickerState extends State<_FolderPicker> {
+  late final _path = TextEditingController(text: widget.start);
+  List<({String name, String path})> _folders = const [];
+  String? _error;
+  String _at = '/';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_open(widget.start));
+  }
+
+  @override
+  void dispose() {
+    _path.dispose();
+    super.dispose();
+  }
+
+  Future<void> _open(String path) async {
+    final browser = widget.browser;
+    if (browser == null) return;
+    try {
+      final entries = await browser.list(path);
+      if (!mounted) return;
+      setState(() {
+        _at = path;
+        _path.text = path;
+        _error = null;
+        _folders = [
+          for (final entry in entries)
+            if (entry.kind == RemoteEntryKind.directory ||
+                (entry.kind == RemoteEntryKind.symlink &&
+                    entry.targetIsDirectory == true))
+              (name: entry.name, path: entry.path),
+        ];
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not list $path: $error');
+    }
+  }
+
+  void _use() {
+    final problem = ClaudeChat.folderProblem(_path.text);
+    if (problem != null) {
+      setState(() => _error = problem);
+      return;
+    }
+    Navigator.pop(context, _path.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget row(String label, VoidCallback onTap, {String? key}) => InkWell(
+      key: key == null ? null : ValueKey(key),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+        child: TuiText(label, size: 12, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+    );
+    final up = _at == '/'
+        ? '/'
+        : (_at.substring(0, _at.lastIndexOf('/')).isEmpty
+              ? '/'
+              : _at.substring(0, _at.lastIndexOf('/')));
+    return TuiDialog(
+      title: 'Start the chat in',
+      maxWidth: 440,
+      actions: [
+        TuiButton(
+          label: 'Cancel',
+          variant: TuiButtonVariant.ghost,
+          onPressed: () => Navigator.pop(context),
+        ),
+        TuiButton(label: 'Use this folder', onPressed: _use),
+      ],
+      child: SizedBox(
+        height: 340,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TuiInput(
+              controller: _path,
+              hint: '/path/to/project',
+              onSubmitted: (_) => _use(),
+              textInputAction: TextInputAction.done,
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: TuiText(_error!, size: 11, tone: TuiTextTone.red),
+              ),
+            if (widget.home != null && _path.text.trim() == widget.home)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: TuiText(
+                  'Claude Code will not start in the home folder.',
+                  size: 11,
+                  tone: TuiTextTone.yellow,
+                ),
+              ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView(
+                children: [
+                  if (widget.recent.isNotEmpty) ...[
+                    const TuiText('Earlier sessions ran in', size: 11, tone: TuiTextTone.dim),
+                    for (final folder in widget.recent)
+                      row(folder, () => Navigator.pop(context, folder)),
+                    const SizedBox(height: 8),
+                  ],
+                  if (widget.browser != null) ...[
+                    TuiText('In $_at', size: 11, tone: TuiTextTone.dim),
+                    row('..', () => unawaited(_open(up)), key: 'folder-up'),
+                    for (final folder in _folders)
+                      row(
+                        '▸ ${folder.name}',
+                        () => unawaited(_open(folder.path)),
+                        key: 'folder-${folder.name}',
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
