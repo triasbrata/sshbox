@@ -48,29 +48,28 @@ env:
     visible: "Upload a file to /tmp"
     timeout: 30000
 
+# Terminal text is drawn, not in the accessibility tree, so what each command
+# did is left on the host for the runner to read (~/jeansh-forged.done, and
+# ~/jeansh-missing.rc), and the pause after each is an optional tap on text
+# that never shows, which waits several seconds.
 # Negative: forged secret, refused, nothing opened.
 - tapOn:
     point: 50%, 40%
-- inputText: "cat ~/jeansh-forged.txt"
+- inputText: "cat ~/jeansh-forged.txt; echo ran > ~/jeansh-forged.done"
 - pressKey: Enter
-# The refusal's toast lasts a second, too short to wait for; what is held is
-# that, once the shell has gone on past the cat (done-2 is only printed by
-# the sum, not by the typed command), no file tab opened.
-- inputText: "echo done-$((1+1))"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible: "(?s).*done-2.*"
-    timeout: 10000
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
 - assertNotVisible: "Save to host"
 - takeScreenshot: jeansh-forged-refused
 
-# Negative: a file that is not there. The script says so itself and sends
+# Negative: a file that is not there. The script refuses it and sends
 # nothing.
-- inputText: "PATH=$HOME/.local/bin:$PATH jeansh missing-e2e-file"
+- inputText: "PATH=$HOME/.local/bin:$PATH jeansh missing-e2e-file; echo $? > ~/jeansh-missing.rc"
 - pressKey: Enter
-- extendedWaitUntil:
-    visible: "(?s).*jeansh: missing-e2e-file: no such file.*"
-    timeout: 10000
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
 - assertNotVisible: "Save to host"
 
 # Positive: the command opens the file.
