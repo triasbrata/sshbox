@@ -1,0 +1,71 @@
+# #216: Home's Text size control, for a touch screen with no keys and no
+# wheel. + steps the UI text size 10%, Reset brings it back to 100%, and
+# Settings' slider follows, being the same setting.
+#
+# The setting persists, so this flow ends at 100% whatever it found.
+appId: cloud.brata.terminal
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: "Text size"
+    timeout: 15000
+- tapOn: "Text size"
+- extendedWaitUntil:
+    visible: "(?s).*UI text size.*"
+    timeout: 5000
+# From 100%, whatever an earlier flow left.
+- tapOn: "(?i)reset"
+- extendedWaitUntil:
+    visible: "UI text size 100 percent"
+    timeout: 3000
+- tapOn: "\\+"
+- extendedWaitUntil:
+    visible: "UI text size 110 percent"
+    timeout: 3000
+- takeScreenshot: text-size-home-110
+- tapOn: "(?i)done"
+
+# Settings' slider says the same.
+- tapOn: "Settings"
+- scrollUntilVisible:
+    element: "(?s).*Set the UI text size.*"
+    direction: DOWN
+    timeout: 15000
+- assertVisible: "(?s).*110%.*"
+# The content text size is another setting: noted here at 110%, and the same
+# at 100% below.
+- scrollUntilVisible:
+    element: "[0-9]+px"
+    direction: DOWN
+    timeout: 15000
+- copyTextFrom: "[0-9]+px"
+- evalScript: ${output.contentAt110 = maestro.copiedText}
+- takeScreenshot: text-size-settings-110
+- back
+
+# Reset, back to 100%, and the slider with it.
+- tapOn: "Text size"
+- extendedWaitUntil:
+    visible: "UI text size 110 percent"
+    timeout: 5000
+- tapOn: "(?i)reset"
+- extendedWaitUntil:
+    visible: "UI text size 100 percent"
+    timeout: 3000
+- tapOn: "(?i)done"
+- tapOn: "Settings"
+- scrollUntilVisible:
+    element: "(?s).*Set the UI text size.*"
+    direction: DOWN
+    timeout: 15000
+- assertVisible: "(?s).*100%.*"
+- scrollUntilVisible:
+    element: "[0-9]+px"
+    direction: DOWN
+    timeout: 15000
+- copyTextFrom: "[0-9]+px"
+- assertTrue: ${maestro.copiedText == output.contentAt110}
+- back

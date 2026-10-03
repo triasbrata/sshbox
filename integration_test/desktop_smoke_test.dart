@@ -41,6 +41,8 @@ import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
+import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
+import 'package:sshbox/src/telemetry/input_log.dart' show inputLog;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
@@ -3766,6 +3768,238 @@ touch '${done.path}'
     },
   );
 
+  // #216: the UI text size from the keyboard, the wheel and the in-frame Help
+  // menu, as a person would, through X: Ctrl with = − 0 steps it 10% at a
+  // time and back to 100%, Ctrl+wheel over the UI grows it and over a
+  // terminal leaves it, and Ctrl+Shift+− still reaches a program as ^_.
+  _test(
+    'Ctrl with = − 0, Ctrl+wheel and Help zoom the UI text, never a terminal',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys and the wheel go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      await _launch(tester);
+      await uiTextSize.choose(1);
+      await tester.pump();
+
+      Future<void> keys(String chord) async {
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo(['key', '--clearmodifiers', chord]);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      Future<void> sizeIs(int percent, String what) => _until(
+        tester,
+        () => (uiTextSize.value * 100).round() == percent,
+        '$what: the UI text size to be $percent% '
+            '(it is ${(uiTextSize.value * 100).round()}%)',
+        timeout: const Duration(seconds: 5),
+      );
+
+      // 1 and 2: the keys.
+      await keys('ctrl+equal');
+      await keys('ctrl+equal');
+      await sizeIs(120, 'Ctrl+= twice');
+      expect(
+        find.textContaining('UI text size 120%'),
+        findsWidgets,
+        reason: 'no toast with the size',
+      );
+      await _settings(tester);
+      final slider = find.byWidgetPredicate(
+        (w) => w is Semantics && w.properties.label == 'Set the UI text size',
+      );
+      await tester.scrollUntilVisible(
+        slider,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('120%'), findsOneWidget, reason: 'Settings disagrees');
+      await _backHome(tester);
+      await keys('ctrl+minus');
+      await sizeIs(110, 'Ctrl+−');
+      await keys('ctrl+0');
+      await sizeIs(100, 'Ctrl+0');
+
+      // Where a point of the app is on the X screen.
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      Future<void> ctrlWheelUp(Offset at) async {
+        final x = (window.left + frame + at.dx * ratio).round();
+        final y = (window.top + frame + at.dy * ratio).round();
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        // The real pointer, which flutter_test drops unless let through.
+        await _realPointer(() async {
+          await _xdo([
+            'mousemove', '$x', '$y', 'sleep', '0.2', //
+            'keydown', 'Control_L', 'click', '4', 'sleep', '0.2', 'click', '4',
+            'sleep', '0.2', 'keyup', 'Control_L',
+          ]);
+          await tester.pump(const Duration(milliseconds: 400));
+        });
+      }
+
+      // 3: the wheel over Home grows it; over a terminal it does not.
+      final home = tester.view.physicalSize / ratio;
+      await ctrlWheelUp(Offset(home.width / 2, home.height * 0.6));
+      await _until(
+        tester,
+        () => uiTextSize.value > 1.001,
+        'Ctrl+wheel up over Home to grow the UI text',
+        timeout: const Duration(seconds: 5),
+      );
+      await uiTextSize.choose(1);
+      await tester.pump();
+
+      // Over a long list, Settings', Ctrl+wheel zooms and leaves where the
+      // list was; a plain wheel would have scrolled it.
+      await _settings(tester);
+      final list = find.byType(Scrollable).first;
+      await tester.drag(list, const Offset(0, -200));
+      await tester.pumpAndSettle();
+      final position = tester.state<ScrollableState>(list).position;
+      final before = position.pixels;
+      expect(before, greaterThan(0), reason: 'Settings did not scroll at all');
+      await ctrlWheelUp(tester.getCenter(list));
+      await _until(
+        tester,
+        () => uiTextSize.value > 1.001,
+        'Ctrl+wheel up over Settings to grow the UI text',
+        timeout: const Duration(seconds: 5),
+      );
+      expect(
+        position.pixels,
+        before,
+        reason: 'Ctrl+wheel scrolled Settings as well as zooming',
+      );
+      await uiTextSize.choose(1);
+      await tester.pump();
+      await _backHome(tester);
+
+      final view = await _localShell(tester);
+      final terminal = tester.getCenter(find.byWidget(view));
+      await ctrlWheelUp(terminal);
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        (uiTextSize.value * 100).round(),
+        100,
+        reason: 'Ctrl+wheel over the terminal zoomed the UI',
+      );
+
+      // 4: Ctrl+Shift+− reaches the program, as ^_.
+      _run(view, 'cat -v');
+      await tester.pump(const Duration(seconds: 1));
+      await keys('ctrl+shift+minus');
+      await keys('Return');
+      final lines = view.terminal.buffer.lines;
+      await _until(tester, () {
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].getText().contains('^_')) return true;
+        }
+        return false;
+      }, 'cat -v to print ^_ for Ctrl+Shift+−');
+      expect((uiTextSize.value * 100).round(), 100);
+      await keys('ctrl+c');
+
+      // 5: Help's Zoom in, Zoom out and Actual size.
+      // Each time with the last menu gone, so a tap never lands on one
+      // still fading out.
+      Future<void> help(String item, int percent) async {
+        await _until(
+          tester,
+          () => _label('Actual size').evaluate().isEmpty,
+          'the Help menu to be closed',
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.tap(_named('Help'));
+        await _pick(tester, item);
+        await sizeIs(percent, 'Help › $item');
+      }
+
+      await help('Zoom in', 110);
+      await help('Zoom in', 120);
+      await help('Zoom out', 110);
+      await help('Actual size', 100);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #216, the other negative: a Ctrl+wheel over a picture zooms the picture
+  // and leaves the UI text size alone. Positive pair: the UI wheel test above.
+  _test(
+    'Ctrl+wheel over an image tab leaves the UI text size unchanged',
+    skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const name = 'e2e-zoom.png';
+      File('${dir.path}/$name').writeAsBytesSync(
+        base64.decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+          'CB0C8AAAAASUVORK5CYII=',
+        ),
+      );
+      await _launch(tester);
+      await uiTextSize.choose(1);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name).evaluate().isNotEmpty,
+        'the drawer to show the picture',
+      );
+      await tester.tap(find.text(name));
+      await _until(
+        tester,
+        () => find.byType(InteractiveViewer).evaluate().isNotEmpty,
+        'the picture to open in a tab',
+      );
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      final at = tester.getCenter(find.byType(InteractiveViewer));
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      // That the wheel arrived at all, or "unchanged" below proves nothing.
+      var wheels = 0;
+      void heard(PointerEvent e) => e is PointerScrollEvent ? wheels++ : null;
+      GestureBinding.instance.pointerRouter.addGlobalRoute(heard);
+      addTearDown(
+        () => GestureBinding.instance.pointerRouter.removeGlobalRoute(heard),
+      );
+      await _realPointer(() async {
+        await _xdo([
+          'mousemove',
+          '${(window.left + frame + at.dx * ratio).round()}',
+          '${(window.top + frame + at.dy * ratio).round()}',
+          'sleep', '0.2', 'keydown', 'Control_L', 'click', '4', 'sleep', '0.2',
+          'click', '4', 'sleep', '0.2', 'keyup', 'Control_L',
+        ]);
+        await tester.pump(const Duration(milliseconds: 400));
+      });
+      expect(wheels, greaterThan(0), reason: 'no wheel reached the app');
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        (uiTextSize.value * 100).round(),
+        100,
+        reason: 'Ctrl+wheel over the picture zoomed the UI text',
+      );
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
   // #126, with the real pointer. In a shell: a double click selects a word,
   // and selecting more after it — a longer drag, then a fresh one elsewhere
   // — copies each, a few times over, the user having seen it fail often and
@@ -5305,6 +5539,128 @@ touch '${done.path}'
       });
       await _grab(tester, 'chat-code-copy-end');
       await _closeTabs(tester);
+    },
+  );
+
+  // #223: the app log holds the keys that type nothing and the pastes by
+  // kind, and no character typed. Real X key events through xdotool.
+  _test(
+    'the app log holds named keys and pastes, never what was typed',
+    skip: Platform.isLinux ? null : 'xdotool drives the Linux build only',
+    (tester) async {
+      // What the log holds, each line without its timestamp and level.
+      List<String> lines() {
+        inputLog.flush();
+        // Only what this test did: earlier tests' keys share the one log.
+        final all = appLog.current
+            .split('\n')
+            .map((l) => l.split(' ').skip(2).join(' '))
+            .toList();
+        return all.sublist(all.lastIndexOf('e2e: start #223') + 1);
+      }
+
+      Future<void> quiet() => tester.pump(const Duration(milliseconds: 900));
+      appLog.add('e2e: start #223');
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await _xdo(['windowfocus', '--sync', await _window()]);
+
+      // 1. Positive: keys that type nothing, with where they went.
+      await _xdo(['key', 'Home']);
+      await _xdo(['key', 'End']);
+      await _xdo(['key', 'Prior']);
+      await _xdo(['key', 'ctrl+k']);
+      // 2. Negative: letters and digits are typing, and are no line.
+      await _xdo(['type', '--delay', '60', 'zq7hunter2']);
+      await _xdo(['key', 'Return']);
+      await quiet();
+      var seen = lines();
+      expect(seen, contains('key Home (terminal)'));
+      expect(seen, contains('key End (terminal)'));
+      expect(seen, contains('key PageUp (terminal)'));
+      expect(seen, contains('key Ctrl+K (terminal)'));
+      expect(seen, contains('key Enter (terminal)'));
+      const allowed = {'Home', 'End', 'PageUp', 'Ctrl+K', 'Enter'};
+      for (final line in seen.where((l) => l.startsWith('key '))) {
+        final label = line.split(' ')[1];
+        expect(
+          allowed,
+          contains(label),
+          reason: 'a typed key was logged: $line',
+        );
+      }
+      expect(lines().join('\n'), isNot(contains('hunter')));
+      expect(lines().join('\n'), isNot(contains('zq7')));
+
+      // 4. Positive: a text paste, by length. 5. Negative: not its words.
+      const clip = 'clip-secret-words';
+      final put = await Process.run('sh', [
+        '-c',
+        r'printf %s "$1" | xclip -selection clipboard -i >/dev/null 2>&1',
+        'sh',
+        clip,
+      ]);
+      expect(put.exitCode, 0);
+      await _paste(tester);
+      await _until(
+        tester,
+        () => lines().contains('paste text ${clip.length} (terminal)'),
+        'the text paste in the log',
+      );
+      await quiet();
+      expect(appLog.current, isNot(contains('clip-secret')));
+
+      // A picture, by kind.
+      final picture = File('${_scratch().path}/picture-log.png')
+        ..writeAsBytesSync(
+          base64.decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+            'CB0C8AAAAASUVORK5CYII=',
+          ),
+        );
+      await _putPicture(picture.path);
+      await _paste(tester);
+      await _until(
+        tester,
+        () => lines().contains('paste image 1 (terminal)'),
+        'the picture paste in the log',
+      );
+      expect(appLog.current, isNot(contains('picture-log')));
+      expect(view.terminal.buffer.lines.length, greaterThan(0));
+
+      // 3. Negative: an obscured field logs nothing, not even Backspace.
+      await _closeTabs(tester);
+      await tester.tap(_label('Add'));
+      await tester.pump(const Duration(milliseconds: 600));
+      await _pick(tester, 'Host');
+      final obscured = find.byWidgetPredicate(
+        (w) => w is EditableText && w.obscureText,
+      );
+      await _until(
+        tester,
+        () => obscured.evaluate().isNotEmpty,
+        'the host editor with its password field',
+      );
+      await tester.ensureVisible(obscured.first);
+      await tester.tap(obscured.first);
+      await tester.pump(const Duration(milliseconds: 300));
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await quiet();
+      final before = lines().length;
+      await _xdo(['type', '--delay', '60', 'pw9secret']);
+      await _xdo(['key', 'BackSpace']);
+      await _xdo(['key', 'Home']);
+      await quiet();
+      seen = lines();
+      expect(
+        seen.skip(before).where((l) => l.startsWith('key ')),
+        isEmpty,
+        reason: 'keys were logged in an obscured field: ${seen.skip(before)}',
+      );
+      expect(appLog.current, isNot(contains('pw9')));
+      await _xdo(['key', 'Escape']);
+      await tester.pump(const Duration(milliseconds: 600));
     },
   );
 }
