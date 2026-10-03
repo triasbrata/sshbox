@@ -1,0 +1,69 @@
+# Chat shows how much of its context window the session uses, "Context 85%",
+# at the box's edge, and a popup with the plan's usage as the host's Claude Code
+# prints it: the context with its model, the session and weekly limits with
+# their resets, and when they were read.
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_progress (tools/e2e_android.sh's chat_usage). A line starting usage:
+# plays a turn whose answer's usage carries 170,000 of a 200,000 window; the
+# stand-in claude answers `claude -p /usage` from ~/.e2e-usage.txt.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "usage: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+
+# The last request carried 170,000 of 200,000.
+- extendedWaitUntil:
+    visible: "(?s).*Context 85%.*"
+    timeout: 20000
+- takeScreenshot: chat-usage-chip
+
+# A tap opens the popup: the context and its model, then the plan as printed.
+- tapOn: "(?s).*Context 85%.*"
+- extendedWaitUntil:
+    visible: "(?s).*Context.*170k / 200k \\(85%\\).*"
+    timeout: 5000
+- assertVisible: "(?s).*claude-opus-5-5.*"
+- extendedWaitUntil:
+    visible: "(?s).*Current session.*65% used.*"
+    timeout: 20000
+- assertVisible: "(?s).*Current week \\(all models\\).*28% used.*"
+- assertVisible: "(?s).*resets Oct 2, 3:59pm \\(Asia/Example\\).*"
+- assertVisible: "(?s).*as of .*"
+- takeScreenshot: chat-usage-popup
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
