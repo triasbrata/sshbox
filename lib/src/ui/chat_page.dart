@@ -14,8 +14,10 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../chat/claude_chat.dart';
 import '../chat/picture_draft.dart';
+import '../files/file_browser.dart' show FileBrowserException, FileBrowserFault;
 import '../files/transfers.dart';
 import '../platform.dart';
+import '../session/local_transport.dart' show localHostId;
 import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
 import 'chat_ask_card.dart';
@@ -468,16 +470,83 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   /// Files dropped from the OS file manager on a desktop, in order.
+  ///
+  /// A picture stays a card. Any other file puts its path in the box at the
+  /// caret: its own for a Mac or Linux Local shell, nothing copied; the path
+  /// it was uploaded to, through the terminal's own upload, for a host over
+  /// SSH or a WSL distro. A folder only has a path on this machine. The box
+  /// is a message, not a shell line, so no escaping; a path with a space is
+  /// wrapped in double quotes so where it ends is plain.
   Future<void> _dropped(DropDoneDetails details) async {
     setState(() => _dropping = false);
+    final here =
+        widget.session.host.id == localHostId &&
+        defaultTargetPlatform != TargetPlatform.windows;
     for (final item in details.files) {
-      if (FileSystemEntity.isDirectorySync(item.path)) {
-        _refuse('A folder is not a picture: ${item.name}');
-        continue;
+      final path = item.path;
+      final isDir = FileSystemEntity.isDirectorySync(path);
+      if (_misleading.hasMatch(path)) {
+        _refuse('Not added: the name holds a control character: ${item.name}');
+      } else if (!isDir && _pictureNames.hasMatch(item.name)) {
+        await _addPicture((path: path, name: item.name));
+      } else if (here) {
+        _typePath(path);
+      } else if (isDir) {
+        _refuse('A folder cannot be uploaded: ${item.name}');
+      } else if (!widget.session.canUploadFiles) {
+        _refuse('This session cannot take ${item.name}.');
+      } else {
+        try {
+          final remote = await transfers.run(
+            name: item.name,
+            host: widget.session.host.displayName,
+            direction: TransferDirection.upload,
+            work: (transfer) => widget.session.uploadToTmp(
+              localPath: path,
+              fileName: item.name,
+              onProgress: transfer.report,
+              cancel: transfer.cancelled,
+            ),
+          );
+          if (mounted) _typePath(remote);
+        } catch (error) {
+          // Cancelled from the Transfers tab, which says so itself.
+          final cancelled =
+              error is FileBrowserException &&
+              error.fault == FileBrowserFault.cancelled;
+          if (mounted && !cancelled) _refuse('Upload failed: $error');
+        }
       }
-      await _addPicture((path: item.path, name: item.name));
       if (!mounted) return;
     }
+  }
+
+  /// C0 and C1 controls and the bidi controls, which make a name show
+  /// reversed or hide what it says.
+  static final _misleading = RegExp(
+    r'[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]',
+  );
+
+  /// [path] after the selection, with a space after it so the next word is
+  /// apart: never over text, since an upload ends long after the drop and
+  /// the user may have selected a sentence meanwhile. Not at all once the
+  /// chat has turned read-only.
+  void _typePath(String path) {
+    if (!_attachable) return;
+    final quoted = path.contains(RegExp(r'\s'))
+        ? '"${path.replaceAll('"', r'\"')}"'
+        : path;
+    final value = _input.value;
+    final at = value.selection.isValid
+        ? value.selection.end
+        : value.text.length;
+    final apart = at > 0 && !RegExp(r'\s').hasMatch(value.text[at - 1]);
+    final text = '${apart ? ' ' : ''}$quoted ';
+    _input.value = TextEditingValue(
+      text: value.text.replaceRange(at, at, text),
+      selection: TextSelection.collapsed(offset: at + text.length),
+    );
+    setState(() {});
   }
 
   /// Puts [picture] on the host for a session there, through the upload the
