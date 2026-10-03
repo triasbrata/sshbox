@@ -2323,7 +2323,7 @@ class ClaudeChat extends ChangeNotifier {
       final channel = await open(
         backgroundCommand(
           pictures.isEmpty ? message : '',
-          cwd: startFolder,
+          cwd: cwd,
           permission: _permission,
           model: _alias,
         ),
