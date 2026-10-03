@@ -357,7 +357,7 @@ jobs:
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'linux-desktop' }}
     # The release's Linux build runs on 22.04 (release.yml), so this does too.
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -426,8 +426,11 @@ jobs:
       # runner's loopback, as an older version, so there is something newer
       # to offer. The feed override is read by debug builds alone, never a
       # release.
+      # v1.0.104's gate ran out at 22 minutes with every test passed (44),
+      # the suite having grown past it, so the step goes to 35 and the job
+      # to 60 around it.
       - name: Drive the desktop build
-        timeout-minutes: 22
+        timeout-minutes: 35
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
         run: |
