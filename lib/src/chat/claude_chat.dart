@@ -882,6 +882,9 @@ class ClaudeChat extends ChangeNotifier {
 
   String? _folder;
 
+  /// The directory the session being continued was written under.
+  String? _sessionCwd;
+
   /// Where a new chat's `claude --bg` starts: the folder chosen for it, else
   /// the host's file-tree root.
   String? get startFolder => _folder ?? cwd;
@@ -974,6 +977,127 @@ class ClaudeChat extends ChangeNotifier {
   /// Claude is on its way up: a pick now would apply only at the next start,
   /// so the picker waits.
   bool get modelStarting => _watching == null && !_composing && _starting;
+
+  /// Set by [reviseLast] until the forked session reports itself: where in the
+  /// old one the next start resumes.
+  String? _resumeAt;
+  bool _fork = false;
+
+  /// The user's newest message in this view.
+  ChatSaid? get lastMine =>
+      _entries.whereType<ChatSaid>().where((said) => said.mine).lastOrNull;
+
+  /// The uuid of the transcript row before the user's last prompt, which is
+  /// where `--resume-session-at` cuts: the row's `parentUuid`. Null unless the
+  /// last real prompt in [transcript] (the host's answer to [historyCommand])
+  /// says [text], so a revision never cuts at a prompt it did not mean.
+  static String? revisionPoint(String transcript, String text) {
+    String? parent;
+    String? said;
+    for (final line in const LineSplitter().convert(transcript)) {
+      if (!line.startsWith('{')) continue;
+      final Object? row;
+      try {
+        row = jsonDecode(line);
+      } catch (_) {
+        continue;
+      }
+      if (row is! Map || row['type'] != 'user' || row['isSidechain'] == true) {
+        continue;
+      }
+      final content = (row['message'] as Map?)?['content'];
+      final String? words = content is String
+          ? content
+          : content is List && !content.any((b) => b is Map && b['type'] == 'tool_result')
+          ? content.whereType<Map>().map((b) => b['text']).whereType<String>().join()
+          : null;
+      if (words == null || words.trim().isEmpty) continue;
+      said = words.trim();
+      parent = row['parentUuid'] as String?;
+    }
+    return said == text.trim() && parent != null && _uuid.hasMatch(parent)
+        ? parent
+        : null;
+  }
+
+  /// Goes back to just before the user's last message and returns its text
+  /// for the box, or null, saying why in the chat. A fork: Claude restarts on
+  /// `--resume ID --resume-session-at ROW --fork-session`, ROW being the
+  /// transcript row before the prompt, measured on 2.1.287, so the earlier branch stays on the
+  /// host, in the sessions list, untouched. Files the old turn changed are
+  /// not put back: the CLI's rewind needs file checkpointing, which `-p` has
+  /// off ("File rewinding is not enabled").
+  ///
+  /// Only this chat's own Claude. A session on the host is revised at its own
+  /// terminal, which this never types into blind.
+  Future<String?> reviseLast() async {
+    final said = lastMine;
+    if (said == null) return null;
+    String? no(String why) {
+      _say(ChatNotice(why));
+      return null;
+    }
+
+    if (_watching != null) {
+      // Held here, nothing typed: it goes back into the box and is gone.
+      final held = _held.lastOrNull;
+      if (held != null) {
+        _held.remove(held);
+        _entries.remove(held.said);
+        if (_held.isEmpty) {
+          _holdTimer?.cancel();
+          _holdTimer = null;
+        }
+        notifyListeners();
+        return held.said.text;
+      }
+      return no(
+        'A session running on the host is revised at its own terminal: press '
+        'Esc Esc there. This chat does not type that for you.',
+      );
+    }
+    final id = _sessionId;
+    if (id == null || _composing || !_ready) {
+      return no('There is no conversation of this chat to go back in yet.');
+    }
+    if (_busy) {
+      return no('Claude is answering. Edit the message once it has finished.');
+    }
+    if (said.pictures.isNotEmpty) {
+      return no('A message with pictures cannot be revised from here.');
+    }
+    final String point;
+    try {
+      final read = utf8.decode(
+        await _readAll(historyCommand(id), const Duration(seconds: 30)),
+        allowMalformed: true,
+      );
+      final found = revisionPoint(read, said.text);
+      if (found == null) {
+        return no('That message is not in the session’s transcript yet.');
+      }
+      point = found;
+    } catch (error) {
+      return no('Could not read the session to go back in it: $error');
+    }
+    final at = _entries.indexOf(said);
+    if (at < 0) return null;
+    await _stop();
+    _entries.removeRange(at, _entries.length);
+    _modelAsks.clear();
+    _resumeAt = point;
+    _fork = true;
+    _busy = false;
+    _ended = false;
+    await start();
+    _say(
+      ChatNotice(
+        'Went back to before that message. The earlier branch stays in the '
+        'sessions list. Files the old turn changed are not put back.',
+      ),
+    );
+    return said.text;
+  }
 
   ChatPermission _permission = ChatPermission.acceptEdits;
 
@@ -1814,10 +1938,12 @@ class ClaudeChat extends ChangeNotifier {
     try {
       final channel = await open(
         command(
-          cwd: cwd,
+          cwd: _sessionCwd ?? cwd,
           permission: _permission,
           resume: _sessionId,
           model: _alias,
+          resumeAt: _resumeAt,
+          fork: _fork,
         ),
       );
       // The tab closed while the host answered: nothing is left to hold it.
@@ -2179,6 +2305,9 @@ class ClaudeChat extends ChangeNotifier {
     _composing = false;
     _sessionId = agent.sessionId;
     _pickedFrom = agent.sessionId;
+    // --resume finds a transcript only from the directory it was written
+    // under: a continuation or a fork starts there, not in the chat's folder.
+    _sessionCwd = agent.cwd.isEmpty ? null : agent.cwd;
     final pid = agent.pid;
     final read = await _loadHistory(
       agent.sessionId,
@@ -2235,7 +2364,10 @@ class ClaudeChat extends ChangeNotifier {
     // What was typed for the session being left and not recorded yet: its
     // entry goes with the rest of the view, so it is said again, once the
     // view is new, where the user will see it.
-    final unsent = [..._pending];
+    final unsent = [..._pending, for (final held in _held) held.said];
+    _held.clear();
+    _holdTimer?.cancel();
+    _holdTimer = null;
     final leaving = _watching;
     await _stop();
     // Those still in the view as it goes: a message the session recorded in
@@ -2252,6 +2384,7 @@ class ClaudeChat extends ChangeNotifier {
     _tasks.clear();
     _parked.clear();
     _context = null;
+    _sessionCwd = null;
     _model = null;
     // A model picked was for the chat left, not for the next session.
     _alias = null;
@@ -2405,6 +2538,7 @@ class ClaudeChat extends ChangeNotifier {
           _replaced.future,
           upload: upload,
           confirm: false,
+          hold: false,
         );
         if (said.delivery == Delivery.failed) return;
       }
@@ -2648,6 +2782,103 @@ class ClaudeChat extends ChangeNotifier {
     return paths;
   }
 
+  /// Messages sent to a session that was mid-turn, kept here until it is
+  /// idle: Claude Code would queue them itself, but a message queued there
+  /// cannot be taken back from here, and one held here can.
+  final List<_Held> _held = [];
+  Timer? _holdTimer;
+  bool _draining = false;
+
+  /// How often a held message looks for the session to be idle.
+  Duration holdEvery = const Duration(seconds: 3);
+
+  /// Whether [said] is held here, and so can be taken back.
+  bool isHeld(ChatSaid said) => _held.any((held) => held.said == said);
+
+  /// Mid-turn, with nothing asked of the user: what the session's list row
+  /// says, whichever kind of session it is.
+  static bool _busyNow(ClaudeAgent agent) =>
+      agent.waitingFor == null &&
+      (agent.state == 'working' || agent.status == 'busy');
+
+  void _hold(
+    ChatSaid said,
+    ClaudeAgent agent,
+    int target,
+    Future<void> replaced,
+    PictureUpload? upload,
+  ) {
+    // Not pending: nothing is typed, so nothing is to be recorded yet.
+    _pending.remove(said);
+    final recorded = _recorded.remove(said);
+    if (recorded != null && !recorded.isCompleted) recorded.complete();
+    said.delivery = Delivery.queued;
+    _held.add(_Held(said, agent, target, replaced, upload));
+    _holdTimer ??= Timer.periodic(
+      holdEvery,
+      (_) => unawaited(_drainHeld()),
+    );
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Types the oldest held message once the session is idle, one at a time;
+  /// the next waits for the turn that one starts to end.
+  Future<void> _drainHeld() async {
+    if (_draining || _held.isEmpty || _disposed) return;
+    _draining = true;
+    try {
+      final first = _held.first;
+      void failAll(String why) {
+        for (final held in [..._held]) {
+          _undelivered(held.said, why);
+        }
+        _held.clear();
+      }
+
+      if (!_current(first.target)) {
+        _held.remove(first);
+        _movedOn(first.said, first.agent);
+        return;
+      }
+      final ClaudeAgent? now;
+      try {
+        now = (await agents())
+            .where((row) => row.sessionId == first.agent.sessionId)
+            .firstOrNull;
+      } catch (error) {
+        return failAll('Not sent: could not check on “${first.agent.name}”: '
+            '$error');
+      }
+      // Taken back, or the chat moved off, while the host answered.
+      if (_disposed || !_held.contains(first)) return;
+      if (now == null || !now.live) {
+        return failAll('Not sent: “${first.agent.name}” is no longer running.');
+      }
+      if (_busyNow(now)) return;
+      _held.remove(first);
+      first.said.delivery = Delivery.sending;
+      _pending.add(first.said);
+      _recorded[first.said] = Completer<void>();
+      notifyListeners();
+      await _deliver(
+        first.said,
+        first.agent,
+        first.target,
+        first.replaced,
+        upload: first.upload,
+        hold: false,
+      ).catchError(
+        (Object error) => _undelivered(first.said, 'Not delivered: $error'),
+      );
+    } finally {
+      _draining = false;
+      if (_held.isEmpty) {
+        _holdTimer?.cancel();
+        _holdTimer = null;
+      }
+    }
+  }
+
   /// With [confirm] false, done once it is typed: a session that has just
   /// started, which nothing follows yet.
   Future<void> _deliver(
@@ -2657,6 +2888,7 @@ class ClaudeChat extends ChangeNotifier {
     Future<void> replaced, {
     PictureUpload? upload,
     bool confirm = true,
+    bool hold = true,
   }) async {
     // What it is doing now, not what the list said when it was picked.
     final ClaudeAgent? now;
@@ -2670,6 +2902,11 @@ class ClaudeChat extends ChangeNotifier {
     if (!_current(target)) return _movedOn(said, agent);
     if (now == null || !now.live) {
       return _undelivered(said, '“${agent.name}” is no longer running.');
+    }
+    // Busy, or older messages are still held: kept here, nothing typed, so
+    // they go one turn each and in the order they were sent.
+    if (hold && (_held.isNotEmpty || _draining || _busyNow(now))) {
+      return _hold(said, agent, target, replaced, upload);
     }
     if (now.interactive) return _typeIntoPane(said, agent, now, target, upload);
     final openTerminal = this.openTerminal;
@@ -3599,6 +3836,9 @@ class ClaudeChat extends ChangeNotifier {
     switch (event['type']) {
       case 'system' when event['subtype'] == 'init':
         _sessionId = event['session_id'] as String?;
+        // A revision's fork is the session now: later starts resume it whole.
+        _resumeAt = null;
+        _fork = false;
         final model = event['model'];
         if (model is String && model.isNotEmpty) _model = model;
         notifyListeners();
@@ -3988,6 +4228,7 @@ class ClaudeChat extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _poll?.cancel();
+    _holdTimer?.cancel();
     for (final timer in _timers) {
       timer.cancel();
     }
@@ -4031,11 +4272,17 @@ class ClaudeChat extends ChangeNotifier {
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
     String? model,
+    String? resumeAt,
+    bool fork = false,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
-    final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
+    final at = resume != null && resumeAt != null && _uuid.hasMatch(resumeAt)
+        ? ' --resume-session-at $resumeAt${fork ? ' --fork-session' : ''}'
+        : '';
+    final again =
+        '${resume == null ? '' : ' --resume ${_shellQuote(resume)}'}$at';
     final picked = _modelFlag(model);
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
@@ -4047,6 +4294,10 @@ class ClaudeChat extends ChangeNotifier {
         '--permission-prompt-tool stdio$again$picked 2>&1';
     return 'sh -c ${_shellQuote(script)}';
   }
+
+  static final _uuid = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+  );
 
   /// ` --model <alias>` for an alias [ChatModel.choices] offers; nothing for
   /// the default or for any other text, which never reaches the shell.
@@ -4487,4 +4738,16 @@ class ClaudeChat extends ChangeNotifier {
   /// Wraps a value so the remote shell sees exactly these bytes.
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", r"'\''")}'";
+}
+
+/// A message kept here for a session that was mid-turn: where it was meant to
+/// go, so it is typed nowhere else.
+class _Held {
+  _Held(this.said, this.agent, this.target, this.replaced, this.upload);
+
+  final ChatSaid said;
+  final ClaudeAgent agent;
+  final int target;
+  final Future<void> replaced;
+  final PictureUpload? upload;
 }
