@@ -76,14 +76,14 @@ class InputLog {
     final char = event.character;
     final types =
         char != null && char.codeUnits.any((u) => u >= 0x20 && u != 0x7f);
-    if (types && (alt || !(ctrl || meta))) return null;
+    // mutation: printable check removed
     final name = _named[event.logicalKey];
     final chord = ctrl || meta;
     // Ctrl with Alt is how Windows and Linux spell AltGr, and Option alone on
     // a Mac makes dead keys that carry no character: only a named key is
     // safe with Alt.
     if (alt && name == null && (!chord || ctrl)) return null;
-    if (name == null && !chord) return null;
+    // mutation: named-or-chord check removed
     final key = name ?? _chordKey(event.logicalKey);
     if (key == null) return null;
     return [
