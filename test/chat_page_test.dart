@@ -6427,6 +6427,19 @@ void main() {
       expect(find.byTooltip('Edit this message'), findsNothing);
     });
 
+    testWidgets('the Edit button is a semantics node of its own, and the '
+        "bubble's text stays only the message", (tester) async {
+      final semantics = tester.ensureSemantics();
+      await ownChat(tester);
+      final message = tester.getSemantics(find.text('check nginx').first);
+      expect(message.label, 'check nginx');
+      expect(message.label, isNot(contains('Edit')));
+      final edit = tester.getSemantics(find.bySemanticsLabel('Edit this message'));
+      expect(edit.label, 'Edit this message');
+      expect(edit.id, isNot(message.id));
+      semantics.dispose();
+    });
+
     testWidgets('while Claude answers it says so and goes nowhere', (
       tester,
     ) async {
