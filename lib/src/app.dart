@@ -34,6 +34,7 @@ import 'telemetry/input_log.dart' show LogRoutes;
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
+import 'telemetry/app_log.dart';
 
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key, @visibleForTesting this.transport});
@@ -642,7 +643,10 @@ class _SshboxAppState extends State<SshboxApp> {
                     sessions: _sessions,
                     onOpenHost: (hostId) =>
                         openHost(hostId, newSession: true, restoredFirst: true),
-                    onDuplicate: (hostId) => openHost(hostId, newSession: true),
+                    onDuplicate: (hostId) {
+                      appLog.add('action tab duplicate');
+                      return openHost(hostId, newSession: true);
+                    },
                     // Home draws the Local card on a desktop alone.
                     onOpenLocal: () => openHost(
                       localHostId,

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import '../telemetry/app_log.dart';
 
 /// Runs a command wherever the session runs — over SSH for a saved host, in a
 /// process beside the app for a local shell — and hands back its output a line
@@ -313,17 +314,26 @@ class GitRepo {
   Future<String> compare(String ref) =>
       _git(['diff', ..._patch, '--stat', '--patch', 'HEAD...$ref', '--']);
 
-  Future<void> stage(String path) => _git(['add', '--', path]);
+  Future<void> stage(String path) {
+    appLog.add('action git stage');
+    return _git(['add', '--', path]);
+  }
 
   /// Takes a path back out of the index, leaving the working tree alone.
-  Future<void> unstage(String path) =>
-      _git(['restore', '--staged', '--', path]);
+  Future<void> unstage(String path) {
+    appLog.add('action git unstage');
+    return _git(['restore', '--staged', '--', path]);
+  }
 
-  Future<void> stageAll() => _git(['add', '--all']);
+  Future<void> stageAll() {
+    appLog.add('action git stage all');
+    return _git(['add', '--all']);
+  }
 
   /// Commits what is staged. Nothing staged is git's own error, and it says
   /// so in words worth showing.
   Future<String> commit(String message) async {
+    appLog.add('action git commit');
     if (message.trim().isEmpty) {
       throw const GitException('A commit needs a message.');
     }
@@ -345,6 +355,7 @@ class GitRepo {
   /// so even `--output=x`, which `update-ref` lets a branch be called, is
   /// never read as an option.
   Future<void> switchTo(GitBranch target) async {
+    appLog.add('action git switch');
     if (target.current) return;
     final busy = await _inProgress();
     if (busy != null) {

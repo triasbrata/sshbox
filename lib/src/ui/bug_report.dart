@@ -347,12 +347,12 @@ class _BugReportDialogState extends State<_BugReportDialog> {
       maxWidth: 460,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: _sending ? null : () => Navigator.of(context).pop(),
         ),
         TuiButton(
-          label: 'Under my name',
+          label: 'Under my name', logName: 'Under my name',
           variant: TuiButtonVariant.ghost,
           onPressed: ready ? _openGitHub : null,
         ),

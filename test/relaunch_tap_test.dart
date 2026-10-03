@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
@@ -13,6 +14,9 @@ import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
+
+/// How many times the app log holds [line]: a test compares before and after.
+int _logged(String line) => line.allMatches(appLog.current).length;
 
 /// The e2e gate's host, named as the flows name it. Its address refuses at
 /// once, so the connect a tap starts ends here rather than out on a network.
@@ -349,12 +353,14 @@ void main() {
     SharedPreferences.setMockInitialValues(_killedLive(host: _tmuxHost));
     _quietPlatform(tester);
     final box = _Box();
+    final dups = _logged('action tab duplicate');
     await _start(tester, over: box);
 
     await tester.longPress(_onStrip(find.text('WSL via tailnet')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Duplicate session'));
     await _settle(tester);
+    expect(_logged('action tab duplicate'), dups + 1);
     expect(box.attached, hasLength(1));
     expect(box.attached.single, isNot('sshbox-abc'));
     expect(await _savedTmux(), ['sshbox-abc', box.attached.single]);

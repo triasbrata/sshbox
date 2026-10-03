@@ -7,6 +7,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
@@ -18,6 +19,9 @@ import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 import 'fake_web_view.dart';
 import 'package:sshbox/src/ui/tui.dart';
+
+/// How many times the app log holds [line]: a test compares before and after.
+int _logged(String line) => line.allMatches(appLog.current).length;
 
 Future<void> _pumpEditor(
   WidgetTester tester,
@@ -117,7 +121,10 @@ void main() {
   testWidgets('keeps a CRLF file CRLF', (tester) async {
     final browser = FakeFileBrowser()
       ..contents['/home/me/notes.txt'] = 'one\r\ntwo\r\n';
+    final opened = _logged('action editor open');
+    final saves = _logged('action editor save');
     await _pumpEditor(tester, browser);
+    expect(_logged('action editor open'), opened + 1);
 
     // Its line endings alone are not an edit.
     expect(_canSave(tester), isFalse);
@@ -128,6 +135,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(browser.contents['/home/me/notes.txt'], 'one\r\ntwo\r\nthree\r\n');
+    expect(_logged('action editor save'), saves + 1);
     expect(_canSave(tester), isFalse);
   });
 
@@ -251,6 +259,7 @@ void main() {
   testWidgets('reloading asks before dropping an edit', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
+    final reloads = _logged('action editor reload');
     String text() =>
         _editor(tester).text;
 
@@ -263,12 +272,15 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Keep editing'));
     await tester.pumpAndSettle();
     expect(text(), 'half typed');
+    // Kept editing: nothing was reloaded, so nothing is logged.
+    expect(_logged('action editor reload'), reloads);
 
     await tester.tap(find.byIcon(Icons.refresh));
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Discard'));
     await tester.pumpAndSettle();
     expect(text(), 'first line\nsecond line\n');
+    expect(_logged('action editor reload'), reloads + 1);
   });
 
   group('find', () {
