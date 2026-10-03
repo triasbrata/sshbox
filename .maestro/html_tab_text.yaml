@@ -1,0 +1,39 @@
+# The negative half of html_tab.yaml (#253): a .txt file still opens in the
+# editor, and nothing offers it in a browser tab. The runner puts
+# jeansh-e2e-notes.txt in the login home.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Browse files"
+    timeout: 30000
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: "Filter by name"
+    timeout: 30000
+- tapOn: "Filter by name"
+- inputText: "jeansh-e2e-notes"
+- tapOn: "(?s)\\W*jeansh-e2e-notes.txt"
+- extendedWaitUntil:
+    visible: "Save to host"
+    timeout: 20000
+- tapOn: "More"
+- assertVisible: "Download"
+- assertNotVisible: "(?s).*Open in browser tab.*"
+- pressKey: Back
+# Still the editor: no web tab came of it.
+- assertVisible: "Save to host"
+- assertNotVisible: "Reload"
+
+- tapOn: "Close ${HOST_LABEL}.*"

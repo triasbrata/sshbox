@@ -7,6 +7,7 @@ import '../data/secret_store.dart';
 import '../db/db_session.dart';
 import '../files/transfers.dart';
 import '../models/host_profile.dart';
+import '../platform.dart';
 import '../session/isolate_transport.dart';
 import '../session/local_transport.dart'
     show isLocalHostId, localHostId, wslDistros, wslHost;
@@ -314,6 +315,12 @@ class _TabsShellState extends State<TabsShell> {
     );
   }
 
+  /// Opens an HTML file in a web tab. Null on a desktop, where web tabs are
+  /// never opened and links go to the machine's own browser.
+  void Function(String path)? _onOpenHtml(TabRef tab) => isDesktop
+      ? null
+      : (path) => widget.sessions.openHtml(tab.session.id, path);
+
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
@@ -322,6 +329,7 @@ class _TabsShellState extends State<TabsShell> {
       onOpenFile: (path, {line}) =>
           widget.sessions.openFile(tab.session.id, path, line: line),
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
+      onOpenHtml: _onOpenHtml(tab),
       onOpenChat: () => widget.sessions.openChat(tab.session.id),
       onOpenGit: () => widget.sessions.openGit(tab.session.id),
       onOpenDiff: (diff) => widget.sessions.openDiff(tab.session.id, diff),
@@ -338,6 +346,7 @@ class _TabsShellState extends State<TabsShell> {
       // when the session it was typed in is long gone.
       draftKey: '${tab.session.host.id}:${tab.path}',
       onOpenWeb: (url) => widget.sessions.openWeb(tab.session.id, url),
+      onOpenHtml: _onOpenHtml(tab),
       host: tab.session.fileTabHost,
       line:
           tab.session.id == widget.sessions.activeId &&
@@ -369,6 +378,12 @@ class _TabsShellState extends State<TabsShell> {
     TabKind.web => WebPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       initialUrl: tab.web!.url,
+      html: tab.web!.htmlPath == null
+          ? null
+          : () async => (await tab.session.fileBrowser.readText(
+              tab.web!.htmlPath!,
+              maxBytes: htmlLimit,
+            )).text,
       onChanged: (url, title) =>
           tab.session.updateWeb(tab.web!, url: url, title: title),
     ),
@@ -951,7 +966,8 @@ class _TabStripState extends State<TabStrip> {
           message: 'Group ${names[id]} with',
           actions: [
             TuiButton(
-              label: 'Cancel', logName: 'Cancel',
+              label: 'Cancel',
+              logName: 'Cancel',
               variant: TuiButtonVariant.ghost,
               onPressed: () => Navigator.pop(context),
             ),
@@ -1034,7 +1050,10 @@ class _TabStripState extends State<TabStrip> {
     // + and then the bug button, both at the strip's left, as one unit.
     final addTab = Row(
       mainAxisSize: MainAxisSize.min,
-      children: [_AddTab(onTap: () => widget.onSelect(null)), const _BugButton()],
+      children: [
+        _AddTab(onTap: () => widget.onSelect(null)),
+        const _BugButton(),
+      ],
     );
 
     // Each tab's chip, name and tap, by id: a group gathers its tabs' chips

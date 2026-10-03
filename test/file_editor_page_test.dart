@@ -149,6 +149,53 @@ void main() {
   // The editor reads its text size and wrap setting when it opens.
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  group('Open in browser tab', () {
+    Future<List<String>> pump(
+      WidgetTester tester,
+      String path, {
+      bool offered = true,
+    }) async {
+      final browser = FakeFileBrowser()
+        ..contents[path] = '<h1>x</h1>';
+      final opened = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FileEditorPage(
+            browser: browser,
+            path: path,
+            onOpenHtml: offered ? opened.add : null,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return opened;
+    }
+
+    testWidgets('an HTML file offers it, and a text file does not', (
+      tester,
+    ) async {
+      final opened = await pump(tester, '/home/me/a.html');
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open in browser tab'));
+      await tester.pump();
+      expect(opened, ['/home/me/a.html']);
+
+      await pump(tester, '/home/me/notes.txt');
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      expect(find.text('Download'), findsOneWidget);
+      expect(find.text('Open in browser tab'), findsNothing);
+    });
+
+    testWidgets('is not offered without web tabs', (tester) async {
+      await pump(tester, '/home/me/a.htm', offered: false);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open in browser tab'), findsNothing);
+    });
+  });
+
   testWidgets('shows what the file holds', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);

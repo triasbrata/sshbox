@@ -66,6 +66,7 @@ class FileBrowserPage extends StatefulWidget {
     this.initialScrollOffset = 0,
     this.terminal,
     this.onFileSelected,
+    this.onOpenHtml,
     this.onRootChanged,
     this.onExpandedChanged,
     this.onScrollChanged,
@@ -107,6 +108,10 @@ class FileBrowserPage extends StatefulWidget {
   /// terminal — so this page hands the path over instead of navigating. A
   /// search result also hands over the line it was found on.
   final void Function(String path, {int? line})? onFileSelected;
+
+  /// Shows an HTML file in a web tab, from a long press on it; null where
+  /// there are no web tabs, and the item is not offered.
+  final void Function(String path)? onOpenHtml;
 
   /// Reports the root being shown, [onExpandedChanged] the folders open under
   /// it and [onScrollChanged] how far down it is scrolled, so a host that
@@ -744,17 +749,20 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           'new one as "$bothName", or skip it.',
       actions: [
         TuiButton(
-          label: 'Skip', logName: 'Skip',
+          label: 'Skip',
+          logName: 'Skip',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(_Clash.skip),
         ),
         TuiButton(
-          label: 'Keep both', logName: 'Keep both',
+          label: 'Keep both',
+          logName: 'Keep both',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(_Clash.keepBoth),
         ),
         TuiButton(
-          label: 'Replace', logName: 'Replace',
+          label: 'Replace',
+          logName: 'Replace',
           variant: TuiButtonVariant.danger,
           onPressed: () => Navigator.of(context).pop(_Clash.replace),
         ),
@@ -861,6 +869,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         ],
         if (isFile) ...[
           item('Download', () => _download(entry)),
+          if (widget.onOpenHtml != null && isHtmlFile(entry.path))
+            item('Open in browser tab', () => widget.onOpenHtml!(entry.path)),
           const TuiMenuDivider(),
         ],
         if (terminal != null) ...[
@@ -1075,7 +1085,8 @@ class _NamePromptState extends State<_NamePrompt> {
       title: widget.title,
       actions: [
         TuiButton(
-          label: 'Cancel', logName: 'Cancel',
+          label: 'Cancel',
+          logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),

@@ -112,4 +112,78 @@ void main() {
       expect(FocusManager.instance.primaryFocus, same(view));
     }
   });
+
+  group('an HTML file', () {
+    var reads = 0;
+    Future<void> pumpHtml(WidgetTester tester, {bool fail = false}) async {
+      WebViewPlatform.instance = platform = FakeWebViewPlatform();
+      UrlLauncherPlatform.instance = launcher = _Launcher();
+      reads = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WebPage(
+              initialUrl: Uri.parse('about:blank'),
+              onChanged: (_, _) {},
+              html: () async {
+                reads++;
+                if (fail) throw StateError('<b>gone</b>');
+                return '<h1>Report $reads</h1>';
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    Future<NavigationDecision> go(String url) async => platform.view.page
+        .navigate(NavigationRequest(url: url, isMainFrame: true));
+
+    testWidgets('is loaded as text, with no address and no origin', (
+      tester,
+    ) async {
+      await pumpHtml(tester);
+      expect(platform.view.htmls, ['<h1>Report 1</h1>']);
+      expect(platform.view.loaded, isEmpty);
+      expect(tester.widget<TextField>(find.byType(TextField)).readOnly, isTrue);
+    });
+
+    testWidgets('Reload reads the file again', (tester) async {
+      await pumpHtml(tester);
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.pump();
+      expect(platform.view.htmls, ['<h1>Report 1</h1>', '<h1>Report 2</h1>']);
+    });
+
+    testWidgets('a file that cannot be read says so, escaped', (tester) async {
+      await pumpHtml(tester, fail: true);
+      expect(platform.view.htmls.single, contains('Could not open the file'));
+      expect(platform.view.htmls.single, contains('&lt;b&gt;'));
+    });
+
+    testWidgets('its own anchors stay, links leave through openUrl', (
+      tester,
+    ) async {
+      await pumpHtml(tester);
+      expect(await go('about:blank#top'), NavigationDecision.navigate);
+
+      // An allowed link leaves, to the browser, and the tab stays.
+      expect(await go('https://dart.dev/'), NavigationDecision.prevent);
+      expect(launcher.tried.last.$1, 'https://dart.dev/');
+
+      // None of these reach the launcher at all.
+      launcher.tried.clear();
+      for (final url in [
+        'file:///etc/passwd',
+        'intent://x#Intent;scheme=http;end',
+        'sshbox://host/local',
+        'javascript:alert(1)',
+      ]) {
+        expect(await go(url), NavigationDecision.prevent, reason: url);
+      }
+      await tester.pump();
+      expect(launcher.tried, isEmpty);
+    });
+  });
 }
