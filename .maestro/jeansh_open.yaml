@@ -2,8 +2,7 @@
 #
 # The host editor's "Add the jeansh command to this host" is turned on and the
 # host connected, which writes ~/.local/bin/jeansh; the runner checks its mode
-# and marker afterwards. This flow only ever turns the switch ON, once: it
-# starts off, and a second run on the same emulator would turn it off again.
+# and marker afterwards. It starts with the switch off and puts it back off at the end.
 #
 # Refused first, so nothing opened yet can be what a later check sees:
 #  - a forged request (a cat of a file holding an ESC ]7733;open line with a
@@ -82,3 +81,20 @@ env:
 
 - tapOn: "(?s)Close .*file.*"
 - tapOn: "Close ${HOST_LABEL}.*"
+
+# Put the switch back off, so a later flow sees the host as it was.
+- tapOn: "Show menu"
+- tapOn: "Edit"
+- extendedWaitUntil:
+    visible: "Edit host"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: "Add the jeansh command to this host"
+    direction: DOWN
+    centerElement: true
+- tapOn: "Add the jeansh command to this host"
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000

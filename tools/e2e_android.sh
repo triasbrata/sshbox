@@ -988,6 +988,9 @@ done
 echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
 echo "::endgroup::"
+echo "::group::jeansh_open (report only)"
+jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::share_text (report only)"
 share_text || echo "::warning::share_text failed -- report only, not gating"
