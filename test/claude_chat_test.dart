@@ -6528,6 +6528,28 @@ void main() {
       expect(command, isNot(contains('--fork-session')));
     });
 
+    test('a message with a picture is not revised from here', () async {
+      final t = await started();
+      await t.chat.send(
+        'look [Image #1]',
+        pictures: [
+          ChatPicture(
+            bytes: Uint8List.fromList(const [137, 80, 78, 71]),
+            name: 'a.png',
+            number: 1,
+          ),
+        ],
+      );
+      t.procs.single.event({'type': 'result', 'subtype': 'success'});
+      await _settle();
+      final commands = t.commands.length;
+      expect(await t.chat.reviseLast(), isNull);
+      expect(t.chat.entries.whereType<ChatNotice>().last.text,
+          contains('pictures cannot be revised'));
+      expect(t.chat.entries.whereType<ChatSaid>(), hasLength(1));
+      expect(t.commands.length, commands);
+    });
+
     test('with no message of the user\'s there is nothing to go back to',
         () async {
       final t = await started();
