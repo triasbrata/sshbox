@@ -30,6 +30,7 @@ import 'ui/tabs_shell.dart';
 import 'ui/text_size.dart';
 import 'ui/title_bar.dart';
 import 'ui/tui.dart';
+import 'telemetry/input_log.dart' show LogRoutes;
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
@@ -603,6 +604,7 @@ class _SshboxAppState extends State<SshboxApp> {
           debugShowCheckedModeBanner: false,
           scrollBehavior: const ZoomScrollBehavior(),
           navigatorKey: _navigator,
+          navigatorObservers: [LogRoutes()],
           themeMode: look.mode,
           theme: themeOf(Brightness.light),
           darkTheme: themeOf(Brightness.dark),

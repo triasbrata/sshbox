@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart' show TerminalStyle;
 
+import '../telemetry/app_log.dart';
 import 'settings_page.dart' show TerminalSettings, terminalSettings;
 import 'toast.dart';
 
@@ -42,6 +43,7 @@ class UiTextSize extends ValueNotifier<double> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose(double scale) async {
     value = scale.clamp(min, max).toDouble();
+    appLog.add('setting ui text size $value');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_key, value);
   }

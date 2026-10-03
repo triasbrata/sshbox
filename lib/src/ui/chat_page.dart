@@ -46,6 +46,7 @@ import 'terminal_page.dart' show openUrl;
 import 'terminal_paste.dart'
     show clipboardImage, insertedImage, pasteImageLimit;
 import 'toast.dart';
+import '../telemetry/input_log.dart';
 import 'tui.dart';
 
 /// A conversation with Claude Code running on the host, beside that host's
@@ -483,7 +484,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         editable.hideToolbar();
         unawaited(
           _pastePicture().then((took) {
-            if (!took) editable.pasteText(SelectionChangedCause.toolbar);
+            if (!took) {
+              logPaste('chat', 'text');
+              editable.pasteText(SelectionChangedCause.toolbar);
+            }
           }),
         );
       },
@@ -523,6 +527,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     try {
       final image = await clipboardImage();
       if (image == null) return false;
+      logPaste('chat', 'image', 1);
       await _addPicture(image);
     } on PlatformException catch (error) {
       _refuse(
@@ -1855,7 +1860,10 @@ class _PictureOrText extends Action<PasteTextIntent> {
     final text = callingAction;
     unawaited(
       take().then((took) {
-        if (!took) text?.invoke(intent);
+        if (!took) {
+          logPaste('chat', 'text');
+          text?.invoke(intent);
+        }
       }),
     );
     return null;

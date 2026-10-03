@@ -51,6 +51,7 @@ import 'terminal_text_input.dart';
 import 'text_size.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
+import '../telemetry/input_log.dart';
 import 'tui.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
@@ -682,8 +683,9 @@ class _TerminalPageState extends State<TerminalPage> {
   /// reading the file. Otherwise typed.
   void _pastePath(String path) {
     final terminal = _session.terminal;
+    logPaste('terminal', 'files', 1);
     if (terminal.bracketedPasteMode) {
-      terminal.paste('$path ');
+      mutePasteLog(() => terminal.paste('$path '));
     } else {
       _session.sendRaw('$path ');
     }
