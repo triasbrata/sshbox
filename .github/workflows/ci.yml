@@ -74,6 +74,7 @@ jobs:
       # steps to reach. A report: it never fails the job.
       - name: Changed lines no test runs
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: |
           git diff -U0 HEAD^1 HEAD -- lib > "$RUNNER_TEMP/pr.diff"
           python3 tool/uncovered_changed_lines.py coverage/lcov.info "$RUNNER_TEMP/pr.diff" >> "$GITHUB_STEP_SUMMARY"
