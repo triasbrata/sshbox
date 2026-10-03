@@ -9,7 +9,11 @@ class SecretKeys {
   static String privateKey(String hostId) => 'sshbox.pem.$hostId';
   static String passphrase(String hostId) => 'sshbox.passphrase.$hostId';
 
+  /// What a `jeansh <file>` is signed with: see `OpenRequests`.
+  static String openSecret(String hostId) => 'sshbox.opensecret.$hostId';
+
   static List<String> allFor(String hostId) => [
+        openSecret(hostId),
         password(hostId),
         privateKey(hostId),
         passphrase(hostId),
