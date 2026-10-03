@@ -3597,6 +3597,69 @@ touch '${done.path}'
     },
   );
 
+  // #216, the other negative: a Ctrl+wheel over a picture zooms the picture
+  // and leaves the UI text size alone. Positive pair: the UI wheel test above.
+  _test(
+    'Ctrl+wheel over an image tab leaves the UI text size unchanged',
+    skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      const name = 'e2e-zoom.png';
+      File('${dir.path}/$name').writeAsBytesSync(
+        base64.decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+          'CB0C8AAAAASUVORK5CYII=',
+        ),
+      );
+      await _launch(tester);
+      await uiTextSize.choose(1);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name).evaluate().isNotEmpty,
+        'the drawer to show the picture',
+      );
+      await tester.tap(find.text(name));
+      await _until(
+        tester,
+        () => find.byType(InteractiveViewer).evaluate().isNotEmpty,
+        'the picture to open in a tab',
+      );
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      final at = tester.getCenter(find.byType(InteractiveViewer));
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo([
+        'mousemove',
+        '${(window.left + frame + at.dx * ratio).round()}',
+        '${(window.top + frame + at.dy * ratio).round()}',
+        'sleep', '0.2', 'keydown', 'Control_L', 'click', '4', 'sleep', '0.2',
+        'click', '4', 'sleep', '0.2', 'keyup', 'Control_L',
+      ]);
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        (uiTextSize.value * 100).round(),
+        100,
+        reason: 'Ctrl+wheel over the picture zoomed the UI text',
+      );
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
   // #126, with the real pointer. In a shell: a double click selects a word,
   // and selecting more after it — a longer drag, then a fresh one elsewhere
   // — copies each, a few times over, the user having seen it fail often and
