@@ -84,9 +84,8 @@ class NotificationGateway {
 
   static Future<bool> _onTestLab() async {
     try {
-      return await const MethodChannel('sshbox/share').invokeMethod<bool>(
-            'isTestLab',
-          ) ??
+      return await const MethodChannel('sshbox/share')
+              .invokeMethod<bool>('isTestLab') ??
           false;
     } on PlatformException {
       return false;
