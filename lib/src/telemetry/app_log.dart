@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart'
     show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
 import 'package:path_provider/path_provider.dart';
 
+import 'input_log.dart';
 import 'scrub.dart';
 
 /// What a bug report carries so a developer can see what happened, not only
@@ -74,6 +75,7 @@ class AppLog {
   /// Exactly what a report attaches and the dialog shows: the run before,
   /// then this one.
   String render() {
+    inputLog.flush();
     final out = StringBuffer();
     if (_previous.isNotEmpty) {
       out
@@ -179,6 +181,8 @@ void watchAppLog() {
   // An observer, not an AppLifecycleListener: that one asserts on a state
   // jump such as resumed to hidden, which a real minimize on Linux makes.
   WidgetsBinding.instance.addObserver(_observer = _FlushOnLeave());
+  watchKeys();
+  appLog.add('app: started');
 }
 
 _FlushOnLeave? _observer;
@@ -198,7 +202,11 @@ void unwatchAppLog() {
 class _FlushOnLeave with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) unawaited(appLog.flush());
+    appLog.add('app: ${state.name}');
+    if (state != AppLifecycleState.resumed) {
+      inputLog.flush();
+      unawaited(appLog.flush());
+    }
   }
 }
 

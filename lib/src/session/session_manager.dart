@@ -842,6 +842,7 @@ class LiveSession extends ChangeNotifier {
   /// Starts this tab's tmux session on the connection [session] holds, and
   /// says why not when it cannot.
   Future<TmuxSession?> _attachTmux(TerminalSession session) async {
+    appLog.add('tmux: attach session $id${_attachTmuxOnly ? ' existing' : ''}');
     final TmuxSession tmux;
     try {
       final host = session as ChannelCapable;
@@ -954,6 +955,7 @@ class LiveSession extends ChangeNotifier {
     _detached = true;
     final tmux = _tmux;
     if (tmux == null) return;
+    appLog.add('tmux: detach session $id');
     await tmux.detach();
     await _teardown();
     _notify();

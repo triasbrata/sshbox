@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../session/session_manager.dart' show SharedFile;
+import '../telemetry/input_log.dart';
 import 'desktop_clipboard.dart';
 
 /// MainActivity's clipboard, which hands an image over as a file of ours
@@ -43,6 +44,7 @@ Future<void> pasteIntoTerminal(
 }) async {
   final image = await clipboardImage();
   if (image != null) {
+    logPaste('terminal', 'image', 1);
     await upload(image);
     return;
   }
