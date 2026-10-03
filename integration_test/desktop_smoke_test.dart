@@ -39,7 +39,7 @@ import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
 import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
-import 'package:sshbox/src/telemetry/input_log.dart' show inputLog;
+import 'package:sshbox/src/telemetry/input_log.dart' show InputLog, inputLog;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
@@ -4908,9 +4908,13 @@ touch '${done.path}'
 
       // 1. Positive: keys that type nothing, with where they went.
       HardwareKeyboard.instance.addHandler((e) {
+        final f = FocusManager.instance.primaryFocus?.context;
+        final k = HardwareKeyboard.instance;
         debugPrint(
           'PROBE ${e.runtimeType} ${e.logicalKey.keyLabel} char=${e.character} '
-          'focus=${FocusManager.instance.primaryFocus?.context?.widget.runtimeType}',
+          'label=${InputLog.labelOf(e, ctrl: k.isControlPressed, alt: k.isAltPressed, meta: k.isMetaPressed, shift: k.isShiftPressed)} '
+          'obscured=${InputLog.obscured(f)} where=${InputLog.whereOf(f)} '
+          'appLogLen=${appLog.length}',
         );
         return false;
       });
