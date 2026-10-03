@@ -38,7 +38,7 @@ Future<void> showTextSizeControl(BuildContext context) => showDialog<void>(
               label: '+',
               variant: TuiButtonVariant.ghost,
               onPressed: scale < UiTextSize.max - 0.001
-                  ? () => zoomUiText(context, 1)
+                  ? () {}
                   : null,
             ),
           ],
