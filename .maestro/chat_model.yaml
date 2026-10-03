@@ -35,7 +35,7 @@ env:
 - extendedWaitUntil:
     visible: "Opus"
     timeout: 5000
-- assertVisible: "Default"
+- assertVisible: "(?s)\\W*Default.*"
 - assertVisible: "Fable"
 - assertVisible: "Haiku"
 - tapOn: "Sonnet"
