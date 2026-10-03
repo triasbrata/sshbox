@@ -38,6 +38,8 @@ import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
 import 'package:sshbox/src/platform.dart';
+import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
+import 'package:sshbox/src/telemetry/input_log.dart' show inputLog;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
@@ -4880,6 +4882,126 @@ touch '${done.path}'
       });
       await _grab(tester, 'chat-code-copy-end');
       await _closeTabs(tester);
+    },
+  );
+
+  // #223: the app log holds the keys that type nothing and the pastes by
+  // kind, and no character typed. Real X key events through xdotool.
+  _test(
+    'the app log holds named keys and pastes, never what was typed',
+    skip: Platform.isLinux ? null : 'xdotool drives the Linux build only',
+    (tester) async {
+      // What the log holds, each line without its timestamp and level.
+      List<String> lines() {
+        inputLog.flush();
+        return appLog.current
+            .split('\n')
+            .map((l) => l.split(' ').skip(2).join(' '))
+            .toList();
+      }
+
+      Future<void> quiet() => tester.pump(const Duration(milliseconds: 900));
+
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await _xdo(['windowfocus', '--sync', await _window()]);
+
+      // 1. Positive: keys that type nothing, with where they went.
+      await _xdo(['key', 'Home']);
+      await _xdo(['key', 'End']);
+      await _xdo(['key', 'Prior']);
+      await _xdo(['key', 'ctrl+k']);
+      // 2. Negative: letters and digits are typing, and are no line.
+      await _xdo(['type', '--delay', '60', 'zq7hunter2']);
+      await _xdo(['key', 'Return']);
+      await quiet();
+      var seen = lines();
+      debugPrint('APPLOG TAIL:\n${seen.skip(seen.length > 40 ? seen.length - 40 : 0).join('\n')}');
+      expect(seen, contains('key Home (terminal)'));
+      expect(seen, contains('key End (terminal)'));
+      expect(seen, contains('key PageUp (terminal)'));
+      expect(seen, contains('key Ctrl+K (terminal)'));
+      expect(seen, contains('key Enter (terminal)'));
+      const allowed = {'Home', 'End', 'PageUp', 'Ctrl+K', 'Enter'};
+      for (final line in seen.where((l) => l.startsWith('key '))) {
+        final label = line.split(' ')[1];
+        expect(
+          allowed,
+          contains(label),
+          reason: 'a typed key was logged: $line',
+        );
+      }
+      expect(appLog.current, isNot(contains('hunter')));
+      expect(appLog.current, isNot(contains('zq7')));
+
+      // 4. Positive: a text paste, by length. 5. Negative: not its words.
+      const clip = 'clip-secret-words';
+      final put = await Process.run('sh', [
+        '-c',
+        r'printf %s "$1" | xclip -selection clipboard -i >/dev/null 2>&1',
+        'sh',
+        clip,
+      ]);
+      expect(put.exitCode, 0);
+      await _paste(tester);
+      await _until(
+        tester,
+        () => lines().contains('paste text ${clip.length} (terminal)'),
+        'the text paste in the log',
+      );
+      await quiet();
+      expect(appLog.current, isNot(contains('clip-secret')));
+
+      // A picture, by kind.
+      final picture = File('${_scratch().path}/picture-log.png')
+        ..writeAsBytesSync(
+          base64.decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+            'CB0C8AAAAASUVORK5CYII=',
+          ),
+        );
+      await _putPicture(picture.path);
+      await _paste(tester);
+      await _until(
+        tester,
+        () => lines().contains('paste image 1 (terminal)'),
+        'the picture paste in the log',
+      );
+      expect(appLog.current, isNot(contains('picture-log')));
+      expect(view.terminal.buffer.lines.length, greaterThan(0));
+
+      // 3. Negative: an obscured field logs nothing, not even Backspace.
+      await _closeTabs(tester);
+      await tester.tap(_label('Add'));
+      await tester.pump(const Duration(milliseconds: 600));
+      await _pick(tester, 'Host');
+      final obscured = find.byWidgetPredicate(
+        (w) => w is EditableText && w.obscureText,
+      );
+      await _until(
+        tester,
+        () => obscured.evaluate().isNotEmpty,
+        'the host editor with its password field',
+      );
+      await tester.ensureVisible(obscured.first);
+      await tester.tap(obscured.first);
+      await tester.pump(const Duration(milliseconds: 300));
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await quiet();
+      final before = lines().length;
+      await _xdo(['type', '--delay', '60', 'pw9secret']);
+      await _xdo(['key', 'BackSpace']);
+      await _xdo(['key', 'Home']);
+      await quiet();
+      seen = lines();
+      expect(
+        seen.skip(before).where((l) => l.startsWith('key ')),
+        isEmpty,
+        reason: 'keys were logged in an obscured field: ${seen.skip(before)}',
+      );
+      expect(appLog.current, isNot(contains('pw9')));
+      await _xdo(['key', 'Escape']);
+      await tester.pump(const Duration(milliseconds: 600));
     },
   );
 }
