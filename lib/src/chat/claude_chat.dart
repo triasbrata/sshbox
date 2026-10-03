@@ -4205,7 +4205,7 @@ class ClaudeChat extends ChangeNotifier {
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
     final at = resume != null && resumeAt != null && _uuid.hasMatch(resumeAt)
-        ? ' --resume-session-at $resumeAt${fork ? ' --fork-session' : ''}'
+        ? ' --resume-session-at $resumeAt'
         : '';
     final again =
         '${resume == null ? '' : ' --resume ${_shellQuote(resume)}'}$at';
