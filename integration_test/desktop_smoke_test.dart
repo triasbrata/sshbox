@@ -3584,18 +3584,24 @@ touch '${done.path}'
       await keys('ctrl+c');
 
       // 5: Help's Zoom in, Zoom out and Actual size.
-      await tester.tap(_named('Help'));
-      await _pick(tester, 'Zoom in');
-      await sizeIs(110, 'Help › Zoom in');
-      await tester.tap(_named('Help'));
-      await _pick(tester, 'Zoom in');
-      await sizeIs(120, 'Help › Zoom in again');
-      await tester.tap(_named('Help'));
-      await _pick(tester, 'Zoom out');
-      await sizeIs(110, 'Help › Zoom out');
-      await tester.tap(_named('Help'));
-      await _pick(tester, 'Actual size');
-      await sizeIs(100, 'Help › Actual size');
+      // Each time with the last menu gone, so a tap never lands on one
+      // still fading out.
+      Future<void> help(String item, int percent) async {
+        await _until(
+          tester,
+          () => _label('Actual size').evaluate().isEmpty,
+          'the Help menu to be closed',
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.tap(_named('Help'));
+        await _pick(tester, item);
+        await sizeIs(percent, 'Help › $item');
+      }
+
+      await help('Zoom in', 110);
+      await help('Zoom in', 120);
+      await help('Zoom out', 110);
+      await help('Actual size', 100);
       await _closeTabs(tester);
     },
   );
