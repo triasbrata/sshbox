@@ -1442,7 +1442,6 @@ class _PaneViewState extends State<_PaneView> {
     // A press while a gesture is still held means its up never came — the
     // window blurred mid-drag — whatever the press is: a right click, or a
     // left one a program tracking the mouse keeps from [_selectByClicks].
-    if (_gesture?.device == event.device) _endGesture();
     // A second pointer — a touchscreen, a pen — must not lose the held
     // press its release: the program would drag for ever.
     if (_holding) return;
@@ -1596,7 +1595,6 @@ class _PaneViewState extends State<_PaneView> {
   /// can bring on: on a Mac the first click that activates the window did,
   /// and ended the gesture it began.
   void _gestureHover(PointerHoverEvent event) {
-    if (_gesture?.device == event.device) _endGesture();
   }
 
   /// Gives [selection] back to xterm2 once the tap that ends the gesture has
