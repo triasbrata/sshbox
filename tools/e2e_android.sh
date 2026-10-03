@@ -1113,7 +1113,10 @@ text_size_home() {
 # other name is a flow of .maestro/ run as it is.
 if [ -n "${E2E_ONLY:-}" ]; then
   echo "::group::$E2E_ONLY (asked for alone)"
-  if declare -F "$E2E_ONLY" >/dev/null; then
+  # A block that needs the stand-in first has an `_alone` twin that makes it.
+  if declare -F "${E2E_ONLY}_alone" >/dev/null; then
+    "${E2E_ONLY}_alone"
+  elif declare -F "$E2E_ONLY" >/dev/null; then
     "$E2E_ONLY"
   else
     flow "$E2E_ONLY"
