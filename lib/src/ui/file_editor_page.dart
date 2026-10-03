@@ -1554,22 +1554,27 @@ class _PictureViewState extends State<PictureView> {
         builder: (context, box) => GestureDetector(
           onDoubleTapDown: (details) => _tapped = details.localPosition,
           onDoubleTap: () => _toggleZoom(box.biggest),
-          child: InteractiveViewer(
-            transformationController: _view,
-            maxScale: 8,
-            child: Image(
-              image: ResizeImage(
-                widget.image,
-                width: most,
-                height: most,
-                policy: ResizeImagePolicy.fit,
-                allowUpscaling: false,
-              ),
-              fit: BoxFit.contain,
-              // A copy that went away under us, or a file that was never a
-              // picture after all.
-              errorBuilder: (context, _, _) => const Center(
-                child: Icon(Icons.broken_image_outlined, size: 40),
+          child: Listener(
+            // The picture takes the wheel for its own zoom, so with Ctrl held it
+            // is not the UI text's too.
+            onPointerSignal: UiZoomWheel.keep,
+            child: InteractiveViewer(
+              transformationController: _view,
+              maxScale: 8,
+              child: Image(
+                image: ResizeImage(
+                  widget.image,
+                  width: most,
+                  height: most,
+                  policy: ResizeImagePolicy.fit,
+                  allowUpscaling: false,
+                ),
+                fit: BoxFit.contain,
+                // A copy that went away under us, or a file that was never a
+                // picture after all.
+                errorBuilder: (context, _, _) => const Center(
+                  child: Icon(Icons.broken_image_outlined, size: 40),
+                ),
               ),
             ),
           ),

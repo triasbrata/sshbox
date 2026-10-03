@@ -2026,6 +2026,8 @@ class _PaneViewState extends State<_PaneView> {
         child: Listener(
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
+          // The wheel over a terminal is the program's, never the UI zoom's.
+          onPointerSignal: UiZoomWheel.keep,
           onPointerHover: _gestureHover,
           onPointerMove: (event) {
             _trackedMove(event);
@@ -2037,32 +2039,36 @@ class _PaneViewState extends State<_PaneView> {
             _rightUp(event);
           },
           onPointerPanZoomStart: _trackpadDown,
-          child: TerminalView(
-            widget.terminal,
-            key: _viewKey,
-            controller: selection,
-            focusNode: _focusNode,
-            scrollController: _scrollController,
-            autofocus: widget.focused,
-            autoResize: widget.autoResize,
-            // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
-            // hardware keys, shortcuts and mouse selection.
-            hardwareKeyboardOnly: true,
-            // Asked before xterm2's own shortcuts, and it claims the copy and
-            // paste chords alone.
-            onKeyEvent: _onCopyChord,
-            // Tapping a terminal that already has focus is how you ask for the
-            // keyboard back, and focus alone will not raise it.
-            onTapUp: (details, cell) {
-              _click(TerminalMouseButton.left, details.globalPosition);
-              widget.onTap(this, cell);
-            },
-            onSecondaryTapUp: isDesktop ? _contextMenu : null,
-            padding: widget.padding,
-            textStyle: widget.textStyle,
-            // The theme picked in Settings: a new pick repaints the shell at
-            // once, with no reconnect.
-            theme: terminalThemeOf(context),
+          child: ScrollConfiguration(
+            // Not the zoom's guard: here the wheel is the program's.
+            behavior: const MaterialScrollBehavior(),
+            child: TerminalView(
+              widget.terminal,
+              key: _viewKey,
+              controller: selection,
+              focusNode: _focusNode,
+              scrollController: _scrollController,
+              autofocus: widget.focused,
+              autoResize: widget.autoResize,
+              // The soft keyboard belongs to TerminalTextInput; xterm2 keeps
+              // hardware keys, shortcuts and mouse selection.
+              hardwareKeyboardOnly: true,
+              // Asked before xterm2's own shortcuts, and it claims the copy and
+              // paste chords alone.
+              onKeyEvent: _onCopyChord,
+              // Tapping a terminal that already has focus is how you ask for the
+              // keyboard back, and focus alone will not raise it.
+              onTapUp: (details, cell) {
+                _click(TerminalMouseButton.left, details.globalPosition);
+                widget.onTap(this, cell);
+              },
+              onSecondaryTapUp: isDesktop ? _contextMenu : null,
+              padding: widget.padding,
+              textStyle: widget.textStyle,
+              // The theme picked in Settings: a new pick repaints the shell at
+              // once, with no reconnect.
+              theme: terminalThemeOf(context),
+            ),
           ),
         ),
       ),
