@@ -58,9 +58,13 @@ env:
 - pressKey: Remote Dpad Up
 - assertNotVisible: "(?s).*Went back to.*"
 - assertVisible: "(?s).*Echo: A.*"
+- tapOn:
+    point: 40%, 49%
 - eraseText: 5
 
 # 3. In the empty box ↑ goes back: the answer is gone, the notice says so.
+- tapOn:
+    point: 40%, 49%
 - pressKey: Remote Dpad Up
 - extendedWaitUntil:
     visible: "(?s).*Went back to before that message.*"
@@ -72,6 +76,8 @@ env:
 - takeScreenshot: chat-edit-previous-back
 
 # 4. While Claude answers, ↑ says so and goes nowhere.
+- tapOn:
+    point: 40%, 49%
 - eraseText: 5
 - inputText: "slow: B"
 - tapOn: "Send"
