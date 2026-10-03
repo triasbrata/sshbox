@@ -53,8 +53,13 @@ env:
     point: 50%, 40%
 - inputText: "cat ~/jeansh-forged.txt"
 - pressKey: Enter
+# The refusal's toast lasts a second, too short to wait for; what is held is
+# that, once the shell has gone on past the cat (done-2 is only printed by
+# the sum, not by the typed command), no file tab opened.
+- inputText: "echo done-$((1+1))"
+- pressKey: Enter
 - extendedWaitUntil:
-    visible: "(?s).*A jeansh request was refused.*"
+    visible: "(?s).*done-2.*"
     timeout: 10000
 - assertNotVisible: "Save to host"
 - takeScreenshot: jeansh-forged-refused
