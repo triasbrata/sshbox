@@ -126,14 +126,14 @@ class _ChatAskCardState extends State<ChatAskCard> {
                   _KeyButton(
                     onPressed: _complete ? _send : null,
                     child: TuiButton(
-                      label: 'Send answers',
+                      label: 'Send answers', logName: 'Send answers',
                       onPressed: _complete ? _send : null,
                     ),
                   ),
                   _KeyButton(
                     onPressed: () => widget.onDecline(ask),
                     child: TuiButton(
-                      label: 'Dismiss',
+                      label: 'Dismiss', logName: 'Dismiss',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => widget.onDecline(ask),
                     ),

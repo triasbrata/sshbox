@@ -1,10 +1,14 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/db/db_session.dart';
 import 'package:sshbox/src/ui/db_browser_page.dart';
 import 'package:sshbox/src/ui/toast.dart';
 import 'package:sshbox/src/ui/tui.dart';
+
+/// How many times the app log holds [line]: a test compares before and after.
+int _logged(String line) => line.allMatches(appLog.current).length;
 
 /// A database whose every run reads the same [rows] back, saved through
 /// [edit], and which keeps every query run.
@@ -127,6 +131,7 @@ void main() {
     final saved = <String>[];
     final db = _people(saved);
     await _open(tester, db);
+    final saves = _logged('action database save postgres');
     expect(find.text(_hint), findsOneWidget);
 
     await _type(tester, find.text('ann'), r"O'Brien\");
@@ -154,6 +159,7 @@ void main() {
         r'''INSERT INTO public.people ("Name") VALUES (E'bob');''',
       ].join('\n'),
     ]);
+    expect(_logged('action database save postgres'), saves + 1);
     // Read back, with nothing left to save.
     expect(db.runs, [_query, _query]);
     expect(find.text(_hint), findsOneWidget);
@@ -204,6 +210,7 @@ void main() {
 
     await _type(tester, find.text('ann'), 'zed');
     expect(find.text('zed'), findsOneWidget);
+    final runs = _logged('action database run postgres');
     await tester.tap(find.bySemanticsLabel('Run'));
     await tester.pumpAndSettle();
     // Asked first, the run reading the rows afresh.
@@ -215,6 +222,22 @@ void main() {
     expect(find.text(_hint), findsOneWidget);
     expect(saved, isEmpty);
     expect(db.runs, [_query, _query]);
+    expect(_logged('action database run postgres'), runs + 1);
+    // The query itself is never in the log.
+    expect(appLog.current, isNot(contains(_query)));
+  });
+
+  testWidgets('the Discard button drops the changes and logs it by kind', (
+    tester,
+  ) async {
+    final db = _people(<String>[]);
+    await _open(tester, db);
+    await _type(tester, find.text('ann'), 'zed');
+    final discards = _logged('action database discard postgres');
+    await tester.tap(find.bySemanticsLabel('Discard'));
+    await tester.pumpAndSettle();
+    expect(find.text('zed'), findsNothing);
+    expect(_logged('action database discard postgres'), discards + 1);
   });
 
   testWidgets('nothing not saved goes without asking', (tester) async {

@@ -951,7 +951,7 @@ class _TabStripState extends State<TabStrip> {
           message: 'Group ${names[id]} with',
           actions: [
             TuiButton(
-              label: 'Cancel',
+              label: 'Cancel', logName: 'Cancel',
               variant: TuiButtonVariant.ghost,
               onPressed: () => Navigator.pop(context),
             ),

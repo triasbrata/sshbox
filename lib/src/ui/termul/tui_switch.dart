@@ -8,6 +8,8 @@
 
 import 'package:flutter/material.dart';
 
+import '../../telemetry/tap_log.dart';
+
 import 'termul_theme.dart';
 import 'tui_text.dart';
 
@@ -19,9 +21,13 @@ class TuiSwitch extends StatelessWidget {
     required this.onChanged,
     this.label,
     this.hint,
+    this.logName,
   });
 
   final bool value;
+
+  /// The name a tap is logged under: a fixed word from code.
+  final String? logName;
   final ValueChanged<bool>? onChanged;
   final String? label;
   final String? hint;
@@ -37,7 +43,12 @@ class TuiSwitch extends StatelessWidget {
       enabled: enabled,
       label: label,
       child: GestureDetector(
-        onTap: enabled ? () => onChanged!(!value) : null,
+        onTap: enabled
+            ? () {
+                logTap(context, logName, 'switch');
+                onChanged!(!value);
+              }
+            : null,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           width: 52,

@@ -589,7 +589,7 @@ class _AddButtonState extends State<_AddButton> {
                 ),
               ),
           TuiButton(
-            label: 'Add',
+            label: 'Add', logName: 'Add',
             prefix: _open ? '×' : '+',
             onPressed: () => setState(() => _open = !_open),
           ),

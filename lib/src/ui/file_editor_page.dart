@@ -24,6 +24,7 @@ import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
 import 'tui.dart';
 import 'text_size.dart';
+import '../telemetry/app_log.dart';
 
 /// One remote file in a tab: an image in a viewer, anything else in the
 /// editor.
@@ -386,6 +387,7 @@ class _TextFileTabState extends State<_TextFileTab> {
   @override
   void initState() {
     super.initState();
+    appLog.add('action editor open');
     _controller.addListener(_onEdited);
     unawaited(_restoreLook());
     _load();
@@ -727,6 +729,7 @@ class _TextFileTabState extends State<_TextFileTab> {
 
   Future<void> _reload() async {
     if (_dirty && !await _confirmDiscard()) return;
+    appLog.add('action editor reload');
     await _load();
   }
 
@@ -735,6 +738,7 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// saves through sudo; left out, the file is saved the way it was read.
   Future<void> _save({bool overwrite = false, bool? root}) async {
     final asRoot = root ?? _asRoot;
+    appLog.add('action editor save');
     setState(() => _saving = true);
     final text = _controller.text;
     var conflict = false;
@@ -805,17 +809,17 @@ class _TextFileTabState extends State<_TextFileTab> {
             'and drop your edits?',
         actions: [
           TuiButton(
-            label: 'Cancel',
+            label: 'Cancel', logName: 'Cancel',
             variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(),
           ),
           TuiButton(
-            label: 'Reload',
+            label: 'Reload', logName: 'Reload',
             variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(_Conflict.reload),
           ),
           TuiButton(
-            label: 'Overwrite',
+            label: 'Overwrite', logName: 'Overwrite',
             variant: TuiButtonVariant.danger,
             onPressed: () => Navigator.of(context).pop(_Conflict.overwrite),
           ),
@@ -1044,12 +1048,12 @@ class _TextFileTabState extends State<_TextFileTab> {
             ),
           ),
           TuiButton(
-            label: 'Discard',
+            label: 'Discard', logName: 'Discard',
             variant: TuiButtonVariant.ghost,
             onPressed: _discardStoredDraft,
           ),
           const SizedBox(width: 8),
-          TuiButton(label: 'Restore', onPressed: _restoreDraft),
+          TuiButton(label: 'Restore', logName: 'Restore', onPressed: _restoreDraft),
         ],
       ),
     );
@@ -1671,7 +1675,7 @@ class _EditorError extends StatelessWidget {
             if (onSudo != null) ...[
               const SizedBox(height: 16),
               TuiButton(
-                label: 'Open with sudo',
+                label: 'Open with sudo', logName: 'Open with sudo',
                 prefix: '#',
                 onPressed: onSudo,
               ),
@@ -2282,7 +2286,7 @@ class _TextPromptState extends State<_TextPrompt> {
       title: widget.title,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),

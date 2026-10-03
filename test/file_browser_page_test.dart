@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher_platform_interface/link.dart';
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/files/transfers.dart' show transfers;
 import 'package:sshbox/src/ui/file_browser_page.dart';
@@ -24,6 +25,9 @@ import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 
 import 'tui_finders.dart';
+
+/// How many times the app log holds [line]: a test compares before and after.
+int _logged(String line) => line.allMatches(appLog.current).length;
 
 /// The pages, driven by a filesystem that is not SFTP.
 ///
@@ -114,9 +118,11 @@ void main() {
   testWidgets('opens a folder in place and closes it again', (tester) async {
     final browser = FakeFileBrowser();
     await _pumpBrowser(tester, browser);
+    final opens = _logged('action files open');
 
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
+    expect(_logged('action files open'), opens + 1);
 
     // A tree, not a listing: the folder's contents join the rows around it
     // rather than replacing them.
@@ -653,11 +659,14 @@ void main() {
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
     expect(visited, isEmpty, reason: 'off, a tap only opens the folder');
+    final follows = _logged('action files follow');
+    expect(follows, _logged('action files follow'), reason: 'off, none');
 
     link.follow = true;
     await tester.tap(_row('dev'));
     await tester.pumpAndSettle();
     expect(visited, ['/home/me/dev'], reason: 'shutting it counts too');
+    expect(_logged('action files follow'), follows + 1);
 
     // Opened again, it asks again: whether the shell is already there is for
     // the terminal to find out, not the tree to guess.
@@ -760,6 +769,7 @@ void main() {
       (tester) async {
     useFakePicker().next = [_PhoneFile('photo.jpg'), _PhoneFile('song.mp3')];
     final browser = FakeFileBrowser();
+    final uploads = _logged('action files upload');
     await _pumpBrowser(tester, browser);
 
     await _rowAction(tester, 'dev', 'Upload here…');
@@ -771,6 +781,7 @@ void main() {
     // The folder opened and read again, so what arrived is in sight.
     expect(_row('photo.jpg'), findsOneWidget);
     expect(_row('song.mp3'), findsOneWidget);
+    expect(_logged('action files upload'), uploads + 1);
   });
 
   testWidgets('a name already there asks: replace, keep both or skip',
@@ -837,11 +848,14 @@ void main() {
   testWidgets('downloads a file through the save dialog, byte for byte',
       (tester) async {
     final picker = useFakePicker();
+    final downloads = _logged('action files download');
     await _pumpBrowser(tester, FakeFileBrowser());
 
     await _rowAction(tester, 'notes.txt', 'Download');
 
     expect(picker.saved?.name, 'notes.txt');
+    expect(_logged('action files download'), downloads + 1);
+    expect(appLog.current, isNot(contains('notes.txt')));
     expect(picker.saved?.bytes, utf8.encode('first line\nsecond line\n'));
     // Handed over as the app's own copy, which goes once it is saved.
     expect(File(picker.savedFrom!).existsSync(), isFalse);

@@ -536,7 +536,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       ),
                       const SizedBox(height: 28),
                       TuiSwitch(
-                        label: 'Forward ports to the tailnet',
+                        label: 'Forward ports to the tailnet', logName: 'Forward ports to the tailnet',
                         hint:
                             'A server you start in a session goes on the '
                             'tailnet by itself: vite on port 3000 shows up at '
@@ -550,7 +550,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       ),
                       const SizedBox(height: 28),
                       TuiSwitch(
-                        label: 'Use tmux',
+                        label: 'Use tmux', logName: 'Use tmux',
                         hint:
                             'Each tab runs in its own tmux session. Split it '
                             'into panes from the tab\'s '
@@ -565,7 +565,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       if (_useTmux) ...[
                         const SizedBox(height: 28),
                         TuiSwitch(
-                          label: 'Keep a record of each pane',
+                          label: 'Keep a record of each pane', logName: 'Keep a record of each pane',
                           hint:
                               'The host writes all a pane prints to a file '
                               'under ~/.local/state/jeansh, even with the app '
@@ -580,7 +580,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       ],
                       const SizedBox(height: 28),
                       TuiSwitch(
-                        label: 'Add the jeansh command to this host',
+                        label: 'Add the jeansh command to this host', logName: 'Add the jeansh command to this host',
                         hint:
                             'Writes ~/.local/bin/jeansh when the app '
                             'connects, so "jeansh <file>" in a terminal '
@@ -597,7 +597,7 @@ class _HostEditPageState extends State<HostEditPage> {
                         Align(
                           alignment: Alignment.centerLeft,
                           child: TuiButton(
-                            label: 'Copy notification key',
+                            label: 'Copy notification key', logName: 'Copy notification key',
                             prefix: '⧉',
                             variant: TuiButtonVariant.ghost,
                             onPressed: _copyNotifyKey,
@@ -656,7 +656,7 @@ class _HostEditPageState extends State<HostEditPage> {
                         Align(
                           alignment: Alignment.centerLeft,
                           child: TuiButton(
-                            label: 'Choose file',
+                            label: 'Choose file', logName: 'Choose file',
                             prefix: '+',
                             variant: TuiButtonVariant.ghost,
                             onPressed: _chooseKeyFile,
@@ -674,7 +674,7 @@ class _HostEditPageState extends State<HostEditPage> {
                       Align(
                         alignment: Alignment.centerLeft,
                         child: TuiButton(
-                          label: 'Save host',
+                          label: 'Save host', logName: 'Save host',
                           prefix: '▸',
                           onPressed: _saving ? null : _save,
                         ),

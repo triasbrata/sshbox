@@ -2205,7 +2205,7 @@ class ConnectionError extends StatelessWidget {
               children: [
                 if (onClose != null) ...[
                   TuiButton(
-                    label: 'Close',
+                    label: 'Close', logName: 'Close',
                     variant: TuiButtonVariant.ghost,
                     onPressed: onClose,
                   ),
