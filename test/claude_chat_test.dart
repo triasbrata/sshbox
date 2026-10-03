@@ -300,6 +300,9 @@ class _LiveHost {
   /// host answers: what the session does meanwhile goes on.
   Future<void>? agentsGate;
 
+  /// Whether `claude agents` still shows the session's process.
+  var alive = true;
+
   Future<CommandChannel> openTerminal(String command) async {
     commands.add(command);
     final typed = <String>[];
@@ -403,7 +406,7 @@ class _LiveHost {
       if (gate != null) await gate;
       final listed = jsonEncode([
         {
-          'pid': _live.pid,
+          if (alive) 'pid': _live.pid,
           if (!interactive) 'id': _live.id,
           'cwd': _live.cwd,
           'kind': interactive ? 'interactive' : 'background',
@@ -2738,6 +2741,66 @@ void main() {
         lost = false;
         await Future<void>.delayed(wait);
         expect(host.terminals, isEmpty);
+      });
+
+      test('↑ on the only held message empties the hold, and nothing is '
+          'typed later', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('only one');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(await chat.reviseLast(), 'only one');
+        host.state = 'done';
+        await Future<void>.delayed(wait);
+        expect(host.terminals, isEmpty);
+        expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+      });
+
+      test('a chat that started its own Claude meanwhile does not type what '
+          'was held, and says so', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('then run the tests');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await chat.start();
+        host.state = 'done';
+        await Future<void>.delayed(wait);
+        expect(host.terminals, isEmpty);
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, contains('moved off'));
+      });
+
+      test('a held message fails when its session is no longer running', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('then run the tests');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        host.alive = false;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, contains('is no longer running'));
+        expect(host.terminals, isEmpty);
+      });
+
+      test('a failed typing of a held message says it was not delivered', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = ClaudeChat(
+          open: host.open,
+          openTerminal: (_) => throw StateError('no terminal'),
+        )..holdEvery = const Duration(milliseconds: 100);
+        addTearDown(chat.dispose);
+        await chat.continueFrom(_live);
+        chat.send('then run the tests');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        host.state = 'done';
+        await Future<void>.delayed(wait);
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.failed);
       });
 
       test('moving to another session sends it nowhere, and says so', () async {
@@ -6590,6 +6653,74 @@ void main() {
         ClaudeChat.command(resume: sid, resumeAt: r'$(touch pwned)', fork: true),
         isNot(contains('resume-session-at')),
       );
+    });
+
+    test('a prompt whose content is text blocks is found, and a tool result '
+        'is not a prompt', () {
+      String t(Object content) {
+        final row = jsonEncode({
+          'type': 'user',
+          'parentUuid': before,
+          'message': {'role': 'user', 'content': content},
+        });
+        return '0\n$row\n';
+      }
+
+      expect(
+        ClaudeChat.revisionPoint(
+          t([
+            {'type': 'text', 'text': 'first '},
+            {'type': 'text', 'text': 'idea'},
+          ]),
+          'first idea',
+        ),
+        before,
+      );
+      expect(
+        ClaudeChat.revisionPoint(
+          t([
+            {'type': 'tool_result', 'content': 'x'},
+          ]),
+          'x',
+        ),
+        isNull,
+      );
+    });
+
+    test('the fork starts in the directory of the session it forks, not the '
+        "chat's folder", () async {
+      final commands = <String>[];
+      final procs = <_FakeClaude>[];
+      final chat = ClaudeChat(
+        cwd: '/chat/folder',
+        open: (command) async {
+          commands.add(command);
+          if (command.contains('.jsonl')) return _says(transcript());
+          if (!command.contains('stream-json')) return _says('');
+          final claude = _FakeClaude();
+          procs.add(claude);
+          return claude.channel;
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(
+        const ClaudeAgent(
+          sessionId: sid,
+          name: 'old',
+          cwd: '/where/it/ran',
+          kind: 'background',
+        ),
+      );
+      procs.last.event({'type': 'system', 'subtype': 'init', 'session_id': sid});
+      await _settle();
+      await chat.send('first idea');
+      procs.last.event({'type': 'result', 'subtype': 'success'});
+      await _settle();
+      expect(await chat.reviseLast(), 'first idea');
+      final fork = commands.last;
+      expect(fork, contains('--fork-session'));
+      expect(fork, contains('/where/it/ran'));
+      expect(fork, isNot(contains('/chat/folder')));
     });
 
     test('a revision restarts as a fork cut before the prompt, drops what '
