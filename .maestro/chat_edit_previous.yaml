@@ -41,11 +41,11 @@ env:
     timeout: 20000
 - tapOn: "(?s)\\W*E2E code reply.*"
 - extendedWaitUntil:
-    visible: "Message “E2E code reply”…"
+    visible: "Ask Claude…"
     timeout: 30000
 
 # 1. A, answered.
-- tapOn: "Message “E2E code reply”…"
+- tapOn: "Ask Claude…"
 - inputText: "A"
 - tapOn: "Send"
 - extendedWaitUntil:
@@ -53,7 +53,7 @@ env:
     timeout: 60000
 
 # 2. Over a draft, ↑ changes nothing.
-- tapOn: "Message “E2E code reply”…"
+- tapOn: "Ask Claude…"
 - inputText: "x"
 - pressKey: Remote Dpad Up
 - assertNotVisible: "(?s).*Went back to.*"
