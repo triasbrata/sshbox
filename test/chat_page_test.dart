@@ -6479,6 +6479,245 @@ void main() {
     }, variant: linux);
   });
 
+  // Measurements for #215, run with CHAT_BENCH=1: debug-mode (JIT, asserts on)
+  // widget-test numbers, so only their ratios and counts carry over to a
+  // release build. No raster time is included.
+  group('chat performance, measured', () {
+    final on = Platform.environment['CHAT_BENCH'] != null;
+
+    Map<String, Object?> text(String id, String body, {String role = 'assistant'}) =>
+        role == 'user'
+        ? {
+            'type': 'user',
+            'message': {'role': 'user', 'content': body},
+          }
+        : {
+            'type': 'assistant',
+            'message': {
+              'id': id,
+              'role': 'assistant',
+              'model': 'claude-opus-5-5',
+              'stop_reason': 'end_turn',
+              'usage': {'input_tokens': 1, 'cache_read_input_tokens': 50000},
+              'content': [
+                {'type': 'text', 'text': body},
+              ],
+            },
+          };
+
+    const prose =
+        '## Findings\n\nThe **nightly** build fails at the `lint` step. See '
+        '[the log](https://example.com/log).\n\n- first point about the cache\n'
+        '- second point about the runner\n- third point with `code`\n';
+    final code =
+        '```dart\n${List.generate(8, (i) => 'final value$i = compute($i);').join('\n')}\n```';
+
+    /// About [n] entries: user text, prose, code, and a tool call with its
+    /// result, in turn.
+    String longHistory(int n) {
+      final lines = <Map<String, Object?>>[];
+      var i = 0;
+      while (lines.length < n) {
+        lines.add(text('', 'question $i about the build?', role: 'user'));
+        lines.add(text('p$i', prose));
+        lines.add(text('c$i', 'Here is the change:\n\n$code'));
+        lines.add({
+          'type': 'assistant',
+          'message': {
+            'id': 't$i',
+            'role': 'assistant',
+            'model': 'claude-opus-5-5',
+            'stop_reason': 'tool_use',
+            'usage': {'input_tokens': 1, 'cache_read_input_tokens': 50000},
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'tu$i',
+                'name': 'Bash',
+                'input': {'command': 'ls -la /srv/app', 'description': 'list'},
+              },
+            ],
+          },
+        });
+        lines.add({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': 'tu$i',
+                'content': 'total 8\ndrwxr-xr-x 2 me me 4096 Oct 2 file$i',
+              },
+            ],
+          },
+        });
+        i++;
+      }
+      return _history(lines.take(n).toList());
+    }
+
+    String pct(List<int> us, double q) {
+      final sorted = [...us]..sort();
+      return (sorted[((sorted.length - 1) * q).round()] / 1000).toStringAsFixed(1);
+    }
+
+    String stats(List<int> us) =>
+        'n=${us.length} mean=${(us.reduce((a, b) => a + b) / us.length / 1000).toStringAsFixed(1)}ms '
+        'p95=${pct(us, 0.95)}ms max=${pct(us, 1)}ms';
+
+    final rebuilds = <String, int>{};
+    void count() => debugOnRebuildDirtyWidget = (element, _) {
+      final name = element.widget.runtimeType.toString();
+      rebuilds[name] = (rebuilds[name] ?? 0) + 1;
+    };
+    String top() {
+      final rows = rebuilds.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      return rows.take(8).map((e) => '${e.key}=${e.value}').join(' ');
+    }
+
+    Future<List<int>> frames(WidgetTester tester, int n,
+        [Duration step = const Duration(milliseconds: 16)]) async {
+      final us = <int>[];
+      for (var i = 0; i < n; i++) {
+        final w = Stopwatch()..start();
+        await tester.pump(step);
+        us.add(w.elapsedMicroseconds);
+      }
+      return us;
+    }
+
+    Future<_Shell> pickUp(WidgetTester tester, String history) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = history
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      return shell;
+    }
+
+    testWidgets('open a long session', (tester) async {
+      final history = longHistory(2000);
+      final rss0 = ProcessInfo.currentRss;
+      final shell = await pickUp(tester, history);
+      rebuilds.clear();
+      count();
+      final w = Stopwatch()..start();
+      await tester.tap(find.text('the nightly build'));
+      await tester.pump();
+      final first = w.elapsedMilliseconds;
+      await _settlePickUp(tester);
+      final total = w.elapsedMilliseconds;
+      debugOnRebuildDirtyWidget = null;
+      // ignore: avoid_print
+      print('BENCH open: transcript=${utf8.encode(history).length ~/ 1024}KB '
+          'lines=2000 first-pump=${first}ms settled=${total}ms '
+          'elements=${tester.allElements.length} '
+          'rss+${(ProcessInfo.currentRss - rss0) ~/ (1024 * 1024)}MB '
+          'commands=${shell.commands.length}\nBENCH open rebuilds: ${top()}');
+    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+
+    testWidgets('stream 200 events into a conversation, and scroll', (
+      tester,
+    ) async {
+      final shell = await pickUp(tester, longHistory(500));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      await _frames(tester);
+      rebuilds.clear();
+      count();
+      final per = <int>[];
+      for (var i = 0; i < 200; i++) {
+        final w = Stopwatch()..start();
+        shell.follow?.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '${jsonEncode(text('s$i', '$prose\nstreamed event $i'))}\n',
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 16));
+        per.add(w.elapsedMicroseconds);
+      }
+      debugOnRebuildDirtyWidget = null;
+      // ignore: avoid_print
+      print('BENCH stream (500-entry session, 200 events, follow on): '
+          '${stats(per)}\nBENCH stream rebuilds (total over 200 events): ${top()}\n'
+          'BENCH per event: ${rebuilds.entries.map((e) => '${e.key}=${(e.value / 200).toStringAsFixed(1)}').take(6).join(' ')}');
+
+      // Scrolling through it.
+      rebuilds.clear();
+      count();
+      final scroll = <int>[];
+      for (var i = 0; i < 8; i++) {
+        await tester.fling(
+          find.byType(CustomScrollView),
+          const Offset(0, 600),
+          2500,
+        );
+        scroll.addAll(await frames(tester, 40));
+      }
+      debugOnRebuildDirtyWidget = null;
+      // ignore: avoid_print
+      print('BENCH scroll (8 flings): ${stats(scroll)}\n'
+          'BENCH scroll rebuilds: ${top()}');
+    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+
+    testWidgets('an idle minute', (tester) async {
+      final shell = await pickUp(tester, longHistory(200));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final before = shell.commands.length;
+      rebuilds.clear();
+      count();
+      final us = <int>[];
+      for (var s = 0; s < 60; s++) {
+        final w = Stopwatch()..start();
+        await tester.pump(const Duration(seconds: 1));
+        us.add(w.elapsedMicroseconds);
+      }
+      debugOnRebuildDirtyWidget = null;
+      final polled = shell.commands.skip(before).toList();
+      final kinds = <String, int>{};
+      for (final c in polled) {
+        final k = c.contains('agents --json')
+            ? 'agents'
+            : c.contains('/usage')
+            ? 'usage'
+            : c.contains('/tasks')
+            ? 'tasks'
+            : c.contains(' -f ')
+            ? 'follow'
+            : 'other';
+        kinds[k] = (kinds[k] ?? 0) + 1;
+      }
+      // ignore: avoid_print
+      print('BENCH idle 60s: frames ${stats(us)} host commands=${polled.length} '
+          '$kinds\nBENCH idle rebuilds: ${top()}');
+    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+  });
+
   group('the usage chip and its popup', () {
     setUp(ClaudeChat.forgetQuotas);
     String history(int tokens) {
