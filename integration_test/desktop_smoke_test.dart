@@ -4894,13 +4894,16 @@ touch '${done.path}'
       // What the log holds, each line without its timestamp and level.
       List<String> lines() {
         inputLog.flush();
-        return appLog.current
+        // Only what this test did: earlier tests' keys share the one log.
+        final all = appLog.current
             .split('\n')
             .map((l) => l.split(' ').skip(2).join(' '))
             .toList();
+        return all.sublist(all.lastIndexOf('e2e: start #223') + 1);
       }
 
       Future<void> quiet() => tester.pump(const Duration(milliseconds: 900));
+      appLog.add('e2e: start #223');
 
       await _launch(tester);
       final view = await _localShell(tester);
@@ -4930,8 +4933,8 @@ touch '${done.path}'
           reason: 'a typed key was logged: $line',
         );
       }
-      expect(appLog.current, isNot(contains('hunter')));
-      expect(appLog.current, isNot(contains('zq7')));
+      expect(lines().join('\n'), isNot(contains('hunter')));
+      expect(lines().join('\n'), isNot(contains('zq7')));
 
       // 4. Positive: a text paste, by length. 5. Negative: not its words.
       const clip = 'clip-secret-words';
