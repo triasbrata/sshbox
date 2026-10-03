@@ -164,7 +164,12 @@ case "$target" in
         TMUX_TMPDIR=$XDG_DATA_HOME && export TMUX_TMPDIR
         unset TMUX TMUX_PANE
         trap "kill \$notifier 2>/dev/null; tmux kill-server 2>/dev/null; rm -rf \"$XDG_DATA_HOME\"" EXIT
-        printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+        # An empty password makes the first secret write wait on an invisible
+        # prompt for ever, and a Local shell now writes one (the secret of
+        # the jeansh command). A throwaway password and a default keyring
+        # named login avoid the prompt.
+        mkdir -p "$XDG_DATA_HOME/keyrings" && printf login > "$XDG_DATA_HOME/keyrings/default"
+        printf e2e | gnome-keyring-daemon --unlock --components=secrets >/dev/null
         dunst >/dev/null 2>&1 & notifier=$!
         tests=$1 && shift
         rc=0
