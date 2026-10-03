@@ -386,6 +386,34 @@ jobs:
             liblzma-dev libstdc++-12-dev libsecret-1-dev xvfb dbus-x11 gnome-keyring
             tmux xclip dunst xdotool python3-gi gir1.2-gtk-3.0 openbox x11-utils ffmpeg
 
+      # A host for the chat-drop test: this runner's own sshd on loopback,
+      # a throwaway user and password made here and gone with the runner, as
+      # the Android job does. The test reads SSH_USER and SSH_PASSWORD.
+      - name: Install the sshd
+        timeout-minutes: 10
+        uses: ./.github/actions/apt-install
+        with:
+          args: -y -qq openssh-server
+
+      - name: Start an sshd for the drop test
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          sudo useradd -m -s /bin/bash e2e
+          echo "e2e:$password" | sudo chpasswd
+          printf 'ListenAddress 127.0.0.1\nPasswordAuthentication yes\n' |
+            sudo tee /etc/ssh/sshd_config.d/99-e2e.conf >/dev/null
+          sudo systemctl disable --now ssh.socket 2>/dev/null || true
+          sudo systemctl restart ssh
+          echo "SSH_PASSWORD=$password" >> "$GITHUB_ENV"
+          echo "SSH_USER=e2e" >> "$GITHUB_ENV"
+          for i in $(seq 20); do
+            (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null && break
+            sleep 1
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null || { echo "::error::sshd did not start"; exit 1; }
+          echo "sshd answers on 127.0.0.1:22"
+
       - uses: ./.github/actions/flutter
         timeout-minutes: 15
 
