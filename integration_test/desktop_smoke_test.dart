@@ -3510,12 +3510,15 @@ touch '${done.path}'
         final x = (window.left + frame + at.dx * ratio).round();
         final y = (window.top + frame + at.dy * ratio).round();
         await _xdo(['windowfocus', '--sync', await _window()]);
-        await _xdo([
-          'mousemove', '$x', '$y', 'sleep', '0.2', //
-          'keydown', 'Control_L', 'click', '4', 'sleep', '0.2', 'click', '4',
-          'sleep', '0.2', 'keyup', 'Control_L',
-        ]);
-        await tester.pump(const Duration(milliseconds: 400));
+        // The real pointer, which flutter_test drops unless let through.
+        await _realPointer(() async {
+          await _xdo([
+            'mousemove', '$x', '$y', 'sleep', '0.2', //
+            'keydown', 'Control_L', 'click', '4', 'sleep', '0.2', 'click', '4',
+            'sleep', '0.2', 'keyup', 'Control_L',
+          ]);
+          await tester.pump(const Duration(milliseconds: 400));
+        });
       }
 
       // 3: the wheel over Home grows it; over a terminal it does not.
@@ -3642,13 +3645,24 @@ touch '${done.path}'
       final frame = (window.width - tester.view.physicalSize.width) / 2;
       final at = tester.getCenter(find.byType(InteractiveViewer));
       await _xdo(['windowfocus', '--sync', await _window()]);
-      await _xdo([
-        'mousemove',
-        '${(window.left + frame + at.dx * ratio).round()}',
-        '${(window.top + frame + at.dy * ratio).round()}',
-        'sleep', '0.2', 'keydown', 'Control_L', 'click', '4', 'sleep', '0.2',
-        'click', '4', 'sleep', '0.2', 'keyup', 'Control_L',
-      ]);
+      // That the wheel arrived at all, or "unchanged" below proves nothing.
+      var wheels = 0;
+      void heard(PointerEvent e) => e is PointerScrollEvent ? wheels++ : null;
+      GestureBinding.instance.pointerRouter.addGlobalRoute(heard);
+      addTearDown(
+        () => GestureBinding.instance.pointerRouter.removeGlobalRoute(heard),
+      );
+      await _realPointer(() async {
+        await _xdo([
+          'mousemove',
+          '${(window.left + frame + at.dx * ratio).round()}',
+          '${(window.top + frame + at.dy * ratio).round()}',
+          'sleep', '0.2', 'keydown', 'Control_L', 'click', '4', 'sleep', '0.2',
+          'click', '4', 'sleep', '0.2', 'keyup', 'Control_L',
+        ]);
+        await tester.pump(const Duration(milliseconds: 400));
+      });
+      expect(wheels, greaterThan(0), reason: 'no wheel reached the app');
       await tester.pump(const Duration(seconds: 1));
       expect(
         (uiTextSize.value * 100).round(),
