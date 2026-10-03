@@ -926,6 +926,115 @@ class ClaudeChat extends ChangeNotifier {
   /// so the picker waits.
   bool get modelStarting => _watching == null && !_composing && _starting;
 
+  /// Set by [reviseLast] until the forked session reports itself: where in the
+  /// old one the next start resumes.
+  String? _resumeAt;
+  bool _fork = false;
+
+  /// The user's newest message in this view.
+  ChatSaid? get lastMine =>
+      _entries.whereType<ChatSaid>().where((said) => said.mine).lastOrNull;
+
+  /// The uuid of the transcript row before the user's last prompt, which is
+  /// where `--resume-session-at` cuts: the row's `parentUuid`. Null unless the
+  /// last real prompt in [transcript] (the host's answer to [historyCommand])
+  /// says [text], so a revision never cuts at a prompt it did not mean.
+  static String? revisionPoint(String transcript, String text) {
+    String? parent;
+    String? said;
+    for (final line in const LineSplitter().convert(transcript)) {
+      if (!line.startsWith('{')) continue;
+      final Object? row;
+      try {
+        row = jsonDecode(line);
+      } catch (_) {
+        continue;
+      }
+      if (row is! Map || row['type'] != 'user' || row['isSidechain'] == true) {
+        continue;
+      }
+      final content = (row['message'] as Map?)?['content'];
+      final String? words = content is String
+          ? content
+          : content is List && !content.any((b) => b is Map && b['type'] == 'tool_result')
+          ? content.whereType<Map>().map((b) => b['text']).whereType<String>().join()
+          : null;
+      if (words == null || words.trim().isEmpty) continue;
+      said = words.trim();
+      parent = row['parentUuid'] as String?;
+    }
+    return said == text.trim() && parent != null && _uuid.hasMatch(parent)
+        ? parent
+        : null;
+  }
+
+  /// Goes back to just before the user's last message and returns its text
+  /// for the box, or null, saying why in the chat. A fork: Claude restarts on
+  /// `--resume ID --resume-session-at ROW --fork-session`, ROW being the
+  /// transcript row before the prompt, measured on 2.1.287, so the earlier branch stays on the
+  /// host, in the sessions list, untouched. Files the old turn changed are
+  /// not put back: the CLI's rewind needs file checkpointing, which `-p` has
+  /// off ("File rewinding is not enabled").
+  ///
+  /// Only this chat's own Claude. A session on the host is revised at its own
+  /// terminal, which this never types into blind.
+  Future<String?> reviseLast() async {
+    final said = lastMine;
+    if (said == null) return null;
+    String? no(String why) {
+      _say(ChatNotice(why));
+      return null;
+    }
+
+    if (_watching != null) {
+      return no(
+        'A session running on the host is revised at its own terminal: press '
+        'Esc Esc there. This chat does not type that for you.',
+      );
+    }
+    final id = _sessionId;
+    if (id == null || _composing || !_ready) {
+      return no('There is no conversation of this chat to go back in yet.');
+    }
+    if (_busy) {
+      return no('Claude is answering. Edit the message once it has finished.');
+    }
+    if (said.pictures.isNotEmpty) {
+      return no('A message with pictures cannot be revised from here.');
+    }
+    final String point;
+    try {
+      final read = utf8.decode(
+        await _readAll(historyCommand(id), const Duration(seconds: 30)),
+        allowMalformed: true,
+      );
+      final found = revisionPoint(read, said.text);
+      if (found == null) {
+        return no('That message is not in the session’s transcript yet.');
+      }
+      point = found;
+    } catch (error) {
+      return no('Could not read the session to go back in it: $error');
+    }
+    final at = _entries.indexOf(said);
+    if (at < 0) return null;
+    await _stop();
+    _entries.removeRange(at, _entries.length);
+    _modelAsks.clear();
+    _resumeAt = point;
+    _fork = true;
+    _busy = false;
+    _ended = false;
+    await start();
+    _say(
+      ChatNotice(
+        'Went back to before that message. The earlier branch stays in the '
+        'sessions list. Files the old turn changed are not put back.',
+      ),
+    );
+    return said.text;
+  }
+
   ChatPermission _permission = ChatPermission.acceptEdits;
 
   /// What Claude may do without being asked. Fixed when the process starts,
@@ -1769,6 +1878,8 @@ class ClaudeChat extends ChangeNotifier {
           permission: _permission,
           resume: _sessionId,
           model: _alias,
+          resumeAt: _resumeAt,
+          fork: _fork,
         ),
       );
       // The tab closed while the host answered: nothing is left to hold it.
@@ -3532,6 +3643,9 @@ class ClaudeChat extends ChangeNotifier {
     switch (event['type']) {
       case 'system' when event['subtype'] == 'init':
         _sessionId = event['session_id'] as String?;
+        // A revision's fork is the session now: later starts resume it whole.
+        _resumeAt = null;
+        _fork = false;
         final model = event['model'];
         if (model is String && model.isNotEmpty) _model = model;
         notifyListeners();
@@ -3964,11 +4078,17 @@ class ClaudeChat extends ChangeNotifier {
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
     String? model,
+    String? resumeAt,
+    bool fork = false,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
-    final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
+    final at = resume != null && resumeAt != null && _uuid.hasMatch(resumeAt)
+        ? ' --resume-session-at $resumeAt${fork ? ' --fork-session' : ''}'
+        : '';
+    final again =
+        '${resume == null ? '' : ' --resume ${_shellQuote(resume)}'}$at';
     final picked = _modelFlag(model);
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
@@ -3980,6 +4100,10 @@ class ClaudeChat extends ChangeNotifier {
         '--permission-prompt-tool stdio$again$picked 2>&1';
     return 'sh -c ${_shellQuote(script)}';
   }
+
+  static final _uuid = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+  );
 
   /// ` --model <alias>` for an alias [ChatModel.choices] offers; nothing for
   /// the default or for any other text, which never reaches the shell.

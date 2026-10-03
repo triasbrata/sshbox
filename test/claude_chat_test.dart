@@ -6326,4 +6326,213 @@ void main() {
       expect(await run(ClaudeChat.subAgentsCommand('e2e00000-0000-4000-8000-000000000000')), isEmpty);
     });
   });
+
+  group('going back to the last message to revise it', () {
+    const sid = '11111111-1111-4111-8111-111111111111';
+    const before = '22222222-2222-4222-8222-222222222222';
+
+    String transcript({String prompt = 'first idea'}) {
+      final rows = [
+        {
+          'type': 'user',
+          'uuid': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          'parentUuid': null,
+          'message': {'role': 'user', 'content': 'earlier'},
+        },
+        {
+          'type': 'user',
+          'uuid': '33333333-3333-4333-8333-333333333333',
+          'parentUuid': before,
+          'message': {'role': 'user', 'content': prompt},
+        },
+        {
+          'type': 'user',
+          'uuid': '44444444-4444-4444-8444-444444444444',
+          'parentUuid': '33333333-3333-4333-8333-333333333333',
+          'message': {
+            'role': 'user',
+            'content': [
+              {'type': 'tool_result', 'content': 'x'},
+            ],
+          },
+        },
+      ].map(jsonEncode).join('\n');
+      return '${utf8.encode(rows).length}\n$rows\n';
+    }
+
+    Future<
+      ({ClaudeChat chat, List<String> commands, List<_FakeClaude> procs})
+    >
+    started({String host = ''}) async {
+      final procs = <_FakeClaude>[];
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains('.jsonl')) {
+            return _says(host.isEmpty ? transcript() : host);
+          }
+          if (!command.contains('stream-json')) return _says('');
+          final claude = _FakeClaude();
+          procs.add(claude);
+          return claude.channel;
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.start();
+      procs.single.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': sid,
+      });
+      await _settle();
+      return (chat: chat, commands: commands, procs: procs);
+    }
+
+    test('the point to cut at is the row before the prompt, and only for '
+        'the prompt that was meant', () {
+      expect(ClaudeChat.revisionPoint(transcript(), 'first idea'), before);
+      // Not a prompt this chat said: nothing is cut.
+      expect(ClaudeChat.revisionPoint(transcript(), 'something else'), isNull);
+      // A tool result is not a prompt.
+      expect(ClaudeChat.revisionPoint('0\n', 'x'), isNull);
+      // A parent that is not a uuid never reaches the command line.
+      expect(
+        ClaudeChat.revisionPoint(
+          '0\n${jsonEncode({
+            'type': 'user',
+            'parentUuid': r'$(touch pwned)',
+            'message': {'role': 'user', 'content': 'x'},
+          })}\n',
+          'x',
+        ),
+        isNull,
+      );
+      expect(
+        ClaudeChat.command(resume: sid, resumeAt: r'$(touch pwned)', fork: true),
+        isNot(contains('resume-session-at')),
+      );
+    });
+
+    test('a revision restarts as a fork cut before the prompt, drops what '
+        'followed, and hands back the text', () async {
+      final t = await started();
+      final sent = t.chat.send('first idea');
+      await _settle();
+      t.procs.single.event({
+        'type': 'assistant',
+        'message': {
+          'id': 'm1',
+          'stop_reason': 'end_turn',
+          'content': [
+            {'type': 'text', 'text': 'an answer'},
+          ],
+        },
+      });
+      t.procs.single.event({'type': 'result', 'subtype': 'success'});
+      await sent;
+      await _settle();
+      expect(t.chat.entries.whereType<ChatSaid>(), hasLength(2));
+
+      final text = await t.chat.reviseLast();
+      expect(text, 'first idea');
+      expect(t.procs.first.closed, isTrue);
+      final fork = t.commands.last;
+      expect(fork, contains('--resume '));
+      expect(fork, contains(sid));
+      expect(fork, contains('--resume-session-at $before'));
+      expect(fork, contains('--fork-session'));
+      // The user's message and Claude's answer are gone from the view; the
+      // notice says what became of the old branch and the files.
+      expect(t.chat.entries.whereType<ChatSaid>(), isEmpty);
+      final notice = t.chat.entries.whereType<ChatNotice>().last.text;
+      expect(notice, contains('earlier branch stays'));
+      expect(notice, contains('not put back'));
+
+      // Once the fork reports itself, a later restart resumes it whole.
+      t.procs.last.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': '55555555-5555-4555-8555-555555555555',
+      });
+      await _settle();
+      await t.chat.restart();
+      expect(t.commands.last, contains('55555555-5555'));
+      expect(t.commands.last, isNot(contains(sid)));
+      expect(t.commands.last, isNot(contains('--resume-session-at')));
+    });
+
+    test('nothing is cut while Claude answers, or for a message with no '
+        'transcript row', () async {
+      final t = await started();
+      unawaited(t.chat.send('first idea'));
+      await _settle();
+      final before = t.commands.length;
+      expect(await t.chat.reviseLast(), isNull);
+      expect(t.chat.entries.whereType<ChatNotice>().last.text,
+          contains('Claude is answering'));
+      expect(t.commands.length, before);
+
+      final u = await started(host: '0\n');
+      await u.chat.send('first idea');
+      u.procs.single.event({'type': 'result', 'subtype': 'success'});
+      await _settle();
+      expect(await u.chat.reviseLast(), isNull);
+      expect(u.chat.entries.whereType<ChatNotice>().last.text,
+          contains('not in the session’s transcript'));
+      expect(u.chat.entries.whereType<ChatSaid>(), hasLength(1));
+      expect(u.procs, hasLength(1));
+    });
+
+    test('no session yet, or a host that will not hand over its transcript, '
+        'says so and cuts nothing', () async {
+      final early = ClaudeChat(open: (_) async => _FakeClaude().channel);
+      addTearDown(early.dispose);
+      await early.start();
+      await early.send('hello');
+      expect(await early.reviseLast(), isNull);
+      expect(early.entries.whereType<ChatNotice>().last.text,
+          contains('no conversation of this chat'));
+
+      final procs = <_FakeClaude>[];
+      final broken = ClaudeChat(
+        open: (command) async {
+          if (command.contains('.jsonl')) throw StateError('host went away');
+          if (!command.contains('stream-json')) return _says('');
+          final claude = _FakeClaude();
+          procs.add(claude);
+          return claude.channel;
+        },
+      );
+      addTearDown(broken.dispose);
+      await broken.start();
+      procs.single.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': sid,
+      });
+      await _settle();
+      await broken.send('hello');
+      procs.single.event({'type': 'result', 'subtype': 'success'});
+      await _settle();
+      expect(await broken.reviseLast(), isNull);
+      expect(broken.entries.whereType<ChatNotice>().last.text,
+          contains('host went away'));
+      expect(procs, hasLength(1));
+      expect(broken.entries.whereType<ChatSaid>(), hasLength(1));
+    });
+
+    test('a cut without a fork still resumes at the row', () {
+      final command = ClaudeChat.command(resume: sid, resumeAt: before);
+      expect(command, contains('--resume-session-at $before'));
+      expect(command, isNot(contains('--fork-session')));
+    });
+
+    test('with no message of the user\'s there is nothing to go back to',
+        () async {
+      final t = await started();
+      expect(await t.chat.reviseLast(), isNull);
+      expect(t.chat.entries, isEmpty);
+    });
+  });
 }
