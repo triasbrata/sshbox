@@ -1014,6 +1014,35 @@ JSON
   return "$status"
 }
 
+# #218: `jeansh <file>` (.maestro/jeansh_open.yaml). The runner makes the file
+# to open and a forged request, an OSC 7733 line with the right shape and
+# time and a wrong secret, for a `cat` to print; afterwards it reads the
+# command's mode and marker, which the host editor's switch had the app write.
+jeansh_open() {
+  local status=0 home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local b64
+  sudo -u "$SSH_USER" rm -f "$bin" "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
+  printf 'jeansh e2e target\n' | sudo -u "$SSH_USER" tee "$home/jeansh-target.txt" >/dev/null
+  b64=$(printf %s "$home/jeansh-target.txt" | base64 | tr -d '\n')
+  printf '\033]7733;open;wrong-secret;%s;%s;%s\007' "$(date +%s)" \
+    "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" "$b64" |
+    sudo -u "$SSH_USER" tee "$home/jeansh-forged.txt" >/dev/null
+  flow jeansh_open || status=1
+  sudo test -f "$home/jeansh-forged.done" ||
+    { echo "::error::the forged request's cat never ran"; status=1; }
+  [ "$(sudo cat "$home/jeansh-missing.rc" 2>/dev/null)" = 1 ] ||
+    { echo "::error::jeansh missing-e2e-file did not exit 1"; status=1; }
+  [ "$(sudo stat -c %a "$bin" 2>/dev/null)" = 755 ] ||
+    { echo "::error::$bin is not mode 755"; status=1; }
+  sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" 2>/dev/null ||
+    { echo "::error::$bin lacks the marker line"; status=1; }
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'jeansh-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$bin" "$home/jeansh-target.txt" "$home/jeansh-forged.txt" \
+    "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -1046,6 +1075,9 @@ done
 
 echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
+echo "::endgroup::"
+echo "::group::jeansh_open (report only)"
+jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::share_text (report only)"
