@@ -1,8 +1,15 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart' show TerminalStyle;
 
+import '../telemetry/app_log.dart';
 import 'settings_page.dart' show TerminalSettings, terminalSettings;
+import 'toast.dart';
 
 /// Two text sizes, as Settings sets them: one for the app's own chrome — the
 /// tab strip, the key bar, menus, dialogs, toasts, Settings and Home — and one
@@ -36,9 +43,14 @@ class UiTextSize extends ValueNotifier<double> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose(double scale) async {
     value = scale.clamp(min, max).toDouble();
+    appLog.add('setting ui text size $value');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_key, value);
   }
+
+  /// One step of Settings' slider, 10%, up or down; 0 is back to 100%.
+  Future<void> zoom(int direction) =>
+      choose(direction == 0 ? 1 : ((value * 10).round() + direction.sign) / 10);
 }
 
 /// The app's one; `main` reads the saved choice into it.
@@ -109,4 +121,140 @@ class ContentText extends StatelessWidget {
     data: MediaQuery.of(context).copyWith(textScaler: scaler),
     child: child,
   );
+}
+
+/// [UiTextSize.zoom], and a toast saying the size it came to. [context] may
+/// be null before the app is up: the size still changes.
+void zoomUiText(BuildContext? context, int direction) {
+  unawaited(uiTextSize.zoom(direction));
+  if (context != null && context.mounted) {
+    showToast(context, 'UI text size ${(uiTextSize.value * 100).round()}%');
+  }
+}
+
+/// ⌘= (⌘+), ⌘− and ⌘0 on a Mac, Ctrl+= (Ctrl++), Ctrl+− and Ctrl+0 elsewhere,
+/// as a browser and desktop terminals zoom.
+///
+/// Taken by an early key handler, before any widget, so a focused terminal
+/// never sees them. That costs one thing: Ctrl+− is ^_, readline's and
+/// emacs's undo. As GNOME Terminal and Windows Terminal do, it is the
+/// zoom's, and Ctrl+Shift+− is left alone, which sends ^_ as it always did
+/// (the key bar's CTRL with / does too). A Mac loses nothing: ⌘ reaches no
+/// program there, and Ctrl keeps every use. Shift is read only for +, which
+/// needs it on most layouts; Alt and the other modifier key take the chord
+/// out of it.
+class UiZoomKeys {
+  UiZoomKeys(this.onZoom);
+
+  /// Called with 1, -1 or 0 (back to 100%).
+  final void Function(int direction) onZoom;
+
+  final _down = <LogicalKeyboardKey>{};
+
+  KeyEventResult handle(KeyEvent event) {
+    final key = event.logicalKey;
+    if (event is KeyUpEvent) {
+      return _down.remove(key)
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+    }
+    final direction = _direction(key);
+    if (direction == null) return KeyEventResult.ignored;
+    final keys = HardwareKeyboard.instance;
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final chord = mac ? keys.isMetaPressed : keys.isControlPressed;
+    final other = mac ? keys.isControlPressed : keys.isMetaPressed;
+    final plus = direction > 0;
+    if (!chord || other || keys.isAltPressed) return KeyEventResult.ignored;
+    if (keys.isShiftPressed && !plus) return KeyEventResult.ignored;
+    _down.add(key);
+    onZoom(direction);
+    return KeyEventResult.handled;
+  }
+
+  static int? _direction(LogicalKeyboardKey key) {
+    if (key == LogicalKeyboardKey.equal ||
+        key == LogicalKeyboardKey.add ||
+        key == LogicalKeyboardKey.numpadAdd) {
+      return 1;
+    }
+    if (key == LogicalKeyboardKey.minus ||
+        key == LogicalKeyboardKey.numpadSubtract) {
+      return -1;
+    }
+    if (key == LogicalKeyboardKey.digit0 || key == LogicalKeyboardKey.numpad0) {
+      return 0;
+    }
+    return null;
+  }
+}
+
+/// Ctrl or ⌘ with the mouse wheel, over the app's own UI, zooms the UI text.
+///
+/// Wrap the app's root in [UiZoomWheel]; wrap a terminal's pointer handling
+/// in [UiZoomWheel.keep], which takes the wheel out of the zoom: over a
+/// terminal it belongs to the program, as before.
+class UiZoomWheel extends StatefulWidget {
+  const UiZoomWheel({super.key, required this.onZoom, required this.child});
+
+  final void Function(int direction) onZoom;
+  final Widget child;
+
+  static PointerEvent? _kept;
+
+  /// For a [Listener.onPointerSignal] inside a terminal: the event goes
+  /// innermost first, so this is seen before the root's.
+  static void keep(PointerSignalEvent event) => _kept = event.original ?? event;
+
+  @override
+  State<UiZoomWheel> createState() => _UiZoomWheelState();
+}
+
+class _UiZoomWheelState extends State<UiZoomWheel> {
+  /// A notch is one step; a trackpad's many small deltas add up to one.
+  static const _perStep = 40.0;
+  double _carried = 0;
+
+  void _signal(PointerSignalEvent event) {
+    // Each listener is handed the event in its own coordinates, a copy
+    // whose original is the one event.
+    final whole = event.original ?? event;
+    if (event is! PointerScrollEvent || identical(whole, UiZoomWheel._kept)) {
+      return;
+    }
+    final keys = HardwareKeyboard.instance;
+    if (!keys.isControlPressed && !keys.isMetaPressed) return;
+    final dy = event.scrollDelta.dy;
+    if (dy == 0) return;
+    if (_carried.sign != dy.sign) _carried = 0;
+    _carried += dy;
+    if (_carried.abs() < _perStep) return;
+    // Wheel up, away from the user, is bigger.
+    widget.onZoom(_carried < 0 ? 1 : -1);
+    _carried = 0;
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      Listener(onPointerSignal: _signal, child: widget.child);
+}
+
+/// Under the app's root, so a list, the file tree or the editor does not
+/// scroll as Ctrl or ⌘ with the wheel zooms. A scrollable claims a wheel turn
+/// before the zoom's root Listener can, but reads it along the other axis
+/// when one of [pointerAxisModifiers] is held, as Shift does, and a vertical
+/// list finds nothing there to claim. A terminal opts out.
+class ZoomScrollBehavior extends MaterialScrollBehavior {
+  const ZoomScrollBehavior();
+
+  @override
+  Set<LogicalKeyboardKey> get pointerAxisModifiers => {
+    ...super.pointerAxisModifiers,
+    LogicalKeyboardKey.control,
+    LogicalKeyboardKey.controlLeft,
+    LogicalKeyboardKey.controlRight,
+    LogicalKeyboardKey.meta,
+    LogicalKeyboardKey.metaLeft,
+    LogicalKeyboardKey.metaRight,
+  };
 }

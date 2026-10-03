@@ -1869,6 +1869,18 @@ class ClaudeChat extends ChangeNotifier {
           failed: true));
       return;
     }
+    // Its size, never its words.
+    final bucket = message.length < 50
+        ? '<50'
+        : message.length < 500
+        ? '<500'
+        : message.length < 5000
+        ? '<5000'
+        : '5000+';
+    appLog.add(
+      'chat: send $bucket chars, ${pictures.length} pictures, '
+      '${_permission.name}, ${_context?.model ?? 'model unknown'}',
+    );
     _pictures = math.max(
       _pictures,
       pictures.fold(0, (most, picture) => math.max(most, picture.number)),

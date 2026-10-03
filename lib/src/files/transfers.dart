@@ -154,7 +154,8 @@ class Transfers extends ChangeNotifier {
 
   void _end(Transfer transfer, TransferState state, {String? error}) {
     appLog.add(
-      'transfer: ${transfer.direction.name} ${transfer.id} ${state.name}',
+      'transfer: ${transfer.direction.name} ${transfer.id} ${state.name} '
+      '${transfer.total} bytes',
       level: state == TransferState.failed ? 'W' : 'I',
     );
     transfer

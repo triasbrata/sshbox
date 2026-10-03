@@ -299,6 +299,25 @@
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <menu key="submenu" title="View" id="HyV-fh-RgO">
                         <items>
+                            <menuItem title="Zoom In" keyEquivalent="+" id="Zm-In-It">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES"/>
+                                <connections>
+                                    <action selector="zoomIn:" target="Voe-Tx-rLC" id="Zm-In-It-Ac"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Zoom Out" keyEquivalent="-" id="Zm-Ou-It">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES"/>
+                                <connections>
+                                    <action selector="zoomOut:" target="Voe-Tx-rLC" id="Zm-Ou-It-Ac"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Actual Size" keyEquivalent="0" id="Zm-Rs-It">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES"/>
+                                <connections>
+                                    <action selector="zoomReset:" target="Voe-Tx-rLC" id="Zm-Rs-It-Ac"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="Zm-Sp-It"/>
                             <menuItem title="Enter Full Screen" keyEquivalent="f" id="4J7-dP-txa">
                                 <modifierMask key="keyEquivalentModifierMask" control="YES" command="YES"/>
                                 <connections>

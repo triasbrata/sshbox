@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -12,6 +13,7 @@ import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
+import 'package:sshbox/src/ui/text_size.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_file_browser.dart';
@@ -99,6 +101,47 @@ const _unsavedWarning =
     'in it.';
 
 void main() {
+
+  testWidgets('Ctrl with the wheel over an image tab zooms the picture only, '
+      'not the UI text', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    uiTextSize.value = 1;
+    final browser = FakeFileBrowser()..binary['/home/me/pic.png'] = _png;
+    await tester.pumpWidget(
+      UiZoomWheel(
+        onZoom: (d) => uiTextSize.zoom(d),
+        child: MaterialApp(
+          home: FileEditorPage(browser: browser, path: '/home/me/pic.png'),
+        ),
+      ),
+    );
+    for (var i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    final pointer = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      pointer.hover(tester.getCenter(find.byType(InteractiveViewer))),
+    );
+    await tester.sendEventToBinding(pointer.scroll(const Offset(0, -100)));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(uiTextSize.value, 1);
+
+    // Anywhere else in the page, the same turn zooms the text.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendEventToBinding(pointer.hover(const Offset(2, 2)));
+    await tester.sendEventToBinding(pointer.scroll(const Offset(0, -100)));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(uiTextSize.value, 1.1);
+    uiTextSize.value = 1;
+  });
   // The editor reads its text size and wrap setting when it opens.
   setUp(() => SharedPreferences.setMockInitialValues({}));
 

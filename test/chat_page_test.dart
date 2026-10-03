@@ -16,6 +16,7 @@ import 'package:flutter/rendering.dart'
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownBody;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -5777,6 +5778,40 @@ void main() {
       await tester.pump();
       expect(box(tester), '[Image #1] ');
       expect(find.text('[Image #1] shot.png'), findsOneWidget);
+    });
+
+    testWidgets('the selection menu\'s Paste with no picture logs a text paste '
+        'and none of its words', (tester) async {
+      clipboard(tester);
+      await continued(tester);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            return {'text': 'sekret clipboard words'};
+          }
+          if (call.method == 'Clipboard.hasStrings') return {'value': true};
+          return null;
+        },
+      );
+      tester
+          .state<EditableTextState>(
+            find.descendant(
+              of: find.byType(TextField),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .showToolbar();
+      await tester.pumpAndSettle();
+      final before = appLog.length;
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      final added = appLog.current.split('\n').skip(before).join('\n');
+      expect(added, contains('paste text (chat)'));
+      expect(added, isNot(contains('sekret')));
     });
 
     testWidgets('a transcript\'s picture that claims too many pixels is not '

@@ -12,6 +12,7 @@ import '../notifications/notify_key.dart';
 import '../platform.dart';
 import '../session/open_command.dart';
 import '../system_fonts.dart';
+import '../telemetry/app_log.dart';
 import '../telemetry/crash_reporting.dart';
 import '../telemetry/telemetry.dart';
 import 'bug_report.dart';
@@ -161,6 +162,13 @@ class TerminalSettings extends ValueNotifier<TerminalStyle> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose({String? family, double? size}) async {
     value = terminalStyleOf(family ?? value.fontFamily, size ?? value.fontSize);
+    // A family installed on the machine is its own name, so only a bundled
+    // one is said.
+    final bundled = terminalFonts.any((f) => f.family == value.fontFamily);
+    appLog.add(
+      'setting terminal font ${bundled ? value.fontFamily : 'system'} '
+      '${value.fontSize}',
+    );
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_familyKey, value.fontFamily);
     await prefs.setDouble(_sizeKey, value.fontSize);
@@ -203,6 +211,7 @@ class AppTheme
   /// Applies at once, and is saved for the next start.
   Future<void> choose({ThemeMode? mode, TerminalScheme? scheme}) async {
     value = (mode: mode ?? value.mode, scheme: scheme ?? value.scheme);
+    appLog.add('setting theme ${value.mode.name} ${value.scheme.id}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_modeKey, value.mode.name);
     await prefs.setString(_schemeKey, value.scheme.id);
@@ -251,6 +260,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   /// Saved for the next key, and the next start.
   Future<void> chooseLayout({required bool mac}) async {
     macLayout = mac;
+    appLog.add('setting key layout ${mac ? 'mac' : 'pc'}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_layoutKey, mac ? 'mac' : 'pc');
   }
@@ -326,6 +336,7 @@ class KeyBarSettings extends ValueNotifier<List<KeyBarItem>> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose(List<KeyBarItem> items) async {
     value = items;
+    appLog.add('setting key bar ${items.length} items');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _key,
@@ -382,6 +393,7 @@ class GitPanelSetting extends ValueNotifier<bool> {
   /// Applies to the next tap, and is saved for the next start.
   Future<void> choose(bool drawer) async {
     value = drawer;
+    appLog.add('setting panel ${drawer ? 'drawer' : 'tab'}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, drawer);
   }
@@ -408,6 +420,7 @@ class ChatEnterSetting extends ValueNotifier<bool> {
   /// Applies at once, and is saved for the next start.
   Future<void> choose(bool enter) async {
     value = enter;
+    appLog.add('setting chat enter sends $enter');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, enter);
   }
@@ -453,6 +466,7 @@ class LocalTmuxSetting extends ValueNotifier<({bool on, String path})> {
     final problem = path == null ? null : tmuxPathProblem(path);
     if (problem != null) return problem;
     value = (on: on ?? value.on, path: path ?? value.path);
+    appLog.add('setting local tmux ${value.on}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_onKey, value.on);
     await prefs.setString(_pathKey, value.path);
@@ -493,6 +507,7 @@ class DotfilesSetting extends ValueNotifier<bool> {
   /// Shows or hides them at once, and is saved for the next start.
   Future<void> choose(bool show) async {
     value = show;
+    appLog.add('setting dotfiles $show');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, show);
   }
@@ -518,6 +533,7 @@ class CopyOnSelectSetting extends ValueNotifier<bool> {
   /// Applies to the next selection, and is saved for the next start.
   Future<void> choose(bool on) async {
     value = on;
+    appLog.add('setting copy on select $on');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, on);
   }
@@ -633,6 +649,7 @@ class LinkModifierSetting extends ValueNotifier<LinkModifier?> {
   /// Applies to the next click, and is saved for the next start.
   Future<void> choose(LinkModifier key) async {
     value = key;
+    appLog.add('setting link key ${key.name}');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, key.name);
   }
