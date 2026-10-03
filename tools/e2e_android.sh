@@ -140,7 +140,7 @@ case "$1" in
   # (the model chosen shows in them), and the line a real one prints, naming a
   # session the agents list holds.
   --bg) printf '%s\n' "$*" >"$HOME/.e2e-bg-args"
-    echo 'backgrounded · e2e2 · New chat' ;;
+    echo 'backgrounded · e2e0newc · New chat' ;;
   -p) if [ "$2" = /usage ]; then cat "$HOME/.e2e-usage.txt" 2>/dev/null; else
     # Chat's own claude, where a flow asked for a model (~/.e2e-model): the
     # init a real one writes, naming it; a set_model request is kept for the
@@ -628,6 +628,17 @@ chat_model() {
   live_session
   sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests"
   sudo -u "$SSH_USER" touch "$home/.e2e-model"
+  # The session `--bg` names, which the agents list must hold (an id of 8
+  # characters or more): a finished one, so chat continues it as its own.
+  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
+import json, os
+path = os.path.join(os.environ['HOME'], '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'id': 'e2e0newc', 'cwd': os.environ['HOME'], 'kind': 'background',
+             'startedAt': 1790000000100, 'sessionId': 'e2e00002-0000-4000-8000-000000000002',
+             'name': 'New chat', 'state': 'done'})
+json.dump(rows, open(path, 'w'))
+PY
   # With the emulator's animations off a toast is gone at once.
   adb shell settings put global animator_duration_scale 1
   flow chat_model || status=1
