@@ -284,7 +284,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
               Align(
                 alignment: Alignment.centerRight,
                 child: TuiButton(
-                  label: 'Cancel',
+                  label: 'Cancel', logName: 'Cancel',
                   variant: TuiButtonVariant.ghost,
                   onPressed: () => Navigator.of(context).pop(false),
                 ),
@@ -417,7 +417,7 @@ class _HostKeyPrompt extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
             TuiButton(
-              label: 'Cancel',
+              label: 'Cancel', logName: 'Cancel',
               variant: TuiButtonVariant.ghost,
               onPressed: () => onAnswer(false),
             ),
@@ -482,7 +482,7 @@ class AuthCheckPrompt extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
-        TuiButton(label: 'Open link', prefix: '↗', onPressed: onOpen),
+        TuiButton(label: 'Open link', logName: 'Open link', prefix: '↗', onPressed: onOpen),
         const SizedBox(height: 12),
         SelectableText(
           url.toString(),

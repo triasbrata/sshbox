@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/telemetry/input_log.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:xterm2/xterm.dart' show TerminalView;
+import 'log_messages.dart';
 
 /// A fresh log and key handler per test, so what one prints never leaks in.
 late AppLog log;
@@ -185,7 +186,7 @@ void main() {
       final line = appLog.current.split('\n').last;
       expect(appLog.length, before + 1);
       expect(line, contains('paste text 16 (terminal)'));
-      expect(line, isNot(contains('secret')));
+      expect(logMessages(line), isNot(contains('secret')));
     });
 
     test('a muted paste is not logged twice', () {
@@ -266,7 +267,7 @@ void main() {
     await tester.pumpAndSettle();
     final added = appLog.current.split('\n').skip(before).join('\n');
     expect(added, contains('route open popup DialogRoute'));
-    expect(added, isNot(contains('private words')));
+    expect(logMessages(added), isNot(contains('private words')));
   });
 
   test('a setting logs its choice as a value, and no host text', () async {

@@ -15,6 +15,7 @@ import 'settings_page.dart' show showDotfiles;
 import 'terminal_link.dart';
 import 'toast.dart';
 import 'tui.dart';
+import '../telemetry/app_log.dart';
 
 /// One visible line of the tree: an entry, and how many open folders deep it
 /// sits below the root.
@@ -371,11 +372,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Future<void> _openEntry(RemoteEntry entry) async {
+    appLog.add('action files open');
     setState(() => _selected = entry.path);
     if (entry.isTraversable) {
       // Opened or shut, a tapped folder is where the user is looking, so a
       // shell told to follow goes there too. A file is not somewhere a shell
       // can be, and opening one moves nothing.
+      appLog.add('action files follow');
       widget.terminal?.followTo(entry.path);
       await _toggle(entry);
       return;
@@ -624,6 +627,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// name already there asks first: replace that file, keep both, or skip
   /// this one.
   Future<void> _uploadInto(String folder) async {
+    appLog.add('action files upload');
     final picked = await FilePicker.pickFiles();
     if (picked.isEmpty || !mounted) return;
     final say = _sayAnyway();
@@ -740,17 +744,17 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           'new one as "$bothName", or skip it.',
       actions: [
         TuiButton(
-          label: 'Skip',
+          label: 'Skip', logName: 'Skip',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(_Clash.skip),
         ),
         TuiButton(
-          label: 'Keep both',
+          label: 'Keep both', logName: 'Keep both',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(_Clash.keepBoth),
         ),
         TuiButton(
-          label: 'Replace',
+          label: 'Replace', logName: 'Replace',
           variant: TuiButtonVariant.danger,
           onPressed: () => Navigator.of(context).pop(_Clash.replace),
         ),
@@ -761,6 +765,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// Brings [entry] down to the phone through [downloadFile], as a file tab
   /// does.
   Future<void> _download(RemoteEntry entry) async {
+    appLog.add('action files download');
     setState(() => _busy = true);
     try {
       await downloadFile(
@@ -1070,7 +1075,7 @@ class _NamePromptState extends State<_NamePrompt> {
       title: widget.title,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),

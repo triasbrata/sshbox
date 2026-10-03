@@ -2110,7 +2110,7 @@ class _Empty extends StatelessWidget {
               FittedBox(
                 fit: BoxFit.scaleDown,
                 child: TuiButton(
-                  label: 'Sessions on this host',
+                  label: 'Sessions on this host', logName: 'Sessions on this host',
                   prefix: '▸',
                   variant: TuiButtonVariant.ghost,
                   onPressed: show,
@@ -2477,15 +2477,15 @@ class _Bubble extends StatelessWidget {
           child: Wrap(
             spacing: 8,
             children: [
-              TuiButton(label: 'Retry', prefix: '↻', onPressed: onRetry),
+              TuiButton(label: 'Retry', logName: 'Retry', prefix: '↻', onPressed: onRetry),
               if (onChooseFolder != null)
                 TuiButton(
-                  label: 'Choose another folder',
+                  label: 'Choose another folder', logName: 'Choose another folder',
                   variant: TuiButtonVariant.ghost,
                   onPressed: onChooseFolder,
                 ),
               TuiButton(
-                label: 'Remove',
+                label: 'Remove', logName: 'Remove',
                 variant: TuiButtonVariant.ghost,
                 onPressed: onRemove,
               ),
@@ -3892,11 +3892,11 @@ class _FolderPickerState extends State<_FolderPicker> {
       maxWidth: 440,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.pop(context),
         ),
-        TuiButton(label: 'Use this folder', onPressed: _use),
+        TuiButton(label: 'Use this folder', logName: 'Use this folder', onPressed: _use),
       ],
       child: SizedBox(
         height: 340,

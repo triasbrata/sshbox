@@ -6,6 +6,8 @@
 
 import 'package:flutter/material.dart';
 
+import '../../telemetry/tap_log.dart';
+
 import 'termul_theme.dart';
 import 'tui_text.dart';
 
@@ -37,7 +39,11 @@ class TuiTabs extends StatelessWidget {
             _Tab(
               label: tabs[i],
               selected: i == index,
-              onTap: () => onChanged(i),
+              onTap: () {
+                // The place, never the label: a tab's name may be a host's.
+                logTap(context, 'tab ${i + 1}', 'tab');
+                onChanged(i);
+              },
             ),
           const Spacer(),
           Padding(

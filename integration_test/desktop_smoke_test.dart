@@ -1769,6 +1769,8 @@ touch '${done.path}'
           ((w.message ?? '').startsWith('Close ') || w.message == 'Reconnect'),
     );
     final before = tabs.evaluate().length;
+    int logged(String line) => line.allMatches(appLog.current).length;
+    final dups = logged('action tab duplicate');
 
     // Right-clicked on the chip that holds a close button. Any Local tab
     // duplicates the same way.
@@ -1787,6 +1789,32 @@ touch '${done.path}'
       'a second Local shell',
     );
     expect(find.textContaining('no longer saved'), findsNothing);
+    // #223: the action is in the log once, by a word or two, and the menu
+    // that was open before it logged none.
+    expect(logged('action tab duplicate'), dups + 1);
+    await _closeTabs(tester);
+  });
+
+  // #223 part 2: a tap on one of the app's own controls is a line with a
+  // fixed name and where it was, and no name a host or a user chose.
+  _test('a tap on a control is logged by its fixed name, never a host label', (
+    tester,
+  ) async {
+    await _launch(tester);
+    int logged(String line) => line.allMatches(appLog.current).length;
+    final adds = logged('tap Add (home)');
+    final cards = logged('tap button (home)');
+    await tester.tap(_label('Add'));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(logged('tap Add (home)'), adds + 1);
+    // Closed again with a second tap: one more, still the fixed name.
+    await tester.tap(_label('Add'));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(logged('tap Add (home)'), adds + 2);
+    // Opening the Local shell by its card puts its title nowhere in the log.
+    await _localShell(tester);
+    expect(appLog.current, isNot(contains('tap Local shell')));
+    expect(logged('tap button (home)'), cards);
     await _closeTabs(tester);
   });
 

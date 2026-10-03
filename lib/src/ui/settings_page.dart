@@ -1212,7 +1212,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
               ValueListenableBuilder(
                 valueListenable: copyOnSelect,
                 builder: (context, on, _) => TuiSwitch(
-                  label: 'Copy on select',
+                  label: 'Copy on select', logName: 'Copy on select',
                   value: on,
                   onChanged: copyOnSelect.choose,
                 ),
@@ -1226,7 +1226,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
                 ValueListenableBuilder(
                   valueListenable: localOpenCommand,
                   builder: (context, on, _) => TuiSwitch(
-                    label: 'Add the jeansh command to this computer',
+                    label: 'Add the jeansh command to this computer', logName: 'Add the jeansh command to this computer',
                     value: on,
                     onChanged: (value) async {
                       final ok = await localOpenCommand.choose(value);
@@ -1304,13 +1304,13 @@ class _InstalledFontPickerState extends State<_InstalledFontPicker> {
       maxWidth: 520,
       actions: [
         TuiButton(
-          label: 'Cancel',
+          label: 'Cancel', logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),
         if (fonts == null)
           TuiButton(
-            label: 'Use',
+            label: 'Use', logName: 'Use',
             onPressed: typed.isEmpty ? null : () => pick(typed),
           ),
       ],
@@ -1525,13 +1525,13 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                   runSpacing: 8,
                   children: [
                     TuiButton(
-                      label: 'Divider',
+                      label: 'Divider', logName: 'Divider',
                       prefix: '│',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => pick(keyBarDivider),
                     ),
                     TuiButton(
-                      label: 'Custom key…',
+                      label: 'Custom key…', logName: 'Custom key…',
                       prefix: '+',
                       onPressed: () => pick(customKeyPrefix),
                     ),
@@ -1618,7 +1618,7 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                         ),
                       ),
                     ),
-                    TuiButton(label: 'Add key', prefix: '+', onPressed: _add),
+                    TuiButton(label: 'Add key', logName: 'Add key', prefix: '+', onPressed: _add),
                   ],
                 ),
               ),
@@ -1983,13 +1983,13 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                 child: Row(
                   children: [
                     TuiButton(
-                      label: 'Clear',
+                      label: 'Clear', logName: 'Clear',
                       variant: TuiButtonVariant.ghost,
                       onPressed: _clear,
                     ),
                     const Spacer(),
                     TuiButton(
-                      label: 'Cancel',
+                      label: 'Cancel', logName: 'Cancel',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
@@ -2233,7 +2233,7 @@ class _PrivacySection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             TuiSwitch(
-              label: 'Telemetry',
+              label: 'Telemetry', logName: 'Telemetry',
               value: on,
               onChanged: (want) => _choose(context, want),
             ),

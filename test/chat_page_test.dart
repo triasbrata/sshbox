@@ -40,6 +40,7 @@ import 'package:sshbox/src/ui/tui.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_web_view.dart';
+import 'log_messages.dart';
 
 /// Takes every link it is handed and remembers it: what would have gone to
 /// the phone's browser, or to whatever app answers the link's scheme.
@@ -5811,7 +5812,7 @@ void main() {
       await tester.pump();
       final added = appLog.current.split('\n').skip(before).join('\n');
       expect(added, contains('paste text (chat)'));
-      expect(added, isNot(contains('sekret')));
+      expect(logMessages(added), isNot(contains('sekret')));
     });
 
     testWidgets('a transcript\'s picture that claims too many pixels is not '

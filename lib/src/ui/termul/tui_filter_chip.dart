@@ -9,6 +9,8 @@
 
 import 'package:flutter/material.dart';
 
+import '../../telemetry/tap_log.dart';
+
 import 'termul_theme.dart';
 import 'tui_text.dart';
 
@@ -36,12 +38,17 @@ class TuiFilterChip extends StatefulWidget {
     this.count,
     this.onSelected,
     this.enabled = true,
+    this.logName,
   });
 
   final String label;
   final bool selected;
   final int? count;
   final ValueChanged<bool>? onSelected;
+
+  /// The name a tap is logged under: a fixed word from code, never a label
+  /// built from a table or a key.
+  final String? logName;
   final bool enabled;
 
   @override
@@ -93,7 +100,12 @@ class _TuiFilterChipState extends State<TuiFilterChip> {
           onTapDown: active ? (_) => setState(() => _pressed = true) : null,
           onTapUp: active ? (_) => setState(() => _pressed = false) : null,
           onTapCancel: active ? () => setState(() => _pressed = false) : null,
-          onTap: active ? () => widget.onSelected!(!selected) : null,
+          onTap: active
+              ? () {
+                  logTap(context, widget.logName, 'chip');
+                  widget.onSelected!(!selected);
+                }
+              : null,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 80),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),

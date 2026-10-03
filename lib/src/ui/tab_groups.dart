@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'tui.dart';
+import '../telemetry/app_log.dart';
 
 /// Tabs shown together, each page in a pane of its own, the way tmux splits
 /// a window: see [TabGroupView]. A group keeps only its tabs' ids, so a tab
@@ -40,6 +41,7 @@ class TabGroups extends ChangeNotifier {
   /// in a new group of the two. A tab in another group leaves that first.
   void join(String id, String target) {
     if (id == target) return;
+    appLog.add('action tab group');
     _leave(id);
     final group = of(target);
     if (group == null) {
@@ -52,6 +54,7 @@ class TabGroups extends ChangeNotifier {
 
   /// Takes [id] out of its group, back into a tab of its own.
   void leave(String id) {
+    appLog.add('action tab take out');
     _leave(id);
     notifyListeners();
   }
@@ -67,6 +70,7 @@ class TabGroups extends ChangeNotifier {
 
   /// Every tab of [group] back into a tab of its own.
   void ungroup(TabGroup group) {
+    appLog.add('action tab ungroup');
     _all.remove(group);
     notifyListeners();
   }

@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import 'termul_theme.dart';
 import 'tui_text.dart';
+import '../../telemetry/tap_log.dart';
 
 enum TuiButtonVariant { primary, ghost, danger }
 
@@ -24,9 +25,15 @@ class TuiButton extends StatefulWidget {
     this.onPressed,
     this.variant = TuiButtonVariant.primary,
     this.prefix,
+    this.logName,
   });
 
   final String label;
+
+  /// The name a tap is logged under, always a fixed word from code: a label
+  /// built from a host, a file or a session passes one, or is logged as a
+  /// plain button.
+  final String? logName;
   final VoidCallback? onPressed;
   final TuiButtonVariant variant;
   final String? prefix;
@@ -43,6 +50,12 @@ class _TuiButtonState extends State<TuiButton> {
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
     final enabled = widget.onPressed != null;
+    final onPressed = enabled
+        ? () {
+            logTap(context, widget.logName, 'button');
+            widget.onPressed!();
+          }
+        : null;
 
     // Light primary: paper fill + ink label + indigo mark square.
     // Dark themes keep filled accent primary.
@@ -83,7 +96,7 @@ class _TuiButtonState extends State<TuiButton> {
       button: true,
       enabled: enabled,
       label: widget.label,
-      onTap: widget.onPressed,
+      onTap: onPressed,
       excludeSemantics: true,
       child: MouseRegion(
         onEnter: (_) => setState(() => _hover = true),
@@ -92,7 +105,7 @@ class _TuiButtonState extends State<TuiButton> {
           onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
           onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
           onTapCancel: enabled ? () => setState(() => _pressed = false) : null,
-          onTap: widget.onPressed,
+          onTap: onPressed,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 80),
             decoration: BoxDecoration(
