@@ -35,6 +35,14 @@ appId: cloud.brata.terminal
     direction: DOWN
     timeout: 15000
 - assertVisible: "(?s).*110%.*"
+# The content text size is another setting: noted here at 110%, and the same
+# at 100% below.
+- scrollUntilVisible:
+    element: "[0-9]+px"
+    direction: DOWN
+    timeout: 15000
+- copyTextFrom: "[0-9]+px"
+- evalScript: ${output.contentAt110 = maestro.copiedText}
 - takeScreenshot: text-size-settings-110
 - back
 
@@ -54,4 +62,10 @@ appId: cloud.brata.terminal
     direction: DOWN
     timeout: 15000
 - assertVisible: "(?s).*100%.*"
+- scrollUntilVisible:
+    element: "[0-9]+px"
+    direction: DOWN
+    timeout: 15000
+- copyTextFrom: "[0-9]+px"
+- assertTrue: ${maestro.copiedText == output.contentAt110}
 - back
