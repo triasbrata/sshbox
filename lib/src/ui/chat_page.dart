@@ -1670,7 +1670,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 // that takes a picture first, offered with a picture alone.
                 // Enter and the slash menu stay [_onBoxKey]'s: only a paste is
                 // taken here.
-                Actions(
+                // Its own semantics node: without one the field's merges up
+                // into the whole box's, so a press at the centre of that node,
+                // where a screen reader or a flow aims, lands between controls.
+                Semantics(
+                  container: true,
+                  child: Actions(
                   actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
                   child: TextField(
                     contextMenuBuilder: _contextMenu,
@@ -1749,7 +1754,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       if (synced != _input.value) _input.value = synced;
                     }),
                   ),
-                ),
+                )),
                 Row(
                   children: [
                     IconButton(
