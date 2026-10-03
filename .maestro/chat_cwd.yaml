@@ -39,6 +39,12 @@ env:
     timeout: 10000
 - tapOn:
     point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
 - eraseText: 120
 - inputText: "relative/dir"
 - tapOn: "Use this folder"
@@ -88,6 +94,12 @@ env:
 - tapOn: "Folder.*"
 - tapOn:
     point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
 - eraseText: 120
 - inputText: "${BROKEN}"
 - tapOn: "Use this folder"
@@ -105,6 +117,12 @@ env:
 - tapOn: "Folder.*"
 - tapOn:
     point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
 - eraseText: 120
 - inputText: "${BAD}"
 - tapOn: "Use this folder"
@@ -121,6 +139,12 @@ env:
 - tapOn: "(?i)choose another folder"
 - tapOn:
     point: 50%, 24%
+# The caret goes where the tap landed, and erasing only goes backwards: to the end first.
+- repeat:
+    times: 40
+    commands:
+      - pressKey: Remote Dpad Right
+- eraseText: 120
 - eraseText: 120
 - inputText: "${PROJ}"
 - tapOn: "Use this folder"
