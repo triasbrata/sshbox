@@ -803,7 +803,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
   if (Platform.isWindows) {
     run = _winMouse([
       for (final step in steps)
-        if (step.startsWith('clickstate')) ...<String>[]
+        if (step.startsWith('clickstate'))
+          ...<String>[]
         else if (step.split(' ') case ['move', final x, final y])
           'move ${(double.parse(x) * ratio).round()} '
               '${(double.parse(y) * ratio).round()}'
@@ -943,6 +944,28 @@ for step in args[3].split(separator: ";") {
       usleep(60_000)
     }
     clickState = 0
+  case "wheel":
+    // A mouse wheel's notch: lines, not the trackpad's phased pixels.
+    let e = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                    wheel1: Int32(p[1])!, wheel2: 0, wheel3: 0)!
+    e.location = at
+    e.post(tap: .cghidEventTap)
+    usleep(60_000)
+  case "cmdtab":
+    // What a hand does mid-drag: the app goes behind, the button still held.
+    modifier(55, commandLeft, true)
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: keys, virtualKey: 48, keyDown: down)!
+      e.flags = commandLeft
+      e.post(tap: .cghidEventTap)
+      usleep(150_000)
+    }
+    modifier(55, commandLeft, false)
+    usleep(500_000)
+  case "activate":
+    NSRunningApplication(processIdentifier: pid)?.activate()
+    usleep(500_000)
+  case "forget": pressed = false  // the button's up went to nobody
   case "rdown": post(.rightMouseDown, .right)
   case "rup": post(.rightMouseUp, .right)
   case "shiftdown": modifier(56, shiftLeft, true)
@@ -3848,15 +3871,15 @@ touch '${done.path}'
         await Clipboard.setData(const ClipboardData(text: 'untouched'));
         await _hearing(() async {
           // Shift held past the release, as a hand holds it: the app may
-        // hear a key before the pointer events sent ahead of it, and xterm2
-        // reads Shift as the drag starts, not at the press.
-        await _osMouse(tester, [
-          'shiftdown',
-          'sleep 200',
-          ...drag,
-          'sleep 500',
-          'shiftup',
-        ]);
+          // hear a key before the pointer events sent ahead of it, and xterm2
+          // reads Shift as the drag starts, not at the press.
+          await _osMouse(tester, [
+            'shiftdown',
+            'sleep 200',
+            ...drag,
+            'sleep 500',
+            'shiftup',
+          ]);
           await _until(
             tester,
             () async => await _clipboard() != 'untouched',
@@ -4030,6 +4053,102 @@ touch '${done.path}'
       });
     },
   );
+
+  // JEANSH-D ("cant scrolling to the terminal panel", 1.0.99 on a Mac): the
+  // scrollback must move for a wheel and for a trackpad, in a plain shell and
+  // in a tmux pane, and after a gesture the window never saw the end of —
+  // ⌘+Tab mid-drag, a held double-click drag. Each is the 2x2: the scrollback
+  // moves (positive), and nothing else does — the screen's text, the number of
+  // lines and the clipboard stay as they were (negative). Reported, not gated;
+  // reverting #211's "a new press ends a held gesture" is its mutation.
+  const clicked = [
+    ['plain shell, wheel', false, 'wheel', <String>[]],
+    ['tmux pane, wheel', true, 'wheel', <String>[]],
+    ['tmux pane, trackpad', true, 'trackpad', <String>[]],
+    [
+      'after ⌘+Tab mid-drag, then a click',
+      false,
+      'trackpad',
+      ['down', 'move +40 +0', 'cmdtab', 'activate', 'forget', 'down', 'up'],
+    ],
+    [
+      'after a held double-click drag',
+      false,
+      'trackpad',
+      [
+        'clickstate 1', 'down', 'up', 'clickstate 2', 'down', //
+        'move +60 +0', 'sleep 800', 'up', 'clickstate 0',
+      ],
+    ],
+  ];
+  for (final [name, tmux, how, before] in clicked) {
+    _test(
+      'the scrollback moves and nothing else does: $name',
+      skip: Platform.isMacOS
+          ? null
+          : 'a Mac wheel and trackpad, through CoreGraphics',
+      (tester) async {
+        await _realPointer(() async {
+          await _launch(tester);
+          final view = await _localShell(tester, tmux: tmux as bool);
+          _run(view, 'seq 1 400');
+          await _until(
+            tester,
+            () => _text(view).any((line) => line.trim() == '400'),
+            'seq to print 400 lines',
+          );
+          final scroll = tester.state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byType(TerminalView),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          final box = tester.getRect(find.byType(TerminalView));
+          final c = box.center;
+          String at(String step) {
+            final [verb, dx, dy] = step.split(' ');
+            return 'move ${c.dx + double.parse(dx)} ${c.dy + double.parse(dy)}';
+          }
+
+          await Clipboard.setData(const ClipboardData(text: 'untouched'));
+          final steps = [
+            'move ${c.dx} ${c.dy}',
+            for (final step in before as List<String>)
+              step.startsWith('move +') ? at(step) : step,
+          ];
+          await _osMouse(tester, steps);
+          await Clipboard.setData(const ClipboardData(text: 'untouched'));
+          scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
+          await tester.pump();
+          final from = scroll.position.pixels;
+          final text = _text(view).join('\n');
+          final lines = view.terminal.buffer.lines.length;
+
+          if (how == 'wheel') {
+            await _osMouse(tester, ['move ${c.dx} ${c.dy}', 'wheel 15']);
+          } else {
+            await _trackpad(tester, c);
+          }
+
+          expect(
+            scroll.position.pixels,
+            isNot(from),
+            reason: 'the scrollback, from $from ($name)',
+          );
+          expect(_text(view).join('\n'), text, reason: 'the screen ($name)');
+          expect(view.terminal.buffer.lines.length, lines);
+          expect(
+            (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+            'untouched',
+            reason: 'the clipboard ($name)',
+          );
+          await _closeTabs(tester);
+        });
+      },
+    );
+  }
 
   // #117: on Linux and Windows the runner draws no title bar, and the app
   // draws its buttons and moves the window from the tab strip's empty space.
@@ -4768,7 +4887,14 @@ touch '${done.path}'
               'role': 'user',
               'content': [
                 {'type': 'tool_result', 'tool_use_id': 'toolu_msg', 'content': 'sent'},
-                {'type': 'tool_result', 'tool_use_id': 'toolu_mcp', 'content': jsonEncode({'rows': [1, 2], 'ok': true})},
+                {
+                  'type': 'tool_result',
+                  'tool_use_id': 'toolu_mcp',
+                  'content': jsonEncode({
+                    'rows': [1, 2],
+                    'ok': true,
+                  }),
+                },
               ],
             },
           })}',
@@ -4934,7 +5060,11 @@ touch '${done.path}'
                 w.scrollDirection == Axis.horizontal,
           ),
         );
-        expect(sideways.evaluate().length, lessThanOrEqualTo(1), reason: 'only a table may scroll sideways, not a code block');
+        expect(
+          sideways.evaluate().length,
+          lessThanOrEqualTo(1),
+          reason: 'only a table may scroll sideways, not a code block',
+        );
         final block = tester.renderObject<RenderParagraph>(
           find.textContaining('wd0 wd1', findRichText: true).first,
         );
@@ -5053,7 +5183,7 @@ touch '${done.path}'
         ]);
         await clipboardIs(
           'Before the table.\nName\tNote\nalpha\tfirst cell_code() here\n'
-          'beta\tsecond row words\nAfter the table.',
+              'beta\tsecond row words\nAfter the table.',
           '8. a drag across a paragraph, a table and a paragraph',
         );
       });
