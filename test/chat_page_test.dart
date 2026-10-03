@@ -5779,6 +5779,51 @@ void main() {
       expect(find.text('[Image #1] shot.png'), findsOneWidget);
     });
 
+    testWidgets('a long press on the empty box opens the selection menu with '
+        'Paste, which puts the clipboard text in', (tester) async {
+      clipboard(tester);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            return {'text': 'from the clipboard'};
+          }
+          if (call.method == 'Clipboard.hasStrings') return {'value': false};
+          return null;
+        },
+      );
+      tester.view
+        ..physicalSize = const Size(700, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await continued(tester);
+      // Where a screen reader or a flow reaches the box: the centre of the
+      // semantics node that names it. It must be the field's own, not the
+      // whole composer's, or a press there lands between the controls.
+      final sem = tester.ensureSemantics();
+      final node = tester.getSemantics(find.bySemanticsLabel('Ask Claude…'));
+      final centre = tester.getCenter(find.bySemanticsLabel('Ask Claude…'));
+      expect(node.childrenCount, 0, reason: 'the field has no controls inside');
+      expect(
+        tester.getRect(find.byType(TextField)).contains(centre),
+        isTrue,
+        reason: 'the centre of its node is on the field',
+      );
+      await tester.longPressAt(centre);
+      sem.dispose();
+      // The soft keyboard comes up with the focus, as it does on a phone.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpAndSettle();
+      expect(find.text('Paste'), findsOneWidget);
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), 'from the clipboard');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
     testWidgets('the selection menu\'s Paste with no picture logs a text paste '
         'and none of its words', (tester) async {
       clipboard(tester);
