@@ -143,8 +143,11 @@ class _HostsPageState extends State<HostsPage> {
     );
     // Both lists in the same order, so a secret added to SecretKeys travels
     // with a duplicate too. Read and written, never logged or shown.
-    final from = SecretKeys.allFor(host.id);
-    final to = SecretKeys.allFor(copy.id);
+    // Not the `jeansh` secret: it is the host's, and a copy makes its own.
+    final from = SecretKeys.allFor(host.id)
+      ..remove(SecretKeys.openSecret(host.id));
+    final to = SecretKeys.allFor(copy.id)
+      ..remove(SecretKeys.openSecret(copy.id));
     for (var i = 0; i < from.length; i++) {
       await widget.secrets.write(to[i], await widget.secrets.read(from[i]));
     }
