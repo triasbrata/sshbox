@@ -33,7 +33,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
+import 'package:sshbox/src/data/host_repository.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
@@ -800,7 +803,8 @@ Future<void> _osMouse(WidgetTester tester, List<String> steps) async {
   if (Platform.isWindows) {
     run = _winMouse([
       for (final step in steps)
-        if (step.startsWith('clickstate')) ...<String>[]
+        if (step.startsWith('clickstate'))
+          ...<String>[]
         else if (step.split(' ') case ['move', final x, final y])
           'move ${(double.parse(x) * ratio).round()} '
               '${(double.parse(y) * ratio).round()}'
@@ -940,6 +944,28 @@ for step in args[3].split(separator: ";") {
       usleep(60_000)
     }
     clickState = 0
+  case "wheel":
+    // A mouse wheel's notch: lines, not the trackpad's phased pixels.
+    let e = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                    wheel1: Int32(p[1])!, wheel2: 0, wheel3: 0)!
+    e.location = at
+    e.post(tap: .cghidEventTap)
+    usleep(60_000)
+  case "cmdtab":
+    // What a hand does mid-drag: the app goes behind, the button still held.
+    modifier(55, commandLeft, true)
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: keys, virtualKey: 48, keyDown: down)!
+      e.flags = commandLeft
+      e.post(tap: .cghidEventTap)
+      usleep(150_000)
+    }
+    modifier(55, commandLeft, false)
+    usleep(500_000)
+  case "activate":
+    NSRunningApplication(processIdentifier: pid)?.activate()
+    usleep(500_000)
+  case "forget": pressed = false  // the button's up went to nobody
   case "rdown": post(.rightMouseDown, .right)
   case "rup": post(.rightMouseUp, .right)
   case "shiftdown": modifier(56, shiftLeft, true)
@@ -2935,11 +2961,12 @@ touch '${done.path}'
   );
 
   // #146: files dropped from the file manager on a desktop chat. A picture
-  // becomes a card above the box and its [Image #1] in it; a folder dropped
-  // with it is refused, saying it is a folder, and so is a file that is no
-  // picture Claude reads. A real X drag, as the terminal's above.
+  // becomes a card above the box and its [Image #1] in it; since #217 a
+  // folder, or a file that is no picture, dropped with it goes in as its
+  // path on this machine instead of being refused. A real X drag, as the
+  // terminal's above.
   _test(
-    'a picture dropped on a chat becomes a card, a folder is refused',
+    'a picture dropped on a chat becomes a card, a folder goes in as a path',
     skip: !Platform.isLinux
         ? 'the drag is a real X drag, made with xdotool and a GTK window'
         : Platform.environment['CI'] != 'true'
@@ -2968,10 +2995,6 @@ touch '${done.path}'
         () => _composer.evaluate().isNotEmpty,
         'the chat tab to open, its version check passed',
       );
-      Finder toast(String text) => find.descendant(
-        of: find.byType(TuiToastCard),
-        matching: find.textContaining(text, findRichText: true),
-      );
       final cards = find.byWidgetPredicate(
         (w) => w is Tooltip && (w.message ?? '').startsWith('Remove '),
       );
@@ -2979,34 +3002,213 @@ touch '${done.path}'
       await _drag(tester, picture.path, dir, more: [folder.path]);
       await _until(
         tester,
-        () =>
-            toast('A folder is not a picture: e2e-folder')
-                .evaluate()
-                .isNotEmpty,
-        'the folder refused, saying it is a folder',
-      );
-      await _until(
-        tester,
         () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
         "the picture's card",
       );
       expect(cards, findsOneWidget, reason: 'one card, for the picture alone');
-      expect(
-        tester.widget<TextField>(_composer).controller!.text,
-        '[Image #1] ',
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+      await _until(
+        tester,
+        () => box() == '[Image #1] ${folder.path} ',
+        "the picture's token, then the folder's own path",
       );
+      expect(find.textContaining('is not a picture'), findsNothing);
       await _shot(tester, 'desktop-chat-dropped-picture');
 
       await _drag(tester, notes.path, dir);
       await _until(
         tester,
-        () =>
-            toast('Not a picture Claude can read: e2e-notes.txt')
-                .evaluate()
-                .isNotEmpty,
-        'the text file refused',
+        () => box() == '[Image #1] ${folder.path} ${notes.path} ',
+        'the text file as a path after the folder',
       );
       expect(cards, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #217: any file dragged into a chat goes in as a path. A Local shell's is
+  // the file's own, nothing copied, with a space after; a picture is still a
+  // card. A real X drag, as the terminal's and the picture's above.
+  _test(
+    'a file dropped on a Local shell chat goes in as its path',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI it would drag with the user's own pointer"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final dir = _scratch();
+      final first = File('${dir.path}/e2e-first.txt')..writeAsStringSync('1');
+      final second = File('${dir.path}/e2e-second.txt')..writeAsStringSync('2');
+      final picture = File('${dir.path}/e2e-drop.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8Dw'
+            'HwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+          ),
+        );
+      await _launch(tester);
+      await _chatAnswered(tester);
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+      // The message sent has emptied the box.
+      expect(box(), '');
+
+      await _drag(tester, first.path, dir);
+      await _until(
+        tester,
+        () => box() == '${first.path} ',
+        "the first file's own path and a space in the box",
+      );
+      await _drag(tester, second.path, dir);
+      await _until(
+        tester,
+        () => box() == '${first.path} ${second.path} ',
+        'the second path after the first',
+      );
+      debugPrint('STEP 1 PASS: the box holds "${box()}"');
+
+      await _drag(tester, picture.path, dir);
+      await _until(
+        tester,
+        () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
+        "the picture's card",
+      );
+      expect(box(), contains('[Image #1]'));
+      expect(box(), isNot(contains('e2e-drop.png')));
+      debugPrint('STEP 2 PASS: a picture card, not a path: "${box()}"');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #217, over SSH: the file is uploaded first, shows in Transfers, and the
+  // box gets its path on the host; a folder cannot be uploaded and says so.
+  // The host is the job's own sshd (e2e.yml), its user throwaway, with a
+  // stand-in Claude in that user's home for chat's version check.
+  _test(
+    'a file dropped on an SSH host chat is uploaded, a folder refused',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true' ||
+              (Platform.environment['SSH_USER'] ?? '').isEmpty ||
+              (Platform.environment['SSH_PASSWORD'] ?? '').isEmpty
+        ? "needs the job's own sshd and its throwaway user"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final user = Platform.environment['SSH_USER']!;
+      final password = Platform.environment['SSH_PASSWORD']!;
+      // The stand-in in the sshd user's home; `sudo -u` because that user is
+      // not this one. Removed after.
+      final bin = '/home/$user/.local/bin/claude';
+      Future<void> sudo(List<String> args, {String? stdin}) async {
+        final p = await Process.start('sudo', args);
+        if (stdin != null) p.stdin.write(stdin);
+        await p.stdin.close();
+        await p.stdout.drain<void>();
+        expect(await p.exitCode, 0, reason: 'sudo $args');
+      }
+
+      await sudo(['-u', user, 'mkdir', '-p', '/home/$user/.local/bin']);
+      await sudo(['-u', user, 'tee', bin], stdin: _standInClaude);
+      await sudo(['chmod', '755', bin]);
+      final remoteName = 'e2e-drop-$pid.txt';
+      addTearDown(() async {
+        await sudo(['rm', '-f', bin, '/tmp/$remoteName']);
+        await sudo(['rm', '-rf', '/home/$user/.claude']);
+      });
+
+      final secrets = KeystoreSecretStore();
+      final hosts = HostRepository(secrets);
+      const id = 'e2e-ssh-drop';
+      // A locked keyring waits for a prompt nobody sees: say so, not hang.
+      await secrets
+          .write(SecretKeys.password(id), password)
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () => fail('the keyring never took the password'),
+          );
+      await hosts.upsert(
+        HostProfile(
+          id: id,
+          label: 'e2e sshd',
+          host: '127.0.0.1',
+          username: user,
+        ),
+      );
+      addTearDown(() => hosts.delete(id));
+
+      final dir = _scratch();
+      final file = File('${dir.path}/$remoteName')
+        ..writeAsStringSync('uploaded by the e2e');
+      final folder = Directory('${dir.path}/e2e-folder')..createSync();
+
+      await _launch(tester);
+      await _closeTabs(tester);
+      await tester.tap(_homeCard('e2e sshd'));
+      await _until(
+        tester,
+        () => _label('Trust').evaluate().isNotEmpty,
+        "the host key's Trust",
+      );
+      await tester.tap(_label('Trust'));
+      await _until(
+        tester,
+        () => find.byTooltip('Chat with Claude').evaluate().isNotEmpty,
+        'the SSH tab, connected',
+        timeout: const Duration(seconds: 40),
+      );
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () => _composer.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+        timeout: const Duration(seconds: 40),
+      );
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+
+      final before = transfers.items.length;
+      await _drag(tester, file.path, dir);
+      await _until(
+        tester,
+        () => box() == '/tmp/$remoteName ',
+        'the uploaded path and a space in the box',
+        timeout: const Duration(seconds: 30),
+      );
+      final mine = transfers.items
+          .take(transfers.items.length - before)
+          .toList();
+      expect(mine, hasLength(1), reason: 'one transfer for the one file');
+      expect(mine.single.name, remoteName);
+      expect(mine.single.state, TransferState.done);
+      final read = await Process.run('sudo', ['cat', '/tmp/$remoteName']);
+      expect(read.stdout, 'uploaded by the e2e');
+      debugPrint(
+        'STEP 3 PASS: Transfers ran ${mine.single.name} (${mine.single.state}), '
+        'the box holds "${box()}"',
+      );
+
+      await _drag(tester, folder.path, dir);
+      await _until(
+        tester,
+        () => find
+            .descendant(
+              of: find.byType(TuiToastCard),
+              matching: find.textContaining(
+                'A folder cannot be uploaded',
+                findRichText: true,
+              ),
+            )
+            .evaluate()
+            .isNotEmpty,
+        'the folder refused, saying it cannot be uploaded',
+      );
+      expect(box(), '/tmp/$remoteName ', reason: 'the folder added no path');
+      expect(transfers.items.length, before + 1);
+      debugPrint('STEP 4 PASS: "A folder cannot be uploaded" toast');
       await _closeTabs(tester);
     },
   );
@@ -3669,15 +3871,15 @@ touch '${done.path}'
         await Clipboard.setData(const ClipboardData(text: 'untouched'));
         await _hearing(() async {
           // Shift held past the release, as a hand holds it: the app may
-        // hear a key before the pointer events sent ahead of it, and xterm2
-        // reads Shift as the drag starts, not at the press.
-        await _osMouse(tester, [
-          'shiftdown',
-          'sleep 200',
-          ...drag,
-          'sleep 500',
-          'shiftup',
-        ]);
+          // hear a key before the pointer events sent ahead of it, and xterm2
+          // reads Shift as the drag starts, not at the press.
+          await _osMouse(tester, [
+            'shiftdown',
+            'sleep 200',
+            ...drag,
+            'sleep 500',
+            'shiftup',
+          ]);
           await _until(
             tester,
             () async => await _clipboard() != 'untouched',
@@ -3851,6 +4053,102 @@ touch '${done.path}'
       });
     },
   );
+
+  // JEANSH-D ("cant scrolling to the terminal panel", 1.0.99 on a Mac): the
+  // scrollback must move for a wheel and for a trackpad, in a plain shell and
+  // in a tmux pane, and after a gesture the window never saw the end of —
+  // ⌘+Tab mid-drag, a held double-click drag. Each is the 2x2: the scrollback
+  // moves (positive), and nothing else does — the screen's text, the number of
+  // lines and the clipboard stay as they were (negative). Reported, not gated;
+  // reverting #211's "a new press ends a held gesture" is its mutation.
+  const clicked = [
+    ['plain shell, wheel', false, 'wheel', <String>[]],
+    ['tmux pane, wheel', true, 'wheel', <String>[]],
+    ['tmux pane, trackpad', true, 'trackpad', <String>[]],
+    [
+      'after ⌘+Tab mid-drag, then a click',
+      false,
+      'trackpad',
+      ['down', 'move +40 +0', 'cmdtab', 'activate', 'forget', 'down', 'up'],
+    ],
+    [
+      'after a held double-click drag',
+      false,
+      'trackpad',
+      [
+        'clickstate 1', 'down', 'up', 'clickstate 2', 'down', //
+        'move +60 +0', 'sleep 800', 'up', 'clickstate 0',
+      ],
+    ],
+  ];
+  for (final [name, tmux, how, before] in clicked) {
+    _test(
+      'the scrollback moves and nothing else does: $name',
+      skip: Platform.isMacOS
+          ? null
+          : 'a Mac wheel and trackpad, through CoreGraphics',
+      (tester) async {
+        await _realPointer(() async {
+          await _launch(tester);
+          final view = await _localShell(tester, tmux: tmux as bool);
+          _run(view, 'seq 1 400');
+          await _until(
+            tester,
+            () => _text(view).any((line) => line.trim() == '400'),
+            'seq to print 400 lines',
+          );
+          final scroll = tester.state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byType(TerminalView),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          final box = tester.getRect(find.byType(TerminalView));
+          final c = box.center;
+          String at(String step) {
+            final [verb, dx, dy] = step.split(' ');
+            return 'move ${c.dx + double.parse(dx)} ${c.dy + double.parse(dy)}';
+          }
+
+          await Clipboard.setData(const ClipboardData(text: 'untouched'));
+          final steps = [
+            'move ${c.dx} ${c.dy}',
+            for (final step in before as List<String>)
+              step.startsWith('move +') ? at(step) : step,
+          ];
+          await _osMouse(tester, steps);
+          await Clipboard.setData(const ClipboardData(text: 'untouched'));
+          scroll.position.jumpTo(scroll.position.maxScrollExtent - 600);
+          await tester.pump();
+          final from = scroll.position.pixels;
+          final text = _text(view).join('\n');
+          final lines = view.terminal.buffer.lines.length;
+
+          if (how == 'wheel') {
+            await _osMouse(tester, ['move ${c.dx} ${c.dy}', 'wheel 15']);
+          } else {
+            await _trackpad(tester, c);
+          }
+
+          expect(
+            scroll.position.pixels,
+            isNot(from),
+            reason: 'the scrollback, from $from ($name)',
+          );
+          expect(_text(view).join('\n'), text, reason: 'the screen ($name)');
+          expect(view.terminal.buffer.lines.length, lines);
+          expect(
+            (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+            'untouched',
+            reason: 'the clipboard ($name)',
+          );
+          await _closeTabs(tester);
+        });
+      },
+    );
+  }
 
   // #117: on Linux and Windows the runner draws no title bar, and the app
   // draws its buttons and moves the window from the tab strip's empty space.
@@ -4589,7 +4887,14 @@ touch '${done.path}'
               'role': 'user',
               'content': [
                 {'type': 'tool_result', 'tool_use_id': 'toolu_msg', 'content': 'sent'},
-                {'type': 'tool_result', 'tool_use_id': 'toolu_mcp', 'content': jsonEncode({'rows': [1, 2], 'ok': true})},
+                {
+                  'type': 'tool_result',
+                  'tool_use_id': 'toolu_mcp',
+                  'content': jsonEncode({
+                    'rows': [1, 2],
+                    'ok': true,
+                  }),
+                },
               ],
             },
           })}',
@@ -4755,7 +5060,11 @@ touch '${done.path}'
                 w.scrollDirection == Axis.horizontal,
           ),
         );
-        expect(sideways.evaluate().length, lessThanOrEqualTo(1), reason: 'only a table may scroll sideways, not a code block');
+        expect(
+          sideways.evaluate().length,
+          lessThanOrEqualTo(1),
+          reason: 'only a table may scroll sideways, not a code block',
+        );
         final block = tester.renderObject<RenderParagraph>(
           find.textContaining('wd0 wd1', findRichText: true).first,
         );
@@ -4874,7 +5183,7 @@ touch '${done.path}'
         ]);
         await clipboardIs(
           'Before the table.\nName\tNote\nalpha\tfirst cell_code() here\n'
-          'beta\tsecond row words\nAfter the table.',
+              'beta\tsecond row words\nAfter the table.',
           '8. a drag across a paragraph, a table and a paragraph',
         );
       });

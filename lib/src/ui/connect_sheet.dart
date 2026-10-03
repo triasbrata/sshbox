@@ -155,10 +155,24 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   LiveSession get _session => widget.session;
 
+  /// Handed a session already disposed — its tab closed while this sheet was
+  /// on its way: nothing is attached, and the sheet closes itself.
+  late final bool _gone = _session.isDisposed;
+
   @override
   void initState() {
     super.initState();
+    if (_gone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _close());
+      return;
+    }
     _session.addListener(_onSessionChanged);
+    // Its tab closing under the sheet leaves nothing to connect.
+    unawaited(
+      _session.whenDisposed.then((_) {
+        if (mounted) _close();
+      }),
+    );
     // After the frame: connecting tells whatever shows the session — the
     // tabs, and a reconnecting tab's page — which must not hear of it while
     // this sheet is being built.
@@ -166,12 +180,23 @@ class _ConnectSheetState extends State<_ConnectSheet> {
   }
 
   void _onSessionChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  /// Closes this sheet, whatever else has opened over it since, answered no.
+  void _close() {
+    if (!mounted) return;
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isActive) return;
+    Navigator.of(context).removeRoute(route, false);
   }
 
   @override
   void dispose() {
-    _session.removeListener(_onSessionChanged);
+    if (!_gone && !_session.isDisposed) {
+      _session.removeListener(_onSessionChanged);
+    }
     // Closed with a question open: that is a no.
     _answer?.complete(false);
     _picked?.complete(null);
@@ -188,6 +213,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
       pickTmux: _pick,
     );
     if (!mounted) return;
+    if (_session.isDisposed) return _close();
     final route = ModalRoute.of(context);
     if (route == null || !route.isActive || !_session.isConnected) return;
     // By route rather than a plain pop when another sheet has opened over
@@ -231,6 +257,7 @@ class _ConnectSheetState extends State<_ConnectSheet> {
 
   @override
   Widget build(BuildContext context) {
+    if (_gone) return const SizedBox.shrink();
     final host = _session.host;
     final check = _check;
     final found = _found;
