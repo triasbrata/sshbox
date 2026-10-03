@@ -882,6 +882,9 @@ class ClaudeChat extends ChangeNotifier {
 
   String? _folder;
 
+  /// The directory the session being continued was written under.
+  String? _sessionCwd;
+
   /// Where a new chat's `claude --bg` starts: the folder chosen for it, else
   /// the host's file-tree root.
   String? get startFolder => _folder ?? cwd;
@@ -1935,7 +1938,7 @@ class ClaudeChat extends ChangeNotifier {
     try {
       final channel = await open(
         command(
-          cwd: cwd,
+          cwd: _sessionCwd ?? cwd,
           permission: _permission,
           resume: _sessionId,
           model: _alias,
@@ -2302,6 +2305,9 @@ class ClaudeChat extends ChangeNotifier {
     _composing = false;
     _sessionId = agent.sessionId;
     _pickedFrom = agent.sessionId;
+    // --resume finds a transcript only from the directory it was written
+    // under: a continuation or a fork starts there, not in the chat's folder.
+    _sessionCwd = agent.cwd.isEmpty ? null : agent.cwd;
     final pid = agent.pid;
     final read = await _loadHistory(
       agent.sessionId,
@@ -2378,6 +2384,7 @@ class ClaudeChat extends ChangeNotifier {
     _tasks.clear();
     _parked.clear();
     _context = null;
+    _sessionCwd = null;
     _model = null;
     // A model picked was for the chat left, not for the next session.
     _alias = null;
