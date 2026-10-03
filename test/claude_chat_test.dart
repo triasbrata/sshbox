@@ -2649,8 +2649,116 @@ void main() {
       }
     });
 
+    group('a message to a session mid-turn is held here', () {
+      const wait = Duration(milliseconds: 2400);
+
+      ClaudeChat holder(_LiveHost host, {bool Function()? cut}) {
+        final chat = ClaudeChat(
+          open: (command) {
+            if (cut != null && cut() && command.contains('agents --json')) {
+              throw StateError('connection lost');
+            }
+            return host.open(command);
+          },
+          openTerminal: host.openTerminal,
+        )..holdEvery = const Duration(milliseconds: 100);
+        addTearDown(chat.dispose);
+        return chat;
+      }
+
+      test('held as Queued, and nothing is typed while it is busy', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('then run the tests');
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.queued);
+        expect(chat.isHeld(said), isTrue);
+        expect(host.terminals, isEmpty);
+      });
+
+      test('typed one at a time, in order, once it is idle', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('first');
+        chat.send('second');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(host.terminals, isEmpty);
+
+        host.state = 'done';
+        await Future<void>.delayed(wait);
+        // Only the first, and the second waits for the turn it starts.
+        expect(host.terminals.map((t) => t.typed.first), ['first']);
+        host.adds({
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'first'},
+        });
+        await Future<void>.delayed(wait);
+        expect(host.terminals.map((t) => t.typed.first), ['first', 'second']);
+      });
+
+      test('↑ takes the newest one back, and it is never typed', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('first');
+        chat.send('second');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+
+        expect(await chat.reviseLast(), 'second');
+        expect(chat.entries.whereType<ChatSaid>().map((s) => s.text), [
+          'first',
+        ]);
+        host.state = 'done';
+        await Future<void>.delayed(wait);
+        expect(host.terminals.map((t) => t.typed.first), ['first']);
+        expect(
+          host.terminals.expand((t) => t.typed).where((k) => k == 'second'),
+          isEmpty,
+        );
+      });
+
+      test('a lost connection fails what is held, with Retry, and never '
+          'types it', () async {
+        var lost = false;
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host, cut: () => lost);
+        await chat.continueFrom(_live);
+        chat.send('then run the tests');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        lost = true;
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, contains('connection lost'));
+        expect(chat.isHeld(said), isFalse);
+        host.state = 'done';
+        lost = false;
+        await Future<void>.delayed(wait);
+        expect(host.terminals, isEmpty);
+      });
+
+      test('moving to another session sends it nowhere, and says so', () async {
+        final host = _LiveHost('0\n', state: 'working');
+        final chat = holder(host);
+        await chat.continueFrom(_live);
+        chat.send('then run the tests');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await chat.newChat();
+        host.state = 'done';
+        await Future<void>.delayed(wait);
+        expect(host.terminals, isEmpty);
+        expect(
+          chat.entries.whereType<ChatNotice>().map((n) => n.text),
+          contains(contains('then run the tests')),
+        );
+      });
+    });
+
     test('a message behind a running turn says it is queued', () async {
-      final host = _LiveHost('0\n', state: 'working');
+      final host = _LiveHost('0\n');
       final chat = watcher(host);
       await chat.continueFrom(_live);
 
@@ -2691,7 +2799,7 @@ void main() {
 
     test('a queued message resolves when the session records it as delivered '
         'into its turn, and is not drawn twice', () async {
-      final host = _LiveHost('0\n', state: 'working');
+      final host = _LiveHost('0\n');
       final chat = watcher(host);
       await chat.continueFrom(_live);
 
@@ -2743,7 +2851,7 @@ void main() {
     test('a queued message the queue gives up without running it is said not '
         'to have arrived, with Retry, which sends it once through the gate',
         () async {
-      final host = _LiveHost('0\n', state: 'working');
+      final host = _LiveHost('0\n');
       final chat = watcher(
         host,
         dropGrace: const Duration(milliseconds: 200),
@@ -2782,7 +2890,7 @@ void main() {
     test('a delivery that comes after the grace, with the message given up '
         'for dropped, resolves the same bubble: one bubble, delivered, no '
         'Retry', () async {
-      final host = _LiveHost('0\n', state: 'working');
+      final host = _LiveHost('0\n');
       final chat = watcher(
         host,
         dropGrace: const Duration(milliseconds: 100),
@@ -2811,7 +2919,7 @@ void main() {
 
     test('a message the user removed after the grace is not matched by a '
         'late delivery', () async {
-      final host = _LiveHost('0\n', state: 'working');
+      final host = _LiveHost('0\n');
       final chat = watcher(
         host,
         dropGrace: const Duration(milliseconds: 100),
@@ -2835,7 +2943,7 @@ void main() {
     });
 
     test('a removal followed by its delivery is not a drop', () async {
-      final host = _LiveHost('0\n', state: 'working');
+      final host = _LiveHost('0\n');
       final chat = watcher(
         host,
         dropGrace: const Duration(milliseconds: 200),
@@ -3156,8 +3264,14 @@ void main() {
 
           expect(host.paneTyping, isEmpty);
           final said = chat.entries.whereType<ChatSaid>().single;
-          expect(said.delivery, Delivery.failed);
-          expect(said.why, contains(waitingFor ?? 'middle of a turn'));
+          if (waitingFor == null) {
+            // Mid-turn it is held here until the session is idle.
+            expect(said.delivery, Delivery.queued);
+            expect(chat.isHeld(said), isTrue);
+          } else {
+            expect(said.delivery, Delivery.failed);
+            expect(said.why, contains(waitingFor));
+          }
         });
       }
 

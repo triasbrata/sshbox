@@ -987,6 +987,18 @@ class ClaudeChat extends ChangeNotifier {
     }
 
     if (_watching != null) {
+      // Held here, nothing typed: it goes back into the box and is gone.
+      final held = _held.lastOrNull;
+      if (held != null) {
+        _held.remove(held);
+        _entries.remove(held.said);
+        if (_held.isEmpty) {
+          _holdTimer?.cancel();
+          _holdTimer = null;
+        }
+        notifyListeners();
+        return held.said.text;
+      }
       return no(
         'A session running on the host is revised at its own terminal: press '
         'Esc Esc there. This chat does not type that for you.',
@@ -2285,7 +2297,10 @@ class ClaudeChat extends ChangeNotifier {
     // What was typed for the session being left and not recorded yet: its
     // entry goes with the rest of the view, so it is said again, once the
     // view is new, where the user will see it.
-    final unsent = [..._pending];
+    final unsent = [..._pending, for (final held in _held) held.said];
+    _held.clear();
+    _holdTimer?.cancel();
+    _holdTimer = null;
     final leaving = _watching;
     await _stop();
     // Those still in the view as it goes: a message the session recorded in
@@ -2455,6 +2470,7 @@ class ClaudeChat extends ChangeNotifier {
           _replaced.future,
           upload: upload,
           confirm: false,
+          hold: false,
         );
         if (said.delivery == Delivery.failed) return;
       }
@@ -2692,6 +2708,103 @@ class ClaudeChat extends ChangeNotifier {
     return paths;
   }
 
+  /// Messages sent to a session that was mid-turn, kept here until it is
+  /// idle: Claude Code would queue them itself, but a message queued there
+  /// cannot be taken back from here, and one held here can.
+  final List<_Held> _held = [];
+  Timer? _holdTimer;
+  bool _draining = false;
+
+  /// How often a held message looks for the session to be idle.
+  Duration holdEvery = const Duration(seconds: 3);
+
+  /// Whether [said] is held here, and so can be taken back.
+  bool isHeld(ChatSaid said) => _held.any((held) => held.said == said);
+
+  /// Mid-turn, with nothing asked of the user: what the session's list row
+  /// says, whichever kind of session it is.
+  static bool _busyNow(ClaudeAgent agent) =>
+      agent.waitingFor == null &&
+      (agent.state == 'working' || agent.status == 'busy');
+
+  void _hold(
+    ChatSaid said,
+    ClaudeAgent agent,
+    int target,
+    Future<void> replaced,
+    PictureUpload? upload,
+  ) {
+    // Not pending: nothing is typed, so nothing is to be recorded yet.
+    _pending.remove(said);
+    final recorded = _recorded.remove(said);
+    if (recorded != null && !recorded.isCompleted) recorded.complete();
+    said.delivery = Delivery.queued;
+    _held.add(_Held(said, agent, target, replaced, upload));
+    _holdTimer ??= Timer.periodic(
+      holdEvery,
+      (_) => unawaited(_drainHeld()),
+    );
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Types the oldest held message once the session is idle, one at a time;
+  /// the next waits for the turn that one starts to end.
+  Future<void> _drainHeld() async {
+    if (_draining || _held.isEmpty || _disposed) return;
+    _draining = true;
+    try {
+      final first = _held.first;
+      void failAll(String why) {
+        for (final held in [..._held]) {
+          _undelivered(held.said, why);
+        }
+        _held.clear();
+      }
+
+      if (!_current(first.target)) {
+        _held.remove(first);
+        _movedOn(first.said, first.agent);
+        return;
+      }
+      final ClaudeAgent? now;
+      try {
+        now = (await agents())
+            .where((row) => row.sessionId == first.agent.sessionId)
+            .firstOrNull;
+      } catch (error) {
+        return failAll('Not sent: could not check on “${first.agent.name}”: '
+            '$error');
+      }
+      // Taken back, or the chat moved off, while the host answered.
+      if (_disposed || !_held.contains(first)) return;
+      if (now == null || !now.live) {
+        return failAll('Not sent: “${first.agent.name}” is no longer running.');
+      }
+      if (_busyNow(now)) return;
+      _held.remove(first);
+      first.said.delivery = Delivery.sending;
+      _pending.add(first.said);
+      _recorded[first.said] = Completer<void>();
+      notifyListeners();
+      await _deliver(
+        first.said,
+        first.agent,
+        first.target,
+        first.replaced,
+        upload: first.upload,
+        hold: false,
+      ).catchError(
+        (Object error) => _undelivered(first.said, 'Not delivered: $error'),
+      );
+    } finally {
+      _draining = false;
+      if (_held.isEmpty) {
+        _holdTimer?.cancel();
+        _holdTimer = null;
+      }
+    }
+  }
+
   /// With [confirm] false, done once it is typed: a session that has just
   /// started, which nothing follows yet.
   Future<void> _deliver(
@@ -2701,6 +2814,7 @@ class ClaudeChat extends ChangeNotifier {
     Future<void> replaced, {
     PictureUpload? upload,
     bool confirm = true,
+    bool hold = true,
   }) async {
     // What it is doing now, not what the list said when it was picked.
     final ClaudeAgent? now;
@@ -2714,6 +2828,11 @@ class ClaudeChat extends ChangeNotifier {
     if (!_current(target)) return _movedOn(said, agent);
     if (now == null || !now.live) {
       return _undelivered(said, '“${agent.name}” is no longer running.');
+    }
+    // Busy, or older messages are still held: kept here, nothing typed, so
+    // they go one turn each and in the order they were sent.
+    if (hold && (_held.isNotEmpty || _draining || _busyNow(now))) {
+      return _hold(said, agent, target, replaced, upload);
     }
     if (now.interactive) return _typeIntoPane(said, agent, now, target, upload);
     final openTerminal = this.openTerminal;
@@ -4035,6 +4154,7 @@ class ClaudeChat extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _poll?.cancel();
+    _holdTimer?.cancel();
     for (final timer in _timers) {
       timer.cancel();
     }
@@ -4544,4 +4664,16 @@ class ClaudeChat extends ChangeNotifier {
   /// Wraps a value so the remote shell sees exactly these bytes.
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", r"'\''")}'";
+}
+
+/// A message kept here for a session that was mid-turn: where it was meant to
+/// go, so it is typed nowhere else.
+class _Held {
+  _Held(this.said, this.agent, this.target, this.replaced, this.upload);
+
+  final ChatSaid said;
+  final ClaudeAgent agent;
+  final int target;
+  final Future<void> replaced;
+  final PictureUpload? upload;
 }

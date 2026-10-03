@@ -1952,7 +1952,11 @@ Widget _drawEntry(
   ChatSaid(mine: true) => _Bubble(
     said: entry,
     // Only the newest message of the user's can be gone back to.
-    onEdit: identical(chat.lastMine, entry) ? onEdit : null,
+    onEdit:
+        identical(chat.lastMine, entry) &&
+            (entry.delivery == null || chat.isHeld(entry))
+        ? onEdit
+        : null,
     onTapLink: onTapLink,
     // A sub-agent's view has no message of its own to send again.
     onRetry: () => onRetry?.call(entry),
@@ -2279,7 +2283,7 @@ class _Bubble extends StatelessWidget {
           ),
         ),
       _bubble(context),
-      if (onEdit != null && said.delivery == null)
+      if (onEdit != null)
         Align(
           alignment: Alignment.centerRight,
           child: TuiTooltip(
