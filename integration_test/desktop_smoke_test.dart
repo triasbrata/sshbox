@@ -43,13 +43,20 @@ import 'package:sshbox/src/update/updater.dart'
     show Updater, downloadsFolder, updateAvailable, updateHost, updatePlatform;
 import 'package:sshbox/src/ui/file_download.dart'
     show downloadFile, openDownload;
+import 'package:sshbox/src/ui/file_editor_page.dart' show FileEditorPage;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart' show TuiChatBubble;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart'
-    show SettingsPage, localTmux, maxFontSize, terminalFonts, terminalSettings;
+    show
+        SettingsPage,
+        localOpenCommand,
+        localTmux,
+        maxFontSize,
+        terminalFonts,
+        terminalSettings;
 import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:xterm2/xterm.dart';
@@ -3445,6 +3452,108 @@ touch '${done.path}'
         'Alt+click to hand the link to the browser',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // #218, desktop: `jeansh <file>` in a Local shell opens a file tab, and
+  // what is not a regular file, or a forged request, opens nothing.
+  _test(
+    'jeansh <file> opens a file tab, and refusals open none',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, which has no sh script'
+        : null,
+    (tester) async {
+      final dir = _scratch();
+      final file = File('${dir.path}/e2e-open.txt')
+        ..writeAsStringSync('hello from jeansh\n');
+      final folder = Directory('${dir.path}/a-folder')..createSync();
+      final forged = File('${dir.path}/forged.txt')
+        ..writeAsStringSync(
+          '\x1b]7733;open;not-the-secret;'
+          '${DateTime.now().millisecondsSinceEpoch ~/ 1000};'
+          '00112233445566ff;${base64.encode(utf8.encode(file.path))}\x07',
+        );
+      await _launch(tester);
+      final view = await _localShell(tester);
+      int tabs() => find.byType(FileEditorPage).evaluate().length;
+      Future<void> says(String text) => _until(
+        tester,
+        () => _text(view).any((l) => l.contains(text)),
+        'the terminal to say "$text"',
+      );
+
+      // Negative: nothing opens, each says why.
+      _run(view, 'jeansh ${dir.path}/missing');
+      await says('no such file');
+      _run(view, 'jeansh ${folder.path}');
+      await says('is a folder');
+      _run(view, 'jeansh /dev/zero');
+      await says('is not a regular file');
+      _run(view, 'cat ${forged.path}');
+      await _until(
+        tester,
+        () => find
+            .textContaining('A jeansh request was refused')
+            .evaluate()
+            .isNotEmpty,
+        'the forged request to be refused',
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(tabs(), 0, reason: 'a refused request opened a file tab');
+
+      // Positive: one tab, and the same file again opens no second.
+      _run(view, 'jeansh ${file.path}');
+      await _until(
+        tester,
+        () => tabs() == 1,
+        'jeansh <file> to open a file tab',
+      );
+      _run(view, 'jeansh ${file.path}');
+      await tester.pump(const Duration(seconds: 3));
+      expect(tabs(), 1, reason: 'the same file opened a second tab');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #218's switch: Settings writes ~/.local/bin/jeansh, mode 755, only when
+  // it is turned on.
+  _test(
+    'Settings adds the jeansh command to ~/.local/bin only when on',
+    skip: Platform.isWindows ? 'no such switch on Windows' : null,
+    (tester) async {
+      final target = File('${Platform.environment['HOME']}/.local/bin/jeansh');
+      void gone() {
+        if (target.existsSync()) target.deleteSync();
+      }
+
+      gone();
+      addTearDown(() async {
+        await localOpenCommand.choose(false);
+        gone();
+      });
+      await localOpenCommand.choose(false);
+      gone();
+      await _launch(tester);
+      await _settings(tester);
+      final label = find.text('Add the jeansh command to this computer');
+      await tester.scrollUntilVisible(
+        label,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(target.existsSync(), isFalse, reason: 'written with it off');
+
+      await tester.tap(label);
+      await _until(
+        tester,
+        () => target.existsSync(),
+        '~/.local/bin/jeansh to be written',
+      );
+      final mode = await Process.run('stat', ['-c', '%a', target.path]);
+      expect((mode.stdout as String).trim(), '755');
+      expect(target.readAsStringSync(), contains('jeansh-open: installed'));
+      await _backHome(tester);
     },
   );
 
