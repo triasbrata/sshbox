@@ -58,6 +58,7 @@ import 'package:sshbox/src/ui/settings_page.dart'
         terminalFonts,
         terminalSettings;
 import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
+import 'package:sshbox/src/ui/termul/tui_switch.dart' show TuiSwitch;
 import 'package:sshbox/src/ui/text_size.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -3544,7 +3545,13 @@ touch '${done.path}'
       await tester.pump(const Duration(seconds: 1));
       expect(target.existsSync(), isFalse, reason: 'written with it off');
 
-      await tester.tap(label);
+      // The switch itself: its label text is not a tap target.
+      await tester.tap(
+        find.descendant(
+          of: find.ancestor(of: label, matching: find.byType(TuiSwitch)),
+          matching: find.byType(GestureDetector),
+        ),
+      );
       await _until(
         tester,
         () => target.existsSync(),
