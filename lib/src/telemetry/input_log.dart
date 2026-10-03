@@ -140,7 +140,7 @@ class InputLog {
   /// A handler for [HardwareKeyboard]; never consumes the event.
   bool onKey(KeyEvent event) {
     final focus = FocusManager.instance.primaryFocus?.context;
-    if (obscured(focus)) return false;
+    // mutation: obscured check removed
     final keys = HardwareKeyboard.instance;
     final label = labelOf(
       event,
