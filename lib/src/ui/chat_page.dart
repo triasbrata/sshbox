@@ -1352,9 +1352,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         // Under the working line, and alone between turns while a task is
         // still open, as Claude Code's own view keeps it.
         if (chat.openTasks.isNotEmpty) _Checklist(chat: chat),
-        // How much of the context window the session uses, with the plan's
-        // quota in a popup: hover on a desktop, a tap on touch.
-        if (chat.context != null) _UsageChip(chat: chat),
         const Divider(height: 1),
         if (!_draft.isEmpty) _pictureCards(),
         _composer(theme, wide: wide, sidebar: sidebar),
@@ -1551,60 +1548,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         openState: _menuOpen,
         onRefresh: () => setState(_listCommands),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              IconButton(
-                tooltip: sidebar
-                    ? 'Hide the sessions on this host'
-                    : 'Sessions on this host',
-                isSelected: sidebar,
-                onPressed: () => _toggleSessions(wide),
-                icon: const Icon(Icons.view_sidebar_outlined),
-                selectedIcon: const Icon(Icons.view_sidebar),
-              ),
-              IconButton(
-                tooltip: 'Add a picture',
-                onPressed: readOnly ? null : _pickPictures,
-                icon: const Icon(Icons.add_photo_alternate_outlined),
-              ),
-              MenuButton<Object>(
-                tooltip: 'Chat settings',
-                onSelected: (choice) {
-                  if (choice is ChatPermission) {
-                    unawaited(chat.restart(permission: choice));
-                  } else if (choice == 'new') {
-                    unawaited(_newChat());
-                  } else {
-                    unawaited(chat.restart());
-                  }
-                },
-                entries: [
-                  TuiMenuItem(
-                    value: 'new',
-                    label: 'New chat',
-                    enabled: connected,
-                  ),
-                  const TuiMenuDivider(),
-                  for (final mode in ChatPermission.values)
-                    TuiMenuItem(
-                      value: mode,
-                      label: mode.label,
-                      checked: chat.permission == mode,
-                    ),
-                  const TuiMenuDivider(),
-                  const TuiMenuItem(value: 'restart', label: 'Restart Claude'),
-                ],
-              ),
-              Expanded(
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+          // One box, as a chat input is drawn elsewhere: the text on top and
+          // one row of controls along its bottom, inside it.
+          child: TuiBox(
+            expanded: false,
+            padding: const EdgeInsets.fromLTRB(10, 4, 4, 2),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 // A picture pasted goes in as a card rather than as nothing:
                 // see [_pastePicture]. The field's own menu Paste is offered
                 // only for text, and takes text — so it is replaced by one
                 // that takes a picture first, offered with a picture alone.
                 // Enter and the slash menu stay [_onBoxKey]'s: only a paste is
                 // taken here.
-                child: Actions(
+                Actions(
                   actions: {PasteTextIntent: _PictureOrText(_pastePicture)},
                   child: TextField(
                     contextMenuBuilder: _contextMenu,
@@ -1646,6 +1606,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     // TuiInput does not.
                     decoration: InputDecoration(
                       isDense: true,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      disabledBorder: InputBorder.none,
+                      filled: false,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 6),
                       // One line, cut: at a large text size on a phone a hint
                       // that wraps grows the box past the room the keyboard
                       // leaves.
@@ -1678,26 +1644,89 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     }),
                   ),
                 ),
-              ),
-              const SizedBox(width: 4),
-              IconButton.filled(
-                tooltip: 'Send',
-                // The app's iconButtonTheme gives every IconButton an accent
-                // foreground, which beats the filled variant's own onPrimary:
-                // an accent arrow on an accent fill. Black or white, whichever
-                // reads on the fill.
-                style: IconButton.styleFrom(
-                  backgroundColor: palette.accent,
-                  foregroundColor:
-                      tuiContrast(Colors.black, palette.accent) >=
-                          tuiContrast(Colors.white, palette.accent)
-                      ? Colors.black
-                      : Colors.white,
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: sidebar
+                          ? 'Hide the sessions on this host'
+                          : 'Sessions on this host',
+                      isSelected: sidebar,
+                      onPressed: () => _toggleSessions(wide),
+                      icon: const Icon(Icons.view_sidebar_outlined),
+                      selectedIcon: const Icon(Icons.view_sidebar),
+                    ),
+                    IconButton(
+                      tooltip: 'Add a picture',
+                      onPressed: readOnly ? null : _pickPictures,
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                    ),
+                    MenuButton<Object>(
+                      tooltip: 'Chat settings',
+                      onSelected: (choice) {
+                        if (choice is ChatPermission) {
+                          unawaited(chat.restart(permission: choice));
+                        } else if (choice == 'new') {
+                          unawaited(_newChat());
+                        } else {
+                          unawaited(chat.restart());
+                        }
+                      },
+                      entries: [
+                        TuiMenuItem(
+                          value: 'new',
+                          label: 'New chat',
+                          enabled: connected,
+                        ),
+                        const TuiMenuDivider(),
+                        for (final mode in ChatPermission.values)
+                          TuiMenuItem(
+                            value: mode,
+                            label: mode.label,
+                            checked: chat.permission == mode,
+                          ),
+                        const TuiMenuDivider(),
+                        const TuiMenuItem(
+                          value: 'restart',
+                          label: 'Restart Claude',
+                        ),
+                      ],
+                    ),
+                    // Fills the row, so Send sits at the box's right edge; the
+                    // chip gives way first when the row is short of room.
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (chat.context != null) _UsageChip(chat: chat),
+                            Flexible(child: _ModelChip(chat: chat)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton.filled(
+                      tooltip: 'Send',
+                      // The app's iconButtonTheme gives every IconButton an accent
+                      // foreground, which beats the filled variant's own onPrimary:
+                      // an accent arrow on an accent fill. Black or white, whichever
+                      // reads on the fill.
+                      style: IconButton.styleFrom(
+                        backgroundColor: palette.accent,
+                        foregroundColor:
+                            tuiContrast(Colors.black, palette.accent) >=
+                                tuiContrast(Colors.white, palette.accent)
+                            ? Colors.black
+                            : Colors.white,
+                      ),
+                      onPressed: _sendable ? _send : null,
+                      icon: const Icon(Icons.send),
+                    ),
+                  ],
                 ),
-                onPressed: _sendable ? _send : null,
-                icon: const Icon(Icons.send),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -3185,7 +3214,8 @@ class _Checklist extends StatelessWidget {
 // TODO(termul): a rich anchored popover — hover, tap to pin, tap outside to
 // close — holding any widgets; TuiTooltip takes a String only, so this builds
 // its own from OverlayPortal and TuiBox. Asked of termul in sshbox#195.
-/// "Context 45%" at the box's edge, in the warning colour from 80%, and the
+/// A ring in the box's control row, filling as the context is used and in the
+/// warning colour from 80% (its tooltip and label say "Context 45%"), and the
 /// popup it opens: context used out of the window with a bar and the model, the
 /// plan's usage with each reset, and when it was read. Hover opens it, a tap
 /// pins it open, and a tap anywhere else closes it. Everything the host said is
@@ -3202,6 +3232,7 @@ class _UsageChip extends StatefulWidget {
 class _UsageChipState extends State<_UsageChip> {
   final _link = LayerLink();
   bool _working = false;
+  bool _ring = false;
 
   @override
   void initState() {
@@ -3295,63 +3326,218 @@ class _UsageChipState extends State<_UsageChip> {
     final percent = (context_.fraction * 100).round();
     final warn = context_.fraction >= 0.8;
     final label = 'Context $percent%';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 12, 2),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: CompositedTransformTarget(
+    return CompositedTransformTarget(
+      link: _link,
+      child: OverlayPortal(
+        controller: _portal,
+        overlayChildBuilder: (_) => CompositedTransformFollower(
           link: _link,
-          child: OverlayPortal(
-            controller: _portal,
-            overlayChildBuilder: (_) => CompositedTransformFollower(
-              link: _link,
-              targetAnchor: Alignment.topRight,
-              followerAnchor: Alignment.bottomRight,
-              child: Align(
-                alignment: Alignment.bottomRight,
-                child: _UsagePopup(
-                  chat: widget.chat,
-                  local: _local,
-                  count: _count,
+          targetAnchor: Alignment.topRight,
+          followerAnchor: Alignment.bottomRight,
+          child: Align(
+            alignment: Alignment.bottomRight,
+            child: _UsagePopup(chat: widget.chat, local: _local, count: _count),
+          ),
+        ),
+        child: TapRegion(
+          onTapOutside: (_) {
+            if (_pinned) {
+              _pinned = false;
+              _sync();
+            }
+          },
+          child: MouseRegion(
+            onEnter: (_) {
+              _hover = true;
+              _sync();
+            },
+            onExit: (_) {
+              _hover = false;
+              _sync();
+            },
+            child: FocusableActionDetector(
+              onShowFocusHighlight: (on) => setState(() => _ring = on),
+              // Enter and Space open and close the popup, as a tap does.
+              actions: {
+                ActivateIntent: CallbackAction<ActivateIntent>(
+                  onInvoke: (_) {
+                    _pinned = !_pinned;
+                    _sync();
+                    return null;
+                  },
+                ),
+              },
+              child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                _pinned = !_pinned;
+                _sync();
+              },
+              child: Semantics(
+                container: true,
+                button: true,
+                label: '$label used. Usage details',
+                excludeSemantics: true,
+                child: TuiTooltip(
+                  message: label,
+                  excludeFromSemantics: true,
+                  child: DecoratedBox(
+                    key: const ValueKey('gauge-focus'),
+                    // Where keyboard focus is, in termul's accent.
+                    decoration: BoxDecoration(
+                      border: _ring
+                          ? Border.all(
+                              color: TermulThemeData.of(context).palette.accent,
+                            )
+                          : null,
+                    ),
+                    child: SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Center(
+                      child: ContextGauge(
+                        fraction: context_.fraction,
+                        warn: warn,
+                      ),
+                    ),
+                  ),
+                  ),
                 ),
               ),
             ),
-            child: TapRegion(
-              onTapOutside: (_) {
-                if (_pinned) {
-                  _pinned = false;
-                  _sync();
-                }
-              },
-              child: MouseRegion(
-                onEnter: (_) {
-                  _hover = true;
-                  _sync();
-                },
-                onExit: (_) {
-                  _hover = false;
-                  _sync();
-                },
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    _pinned = !_pinned;
-                    _sync();
-                  },
-                  child: Semantics(
-                    container: true,
-                    button: true,
-                    label: '$label used. Usage details',
-                    excludeSemantics: true,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: TuiText(
-                        label,
-                        size: 11,
-                        tone: warn ? TuiTextTone.yellow : TuiTextTone.dim,
-                        bold: warn,
-                      ),
-                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A ring that fills as the context window is used, in the warning colour
+/// from 80%.
+class ContextGauge extends StatelessWidget {
+  const ContextGauge({super.key, required this.fraction, required this.warn});
+
+  final double fraction;
+  final bool warn;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    return CustomPaint(
+      size: const Size.square(18),
+      painter: _GaugePainter(
+        fraction: fraction.clamp(0.0, 1.0),
+        track: p.border,
+        fill: warn ? p.yellow : p.dim,
+      ),
+    );
+  }
+}
+
+class _GaugePainter extends CustomPainter {
+  const _GaugePainter({
+    required this.fraction,
+    required this.track,
+    required this.fill,
+  });
+
+  final double fraction;
+  final Color track;
+  final Color fill;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = (Offset.zero & size).deflate(1.5);
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    canvas.drawArc(rect, 0, math.pi * 2, false, stroke..color = track);
+    canvas.drawArc(
+      rect,
+      -math.pi / 2,
+      math.pi * 2 * fraction,
+      false,
+      stroke..color = fill,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_GaugePainter old) =>
+      old.fraction != fraction || old.track != track || old.fill != fill;
+}
+
+// TODO(termul): a compact select chip that opens a menu; TuiSelect is a
+// full-width field and TuiMenuButton a fixed 36 dp glyph, so this is an
+// InkWell over termul's own showTuiMenu and TuiText.
+/// The session's model by its short name (`Opus 5.5`), and the choice of
+/// another: the CLI's aliases for a new chat and for this chat's own Claude;
+/// for a session watched on the host the name only, with the hint why.
+class _ModelChip extends StatelessWidget {
+  const _ModelChip({required this.chat});
+
+  final ClaudeChat chat;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final starting = chat.modelStarting;
+    final can = chat.canPickModel && !starting;
+    final name = chat.modelName;
+    final label = name ?? 'Model';
+    return Builder(
+      builder: (chipContext) => TuiTooltip(
+        message: can
+            ? 'Model: $label'
+            : starting
+            ? 'Claude is starting; pick a model once it is up.'
+            : ClaudeChat.modelReadOnlyHint,
+        excludeFromSemantics: true,
+        child: Semantics(
+          container: true,
+          button: can,
+          label: 'Model $label',
+          hint: can
+              ? null
+              : starting
+              ? 'Claude is starting; pick a model once it is up.'
+              : ClaudeChat.modelReadOnlyHint,
+          excludeSemantics: true,
+          child: InkWell(
+            hoverColor: p.selection,
+            onTap: can
+                ? () async {
+                    final picked = await showTuiMenu<String>(
+                      context,
+                      anchor: chipContext,
+                      entries: [
+                        for (final model in ChatModel.choices)
+                          TuiMenuItem(
+                            value: model.alias,
+                            label: model.label,
+                            checked:
+                                (chat.modelAlias ?? ChatModel.defaultAlias) ==
+                                model.alias,
+                          ),
+                      ],
+                    );
+                    if (picked != null) unawaited(chat.setModel(picked));
+                  }
+                : starting
+                ? null
+                : () => showToast(context, ClaudeChat.modelReadOnlyHint),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 32, maxWidth: 120),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Center(
+                  widthFactor: 1,
+                  child: TuiText(
+                    can ? '$label ▾' : label,
+                    size: 12,
+                    tone: TuiTextTone.dim,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ),

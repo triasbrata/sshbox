@@ -295,6 +295,47 @@ class SubAgent {
   }
 }
 
+/// The models a chat offers: the aliases `claude --model` and the control
+/// protocol's `set_model` take, measured on 2.1.287 — `default` is no flag at
+/// all — and the short name a session's model id is shown by.
+class ChatModel {
+  const ChatModel(this.alias, this.label);
+
+  final String alias;
+  final String label;
+
+  static const defaultAlias = 'default';
+
+  static const choices = [
+    ChatModel(defaultAlias, 'Default'),
+    ChatModel('opus', 'Opus'),
+    ChatModel('sonnet', 'Sonnet'),
+    ChatModel('fable', 'Fable'),
+    ChatModel('haiku', 'Haiku'),
+  ];
+
+  /// An alias this offers, else null: the only text that ever reaches a
+  /// command line.
+  static String? known(String? alias) =>
+      choices.any((c) => c.alias == alias) ? alias : null;
+
+  /// `claude-opus-5-5` → `Opus 5.5`; `claude-haiku-4-5-20251001` → `Haiku 4.5`;
+  /// an alias → its label. Null for an id of a shape this does not know, so
+  /// the picker shows nothing rather than a wrong name.
+  static String? shortName(String? model) {
+    if (model == null || model.isEmpty) return null;
+    for (final c in choices) {
+      if (c.alias == model) return c.label;
+    }
+    final m = RegExp(r'^claude-([a-z]+)((?:-\d{1,2})+)(?:-\d{8})?(?:\[\w+\])?$')
+        .firstMatch(model);
+    if (m == null) return null;
+    final family = m.group(1)!;
+    final version = m.group(2)!.substring(1).replaceAll('-', '.');
+    return '${family[0].toUpperCase()}${family.substring(1)} $version';
+  }
+}
+
 /// How much of its context window a session uses, from the usage of the last
 /// request it made: what went in, whether new or read from the cache, plus what
 /// came out, which is what the next request carries. The window is not in a
@@ -818,6 +859,72 @@ class ClaudeChat extends ChangeNotifier {
   /// it reads are the ones the drawer shows. Null starts it in the login
   /// directory.
   final String? cwd;
+
+  /// The model alias picked for what this chat starts, or null for the host's
+  /// own default. Kept across [restart], which would otherwise start Claude on
+  /// the default again.
+  String? _alias;
+
+  /// The session's model as it last reported: a full id from the init event or
+  /// a message, or the alias a `set_model` just took.
+  String? _model;
+  final _modelAsks = <String, String>{};
+  int _modelRequests = 0;
+
+  /// The model's short name for the picker (`Opus 5.5`), null when unknown.
+  String? get modelName =>
+      ChatModel.shortName(_model ?? (_watching == null ? _alias : null));
+
+  /// The alias to mark as chosen: the one picked, else none.
+  String? get modelAlias => _watching == null ? _alias : null;
+
+  /// A pick is applied for a new chat before its first message and for this
+  /// chat's own Claude; a session watched on the host takes none from here.
+  bool get canPickModel => _watching == null;
+
+  /// Why the model cannot be changed from here, for a hint.
+  static const modelReadOnlyHint =
+      'Change a running session’s model in its own terminal with /model.';
+
+  /// Picks [alias] (see [ChatModel.choices]). A chat of this app's own
+  /// switches at once with `set_model`, which takes effect on its next
+  /// message, measured; a new chat starts with it, and a restart keeps it.
+  Future<void> setModel(String alias) async {
+    final known = ChatModel.known(alias);
+    if (known == null || !canPickModel || modelStarting) return;
+    if (!_composing && _ready && _channel != null) {
+      // Taken as the chat's own only once the CLI accepts it: a refused or
+      // unwritten pick must not be what the next start passes.
+      final id = 'sshbox-model-${++_modelRequests}';
+      _modelAsks[id] = known;
+      final sent = _write({
+        'type': 'control_request',
+        'request_id': id,
+        'request': {
+          'subtype': 'set_model',
+          if (known != ChatModel.defaultAlias) 'model': known,
+        },
+      });
+      if (!sent) {
+        _modelAsks.remove(id);
+        _say(
+          ChatNotice(
+            'The model was not changed: Claude is not running.',
+            failed: true,
+          ),
+        );
+        return;
+      }
+    } else {
+      _alias = known == ChatModel.defaultAlias ? null : known;
+      _model = null;
+    }
+    notifyListeners();
+  }
+
+  /// Claude is on its way up: a pick now would apply only at the next start,
+  /// so the picker waits.
+  bool get modelStarting => _watching == null && !_composing && _starting;
 
   ChatPermission _permission = ChatPermission.acceptEdits;
 
@@ -1595,6 +1702,8 @@ class ClaudeChat extends ChangeNotifier {
     final message = event['message'];
     if (_pastOnly || message is! Map<String, dynamic>) return;
     _context = ChatContext.from(message) ?? _context;
+    final model = message['model'];
+    if (model is String && !model.startsWith('<')) _model = model;
     final stop = message['stop_reason'];
     if (stop is String && stop != 'tool_use') return _endTurn();
     _startTurn(event['timestamp']);
@@ -1655,7 +1764,12 @@ class ClaudeChat extends ChangeNotifier {
     notifyListeners();
     try {
       final channel = await open(
-        command(cwd: cwd, permission: _permission, resume: _sessionId),
+        command(
+          cwd: cwd,
+          permission: _permission,
+          resume: _sessionId,
+          model: _alias,
+        ),
       );
       // The tab closed while the host answered: nothing is left to hold it.
       if (_disposed) {
@@ -1836,6 +1950,8 @@ class ClaudeChat extends ChangeNotifier {
       appLog.add('chat: mode ${permission.name}');
     }
     appLog.add('chat: restart');
+    // Asked of the process being replaced: no answer will come.
+    _modelAsks.clear();
     if (permission != null) _permission = permission;
     // Watching runs no Claude of its own to restart: follow it afresh.
     final watching = _watching;
@@ -2075,6 +2191,9 @@ class ClaudeChat extends ChangeNotifier {
     _tasks.clear();
     _parked.clear();
     _context = null;
+    _model = null;
+    // A model picked was for the chat left, not for the next session.
+    _alias = null;
     // What was waiting to ask about the session being left, and how often it
     // had asked, is of no use to the one that replaces it.
     _askWhenSeen = false;
@@ -2173,6 +2292,7 @@ class ClaudeChat extends ChangeNotifier {
           pictures.isEmpty ? message : '',
           cwd: cwd,
           permission: _permission,
+          model: _alias,
         ),
       );
       final String output;
@@ -3412,6 +3532,8 @@ class ClaudeChat extends ChangeNotifier {
     switch (event['type']) {
       case 'system' when event['subtype'] == 'init':
         _sessionId = event['session_id'] as String?;
+        final model = event['model'];
+        if (model is String && model.isNotEmpty) _model = model;
         notifyListeners();
         unawaited(_readTasks());
       case 'assistant':
@@ -3427,6 +3549,25 @@ class ClaudeChat extends ChangeNotifier {
         }
       case 'control_request':
         _onControlRequest(event);
+      case 'control_response':
+        final response = event['response'];
+        final asked = response is Map
+            ? _modelAsks.remove(response['request_id'])
+            : null;
+        if (asked != null) {
+          if (response['subtype'] == 'success') {
+            _model = asked;
+            _alias = asked == ChatModel.defaultAlias ? null : asked;
+          } else {
+            _say(
+              ChatNotice(
+                'The model was not changed: ${response['error'] ?? 'refused'}',
+                failed: true,
+              ),
+            );
+          }
+          notifyListeners();
+        }
       case 'control_cancel_request':
         _onControlCancel(event);
       case 'rate_limit_event':
@@ -3746,6 +3887,7 @@ class ClaudeChat extends ChangeNotifier {
     // An error on the stream is followed by its close, and the run has only
     // ended once.
     if (_ended) return;
+    _modelAsks.clear();
     _ready = false;
     _busy = false;
     _ended = true;
@@ -3821,11 +3963,13 @@ class ClaudeChat extends ChangeNotifier {
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
+    String? model,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
     final again = resume == null ? '' : ' --resume ${_shellQuote(resume)}';
+    final picked = _modelFlag(model);
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
     // Splicing a quoted value into an outer '…' closes that quote instead, so
@@ -3833,8 +3977,17 @@ class ClaudeChat extends ChangeNotifier {
     final script = '$_findClaude$start'
         r'exec "$c" -p --input-format stream-json --output-format stream-json '
         '--verbose --permission-mode ${permission.flag} '
-        '--permission-prompt-tool stdio$again 2>&1';
+        '--permission-prompt-tool stdio$again$picked 2>&1';
     return 'sh -c ${_shellQuote(script)}';
+  }
+
+  /// ` --model <alias>` for an alias [ChatModel.choices] offers; nothing for
+  /// the default or for any other text, which never reaches the shell.
+  static String _modelFlag(String? alias) {
+    final known = ChatModel.known(alias);
+    return known == null || known == ChatModel.defaultAlias
+        ? ''
+        : ' --model $known';
   }
 
   /// What the host runs to list its Claude sessions.
@@ -3972,12 +4125,13 @@ class ClaudeChat extends ChangeNotifier {
     String prompt, {
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
+    String? model,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
     final script = '$_findClaude$start'
-        '"\$c" --bg --permission-mode ${permission.flag}'
+        '"\$c" --bg --permission-mode ${permission.flag}${_modelFlag(model)}'
         // With none, the session waits for its first message.
         '${prompt.isEmpty ? '' : ' -- ${_shellQuote(_pasteable(prompt))}'}'
         ' </dev/null 2>&1';

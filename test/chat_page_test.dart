@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'fake_drop.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderParagraph;
+import 'package:flutter/rendering.dart'
+    show RenderParagraph, RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
@@ -1387,7 +1389,7 @@ void main() {
         'on an option stays out of the composer, and Enter on Send answers '
         'sends', (tester) async {
       final shell = await asked(tester, usage: true);
-      expect(find.text('Context 45%'), findsOneWidget);
+      expect(find.byType(ContextGauge), findsOneWidget);
       await focusOn(tester, find.byType(TuiCheckbox).last);
       await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
@@ -3685,16 +3687,18 @@ void main() {
         await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
         await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-        for (final key in [
-          LogicalKeyboardKey.tab,
-          LogicalKeyboardKey.escape,
-          LogicalKeyboardKey.f5,
-        ]) {
+        for (final key in [LogicalKeyboardKey.escape, LogicalKeyboardKey.f5]) {
           await tester.sendKeyEvent(key);
         }
         await tester.pump();
 
         expect(box.focusNode!.hasFocus, isFalse);
+        expect(box.controller!.text, isEmpty);
+
+        // Tab is the focus traversal's, not a character: with the box now the
+        // first thing in the composer it may land there, and types nothing.
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
         expect(box.controller!.text, isEmpty);
       });
 
@@ -5858,6 +5862,478 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 
+  group('the composer box and its model picker', () {
+    String history() {
+      final body = [
+        {
+          'type': 'user',
+          'message': {'role': 'user', 'content': 'is the nightly build green?'},
+        },
+        {
+          'type': 'assistant',
+          'message': {
+            'id': 'm1',
+            'model': 'claude-opus-5-5',
+            'stop_reason': 'end_turn',
+            'usage': {'input_tokens': 1, 'cache_read_input_tokens': 90000},
+            'content': [
+              {'type': 'text', 'text': 'It failed at the lint step.'},
+            ],
+          },
+        },
+      ].map(jsonEncode).join('\n');
+      return '${utf8.encode(body).length}\n$body\n';
+    }
+
+    Future<_Shell> open(
+      WidgetTester tester, {
+      Map<String, Object?>? running,
+      Map<String, Object?>? finished,
+      Size size = const Size(1280, 800),
+    }) async {
+      tester.view
+        ..physicalSize = size
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = history()
+        ..listing = jsonEncode([?running, ?finished]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      return shell;
+    }
+
+    const running = {
+      'pid': 4079548,
+      'id': '81badf4a',
+      'cwd': '/srv/app',
+      'kind': 'background',
+      'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+      'name': 'the nightly build',
+      'status': 'idle',
+      'state': 'done',
+    };
+
+    Future<void> pick(WidgetTester tester, String label) async {
+      await tester.tap(find.textContaining('▾'));
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(find.text(label));
+      await tester.pump();
+    }
+
+    testWidgets('one box holds the field and every control', (tester) async {
+      await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final box = find.ancestor(
+        of: find.byType(TextField),
+        matching: find.byType(TuiBox),
+      );
+      expect(box, findsOneWidget);
+      for (final inside in <Finder>[
+        find.byIcon(Icons.view_sidebar),
+        find.byIcon(Icons.add_photo_alternate_outlined),
+        find.byType(MenuButton<Object>),
+        find.byType(ContextGauge),
+        find.text('Opus 5.5'),
+        find.byIcon(Icons.send),
+      ]) {
+        expect(
+          find.descendant(of: box, matching: inside),
+          findsOneWidget,
+          reason: '$inside',
+        );
+      }
+      // The field is on top, the controls along the bottom of the box.
+      expect(
+        tester.getTopLeft(find.byType(TextField)).dy,
+        lessThan(tester.getTopLeft(find.byIcon(Icons.send)).dy),
+      );
+    });
+
+    testWidgets("everything fits on one row at a phone's width", (
+      tester,
+    ) async {
+      await open(tester, running: running, size: const Size(360, 740));
+      await tester.tap(find.text('SESSIONS ON THIS HOST'));
+      await _settlePickUp(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final ys = {
+        for (final f in <Finder>[
+          find.byIcon(Icons.add_photo_alternate_outlined),
+          find.byType(ContextGauge),
+          find.text('Opus 5.5'),
+          find.byIcon(Icons.send),
+        ])
+          tester.getCenter(f).dy.round(),
+      };
+      expect(ys, hasLength(1));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the gauge is a symbol, its words only a label', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(find.text('Context 45%'), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('^Context 45%')), findsOneWidget);
+      expect(
+        tester.widget<ContextGauge>(find.byType(ContextGauge)).warn,
+        isFalse,
+      );
+      semantics.dispose();
+    });
+
+    testWidgets('a session watched on the host shows its model and cannot '
+        'change it from here', (tester) async {
+      final shell = await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(find.text('Opus 5.5'), findsOneWidget);
+      final before = shell.commands.length;
+      await tester.tap(find.text('Opus 5.5'));
+      await tester.pump();
+      await _frames(tester);
+      expect(find.textContaining('/model'), findsOneWidget);
+      expect(find.text('Haiku'), findsNothing);
+      expect(shell.commands.length, before);
+      expect(shell.written, isEmpty);
+      expect(shell.paneTyped, isEmpty);
+    });
+
+    testWidgets('a new chat starts with the model picked', (tester) async {
+      final shell = await open(tester);
+      expect(find.text('Model ▾'), findsOneWidget);
+      await pick(tester, 'Sonnet');
+      expect(find.text('Sonnet ▾'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'why is nginx slow?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      final started = shell.commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, contains('--permission-mode acceptEdits --model sonnet'));
+    });
+
+    testWidgets('a new chat whose --model the account cannot use says so', (
+      tester,
+    ) async {
+      final shell = await open(tester);
+      shell.background =
+          "There's an issue with the selected model (fable). "
+          'It may not exist or you may not have access to it.\n';
+      await pick(tester, 'Fable');
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      expect(
+        shell.commands.firstWhere((c) => c.contains(' --bg ')),
+        contains('--model fable'),
+      );
+      expect(find.textContaining('selected model (fable)'), findsWidgets);
+    });
+
+    testWidgets("Send sits at the box's right edge at every width", (
+      tester,
+    ) async {
+      for (final size in [const Size(360, 740), const Size(1280, 800)]) {
+        await open(tester, running: running, size: size);
+        if (size.width < 840) {
+          await tester.tap(find.text('SESSIONS ON THIS HOST'));
+          await _settlePickUp(tester);
+        }
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        final box = find.ancestor(
+          of: find.byType(TextField),
+          matching: find.byType(TuiBox),
+        );
+        final send = tester.getTopRight(find.byIcon(Icons.send)).dx;
+        expect(
+          tester.getTopRight(box).dx - send,
+          lessThan(30),
+          reason: '$size',
+        );
+      }
+    });
+
+    testWidgets('a new chat on Default passes no --model', (tester) async {
+      final shell = await open(tester);
+      await pick(tester, 'Opus');
+      await pick(tester, 'Default');
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      final started = shell.commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, isNot(contains('--model')));
+    });
+
+    testWidgets("this chat's own Claude takes a pick as a set_model request "
+        'and shows the model once the CLI accepts it', (tester) async {
+      final shell = await open(
+        tester,
+        finished: _finished('cf58d27a', 'Zsh'),
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'Zsh');
+      shell.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': 'cf58d27a-0000-4000-8000-000000000000',
+        'model': 'claude-opus-5-5',
+      });
+      await tester.pump();
+      expect(find.text('Opus 5.5 ▾'), findsOneWidget);
+      final process = shell.commands.length;
+      await pick(tester, 'Haiku');
+      // No restart: the same process was written to.
+      expect(shell.commands.length, process);
+      final sent = jsonDecode(shell.written.last.trim()) as Map;
+      expect(sent['type'], 'control_request');
+      expect(sent['request'], {'subtype': 'set_model', 'model': 'haiku'});
+      // Not claimed before the CLI said so.
+      expect(find.text('Opus 5.5 ▾'), findsOneWidget);
+      shell.event({
+        'type': 'control_response',
+        'response': {'subtype': 'success', 'request_id': sent['request_id']},
+      });
+      await tester.pump();
+      expect(find.text('Haiku ▾'), findsOneWidget);
+    });
+
+    testWidgets('a pick the CLI refuses is said, and the model stays', (
+      tester,
+    ) async {
+      final shell = await open(
+        tester,
+        finished: _finished('cf58d27a', 'Zsh'),
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'Zsh');
+      shell.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': 'cf58d27a-0000-4000-8000-000000000000',
+        'model': 'claude-opus-5-5',
+      });
+      await tester.pump();
+      await pick(tester, 'Haiku');
+      final sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {
+          'subtype': 'error',
+          'request_id': sent['request_id'],
+          'error': "Model 'haiku' not found",
+        },
+      });
+      await tester.pump();
+      expect(find.textContaining("Model 'haiku' not found"), findsOneWidget);
+      expect(find.text('Opus 5.5 ▾'), findsOneWidget);
+    });
+
+    // Pictures of the composer for a review, written where COMPOSER_CAPTURES
+    // names a folder and nowhere otherwise. Fonts are the test's own boxes: the
+    // layout is the evidence, not the lettering.
+    for (final (name, size, palette) in [
+      ('phone_light', const Size(360, 740), TermulPalette.paper),
+      ('phone_dark', const Size(360, 740), TermulPalette.mocha),
+      ('desktop_light', const Size(1280, 800), TermulPalette.paper),
+      ('desktop_dark', const Size(1280, 800), TermulPalette.mocha),
+    ]) {
+      testWidgets('captured: the composer, $name', (tester) async {
+        final out = Platform.environment['COMPOSER_CAPTURES'];
+        tester.view
+          ..physicalSize = size
+          ..devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        final shell = _Shell()
+          ..history = history()
+          ..listing = jsonEncode([running]);
+        final session = LiveSession(host: _host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session.connect(secrets: _NoSecrets());
+        final key = GlobalKey();
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: TermulTheme.of(palette),
+            home: RepaintBoundary(
+              key: key,
+              child: Scaffold(body: ChatPage(session: session)),
+            ),
+          ),
+        );
+        await _frames(tester);
+        if (size.width < 840) {
+          await tester.tap(find.text('SESSIONS ON THIS HOST'));
+          await _settlePickUp(tester);
+        }
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        await tester.enterText(find.byType(TextField), 'is it **green** now?');
+        await tester.pump();
+        if (out != null) {
+          final bytes = await tester.runAsync(() async {
+            final boundary =
+                key.currentContext!.findRenderObject()!
+                    as RenderRepaintBoundary;
+            final image = await boundary.toImage();
+            final data = await image.toByteData(format: ui.ImageByteFormat.png);
+            return data!.buffer.asUint8List();
+          });
+          File('$out/composer_$name.png').writeAsBytesSync(bytes!);
+        }
+        expect(find.byType(ContextGauge), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('a refused pick is not what the menu marks or a restart '
+        'passes', (tester) async {
+      final shell = await open(
+        tester,
+        finished: _finished('cf58d27a', 'Zsh'),
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'Zsh');
+      shell.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': 'cf58d27a-0000-4000-8000-000000000000',
+        'model': 'claude-sonnet-5-5',
+      });
+      await tester.pump();
+      // Opus is accepted, then Haiku is refused.
+      await pick(tester, 'Opus');
+      var sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {'subtype': 'success', 'request_id': sent['request_id']},
+      });
+      await tester.pump();
+      await pick(tester, 'Haiku');
+      sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {
+          'subtype': 'error',
+          'request_id': sent['request_id'],
+          'error': 'not allowed',
+        },
+      });
+      await tester.pump();
+      expect(find.text('Opus ▾'), findsOneWidget);
+      // The menu marks Opus, not Haiku.
+      await tester.tap(find.text('Opus ▾'));
+      await tester.pump();
+      await _frames(tester);
+      Finder mark(String label) => find.descendant(
+        of: find.ancestor(
+          of: find.text(label),
+          matching: find.byType(PopupMenuItem<String>),
+        ),
+        matching: find.text('✓'),
+      );
+      expect(mark('Opus'), findsOneWidget);
+      expect(mark('Haiku'), findsNothing);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pump();
+      await _frames(tester);
+      // And a restart starts on Opus.
+      await tester.tap(find.byType(MenuButton<Object>));
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(find.text('Restart Claude'));
+      await _settlePickUp(tester);
+      final restarted = shell.commands.last;
+      expect(restarted, contains('--model opus'));
+      expect(restarted, isNot(contains('haiku')));
+    });
+
+    testWidgets('a read-only chip carries its hint for a screen reader', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(
+        tester.getSemantics(find.text('Opus 5.5')).hint,
+        ClaudeChat.modelReadOnlyHint,
+      );
+      semantics.dispose();
+    });
+
+    testWidgets('the gauge takes focus, and Enter and Space open and close '
+        'the usage popup', (tester) async {
+      await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final gauge = find.ancestor(
+        of: find.byType(ContextGauge),
+        matching: find.byType(FocusableActionDetector),
+      );
+      Focus.of(tester.element(find.byType(ContextGauge))).requestFocus();
+      final detector = tester.element(gauge);
+      FocusScope.of(detector).requestFocus(
+        Focus.of(detector, scopeOk: false),
+      );
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsNothing);
+      bool outlined() =>
+          tester
+              .widget<DecoratedBox>(find.byKey(const ValueKey('gauge-focus')))
+              .decoration
+              .toString()
+              .contains('Border');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsOneWidget);
+      // Focus came from the keyboard: it shows.
+      expect(outlined(), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      expect(find.textContaining('Usage'), findsNothing);
+    });
+
+    test('a model id reads as a short name', () {
+      expect(ChatModel.shortName('claude-opus-5-5'), 'Opus 5.5');
+      expect(ChatModel.shortName('claude-haiku-4-5-20251001'), 'Haiku 4.5');
+      expect(ChatModel.shortName('claude-fable-5-1'), 'Fable 5.1');
+      expect(ChatModel.shortName('claude-opus-5'), 'Opus 5');
+      expect(ChatModel.shortName('claude-opus-5-5[1m]'), 'Opus 5.5');
+      expect(ChatModel.shortName('sonnet'), 'Sonnet');
+      expect(ChatModel.shortName('<synthetic>'), isNull);
+    });
+
+    test('only an alias the picker offers reaches the command line', () {
+      expect(
+        ClaudeChat.command(model: 'opus'),
+        contains('--permission-prompt-tool stdio --model opus'),
+      );
+      expect(ClaudeChat.command(model: 'default'), isNot(contains('--model')));
+      expect(
+        ClaudeChat.command(model: 'x; touch pwned'),
+        isNot(contains('--model')),
+      );
+      expect(
+        ClaudeChat.backgroundCommand('hi', model: r'$(touch pwned)'),
+        isNot(contains('--model')),
+      );
+    });
+  });
+
   group('a file dropped on a desktop chat goes into the box as a path', () {
     const local = HostProfile(
       id: localHostId,
@@ -6078,7 +6554,7 @@ void main() {
     ) async {
       await watching(tester, tokens: 90000);
       // 90,001 of 200,000.
-      expect(find.text('Context 45%'), findsOneWidget);
+      expect(find.byType(ContextGauge), findsOneWidget);
       expect(find.textContaining('Usage'), findsNothing);
     });
 
@@ -6091,7 +6567,7 @@ void main() {
             'Current week (all models): 28% used · resets Oct 9, 2:59am '
             '(Asia/Example)\n',
       );
-      await hover(tester, find.text('Context 45%'));
+      await hover(tester, find.byType(ContextGauge));
       expect(find.textContaining('Usage'), findsOneWidget);
       expect(find.text('Context  90k / 200k (45%)'), findsOneWidget);
       expect(find.text('claude-opus-5-5'), findsOneWidget);
@@ -6210,7 +6686,7 @@ void main() {
       await _frames(tester);
       await tester.tap(find.text('the nightly build'));
       await _settlePickUp(tester);
-      await hover(tester, find.text('Context 45%'));
+      await hover(tester, find.byType(ContextGauge));
       expect(find.textContaining('Usage'), findsOneWidget);
 
       shown.value = false;
@@ -6225,7 +6701,7 @@ void main() {
       tester,
     ) async {
       await watching(tester);
-      await tester.tap(find.text('Context 45%'));
+      await tester.tap(find.byType(ContextGauge));
       await tester.pump();
       expect(find.textContaining('Usage'), findsOneWidget);
       await tester.tapAt(const Offset(40, 300));
@@ -6234,10 +6710,13 @@ void main() {
     });
 
     testWidgets('past 80% the chip is in the warning colour', (tester) async {
+      final semantics = tester.ensureSemantics();
       await watching(tester, tokens: 170000);
-      final chip = tester.widget<TuiText>(find.widgetWithText(TuiText, 'Context 85%'));
-      expect(chip.tone, TuiTextTone.yellow);
-      expect(chip.bold, isTrue);
+      final gauge = tester.widget<ContextGauge>(find.byType(ContextGauge));
+      expect(gauge.warn, isTrue);
+      expect(gauge.fraction, closeTo(0.85, 0.01));
+      expect(find.bySemanticsLabel(RegExp('^Context 85%')), findsOneWidget);
+      semantics.dispose();
     });
 
     testWidgets('a plan reading that is old says how old', (tester) async {
@@ -6246,7 +6725,7 @@ void main() {
       chatNow = () => now;
       addTearDown(() => chatNow = real);
       await watching(tester, usage: 'Current session: 10% used');
-      await tester.tap(find.text('Context 45%'));
+      await tester.tap(find.byType(ContextGauge));
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.text('as of 12:00'), findsOneWidget);
@@ -6260,7 +6739,7 @@ void main() {
       tester,
     ) async {
       await watching(tester, usage: 'Usage is not available.');
-      await tester.tap(find.text('Context 45%'));
+      await tester.tap(find.byType(ContextGauge));
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.text("Claude Code didn't report plan usage."), findsOneWidget);
@@ -6272,7 +6751,7 @@ void main() {
         tester,
         usage: 'Current <b>session</b> **x**: 5% used · resets [a](javascript:1)',
       );
-      await tester.tap(find.text('Context 45%'));
+      await tester.tap(find.byType(ContextGauge));
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.textContaining('resets [a](javascript:1)'), findsOneWidget);
