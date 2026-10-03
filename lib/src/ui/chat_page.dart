@@ -2355,9 +2355,14 @@ class _Bubble extends StatelessWidget {
       if (onEdit != null)
         Align(
           alignment: Alignment.centerRight,
+          // The button is a node of its own: its words must not merge into
+          // the bubble's text above it, which then no longer reads as the
+          // message alone.
           child: TuiTooltip(
             message: 'Edit this message',
+            excludeFromSemantics: true,
             child: Semantics(
+              container: true,
               button: true,
               label: 'Edit this message',
               excludeSemantics: true,
