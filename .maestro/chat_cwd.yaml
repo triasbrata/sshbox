@@ -37,7 +37,8 @@ env:
 - extendedWaitUntil:
     visible: "Start the chat in"
     timeout: 10000
-- tapOn: "/path/to/project"
+- tapOn:
+    point: 50%, 24%
 - eraseText: 120
 - inputText: "relative/dir"
 - tapOn: "Use this folder"
@@ -85,7 +86,8 @@ env:
 # Negative: a start that fails for another reason has no way to choose
 # another folder offered.
 - tapOn: "Folder.*"
-- tapOn: "/path/to/project"
+- tapOn:
+    point: 50%, 24%
 - eraseText: 120
 - inputText: "${BROKEN}"
 - tapOn: "Use this folder"
@@ -101,7 +103,8 @@ env:
 # Recovery: the untrusted folder is refused, the failed bubble offers Retry,
 # Remove and Choose another folder; a good folder and Retry start the chat.
 - tapOn: "Folder.*"
-- tapOn: "/path/to/project"
+- tapOn:
+    point: 50%, 24%
 - eraseText: 120
 - inputText: "${BAD}"
 - tapOn: "Use this folder"
@@ -116,7 +119,8 @@ env:
 - assertVisible: "(?i)choose another folder"
 - takeScreenshot: chat-cwd-refused
 - tapOn: "(?i)choose another folder"
-- tapOn: "/path/to/project"
+- tapOn:
+    point: 50%, 24%
 - eraseText: 120
 - inputText: "${PROJ}"
 - tapOn: "Use this folder"
