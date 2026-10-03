@@ -4916,7 +4916,6 @@ touch '${done.path}'
       await _xdo(['key', 'Return']);
       await quiet();
       var seen = lines();
-      debugPrint('APPLOG TAIL:\n${seen.skip(seen.length > 40 ? seen.length - 40 : 0).join('\n')}');
       expect(seen, contains('key Home (terminal)'));
       expect(seen, contains('key End (terminal)'));
       expect(seen, contains('key PageUp (terminal)'));
