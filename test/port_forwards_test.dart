@@ -301,7 +301,12 @@ void main() {
     // Everything it was saved with, and the alternative address it was saved
     // before: blank, so it is dialled at the one address it has. Pane records
     // came after it too, and are on, as for a host saved since.
-    expect(hosts.first.toJson(), {...db, 'altHost': '', 'recordPanes': true});
+    expect(hosts.first.toJson(), {
+      ...db,
+      'altHost': '',
+      'recordPanes': true,
+      'installOpenCommand': false,
+    });
 
     // Once: a setting deleted since stays deleted.
     await forwards.delete(run.setting.id);
