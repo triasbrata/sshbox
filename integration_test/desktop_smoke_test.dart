@@ -4907,6 +4907,13 @@ touch '${done.path}'
       await _xdo(['windowfocus', '--sync', await _window()]);
 
       // 1. Positive: keys that type nothing, with where they went.
+      HardwareKeyboard.instance.addHandler((e) {
+        debugPrint(
+          'PROBE ${e.runtimeType} ${e.logicalKey.keyLabel} char=${e.character} '
+          'focus=${FocusManager.instance.primaryFocus?.context?.widget.runtimeType}',
+        );
+        return false;
+      });
       await _xdo(['key', 'Home']);
       await _xdo(['key', 'End']);
       await _xdo(['key', 'Prior']);
