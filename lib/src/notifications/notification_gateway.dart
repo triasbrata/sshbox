@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../files/file_browser.dart';
@@ -32,6 +33,13 @@ class NotificationGateway {
   Future<void> initialize() => _quietly(_initialize);
 
   Future<void> _initialize() async {
+    // Play's pre-launch robot (Firebase Test Lab) runs ARM code translated on
+    // x86_64, where the plugin's drawable lookup by name crashed in
+    // AssetManager2::GetResourceId (JEANSH-4, JEANSH-8) — a signal no Dart
+    // catch sees. Nobody reads notifications there, so they are not started.
+    if (defaultTargetPlatform == TargetPlatform.android && await _onTestLab()) {
+      return;
+    }
     await _plugin.initialize(
       // Every platform the app is built for has to be named here, or the
       // plugin throws "settings must be set when targeting <platform>" as it
@@ -72,6 +80,17 @@ class NotificationGateway {
           AndroidFlutterLocalNotificationsPlugin
         >()
         ?.requestNotificationsPermission();
+  }
+
+  static Future<bool> _onTestLab() async {
+    try {
+      return await const MethodChannel('sshbox/share').invokeMethod<bool>(
+            'isTestLab',
+          ) ??
+          false;
+    } on PlatformException {
+      return false;
+    }
   }
 
   void _onTap(NotificationResponse response) {

@@ -127,22 +127,15 @@ enum NativeCrashes {
   }
   #endif
 
-  /// An App Hang that is not ours to report: the Mac was asleep, napping or
-  /// just woke, or the main thread's stack holds no frame of the app's own
-  /// executable between NSApplicationMain and where it stopped — the run loop,
-  /// AppKit's state restoration and Flutter's engine, which the user can do
-  /// nothing about. A hang with a frame of the Runner's in it is still sent.
-  static func isIdleHang(_ event: Event, now: Date = Date(), executable: String? = nil) -> Bool {
+  /// An App Hang that is the Mac's: it was asleep, napping or just woke. A
+  /// hang with no Runner frame is still sent, since a real Dart or engine
+  /// hang has none either.
+  static func isIdleHang(_ event: Event, now: Date = Date()) -> Bool {
     guard event.exceptions?.first?.mechanism?.type == "AppHang" else { return false }
     quietLock.lock()
     let until = quietUntil
     quietLock.unlock()
-    if now < until { return true }
-    let exe = executable ?? Bundle.main.executableURL?.lastPathComponent ?? ""
-    let frames = event.exceptions?.first?.stacktrace?.frames ?? []
-    // Frames run oldest first: everything up to NSApplicationMain is the entry.
-    let entry = frames.firstIndex { $0.function == "NSApplicationMain" } ?? -1
-    return !frames.dropFirst(entry + 1).contains { $0.package.map(lastComponent) == exe }
+    return now < until
   }
 
   /// For the switch being turned off while the app runs.

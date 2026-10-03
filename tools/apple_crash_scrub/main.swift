@@ -54,37 +54,33 @@ case "send":
   SentrySDK.close()
 case "hang":
   // Which App Hangs go out: the verdicts of NativeCrashes.isIdleHang, with no
-  // hang and no network. 2x2: a hang with a Runner frame is sent, one of
-  // system frames only is dropped, and a sent one is dropped while the Mac
-  // sleeps and sent again after.
-  func hang(_ functions: [(String, String)]) -> Event {
+  // hang and no network. 2x2: an awake hang is sent whatever its frames, and
+  // any hang is dropped while the Mac sleeps, then sent again after.
+  func hang(_ functions: [String]) -> Event {
     let e = Event(level: .error)
     let x = Exception(value: "", type: "App Hanging")
     x.mechanism = Mechanism(type: "AppHang")
     x.stacktrace = SentryStacktrace(
-      frames: functions.map { f, p in
+      frames: functions.map { f in
         let frame = Frame()
         frame.function = f
-        frame.package = p
         return frame
       }, registers: [:])
     e.exceptions = [x]
     return e
   }
-  let sys = "/usr/lib/system/libdispatch.dylib"
-  let runner = "/Applications/X.app/Contents/MacOS/Runner"
-  let entry = [("start", "/usr/lib/dyld"), ("main", runner), ("NSApplicationMain", sys)]
-  let ours = hang(entry + [("-[TitleBar layout]", runner), ("kevent_id", sys)])
-  let theirs = hang(entry + [("kevent_id", sys)])
+  let withRunner = hang(["start", "main", "NSApplicationMain", "-[TitleBar layout]"])
+  let systemOnly = hang(["start", "NSApplicationMain", "kevent_id"])
   var bad: [String] = []
   func expect(_ name: String, _ got: Bool, _ want: Bool) { if got != want { bad.append(name) } }
   let now = Date()
-  expect("runner frame sent", NativeCrashes.isIdleHang(ours, now: now, executable: "Runner"), false)
-  expect("system only dropped", NativeCrashes.isIdleHang(theirs, now: now, executable: "Runner"), true)
+  expect("awake, Runner frame sent", NativeCrashes.isIdleHang(withRunner, now: now), false)
+  expect("awake, system frames only sent", NativeCrashes.isIdleHang(systemOnly, now: now), false)
   NativeCrashes.quiet(until: .distantFuture)
-  expect("asleep dropped", NativeCrashes.isIdleHang(ours, now: now, executable: "Runner"), true)
+  expect("asleep dropped", NativeCrashes.isIdleHang(systemOnly, now: now), true)
+  expect("asleep, Runner frame dropped", NativeCrashes.isIdleHang(withRunner, now: now), true)
   NativeCrashes.quiet(until: .distantPast)
-  expect("awake sent", NativeCrashes.isIdleHang(ours, now: now, executable: "Runner"), false)
+  expect("awake again sent", NativeCrashes.isIdleHang(systemOnly, now: now), false)
   print(bad.isEmpty ? "hang verdicts ok" : "hang verdicts wrong: \(bad)")
   exit(bad.isEmpty ? 0 : 1)
 default:
