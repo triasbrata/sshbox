@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'right_click.dart';
+import 'text_size.dart';
 import 'tui.dart';
 import 'update_dialog.dart';
 
@@ -209,8 +210,8 @@ class WindowButtons extends StatelessWidget {
     child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // The native Help menu's one item: the menu bar it sat in went with
-        // the title bar.
+        // The native Help menu's item, and View's zoom: the menu bar they sat
+        // in went with the title bar.
         Builder(
           builder: (context) => _WindowButton(
             width: _help,
@@ -240,8 +241,24 @@ class WindowButtons extends StatelessWidget {
                 box.localToGlobal(box.size.bottomLeft(Offset.zero)),
                 [
                   TuiMenuItem(
+                    value: () => zoomUiText(inside, 1),
+                    label: 'Zoom in', logName: 'Zoom in',
+                    shortcut: 'Ctrl+=',
+                  ),
+                  TuiMenuItem(
+                    value: () => zoomUiText(inside, -1),
+                    label: 'Zoom out', logName: 'Zoom out',
+                    shortcut: 'Ctrl+-',
+                  ),
+                  TuiMenuItem(
+                    value: () => zoomUiText(inside, 0),
+                    label: 'Actual size', logName: 'Actual size',
+                    shortcut: 'Ctrl+0',
+                  ),
+                  const TuiMenuDivider(),
+                  TuiMenuItem(
                     value: () => checkForUpdates(inside),
-                    label: 'Check for updates…',
+                    label: 'Check for updates…', logName: 'Check for updates',
                   ),
                 ],
               );

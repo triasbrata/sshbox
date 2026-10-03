@@ -30,9 +30,11 @@ import 'ui/tabs_shell.dart';
 import 'ui/text_size.dart';
 import 'ui/title_bar.dart';
 import 'ui/tui.dart';
+import 'telemetry/input_log.dart' show LogRoutes;
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
+import 'telemetry/app_log.dart';
 
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key, @visibleForTesting this.transport});
@@ -59,7 +61,21 @@ class _SshboxAppState extends State<SshboxApp> {
   late final SessionManager _sessions = SessionManager(
     notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
+    onOpenRefused: _openRefused,
   );
+  /// A `jeansh` request a terminal refused. Never says which check, nor that
+  /// it was one: a program's output can cause this too.
+  void _openRefused() {
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    showToast(
+      context,
+      'A jeansh request was refused. If you typed jeansh, open a new pane or '
+      'tab and try again.',
+      type: TuiToastType.warning,
+    );
+  }
+
   late final HostRepository _repository = HostRepository(_secrets);
 
   final AppLinks _appLinks = AppLinks();
@@ -95,10 +111,16 @@ class _SshboxAppState extends State<SshboxApp> {
     if (defaultTargetPlatform == TargetPlatform.macOS) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
     }
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      FocusManager.instance.addEarlyKeyEventHandler(_zoomKeys.handle);
+    }
     if (isDesktop) {
       _menuChannel.setMethodCallHandler((call) async {
         if (call.method == 'openSettings') _openSettings();
         if (call.method == 'checkForUpdates') _checkFromMenu();
+        if (call.method == 'zoomIn') _zoom(1);
+        if (call.method == 'zoomOut') _zoom(-1);
+        if (call.method == 'zoomReset') _zoom(0);
       });
     }
     // Desktop apps stay open for days: the daily check is asked again every
@@ -118,6 +140,10 @@ class _SshboxAppState extends State<SshboxApp> {
   /// any more: their Help is drawn beside the window's buttons
   /// (`WindowButtons`), and runs the same check.
   static const _menuChannel = MethodChannel('sshbox/menu');
+
+  late final _zoomKeys = UiZoomKeys(_zoom);
+
+  void _zoom(int direction) => zoomUiText(_navigator.currentContext, direction);
 
   void _checkFromMenu() {
     final context = _navigator.currentContext;
@@ -553,6 +579,7 @@ class _SshboxAppState extends State<SshboxApp> {
     lastFault.removeListener(_offerToReport);
     localTmux.removeListener(_noTmux.clear);
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
+    FocusManager.instance.removeEarlyKeyEventHandler(_zoomKeys.handle);
     unawaited(_linkSubscription?.cancel());
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());
@@ -576,7 +603,9 @@ class _SshboxAppState extends State<SshboxApp> {
         return MaterialApp(
           title: 'Jeansh',
           debugShowCheckedModeBanner: false,
+          scrollBehavior: const ZoomScrollBehavior(),
           navigatorKey: _navigator,
+          navigatorObservers: [LogRoutes()],
           themeMode: look.mode,
           theme: themeOf(Brightness.light),
           darkTheme: themeOf(Brightness.dark),
@@ -587,30 +616,33 @@ class _SshboxAppState extends State<SshboxApp> {
           // Every text in the app at the UI size Settings picked, on top of
           // the system's own: a tab's content takes it back out, see
           // ContentText.
-          builder: (context, child) => MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              textScaler: UiTextScaler(
-                MediaQuery.textScalerOf(context),
-                uiTextSize.value,
+          builder: (context, child) => UiZoomWheel(
+            onZoom: _zoom,
+            child: MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: UiTextScaler(
+                  MediaQuery.textScalerOf(context),
+                  uiTextSize.value,
+                ),
               ),
-            ),
-            child: AnnotatedRegion<SystemUiOverlayStyle>(
-              value: SystemUiOverlayStyle(
-                statusBarIconBrightness:
-                    Theme.of(context).brightness == Brightness.dark
-                    ? Brightness.light
-                    : Brightness.dark,
-              ),
-              // On a desktop, every page and toast clear of the window's
-              // buttons; onboarding, before the tabs, covers them too.
-              child: TitleBarSpace(
-                navigator: _navigator,
-                covered: () =>
-                    !onboardingDone.value ||
-                    (_navigator.currentState?.canPop() ?? false),
-                // Toasts over every page, taking only the touches that land
-                // on one.
-                child: ToastLayer(child: child!),
+              child: AnnotatedRegion<SystemUiOverlayStyle>(
+                value: SystemUiOverlayStyle(
+                  statusBarIconBrightness:
+                      Theme.of(context).brightness == Brightness.dark
+                      ? Brightness.light
+                      : Brightness.dark,
+                ),
+                // On a desktop, every page and toast clear of the window's
+                // buttons; onboarding, before the tabs, covers them too.
+                child: TitleBarSpace(
+                  navigator: _navigator,
+                  covered: () =>
+                      !onboardingDone.value ||
+                      (_navigator.currentState?.canPop() ?? false),
+                  // Toasts over every page, taking only the touches that land
+                  // on one.
+                  child: ToastLayer(child: child!),
+                ),
               ),
             ),
           ),
@@ -626,7 +658,10 @@ class _SshboxAppState extends State<SshboxApp> {
                     sessions: _sessions,
                     onOpenHost: (hostId) =>
                         openHost(hostId, newSession: true, restoredFirst: true),
-                    onDuplicate: (hostId) => openHost(hostId, newSession: true),
+                    onDuplicate: (hostId) {
+                      appLog.add('action tab duplicate');
+                      return openHost(hostId, newSession: true);
+                    },
                     // Home draws the Local card on a desktop alone.
                     onOpenLocal: () => openHost(
                       localHostId,

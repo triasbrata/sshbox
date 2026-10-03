@@ -85,7 +85,7 @@ class _PortForwardingPageState extends State<PortForwardingPage> {
       floatingActionButton: hosts == null
           ? null
           : TuiButton(
-              label: 'Add port forward',
+              label: 'Add port forward', logName: 'Add port forward',
               prefix: '+',
               onPressed: () => _edit(hosts),
             ),
@@ -765,7 +765,7 @@ class _ForwardEditorState extends State<_ForwardEditor> {
                 Align(
                   alignment: AlignmentDirectional.centerStart,
                   child: TuiButton(
-                    label: 'Add port',
+                    label: 'Add port', logName: 'Add port',
                     prefix: '+',
                     variant: TuiButtonVariant.ghost,
                     onPressed: () => setState(() => _mappings.add(_Mapping())),

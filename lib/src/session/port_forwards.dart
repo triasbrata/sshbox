@@ -13,6 +13,7 @@ import 'isolate_transport.dart';
 import 'local_forwarder.dart';
 import 'session_manager.dart' show LiveSession;
 import 'terminal_session.dart';
+import '../telemetry/app_log.dart';
 
 enum ForwardStatus { stopped, connecting, running, reconnecting, error }
 
@@ -177,6 +178,7 @@ class PortForwards extends ChangeNotifier {
   Future<void> start(String id) async {
     final run = _runs[id];
     if (run == null || run.on) return;
+    appLog.add('action port forward on');
     run
       .._status = ForwardStatus.connecting
       .._error = null
@@ -191,6 +193,7 @@ class PortForwards extends ChangeNotifier {
   Future<void> stop(String id) async {
     final run = _runs[id];
     if (run == null) return;
+    appLog.add('action port forward off');
     run
       .._status = ForwardStatus.stopped
       .._error = null

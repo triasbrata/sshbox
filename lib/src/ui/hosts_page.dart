@@ -19,6 +19,7 @@ import 'os_icon.dart';
 import 'port_forwarding_page.dart';
 import 'right_click.dart';
 import 'settings_page.dart';
+import 'text_size_control.dart';
 import 'tui.dart';
 import 'update_dialog.dart';
 
@@ -143,8 +144,11 @@ class _HostsPageState extends State<HostsPage> {
     );
     // Both lists in the same order, so a secret added to SecretKeys travels
     // with a duplicate too. Read and written, never logged or shown.
-    final from = SecretKeys.allFor(host.id);
-    final to = SecretKeys.allFor(copy.id);
+    // Not the `jeansh` secret: it is the host's, and a copy makes its own.
+    final from = SecretKeys.allFor(host.id)
+      ..remove(SecretKeys.openSecret(host.id));
+    final to = SecretKeys.allFor(copy.id)
+      ..remove(SecretKeys.openSecret(copy.id));
     for (var i = 0; i < from.length; i++) {
       await widget.secrets.write(to[i], await widget.secrets.read(from[i]));
     }
@@ -283,6 +287,11 @@ class _HostsPageState extends State<HostsPage> {
                           KnownHostsPage(repository: widget.repository),
                     ),
                   ),
+                ),
+                (
+                  'Text size',
+                  Icons.text_fields,
+                  () => showTextSizeControl(context),
                 ),
                 (
                   'Settings',
@@ -489,27 +498,39 @@ class _HomeHeader extends StatelessWidget {
                   ),
                 ),
               ),
-              const Spacer(),
-              for (final (tooltip, icon, onTap) in actions) ...[
-                // Left of Settings, while a newer release is out.
-                if (tooltip == 'Settings') const UpdateChip(),
-                TuiTooltip(
-                  message: tooltip,
-                  child: Semantics(
-                    container: true,
-                    button: true,
-                    label: tooltip,
-                    child: GestureDetector(
-                      onTap: onTap,
-                      behavior: HitTestBehavior.opaque,
-                      child: Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Icon(icon, size: 20, color: p.accent),
-                      ),
-                    ),
+              // The actions scroll, from the right, when a large UI text size
+              // leaves them no room.
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  reverse: true,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final (tooltip, icon, onTap) in actions) ...[
+                        // Left of Settings, while a newer release is out.
+                        if (tooltip == 'Settings') const UpdateChip(),
+                        TuiTooltip(
+                          message: tooltip,
+                          child: Semantics(
+                            container: true,
+                            button: true,
+                            label: tooltip,
+                            child: GestureDetector(
+                              onTap: onTap,
+                              behavior: HitTestBehavior.opaque,
+                              child: Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Icon(icon, size: 20, color: p.accent),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              ],
+              ),
             ],
           ),
           const SizedBox(height: 4),
@@ -568,7 +589,7 @@ class _AddButtonState extends State<_AddButton> {
                 ),
               ),
           TuiButton(
-            label: 'Add',
+            label: 'Add', logName: 'Add',
             prefix: _open ? '×' : '+',
             onPressed: () => setState(() => _open = !_open),
           ),

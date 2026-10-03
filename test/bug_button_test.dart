@@ -24,6 +24,7 @@ import 'package:url_launcher_platform_interface/url_launcher_platform_interface.
 import 'package:xterm2/xterm.dart' show Terminal;
 
 import 'tui_finders.dart';
+import 'log_messages.dart';
 
 class _Launcher extends UrlLauncherPlatform {
   final opened = <String>[];
@@ -141,7 +142,7 @@ void main() {
         'postgresql://u:hunter2@db.internal/app '
         'ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD',
       );
-      final text = log.render();
+      final text = logMessages(log.render());
       for (final leak in [
         'trias',
         'my-box',
@@ -168,7 +169,7 @@ void main() {
       await second.flush();
       final third = AppLog();
       await third.load(dir: dir);
-      final text = third.render();
+      final text = logMessages(third.render());
       expect(text, contains('second run marker'));
       expect(text, isNot(contains('first run marker')));
       if (!Platform.isWindows) {
@@ -524,7 +525,7 @@ void main() {
         showToast(context, message, type: TuiToastType.error);
       }
       showToast(context, 'Upload of Jane.docx failed', logAs: 'upload failed');
-      final log = appLog.current;
+      final log = logMessages(appLog.current);
       for (final leak in [
         'Jane',
         'payroll',

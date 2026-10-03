@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'app_log.dart';
 import 'scrub.dart';
 
 /// Jeansh's own Worker: the daily count, and the bug reports somebody chose
@@ -66,6 +67,7 @@ class TelemetrySetting extends ValueNotifier<bool> {
   /// `stopCrashReporting`.
   Future<void> choose(bool on) async {
     value = on;
+    appLog.add('setting telemetry $on');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, on);
   }

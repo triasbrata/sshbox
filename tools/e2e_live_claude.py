@@ -284,6 +284,23 @@ def agents_turn(text):
     sys.stdout.write('Agents played\n')
 
 
+def usage_turn(text):
+    """A line starting `usage:` plays a short turn whose answer's usage says the
+    request carried 170,000 tokens of a 200,000 window, so chat's context chip
+    reads 85%, in the warning colour."""
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_usage', 'role': 'assistant', 'model': 'claude-opus-5-5',
+        'stop_reason': 'end_turn',
+        'usage': {'input_tokens': 1, 'cache_creation_input_tokens': 0,
+                  'cache_read_input_tokens': 169989, 'output_tokens': 10},
+        'content': [{'type': 'text', 'text': 'Usage answer: done'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 1000,
+            'timestamp': now()})
+    sys.stdout.write('Usage answer: done\n')
+
+
 def prompt():
     sys.stdout.write('❯ ')
     sys.stdout.flush()
@@ -299,6 +316,8 @@ while True:
         slow_turn(text)
     elif text.startswith('agents:'):
         agents_turn(text)
+    elif text.startswith('usage:'):
+        usage_turn(text)
     elif text.startswith('tasks:'):
         task_turn(text)
     elif text.startswith('wait:'):

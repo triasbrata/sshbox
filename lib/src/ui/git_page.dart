@@ -497,7 +497,7 @@ class _GitPageState extends State<GitPage> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TuiButton(
-                    label: 'Commit',
+                    label: 'Commit', logName: 'Commit',
                     prefix: '✓',
                     // Only what is staged goes in, as the editors do it: the
                     // list above says exactly what that is.
@@ -735,7 +735,7 @@ class _Message extends StatelessWidget {
             if (onRetry != null) ...[
               const SizedBox(height: 12),
               TuiButton(
-                label: 'Try again',
+                label: 'Try again', logName: 'Try again',
                 prefix: '↻',
                 variant: TuiButtonVariant.ghost,
                 onPressed: onRetry,

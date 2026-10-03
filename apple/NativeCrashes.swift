@@ -50,6 +50,9 @@ enum NativeCrashes {
       o.maxBreadcrumbs = 0
       o.beforeBreadcrumb = { _ in nil }
       o.enableCaptureFailedRequests = false
+      // sentry-cocoa's 2 s is short for a Mac that is waking or being napped;
+      // [scrub] drops the rest of those, see [isIdleHang].
+      o.appHangTimeoutInterval = 5
       // The release and dist Dart's LoadReleaseIntegration makes from the same
       // Info.plist, which are also sentry-cocoa's own defaults, spelled out.
       let info = Bundle.main.infoDictionary ?? [:]
@@ -78,6 +81,61 @@ enum NativeCrashes {
         name: Notification.Name("SentryHybridSdkDidBecomeActive"), object: nil)
     }
     #endif
+    #if canImport(FlutterMacOS)
+    watchSleep()
+    #endif
+  }
+
+  // MARK: App hangs that are the Mac's, not the app's
+
+  private static let quietLock = NSLock()
+  private static var quietUntil = Date.distantPast
+  private static var watching = false
+
+  /// While the Mac sleeps or the app is occluded (App Nap) the main thread is
+  /// stopped by the system, and sentry-cocoa reads the stop as a hang when it
+  /// runs again. The window stays shut for 30 s after the Mac wakes or the app
+  /// is visible again.
+  static func quiet(until: Date) {
+    quietLock.lock()
+    quietUntil = until
+    quietLock.unlock()
+  }
+
+  #if canImport(FlutterMacOS)
+  private static func watchSleep() {
+    quietLock.lock()
+    let already = watching
+    watching = true
+    quietLock.unlock()
+    if already { return }
+    let ws = NSWorkspace.shared.notificationCenter
+    ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in
+      quiet(until: .distantFuture)
+    }
+    for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+      ws.addObserver(forName: name, object: nil, queue: nil) { _ in
+        quiet(until: Date().addingTimeInterval(30))
+      }
+    }
+    NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeOcclusionStateNotification, object: nil, queue: nil
+    ) { _ in
+      let visible = NSApplication.shared.occlusionState.contains(.visible)
+      quiet(until: visible ? Date().addingTimeInterval(30) : .distantFuture)
+    }
+  }
+  #endif
+
+  /// An App Hang that is the Mac's: it was asleep, napping or just woke. A
+  /// hang with no Runner frame is still sent, since a real Dart or engine
+  /// hang has none either.
+  static func isIdleHang(_ event: Event, now: Date = Date()) -> Bool {
+    guard event.exceptions?.first?.mechanism?.type == "AppHang" else { return false }
+    quietLock.lock()
+    let until = quietUntil
+    quietLock.unlock()
+    return now < until
   }
 
   /// For the switch being turned off while the app runs.
@@ -110,6 +168,7 @@ enum NativeCrashes {
     // A transaction reaches beforeSend too, and rebuilt it would go out as an
     // error. Tracing is off, so there are none; one that turns up goes.
     if event.type == "transaction" { return nil }
+    if isIdleHang(event) { return nil }
 
     let out = Event(level: event.level)
     out.eventId = event.eventId

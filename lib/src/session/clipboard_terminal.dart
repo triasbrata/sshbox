@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:xterm2/xterm.dart';
 
+import '../telemetry/input_log.dart';
+
 /// The most a program may put on the clipboard in one go, decoded: 1 MB.
 /// Anything bigger is dropped whole rather than cut short.
 const maxClipboardBytes = 1 << 20;
@@ -35,10 +37,22 @@ const maxClipboardBytes = 1 << 20;
 /// it wrote it, so the wrapped one is taken out and dropped: one copy, one
 /// toast.
 class ClipboardTerminal extends Terminal {
-  ClipboardTerminal({super.maxLines, super.inputHandler})
+  ClipboardTerminal({
+    super.maxLines,
+    super.inputHandler,
+    super.onPrivateOSC,
+  })
     : super(onClipboardQuery: _refuse);
 
   static String? _refuse(String _) => null;
+
+  /// Every text paste into a terminal goes through here, the shortcut, the
+  /// menu and a share alike: its amount is logged, never the text.
+  @override
+  void paste(String text) {
+    logPaste('terminal', 'text', text.length);
+    super.paste(text);
+  }
 
   static const _start = '\x1b]52;';
 

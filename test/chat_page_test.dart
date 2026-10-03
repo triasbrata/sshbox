@@ -5,18 +5,24 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'fake_drop.dart';
+import 'fake_file_browser.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sshbox/src/files/file_browser.dart' show FileBrowser;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show RenderParagraph, RenderRepaintBoundary;
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownBody;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/session/local_transport.dart' show localHostId;
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/chat_page.dart';
@@ -34,6 +40,7 @@ import 'package:sshbox/src/ui/tui.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_web_view.dart';
+import 'log_messages.dart';
 
 /// Takes every link it is handed and remembers it: what would have gone to
 /// the phone's browser, or to whatever app answers the link's scheme.
@@ -65,6 +72,14 @@ List<String> _useFakeClipboard() {
     () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
   );
   return copied;
+}
+
+/// A host whose files can be browsed, as the folder picker needs.
+class _BrowseShell extends _Shell implements FileBrowseCapable {
+  final browser = FakeFileBrowser();
+
+  @override
+  FileBrowser openFileBrowser() => browser;
 }
 
 class _NoSecrets implements SecretStore {
@@ -5766,6 +5781,85 @@ void main() {
       expect(find.text('[Image #1] shot.png'), findsOneWidget);
     });
 
+    testWidgets('a long press on the empty box opens the selection menu with '
+        'Paste, which puts the clipboard text in', (tester) async {
+      clipboard(tester);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            return {'text': 'from the clipboard'};
+          }
+          if (call.method == 'Clipboard.hasStrings') return {'value': false};
+          return null;
+        },
+      );
+      tester.view
+        ..physicalSize = const Size(700, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await continued(tester);
+      // Where a screen reader or a flow reaches the box: the centre of the
+      // semantics node that names it. It must be the field's own, not the
+      // whole composer's, or a press there lands between the controls.
+      final sem = tester.ensureSemantics();
+      final node = tester.getSemantics(find.bySemanticsLabel('Ask Claude…'));
+      final centre = tester.getCenter(find.bySemanticsLabel('Ask Claude…'));
+      expect(node.childrenCount, 0, reason: 'the field has no controls inside');
+      expect(
+        tester.getRect(find.byType(TextField)).contains(centre),
+        isTrue,
+        reason: 'the centre of its node is on the field',
+      );
+      await tester.longPressAt(centre);
+      sem.dispose();
+      // The soft keyboard comes up with the focus, as it does on a phone.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpAndSettle();
+      expect(find.text('Paste'), findsOneWidget);
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      expect(box(tester), 'from the clipboard');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('the selection menu\'s Paste with no picture logs a text paste '
+        'and none of its words', (tester) async {
+      clipboard(tester);
+      await continued(tester);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            return {'text': 'sekret clipboard words'};
+          }
+          if (call.method == 'Clipboard.hasStrings') return {'value': true};
+          return null;
+        },
+      );
+      tester
+          .state<EditableTextState>(
+            find.descendant(
+              of: find.byType(TextField),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .showToolbar();
+      await tester.pumpAndSettle();
+      final before = appLog.length;
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Paste'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+      final added = appLog.current.split('\n').skip(before).join('\n');
+      expect(added, contains('paste text (chat)'));
+      expect(logMessages(added), isNot(contains('sekret')));
+    });
+
     testWidgets('a transcript\'s picture that claims too many pixels is not '
         'drawn in its bubble, and one that does not is, decoded small', (
       tester,
@@ -5854,7 +5948,7 @@ void main() {
       expect(box(tester), '[Image #1] ');
       expect(find.text('[Image #1] drop.png'), findsOneWidget);
       expect(
-        find.textContaining('A folder is not a picture: pics'),
+        find.textContaining('A folder cannot be uploaded: pics'),
         findsOneWidget,
       );
       await tester.pumpAndSettle(const Duration(seconds: 6));
@@ -6330,6 +6424,647 @@ void main() {
         ClaudeChat.backgroundCommand('hi', model: r'$(touch pwned)'),
         isNot(contains('--model')),
       );
+    });
+  });
+
+  group('a file dropped on a desktop chat goes into the box as a path', () {
+    const local = HostProfile(
+      id: localHostId,
+      label: 'Local',
+      host: 'local',
+      username: 'me',
+    );
+
+    Future<_Shell> chatOn(WidgetTester tester, HostProfile host) async {
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(host: host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      return shell;
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    Future<void> drop(WidgetTester tester, List<String> paths) async {
+      await tester.runAsync(() async {
+        await dropOnTerminal(tester, paths, on: find.byType(TextField));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+    }
+
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('chat-drop'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    final linux = TargetPlatformVariant.only(TargetPlatform.linux);
+
+    testWidgets('in a Local shell its own path goes in at the caret, '
+        'nothing uploaded, and a folder too', (tester) async {
+      final shell = await chatOn(tester, local);
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      final spaced = File('${dir.path}/my notes.txt')..writeAsStringSync('x');
+      final folder = Directory('${dir.path}/sub')..createSync();
+      await tester.enterText(find.byType(TextField), 'read  now');
+      await tester.pump();
+      tester.widget<TextField>(find.byType(TextField)).controller!.selection =
+          const TextSelection.collapsed(offset: 5);
+      await drop(tester, [file.path, spaced.path, folder.path]);
+      expect(
+        box(tester),
+        'read ${file.path} "${spaced.path}" ${folder.path}  now',
+      );
+      expect(shell.uploaded, isEmpty);
+    }, variant: linux);
+
+    testWidgets('on an SSH host it is uploaded and the uploaded path goes '
+        'in; a folder is refused', (tester) async {
+      final shell = await chatOn(tester, _host);
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      final folder = Directory('${dir.path}/sub')..createSync();
+      await drop(tester, [file.path, folder.path]);
+      expect(shell.uploaded, ['notes.txt']);
+      expect(box(tester), '/tmp/notes.txt ');
+      expect(
+        find.textContaining('A folder cannot be uploaded: sub'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: linux);
+
+    testWidgets('a late upload goes in after a selection, never over it, '
+        'and a quote in a spaced path is escaped', (tester) async {
+      final shell = await chatOn(tester, _host);
+      final file = File('${dir.path}/my "q" notes.txt')..writeAsStringSync('x');
+      await tester.enterText(find.byType(TextField), 'keep this sentence');
+      await tester.pump();
+      final controller = tester
+          .widget<TextField>(find.byType(TextField))
+          .controller!;
+      controller.selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 18,
+      );
+      await drop(tester, [file.path]);
+      expect(shell.uploaded, ['my "q" notes.txt']);
+      expect(box(tester), r'keep this sentence "/tmp/my \"q\" notes.txt" ');
+    }, variant: linux);
+
+    for (final (label, host) in [
+      ('a Local drop uploads', local),
+      (
+        'a WSL host uploads',
+        const HostProfile(
+          id: 'wsl:Ubuntu',
+          label: 'WSL',
+          host: 'wsl',
+          username: 'me',
+        ),
+      ),
+    ]) {
+      testWidgets('on Windows $label', (tester) async {
+        final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+        final shell = await chatOn(tester, host);
+        await drop(tester, [file.path]);
+        expect(shell.uploaded, ['notes.txt']);
+        expect(box(tester), '/tmp/notes.txt ');
+      }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+    }
+
+    testWidgets('C1 and bidi controls in a name are refused', (tester) async {
+      final shell = await chatOn(tester, local);
+      final spoof = File('${dir.path}/a\u202egpj.txt')..writeAsStringSync('x');
+      final c1 = File('${dir.path}/a\u0085b.txt')..writeAsStringSync('x');
+      final png = File('${dir.path}/a\u202egnp.png')..writeAsBytesSync([1]);
+      await drop(tester, [spoof.path, c1.path, png.path]);
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('holds a control character'), findsNWidgets(3));
+      expect(shell.uploaded, isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: linux);
+
+    testWidgets('a name holding a control character is refused, and a '
+        'picture is still a card', (tester) async {
+      final shell = await chatOn(tester, local);
+      final odd = File('${dir.path}/a\nb.txt')..writeAsStringSync('x');
+      final shot = File('${dir.path}/shot.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+          ),
+        );
+      await drop(tester, [odd.path, shot.path]);
+      expect(box(tester), '[Image #1] ');
+      expect(find.textContaining('holds a control character'), findsOneWidget);
+      expect(shell.uploaded, isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    }, variant: linux);
+  });
+
+  // Measurements for #215, run with CHAT_BENCH=1: debug-mode (JIT, asserts on)
+  // widget-test numbers, so only their ratios and counts carry over to a
+  // release build. No raster time is included.
+  group('chat performance, measured', () {
+    final on = Platform.environment['CHAT_BENCH'] != null;
+
+    Map<String, Object?> text(String id, String body, {String role = 'assistant'}) =>
+        role == 'user'
+        ? {
+            'type': 'user',
+            'message': {'role': 'user', 'content': body},
+          }
+        : {
+            'type': 'assistant',
+            'message': {
+              'id': id,
+              'role': 'assistant',
+              'model': 'claude-opus-5-5',
+              'stop_reason': 'end_turn',
+              'usage': {'input_tokens': 1, 'cache_read_input_tokens': 50000},
+              'content': [
+                {'type': 'text', 'text': body},
+              ],
+            },
+          };
+
+    const prose =
+        '## Findings\n\nThe **nightly** build fails at the `lint` step. See '
+        '[the log](https://example.com/log).\n\n- first point about the cache\n'
+        '- second point about the runner\n- third point with `code`\n';
+    final code =
+        '```dart\n${List.generate(8, (i) => 'final value$i = compute($i);').join('\n')}\n```';
+
+    /// About [n] entries: user text, prose, code, and a tool call with its
+    /// result, in turn.
+    String longHistory(int n) {
+      final lines = <Map<String, Object?>>[];
+      var i = 0;
+      while (lines.length < n) {
+        lines.add(text('', 'question $i about the build?', role: 'user'));
+        lines.add(text('p$i', prose));
+        lines.add(text('c$i', 'Here is the change:\n\n$code'));
+        lines.add({
+          'type': 'assistant',
+          'message': {
+            'id': 't$i',
+            'role': 'assistant',
+            'model': 'claude-opus-5-5',
+            'stop_reason': 'tool_use',
+            'usage': {'input_tokens': 1, 'cache_read_input_tokens': 50000},
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'tu$i',
+                'name': 'Bash',
+                'input': {'command': 'ls -la /srv/app', 'description': 'list'},
+              },
+            ],
+          },
+        });
+        lines.add({
+          'type': 'user',
+          'message': {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'tool_result',
+                'tool_use_id': 'tu$i',
+                'content': 'total 8\ndrwxr-xr-x 2 me me 4096 Oct 2 file$i',
+              },
+            ],
+          },
+        });
+        i++;
+      }
+      return _history(lines.take(n).toList());
+    }
+
+    String pct(List<int> us, double q) {
+      final sorted = [...us]..sort();
+      return (sorted[((sorted.length - 1) * q).round()] / 1000).toStringAsFixed(1);
+    }
+
+    String stats(List<int> us) =>
+        'n=${us.length} mean=${(us.reduce((a, b) => a + b) / us.length / 1000).toStringAsFixed(1)}ms '
+        'p95=${pct(us, 0.95)}ms max=${pct(us, 1)}ms';
+
+    final rebuilds = <String, int>{};
+    void count() => debugOnRebuildDirtyWidget = (element, _) {
+      final name = element.widget.runtimeType.toString();
+      rebuilds[name] = (rebuilds[name] ?? 0) + 1;
+    };
+    String top() {
+      final rows = rebuilds.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      return rows.take(8).map((e) => '${e.key}=${e.value}').join(' ');
+    }
+
+    Future<List<int>> frames(WidgetTester tester, int n,
+        [Duration step = const Duration(milliseconds: 16)]) async {
+      final us = <int>[];
+      for (var i = 0; i < n; i++) {
+        final w = Stopwatch()..start();
+        await tester.pump(step);
+        us.add(w.elapsedMicroseconds);
+      }
+      return us;
+    }
+
+    Future<_Shell> pickUp(WidgetTester tester, String history) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = history
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      return shell;
+    }
+
+    testWidgets('a live event builds its own row only: every older reply '
+        'keeps what it parsed', (tester) async {
+      final shell = await pickUp(tester, longHistory(50));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      // What each reply on screen drew with before the event.
+      final was = {
+        for (final element in find.byType(MarkdownBody).evaluate())
+          element: element.widget,
+      };
+      expect(was, isNotEmpty);
+      shell.follow!.add(
+        Uint8List.fromList(
+          utf8.encode('${jsonEncode(text('live1', 'a **new** reply'))}\n'),
+        ),
+      );
+      await _frames(tester);
+      expect(find.textContaining('new'), findsWidgets);
+      final kept = was.entries.where((e) => e.key.mounted).toList();
+      expect(kept, isNotEmpty, reason: 'some older replies are still shown');
+      // The very same widget: nothing was parsed or built again for it.
+      expect(
+        kept.where((e) => !identical(e.key.widget, e.value)),
+        isEmpty,
+        reason: 'an older reply was handed a new Markdown to build',
+      );
+    });
+
+    testWidgets('the sidebar of a session that is not connected says to '
+        'connect it, and asks the host for nothing', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell();
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      expect(
+        find.text('Connect this session to see its Claude sessions.'),
+        findsOneWidget,
+      );
+      expect(shell.commands.where((c) => c.contains('agents --json')), isEmpty);
+    });
+
+    testWidgets('a poll that finds nothing new redraws nothing outside the '
+        'sidebar, and one that does updates the sidebar', (tester) async {
+      final shell = await pickUp(tester, longHistory(10));
+      await _frames(tester);
+      var page = 0;
+      debugOnRebuildDirtyWidget = (element, _) {
+        if (element.widget is ChatPage) page++;
+      };
+      addTearDown(() => debugOnRebuildDirtyWidget = null);
+      final asked = shell.commands.where((c) => c.contains('agents --json')).length;
+      await tester.pump(const Duration(seconds: 6));
+      await _frames(tester);
+      expect(
+        shell.commands.where((c) => c.contains('agents --json')).length,
+        greaterThan(asked),
+        reason: 'the poll ran',
+      );
+      expect(page, 0, reason: 'nothing changed, so nothing was redrawn');
+      expect(find.textContaining('idle'), findsWidgets);
+
+      // The session starts working: the sidebar shows it, the page still
+      // is not rebuilt.
+      shell.listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'busy',
+          'state': 'working',
+        },
+      ]);
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      debugOnRebuildDirtyWidget = null;
+      expect(find.textContaining('working ·'), findsOneWidget);
+      expect(page, 0);
+    });
+
+    testWidgets('open a long session', (tester) async {
+      final history = longHistory(2000);
+      final rss0 = ProcessInfo.currentRss;
+      final shell = await pickUp(tester, history);
+      rebuilds.clear();
+      count();
+      final w = Stopwatch()..start();
+      await tester.tap(find.text('the nightly build'));
+      await tester.pump();
+      final first = w.elapsedMilliseconds;
+      await _settlePickUp(tester);
+      final total = w.elapsedMilliseconds;
+      debugOnRebuildDirtyWidget = null;
+      // ignore: avoid_print
+      print('BENCH open: transcript=${utf8.encode(history).length ~/ 1024}KB '
+          'lines=2000 first-pump=${first}ms settled=${total}ms '
+          'elements=${tester.allElements.length} '
+          'rss+${(ProcessInfo.currentRss - rss0) ~/ (1024 * 1024)}MB '
+          'commands=${shell.commands.length}\nBENCH open rebuilds: ${top()}');
+    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+
+    testWidgets('stream 200 events into a conversation, and scroll', (
+      tester,
+    ) async {
+      final shell = await pickUp(tester, longHistory(500));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      await _frames(tester);
+      rebuilds.clear();
+      count();
+      final per = <int>[];
+      for (var i = 0; i < 200; i++) {
+        final w = Stopwatch()..start();
+        shell.follow?.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '${jsonEncode(text('s$i', '$prose\nstreamed event $i'))}\n',
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 16));
+        per.add(w.elapsedMicroseconds);
+      }
+      debugOnRebuildDirtyWidget = null;
+      // ignore: avoid_print
+      print('BENCH stream (500-entry session, 200 events, follow on): '
+          '${stats(per)}\nBENCH stream rebuilds (total over 200 events): ${top()}\n'
+          'BENCH per event: ${rebuilds.entries.map((e) => '${e.key}=${(e.value / 200).toStringAsFixed(1)}').take(6).join(' ')}');
+
+      // Scrolling through it.
+      rebuilds.clear();
+      count();
+      final scroll = <int>[];
+      for (var i = 0; i < 8; i++) {
+        await tester.fling(
+          find.byType(CustomScrollView),
+          const Offset(0, 600),
+          2500,
+        );
+        scroll.addAll(await frames(tester, 40));
+      }
+      debugOnRebuildDirtyWidget = null;
+      // ignore: avoid_print
+      print('BENCH scroll (8 flings): ${stats(scroll)}\n'
+          'BENCH scroll rebuilds: ${top()}');
+    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+
+    testWidgets('an idle minute', (tester) async {
+      final shell = await pickUp(tester, longHistory(200));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final before = shell.commands.length;
+      rebuilds.clear();
+      count();
+      final us = <int>[];
+      for (var s = 0; s < 60; s++) {
+        final w = Stopwatch()..start();
+        await tester.pump(const Duration(seconds: 1));
+        us.add(w.elapsedMicroseconds);
+      }
+      debugOnRebuildDirtyWidget = null;
+      final polled = shell.commands.skip(before).toList();
+      final kinds = <String, int>{};
+      for (final c in polled) {
+        final k = c.contains('agents --json')
+            ? 'agents'
+            : c.contains('/usage')
+            ? 'usage'
+            : c.contains('/tasks')
+            ? 'tasks'
+            : c.contains(' -f ')
+            ? 'follow'
+            : 'other';
+        kinds[k] = (kinds[k] ?? 0) + 1;
+      }
+      // ignore: avoid_print
+      print('BENCH idle 60s: frames ${stats(us)} host commands=${polled.length} '
+          '$kinds\nBENCH idle rebuilds: ${top()}');
+    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+  });
+
+  group('the folder a new chat starts in', () {
+    const trust =
+        'Workspace not trusted. The home directory is trusted one session at '
+        'a time — start this from an interactive terminal there, or from a '
+        'project directory.\n';
+
+    Future<_BrowseShell> page(
+      WidgetTester tester, {
+      Map<String, Object> saved = const {},
+      Size size = const Size(1280, 800),
+      String? background,
+      List<Map<String, Object?>> sessions = const [],
+    }) async {
+      SharedPreferences.setMockInitialValues(saved);
+      tester.view
+        ..physicalSize = size
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _BrowseShell()..listing = jsonEncode(sessions);
+      if (background != null) shell.background = background;
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      return shell;
+    }
+
+    Finder dialogField() => find.descendant(
+      of: find.byType(TuiDialog),
+      matching: find.byType(EditableText),
+    );
+
+    Future<void> openPicker(WidgetTester tester) async {
+      await tester.tap(find.textContaining('▸ '));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+    }
+
+    testWidgets('a new chat shows the host root as its folder', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await page(tester);
+      expect(find.text('▸ app'), findsOneWidget);
+      expect(find.bySemanticsLabel('Folder /srv/app'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('a typed path is where the chat starts, remembered for the '
+        'host', (tester) async {
+      final shell = await page(tester);
+      await openPicker(tester);
+      await tester.enterText(dialogField(), '/srv/proj');
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await _frames(tester);
+      expect(find.text('▸ proj'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      final started = shell.commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, contains('/srv/proj'));
+      expect(
+        (await SharedPreferences.getInstance()).getString(
+          'sshbox.chat.folder.host-1',
+        ),
+        '/srv/proj',
+      );
+    });
+
+    testWidgets('what was remembered for this host is used', (tester) async {
+      await page(tester, saved: {'sshbox.chat.folder.host-1': '/srv/proj'});
+      expect(find.text('▸ proj'), findsOneWidget);
+    });
+
+    testWidgets('what was remembered for another host is not', (tester) async {
+      await page(tester, saved: {'sshbox.chat.folder.host-2': '/srv/proj'});
+      expect(find.text('▸ app'), findsOneWidget);
+      expect(find.text('▸ proj'), findsNothing);
+    });
+
+    testWidgets('the home folder is warned about beforehand, and browsing '
+        'to a project folder clears it', (tester) async {
+      await page(tester, saved: {'sshbox.chat.folder.host-1': '/home/me'});
+      expect(find.text('⚠ ▸ me'), findsOneWidget);
+      expect(
+        find.textContaining('will not start in the home folder'),
+        findsOneWidget,
+      );
+      await openPicker(tester);
+      expect(find.byKey(const ValueKey('folder-dev')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('folder-dev')));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(
+        tester.widget<EditableText>(dialogField()).controller.text,
+        '/home/me/dev',
+      );
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await _frames(tester);
+      expect(find.text('▸ dev'), findsOneWidget);
+      expect(find.textContaining('will not start in the home folder'),
+          findsNothing);
+    });
+
+    testWidgets('a folder an earlier session ran in is offered', (
+      tester,
+    ) async {
+      await page(
+        tester,
+        sessions: [
+          {..._finished('cf58d27a', 'Zsh'), 'cwd': '/srv/other'},
+        ],
+      );
+      await openPicker(tester);
+      expect(find.text('Earlier sessions ran in'), findsOneWidget);
+      await tester.tap(find.text('/srv/other'));
+      await _frames(tester);
+      expect(find.text('▸ other'), findsOneWidget);
+    });
+
+    testWidgets('a path with a control character is not taken', (tester) async {
+      await page(tester);
+      await openPicker(tester);
+      await tester.enterText(dialogField(), '/srv/a\x07b');
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await tester.pump();
+      expect(find.textContaining('control character'), findsOneWidget);
+      expect(find.byType(TuiDialog), findsOneWidget);
+    });
+
+    testWidgets('a start refused as untrusted offers another folder beside '
+        'Retry and Remove', (tester) async {
+      await page(tester, background: trust);
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      expect(find.textContaining('Not started in /srv/app'), findsOneWidget);
+      expect(find.text('RETRY'), findsOneWidget);
+      expect(find.text('REMOVE'), findsOneWidget);
+      await tester.tap(find.text('CHOOSE ANOTHER FOLDER'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      expect(find.byType(TuiDialog), findsOneWidget);
+      await tester.enterText(dialogField(), '/srv/proj');
+      await tester.tap(find.text('USE THIS FOLDER'));
+      await _frames(tester);
+      expect(find.textContaining('Retry to start it there'), findsOneWidget);
+      expect(find.text('▸ proj'), findsOneWidget);
+    });
+
+    testWidgets('any other failed start has no folder button', (tester) async {
+      await page(tester, background: 'claude: command not found\n');
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      expect(find.text('RETRY'), findsOneWidget);
+      expect(find.text('CHOOSE ANOTHER FOLDER'), findsNothing);
     });
   });
 

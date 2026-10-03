@@ -10,6 +10,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../telemetry/tap_log.dart';
+
 import 'termul_palette.dart';
 import 'termul_theme.dart';
 
@@ -27,10 +29,15 @@ class TuiMenuItem<T> extends TuiMenuEntry<T> {
     this.enabled = true,
     this.destructive = false,
     this.checked,
+    this.logName,
   });
 
   final T value;
   final String label;
+
+  /// The name a tap is logged under: a fixed word from code, never a label
+  /// built from a host, a file or a session.
+  final String? logName;
 
   /// Optional mono hint on the trailing edge (`⌘C`, `del`, …).
   final String? shortcut;
@@ -94,11 +101,15 @@ Future<T?> showTuiMenu<T>(
     shadowColor: Colors.transparent,
     shape: RoundedRectangleBorder(side: BorderSide(color: p.border)),
     constraints: BoxConstraints(minWidth: minWidth, maxWidth: maxWidth),
-    items: [for (final entry in entries) _toPopupEntry(entry, p)],
+    items: [for (final entry in entries) _toPopupEntry(entry, p, context)],
   );
 }
 
-PopupMenuEntry<T> _toPopupEntry<T>(TuiMenuEntry<T> entry, TermulPalette p) {
+PopupMenuEntry<T> _toPopupEntry<T>(
+  TuiMenuEntry<T> entry,
+  TermulPalette p,
+  BuildContext opener,
+) {
   return switch (entry) {
     TuiMenuDivider() => PopupMenuDivider(height: 9, color: p.border),
     TuiMenuItem(
@@ -108,10 +119,12 @@ PopupMenuEntry<T> _toPopupEntry<T>(TuiMenuEntry<T> entry, TermulPalette p) {
       :final enabled,
       :final destructive,
       :final checked,
+      :final logName,
     ) =>
       PopupMenuItem<T>(
         value: value,
         enabled: enabled,
+        onTap: () => logTap(opener, logName, 'menu item'),
         height: 36,
         padding: EdgeInsets.zero,
         child: _TuiMenuRow(

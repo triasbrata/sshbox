@@ -134,9 +134,27 @@ case "$1" in
   # The SDK's `initialize` on stdin, as chat lists the slash commands with it:
   # answered with ~/.e2e-commands.json where a flow put one; the rest read
   # until stdin ends, as before.
-  -p) while IFS= read -r line; do
-      case $line in *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;; esac
-    done ;;
+  # `claude -p /usage`, which Claude Code answers itself with no model call:
+  # what a flow put in ~/.e2e-usage.txt, or nothing.
+  # `--bg`, a new chat's first message: its arguments kept for a flow to read
+  # (the model chosen shows in them), and the line a real one prints, naming a
+  # session the agents list holds.
+  --bg) printf '%s\n' "$*" >"$HOME/.e2e-bg-args"
+    echo 'backgrounded · e2e0newc · New chat' ;;
+  -p) if [ "$2" = /usage ]; then cat "$HOME/.e2e-usage.txt" 2>/dev/null; else
+    # Chat's own claude, where a flow asked for a model (~/.e2e-model): the
+    # init a real one writes, naming it; a set_model request is kept for the
+    # flow to read and answered with success.
+    case "$*" in *permission-prompt-tool*) [ -f "$HOME/.e2e-model" ] &&
+      printf '%s\n' '{"type":"system","subtype":"init","session_id":"e2e00002-0000-4000-8000-000000000002","model":"claude-opus-5-5"}' ;; esac
+    while IFS= read -r line; do
+      case $line in
+        *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;;
+        *'"set_model"'*) printf '%s\n' "$line" >>"$HOME/.e2e-model-requests"
+          id=${line#*'"request_id":"'}; id=${id%%'"'*}
+          printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id" ;;
+      esac
+    done; fi ;;
   *) exec cat >/dev/null ;;
 esac
 SH
@@ -574,6 +592,76 @@ chat_subagents() {
   return "$status"
 }
 
+# The usage chip over chat's box and its popup: the context of the last request
+# the session made, and the plan's usage as the host's `claude -p /usage`
+# prints it, against the stand-in's usage: turn and a ~/.e2e-usage.txt.
+chat_usage() {
+  local status=0 home=/home/$SSH_USER
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo -u "$SSH_USER" tee "$home/.e2e-usage.txt" >/dev/null <<'TXT'
+You are currently using your subscription to power your Claude Code usage
+
+Current session: 65% used · resets Oct 2, 3:59pm (Asia/Example)
+Current week (all models): 28% used · resets Oct 9, 2:59am (Asia/Example)
+Current week (Fable): 0% used · resets Oct 9, 3am (Asia/Example)
+TXT
+  flow chat_usage || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-usage-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$home/.e2e-usage.txt"
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# #214: the model chip over chat's box. A new chat started on Sonnet runs
+# `claude --bg --model sonnet`; chat's own claude, continuing a finished
+# session, is sent set_model and its chip follows the answer; a watched session
+# only says how to change its model. Against the stand-in's --bg and -p, which
+# keep what they were sent in ~/.e2e-bg-args and ~/.e2e-model-requests.
+chat_model() {
+  local status=0 home=/home/$SSH_USER
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests"
+  sudo -u "$SSH_USER" touch "$home/.e2e-model"
+  # The session `--bg` names, which the agents list must hold (an id of 8
+  # characters or more): a finished one, so chat continues it as its own.
+  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
+import json, os
+path = os.path.join(os.environ['HOME'], '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'id': 'e2e0newc', 'cwd': os.environ['HOME'], 'kind': 'background',
+             'startedAt': 1790000000100, 'sessionId': 'e2e00002-0000-4000-8000-000000000002',
+             'name': 'New chat', 'state': 'done'})
+json.dump(rows, open(path, 'w'))
+PY
+  # With the emulator's animations off a toast is gone at once.
+  adb shell settings put global animator_duration_scale 1
+  flow chat_model || status=1
+  adb shell settings put global animator_duration_scale 0
+  if ! sudo grep -q -- '--model sonnet' "$home/.e2e-bg-args" 2>/dev/null; then
+    echo "::error::the new chat's claude --bg was not given --model sonnet:" \
+      "$(sudo cat "$home/.e2e-bg-args" 2>/dev/null)" >&2
+    status=1
+  fi
+  if ! sudo grep -q '"subtype":"set_model","model":"haiku"' \
+    "$home/.e2e-model-requests" 2>/dev/null; then
+    echo "::error::chat's claude was never sent set_model haiku" >&2
+    status=1
+  fi
+  echo "set_model requests: $(sudo cat "$home/.e2e-model-requests" 2>/dev/null)"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-model-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests" "$home/.e2e-model"
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
 # The three hosts, one after another: a block of its own for E2E_ONLY.
 # Fails if any of them did, for a run asking for it alone.
 chat_version() {
@@ -926,13 +1014,109 @@ JSON
   return "$status"
 }
 
+# #230: the folder a new chat starts in (.maestro/chat_cwd.yaml). The stand-in's
+# `--bg` keeps the folder it ran in, since chat `cd`s there first, refuses a
+# folder called untrusted as Claude Code does an untrusted workspace, and
+# fails in one called broken for another reason. Read afterwards: the first
+# start ran in proj, not the root; each refused folder was tried; and the
+# host's ~/.claude.json, where trust is kept, was not written.
+chat_cwd() {
+  local status=0 home=/home/$SSH_USER runs=/home/$SSH_USER/.e2e-bg-runs
+  local before after
+  chat_stand_in
+  end_live_session
+  sudo -u "$SSH_USER" mkdir -p "$home/e2e-cwd/proj" "$home/e2e-cwd/untrusted" "$home/e2e-cwd/broken"
+  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
+import json, os
+path = os.path.join(os.environ['HOME'], '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'id': 'e2e0newd', 'cwd': os.environ['HOME'] + '/e2e-cwd/proj', 'kind': 'background',
+             'startedAt': 1790000000100, 'sessionId': 'e2e00003-0000-4000-8000-000000000003',
+             'name': 'New chat', 'state': 'done'})
+json.dump(rows, open(path, 'w'))
+PY
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  --bg) printf '%s\n' "$PWD" >>"$HOME/.e2e-bg-runs"
+    case "$PWD" in
+      */untrusted) echo "Workspace not trusted: $PWD"; exit 1 ;;
+      */broken) echo "boom: could not start"; exit 1 ;;
+    esac
+    echo 'backgrounded · e2e0newd · New chat' ;;
+  -p) while IFS= read -r line; do :; done ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$runs"
+  before=$(sudo sha256sum "$home/.claude.json" 2>/dev/null | cut -d' ' -f1)
+  flow chat_cwd -e "PROJ=$home/e2e-cwd/proj" -e "BAD=$home/e2e-cwd/untrusted" \
+    -e "BROKEN=$home/e2e-cwd/broken" || status=1
+  after=$(sudo sha256sum "$home/.claude.json" 2>/dev/null | cut -d' ' -f1)
+  [ "$before" = "$after" ] ||
+    { echo "::error::~/.claude.json on the host changed"; status=1; }
+  echo "--bg ran in: $(sudo cat "$runs" 2>/dev/null | tr '\n' ' ')"
+  [ "$(sudo head -n1 "$runs" 2>/dev/null)" = "$home/e2e-cwd/proj" ] ||
+    { echo "::error::the first --bg did not run in the chosen folder"; status=1; }
+  sudo grep -qx "$home/e2e-cwd/untrusted" "$runs" 2>/dev/null ||
+    { echo "::error::the untrusted folder was never tried"; status=1; }
+  [ "$(sudo tail -n1 "$runs" 2>/dev/null)" = "$home/e2e-cwd/proj" ] ||
+    { echo "::error::the retry did not run in the chosen folder"; status=1; }
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-cwd-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$runs" "$home/e2e-cwd"
+  stand_in ''
+  return "$status"
+}
+
+# #218: `jeansh <file>` (.maestro/jeansh_open.yaml). The runner makes the file
+# to open and a forged request, an OSC 7733 line with the right shape and
+# time and a wrong secret, for a `cat` to print; afterwards it reads the
+# command's mode and marker, which the host editor's switch had the app write.
+jeansh_open() {
+  local status=0 home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local b64
+  sudo -u "$SSH_USER" rm -f "$bin" "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
+  printf 'jeansh e2e target\n' | sudo -u "$SSH_USER" tee "$home/jeansh-target.txt" >/dev/null
+  b64=$(printf %s "$home/jeansh-target.txt" | base64 | tr -d '\n')
+  printf '\033]7733;open;wrong-secret;%s;%s;%s\007' "$(date +%s)" \
+    "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" "$b64" |
+    sudo -u "$SSH_USER" tee "$home/jeansh-forged.txt" >/dev/null
+  flow jeansh_open || status=1
+  sudo test -f "$home/jeansh-forged.done" ||
+    { echo "::error::the forged request's cat never ran"; status=1; }
+  [ "$(sudo cat "$home/jeansh-missing.rc" 2>/dev/null)" = 1 ] ||
+    { echo "::error::jeansh missing-e2e-file did not exit 1"; status=1; }
+  [ "$(sudo stat -c %a "$bin" 2>/dev/null)" = 755 ] ||
+    { echo "::error::$bin is not mode 755"; status=1; }
+  sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" 2>/dev/null ||
+    { echo "::error::$bin lacks the marker line"; status=1; }
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'jeansh-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$bin" "$home/jeansh-target.txt" "$home/jeansh-forged.txt" \
+    "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
+  return "$status"
+}
+
+# #216: Home's Text size control and Settings' slider (.maestro/text_size_home).
+text_size_home() {
+  local status=0
+  flow text_size_home || status=1
+  keep_shots 'text-size-*.png'
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
 # other name is a flow of .maestro/ run as it is.
 if [ -n "${E2E_ONLY:-}" ]; then
   echo "::group::$E2E_ONLY (asked for alone)"
-  if declare -F "$E2E_ONLY" >/dev/null; then
+  # A block that needs the stand-in first has an `_alone` twin that makes it.
+  if declare -F "${E2E_ONLY}_alone" >/dev/null; then
+    "${E2E_ONLY}_alone"
+  elif declare -F "$E2E_ONLY" >/dev/null; then
     "$E2E_ONLY"
   else
     flow "$E2E_ONLY"
@@ -958,6 +1142,9 @@ done
 
 echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
+echo "::endgroup::"
+echo "::group::jeansh_open (report only)"
+jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::share_text (report only)"
@@ -1034,8 +1221,24 @@ echo "::group::chat_subagents (report only)"
 chat_subagents || echo "::warning::chat_subagents failed -- report only, not gating"
 echo "::endgroup::"
 
+echo "::group::chat_usage (report only)"
+chat_usage || echo "::warning::chat_usage failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_model (report only)"
+chat_model || echo "::warning::chat_model failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_cwd (report only)"
+chat_cwd || echo "::warning::chat_cwd failed -- report only, not gating"
+echo "::endgroup::"
+
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::text_size_home (report only)"
+text_size_home || echo "::warning::text_size_home failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::soft_backspace (report only)"

@@ -144,7 +144,7 @@ class _PaneRecordPageState extends State<PaneRecordPage> {
             return Center(
               child: more
                   ? TuiButton(
-                      label: 'Load earlier',
+                      label: 'Load earlier', logName: 'Load earlier',
                       prefix: '↑',
                       variant: TuiButtonVariant.ghost,
                       onPressed: _loading ? null : _earlier,

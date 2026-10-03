@@ -12,6 +12,7 @@ import 'ctrl_click.dart' show hyperlinkIn, selectedText;
 import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
 import 'toast.dart';
 import 'tui.dart' show TermulFonts, TermulThemeData;
+import '../telemetry/tap_log.dart';
 
 /// Applications that request DECCKM (vim, less, many TUIs) expect the SS3
 /// form; sending CSI there produces stray characters instead of movement.
@@ -523,12 +524,12 @@ class TerminalKeyBar extends StatelessWidget {
   Widget _key(String id) => switch (id) {
     keyBarDivider => const _KeyDivider(),
     'ctrl' => KeyButton(
-      label: 'CTRL',
+      label: 'CTRL', logName: 'CTRL',
       active: controller.ctrl,
       onTap: controller.toggleCtrl,
     ),
     'alt' => KeyButton(
-      label: 'ALT',
+      label: 'ALT', logName: 'ALT',
       active: controller.alt,
       onTap: controller.toggleAlt,
     ),
@@ -541,6 +542,7 @@ class TerminalKeyBar extends StatelessWidget {
     // the pane in use, and armed modifiers wait for the keyboard.
     _ => KeyButton(
       label: customKeys[id]?.label ?? terminalKeys[id]!.label,
+      logName: customKeys[id] == null ? terminalKeys[id]!.label : 'custom key',
       onTap: () => onEmit(switch (customKeys[id]) {
         final key? => switch (key.combo) {
           final combo? => encodeKeyCombo(terminal, combo),
@@ -668,12 +670,12 @@ class EditorKeyBar extends StatelessWidget {
                 ),
                 const _KeyDivider(),
                 KeyButton(
-                  label: 'TAB',
+                  label: 'TAB', logName: 'TAB',
                   onTap: useTabs
                       ? () => controller.replaceSelection('\t')
                       : controller.applyIndent,
                 ),
-                KeyButton(label: '⇤', onTap: controller.applyOutdent),
+                KeyButton(label: '⇤', logName: '⇤', onTap: controller.applyOutdent),
                 const _KeyDivider(),
                 arrow('←', 'D'),
                 arrow('↓', 'B'),
@@ -685,10 +687,10 @@ class EditorKeyBar extends StatelessWidget {
                 ),
                 const _KeyDivider(),
                 KeyButton(
-                  label: 'HOME',
+                  label: 'HOME', logName: 'HOME',
                   onTap: controller.moveCursorToLineStart,
                 ),
-                KeyButton(label: 'END', onTap: controller.moveCursorToLineEnd),
+                KeyButton(label: 'END', logName: 'END', onTap: controller.moveCursorToLineEnd),
                 const _KeyDivider(),
                 for (final symbol in _symbols)
                   KeyButton(
@@ -713,10 +715,15 @@ class KeyButton extends StatelessWidget {
     required this.onTap,
     this.active = false,
     this.minWidth = 44,
+    this.logName,
   });
 
   final String label;
   final VoidCallback onTap;
+
+  /// The name a tap is logged under: a fixed key name from code. A key the
+  /// user made passes 'custom key', never its own label.
+  final String? logName;
 
   /// Armed sticky modifiers stay lit so the user can see what the next
   /// keystroke will do.
@@ -742,7 +749,10 @@ class KeyButton extends StatelessWidget {
         color: bg,
         shape: Border.all(color: p.border),
         child: InkWell(
-          onTap: onTap,
+          onTap: () {
+            logTap(context, logName, 'key');
+            onTap();
+          },
           child: Container(
             constraints: BoxConstraints(minWidth: minWidth),
             alignment: Alignment.center,
