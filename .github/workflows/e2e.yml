@@ -73,7 +73,12 @@ jobs:
     # release gate always runs this, and every other job too.
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The full Android suite outgrew an hour: v1.0.103's gate was cancelled at
+    # 60 minutes mid-way through its report-only flows, which skipped promote
+    # without failing anything. ponytail: one job runs every flow, so each
+    # report-only flow added lengthens every release; split them into a
+    # parallel job when this ceiling nears.
+    timeout-minutes: 120
     outputs:
       coverage: ${{ steps.coverage.outputs.pct }}
     steps:
