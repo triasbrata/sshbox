@@ -278,4 +278,24 @@ void main() {
     expect(added, contains('setting terminal font'));
     expect(added, contains('setting chat enter sends true'));
   });
+
+  testWidgets('Shift+Insert in a field logs a text paste', (tester) async {
+    await pump(tester, const TextField(autofocus: true));
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.insert);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.insert);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await settle(tester);
+    expect(lines(), contains('paste text (field)'));
+    expect(lines(), contains('key Shift+Insert (field)'));
+  });
+
+  test('the copy-on-select setting logs its value', () async {
+    SharedPreferences.setMockInitialValues({});
+    final before = appLog.length;
+    await CopyOnSelectSetting().choose(false);
+    final added = appLog.current.split('\n').skip(before).join('\n');
+    expect(added, contains('setting copy on select false'));
+  });
 }
