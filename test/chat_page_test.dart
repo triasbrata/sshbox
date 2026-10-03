@@ -6692,6 +6692,26 @@ void main() {
       );
     });
 
+    testWidgets('the sidebar of a session that is not connected says to '
+        'connect it, and asks the host for nothing', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell();
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      expect(
+        find.text('Connect this session to see its Claude sessions.'),
+        findsOneWidget,
+      );
+      expect(shell.commands.where((c) => c.contains('agents --json')), isEmpty);
+    });
+
     testWidgets('a poll that finds nothing new redraws nothing outside the '
         'sidebar, and one that does updates the sidebar', (tester) async {
       final shell = await pickUp(tester, longHistory(10));
