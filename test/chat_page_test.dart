@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show RenderParagraph, RenderRepaintBoundary;
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownBody;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
 import 'package:sshbox/src/data/host_repository.dart';
@@ -6616,6 +6617,76 @@ void main() {
       await _frames(tester);
       return shell;
     }
+
+    testWidgets('a live event builds its own row only: every older reply '
+        'keeps what it parsed', (tester) async {
+      final shell = await pickUp(tester, longHistory(50));
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      // What each reply on screen drew with before the event.
+      final was = {
+        for (final element in find.byType(MarkdownBody).evaluate())
+          element: element.widget,
+      };
+      expect(was, isNotEmpty);
+      shell.follow!.add(
+        Uint8List.fromList(
+          utf8.encode('${jsonEncode(text('live1', 'a **new** reply'))}\n'),
+        ),
+      );
+      await _frames(tester);
+      expect(find.textContaining('new'), findsWidgets);
+      final kept = was.entries.where((e) => e.key.mounted).toList();
+      expect(kept, isNotEmpty, reason: 'some older replies are still shown');
+      // The very same widget: nothing was parsed or built again for it.
+      expect(
+        kept.where((e) => !identical(e.key.widget, e.value)),
+        isEmpty,
+        reason: 'an older reply was handed a new Markdown to build',
+      );
+    });
+
+    testWidgets('a poll that finds nothing new redraws nothing outside the '
+        'sidebar, and one that does updates the sidebar', (tester) async {
+      final shell = await pickUp(tester, longHistory(10));
+      await _frames(tester);
+      var page = 0;
+      debugOnRebuildDirtyWidget = (element, _) {
+        if (element.widget is ChatPage) page++;
+      };
+      addTearDown(() => debugOnRebuildDirtyWidget = null);
+      final asked = shell.commands.where((c) => c.contains('agents --json')).length;
+      await tester.pump(const Duration(seconds: 6));
+      await _frames(tester);
+      expect(
+        shell.commands.where((c) => c.contains('agents --json')).length,
+        greaterThan(asked),
+        reason: 'the poll ran',
+      );
+      expect(page, 0, reason: 'nothing changed, so nothing was redrawn');
+      expect(find.textContaining('idle'), findsWidgets);
+
+      // The session starts working: the sidebar shows it, the page still
+      // is not rebuilt.
+      shell.listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'busy',
+          'state': 'working',
+        },
+      ]);
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      debugOnRebuildDirtyWidget = null;
+      expect(find.textContaining('working ·'), findsOneWidget);
+      expect(page, 0);
+    });
 
     testWidgets('open a long session', (tester) async {
       final history = longHistory(2000);
