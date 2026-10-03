@@ -52,7 +52,7 @@ class _TuiButtonState extends State<TuiButton> {
     final enabled = widget.onPressed != null;
     final onPressed = enabled
         ? () {
-            logTap(context, widget.logName, 'button');
+            // mutation: tap not logged
             widget.onPressed!();
           }
         : null;
