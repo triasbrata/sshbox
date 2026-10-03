@@ -33,7 +33,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
+import 'package:sshbox/src/data/host_repository.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
     show Transfer, TransferState, transfers;
@@ -2935,11 +2938,12 @@ touch '${done.path}'
   );
 
   // #146: files dropped from the file manager on a desktop chat. A picture
-  // becomes a card above the box and its [Image #1] in it; a folder dropped
-  // with it is refused, saying it is a folder, and so is a file that is no
-  // picture Claude reads. A real X drag, as the terminal's above.
+  // becomes a card above the box and its [Image #1] in it; since #217 a
+  // folder, or a file that is no picture, dropped with it goes in as its
+  // path on this machine instead of being refused. A real X drag, as the
+  // terminal's above.
   _test(
-    'a picture dropped on a chat becomes a card, a folder is refused',
+    'a picture dropped on a chat becomes a card, a folder goes in as a path',
     skip: !Platform.isLinux
         ? 'the drag is a real X drag, made with xdotool and a GTK window'
         : Platform.environment['CI'] != 'true'
@@ -2968,10 +2972,6 @@ touch '${done.path}'
         () => _composer.evaluate().isNotEmpty,
         'the chat tab to open, its version check passed',
       );
-      Finder toast(String text) => find.descendant(
-        of: find.byType(TuiToastCard),
-        matching: find.textContaining(text, findRichText: true),
-      );
       final cards = find.byWidgetPredicate(
         (w) => w is Tooltip && (w.message ?? '').startsWith('Remove '),
       );
@@ -2979,34 +2979,213 @@ touch '${done.path}'
       await _drag(tester, picture.path, dir, more: [folder.path]);
       await _until(
         tester,
-        () =>
-            toast('A folder is not a picture: e2e-folder')
-                .evaluate()
-                .isNotEmpty,
-        'the folder refused, saying it is a folder',
-      );
-      await _until(
-        tester,
         () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
         "the picture's card",
       );
       expect(cards, findsOneWidget, reason: 'one card, for the picture alone');
-      expect(
-        tester.widget<TextField>(_composer).controller!.text,
-        '[Image #1] ',
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+      await _until(
+        tester,
+        () => box() == '[Image #1] ${folder.path} ',
+        "the picture's token, then the folder's own path",
       );
+      expect(find.textContaining('is not a picture'), findsNothing);
       await _shot(tester, 'desktop-chat-dropped-picture');
 
       await _drag(tester, notes.path, dir);
       await _until(
         tester,
-        () =>
-            toast('Not a picture Claude can read: e2e-notes.txt')
-                .evaluate()
-                .isNotEmpty,
-        'the text file refused',
+        () => box() == '[Image #1] ${folder.path} ${notes.path} ',
+        'the text file as a path after the folder',
       );
       expect(cards, findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #217: any file dragged into a chat goes in as a path. A Local shell's is
+  // the file's own, nothing copied, with a space after; a picture is still a
+  // card. A real X drag, as the terminal's and the picture's above.
+  _test(
+    'a file dropped on a Local shell chat goes in as its path',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI it would drag with the user's own pointer"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final dir = _scratch();
+      final first = File('${dir.path}/e2e-first.txt')..writeAsStringSync('1');
+      final second = File('${dir.path}/e2e-second.txt')..writeAsStringSync('2');
+      final picture = File('${dir.path}/e2e-drop.png')
+        ..writeAsBytesSync(
+          base64Decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8Dw'
+            'HwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+          ),
+        );
+      await _launch(tester);
+      await _chatAnswered(tester);
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+      // The message sent has emptied the box.
+      expect(box(), '');
+
+      await _drag(tester, first.path, dir);
+      await _until(
+        tester,
+        () => box() == '${first.path} ',
+        "the first file's own path and a space in the box",
+      );
+      await _drag(tester, second.path, dir);
+      await _until(
+        tester,
+        () => box() == '${first.path} ${second.path} ',
+        'the second path after the first',
+      );
+      debugPrint('STEP 1 PASS: the box holds "${box()}"');
+
+      await _drag(tester, picture.path, dir);
+      await _until(
+        tester,
+        () => find.text('[Image #1] e2e-drop.png').evaluate().isNotEmpty,
+        "the picture's card",
+      );
+      expect(box(), contains('[Image #1]'));
+      expect(box(), isNot(contains('e2e-drop.png')));
+      debugPrint('STEP 2 PASS: a picture card, not a path: "${box()}"');
+      await _closeTabs(tester);
+    },
+  );
+
+  // #217, over SSH: the file is uploaded first, shows in Transfers, and the
+  // box gets its path on the host; a folder cannot be uploaded and says so.
+  // The host is the job's own sshd (e2e.yml), its user throwaway, with a
+  // stand-in Claude in that user's home for chat's version check.
+  _test(
+    'a file dropped on an SSH host chat is uploaded, a folder refused',
+    skip: !Platform.isLinux
+        ? 'the drag is a real X drag, made with xdotool and a GTK window'
+        : Platform.environment['CI'] != 'true' ||
+              (Platform.environment['SSH_USER'] ?? '').isEmpty ||
+              (Platform.environment['SSH_PASSWORD'] ?? '').isEmpty
+        ? "needs the job's own sshd and its throwaway user"
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      final user = Platform.environment['SSH_USER']!;
+      final password = Platform.environment['SSH_PASSWORD']!;
+      // The stand-in in the sshd user's home; `sudo -u` because that user is
+      // not this one. Removed after.
+      final bin = '/home/$user/.local/bin/claude';
+      Future<void> sudo(List<String> args, {String? stdin}) async {
+        final p = await Process.start('sudo', args);
+        if (stdin != null) p.stdin.write(stdin);
+        await p.stdin.close();
+        await p.stdout.drain<void>();
+        expect(await p.exitCode, 0, reason: 'sudo $args');
+      }
+
+      await sudo(['-u', user, 'mkdir', '-p', '/home/$user/.local/bin']);
+      await sudo(['-u', user, 'tee', bin], stdin: _standInClaude);
+      await sudo(['chmod', '755', bin]);
+      final remoteName = 'e2e-drop-$pid.txt';
+      addTearDown(() async {
+        await sudo(['rm', '-f', bin, '/tmp/$remoteName']);
+        await sudo(['rm', '-rf', '/home/$user/.claude']);
+      });
+
+      final secrets = KeystoreSecretStore();
+      final hosts = HostRepository(secrets);
+      const id = 'e2e-ssh-drop';
+      // A locked keyring waits for a prompt nobody sees: say so, not hang.
+      await secrets
+          .write(SecretKeys.password(id), password)
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () => fail('the keyring never took the password'),
+          );
+      await hosts.upsert(
+        HostProfile(
+          id: id,
+          label: 'e2e sshd',
+          host: '127.0.0.1',
+          username: user,
+        ),
+      );
+      addTearDown(() => hosts.delete(id));
+
+      final dir = _scratch();
+      final file = File('${dir.path}/$remoteName')
+        ..writeAsStringSync('uploaded by the e2e');
+      final folder = Directory('${dir.path}/e2e-folder')..createSync();
+
+      await _launch(tester);
+      await _closeTabs(tester);
+      await tester.tap(_homeCard('e2e sshd'));
+      await _until(
+        tester,
+        () => _label('Trust').evaluate().isNotEmpty,
+        "the host key's Trust",
+      );
+      await tester.tap(_label('Trust'));
+      await _until(
+        tester,
+        () => find.byTooltip('Chat with Claude').evaluate().isNotEmpty,
+        'the SSH tab, connected',
+        timeout: const Duration(seconds: 40),
+      );
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () => _composer.evaluate().isNotEmpty,
+        'the chat tab to open, its version check passed',
+        timeout: const Duration(seconds: 40),
+      );
+      String box() => tester.widget<TextField>(_composer).controller!.text;
+
+      final before = transfers.items.length;
+      await _drag(tester, file.path, dir);
+      await _until(
+        tester,
+        () => box() == '/tmp/$remoteName ',
+        'the uploaded path and a space in the box',
+        timeout: const Duration(seconds: 30),
+      );
+      final mine = transfers.items
+          .take(transfers.items.length - before)
+          .toList();
+      expect(mine, hasLength(1), reason: 'one transfer for the one file');
+      expect(mine.single.name, remoteName);
+      expect(mine.single.state, TransferState.done);
+      final read = await Process.run('sudo', ['cat', '/tmp/$remoteName']);
+      expect(read.stdout, 'uploaded by the e2e');
+      debugPrint(
+        'STEP 3 PASS: Transfers ran ${mine.single.name} (${mine.single.state}), '
+        'the box holds "${box()}"',
+      );
+
+      await _drag(tester, folder.path, dir);
+      await _until(
+        tester,
+        () => find
+            .descendant(
+              of: find.byType(TuiToastCard),
+              matching: find.textContaining(
+                'A folder cannot be uploaded',
+                findRichText: true,
+              ),
+            )
+            .evaluate()
+            .isNotEmpty,
+        'the folder refused, saying it cannot be uploaded',
+      );
+      expect(box(), '/tmp/$remoteName ', reason: 'the folder added no path');
+      expect(transfers.items.length, before + 1);
+      debugPrint('STEP 4 PASS: "A folder cannot be uploaded" toast');
       await _closeTabs(tester);
     },
   );
