@@ -51,7 +51,8 @@ import 'package:sshbox/src/ui/file_download.dart'
 import 'package:sshbox/src/ui/file_editor_page.dart' show FileEditorPage;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
-import 'package:sshbox/src/ui/termul/tui_chat.dart' show TuiChatBubble;
+import 'package:sshbox/src/ui/termul/tui_chat.dart'
+    show TuiChatBubble, TuiChatSessionList;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart'
@@ -1166,7 +1167,10 @@ print(json.dumps({"type": "user", "message": {"role": "user", "content": sys.arg
     printf '%s\n' "$answer" >>"$t"
     echo "backgrounded · e2e0c0de · e2e" ;;
   agents)
-    if [ -f "$t" ]; then
+    # A test that wants particular sessions leaves their listing here.
+    if [ -f "$d/e2e-agents.json" ]; then
+      cat "$d/e2e-agents.json"
+    elif [ -f "$t" ]; then
       printf '[{"id":"e2e0c0de","sessionId":"%s","name":"e2e","cwd":"%s","kind":"background","state":"done","startedAt":1}]\n' "$sid" "$HOME"
     else
       echo '[]'
@@ -2438,6 +2442,160 @@ touch '${done.path}'
       _standInClaudeFor();
       await _launch(tester);
       await _chatAnswered(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #249: chat's sidebar collapses to a rail of icons on a wide window:
+  // the toggle, New chat, a space, then pinned, running and finished sessions
+  // in that order. Real X clicks, against a stand-in whose `claude agents`
+  // lists one of each, the finished one with a transcript to pick up.
+  _test(
+    "chat's sidebar collapses to a rail of icons, in order, and back",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      final config = '$home/.claude';
+      const finished = '0e2e0000-0000-4000-8000-0000000000f1';
+      Directory('$config/jobs').createSync(recursive: true);
+      Directory('$config/projects/jeansh-e2e').createSync(recursive: true);
+      File('$config/jobs/pins.json').writeAsStringSync('["e2e0pinn"]');
+      File('$config/e2e-agents.json').writeAsStringSync(
+        '[{"id":"e2e0pinn","sessionId":"0e2e0000-0000-4000-8000-0000000000a1",'
+        '"name":"pin one","cwd":"$home","kind":"background","state":"done",'
+        '"status":"idle","pid":4242,"startedAt":3},'
+        '{"id":"e2e0runn","sessionId":"0e2e0000-0000-4000-8000-0000000000b1",'
+        '"name":"run one","cwd":"$home","kind":"background","state":"done",'
+        '"status":"idle","pid":4243,"startedAt":2},'
+        '{"id":"e2e0fin1","sessionId":"$finished","name":"old one",'
+        '"cwd":"$home","kind":"background","state":"done","startedAt":1}]',
+      );
+      File('$config/projects/jeansh-e2e/$finished.jsonl').writeAsStringSync(
+        '{"type":"user","message":{"role":"user","content":'
+        '"the finished one said this"}}\n',
+      );
+      addTearDown(() {
+        for (final f in ['jobs/pins.json', 'e2e-agents.json']) {
+          final file = File('$config/$f');
+          if (file.existsSync()) file.deleteSync();
+        }
+      });
+      Finder icon(String name) => find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('$name, '),
+      );
+      Future<void> click(Finder at) => _realPointer(() async {
+        final c = tester.getCenter(at);
+        await _osMouse(tester, [
+          'move ${c.dx} ${c.dy}',
+          'down',
+          'sleep 40',
+          'up',
+        ]);
+      });
+      final list = find.byType(TuiChatSessionList);
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () =>
+            _composer.evaluate().isNotEmpty &&
+            find.text('pin one').evaluate().isNotEmpty,
+        'the chat, with its sessions listed',
+      );
+      expect(list, findsOneWidget);
+      expect(find.byTooltip('Expand the sessions'), findsNothing);
+
+      // Collapsed: the list is gone, the toggle is the first icon, and the
+      // sessions follow in order, pinned, running, finished.
+      await click(find.byTooltip('Collapse the sessions'));
+      await _until(tester, () => list.evaluate().isEmpty, 'the list to go');
+      await _until(
+        tester,
+        () => icon('old one').evaluate().isNotEmpty,
+        'the rail icons',
+      );
+      double y(Finder f) => tester.getTopLeft(f).dy;
+      final order = [
+        y(find.byTooltip('Expand the sessions')),
+        y(find.byTooltip('New chat')),
+        y(icon('pin one')),
+        y(icon('run one')),
+        y(icon('old one')),
+      ];
+      expect(
+        [...order]..sort(),
+        order,
+        reason: 'toggle, new, pinned, running, finished',
+      );
+      expect(
+        order[2] - order[1],
+        greaterThan(36),
+        reason: 'a space after New chat',
+      );
+      expect(find.text('the finished one said this'), findsNothing);
+
+      // A click on the finished icon picks it up; the list stays collapsed.
+      await click(icon('old one'));
+      await _until(
+        tester,
+        () => find.text('the finished one said this').evaluate().isNotEmpty,
+        'the finished session picked up from its icon',
+      );
+      expect(list, findsNothing);
+
+      // New chat, with the rail collapsed, starts an empty one.
+      await click(find.byTooltip('New chat'));
+      await _until(
+        tester,
+        () => find.text('the finished one said this').evaluate().isEmpty,
+        'a new, empty chat',
+      );
+      expect(list, findsNothing);
+      expect(find.byTooltip('Expand the sessions'), findsOneWidget);
+
+      // Expand brings the list back, and the rail's toggle goes.
+      await click(find.byTooltip('Expand the sessions'));
+      await _until(tester, () => list.evaluate().isNotEmpty, 'the list back');
+      expect(find.byTooltip('Expand the sessions'), findsNothing);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #249, the other way: a narrow window has the drawer only, no rail.
+  _test(
+    "a narrow chat window has no sessions rail",
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, with no sh for Claude'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Chat with Claude'));
+      await _until(
+        tester,
+        () => _composer.evaluate().isNotEmpty,
+        'the chat tab to open',
+      );
+      tester.view.physicalSize = const Size(600, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpAndSettle(const Duration(seconds: 2));
+      expect(find.byTooltip('Expand the sessions'), findsNothing);
+      expect(find.byTooltip('Collapse the sessions'), findsNothing);
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      await tester.pumpAndSettle(const Duration(seconds: 2));
       await _closeTabs(tester);
     },
   );
@@ -3821,7 +3979,7 @@ touch '${done.path}'
         tester,
         () => (uiTextSize.value * 100).round() == percent,
         '$what: the UI text size to be $percent% '
-            '(it is ${(uiTextSize.value * 100).round()}%)',
+        '(it is ${(uiTextSize.value * 100).round()}%)',
         timeout: const Duration(seconds: 5),
       );
 
@@ -3961,9 +4119,8 @@ touch '${done.path}'
     skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
     (tester) async {
       addTearDown(() => uiTextSize.choose(1));
-      final dir = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('0-jeansh-e2e-');
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
       addTearDown(() => dir.deleteSync(recursive: true));
       const name = 'e2e-zoom.png';
       File('${dir.path}/$name').writeAsBytesSync(
@@ -4011,8 +4168,20 @@ touch '${done.path}'
           'mousemove',
           '${(window.left + frame + at.dx * ratio).round()}',
           '${(window.top + frame + at.dy * ratio).round()}',
-          'sleep', '0.2', 'keydown', 'Control_L', 'click', '4', 'sleep', '0.2',
-          'click', '4', 'sleep', '0.2', 'keyup', 'Control_L',
+          'sleep',
+          '0.2',
+          'keydown',
+          'Control_L',
+          'click',
+          '4',
+          'sleep',
+          '0.2',
+          'click',
+          '4',
+          'sleep',
+          '0.2',
+          'keyup',
+          'Control_L',
         ]);
         await tester.pump(const Duration(milliseconds: 400));
       });
