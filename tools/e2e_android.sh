@@ -480,14 +480,14 @@ SH
   # Positive: the chat showing.
   text="shared into the chat $(date +%s%N)"
   flow share_chat_open || return 1
-  before=$(sudo wc -l <"$calls" 2>/dev/null || echo 0)
+  before=$(sudo cat "$calls" 2>/dev/null | wc -l | tr -d ' ')
   adb shell "$share -t text/plain --es android.intent.extra.TEXT '$text'" >/dev/null || return 1
   sleep 3
   records=$(adb shell dumpsys activity activities |
     grep -oE "ActivityRecord\{[0-9a-f]+ u0 $main" | sort -u | wc -l | tr -d ' ')
   flow share_chat_text_finish -e "TEXT=$text" || status=1
   sleep 1
-  after=$(sudo wc -l <"$calls" 2>/dev/null || echo 0)
+  after=$(sudo cat "$calls" 2>/dev/null | wc -l | tr -d ' ')
   got=$(sudo cat "$out" 2>/dev/null)
   echo "chat showing: the file holds '$got'; MainActivity records: $records; stand-in calls $before -> $after"
   [ -z "$got" ] || { echo "::error::the terminal got '$got' of a share meant for the chat"; status=1; }
@@ -518,8 +518,7 @@ png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 8, 1, 8, 2, 
 open(sys.argv[1], 'wb').write(png)
 PY
   adb push "$png" /data/local/tmp/e2e-share.png >/dev/null || return 1
-  adb shell run-as cloud.brata.terminal sh -c \
-    'mkdir -p cache/clip && cp /data/local/tmp/e2e-share.png cache/clip/e2e-share.png' || return 1
+  adb shell "run-as cloud.brata.terminal sh -c 'mkdir -p cache/clip && cp /data/local/tmp/e2e-share.png cache/clip/e2e-share.png'" || return 1
   flow share_chat_open || return 1
   adb shell "$share -t image/png --eu android.intent.extra.STREAM content://cloud.brata.terminal.files/clip/e2e-share.png" >/dev/null || return 1
   sleep 3
