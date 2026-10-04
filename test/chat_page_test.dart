@@ -6080,11 +6080,16 @@ void main() {
       await open(tester, running: running);
       await tester.tap(find.text('the nightly build'));
       await _settlePickUp(tester);
-      final box = find.ancestor(
-        of: find.byType(TextField),
-        matching: find.byType(TuiBox),
-      );
+      final box = find.byKey(const ValueKey('composer'));
       expect(box, findsOneWidget);
+      // The pane's own panel is the box: no frame of its own around the field.
+      expect(
+        find.ancestor(
+          of: find.byType(TextField),
+          matching: find.byType(TuiBox),
+        ),
+        findsNothing,
+      );
       for (final inside in <Finder>[
         find.byIcon(Icons.view_sidebar),
         find.byIcon(Icons.add_photo_alternate_outlined),
@@ -6203,10 +6208,7 @@ void main() {
         }
         await tester.tap(find.text('the nightly build'));
         await _settlePickUp(tester);
-        final box = find.ancestor(
-          of: find.byType(TextField),
-          matching: find.byType(TuiBox),
-        );
+        final box = find.byKey(const ValueKey('composer'));
         final send = tester.getTopRight(find.byIcon(Icons.send)).dx;
         expect(
           tester.getTopRight(box).dx - send,
@@ -7468,6 +7470,190 @@ void main() {
       );
       expect(shell.written, isEmpty);
       expect(shell.paneTyped, isEmpty);
+    });
+  });
+
+  group('the sessions rail', () {
+    Map<String, Object?> row(String id, String name, {bool live = true}) => {
+      if (live) 'pid': 7,
+      'id': id,
+      'cwd': '/srv',
+      'kind': 'background',
+      'sessionId': '$id-0000-4000-8000-000000000000',
+      'name': name,
+      'status': 'idle',
+      'state': 'done',
+    };
+
+    Future<_Shell> page(WidgetTester tester, {double width = 1280}) async {
+      tester.view
+        ..physicalSize = Size(width, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing =
+            '${jsonEncode([row('aaaa1111', 'run one'), row('bbbb2222', 'pin one'), row('cccc3333', 'old one', live: false)])}'
+            '\n--- pins\n["bbbb2222"]\n';
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    Finder rail(String label) => find.bySemanticsLabel(RegExp('^$label'));
+
+    testWidgets('collapsed, the sidebar is an icon rail: toggle, new chat, '
+        'then pinned, running and finished in order', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await page(tester);
+      // Expanded first, as today; its toggle is at the top left.
+      expect(find.byType(TuiChatSessionList), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byType(TuiChatSessionList), findsNothing);
+      final ys = [
+        for (final l in [
+          'Expand the sessions',
+          'New chat',
+          'pin one',
+          'run one',
+          'old one',
+        ])
+          tester.getTopLeft(rail(l)).dy,
+      ];
+      expect([...ys]..sort(), ys, reason: 'in the user\'s order');
+      // The toggle is the first icon, at the top left.
+      expect(tester.getTopLeft(rail('Expand the sessions')).dx, lessThan(48));
+      // A gap between New chat and the sessions, and a divider between groups.
+      expect(ys[2] - ys[1], greaterThan(36));
+      expect(find.byType(Divider), findsWidgets);
+      semantics.dispose();
+    });
+
+    testWidgets('an icon names its session and state on a long press, and a '
+        'tap picks it up', (tester) async {
+      final shell = await page(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      await tester.longPress(find.byTooltip('old one, Finished'));
+      await _frames(tester);
+      expect(find.text('old one, Finished'), findsWidgets);
+      await tester.tap(find.byTooltip('old one, Finished'));
+      await _settlePickUp(tester);
+      expect(
+        shell.commands.any((c) => c.contains('cccc3333')),
+        isTrue,
+        reason: 'the finished session was picked up',
+      );
+    });
+
+    testWidgets('Expand brings the list back, and New chat starts a new one',
+        (tester) async {
+      await page(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      await tester.tap(find.byTooltip('New chat'));
+      await _frames(tester);
+      expect(find.byTooltip('New chat'), findsOneWidget);
+      await tester.tap(find.byTooltip('Expand the sessions'));
+      await _frames(tester);
+      expect(find.byType(TuiChatSessionList), findsOneWidget);
+      expect(find.byTooltip('Expand the sessions'), findsNothing);
+    });
+
+    testWidgets('each state has its own icon: working spins, waiting asks, '
+        'stopped is a square', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing = jsonEncode([
+          {...row('aaaa1111', 'busy one'), 'status': 'busy', 'state': 'working'},
+          {...row('bbbb2222', 'asking one'), 'waitingFor': 'permission prompt'},
+          {...row('cccc3333', 'dead one', live: false), 'state': 'stopped'},
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('busy one, Working'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byTooltip('busy one, Working'),
+          matching: find.byType(TuiSpinner),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byTooltip('asking one, Waiting for permission prompt'),
+          matching: find.text('!'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byTooltip('dead one, Stopped'),
+          matching: find.text('■'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a session that finished while another was open has a dot on '
+        'its rail icon, which opening it clears', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      String listed({required bool xDone}) => jsonEncode([
+        {
+          ...row('dot00001', 'x one'),
+          'status': xDone ? 'idle' : 'busy',
+          'state': xDone ? 'done' : 'working',
+        },
+        row('dot00002', 'y one'),
+      ]);
+      final shell = _Shell()..listing = listed(xDone: false);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      // Seen working, then finished by the next look, while y is the one open.
+      await tester.tap(find.text('y one'));
+      await _settlePickUp(tester);
+      shell.listing = listed(xDone: true);
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('x one, Done, idle, not opened since'), findsOneWidget);
+      expect(find.byTooltip('y one, Done, idle'), findsOneWidget);
+      // Opened from its icon: the dot goes.
+      await tester.tap(find.byTooltip('x one, Done, idle, not opened since'));
+      await _settlePickUp(tester);
+      expect(find.byTooltip('x one, Done, idle, not opened since'), findsNothing);
+      expect(find.byTooltip('x one, Done, idle'), findsOneWidget);
+    });
+
+    testWidgets('a narrow screen has no rail, only the drawer', (tester) async {
+      await page(tester, width: 600);
+      expect(find.byTooltip('Expand the sessions'), findsNothing);
+      expect(find.byTooltip('Collapse the sessions'), findsNothing);
     });
   });
 
