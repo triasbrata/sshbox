@@ -1057,6 +1057,49 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
   });
 
+  group('Open in browser tab', () {
+    Future<List<String>> pump(WidgetTester tester, {bool offered = true}) async {
+      final browser = FakeFileBrowser();
+      await browser.writeText('/home/me/page.HTML', '<h1>x</h1>');
+      final opened = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FileBrowserPage(
+            browser: browser,
+            title: 'box',
+            onOpenHtml: offered ? opened.add : null,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return opened;
+    }
+
+    testWidgets('is offered on an HTML file and hands over its path', (
+      tester,
+    ) async {
+      final opened = await pump(tester);
+      await _rowAction(tester, 'page.HTML', 'Open in browser tab');
+      expect(opened, ['/home/me/page.HTML']);
+    });
+
+    testWidgets('is not offered on other files, or without web tabs', (
+      tester,
+    ) async {
+      await pump(tester);
+      await tester.longPress(_row('notes.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open in browser tab'), findsNothing);
+      await tester.tapAt(const Offset(1, 1));
+      await tester.pumpAndSettle();
+
+      await pump(tester, offered: false);
+      await tester.longPress(_row('page.HTML'));
+      await tester.pumpAndSettle();
+      expect(find.text('Open in browser tab'), findsNothing);
+    });
+  });
+
   group('Copy content', () {
     testWidgets('puts the file on the clipboard without opening it',
         (tester) async {

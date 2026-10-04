@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_test/flutter_test.dart' show expect, isNull;
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
@@ -29,6 +30,7 @@ class FakeWebView extends PlatformWebViewController {
 
   final loaded = <Uri>[];
   final assets = <String>[];
+  final htmls = <String>[];
   final scripts = <String>[];
   final channels = <String, JavaScriptChannelParams>{};
   late FakeNavigationDelegate page;
@@ -39,6 +41,12 @@ class FakeWebView extends PlatformWebViewController {
 
   @override
   Future<void> loadFlutterAsset(String key) async => assets.add(key);
+
+  @override
+  Future<void> loadHtmlString(String html, {String? baseUrl}) async {
+    expect(baseUrl, isNull, reason: 'a file gets no origin of its own');
+    htmls.add(html);
+  }
 
   @override
   Future<void> runJavaScript(String javaScript) async => scripts.add(javaScript);

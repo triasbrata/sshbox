@@ -543,6 +543,70 @@ void main() {
     semantics.dispose();
     await tester.pump(const Duration(seconds: 10));
   });
+
+  group('a share from another app on Android', () {
+    /// The platform's side of a share arriving as the app runs, as
+    /// MainActivity pushes it.
+    Future<void> shared(WidgetTester tester, String text) async {
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        'sshbox/share',
+        const StandardMethodCodec().encodeMethodCall(
+          MethodCall('shared', [
+            {'text': text},
+          ]),
+        ),
+        (_) {},
+      );
+      await _settle(tester);
+    }
+
+    /// A restored shell tab with a chat tab beside it, the app started
+    /// over them.
+    Future<void> startWithChat(WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({
+        ..._killedLive(),
+        'sshbox.tabs.v1': jsonEncode({
+          'sessions': [
+            {
+              'hostId': _host.id,
+              'tmux': 'sshbox-abc',
+              'chat': true,
+              'files': [],
+              'web': [],
+            },
+          ],
+          'databases': [],
+        }),
+      });
+      _quietPlatform(tester);
+      await _start(tester, over: _Box());
+    }
+
+    String box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    testWidgets('with the chat tab showing, a text goes into its box and '
+        'is not sent', (tester) async {
+      await startWithChat(tester);
+      await tester.tap(_onStrip(find.textContaining('Claude')));
+      await _settle(tester);
+      await shared(tester, 'https://example.com/a');
+      expect(box(tester), 'https://example.com/a ');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('with the shell tab showing, the chat never hears of it', (
+      tester,
+    ) async {
+      await startWithChat(tester);
+      await shared(tester, 'https://example.com/a');
+      // Past the toast a share with no shell showing says, which covers the
+      // strip.
+      await tester.pump(const Duration(seconds: 10));
+      await tester.tap(_onStrip(find.textContaining('Claude')));
+      await _settle(tester);
+      expect(box(tester), isEmpty);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  });
 }
 
 /// [_Box], whose Claude Code answers `claude --version` with [version].

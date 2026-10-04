@@ -69,10 +69,15 @@ class TerminalPage extends StatefulWidget {
     required this.onOpenGit,
     required this.onOpenDiff,
     required this.onSaveFileRoot,
+    this.onOpenHtml,
   });
 
   final LiveSession session;
   final SecretStore secrets;
+
+  /// Shows an HTML file picked in the drawer in a web tab; null where there
+  /// are none.
+  final void Function(String path)? onOpenHtml;
 
   /// Opens a file picked in the drawer as a tab of its own, next to this one;
   /// with [line], a search result's, at that line.
@@ -416,6 +421,12 @@ class _TerminalPageState extends State<TerminalPage> {
         terminal: _terminalLink,
         onClose: _closeDrawer,
         onFileSelected: _openFileTab,
+        onOpenHtml: widget.onOpenHtml == null
+            ? null
+            : (path) {
+                _closeDrawer();
+                widget.onOpenHtml!(path);
+              },
       ),
     );
   }
@@ -2205,7 +2216,8 @@ class ConnectionError extends StatelessWidget {
               children: [
                 if (onClose != null) ...[
                   TuiButton(
-                    label: 'Close', logName: 'Close',
+                    label: 'Close',
+                    logName: 'Close',
                     variant: TuiButtonVariant.ghost,
                     onPressed: onClose,
                   ),

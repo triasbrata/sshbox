@@ -63,6 +63,7 @@ class _SshboxAppState extends State<SshboxApp> {
     onNotify: _notifications.showForHost,
     onOpenRefused: _openRefused,
   );
+
   /// A `jeansh` request a terminal refused. Never says which check, nor that
   /// it was one: a program's output can cause this too.
   void _openRefused() {
@@ -552,9 +553,16 @@ class _SshboxAppState extends State<SshboxApp> {
     );
     if (_pendingShares.isEmpty) return;
 
+    final active = _sessions.active;
+    // A chat showing takes the share into its box, and nothing is sent.
+    if (active != null && _sessions.activeKind == TabKind.chat) {
+      active.queueChatShares(_pendingShares);
+      _pendingShares.clear();
+      return;
+    }
+
     // Straight to the session the user was last in. With no session there is
     // nowhere to upload to yet, so the files wait for the next host they open.
-    final active = _sessions.active;
     if (active != null) {
       unawaited(openHost(active.host.id));
       return;

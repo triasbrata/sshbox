@@ -426,6 +426,27 @@ void main() {
       expect(manager.sessionsFor(_host.id), [session]);
     });
 
+    test('an HTML file opens as a web tab of its own, once', () {
+      final session = manager.open(_host);
+
+      manager.openHtml(session.id, '/home/me/site/index.html');
+      final page = session.webTabs.single;
+      expect(page.htmlPath, '/home/me/site/index.html');
+      expect(page.title, 'index.html');
+      expect(manager.activeKind, TabKind.web);
+
+      // The page's own report must not lose the file's name.
+      session.updateWeb(page, url: Uri.parse('about:blank'));
+      expect(page.title, 'index.html');
+
+      manager.select(session.id);
+      manager.openHtml(session.id, '/home/me/site/index.html');
+      expect(session.webTabs, [page]);
+
+      manager.openHtml(session.id, '/home/me/site/other.htm');
+      expect(session.webTabs.length, 2);
+    });
+
     test('a web tab is named by its page title, and by its host till then',
         () {
       final session = manager.open(_host);

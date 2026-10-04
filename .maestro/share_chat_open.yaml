@@ -1,0 +1,32 @@
+# #251, the first half of tools/e2e_android.sh's share_chat: the host's shell
+# running `cat` into a file, and the chat tab opened and showing, so a share
+# sent next with adb arrives while a chat is the active tab. A new chat's box
+# is empty, its hint reading "Start a new chat…".
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn:
+    point: 50%, 40%
+- inputText: "cat > /tmp/e2e-shared.txt"
+- pressKey: Enter
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Start a new chat…"
+    timeout: 20000

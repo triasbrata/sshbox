@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show HtmlEscape;
 
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -14,7 +15,18 @@ import 'tui.dart';
 /// the tabs' [IndexedStack] keeps the page alive, scrolled where it was, while
 /// another tab is showing.
 class WebPage extends StatefulWidget {
-  const WebPage({super.key, required this.initialUrl, required this.onChanged});
+  const WebPage({
+    super.key,
+    required this.initialUrl,
+    required this.onChanged,
+    this.html,
+  });
+
+  /// Reads the HTML to show, for a tab that shows a file on the host rather
+  /// than a link; Reload calls it again. The page has no origin of its own,
+  /// so nothing on the host reaches it but this text, and every way out of it
+  /// goes to [openUrl].
+  final Future<String> Function()? html;
 
   /// Where the page opens. Where it goes after that is the page's own doing,
   /// so a new value here is not loaded.
@@ -88,7 +100,23 @@ class _WebPageState extends State<WebPage> {
         ),
       ),
     );
-    _load(_url);
+    if (widget.html == null) {
+      _load(_url);
+    } else {
+      _address.text = '';
+      unawaited(_loadHtml());
+    }
+  }
+
+  Future<void> _loadHtml() async {
+    String page;
+    try {
+      page = await widget.html!();
+    } catch (error) {
+      final why = const HtmlEscape().convert('Could not open the file: $error');
+      page = '<p>$why</p>';
+    }
+    if (mounted) unawaited(_view.loadHtmlString(page));
   }
 
   /// On the [Focus] that hands keys on to the view. It takes no focus itself;
@@ -138,7 +166,12 @@ class _WebPageState extends State<WebPage> {
   NavigationDecision _onNavigation(NavigationRequest request) {
     final url = Uri.tryParse(request.url);
     if (url == null) return NavigationDecision.prevent;
-    if (_shownHere.contains(url.scheme) && url != _asked) {
+    // A file's tab is the file alone: its own text and its own #anchors.
+    // Any other address, a web one included, leaves through openUrl.
+    final stays = widget.html == null
+        ? _shownHere.contains(url.scheme)
+        : url.scheme == 'about' || url.scheme == 'data';
+    if (stays && url != _asked) {
       _asked = url;
       return NavigationDecision.navigate;
     }
@@ -237,11 +270,16 @@ class _WebPageState extends State<WebPage> {
                 ),
                 _loading
                     ? button('Stop', Icons.close, _stop)
-                    : button('Reload', Icons.refresh, _view.reload),
+                    : button(
+                        'Reload',
+                        Icons.refresh,
+                        widget.html == null ? _view.reload : _loadHtml,
+                      ),
                 Expanded(
                   child: TextField(
                     controller: _address,
                     focusNode: _addressFocus,
+                    readOnly: widget.html != null,
                     keyboardType: TextInputType.url,
                     textInputAction: TextInputAction.go,
                     autocorrect: false,

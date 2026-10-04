@@ -1,0 +1,17 @@
+# The second half, for a text shared while the chat tab was showing: it is in
+# the chat's box. Then the chat tab closed, back on the shell, Enter is pressed so `cat` hands
+# the runner its file, which must hold nothing of the share. TEXT comes from -e.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- extendedWaitUntil:
+    visible: "(?s).*${TEXT}.*"
+    timeout: 15000
+- takeScreenshot: chat-share-text
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn:
+    point: 50%, 40%
+- pressKey: Enter
+- tapOn: "Close ${HOST_LABEL}.*"
