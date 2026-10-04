@@ -4205,7 +4205,7 @@ class _SessionRail extends StatelessWidget {
         final running = [for (final a in rows) if (!a.pinned && a.live) a];
         final finished = [for (final a in rows) if (!a.pinned && !a.live) a];
         final groups = [
-          for (final g in [pinned, running, finished])
+          for (final g in [running, pinned, finished])
             if (g.isNotEmpty) g,
         ];
         return ColoredBox(
