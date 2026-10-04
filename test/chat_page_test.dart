@@ -6024,11 +6024,16 @@ void main() {
       await open(tester, running: running);
       await tester.tap(find.text('the nightly build'));
       await _settlePickUp(tester);
-      final box = find.ancestor(
-        of: find.byType(TextField),
-        matching: find.byType(TuiBox),
-      );
+      final box = find.byKey(const ValueKey('composer'));
       expect(box, findsOneWidget);
+      // The pane's own panel is the box: no frame of its own around the field.
+      expect(
+        find.ancestor(
+          of: find.byType(TextField),
+          matching: find.byType(TuiBox),
+        ),
+        findsNothing,
+      );
       for (final inside in <Finder>[
         find.byIcon(Icons.view_sidebar),
         find.byIcon(Icons.add_photo_alternate_outlined),
@@ -6147,10 +6152,7 @@ void main() {
         }
         await tester.tap(find.text('the nightly build'));
         await _settlePickUp(tester);
-        final box = find.ancestor(
-          of: find.byType(TextField),
-          matching: find.byType(TuiBox),
-        );
+        final box = find.byKey(const ValueKey('composer'));
         final send = tester.getTopRight(find.byIcon(Icons.send)).dx;
         expect(
           tester.getTopRight(box).dx - send,

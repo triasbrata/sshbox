@@ -1721,10 +1721,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         onRefresh: () => setState(_listCommands),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
-          // One box, as a chat input is drawn elsewhere: the text on top and
-          // one row of controls along its bottom, inside it.
-          child: TuiBox(
-            expanded: false,
+          // The pane's own panel is the box: the text on top and one row of
+          // controls along its bottom, with no frame of their own around.
+          child: Padding(
+            key: const ValueKey('composer'),
             padding: const EdgeInsets.fromLTRB(10, 4, 4, 2),
             child: Column(
               mainAxisSize: MainAxisSize.min,
