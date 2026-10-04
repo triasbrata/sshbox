@@ -530,6 +530,7 @@ void main() {
     late _Launcher launcher;
     late List<String> opened;
     late List<Uri> openedWeb;
+    late List<String> openedHtml;
 
     // Columns: the URL 0–15, dev/ 17–20, notes.txt 22–30, missing/x 32–40.
     const line = 'https://dart.dev dev/ notes.txt missing/x';
@@ -541,6 +542,7 @@ void main() {
       });
       opened = [];
       openedWeb = [];
+      openedHtml = [];
       final session = LiveSession(
         host: const HostProfile(
           id: 'host-1',
@@ -562,6 +564,7 @@ void main() {
               secrets: _NoSecrets(),
               onOpenFile: (path, {line}) => opened.add(path),
               onOpenWeb: openedWeb.add,
+              onOpenHtml: openedHtml.add,
               onOpenChat: () {},
               onOpenGit: () {},
               onOpenDiff: (_) {},
@@ -667,6 +670,27 @@ void main() {
         find.byType(FileBrowserPage),
       );
       expect(drawer.initialScrollOffset, 0);
+    });
+
+    testWidgets('an HTML file in the drawer opens in a browser tab, and the '
+        'drawer closes', (tester) async {
+      await pumpPage(tester);
+      await shell.files.writeText('/home/me/page.html', '<h1>x</h1>');
+
+      await tester.tap(find.byTooltip('Browse files'));
+      await tester.pumpAndSettle();
+      final row = find.descendant(
+        of: find.byType(ListView),
+        matching: find.text('page.html'),
+      );
+      await tester.longPress(row);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open in browser tab'));
+      await tester.pumpAndSettle();
+
+      expect(openedHtml, ['/home/me/page.html']);
+      expect(opened, isEmpty);
+      expect(find.byType(FileBrowserPage), findsNothing);
     });
 
     testWidgets('a file opens in a tab, taken from where claude is', (
