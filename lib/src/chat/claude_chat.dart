@@ -1490,9 +1490,13 @@ class ClaudeChat extends ChangeNotifier {
     _seenIdle = false;
   }
 
+  /// Tools refused this turn that the user has been told about once.
+  final Set<String> _refused = {};
+
   void _endTurn() {
     if (_pastOnly) return;
     _dropped.clear();
+    _refused.clear();
     _turnStart = null;
     _turnTokens.clear();
     _waitingFor = null;
@@ -2210,7 +2214,7 @@ class ClaudeChat extends ChangeNotifier {
   Future<List<SlashCommand>> slashCommands() async {
     final output = const Utf8Decoder(allowMalformed: true).convert(
       await _readAll(
-        slashCommandsCommand(cwd: cwd),
+        slashCommandsCommand(cwd: _sessionCwd ?? cwd),
         const Duration(seconds: 30),
       ),
     );
@@ -4077,10 +4081,22 @@ class ClaudeChat extends ChangeNotifier {
         return;
       }
     }
+    final name = _nameOf(tool);
+    // Claude gets the refusal as a tool result; the user would otherwise only
+    // learn of it if Claude chose to say so.
+    if (_refused.add(name)) {
+      _say(
+        ChatNotice(
+          '$name was refused: this chat cannot approve a tool. Pick what '
+          'Claude may do without asking in the ⋮ menu beside the box.',
+          failed: true,
+        ),
+      );
+    }
     _respond(id, {
       'behavior': 'deny',
       'message':
-          'This chat cannot approve a tool, so ${_nameOf(tool)} was '
+          'This chat cannot approve a tool, so $name was '
           'refused. What Claude may do without being asked is set in the '
           'menu beside the box.',
     });

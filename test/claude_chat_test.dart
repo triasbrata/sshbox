@@ -1223,6 +1223,31 @@ void main() {
       expect(response['message'], contains('Bash was refused'));
     });
 
+    test('a refused tool is also said in the chat, once a turn, pointing at '
+        'the permission menu', () async {
+      final (chat, claude) = await started();
+      for (final id in ['r1', 'r2']) {
+        claude.event({
+          'type': 'control_request',
+          'request_id': id,
+          'request': {
+            'subtype': 'can_use_tool',
+            'tool_name': 'Bash',
+            'input': {'command': 'ls'},
+            'tool_use_id': 'toolu_$id',
+          },
+        });
+      }
+      await _settle();
+      final said = chat.entries
+          .whereType<ChatNotice>()
+          .where((n) => n.text.contains('Bash was refused'))
+          .toList();
+      expect(said, hasLength(1));
+      expect(said.single.failed, isTrue);
+      expect(said.single.text, contains('⋮ menu'));
+    });
+
     // THE INVARIANT: nothing chat writes reaches a process or session that
     // has been replaced, and no write is dropped without saying so. One test
     // for each event that replaces what chat writes to.
@@ -6565,6 +6590,57 @@ void main() {
       final failed = other.entries.whereType<ChatSaid>().single;
       expect(failed.refusedFolder, isNull);
       expect(failed.why, startsWith('Not started: '));
+    });
+  });
+
+  group('a picked session is continued in its own directory', () {
+    // The script is quoted for two shells, so only the path itself is read.
+    String cwdOf(String command) => command.contains('/srv/app')
+        ? '/srv/app'
+        : command.contains('/home/me')
+        ? '/home/me'
+        : '';
+
+    test('a finished session resumes from the cwd claude agents reports, not '
+        "the chat's", () async {
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        cwd: '/home/me',
+        open: (command) async {
+          if (command.contains('stream-json')) {
+            commands.add(command);
+            return _FakeClaude().channel;
+          }
+          return _noHistory();
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      expect(commands.single, contains('--resume'));
+      expect(cwdOf(commands.single), '/srv/app');
+      // A restart (a mode change, a reconnect) keeps to it too.
+      await chat.restart(permission: ChatPermission.plan);
+      expect(cwdOf(commands.last), '/srv/app');
+    });
+
+    test('a chat that picked nothing keeps the chat folder, and a new chat '
+        'forgets the picked cwd', () async {
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        cwd: '/home/me',
+        open: (command) async {
+          if (command.contains('stream-json')) commands.add(command);
+          return command.contains('stream-json')
+              ? _FakeClaude().channel
+              : _noHistory();
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      await chat.newChat();
+      await chat.start();
+      expect(cwdOf(commands.last), '/home/me');
+      expect(commands.last, isNot(contains('--resume')));
     });
   });
 
