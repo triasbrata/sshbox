@@ -7159,6 +7159,183 @@ void main() {
     });
   });
 
+  group('↑ goes back to the last message to edit it', () {
+    const parent = '22222222-2222-4222-8222-222222222222';
+    String transcript(String prompt) {
+      final row = jsonEncode({
+        'type': 'user',
+        'uuid': '33333333-3333-4333-8333-333333333333',
+        'parentUuid': parent,
+        'message': {'role': 'user', 'content': prompt},
+      });
+      return '${utf8.encode(row).length}\n$row\n';
+    }
+
+    Future<_Shell> ownChat(WidgetTester tester, {bool answered = true}) async {
+      tester.view
+        ..physicalSize = const Size(700, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh')]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await _continue(tester, 'Zsh');
+      shell.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': 'cf58d27a-0000-4000-8000-000000000000',
+      });
+      await tester.enterText(find.byType(TextField), 'check nginx');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await tester.pump();
+      if (answered) {
+        shell.event({
+          'type': 'assistant',
+          'message': {
+            'id': 'm1',
+            'stop_reason': 'end_turn',
+            'content': [
+              {'type': 'text', 'text': 'it is fine'},
+            ],
+          },
+        });
+        shell.event({'type': 'result', 'subtype': 'success'});
+        await tester.pump();
+      }
+      shell.history = transcript('check nginx');
+      return shell;
+    }
+
+    TextField box(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField));
+
+    testWidgets('in an empty box it puts the last message there, as a fork '
+        'cut before it', (tester) async {
+      final shell = await ownChat(tester);
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await _settlePickUp(tester);
+      expect(box(tester).controller!.text, 'check nginx');
+      expect(shell.commands.last, contains('--resume-session-at'));
+      expect(shell.commands.last, contains('--fork-session'));
+      expect(find.text('it is fine'), findsNothing);
+      expect(find.textContaining('earlier branch stays'), findsOneWidget);
+    });
+
+    testWidgets('over a draft it does nothing, so the draft is not lost', (
+      tester,
+    ) async {
+      final shell = await ownChat(tester);
+      final before = shell.commands.length;
+      await tester.enterText(find.byType(TextField), 'half a thought');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await _settlePickUp(tester);
+      expect(box(tester).controller!.text, 'half a thought');
+      expect(shell.commands.length, before);
+      expect(find.text('it is fine'), findsOneWidget);
+    });
+
+    testWidgets('the Edit button on the newest message does the same, and '
+        'older ones have none', (tester) async {
+      await ownChat(tester);
+      expect(find.byTooltip('Edit this message'), findsOneWidget);
+      await tester.tap(find.byTooltip('Edit this message'));
+      await _settlePickUp(tester);
+      expect(box(tester).controller!.text, 'check nginx');
+      expect(find.byTooltip('Edit this message'), findsNothing);
+    });
+
+    testWidgets('the Edit button is a semantics node of its own, and the '
+        "bubble's text stays only the message", (tester) async {
+      final semantics = tester.ensureSemantics();
+      await ownChat(tester);
+      final message = tester.getSemantics(find.text('check nginx').first);
+      expect(message.label, 'check nginx');
+      expect(message.label, isNot(contains('Edit')));
+      final edit = tester.getSemantics(find.bySemanticsLabel('Edit this message'));
+      expect(edit.label, 'Edit this message');
+      expect(edit.id, isNot(message.id));
+      semantics.dispose();
+    });
+
+    testWidgets('while Claude answers it says so and goes nowhere', (
+      tester,
+    ) async {
+      final shell = await ownChat(tester, answered: false);
+      final before = shell.commands.length;
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await _settlePickUp(tester);
+      expect(find.textContaining('Claude is answering'), findsOneWidget);
+      expect(box(tester).controller!.text, isEmpty);
+      expect(shell.commands.length, before);
+    });
+
+    testWidgets('a session on the host is revised at its terminal, and '
+        'nothing is typed into it', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = _history([
+          {
+            'type': 'user',
+            'message': {'role': 'user', 'content': 'why is nginx slow?'},
+          },
+        ])
+        ..listing = jsonEncode([
+          {
+            'pid': 4079548,
+            'id': '81badf4a',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+            'name': 'the nightly build',
+            'status': 'idle',
+            'state': 'done',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _frames(tester);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      final before = shell.commands.length;
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await _settlePickUp(tester);
+      expect(find.textContaining('Esc Esc'), findsOneWidget);
+      expect(box(tester).controller!.text, isEmpty);
+      expect(
+        shell.commands
+            .skip(before)
+            .where(
+              (c) =>
+                  c.contains('stream-json') ||
+                  c.contains('attach') ||
+                  c.contains('paste-buffer') ||
+                  c.contains('--resume'),
+            ),
+        isEmpty,
+      );
+      expect(shell.written, isEmpty);
+      expect(shell.paneTyped, isEmpty);
+    });
+  });
+
   group('the usage chip and its popup', () {
     setUp(ClaudeChat.forgetQuotas);
     String history(int tokens) {
