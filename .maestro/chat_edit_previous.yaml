@@ -1,0 +1,94 @@
+# #226: ↑ in chat's empty box goes back to the last message to edit it, as a
+# fork of the session, in chat's own Claude.
+#
+# Against tools/e2e_edit_claude.py, which keeps every start's arguments in
+# ~/.e2e-edit-cmds; the runner (tools/e2e_android.sh's chat_edit_previous)
+# checks there is exactly one start with --resume-session-at ... --fork-session
+# and no more than the two starts this flow makes. In order:
+#  1. "A" sent and answered;
+#  2. negative: over a draft ("x") ↑ does nothing: no notice, no restart;
+#  3. positive: in the empty box ↑ goes back, the answer is gone and the notice
+#     says so (the box holding "A" is read by the runner's absence of a
+#     second send; Maestro cannot read an input's text apart from the chip);
+#  4. negative: while Claude answers ("slow: B" takes 20 s) ↑ says so and
+#     starts nothing.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E code reply.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E code reply.*"
+- extendedWaitUntil:
+    visible: "Ask Claude…"
+    timeout: 30000
+
+# 1. A, answered.
+- tapOn: "Ask Claude…"
+- inputText: "A"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "(?s).*Echo: A.*"
+    timeout: 60000
+
+# 2. Over a draft, ↑ changes nothing.
+- tapOn: "Ask Claude…"
+- inputText: "x"
+- pressKey: Remote Dpad Up
+- assertNotVisible: "(?s).*Went back to.*"
+- assertVisible: "(?s).*Echo: A.*"
+- tapOn:
+    point: 40%, 49%
+- eraseText: 5
+
+# 3. In the empty box ↑ goes back: the answer is gone, the notice says so.
+- tapOn:
+    point: 40%, 49%
+- pressKey: Remote Dpad Up
+- extendedWaitUntil:
+    visible: "(?s).*Went back to before that message.*"
+    timeout: 60000
+- assertNotVisible: "(?s).*Echo: A.*"
+# The box now reads A (the sent bubble is gone with its answer, so this text
+# is the box's).
+- assertVisible: "A"
+- takeScreenshot: chat-edit-previous-back
+
+# 4. While Claude answers, ↑ says so and goes nowhere.
+- tapOn:
+    point: 40%, 49%
+- eraseText: 5
+- inputText: "slow: B"
+- tapOn: "Send"
+- pressKey: Remote Dpad Up
+- extendedWaitUntil:
+    visible: "(?s).*Claude is answering.*"
+    timeout: 10000
+- takeScreenshot: chat-edit-previous-busy
+- extendedWaitUntil:
+    visible: "(?s).*Echo: slow: B.*"
+    timeout: 60000
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
