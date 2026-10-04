@@ -335,6 +335,19 @@ file_editor() {
     [ "$(sudo grep -c $'\r$' "$file")" -eq "$(sudo wc -l <"$file")" ]
 }
 
+# #253: an .html file opens rendered in a web tab, and a .txt file still opens
+# in the editor. Both files go in the login home, the root of the host's file
+# tree, and are gone with the runner.
+html_tab() {
+  local home=/home/$SSH_USER
+  printf '<h1>Jeansh e2e heading</h1>\n' |
+    sudo -u "$SSH_USER" tee "$home/jeansh-e2e-page.html" >/dev/null
+  printf 'Jeansh e2e plain note\n' |
+    sudo -u "$SSH_USER" tee "$home/jeansh-e2e-notes.txt" >/dev/null
+  flow html_tab || return 1
+  flow html_tab_text
+}
+
 # #94: Gboard sends Backspace as a raw KEYCODE_DEL key event, from the
 # virtual keyboard's device (-1) and flagged as soft, whenever it sees nothing
 # before the caret. Jeansh took it for a hardware keyboard: the soft keyboard
@@ -1243,6 +1256,10 @@ keep_shots 'chat-markdown-*.png'
 end_live_session
 echo "::endgroup::"
 stand_in ''
+
+echo "::group::html_tab (report only)"
+html_tab || echo "::warning::html_tab failed -- report only, not gating"
+echo "::endgroup::"
 
 echo "::group::chat_session_status (report only)"
 chat_session_status || echo "::warning::chat_session_status failed -- report only, not gating"

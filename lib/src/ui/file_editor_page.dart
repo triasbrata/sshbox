@@ -41,6 +41,7 @@ class FileEditorPage extends StatelessWidget {
     this.draftKey,
     this.line,
     this.onOpenWeb,
+    this.onOpenHtml,
     this.host,
   });
 
@@ -48,6 +49,9 @@ class FileEditorPage extends StatelessWidget {
   final String path;
   final String? host;
   final void Function(Uri url)? onOpenWeb;
+
+  /// Shows an HTML file in a web tab; null where there are none.
+  final void Function(String path)? onOpenHtml;
   final VoidCallback? onClose;
   final String? draftKey;
   final int? line;
@@ -68,6 +72,7 @@ class FileEditorPage extends StatelessWidget {
           draftKey: draftKey,
           line: line,
           onOpenWeb: onOpenWeb,
+          onOpenHtml: onOpenHtml,
         );
 }
 
@@ -83,6 +88,13 @@ final _imageNames = RegExp(
 );
 
 bool isImageFile(String path) => _imageNames.hasMatch(path);
+
+final _htmlNames = RegExp(r'\.html?$', caseSensitive: false);
+
+bool isHtmlFile(String path) => _htmlNames.hasMatch(path);
+
+/// The most of an HTML file a web tab takes: the editor's own ceiling.
+const htmlLimit = FileBrowser.defaultReadLimit;
 
 /// The most of any one picture the app will bring down and decode, whether it
 /// is a tab of its own or one image in a Markdown preview.
@@ -142,6 +154,7 @@ class _TextFileTab extends StatefulWidget {
     this.draftKey,
     this.line,
     this.onOpenWeb,
+    this.onOpenHtml,
     this.host,
   });
 
@@ -151,6 +164,9 @@ class _TextFileTab extends StatefulWidget {
   /// The host the file is on, as its tab names it, for the Transfers tab to
   /// say where a download came from.
   final String? host;
+
+  /// See [FileEditorPage.onOpenHtml].
+  final void Function(String path)? onOpenHtml;
 
   /// Opens a web link from the Markdown preview in a tab beside the shell,
   /// as a link in the terminal opens. Null sends it to the phone's browser.
@@ -962,6 +978,11 @@ class _TextFileTabState extends State<_TextFileTab> {
                 // Only the path is needed, so a file that would not open as
                 // text can still be saved on the phone.
                 menuAction('Download', _download, enabled: _transfer == null),
+                if (widget.onOpenHtml != null && isHtmlFile(widget.path))
+                  menuAction(
+                    'Open in browser tab',
+                    () => widget.onOpenHtml!(widget.path),
+                  ),
                 // Nothing to copy while the file is still coming, and nothing
                 // worth copying when it would not open as text.
                 if (!_loading && _error == null)
