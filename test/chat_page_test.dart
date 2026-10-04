@@ -7,7 +7,7 @@ import 'dart:ui' as ui;
 import 'fake_drop.dart';
 import 'fake_file_browser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sshbox/src/files/file_browser.dart' show FileBrowser;
+import 'package:sshbox/src/files/file_browser.dart' show FileBrowser, FileBrowserException;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
@@ -95,6 +95,58 @@ class _NoSecrets implements SecretStore {
 
 /// A host that is up at once and can run a command beside the shell — which
 /// is all a chat needs of a session.
+/// [_Shell] as a host that takes no uploads: the same channels, and no
+/// [FileUploadCapable].
+class _NoUploadShell
+    implements
+        SessionTransport,
+        TerminalSession,
+        ChannelCapable,
+        TerminalChannelCapable {
+  _NoUploadShell(this.inner);
+
+  final _Shell inner;
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async => this;
+
+  @override
+  Future<CommandChannel> open(String command) => inner.open(command);
+
+  @override
+  Future<CommandChannel> openTerminal(
+    String command, {
+    int columns = 120,
+    int rows = 40,
+  }) => inner.openTerminal(command, columns: columns, rows: rows);
+
+  @override
+  final status = ValueNotifier(SessionStatus.connected);
+
+  @override
+  Stream<String> get output => const Stream.empty();
+
+  @override
+  String? get failure => null;
+
+  @override
+  void send(String data) {}
+
+  @override
+  void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
 class _Shell
     implements
         SessionTransport,
@@ -110,6 +162,9 @@ class _Shell
   final uploaded = <String>[];
   var failUploads = 0;
 
+  /// Makes the next upload end as one cancelled from Transfers does.
+  var cancelUploads = false;
+
   @override
   Future<String> uploadToTmp({
     required String localPath,
@@ -118,6 +173,7 @@ class _Shell
     Future<void>? cancel,
   }) async {
     uploaded.add(fileName);
+    if (cancelUploads) throw FileBrowserException.cancelled;
     if (failUploads > 0) {
       failUploads--;
       throw const FileSystemException('disk full');
@@ -6645,6 +6701,85 @@ void main() {
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
       expect(shell.uploaded, ['notes.txt']);
       expect(box(tester), '/tmp/notes.txt ');
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('a file shared to a host that takes no uploads is refused, '
+        'and adds nothing', (tester) async {
+      final inner = _Shell()
+        ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+      final session = LiveSession(
+        host: _host,
+        transport: (_, _) => _NoUploadShell(inner),
+      );
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'Zsh config fix');
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(box(tester), isEmpty);
+      expect(find.text('This session cannot take notes.txt.'), findsOneWidget);
+      expect(inner.uploaded, isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('an upload that fails says so, and adds nothing', (
+      tester,
+    ) async {
+      final (shell, session) = await chatOn(tester);
+      shell.failUploads = 1;
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, ['notes.txt']);
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('Upload failed:'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('an upload cancelled from Transfers says nothing and adds '
+        'nothing', (tester) async {
+      final (shell, session) = await chatOn(tester);
+      shell.cancelUploads = true;
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, ['notes.txt']);
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('Upload failed'), findsNothing);
+    });
+
+    testWidgets('a text shared into a read-only session is refused, and adds '
+        'nothing', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      await share(tester, session, ['https://example.com/a']);
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('this session is read-only'), findsOneWidget);
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 
