@@ -22,9 +22,8 @@ struct _MyApplication {
   // screen: what comes back at the next start (see restore_geometry).
   gint x, y, width, height;
   guint save_source;
-  // A geometry seen but not yet trusted, and the timer that makes it the one
-  // above (see configure_cb).
-  gint pending_x, pending_y, pending_width, pending_height;
+  // The timer that reads the geometry above once the window has held still
+  // (see configure_cb).
   guint commit_source;
 };
 
@@ -141,17 +140,16 @@ static void schedule_save(MyApplication* self) {
   self->save_source = g_timeout_add(500, save_geometry, self);
 }
 
-// Called after GTK's handler (see my_application_activate), so the position
-// and size read are this event's, not the one before.
-//
 // The window manager moves and resizes a window in steps when it maximizes
 // it, and the maximized state is told after the first of them: the place of
 // the window seen then is a step on the way, and kept, it came back at the
 // next start as the window's normal place (the one a window manager gives
-// back on un-maximize), wrong. So what a configure event shows is only
-// pending, and becomes the place the window is at once nothing has changed
-// for a moment and the window is neither maximized nor full screen; a change
-// of state throws it away (see window_state_cb).
+// back on un-maximize), wrong. And GTK takes a configure event after this
+// handler has seen it, so the position and size it gives while one is being
+// handled are the event before's. So a configure event only starts a timer,
+// and the place is read when it fires, once nothing has changed for a moment
+// and the window is neither maximized nor full screen; a change of state
+// cancels the timer (see window_state_cb).
 static gboolean commit_geometry(gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   self->commit_source = 0;
@@ -160,10 +158,8 @@ static gboolean commit_geometry(gpointer user_data) {
   GdkWindowState state = gdk_window_get_state(gdk_window);
   if (!(state & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN |
                  GDK_WINDOW_STATE_ICONIFIED))) {
-    self->x = self->pending_x;
-    self->y = self->pending_y;
-    self->width = self->pending_width;
-    self->height = self->pending_height;
+    gtk_window_get_position(self->window, &self->x, &self->y);
+    gtk_window_get_size(self->window, &self->width, &self->height);
     schedule_save(self);
   }
   return G_SOURCE_REMOVE;
@@ -180,9 +176,6 @@ static gboolean configure_cb(GtkWidget* widget, GdkEventConfigure* event,
   GdkWindowState state = gdk_window_get_state(gtk_widget_get_window(widget));
   if (!(state & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN |
                  GDK_WINDOW_STATE_ICONIFIED))) {
-    gtk_window_get_position(self->window, &self->pending_x, &self->pending_y);
-    gtk_window_get_size(self->window, &self->pending_width,
-                        &self->pending_height);
     drop_pending_geometry(self);
     self->commit_source = g_timeout_add(150, commit_geometry, self);
   }
@@ -355,11 +348,7 @@ static void my_application_activate(GApplication* application) {
 
   gtk_window_set_default_size(window, 1280, 720);
   restore_geometry(self);
-  // After GTK's own handler, which is what brings gtk_window_get_position
-  // and _size up to this event: run before it, they are one event behind, and
-  // a window maximized just after a move was kept at the place before it.
-  g_signal_connect_after(window, "configure-event", G_CALLBACK(configure_cb),
-                         self);
+  g_signal_connect(window, "configure-event", G_CALLBACK(configure_cb), self);
   g_signal_connect(window, "delete-event", G_CALLBACK(delete_cb), self);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
