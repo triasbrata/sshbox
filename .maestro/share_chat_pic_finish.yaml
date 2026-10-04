@@ -1,0 +1,12 @@
+# A picture shared while the chat tab was showing becomes a card above the box
+# and an [Image #1] in it, as one pasted does.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- extendedWaitUntil:
+    visible: "(?s).*\\[Image #1\\].*"
+    timeout: 15000
+- takeScreenshot: chat-share-pic
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

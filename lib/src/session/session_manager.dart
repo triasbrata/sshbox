@@ -1366,6 +1366,24 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     return taken;
   }
 
+  /// Shares that arrived while a chat tab was the one showing: they go into
+  /// that chat's box rather than to the terminal — see [queueUploads].
+  final List<Object> _pendingChatShares = [];
+
+  bool get hasPendingChatShares => _pendingChatShares.isNotEmpty;
+
+  void queueChatShares(Iterable<Object> shares) {
+    if (shares.isEmpty) return;
+    _pendingChatShares.addAll(shares);
+    _notify();
+  }
+
+  List<Object> takePendingChatShares() {
+    final taken = List<Object>.of(_pendingChatShares);
+    _pendingChatShares.clear();
+    return taken;
+  }
+
   /// Uploads into `/tmp` on the remote host and returns the path to type.
   Future<String> uploadToTmp({
     required String localPath,
