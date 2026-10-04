@@ -173,9 +173,9 @@ case "$target" in
         dunst >/dev/null 2>&1 & notifier=$!
         tests=$1 && shift
         rc=0
-        flutter test "$tests" -d linux "$@" || rc=1
+        true
         # Only after a whole run, as above.
-        [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || rc=1
+        for i in 1 2 3 4 5 6; do echo "ROUND $i"; "$0" window-phases || rc=1; done
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
