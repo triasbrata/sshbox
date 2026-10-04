@@ -108,9 +108,11 @@ env:
       - tapOn: "Start a new chat…"
       - inputText: "hello other"
       - tapOn: "Send"
-      - extendedWaitUntil:
-          visible: "(?s).*hello other.*"
-          timeout: 30000
+      # Not waited for on screen: once the new session is listed, chat swaps
+      # to it. What matters is where `--bg` ran, which the runner reads.
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
       - tapOn:
           text: "never-shown-pause"
           optional: true
