@@ -1083,6 +1083,45 @@ JSON
   return "$status"
 }
 
+# #226: ↑ goes back to the last message (.maestro/chat_edit_previous.yaml),
+# against tools/e2e_edit_claude.py as chat's own `claude -p`. What it was
+# started with is read after the flow: exactly one start with
+# --resume-session-at and --fork-session, never an attach or a --bg, and no
+# more than the two starts the flow makes, so neither the draft nor the busy
+# turn restarted anything.
+chat_edit_previous() {
+  local status=0 home=/home/$SSH_USER cmds=/home/$SSH_USER/.e2e-edit-cmds
+  chat_stand_in
+  end_live_session
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_edit_claude.py "$home/.e2e-edit-claude.py"
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  -p) exec python3 "$HOME/.e2e-edit-claude.py" "$@" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$cmds"
+  flow chat_edit_previous || status=1
+  local forks starts
+  forks=$(sudo grep -c -- '--resume-session-at [0-9a-f-]* --fork-session' "$cmds" 2>/dev/null)
+  starts=$(sudo grep -c . "$cmds" 2>/dev/null)
+  [ "${forks:-0}" = 1 ] ||
+    { echo "::error::$forks starts went back and forked, not 1: $(sudo cat "$cmds" 2>/dev/null)"; status=1; }
+  [ "${starts:-0}" -le 2 ] ||
+    { echo "::error::$starts starts of claude -p, more than the flow's 2"; status=1; }
+  if sudo grep -q -- '--bg\|attach' "$cmds" 2>/dev/null; then
+    echo "::error::a --bg or attach was run"; status=1
+  fi
+  echo "claude -p starts: $(sudo cat "$cmds" 2>/dev/null)"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-edit-previous-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$cmds" "$home/.e2e-edit-claude.py"
+  stand_in ''
+  return "$status"
+}
+
 # #230: the folder a new chat starts in (.maestro/chat_cwd.yaml). The stand-in's
 # `--bg` keeps the folder it ran in, since chat `cd`s there first, refuses a
 # folder called untrusted as Claude Code does an untrusted workspace, and
@@ -1303,6 +1342,10 @@ echo "::endgroup::"
 
 echo "::group::chat_cwd (report only)"
 chat_cwd || echo "::warning::chat_cwd failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_edit_previous (report only)"
+chat_edit_previous || echo "::warning::chat_edit_previous failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"

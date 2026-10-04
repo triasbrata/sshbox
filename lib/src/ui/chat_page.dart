@@ -28,6 +28,7 @@ import '../platform.dart';
 import '../session/local_transport.dart' show localHostId;
 import '../session/session_manager.dart';
 import '../session/terminal_session.dart' show uploadName;
+import '../telemetry/tap_log.dart';
 import 'chat_ask_card.dart';
 import 'code_languages.dart';
 import 'file_editor_page.dart'
@@ -774,6 +775,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// Enter sends, Shift+Enter then being the new line. An IME's Enter, which
   /// confirms what it is composing, is the IME's.
   KeyEventResult _onBoxKey(FocusNode node, KeyEvent event) {
+    // ↑ in an empty box goes back to the last message, to edit it. Not over a
+    // draft, which it would replace, nor while the command list is open or an
+    // IME composes.
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowUp &&
+        _input.text.isEmpty &&
+        !_menuOpen.value &&
+        !_input.value.isComposingRangeValid &&
+        !HardwareKeyboard.instance.isShiftPressed &&
+        !HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isMetaPressed &&
+        !HardwareKeyboard.instance.isAltPressed &&
+        _chat.lastMine != null) {
+      unawaited(_editPrevious());
+      return KeyEventResult.handled;
+    }
     if (event is KeyUpEvent ||
         (event.logicalKey != LogicalKeyboardKey.enter &&
             event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
@@ -781,6 +798,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return KeyEventResult.ignored;
     }
     return _enterKey();
+  }
+
+  /// Goes back to the user's last message and puts it in the box.
+  Future<void> _editPrevious() async {
+    final text = await _chat.reviseLast();
+    if (text == null || !mounted) return;
+    setState(() {
+      _input.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    });
+    _inputFocus.requestFocus();
   }
 
   /// Whether the key held with Enter is the send chord: ⌘ on Apple's
@@ -1542,6 +1572,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     // sub-agent's view has none to send.
     onRetry: _retry,
     onRemove: _chat.remove,
+    onEdit: _editPrevious,
     onChooseFolder: (said) => unawaited(_chooseFolder(after: said)),
     question: (question) => ChatAskCard(
       // One card for the question for as long as it is in the chat, so what
@@ -2142,11 +2173,18 @@ Widget _drawEntry(
   required void Function(ChatToolRun run, SubAgent sub) openSub,
   void Function(ChatSaid said)? onRetry,
   void Function(ChatSaid said)? onRemove,
+  VoidCallback? onEdit,
   void Function(ChatSaid said)? onChooseFolder,
   Widget Function(ChatQuestion question)? question,
 }) => switch (entry) {
   ChatSaid(mine: true) => _Bubble(
     said: entry,
+    // Only the newest message of the user's can be gone back to.
+    onEdit:
+        identical(chat.lastMine, entry) &&
+            (entry.delivery == null || chat.isHeld(entry))
+        ? onEdit
+        : null,
     onTapLink: onTapLink,
     // A sub-agent's view has no message of its own to send again.
     onRetry: () => onRetry?.call(entry),
@@ -2441,6 +2479,7 @@ class _Bubble extends StatelessWidget {
     required this.onTapLink,
     required this.onRetry,
     required this.onRemove,
+    this.onEdit,
     this.onChooseFolder,
   });
 
@@ -2448,6 +2487,9 @@ class _Bubble extends StatelessWidget {
   final VoidCallback? onChooseFolder;
 
   final ChatSaid said;
+
+  /// Goes back to this message to edit it; offered on the newest only.
+  final VoidCallback? onEdit;
   final MarkdownTapLinkCallback onTapLink;
 
   /// Send it again, or drop it: offered once it is known not to have been
@@ -2476,6 +2518,34 @@ class _Bubble extends StatelessWidget {
           ),
         ),
       _bubble(context),
+      if (onEdit != null)
+        Align(
+          alignment: Alignment.centerRight,
+          // The button is a node of its own: its words must not merge into
+          // the bubble's text above it, which then no longer reads as the
+          // message alone.
+          child: TuiTooltip(
+            message: 'Edit this message',
+            excludeFromSemantics: true,
+            child: Semantics(
+              container: true,
+              button: true,
+              label: 'Edit this message',
+              excludeSemantics: true,
+              child: InkWell(
+                onTap: () {
+                  logTap(context, 'Edit message', 'button');
+                  onEdit!();
+                },
+                child: const SizedBox(
+                  width: 36,
+                  height: 28,
+                  child: Center(child: Text('✎')),
+                ),
+              ),
+            ),
+          ),
+        ),
       if (said.delivery == Delivery.failed)
         Padding(
           padding: const EdgeInsets.only(bottom: 6),
