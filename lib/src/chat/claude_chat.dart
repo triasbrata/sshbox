@@ -1824,7 +1824,7 @@ class ClaudeChat extends ChangeNotifier {
     try {
       final channel = await open(
         command(
-          cwd: _sessionCwd ?? cwd,
+          cwd: cwd,
           permission: _permission,
           resume: _sessionId,
           model: _alias,
