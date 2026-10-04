@@ -194,9 +194,20 @@ env:
           timeout: 10000
       - inputText: "new one"
       - tapOn: "Send"
+      # The answer arrives under a tall picture bubble with the keyboard up,
+      # and a view not at the very end is not followed: it then sits below the
+      # screen with a Latest button over the box. Either shows it.
+      - extendedWaitUntil:
+          visible: "(?is).*(The picture is red. Echo: .*new one|latest).*"
+          timeout: 60000
+      - runFlow:
+          when:
+            visible: "(?i).*latest.*"
+          commands:
+            - tapOn: "(?i).*latest.*"
       - extendedWaitUntil:
           visible: "(?s).*The picture is red. Echo: .*new one.*"
-          timeout: 60000
+          timeout: 30000
       - takeScreenshot: chat-images-new-chat
 
 # refuse: step 6, a file the + button's picker offers that Claude cannot read.
@@ -206,13 +217,19 @@ env:
     when:
       true: ${STEP == 'refuse'}
     commands:
-      - runFlow:
-          file: chat_images_pick.yaml
-          env:
-            FILE: e2e-old.bmp
-      - extendedWaitUntil:
-          visible: "(?s).*Not a picture Claude can read: e2e-old\\.bmp.*"
-          timeout: 10000
+      # The refusal is a toast of a few seconds, and a stall of the emulator's
+      # renderer around the picker can outlast it before Maestro looks, so a
+      # missed toast is picked again, each time asserting it in full.
+      - retry:
+          maxRetries: 2
+          commands:
+            - runFlow:
+                file: chat_images_pick.yaml
+                env:
+                  FILE: e2e-old.bmp
+            - extendedWaitUntil:
+                visible: "(?s).*Not a picture Claude can read: e2e-old\\.bmp.*"
+                timeout: 10000
       - takeScreenshot: chat-images-refused
 
 # probe-*: where a hardware Ctrl+V goes, the script pressing it with adb after
