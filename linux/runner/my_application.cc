@@ -141,6 +141,9 @@ static void schedule_save(MyApplication* self) {
   self->save_source = g_timeout_add(500, save_geometry, self);
 }
 
+// Called after GTK's handler (see my_application_activate), so the position
+// and size read are this event's, not the one before.
+//
 // The window manager moves and resizes a window in steps when it maximizes
 // it, and the maximized state is told after the first of them: the place of
 // the window seen then is a step on the way, and kept, it came back at the
@@ -352,7 +355,11 @@ static void my_application_activate(GApplication* application) {
 
   gtk_window_set_default_size(window, 1280, 720);
   restore_geometry(self);
-  g_signal_connect(window, "configure-event", G_CALLBACK(configure_cb), self);
+  // After GTK's own handler, which is what brings gtk_window_get_position
+  // and _size up to this event: run before it, they are one event behind, and
+  // a window maximized just after a move was kept at the place before it.
+  g_signal_connect_after(window, "configure-event", G_CALLBACK(configure_cb),
+                         self);
   g_signal_connect(window, "delete-event", G_CALLBACK(delete_cb), self);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
