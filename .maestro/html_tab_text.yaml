@@ -36,4 +36,6 @@ env:
 - assertVisible: "Save to host"
 - assertNotVisible: "Reload"
 
+# The selected tab is the file; closing it lands on the shell.
+- tapOn: "(?s)Close .*"
 - tapOn: "Close ${HOST_LABEL}.*"

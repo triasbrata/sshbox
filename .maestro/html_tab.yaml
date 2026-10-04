@@ -42,4 +42,6 @@ env:
 # The editor is not what is on screen.
 - assertNotVisible: "Save to host"
 
+# The selected tab is the page; closing it lands on the shell.
+- tapOn: "(?s)Close .*"
 - tapOn: "Close ${HOST_LABEL}.*"
