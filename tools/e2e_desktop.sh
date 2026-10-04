@@ -78,12 +78,13 @@ window_phases() {
       esac
     fi
     if [ "$target" = windows ]; then
-      APPDATA=$(cygpath -w "$data") flutter test \
+      APPDATA=$(cygpath -w "$data") JEANSH_E2E_WINDOW=$phase flutter test \
         integration_test/window_place_test.dart -d windows \
-        --dart-define=JEANSH_E2E_WINDOW=$phase || { rc=1; break; }
+        || { rc=1; break; }
     else
-      flutter test integration_test/window_place_test.dart -d "$target" \
-        --dart-define=JEANSH_E2E_WINDOW=$phase || { rc=1; break; }
+      JEANSH_E2E_WINDOW=$phase flutter test \
+        integration_test/window_place_test.dart -d "$target" \
+        || { rc=1; break; }
     fi
   done
   if [ "$target" = macos ]; then

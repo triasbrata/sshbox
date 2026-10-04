@@ -25,7 +25,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 
-const _phase = String.fromEnvironment('JEANSH_E2E_WINDOW');
+/// Read at run time, not given as a --dart-define: a define is compiled in,
+/// so each phase rebuilt the app, and the environment lets all four reuse one
+/// build.
+final _phase = Platform.environment['JEANSH_E2E_WINDOW'] ?? '';
 
 /// Where one run tells the next what it left.
 final _noted = File('${Directory.systemTemp.path}/jeansh-e2e-window.txt');

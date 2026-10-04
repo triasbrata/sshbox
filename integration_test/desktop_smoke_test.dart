@@ -141,6 +141,18 @@ Future<void> _chatAnswered(WidgetTester tester) async {
 /// at the start of every test. A step is a frame or so.
 const _settleStep = Duration(milliseconds: 100);
 
+/// Waits for the animation under way — a menu opening, a page sliding in —
+/// to end, at most as long as the fixed 600 ms it replaces. A terminal's
+/// cursor may keep a ticker running, in which case this is that 600 ms.
+Future<void> _still(WidgetTester tester) async {
+  final end = DateTime.now().add(const Duration(milliseconds: 600));
+  await tester.pump(const Duration(milliseconds: 50));
+  while (tester.binding.transientCallbackCount > 0 &&
+      DateTime.now().isBefore(end)) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
 /// Home, from a cold start, settled.
 ///
 /// A generous settle: this is a real app doing real work at launch — reading
@@ -302,7 +314,7 @@ Future<void> _pick(WidgetTester tester, String item) async {
     () => _label(item).evaluate().isNotEmpty,
     'the menu to offer $item',
   );
-  await tester.pump(const Duration(milliseconds: 600));
+  await _still(tester);
   // A pane's menu is taller than a small window, and scrolls.
   await tester.ensureVisible(_label(item));
   await tester.pump();
@@ -322,7 +334,7 @@ Future<void> _settings(WidgetTester tester) async {
         find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY').evaluate().isNotEmpty,
     'Settings to open',
   );
-  await tester.pump(const Duration(milliseconds: 600));
+  await _still(tester);
 }
 
 /// Back from Settings to Home, and Settings all the way gone. Home's card is
@@ -342,7 +354,7 @@ Future<void> _backHome(WidgetTester tester) async {
     () => _homeCard('Local shell').evaluate().isNotEmpty,
     'Home again',
   );
-  await tester.pump(const Duration(milliseconds: 600));
+  await _still(tester);
 }
 
 /// Closes every tab, so the next test's launch brings none back. A Local tab
@@ -463,7 +475,7 @@ Future<void> _escape(WidgetTester tester) async {
   } else {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
   }
-  await tester.pump(const Duration(milliseconds: 600));
+  await _still(tester);
 }
 
 /// A GTK window offering files for a drag, as a file manager does, put
@@ -1746,7 +1758,7 @@ touch '${done.path}'
           timeout: const Duration(seconds: 30),
         );
         await tester.tap(_label('Close'));
-        await tester.pump(const Duration(milliseconds: 600));
+        await _still(tester);
       }
       await _closeTabs(tester);
     },
@@ -1868,7 +1880,7 @@ touch '${done.path}'
           () => find.text(item).evaluate().isNotEmpty,
           'the menu to offer $item',
         );
-        await tester.pump(const Duration(milliseconds: 600));
+        await _still(tester);
       }
 
       // #132: the same click as the OS sends it, Shift and all.
@@ -1985,7 +1997,7 @@ touch '${done.path}'
             _kind('SimpleDialogOption', 'TuiSheetOption').evaluate().isNotEmpty,
         'the tabs to group with',
       );
-      await tester.pump(const Duration(milliseconds: 600));
+      await _still(tester);
       await tester.tap(_kind('SimpleDialogOption', 'TuiSheetOption').first);
       await _until(
         tester,
@@ -2183,7 +2195,7 @@ touch '${done.path}'
             find.text('Switch from $first to e2e-other?').evaluate().isNotEmpty,
         'the dialog naming both branches',
       );
-      await tester.pump(const Duration(milliseconds: 600));
+      await _still(tester);
       await tester.tap(
         find.descendant(
           of: find.byType(TuiDialog),
@@ -2326,7 +2338,7 @@ touch '${done.path}'
           );
           // The drawer slides in: tapped while it does, the folder is still
           // off the window's edge and the tap lands nowhere.
-          await tester.pump(const Duration(milliseconds: 600));
+          await _still(tester);
           await tester.tap(folder);
           await _until(
             tester,
@@ -3334,7 +3346,7 @@ touch '${done.path}'
 
     // The picker closing still holds a barrier over the page, which takes
     // a tap on Back as its own.
-    await tester.pump(const Duration(milliseconds: 600));
+    await _still(tester);
     await _backHome(tester);
     final view = await _localShell(tester);
     expect(
