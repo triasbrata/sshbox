@@ -462,6 +462,75 @@ share_text() {
   [ "$got" = "$text" ] && [ "$records" -eq 1 ]
 }
 
+# A finished session picked in chat's sidebar is continued in the directory it
+# ran in (.maestro/chat_continue_cwd.yaml), and a tool the CLI asks to use is
+# said once to have been refused. The stand-in (tools/e2e_cwd_claude.py) logs
+# where each `claude -p` and `--bg` ran, which is read here: the continuation
+# ran in the picked session's folder with --resume and not in the chat's root,
+# the new chat's first message ran in the folder chosen for it with no
+# --resume, and the refusal notice is one node on screen after two requests.
+chat_continue_cwd() {
+  local status=0 home=/home/$SSH_USER calls=/home/$SSH_USER/.e2e-cwd-calls
+  local app=$home/e2e-cont/app-x other=$home/e2e-cont/other
+  local sid=e2e00010-0000-4000-8000-000000000010 first n
+  chat_stand_in
+  end_live_session
+  sudo -u "$SSH_USER" mkdir -p "$app" "$other"
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_cwd_claude.py "$home/.e2e-cwd-claude.py"
+  sudo -u "$SSH_USER" HOME="$home" APP="$app" SID="$sid" python3 - <<'PY'
+import json, os
+home, app, sid = os.environ['HOME'], os.environ['APP'], os.environ['SID']
+path = os.path.join(home, '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'id': 'e2e0cont', 'sessionId': sid, 'cwd': app, 'kind': 'background',
+             'name': 'E2E cont cwd', 'state': 'done', 'startedAt': 1790000000300})
+json.dump(rows, open(path, 'w'))
+d = os.path.join(home, '.claude', 'projects', app.replace('/', '-'))
+os.makedirs(d, exist_ok=True)
+with open(os.path.join(d, sid + '.jsonl'), 'w') as f:
+    for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'Earlier cont question'}},
+              {'type': 'assistant', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': 'Earlier cont answer'}]}}):
+        f.write(json.dumps(e) + '\n')
+PY
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  -p|--bg) exec python3 "$HOME/.e2e-cwd-claude.py" "$@" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$calls"
+  flow chat_continue_cwd -e STEP=plain || status=1
+  first=$(sudo head -n1 "$calls" 2>/dev/null)
+  echo "the continuation's start: $first"
+  case $first in
+    *"\"pwd\": \"$app\""*"--resume $sid"*) ;;
+    *) echo "::error::the picked session was not resumed in $app: $first"; status=1 ;;
+  esac
+  flow chat_continue_cwd -e STEP=tool || status=1
+  n=$(code_ui | grep -o '<node [^>]*Bash was refused[^>]*>' | wc -l | tr -d ' ')
+  echo "refusal notices on screen: $n"
+  [ "$n" = 1 ] || { echo "::error::$n refusal notices, not 1"; status=1; }
+  sudo rm -f "$calls"
+  flow chat_continue_cwd -e STEP=new -e "OTHER=$other" || status=1
+  first=$(sudo grep '"mode": "bg"' "$calls" 2>/dev/null | head -n1)
+  echo "the new chat's start: $first"
+  case $first in
+    *"\"pwd\": \"$other\""*) ;;
+    *) echo "::error::the new chat did not start in $other: $first"; status=1 ;;
+  esac
+  case $first in
+    *--resume*|*"$app"*) echo "::error::the new chat's start carried the picked session"; status=1 ;;
+  esac
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-continue-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$calls" "$home/e2e-cont" "$home/.e2e-cwd-claude.py" "$home/.claude/projects/-home-$SSH_USER-e2e-cont-app-x"
+  stand_in ''
+  return "$status"
+}
+
 # #251: a share into Jeansh while a chat tab is showing goes into that chat's
 # box, and nothing is sent. The stand-in keeps every `--bg` and `-p` it is run
 # with, so a message or session started by the share would show in its count;
@@ -1288,6 +1357,9 @@ share_text || echo "::warning::share_text failed -- report only, not gating"
 echo "::endgroup::"
 echo "::group::share_chat (report only)"
 share_chat || echo "::warning::share_chat failed -- report only, not gating"
+echo "::endgroup::"
+echo "::group::chat_continue_cwd (report only)"
+chat_continue_cwd || echo "::warning::chat_continue_cwd failed -- report only, not gating"
 echo "::endgroup::"
 
 chat_version || true
