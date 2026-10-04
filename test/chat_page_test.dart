@@ -7610,6 +7610,46 @@ void main() {
       );
     });
 
+    testWidgets('a session that finished while another was open has a dot on '
+        'its rail icon, which opening it clears', (tester) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      String listed({required bool xDone}) => jsonEncode([
+        {
+          ...row('dot00001', 'x one'),
+          'status': xDone ? 'idle' : 'busy',
+          'state': xDone ? 'done' : 'working',
+        },
+        row('dot00002', 'y one'),
+      ]);
+      final shell = _Shell()..listing = listed(xDone: false);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      // Seen working, then finished by the next look, while y is the one open.
+      await tester.tap(find.text('y one'));
+      await _settlePickUp(tester);
+      shell.listing = listed(xDone: true);
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('x one, Done, idle, not opened since'), findsOneWidget);
+      expect(find.byTooltip('y one, Done, idle'), findsOneWidget);
+      // Opened from its icon: the dot goes.
+      await tester.tap(find.byTooltip('x one, Done, idle, not opened since'));
+      await _settlePickUp(tester);
+      expect(find.byTooltip('x one, Done, idle, not opened since'), findsNothing);
+      expect(find.byTooltip('x one, Done, idle'), findsOneWidget);
+    });
+
     testWidgets('a narrow screen has no rail, only the drawer', (tester) async {
       await page(tester, width: 600);
       expect(find.byTooltip('Expand the sessions'), findsNothing);
