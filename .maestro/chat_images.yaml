@@ -194,20 +194,12 @@ env:
           timeout: 10000
       - inputText: "new one"
       - tapOn: "Send"
-      # The answer arrives under a tall picture bubble with the keyboard up,
-      # and a view not at the very end is not followed: it then sits below the
-      # screen with a Latest button over the box. Either shows it.
-      - extendedWaitUntil:
-          visible: "(?is).*(The picture is red. Echo: .*new one|latest).*"
-          timeout: 60000
-      - runFlow:
-          when:
-            visible: "(?i).*latest.*"
-          commands:
-            - tapOn: "(?i).*latest.*"
+      # After the user's own Send the view follows on its own: the answer is
+      # on screen without a tap, and no Latest button is offered over the box.
       - extendedWaitUntil:
           visible: "(?s).*The picture is red. Echo: .*new one.*"
-          timeout: 30000
+          timeout: 60000
+      - assertNotVisible: "(?i).*latest.*"
       - takeScreenshot: chat-images-new-chat
 
 # refuse: step 6, a file the + button's picker offers that Claude cannot read.
