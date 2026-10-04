@@ -1,0 +1,117 @@
+# A finished session picked in chat's sidebar is continued in its own
+# directory: `--resume` finds a transcript only from where it was written. The
+# runner's stand-in (tools/e2e_cwd_claude.py) writes where it ran to
+# ~/.e2e-cwd-calls, which tools/e2e_android.sh reads after each STEP.
+#
+#   step plain: pick "E2E cont cwd", send a message. It is answered, and no
+#               refusal notice shows, nothing having asked for a tool.
+#   step tool:  send "tool: ask", which has the stand-in ask twice to use Bash.
+#               The notice says it was refused. It stays on screen for the
+#               runner to count in the view tree.
+#   step new:   a new chat with another folder in the chip. Its first message
+#               starts `claude --bg` there.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'plain'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E cont cwd.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E cont cwd.*"
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 30000
+      - tapOn: "Ask Claude…"
+      - inputText: "hello cont"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*Echo: hello cont.*"
+          timeout: 60000
+      - assertNotVisible: "(?s).*was refused.*"
+      - takeScreenshot: chat-continue-plain
+
+- runFlow:
+    when:
+      true: ${STEP == 'tool'}
+    commands:
+      - tapOn: "Ask Claude…"
+      - inputText: "tool: ask"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*Bash was refused.*"
+          timeout: 60000
+      - extendedWaitUntil:
+          visible: "(?s).*Echo: tool: ask.*"
+          timeout: 30000
+      - takeScreenshot: chat-continue-tool
+
+- runFlow:
+    when:
+      true: ${STEP == 'new'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Start a new chat…"
+          timeout: 20000
+      - tapOn: "Folder.*"
+      - extendedWaitUntil:
+          visible: "Start the chat in"
+          timeout: 10000
+      - tapOn:
+          point: 50%, 24%
+      - repeat:
+          times: 60
+          commands:
+            - pressKey: Remote Dpad Right
+      - eraseText: 120
+      - eraseText: 120
+      - inputText: "${OTHER}"
+      - tapOn: "Use this folder"
+      - extendedWaitUntil:
+          visible: "Folder ${OTHER}"
+          timeout: 10000
+      - tapOn: "Start a new chat…"
+      - inputText: "hello other"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*hello other.*"
+          timeout: 30000
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - takeScreenshot: chat-continue-new
