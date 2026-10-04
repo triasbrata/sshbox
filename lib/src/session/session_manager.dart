@@ -598,6 +598,19 @@ class LiveSession extends ChangeNotifier {
     return tab;
   }
 
+  /// An HTML file on the host, shown in a web tab. Asked for again, it goes
+  /// back to the tab it already has. Never saved: see [_savedUrl].
+  WebTab openHtml(String path) {
+    final open = _webTabs.where((tab) => tab.htmlPath == path).firstOrNull;
+    if (open != null) return open;
+    final tab = WebTab._(Uri.parse('about:blank'))
+      ..htmlPath = path
+      .._title = path.split('/').last;
+    _webTabs.add(tab);
+    _notify();
+    return tab;
+  }
+
   void closeWeb(WebTab tab) {
     if (_webTabs.remove(tab)) _notify();
   }
@@ -608,7 +621,7 @@ class LiveSession extends ChangeNotifier {
     if (tab._url == url && tab._title == title) return;
     tab
       .._url = url
-      .._title = title;
+      .._title = title ?? (tab.htmlPath == null ? null : tab._title);
     _notify();
   }
 
@@ -705,10 +718,7 @@ class LiveSession extends ChangeNotifier {
             };
       final transport =
           _transport?.call(askedKey, banner) ??
-          IsolateTransport(
-            confirmHostKey: askedKey,
-            onAuthBanner: banner,
-          );
+          IsolateTransport(confirmHostKey: askedKey, onAuthBanner: banner);
       // The key this host's servers sign a push to the relay with, and the
       // host a tap opens, for a script on the host to read rather than anyone
       // copying them over by hand; never the FCM token. A host's first
@@ -1356,6 +1366,24 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     return taken;
   }
 
+  /// Shares that arrived while a chat tab was the one showing: they go into
+  /// that chat's box rather than to the terminal — see [queueUploads].
+  final List<Object> _pendingChatShares = [];
+
+  bool get hasPendingChatShares => _pendingChatShares.isNotEmpty;
+
+  void queueChatShares(Iterable<Object> shares) {
+    if (shares.isEmpty) return;
+    _pendingChatShares.addAll(shares);
+    _notify();
+  }
+
+  List<Object> takePendingChatShares() {
+    final taken = List<Object>.of(_pendingChatShares);
+    _pendingChatShares.clear();
+    return taken;
+  }
+
   /// Uploads into `/tmp` on the remote host and returns the path to type.
   Future<String> uploadToTmp({
     required String localPath,
@@ -1470,6 +1498,10 @@ class WebTab {
 
   /// Opened by the session's sign-in — see [LiveSession.openWeb].
   bool _signIn = false;
+
+  /// The file on the host this tab shows, when it was opened by
+  /// [LiveSession.openHtml] rather than from a link.
+  String? htmlPath;
 
   /// Where the page is now: the link it opened at, until it moves on.
   Uri get url => _url;
@@ -1778,6 +1810,14 @@ class SessionManager extends ChangeNotifier {
     if (session == null) return;
     appLog.add('tab: opened web tab on session $id');
     select(id, kind: TabKind.web, web: session.openWeb(url));
+  }
+
+  /// Opens an HTML file on the host in a web tab beside the session's shell.
+  void openHtml(int id, String path) {
+    final session = _sessions[id];
+    if (session == null) return;
+    appLog.add('tab: opened html tab on session $id');
+    select(id, kind: TabKind.web, web: session.openHtml(path));
   }
 
   /// Closing a web tab lands on the shell whose link opened it.

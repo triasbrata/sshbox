@@ -137,6 +137,11 @@ Future<void> _chatAnswered(WidgetTester tester) async {
   );
 }
 
+/// pumpAndSettle's first argument is the length of each step it pumps, not
+/// a limit: given 5 s it pumped two steps of 5 s whatever the screen did, 10 s
+/// at the start of every test. A step is a frame or so.
+const _settleStep = Duration(milliseconds: 100);
+
 /// Home, from a cold start, settled.
 ///
 /// A generous settle: this is a real app doing real work at launch — reading
@@ -156,7 +161,7 @@ Future<void> _launch(WidgetTester tester) async {
     'Home, or the first-run slides',
   );
   if (skip.evaluate().isNotEmpty) await tester.tap(skip.first);
-  await tester.pumpAndSettle(const Duration(seconds: 5));
+  await tester.pumpAndSettle(_settleStep);
 }
 
 /// Pumps until [done] says so, failing with [what] after [timeout]. A live
@@ -1459,7 +1464,7 @@ void main() {
     await _launch(tester);
 
     await tester.tap(find.byTooltip('Settings'));
-    await tester.pumpAndSettle(const Duration(seconds: 2));
+    await tester.pumpAndSettle(_settleStep);
 
     // Asserted before scrolling, so a Settings page that never opened fails
     // saying that rather than "no Updates section", which would send the next

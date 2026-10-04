@@ -1,0 +1,47 @@
+# An .html file on the host opens rendered in a web tab (#253): the file opens
+# in the editor from the drawer, and its ⋮ menu offers Open in browser tab.
+#
+# Positive: the page's own heading is on screen, in a web tab (it has a Reload
+# and no editor chrome). The runner puts the file in the login home, the root
+# of the host's file tree: <h1>Jeansh e2e heading</h1>.
+# Negative: html_tab_text.yaml, a .txt file's menu offers nothing of the kind.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Browse files"
+    timeout: 30000
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: "Filter by name"
+    timeout: 30000
+- tapOn: "Filter by name"
+- inputText: "jeansh-e2e-page"
+- tapOn: "(?s)\\W*jeansh-e2e-page.html"
+- extendedWaitUntil:
+    visible: "Save to host"
+    timeout: 20000
+- tapOn: "More"
+- tapOn: "(?s).*Open in browser tab.*"
+
+- extendedWaitUntil:
+    visible: "Jeansh e2e heading"
+    timeout: 20000
+- assertVisible: "Reload"
+# The editor is not what is on screen.
+- assertNotVisible: "Save to host"
+
+# The selected tab is the page; closing it lands on the shell.
+- tapOn: "(?s)Close .*"
+- tapOn: "Close ${HOST_LABEL}.*"
