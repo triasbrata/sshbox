@@ -1396,7 +1396,41 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         body: Row(
           children: [
             if (sidebar) ...[
-              SizedBox(width: 300, child: sessions),
+              SizedBox(
+                width: 300,
+                child: Column(
+                  children: [
+                    // Collapses it to the rail, from the same corner the
+                    // rail's own toggle sits in.
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: _RailButton(
+                        glyph: '«',
+                        label: 'Collapse the sessions',
+                        onTap: () => _toggleSessions(wide),
+                      ),
+                    ),
+                    Expanded(child: sessions),
+                  ],
+                ),
+              ),
+              const VerticalDivider(width: 1),
+            ] else if (wide) ...[
+              SizedBox(
+                width: 48,
+                child: ContentText(
+                  child: _SessionRail(
+                    chat: _chat,
+                    listing: _listing,
+                    connected: widget.session.isConnected,
+                    onToggle: () => _toggleSessions(wide),
+                    onNewChat: _newChat,
+                    onPick: _pick,
+                    unseen: (agent) =>
+                        _unseen.contains(_placeOf(agent.sessionId)),
+                  ),
+                ),
+              ),
               const VerticalDivider(width: 1),
             ],
             Expanded(
@@ -4024,6 +4058,180 @@ class _FolderPickerState extends State<_FolderPicker> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// TODO(termul): an icon rail of sessions; TuiChatSessionList has only the
+// expanded list, so the rail is drawn here from termul's own text, tooltip
+// and spinner.
+/// One small button of the sessions rail: a glyph, its word on hover or a
+/// long press, and the same word for a screen reader.
+class _RailButton extends StatelessWidget {
+  const _RailButton({
+    required this.glyph,
+    required this.label,
+    required this.onTap,
+    this.selected = false,
+    this.child,
+  });
+
+  final String glyph;
+  final String label;
+  final VoidCallback? onTap;
+  final bool selected;
+
+  /// Drawn instead of [glyph], as a spinner is.
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    return TuiTooltip(
+      message: label,
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        button: true,
+        label: label,
+        excludeSemantics: true,
+        child: InkWell(
+          onTap: onTap == null
+              ? null
+              : () {
+                  logTap(context, 'Sessions rail', 'button');
+                  onTap!();
+                },
+          hoverColor: p.selection,
+          child: Container(
+            width: 48,
+            height: 36,
+            alignment: Alignment.center,
+            color: selected ? p.selection : null,
+            child:
+                child ??
+                TuiText(
+                  glyph,
+                  size: 14,
+                  tone: selected ? TuiTextTone.accent : TuiTextTone.normal,
+                ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The sessions as a rail of icons: the toggle, a new chat, then the pinned
+/// sessions, the running ones and the finished ones, each group set off by a
+/// divider. Each icon's name and state show on hover or a long press.
+class _SessionRail extends StatelessWidget {
+  const _SessionRail({
+    required this.chat,
+    required this.listing,
+    required this.connected,
+    required this.onToggle,
+    required this.onNewChat,
+    required this.onPick,
+    required this.unseen,
+  });
+
+  final ClaudeChat chat;
+  final ValueListenable<AsyncSnapshot<List<ClaudeAgent>>> listing;
+  final bool connected;
+  final VoidCallback onToggle;
+  final VoidCallback onNewChat;
+  final ValueChanged<ClaudeAgent> onPick;
+  final bool Function(ClaudeAgent agent) unseen;
+
+  Widget _icon(BuildContext context, ClaudeAgent agent) {
+    final p = TermulThemeData.of(context).palette;
+    final status = _SessionList.statusOf(agent);
+    final label =
+        '${agent.name}, ${_SessionList._statusLabel(agent)}'
+        '${unseen(agent) ? ', not opened since' : ''}';
+    final glyph = switch (status) {
+      TuiChatSessionStatus.waiting => '!',
+      TuiChatSessionStatus.done => '✓',
+      TuiChatSessionStatus.stopped => '■',
+      TuiChatSessionStatus.working => '',
+    };
+    return _RailButton(
+      glyph: glyph,
+      label: label,
+      selected: agent.sessionId == chat.pickedFrom,
+      onTap: () => onPick(agent),
+      child: status == TuiChatSessionStatus.working
+          ? const TuiSpinner(size: 14)
+          : Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                TuiText(
+                  agent.pinned ? '★' : glyph,
+                  size: 14,
+                  tone: status == TuiChatSessionStatus.waiting
+                      ? TuiTextTone.yellow
+                      : agent.pinned
+                      ? TuiTextTone.accent
+                      : TuiTextTone.dim,
+                ),
+                if (unseen(agent))
+                  Positioned(
+                    right: 10,
+                    top: 0,
+                    child: Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: p.accent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    return ValueListenableBuilder<AsyncSnapshot<List<ClaudeAgent>>>(
+      valueListenable: listing,
+      builder: (context, snapshot, _) {
+        final rows = snapshot.data ?? const <ClaudeAgent>[];
+        final pinned = [for (final a in rows) if (a.pinned) a];
+        final running = [for (final a in rows) if (!a.pinned && a.live) a];
+        final finished = [for (final a in rows) if (!a.pinned && !a.live) a];
+        final groups = [
+          for (final g in [pinned, running, finished])
+            if (g.isNotEmpty) g,
+        ];
+        return ColoredBox(
+          color: p.sidebar,
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              _RailButton(
+                glyph: '»',
+                label: 'Expand the sessions',
+                onTap: onToggle,
+              ),
+              _RailButton(
+                glyph: '+',
+                label: 'New chat',
+                onTap: connected ? onNewChat : null,
+              ),
+              const SizedBox(height: 12),
+              for (final (i, group) in groups.indexed) ...[
+                if (i > 0) Divider(height: 1, color: p.border),
+                for (final agent in group) _icon(context, agent),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 }
