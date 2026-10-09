@@ -37,11 +37,7 @@ const maxClipboardBytes = 1 << 20;
 /// it wrote it, so the wrapped one is taken out and dropped: one copy, one
 /// toast.
 class ClipboardTerminal extends Terminal {
-  ClipboardTerminal({
-    super.maxLines,
-    super.inputHandler,
-    super.onPrivateOSC,
-  })
+  ClipboardTerminal({super.maxLines, super.inputHandler, super.onPrivateOSC})
     : super(onClipboardQuery: _refuse);
 
   static String? _refuse(String _) => null;
@@ -51,8 +47,18 @@ class ClipboardTerminal extends Terminal {
   @override
   void paste(String text) {
     logPaste('terminal', 'text', text.length);
-    super.paste(text);
+    pasting = true;
+    try {
+      super.paste(text);
+    } finally {
+      pasting = false;
+    }
   }
+
+  /// True while [paste] is handing its text to `onOutput`, so a tmux tab can
+  /// tell a paste from typing and let tmux bracket it from the pane's real
+  /// mode rather than this terminal's own flag.
+  bool pasting = false;
 
   static const _start = '\x1b]52;';
 

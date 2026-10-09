@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/pane_record.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
@@ -90,7 +91,7 @@ TmuxSession _session(
 }) => TmuxSession(
   name: name,
   channel: channel,
-  newTerminal: Terminal.new,
+  newTerminal: ClipboardTerminal.new,
   transform: (data) => data,
   onChanged: () {},
   onEnded: () {},
@@ -271,6 +272,64 @@ void main() {
       await process.exitCode.timeout(const Duration(seconds: 5));
       tmux.dispose();
     }, skip: hasTmux ? false : 'tmux is not installed here');
+  }
+
+  // A paste into a pane that asked for bracketed paste (2004) is bracketed
+  // after a reattach too, and a paste into one that did not never is: the
+  // terminal's own flag is rebuilt from a capture, which holds no modes, and
+  // an unbracketed multi-line paste into Claude Code submits its first line.
+  for (final asked in [true, false]) {
+    test(
+      'a paste into a pane that ${asked ? 'asked for' : 'never asked for'} '
+      'bracketed paste is ${asked ? '' : 'not '}bracketed after a reattach',
+      () async {
+        const name = 'sshbox-paste';
+        final log = File('${dir.path}/paste.log');
+        var (process, channel) = await _start(name, dir);
+        var tmux = _session(name, channel);
+        expect(await tmux.attached, isTrue);
+        await _until(() => tmux.panes.length == 1);
+        final script = await _script(
+          '${dir.path}/paste.sh',
+          "printf '${asked ? r'\033[?2004h' : ''}\\033[?1049h'\n"
+              'stty raw -echo\ndd bs=1 of=${log.path} 2>/dev/null',
+        );
+        tmux.send('$script\r');
+        await _until(() => tmux.panes.single.terminal.isUsingAltBuffer);
+        tmux.dispose();
+        await process.exitCode;
+
+        (process, channel) = await _start(name, dir);
+        tmux = _session(name, channel);
+        expect(await tmux.attached, isTrue);
+        await _until(
+          () => tmux.panes.length == 1 && _text(tmux.panes.single).isNotEmpty,
+        );
+        final terminal = tmux.panes.single.terminal;
+        await _until(() => terminal.isUsingAltBuffer);
+        // Syntax of tmux's own arguments, and non-ASCII, which must arrive as
+        // they were.
+        const text = 'first "line" \$HOME \\n it\'s;\nsecond café 🚀 #{x}';
+        terminal.paste(text);
+        await _until(
+          () => log.existsSync() && log.readAsStringSync().contains('#{x}'),
+          () => 'logged ${log.existsSync() ? log.readAsStringSync() : '-'}',
+        );
+        final got = log.readAsStringSync();
+        expect(got.contains('\x1b[200~'), asked, reason: '$got');
+        expect(got.contains('\x1b[201~'), asked, reason: '$got');
+        // The terminal, rebuilt, does not know the pane asked, so its text
+        // already has its line breaks as CR.
+        expect(
+          got.replaceAll(RegExp(r'\x1b\[20[01]~'), ''),
+          text.replaceAll('\n', '\r'),
+        );
+        await tmux.kill();
+        await process.exitCode.timeout(const Duration(seconds: 5));
+        tmux.dispose();
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
   }
 
   test("the device's variables reach new panes, whoever started the server", () async {

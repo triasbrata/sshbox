@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:xterm2/xterm.dart';
 
+import 'clipboard_terminal.dart';
 import 'pane_record.dart';
 import 'terminal_session.dart';
 
@@ -793,6 +794,53 @@ class TmuxSession {
     }
   }
 
+  static final _pasteMarks = RegExp(r'\x1b\[20[01]~');
+
+  /// A paste, [data] as the terminal produced it, handed to tmux as a buffer
+  /// and pasted with `paste-buffer -p`, which brackets it if the pane really
+  /// asked for bracketed paste. This terminal's own flag cannot say: it is
+  /// rebuilt from a capture, which holds no modes, and tmux gives none of
+  /// this one back (3.2 to 3.4), so a paste after a reattach went in
+  /// unbracketed and a multi-line one into Claude Code submitted its first
+  /// line. -r keeps a line feed as it is; an unbracketed one is already CR.
+  ///
+  /// The text goes in double-quoted arguments of one line each, every
+  /// character that is syntax there, or breaks a line, escaped.
+  void _pasteTo(TmuxPane pane, String data) {
+    final text = data.replaceAll(_pasteMarks, '');
+    const buffer = 'jeansh-paste';
+    final quoted = StringBuffer();
+    var first = true;
+    void flush() {
+      if (quoted.isEmpty) return;
+      _client
+          .command('set-buffer -b $buffer ${first ? '' : '-a '}-- "$quoted"')
+          .ignore();
+      first = false;
+      quoted.clear();
+    }
+
+    for (final rune in text.runes) {
+      quoted.write(switch (rune) {
+        0x5c => r'\\',
+        0x22 => r'\"',
+        0x24 => r'\$',
+        0x0a => r'\n',
+        0x0d => r'\r',
+        0x09 => r'\t',
+        < 0x20 || 0x7f => '',
+        > 0x7e when rune <= 0xffff =>
+          '\\u${rune.toRadixString(16).padLeft(4, '0')}',
+        > 0x7e => '\\U${rune.toRadixString(16).padLeft(8, '0')}',
+        _ => String.fromCharCode(rune),
+      });
+      if (quoted.length >= _sendChunk * 8) flush();
+    }
+    flush();
+    if (first) return;
+    _client.command('paste-buffer -p -r -d -b $buffer -t %${pane.id}').ignore();
+  }
+
   /// Splits the focused pane in two, the new one starting in the folder the
   /// focused one is in. tmux focuses the new pane itself. Throws
   /// [TmuxException] when tmux will not, as with no room for another pane.
@@ -1067,7 +1115,13 @@ class TmuxSession {
     // already said, being the program's real terminal; sent again, they
     // would arrive as typing.
     pane.terminal.onOutput = (data) {
-      if (!pane._feeding) _sendTo(pane, _transform(data));
+      if (pane._feeding) return;
+      final terminal = pane.terminal;
+      if (terminal is ClipboardTerminal && terminal.pasting) {
+        _pasteTo(pane, data);
+      } else {
+        _sendTo(pane, _transform(data));
+      }
     };
     added.add(pane);
     return pane;
