@@ -207,7 +207,11 @@ void main() {
 
   // A pane running a stand-in for a full-screen program that asked for the
   // mouse (or, with [mouse] false, did not) and logs what it is typed.
-  Future<(Process, File)> standIn(String name, {required bool mouse}) async {
+  Future<(Process, File)> standIn(
+    String name, {
+    required bool mouse,
+    String encoding = r'\033[?1006h',
+  }) async {
     final log = File('${dir.path}/input.log');
     final (process, channel) = await _start(name, dir);
     final tmux = _session(name, channel);
@@ -215,7 +219,7 @@ void main() {
     await _until(() => tmux.panes.length == 1);
     final script = await _script(
       '${dir.path}/tui.sh',
-      "printf '${mouse ? r'\033[?1000h\033[?1002h\033[?1006h' : ''}"
+      "printf '${mouse ? '\\033[?1000h\\033[?1002h$encoding' : ''}"
           r"\033[?1049h\033[Hstand-in up'"
           '\nstty raw -echo\ncat >> ${log.path}',
     );
@@ -274,6 +278,26 @@ void main() {
     }, skip: hasTmux ? false : 'tmux is not installed here');
   }
 
+  // The UTF-8 mouse encoding (1005), when the program never asked for SGR.
+  test('a pane with mouse tracking and the UTF-8 encoding keeps both across a '
+      'reattach', () async {
+    const name = 'sshbox-utf8';
+    await standIn(name, mouse: true, encoding: r'\033[?1005h');
+    final (process, channel) = await _start(name, dir);
+    final tmux = _session(name, channel);
+    expect(await tmux.attached, isTrue);
+    await _until(
+      () => tmux.panes.length == 1 && _text(tmux.panes.single).isNotEmpty,
+    );
+    final terminal = tmux.panes.single.terminal;
+    await _until(() => terminal.isUsingAltBuffer);
+    expect(terminal.mouseMode, MouseMode.upDownScrollDrag);
+    expect(terminal.mouseReportMode, MouseReportMode.utf);
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
+
   // A paste into a pane that asked for bracketed paste (2004) is bracketed
   // after a reattach too, and a paste into one that did not never is: the
   // terminal's own flag is rebuilt from a capture, which holds no modes, and
@@ -316,8 +340,8 @@ void main() {
           () => 'logged ${log.existsSync() ? log.readAsStringSync() : '-'}',
         );
         final got = log.readAsStringSync();
-        expect(got.contains('\x1b[200~'), asked, reason: '$got');
-        expect(got.contains('\x1b[201~'), asked, reason: '$got');
+        expect(got.contains('\x1b[200~'), asked, reason: got);
+        expect(got.contains('\x1b[201~'), asked, reason: got);
         // The terminal, rebuilt, does not know the pane asked, so its text
         // already has its line breaks as CR.
         expect(
