@@ -4826,7 +4826,9 @@ touch '${done.path}'
           final shown = find.byType(TerminalView).evaluate();
           if (shown.isEmpty) return false;
           final now = shown.first.widget as TerminalView;
-          return !identical(now.terminal, before) && _text(now).isNotEmpty;
+          // The alternate screen of a program that drew nothing holds no text.
+          return !identical(now.terminal, before) &&
+              (mouse ? now.terminal.isUsingAltBuffer : _text(now).isNotEmpty);
         }, 'the tab to be rebuilt from the capture');
         await tester.pump(const Duration(seconds: 1));
         view =
