@@ -1,0 +1,63 @@
+# #261, second half: the app was killed with the tab live (tmux_mouse_before),
+# so the tab comes back unconnected and a tap on the host's card reattaches it,
+# rebuilding the terminal from tmux's capture. The program is still running in
+# its pane; a swipe must reach it as it did before the kill.
+#
+# What reached the program is read by the runner from the stand-in's log
+# (tools/e2e_android.sh, tmux_mouse_reattach). -e MODE comes from there.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+
+# The restored tab is on the strip; one tap on the card reconnects it.
+- assertVisible: "(?s)Close .*"
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+
+- swipe:
+    start: 50%, 70%
+    end: 50%, 35%
+    duration: 400
+- swipe:
+    start: 50%, 35%
+    end: 50%, 70%
+    duration: 400
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+- takeScreenshot: tmux-mouse-after-${MODE}
+
+# Closing the tab ends its tmux session, and the program with it.
+- tapOn: "Close ${HOST_LABEL}.*"
+
+# The host as it was: tmux off.
+- tapOn: "Show menu"
+- tapOn: "Edit"
+- extendedWaitUntil:
+    visible: "Edit host"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: "Use tmux"
+    direction: DOWN
+    centerElement: true
+- tapOn: "Use tmux"
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000

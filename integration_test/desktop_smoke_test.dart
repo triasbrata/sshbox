@@ -4702,6 +4702,146 @@ touch '${done.path}'
     );
   }
 
+  // #261: a tmux tab rebuilds its terminal from a capture when it attaches
+  // again, and a capture holds text, not modes: a program that had turned the
+  // mouse on stopped getting the wheel, which scrolled Jeansh's own scrollback
+  // instead, until it said so again. Real X wheel events, before and after the
+  // tab's tmux client is cut and the tab reconnected. 2x2: a program that
+  // reads the mouse is sent the wheel both times (positive) and its
+  // scrollback is not touched; a program that does not is sent nothing and
+  // the scrollback moves (negative). Mutation: skip the mode replay in
+  // TmuxSession._fill, which fails the first case after the reconnect.
+  for (final mouse in [true, false]) {
+    _test(
+      'a tmux tab ${mouse ? 'keeps' : 'invents no'} mouse tracking across a '
+      'reconnect: the wheel ${mouse ? 'reaches the program' : 'scrolls the '
+                'scrollback'}',
+      skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+      (tester) async {
+        await _launch(tester);
+        final dir = _scratch();
+        final got = File('${dir.path}/wheel');
+        var view = await _localShell(tester, tmux: true);
+        _run(
+          view,
+          mouse
+              ? r"printf '\033[?1049h\033[?1000h\033[?1002h\033[?1006h'; "
+                    'stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null'
+              : 'seq 1 400; stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () =>
+              got.existsSync() &&
+              (!mouse ||
+                  (view.terminal.isUsingAltBuffer &&
+                      view.terminal.mouseMode != MouseMode.none)),
+          'the program to start',
+        );
+        if (!mouse) {
+          await _until(
+            tester,
+            () => _text(view).any((line) => line.trim() == '400'),
+            'seq to print 400 lines',
+          );
+        }
+
+        // A wheel up over the middle of the terminal, as a hand makes it.
+        Future<void> wheel() async {
+          final box = tester.getRect(find.byType(TerminalView).first);
+          final window = await _windowRect();
+          final ratio = tester.view.devicePixelRatio;
+          final frame = (window.width - tester.view.physicalSize.width) / 2;
+          final x = (window.left + frame + box.center.dx * ratio).round();
+          final y = (window.top + frame + box.center.dy * ratio).round();
+          await _xdo(['windowfocus', '--sync', await _window()]);
+          await _realPointer(() async {
+            await _xdo([
+              'mousemove', '$x', '$y', 'sleep', '0.2', //
+              'click', '--repeat', '4', '--delay', '80', '4',
+            ]);
+            await tester.pump(const Duration(milliseconds: 400));
+          });
+        }
+
+        ScrollableState scroll() => tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(TerminalView).first,
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        final wheelEvent = RegExp(r'\x1b\[<6[45];\d+;\d+M');
+        // What reached the program, and where the scrollback is, after one.
+        Future<void> check(String when) async {
+          final heard = got.readAsStringSync().length;
+          final from = scroll().position.pixels;
+          await wheel();
+          if (mouse) {
+            await _until(
+              tester,
+              () => got.readAsStringSync().length > heard,
+              'a wheel event to reach the program $when',
+            );
+            expect(wheelEvent.hasMatch(got.readAsStringSync()), isTrue);
+            expect(scroll().position.pixels, from, reason: 'scrollback $when');
+          } else {
+            expect(
+              got.readAsStringSync().length,
+              heard,
+              reason: 'the wheel reached a program that never asked $when',
+            );
+            expect(
+              scroll().position.pixels,
+              isNot(from),
+              reason: 'the scrollback did not move $when',
+            );
+          }
+        }
+
+        await check('before the reconnect');
+
+        // The tab's tmux client dies, as a dropped connection takes it; the
+        // session and its program stay. The tab goes to Reconnect.
+        final clients = await Process.run('tmux', [
+          'list-clients',
+          '-F',
+          '#{client_pid}',
+        ]);
+        for (final pid in '${clients.stdout}'.trim().split('\n')) {
+          Process.killPid(int.parse(pid));
+        }
+        final reconnect = find.byWidgetPredicate(
+          (w) => w is Tooltip && w.message == 'Reconnect',
+        );
+        await _until(
+          tester,
+          () => reconnect.evaluate().isNotEmpty,
+          'the tab to offer Reconnect',
+        );
+        await tester.tap(reconnect.first);
+        await _until(tester, () {
+          final shown = find.byType(TerminalView).evaluate();
+          return shown.isNotEmpty &&
+              _text(shown.first.widget as TerminalView).isNotEmpty;
+        }, 'the tab to be rebuilt from the capture');
+        view =
+            find.byType(TerminalView).evaluate().first.widget as TerminalView;
+        if (mouse) {
+          await _until(
+            tester,
+            () => view.terminal.isUsingAltBuffer,
+            'the rebuilt terminal on the alternate screen',
+          );
+        }
+        await check('after the reconnect');
+
+        await _closeTabs(tester);
+      },
+    );
+  }
+
   // #117: on Linux and Windows the runner draws no title bar, and the app
   // draws its buttons and moves the window from the tab strip's empty space.
   // Pressed with the real pointer, as each goes a way no widget test reaches:
