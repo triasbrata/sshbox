@@ -22,6 +22,9 @@ struct _MyApplication {
   // screen: what comes back at the next start (see restore_geometry).
   gint x, y, width, height;
   guint save_source;
+  // The timer that reads the geometry above once the window has held still
+  // (see configure_cb).
+  guint commit_source;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -137,22 +140,56 @@ static void schedule_save(MyApplication* self) {
   self->save_source = g_timeout_add(500, save_geometry, self);
 }
 
+// The window manager moves and resizes a window in steps when it maximizes
+// it, and the maximized state is told after the first of them: the place of
+// the window seen then is a step on the way, and kept, it came back at the
+// next start as the window's normal place (the one a window manager gives
+// back on un-maximize), wrong. And GTK takes a configure event after this
+// handler has seen it, so the position and size it gives while one is being
+// handled are the event before's. So a configure event only starts a timer,
+// and the place is read when it fires, once nothing has changed for a moment
+// and the window is neither maximized nor full screen; a change of state
+// cancels the timer (see window_state_cb).
+static gboolean commit_geometry(gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  self->commit_source = 0;
+  GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(self->window));
+  if (gdk_window == nullptr) return G_SOURCE_REMOVE;
+  GdkWindowState state = gdk_window_get_state(gdk_window);
+  if (!(state & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN |
+                 GDK_WINDOW_STATE_ICONIFIED))) {
+    gtk_window_get_position(self->window, &self->x, &self->y);
+    gtk_window_get_size(self->window, &self->width, &self->height);
+    schedule_save(self);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+static void drop_pending_geometry(MyApplication* self) {
+  if (self->commit_source != 0) g_source_remove(self->commit_source);
+  self->commit_source = 0;
+}
+
 static gboolean configure_cb(GtkWidget* widget, GdkEventConfigure* event,
                              gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   GdkWindowState state = gdk_window_get_state(gtk_widget_get_window(widget));
   if (!(state & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN |
                  GDK_WINDOW_STATE_ICONIFIED))) {
-    gtk_window_get_position(self->window, &self->x, &self->y);
-    gtk_window_get_size(self->window, &self->width, &self->height);
+    drop_pending_geometry(self);
+    self->commit_source = g_timeout_add(150, commit_geometry, self);
   }
-  schedule_save(self);
   return FALSE;
 }
 
 static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
                           gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
+  // A change made in the last moments is still pending: it counts.
+  if (self->commit_source != 0) {
+    g_source_remove(self->commit_source);
+    commit_geometry(self);
+  }
   if (self->save_source != 0) {
     g_source_remove(self->save_source);
     save_geometry(self);
@@ -236,6 +273,8 @@ static gboolean window_state_cb(GtkWidget* widget, GdkEventWindowState* event,
   MyApplication* self = MY_APPLICATION(user_data);
   if (event->changed_mask &
       (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN)) {
+    // What the window manager did on the way to this state is not a place.
+    drop_pending_geometry(self);
     schedule_save(self);
   }
   if ((event->changed_mask & GDK_WINDOW_STATE_MAXIMIZED) &&
