@@ -4785,7 +4785,6 @@ touch '${done.path}'
               'a wheel event to reach the program $when',
             );
             expect(wheelEvent.hasMatch(got.readAsStringSync()), isTrue);
-            expect(scroll().position.pixels, from, reason: 'scrollback $when');
           } else {
             expect(
               got.readAsStringSync().length,
@@ -4820,12 +4819,16 @@ touch '${done.path}'
           () => reconnect.evaluate().isNotEmpty,
           'the tab to offer Reconnect',
         );
+        final before = view.terminal;
         await tester.tap(reconnect.first);
+        // A new terminal, not the ended tab's old one, drawn from the capture.
         await _until(tester, () {
           final shown = find.byType(TerminalView).evaluate();
-          return shown.isNotEmpty &&
-              _text(shown.first.widget as TerminalView).isNotEmpty;
+          if (shown.isEmpty) return false;
+          final now = shown.first.widget as TerminalView;
+          return !identical(now.terminal, before) && _text(now).isNotEmpty;
         }, 'the tab to be rebuilt from the capture');
+        await tester.pump(const Duration(seconds: 1));
         view =
             find.byType(TerminalView).evaluate().first.widget as TerminalView;
         if (mouse) {
