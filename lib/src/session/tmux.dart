@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:xterm2/xterm.dart';
 
+import 'clipboard_terminal.dart';
 import 'pane_record.dart';
 import 'terminal_session.dart';
 
@@ -793,6 +794,53 @@ class TmuxSession {
     }
   }
 
+  static final _pasteMarks = RegExp(r'\x1b\[20[01]~');
+
+  /// A paste, [data] as the terminal produced it, handed to tmux as a buffer
+  /// and pasted with `paste-buffer -p`, which brackets it if the pane really
+  /// asked for bracketed paste. This terminal's own flag cannot say: it is
+  /// rebuilt from a capture, which holds no modes, and tmux gives none of
+  /// this one back (3.2 to 3.4), so a paste after a reattach went in
+  /// unbracketed and a multi-line one into Claude Code submitted its first
+  /// line. -r keeps a line feed as it is; an unbracketed one is already CR.
+  ///
+  /// The text goes in double-quoted arguments of one line each, every
+  /// character that is syntax there, or breaks a line, escaped.
+  void _pasteTo(TmuxPane pane, String data) {
+    final text = data.replaceAll(_pasteMarks, '');
+    const buffer = 'jeansh-paste';
+    final quoted = StringBuffer();
+    var first = true;
+    void flush() {
+      if (quoted.isEmpty) return;
+      _client
+          .command('set-buffer -b $buffer ${first ? '' : '-a '}-- "$quoted"')
+          .ignore();
+      first = false;
+      quoted.clear();
+    }
+
+    for (final rune in text.runes) {
+      quoted.write(switch (rune) {
+        0x5c => r'\\',
+        0x22 => r'\"',
+        0x24 => r'\$',
+        0x0a => r'\n',
+        0x0d => r'\r',
+        0x09 => r'\t',
+        < 0x20 || 0x7f => '',
+        > 0x7e when rune <= 0xffff =>
+          '\\u${rune.toRadixString(16).padLeft(4, '0')}',
+        > 0x7e => '\\U${rune.toRadixString(16).padLeft(8, '0')}',
+        _ => String.fromCharCode(rune),
+      });
+      if (quoted.length >= _sendChunk * 8) flush();
+    }
+    flush();
+    if (first) return;
+    _client.command('paste-buffer -p -r -d -b $buffer -t %${pane.id}').ignore();
+  }
+
   /// Splits the focused pane in two, the new one starting in the folder the
   /// focused one is in. tmux focuses the new pane itself. Throws
   /// [TmuxException] when tmux will not, as with no room for another pane.
@@ -1067,10 +1115,41 @@ class TmuxSession {
     // already said, being the program's real terminal; sent again, they
     // would arrive as typing.
     pane.terminal.onOutput = (data) {
-      if (!pane._feeding) _sendTo(pane, _transform(data));
+      if (pane._feeding) return;
+      final terminal = pane.terminal;
+      if (terminal is ClipboardTerminal && terminal.pasting) {
+        _pasteTo(pane, data);
+      } else {
+        _sendTo(pane, _transform(data));
+      }
     };
     added.add(pane);
     return pane;
+  }
+
+  /// The DECSETs for the mouse modes tmux holds for a pane: a capture has
+  /// text, not modes, and a program that turned mouse tracking on before we
+  /// saw the pane will not say so again until something makes it (Ctrl+Z and
+  /// fg does), so without these a drag or the wheel scrolls our own
+  /// scrollback, or becomes arrow keys, instead of reaching the program.
+  /// [f] is standard, button, all, sgr, utf8; the widest tracking mode wins,
+  /// as in tmux. Bracketed paste and focus reporting are not pane flags in
+  /// tmux 3.2, so they cannot be read back.
+  static String _mouseModes(List<String> f) {
+    final tracking = f[2] == '1'
+        ? '1003'
+        : f[1] == '1'
+        ? '1002'
+        : f[0] == '1'
+        ? '1000'
+        : null;
+    if (tracking == null) return '';
+    final encoding = f[3] == '1'
+        ? '\x1b[?1006h'
+        : f[4] == '1'
+        ? '\x1b[?1005h'
+        : '';
+    return '\x1b[?${tracking}h$encoding';
   }
 
   /// Draws what the pane already holds, for a pane that existed before we
@@ -1084,7 +1163,8 @@ class TmuxSession {
   /// before whoever awaits the answer hears it — which is how a command typed
   /// just after attaching lost its output. The cursor and the modes a
   /// program would have set on its way in are put back too — vim is on the
-  /// alternate screen, and wants its arrow keys in application form.
+  /// alternate screen, and wants its arrow keys in application form, and a
+  /// TUI wants the mouse.
   Future<void> _fill(TmuxPane pane) async {
     final target = '-t %${pane.id}';
     final held = pane._held = [];
@@ -1094,7 +1174,9 @@ class TmuxSession {
       final replies = [
         _client.command(
           'display -p $target "#{cursor_x}\t#{cursor_y}\t#{alternate_on}\t'
-          '#{keypad_cursor_flag}\t#{cursor_flag}"',
+          '#{keypad_cursor_flag}\t#{cursor_flag}\t#{mouse_standard_flag}\t'
+          '#{mouse_button_flag}\t#{mouse_all_flag}\t#{mouse_sgr_flag}\t'
+          '#{mouse_utf8_flag}"',
         ),
         _client.command('capture-pane -p -e -J $target -S -$_history'),
       ];
@@ -1103,6 +1185,9 @@ class TmuxSession {
       if (_panes[pane.id] != pane) return;
       final flags = (state.firstOrNull ?? '').split('\t');
       if (flags.length < 5) return;
+      while (flags.length < 10) {
+        flags.add('');
+      }
       final x = int.tryParse(flags[0]) ?? 0;
       final y = int.tryParse(flags[1]) ?? 0;
       pane._write(
@@ -1111,7 +1196,8 @@ class TmuxSession {
         '${lines.join('\r\n')}'
         '\x1b[${y + 1};${x + 1}H'
         '${flags[3] == '1' ? '\x1b[?1h' : ''}'
-        '${flags[4] == '0' ? '\x1b[?25l' : ''}',
+        '${flags[4] == '0' ? '\x1b[?25l' : ''}'
+        '${_mouseModes(flags.sublist(5))}',
       );
       drawnUpTo = captured;
     } on TmuxException {

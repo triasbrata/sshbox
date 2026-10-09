@@ -1,0 +1,66 @@
+# #261, first half: a tmux tab's program that reads the mouse gets a swipe as
+# mouse events. The second half (tmux_mouse_after) does the same after the app
+# is killed and relaunched, which rebuilds the tab from a capture.
+#
+# Terminal text is painted, not readable here, so the program is a stand-in
+# (tools/e2e_mouse_tui.py) that logs what it is typed to a file; tools/
+# e2e_android.sh's tmux_mouse_reattach block reads that file between the flows.
+# Passed in as -e MODE=mouse or -e MODE=plain, with no default here: a flow's
+# own env block would beat the -e value.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+
+# The host runs its tabs in tmux for this flow; the block turns it off again.
+- tapOn: "Show menu"
+- tapOn: "Edit"
+- extendedWaitUntil:
+    visible: "Edit host"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: "Use tmux"
+    direction: DOWN
+    centerElement: true
+- tapOn: "Use tmux"
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn:
+    point: 50%, 40%
+- inputText: "python3 ~/.e2e-mouse-tui.py ${MODE} ~/.e2e-mouse.log"
+- pressKey: Enter
+# Time for the program to start and for tmux to have its modes.
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+
+- swipe:
+    start: 50%, 70%
+    end: 50%, 35%
+    duration: 400
+- swipe:
+    start: 50%, 35%
+    end: 50%, 70%
+    duration: 400
+- tapOn:
+    text: "never-shown-pause"
+    optional: true
+- takeScreenshot: tmux-mouse-before-${MODE}

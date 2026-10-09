@@ -1304,6 +1304,49 @@ jeansh_open() {
   return "$status"
 }
 
+# #261: a tmux tab keeps its program's mouse modes across a reattach. The host
+# runs its tabs in tmux for this block (the flows switch it on and off); a
+# stand-in program (tools/e2e_mouse_tui.py) logs what it is typed, which is
+# read here, since terminal text is not readable from a flow. A swipe is a
+# mouse wheel to a program that asked for the mouse, before and after the app
+# is killed and the tab rebuilt from tmux's capture; and nothing to one that did
+# not ask (the scrollback it moves is the live tmux test's to prove).
+tmux_mouse_reattach() {
+  local status=0 home=/home/$SSH_USER mode
+  local log=$home/.e2e-mouse.log
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_mouse_tui.py "$home/.e2e-mouse-tui.py"
+  for mode in mouse plain; do
+    sudo rm -f "$log"
+    flow tmux_mouse_before -e "MODE=$mode" || status=1
+    echo "tmux_mouse_reattach $mode, before the kill: $(sudo cat "$log" 2>/dev/null | head -c 300 | tr '\n' ' ')"
+    tmux_mouse_expect "$mode" "before the kill" || status=1
+    sudo sh -c ": > '$log'"
+    flow tmux_mouse_after -e "MODE=$mode" || status=1
+    echo "tmux_mouse_reattach $mode, after the relaunch: $(sudo cat "$log" 2>/dev/null | head -c 300 | tr '\n' ' ')"
+    tmux_mouse_expect "$mode" "after the relaunch" || status=1
+    # Whatever tab the flow left, and what it ran: this user's sshbox- sessions.
+    sudo -u "$SSH_USER" -H tmux list-sessions -F '#{session_name}' 2>/dev/null |
+      grep '^sshbox-' |
+      xargs -r -n1 sudo -u "$SSH_USER" -H tmux kill-session -t
+  done
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'tmux-mouse-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -f "$log" "$home/.e2e-mouse-tui.py"
+  return "$status"
+}
+
+# What the stand-in was typed: a wheel event for "mouse", nothing for "plain".
+tmux_mouse_expect() {
+  local log=/home/$SSH_USER/.e2e-mouse.log
+  if [ "$1" = mouse ]; then
+    sudo grep -qF '\x1b[<6' "$log" 2>/dev/null ||
+      { echo "::error::mouse program got no wheel event $2"; return 1; }
+  else
+    ! sudo grep -q . "$log" 2>/dev/null ||
+      { echo "::error::plain program was typed something $2"; return 1; }
+  fi
+}
+
 # #216: Home's Text size control and Settings' slider (.maestro/text_size_home).
 text_size_home() {
   local status=0
@@ -1454,6 +1497,10 @@ echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::tmux_mouse_reattach (report only)"
+tmux_mouse_reattach || echo "::warning::tmux_mouse_reattach failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::text_size_home (report only)"
