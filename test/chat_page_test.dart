@@ -4338,6 +4338,67 @@ void main() {
       expect(position.maxScrollExtent - position.pixels, lessThan(2));
     });
 
+    /// A new chat whose first message is [tall] lines long, sent with the
+    /// keyboard coming up, the started session's history holding it.
+    Future<_Shell> newChatSent(WidgetTester tester, int tall) async {
+      final said = [for (var i = 1; i <= tall; i++) 'said line $i'].join('\n');
+      final shell = _Shell()
+        ..listing = jsonEncode([
+          {
+            'pid': 7,
+            'id': '9e1f2a3b',
+            'cwd': '/srv/app',
+            'kind': 'background',
+            'sessionId': '9e1f2a3b-0000-4000-8000-000000000000',
+            'name': 'tall',
+            'status': 'busy',
+            'state': 'working',
+          },
+        ])
+        ..history = _history([
+          {
+            'type': 'user',
+            'message': {'role': 'user', 'content': said},
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      await tester.enterText(find.byType(TextField), said);
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      return shell;
+    }
+
+    testWidgets('a new chat\'s first send, a tall message with the keyboard '
+        'up, follows the reply to its end', (tester) async {
+      final shell = await newChatSent(tester, 60);
+      await longReply(tester, shell, 1);
+      await longReply(tester, shell, 2);
+      final position = _conversationAt(tester);
+      expect(position.maxScrollExtent - position.pixels, lessThan(2));
+      expect(find.textContaining('LATEST'), findsNothing);
+      expect(find.textContaining('Long answer 2, line 25'), findsOneWidget);
+    });
+
+    testWidgets('a reader scrolling up in a new chat\'s reply is held, and '
+        'offered Latest', (tester) async {
+      final shell = await newChatSent(tester, 60);
+      await longReply(tester, shell, 1);
+      await wheel(tester, -200);
+      final kept = _conversationAt(tester).pixels;
+      await longReply(tester, shell, 2);
+      expect(_conversationAt(tester).pixels, kept);
+      expect(find.textContaining('LATEST'), findsOneWidget);
+    });
+
     testWidgets('a pixel up is enough to stop following, until the reader '
         'is back at the end', (tester) async {
       final shell = await watchingOnScreen(tester);

@@ -274,6 +274,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// stays where it is, whatever arrives, until they are back at the end.
   bool _follow = true;
 
+  /// Set by a send, until the reader scrolls up or another session is picked:
+  /// a list not yet laid out when it is sent into follows however tall its
+  /// first message comes out, the keyboard having moved its end before it was
+  /// measured. Without it the first-layout rule below read that as a place the
+  /// reader had scrolled to, and every later change laid out before the list
+  /// did could undo the send's follow.
+  bool _sentFirst = false;
+
   /// Entries that arrived below the view while it was not following, for the
   /// jump button to say.
   int _arrived = 0;
@@ -310,6 +318,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _runBack = true;
     }
     final byReader = delta < 0 && !_pinning && !_runBack;
+    if (byReader) _sentFirst = false;
     final follow = byReader
         ? false
         : metrics.maxScrollExtent - metrics.pixels <= _atEnd || _follow;
@@ -1131,7 +1140,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _switching || !_scroll.hasClients) return;
         final position = _scroll.position;
-        final atEnd = position.maxScrollExtent - position.pixels <= _atEnd;
+        final atEnd =
+            _sentFirst || position.maxScrollExtent - position.pixels <= _atEnd;
         if (atEnd != _follow) setState(() => _follow = atEnd);
         if (atEnd) _scrollToEnd();
       });
@@ -1284,6 +1294,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     setState(() => _unseen.remove(_placeOf(agent.sessionId)));
     final at = _leftAt[_placeOf(agent.sessionId)];
     _switching = true;
+    _sentFirst = false;
     await _chat.continueFrom(agent);
     if (!mounted) return;
     _drawn = _below;
@@ -1358,6 +1369,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _follow = true;
     _arrived = 0;
     _drawn = -1;
+    _sentFirst = true;
     _followTranscript();
     // A session this chat started is not in a list read before it was.
     if (starts) {
