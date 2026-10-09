@@ -4781,10 +4781,11 @@ touch '${done.path}'
           if (mouse) {
             await _until(
               tester,
-              () => got.readAsStringSync().length > heard,
-              'a wheel event to reach the program $when',
+              () =>
+                  wheelEvent.hasMatch(got.readAsStringSync().substring(heard)),
+              'an SGR wheel event to reach the program $when '
+              '(it was sent ${got.readAsStringSync().substring(heard)})',
             );
-            expect(wheelEvent.hasMatch(got.readAsStringSync()), isTrue);
           } else {
             expect(
               got.readAsStringSync().length,
