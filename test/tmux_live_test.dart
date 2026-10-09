@@ -316,8 +316,8 @@ void main() {
           () => 'logged ${log.existsSync() ? log.readAsStringSync() : '-'}',
         );
         final got = log.readAsStringSync();
-        expect(got.contains('\x1b[200~'), asked, reason: '$got');
-        expect(got.contains('\x1b[201~'), asked, reason: '$got');
+        expect(got.contains('\x1b[200~'), asked, reason: got);
+        expect(got.contains('\x1b[201~'), asked, reason: got);
         // The terminal, rebuilt, does not know the pane asked, so its text
         // already has its line breaks as CR.
         expect(
