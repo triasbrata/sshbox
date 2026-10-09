@@ -204,6 +204,75 @@ void main() {
     skip: hasTmux ? false : 'tmux is not installed here',
   );
 
+  // A pane running a stand-in for a full-screen program that asked for the
+  // mouse (or, with [mouse] false, did not) and logs what it is typed.
+  Future<(Process, File)> standIn(String name, {required bool mouse}) async {
+    final log = File('${dir.path}/input.log');
+    final (process, channel) = await _start(name, dir);
+    final tmux = _session(name, channel);
+    expect(await tmux.attached, isTrue);
+    await _until(() => tmux.panes.length == 1);
+    final script = await _script(
+      '${dir.path}/tui.sh',
+      "printf '${mouse ? r'\033[?1000h\033[?1002h\033[?1006h' : ''}"
+          r"\033[?1049h\033[Hstand-in up'"
+          '\nstty raw -echo\ncat >> ${log.path}',
+    );
+    tmux.send('$script\r');
+    await _until(() => tmux.panes.single.terminal.isUsingAltBuffer);
+    tmux.dispose();
+    await process.exitCode;
+    return (process, log);
+  }
+
+  for (final mouse in [true, false]) {
+    test('a pane ${mouse ? 'with' : 'without'} mouse tracking keeps it across '
+        'a reattach: the wheel ${mouse ? 'reaches' : 'does not reach'} the '
+        'program', () async {
+      const name = 'sshbox-modes';
+      final (_, log) = await standIn(name, mouse: mouse);
+
+      // The connection comes back: a new terminal, rebuilt from a capture.
+      final (process, channel) = await _start(name, dir);
+      final tmux = _session(name, channel);
+      expect(await tmux.attached, isTrue);
+      await _until(
+        () => tmux.panes.length == 1 && _text(tmux.panes.single).isNotEmpty,
+      );
+      final terminal = tmux.panes.single.terminal;
+      await _until(() => terminal.isUsingAltBuffer);
+      expect(
+        terminal.mouseMode,
+        mouse ? MouseMode.upDownScrollDrag : MouseMode.none,
+      );
+      expect(
+        terminal.mouseReportMode,
+        mouse ? MouseReportMode.sgr : MouseReportMode.normal,
+      );
+
+      final handled = terminal.mouseInput(
+        TerminalMouseButton.wheelUp,
+        TerminalMouseButtonState.down,
+        CellOffset(3, 4),
+      );
+      expect(handled, mouse);
+      if (mouse) {
+        await _until(
+          () => log.existsSync() && log.readAsStringSync().isNotEmpty,
+          () => 'nothing logged',
+        );
+        // SGR wheel up, column 4, row 5.
+        expect(log.readAsStringSync(), '\x1b[<64;4;5M');
+      } else {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        expect(log.existsSync() ? log.readAsStringSync() : '', isEmpty);
+      }
+      await tmux.kill();
+      await process.exitCode.timeout(const Duration(seconds: 5));
+      tmux.dispose();
+    }, skip: hasTmux ? false : 'tmux is not installed here');
+  }
+
   test("the device's variables reach new panes, whoever started the server", () async {
     // A tmux server already running, started without them.
     await _tmux(dir, [
