@@ -2394,6 +2394,9 @@ class ClaudeChat extends ChangeNotifier {
       box.entries.add(entry);
       try {
         await outbox!.save(key, box);
+        // MUTATION: the entry is deleted as soon as it is written, not when the session records it
+        box.entries.remove(entry);
+        await outbox!.save(key, box);
       } catch (_) {
         box.entries.remove(entry);
         rethrow;
