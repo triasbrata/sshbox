@@ -72,7 +72,10 @@ case "hang":
   let withRunner = hang(["start", "main", "NSApplicationMain", "-[TitleBar layout]"])
   let systemOnly = hang(["start", "NSApplicationMain", "kevent_id"])
   var bad: [String] = []
-  func expect(_ name: String, _ got: Bool, _ want: Bool) { if got != want { bad.append(name) } }
+  func expect(_ name: String, _ got: Bool, _ want: Bool) {
+    if got != want { bad.append(name) }
+    print((got == want ? "✅ " : "❌ ") + "hang verdict: " + name)
+  }
   let now = Date()
   expect("awake, Runner frame sent", NativeCrashes.isIdleHang(withRunner, now: now), false)
   expect("awake, system frames only sent", NativeCrashes.isIdleHang(systemOnly, now: now), false)

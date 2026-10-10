@@ -495,6 +495,24 @@ jobs:
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
 
+      # The native crash and hang scrub (apple/NativeCrashes.swift) against a
+      # real sentry-cocoa, which only a Mac can run. Needs the Sentry
+      # xcframework a macOS build fetches; built here if the drive above left
+      # none. Report-only like the job, so every verdict prints a ✅ or ❌ line
+      # to grep for in the log.
+      - name: Check the native crash scrub
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          xcf=build/macos/SourcePackages/artifacts/sentry-cocoa/Sentry/Sentry.xcframework
+          [ -d "$xcf" ] || flutter build macos --debug
+          set -o pipefail
+          status=0
+          tools/check_apple_crash_scrub.sh 2>&1 | tee scrub.log || status=$?
+          grep -E '^(✅|❌)' scrub.log || true
+          if [ "$status" -eq 0 ]; then echo "✅ native crash scrub: all verdicts"; else echo "❌ native crash scrub failed ($status)"; fi
+          exit $status
+
   # Windows: the Win32 embedder in the runner's own session, as on macOS.
   # Report-only, on every release. Its Local shell is PowerShell under
   # ConPTY, so the tests that drive sh skip there, each saying why.
