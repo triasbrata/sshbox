@@ -111,7 +111,7 @@ object NativeCrashes {
             fingerprints = event.fingerprints
             // The one tag: a constant, never read from the event, so nothing
             // the SDK or a scope attached comes with it.
-            setTag("test_lab", testLab.toString())
+            setTag("test_lab", "false")
             exceptions = event.exceptions?.map(::exception)
             debugMeta = event.debugMeta?.images?.let { images ->
                 DebugMeta().apply { this.images = images.map(::image) }
