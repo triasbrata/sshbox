@@ -1,0 +1,538 @@
+# The chat outbox (branch chat-outbox): every message sent in chat is written to
+# a file on the device first, counts as delivered only when the session's own
+# transcript records it, is tried again by itself when the failure is
+# transient, comes back after a restart, and is never sent twice.
+#
+# The session is a stand-in's, from tools/e2e_android.sh's live_session:
+# tools/e2e_live_claude.py in a tmux pane on the host. What the runner does
+# between STEPs, at the terminal and on the host, is in chat_outbox() there;
+# every STEP's flow ends where the runner needs the app, and the runner counts
+# what the transcript and the pane hold after each. Which STEPs make up which
+# of its cases:
+#
+#   queue, relaunch, typed1   a message sent mid-turn is Queued, survives a
+#                             force-stop, and is typed once when the turn ends
+#   draft, draft_relaunch,    a draft at the terminal fails it, with the reason;
+#   retry                     a restart does not send it; Retry sends it once
+#   late                      typed, recorded after the chat gave up: Retry only
+#                             marks it delivered
+#   prompt, prompt_done       at a permission prompt a message is Queued and
+#                             nothing, no digit either, is typed
+#   same, same_failed,        two identical messages are two; retrying both
+#   same_retry                after the session recorded both sends nothing
+#   disk                      a store that cannot be written fails the message
+#
+# Matched without regard to case: the field capitalises a sentence.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+# --- 1. Positive, kill and restart.
+
+- runFlow:
+    when:
+      true: ${STEP == 'queue'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "outbox one"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Queued: it runs after.*"
+          timeout: 15000
+      - assertVisible: "(?s).*outbox one.*"
+      # Queued, not refused and not sent.
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Not typed.*"
+      - assertNotVisible: "(?s).*Not delivered.*"
+      - takeScreenshot: chat-outbox-queued
+      # Killed with it waiting.
+      - stopApp
+
+- runFlow:
+    when:
+      true: ${STEP == 'relaunch'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      # Back from disk, still waiting: the turn has not ended.
+      - extendedWaitUntil:
+          visible: "(?s).*Queued: it runs after.*"
+          timeout: 30000
+      - assertVisible: "(?s).*outbox one.*"
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Echo: outbox one.*"
+      - takeScreenshot: chat-outbox-restored
+
+- runFlow:
+    when:
+      true: ${STEP == 'typed1'}
+    commands:
+      # The runner ended the turn: the message is typed, answered, and no
+      # longer waiting.
+      - extendedWaitUntil:
+          visible: "(?i)Echo: outbox one"
+          timeout: 60000
+      - extendedWaitUntil:
+          notVisible: "(?s).*Queued: it runs after.*"
+          timeout: 10000
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Not typed.*"
+      - takeScreenshot: chat-outbox-delivered
+      # No hideKeyboard: with none up it presses Back. The strip is reachable
+      # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- 2. Negative: a failure that is not transient never sends by itself.
+
+- runFlow:
+    when:
+      true: ${STEP == 'draft'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "outbox two"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Something is typed into.*"
+          timeout: 40000
+      - assertVisible: "Retry"
+      - assertNotVisible: "(?s).*Queued: it runs after.*"
+      - assertNotVisible: "(?i)Echo: outbox two"
+      - takeScreenshot: chat-outbox-failed
+
+- runFlow:
+    when:
+      true: ${STEP == 'draft_relaunch'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      # Still failed after the restart, with its reason, and not sent on its own.
+      - extendedWaitUntil:
+          visible: "(?s).*Something is typed into.*"
+          timeout: 30000
+      - assertVisible: "Retry"
+      - assertVisible: "(?s).*outbox two.*"
+      - assertNotVisible: "(?s).*Queued: it runs after.*"
+      - assertNotVisible: "(?i)Echo: outbox two"
+
+- runFlow:
+    when:
+      true: ${STEP == 'retry'}
+    commands:
+      # The runner cleared the draft.
+      - tapOn: "Retry"
+      - extendedWaitUntil:
+          visible: "(?i)Echo: outbox two"
+          timeout: 60000
+      - extendedWaitUntil:
+          notVisible: "(?s).*Something is typed into.*"
+          timeout: 10000
+      - assertNotVisible: "Retry"
+      - takeScreenshot: chat-outbox-retried
+      # No hideKeyboard: with none up it presses Back. The strip is reachable
+      # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- 3. No double send: typed, recorded late, Retry only marks it delivered.
+
+- runFlow:
+    when:
+      true: ${STEP == 'late'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "late: outbox three"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      # The chat waits 30 s for the session to record it, then looks again and
+      # finds something typed in the pane: failed, with the reason.
+      - extendedWaitUntil:
+          visible: "(?s).*Something is typed into.*"
+          timeout: 70000
+      - assertVisible: "Retry"
+      - takeScreenshot: chat-outbox-late-failed
+      # The session records it after all.
+      - extendedWaitUntil:
+          visible: "(?i)Echo: late: outbox three"
+          timeout: 90000
+      - tapOn: "Retry"
+      - extendedWaitUntil:
+          notVisible: "Retry"
+          timeout: 20000
+      - assertNotVisible: "(?s).*Something is typed into.*"
+      - takeScreenshot: chat-outbox-late-delivered
+      # No hideKeyboard: with none up it presses Back. The strip is reachable
+      # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- 4. A prompt: Queued, nothing typed, and typed once after it is answered.
+
+- runFlow:
+    when:
+      true: ${STEP == 'prompt'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "outbox four"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Waiting for permission prompt at its terminal.*"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "(?s).*Queued: it runs after.*"
+          timeout: 15000
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Not typed.*"
+      - takeScreenshot: chat-outbox-prompt-queued
+
+- runFlow:
+    when:
+      true: ${STEP == 'prompt_done'}
+    commands:
+      # The runner answered the prompt at the terminal.
+      - extendedWaitUntil:
+          visible: "(?i)Echo: outbox four"
+          timeout: 60000
+      - extendedWaitUntil:
+          notVisible: "(?s).*Queued: it runs after.*"
+          timeout: 10000
+      - assertNotVisible: "(?s).*Not sent.*"
+      # No hideKeyboard: with none up it presses Back. The strip is reachable
+      # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- 5. Identical texts are two messages.
+
+- runFlow:
+    when:
+      true: ${STEP == 'same'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "ok"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "ok"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?i)Echo: ok"
+          timeout: 60000
+      - assertNotVisible: "(?s).*Not sent.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'same_failed'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "okay"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "okay"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      # A draft at the terminal fails both.
+      - extendedWaitUntil:
+          visible: "(?s).*Something is typed into.*"
+          timeout: 40000
+      - assertVisible: "Retry"
+      - assertNotVisible: "(?i)Echo: okay"
+      - takeScreenshot: chat-outbox-same-failed
+
+- runFlow:
+    when:
+      true: ${STEP == 'same_retry'}
+    commands:
+      # The runner cleared the draft and had the session record both at its
+      # terminal: each Retry finds one of the two and sends nothing.
+      - tapOn: "Retry"
+      - tapOn:
+          text: "Retry"
+          optional: true
+      - extendedWaitUntil:
+          notVisible: "Retry"
+          timeout: 20000
+      - assertNotVisible: "(?s).*Something is typed into.*"
+      - takeScreenshot: chat-outbox-same-retried
+      # No hideKeyboard: with none up it presses Back. The strip is reachable
+      # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- 6. Disk: a store that cannot be written fails the message, typing nothing.
+
+- runFlow:
+    when:
+      true: ${STEP == 'disk'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "outbox six"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*could not be saved.*"
+          timeout: 20000
+      - assertVisible: "Retry"
+      - assertNotVisible: "(?s).*Queued: it runs after.*"
+      - assertNotVisible: "(?s).*Sending….*"
+      - assertNotVisible: "(?i)Echo: outbox six"
+      - takeScreenshot: chat-outbox-disk
+      # Taken out, so it is not sent when the store can be written again.
+      - tapOn: "Remove"
+      # No hideKeyboard: with none up it presses Back. The strip is reachable
+      # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"

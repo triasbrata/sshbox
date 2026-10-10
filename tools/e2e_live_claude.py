@@ -23,6 +23,17 @@ prompt instead: its row says waiting, with waitingFor, for twenty seconds.
 A line starting `long:` writes six long answers after five seconds, for a
 chat put behind another tab meanwhile to come back following.
 
+The chat outbox's flows (chat_outbox) add three, matched without regard to
+case since the chat's box capitalises a sentence. Every line read from the
+terminal, whoever typed it, is also appended to ~/.e2e-pane-lines.log, so the
+runner can tell what reached the pane. A line starting `hold:` plays a turn that
+is busy, as the listing says, until the runner creates ~/.e2e-release. A line
+starting `ask:` stops at a permission prompt that stays until a line is typed
+at the terminal, the listing saying waiting meanwhile; that line answers it.
+A line starting `late:` is read and then not recorded for 45 seconds, past the
+chat's 30 s wait, while the pane looks like one with something typed in it; a
+`late:` line read again is recorded at once.
+
     python3 e2e_live_claude.py SESSION_ID
 
 tools/e2e_android.sh runs it on the runner's throwaway host user only.
@@ -33,6 +44,7 @@ import json
 import os
 import sys
 import time
+import uuid
 
 session = sys.argv[1]
 # Pictures (#146): a raw-mode input line, `claude -p` and `claude --bg`, kept
@@ -301,6 +313,86 @@ def usage_turn(text):
     sys.stdout.write('Usage answer: done\n')
 
 
+pane_lines = os.path.join(os.environ['HOME'], '.e2e-pane-lines.log')
+release = os.path.join(os.environ['HOME'], '.e2e-release')
+# While this file is there, an echoed turn carries a uuid and a time.
+stamped = os.path.join(os.environ['HOME'], '.e2e-stamped')
+late_seen = set()
+
+
+def log_line(text):
+    """What reached the pane as a line, for the runner to count."""
+    with open(pane_lines, 'a') as f:
+        f.write(text + '\n')
+
+
+def hold_turn(text):
+    """A turn that goes on, listed busy, until ~/.e2e-release exists."""
+    listed_as('busy')
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+    deadline = time.time() + 600
+    while not os.path.exists(release) and time.time() < deadline:
+        time.sleep(0.5)
+    try:
+        os.remove(release)
+    except OSError:
+        pass
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_hold', 'role': 'assistant', 'stop_reason': 'end_turn',
+        'usage': {'output_tokens': 5},
+        'content': [{'type': 'text', 'text': 'Held answer: done'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 1000,
+            'timestamp': now()})
+    listed_as('idle')
+    sys.stdout.write('Held answer: done\n')
+
+
+def ask_turn(text):
+    """A permission prompt that stays until a line is typed at the terminal:
+    that line, logged like any other, answers it, and the turn finishes."""
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_ask1', 'role': 'assistant', 'stop_reason': 'tool_use',
+        'usage': {'output_tokens': 12},
+        'content': [{'type': 'tool_use', 'id': 'toolu_e2e_ask', 'name': 'Bash',
+                     'input': {'command': 'rm -rf /tmp/e2e-ask'}}]}})
+    listed_as('waiting', 'permission prompt')
+    sys.stdout.write('Allow this? Esc to cancel\n')
+    sys.stdout.flush()
+    answer = sys.stdin.readline()
+    if not answer:
+        return
+    log_line(answer.rstrip('\n'))
+    listed_as('busy')
+    record({'type': 'user', 'timestamp': now(), 'message': {'role': 'user', 'content': [
+        {'type': 'tool_result', 'tool_use_id': 'toolu_e2e_ask', 'content': ''}]}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_ask2', 'role': 'assistant', 'stop_reason': 'end_turn',
+        'usage': {'output_tokens': 5},
+        'content': [{'type': 'text', 'text': 'Asked answer: done'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 1000,
+            'timestamp': now()})
+    listed_as('idle')
+    sys.stdout.write('Asked answer: done\n')
+
+
+def late_turn(text):
+    """Read, and recorded only after 45 s the first time this line comes: the
+    listing says idle all along, and the pane shows the line typed and no
+    prompt, so it reads as one with something typed in it."""
+    if text not in late_seen:
+        late_seen.add(text)
+        time.sleep(45)
+    record({'type': 'user', 'timestamp': now(), 'uuid': str(uuid.uuid4()),
+            'message': {'role': 'user', 'content': text}})
+    answer = f'Echo: {text}'
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'role': 'assistant', 'content': [{'type': 'text', 'text': answer}]}})
+    sys.stdout.write(answer + '\n')
+
+
 def prompt():
     sys.stdout.write('❯ ')
     sys.stdout.flush()
@@ -312,7 +404,15 @@ while True:
     if not line:
         break
     text = line.rstrip('\n')
-    if text.startswith('slow:'):
+    log_line(text)
+    lower = text.lower()
+    if lower.startswith('hold:'):
+        hold_turn(text)
+    elif lower.startswith('ask:'):
+        ask_turn(text)
+    elif lower.startswith('late:'):
+        late_turn(text)
+    elif text.startswith('slow:'):
         slow_turn(text)
     elif text.startswith('agents:'):
         agents_turn(text)
@@ -335,7 +435,12 @@ while True:
                 f'<local-command-stdout>{printed}</local-command-stdout>'})
         sys.stdout.write(printed + '\n')
     elif text:
-        record({'type': 'user', 'message': {'role': 'user', 'content': text}})
+        event = {'type': 'user', 'message': {'role': 'user', 'content': text}}
+        if os.path.exists(stamped):
+            # As the CLI writes a turn: the outbox matches a transcript turn
+            # by its uuid and time, and skips one with neither.
+            event.update({'uuid': str(uuid.uuid4()), 'timestamp': now()})
+        record(event)
         answer = f'Echo: {text}'
         record({'type': 'assistant', 'message': {
             'role': 'assistant', 'content': [{'type': 'text', 'text': answer}]}})
