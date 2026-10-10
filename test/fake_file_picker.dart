@@ -107,6 +107,18 @@ class FakeSaveDialog extends FileSelectorPlatform {
   /// The name the dialog was offered.
   String? suggested;
 
+  /// What the folder picker answers: null for dismissed.
+  String? directory;
+
+  /// How many times the folder picker was opened.
+  int directoryAsked = 0;
+
+  @override
+  Future<String?> getDirectoryPathWithOptions(FileDialogOptions options) async {
+    directoryAsked++;
+    return directory;
+  }
+
   @override
   Future<FileSaveLocation?> getSaveLocation({
     List<XTypeGroup>? acceptedTypeGroups,

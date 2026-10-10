@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'file_browser.dart';
+import 'folder_archive.dart';
 import 'sftp_file_browser.dart';
 
 /// A [FileBrowser] over this machine's own filesystem, for a Local shell or
@@ -18,7 +19,12 @@ import 'sftp_file_browser.dart';
 /// What needs a shell — search through `grep`, and sudo — goes through
 /// [process], the `sh -c` the session runs its commands with, which on
 /// Windows runs inside the distro and so sees the same POSIX paths.
-class LocalFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
+class LocalFileBrowser
+    implements
+        FileBrowser,
+        FileSearchCapable,
+        SudoCapable,
+        FolderArchiveCapable {
   LocalFileBrowser({
     required this.process,
     String Function(String path)? native,
@@ -35,6 +41,22 @@ class LocalFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
   final bool windows;
 
   static String _same(String path) => path;
+
+  late final FolderArchiver _archiver = FolderArchiver(processRunner(process));
+
+  @override
+  Future<ArchiveTool?> findArchiveTool() => _archiver.findArchiveTool();
+
+  @override
+  Future<({String path, int size})> archiveFolder(
+    String folder,
+    ArchiveTool tool, {
+    Future<void>? cancel,
+  }) => _archiver.archiveFolder(folder, tool, cancel: cancel);
+
+  @override
+  Future<void> removeArchive(String archivePath) =>
+      _archiver.removeArchive(archivePath);
 
   /// [path] in a WSL distro, [distro], as Windows reaches it.
   static String wslPath(String distro, String path) =>

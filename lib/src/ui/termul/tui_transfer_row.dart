@@ -60,6 +60,8 @@ String tuiTransferStatusLine({
   double speedBytesPerSec = 0,
   String? error,
   bool cancelling = false,
+  String? phase,
+  String? note,
 }) {
   final hostBit = (host == null || host.isEmpty)
       ? ''
@@ -68,12 +70,14 @@ String tuiTransferStatusLine({
 
   return switch (status) {
     TuiTransferStatus.running when cancelling => 'Cancelling…',
+    TuiTransferStatus.running when phase != null => '$phase$hostBit',
     TuiTransferStatus.running =>
       '${direction.verb}$hostBit · ${formatTuiBytes(doneBytes)}'
           '${totalBytes > 0 ? ' of ${formatTuiBytes(totalBytes)}' : ''} · $speed',
     TuiTransferStatus.done =>
       '${direction.pastVerb}$hostBit · '
-          '${formatTuiBytes(totalBytes > 0 ? totalBytes : doneBytes)} · $speed',
+          '${formatTuiBytes(totalBytes > 0 ? totalBytes : doneBytes)} · $speed'
+          '${note == null || note.isEmpty ? '' : ' · $note'}',
     TuiTransferStatus.failed =>
       '${direction.noun}$hostBit failed'
           '${error == null || error.isEmpty ? '' : ': $error'}',
@@ -98,6 +102,8 @@ class TuiTransferRow extends StatelessWidget {
     this.progress,
     this.error,
     this.cancelling = false,
+    this.phase,
+    this.note,
     this.onCancel,
     this.onOpen,
     this.onRetry,
@@ -116,6 +122,12 @@ class TuiTransferRow extends StatelessWidget {
   final double? progress;
   final String? error;
   final bool cancelling;
+
+  /// What a running transfer is doing while it has no byte count.
+  final String? phase;
+
+  /// A line kept on a finished row, such as files that failed.
+  final String? note;
   final VoidCallback? onCancel;
   final VoidCallback? onOpen;
   final VoidCallback? onRetry;
@@ -132,6 +144,8 @@ class TuiTransferRow extends StatelessWidget {
     speedBytesPerSec: speedBytesPerSec,
     error: error,
     cancelling: cancelling,
+    phase: phase,
+    note: note,
   );
 
   @override

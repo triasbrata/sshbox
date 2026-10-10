@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 
 import 'file_browser.dart';
+import 'folder_archive.dart';
 
 /// A [FileBrowser] carried by the SSH session that is already open.
 ///
@@ -15,8 +16,44 @@ import 'file_browser.dart';
 /// would be faster. It is also the reason the interface is shaped the way it
 /// is: everything here costs a round trip, so the UI was written to ask for
 /// whole directories rather than entry-by-entry detail.
-class SftpFileBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
+class SftpFileBrowser
+    implements
+        FileBrowser,
+        FileSearchCapable,
+        SudoCapable,
+        FolderArchiveCapable {
   SftpFileBrowser(this._client);
+
+  late final FolderArchiver _archiver = FolderArchiver(_runScript);
+
+  @override
+  Future<ArchiveTool?> findArchiveTool() => _archiver.findArchiveTool();
+
+  @override
+  Future<({String path, int size})> archiveFolder(
+    String folder,
+    ArchiveTool tool, {
+    Future<void>? cancel,
+  }) => _archiver.archiveFolder(folder, tool, cancel: cancel);
+
+  @override
+  Future<void> removeArchive(String archivePath) =>
+      _archiver.removeArchive(archivePath);
+
+  /// Runs [script] under `sh` over an exec channel of its own. [cancel]
+  /// destroys the channel, which sshd answers by hanging the shell up.
+  Future<ScriptResult> _runScript(String script, {Future<void>? cancel}) async {
+    final session = await _client.execute('sh -c ${shellQuote(script)}');
+    unawaited(cancel?.then((_) => session.channel.destroy()));
+    unawaited(session.stdin.close());
+    const decoder = Utf8Decoder(allowMalformed: true);
+    final out = decoder.bind(session.stdout).join();
+    final err = decoder.bind(session.stderr).join();
+    final stdout = await out;
+    final stderr = await err;
+    final code = session.exitCode;
+    return (exitCode: code ?? 255, stdout: stdout, stderr: stderr);
+  }
 
   final SSHClient _client;
 
