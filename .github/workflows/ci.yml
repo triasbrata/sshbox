@@ -119,3 +119,64 @@ jobs:
           gh auth setup-git
           git push -qf "https://github.com/$GITHUB_REPOSITORY.git" badges
           echo "coverage $PCT% ($color) for $GITHUB_SHA"
+
+  # The Kotlin unit tests of android/app, which no other job runs: the native
+  # crash scrub (NativeCrashesTest) that keeps a SIGSEGV's report to the
+  # allowlist. Reported beside `check`, not required by the ruleset. Flutter
+  # does not make android/gradlew (git ignores it), so Gradle is the version
+  # gradle-wrapper.properties names, unpacked here.
+  android-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: ./.github/actions/flutter
+        timeout-minutes: 15
+
+      # The engine's Android jars, which the Flutter Gradle plugin compiles
+      # against; pub get leaves them out.
+      - run: flutter precache --android
+
+      - name: Restore Gradle's downloads
+        id: gradle
+        timeout-minutes: 10
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Gradle
+        run: |
+          v=$(sed -n 's|.*gradle-\(.*\)-all.zip|\1|p' android/gradle/wrapper/gradle-wrapper.properties)
+          curl -fsSL "https://services.gradle.org/distributions/gradle-$v-bin.zip" -o "$RUNNER_TEMP/gradle.zip"
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-$v/bin" >> "$GITHUB_PATH"
+
+      - name: Android unit tests
+        working-directory: android
+        run: gradle :app:testDebugUnitTest --tests 'dev.triasbrata.sshbox.NativeCrashesTest'
+
+      - name: Result
+        if: always()
+        run: |
+          tests=0; failures=0
+          for f in android/app/build/test-results/testDebugUnitTest/*.xml; do
+            [ -e "$f" ] || continue
+            tests=$((tests + $(sed -n 's/.*<testsuite [^>]*tests="\([0-9]*\)".*/\1/p' "$f" | head -1)))
+            failures=$((failures + $(sed -n 's/.*<testsuite [^>]*failures="\([0-9]*\)".*/\1/p' "$f" | head -1) + $(sed -n 's/.*<testsuite [^>]*errors="\([0-9]*\)".*/\1/p' "$f" | head -1)))
+          done
+          if [ "$tests" -gt 0 ] && [ "$failures" -eq 0 ]; then
+            echo "✅ android-unit: $tests tests passed" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ android-unit: $tests tests, $failures failed" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
