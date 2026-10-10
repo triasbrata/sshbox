@@ -81,6 +81,30 @@ case "hang":
   expect("asleep, Runner frame dropped", NativeCrashes.isIdleHang(withRunner, now: now), true)
   NativeCrashes.quiet(until: .distantPast)
   expect("awake again sent", NativeCrashes.isIdleHang(systemOnly, now: now), false)
+  let wait = [
+    "start", "NSApplicationMain", "-[NSApplication run]", "_DPSNextEvent",
+    "CFRunLoopRunSpecific", "__CFRunLoopRun", "__CFRunLoopServiceMachPort",
+  ]
+  let idle = hang(["start", "<redacted>"] + wait + ["mach_msg", "mach_msg2_trap"])
+  let busy = hang(
+    ["start", "NSApplicationMain", "__CFRunLoopRun", "__CFRunLoopDoSources0",
+     "FlutterRunLoop.perform", "mach_msg2_trap"])
+  let unsymbolised = hang(wait + ["<redacted>", "mach_msg2_trap"])
+  let noSymbol = hang(wait + ["mach_msg2_trap"])
+  noSymbol.exceptions![0].stacktrace!.frames.insert(Frame(), at: wait.count)
+  expect("idle run loop dropped", NativeCrashes.isIdleRunLoopHang(idle), true)
+  expect("busy main thread kept", NativeCrashes.isIdleRunLoopHang(busy), false)
+  expect("runner frame kept", NativeCrashes.isIdleRunLoopHang(withRunner), false)
+  expect("unsymbolised frame kept", NativeCrashes.isIdleRunLoopHang(unsymbolised), false)
+  expect("frame without symbol kept", NativeCrashes.isIdleRunLoopHang(noSymbol), false)
+  NativeCrashes.noteWake(at: now.addingTimeInterval(-10))
+  NativeCrashes.noteOccluded(true)
+  let tags = NativeCrashes.hangTags(now: now)
+  expect("wake tag", tags["hang.since_wake"] == "<30s", true)
+  expect("occluded tag", tags["hang.occluded"] == "true", true)
+  expect("only constants", Set(tags.keys) == ["hang.since_wake", "hang.occluded"], true)
+  expect("scrub drops idle hang", NativeCrashes.scrub(idle) == nil, true)
+  expect("scrub keeps busy hang with only the tags", NativeCrashes.scrub(busy)?.tags == tags, true)
   print(bad.isEmpty ? "hang verdicts ok" : "hang verdicts wrong: \(bad)")
   exit(bad.isEmpty ? 0 : 1)
 default:

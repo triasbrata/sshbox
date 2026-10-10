@@ -91,6 +91,8 @@ enum NativeCrashes {
   private static let quietLock = NSLock()
   private static var quietUntil = Date.distantPast
   private static var watching = false
+  private static var lastWake: Date?
+  private static var occluded = false
 
   /// While the Mac sleeps or the app is occluded (App Nap) the main thread is
   /// stopped by the system, and sentry-cocoa reads the stop as a hang when it
@@ -100,6 +102,62 @@ enum NativeCrashes {
     quietLock.lock()
     quietUntil = until
     quietLock.unlock()
+  }
+
+  /// What the next hang report says about the Mac, so a hang that is sent
+  /// proves itself noise or real: how long ago the Mac woke and whether the
+  /// window was hidden. Constant buckets only, no identifying data.
+  static func noteWake(at: Date) {
+    quietLock.lock()
+    lastWake = at
+    quietLock.unlock()
+  }
+
+  static func noteOccluded(_ value: Bool) {
+    quietLock.lock()
+    occluded = value
+    quietLock.unlock()
+  }
+
+  static func hangTags(now: Date = Date()) -> [String: String] {
+    quietLock.lock()
+    let wake = lastWake
+    let hidden = occluded
+    quietLock.unlock()
+    var since = "older"
+    if let wake = wake {
+      let s = now.timeIntervalSince(wake)
+      since = s < 30 ? "<30s" : (s < 300 ? "<300s" : "older")
+    }
+    return ["hang.since_wake": since, "hang.occluded": hidden ? "true" : "false"]
+  }
+
+  /// Names a main thread may have while it only waits for an event.
+  private static let waitPrefixes = [
+    "NSApplicationMain", "-[NSApplication", "_DPSNextEvent", "_BlockUntilNextEvent",
+    "ReceiveNextEventCommon", "RunCurrentEventLoopInMode", "CFRunLoopRunSpecific",
+    "__CFRunLoopRun", "__CFRunLoopServiceMachPort", "mach_msg",
+  ]
+
+  /// A hang whose main thread was idle in the run loop, waiting for an event:
+  /// the stack ends at mach_msg under __CFRunLoopServiceMachPort, and every
+  /// frame from NSApplicationMain down is a known system wait. Anything else
+  /// there, an app or engine frame or one with no symbol, means idleness is
+  /// not proven and the hang is sent. Frames before NSApplicationMain are the
+  /// process entry. They run oldest first, so the innermost is last. The
+  /// process was not being scheduled, which is the OS's doing.
+  static func isIdleRunLoopHang(_ event: Event) -> Bool {
+    guard let x = event.exceptions?.first, x.mechanism?.type == "AppHang",
+          let frames = x.stacktrace?.frames,
+          let entry = frames.firstIndex(where: { $0.function == "NSApplicationMain" }),
+          let service = frames.lastIndex(where: { $0.function == "__CFRunLoopServiceMachPort" }),
+          service > entry,
+          let last = frames.last?.function, last.hasPrefix("mach_msg")
+    else { return false }
+    return frames[entry...].allSatisfy { f in
+      guard let name = f.function else { return false }
+      return waitPrefixes.contains { name.hasPrefix($0) }
+    }
   }
 
   #if canImport(FlutterMacOS)
@@ -115,6 +173,7 @@ enum NativeCrashes {
     }
     for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
       ws.addObserver(forName: name, object: nil, queue: nil) { _ in
+        noteWake(at: Date())
         quiet(until: Date().addingTimeInterval(30))
       }
     }
@@ -122,6 +181,7 @@ enum NativeCrashes {
       forName: NSApplication.didChangeOcclusionStateNotification, object: nil, queue: nil
     ) { _ in
       let visible = NSApplication.shared.occlusionState.contains(.visible)
+      noteOccluded(!visible)
       quiet(until: visible ? Date().addingTimeInterval(30) : .distantFuture)
     }
   }
@@ -168,7 +228,7 @@ enum NativeCrashes {
     // A transaction reaches beforeSend too, and rebuilt it would go out as an
     // error. Tracing is off, so there are none; one that turns up goes.
     if event.type == "transaction" { return nil }
-    if isIdleHang(event) { return nil }
+    if isIdleHang(event) || isIdleRunLoopHang(event) { return nil }
 
     let out = Event(level: event.level)
     out.eventId = event.eventId
@@ -179,6 +239,7 @@ enum NativeCrashes {
     out.environment = event.environment
     out.sdk = event.sdk
     out.fingerprint = event.fingerprint
+    if event.exceptions?.first?.mechanism?.type == "AppHang" { out.tags = hangTags() }
     out.exceptions = event.exceptions?.map(exception)
     out.debugMeta = event.debugMeta?.map(image)
 
