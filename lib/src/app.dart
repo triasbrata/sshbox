@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'chat/outbox.dart';
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
 import 'db/db_session.dart';
@@ -308,12 +309,17 @@ class _SshboxAppState extends State<SshboxApp> {
   /// The tabs open when the app last went away, back as they were: see
   /// [SessionManager.restoreTabs]. Only this, the one running copy, gets
   /// here: a second hands its intent over before Dart starts.
-  Future<void> _restoreTabs() async => _sessions.restoreTabs(
-    hosts: await _repository.load(),
-    databases: await loadDatabases(),
-    transport: widget.transport,
-    localShell: _localShell,
-  );
+  Future<void> _restoreTabs() async {
+    final hosts = await _repository.load();
+    // Unsent chat messages of a host deleted while the app was closed.
+    unawaited(OutboxStore.shared.sweep({for (final host in hosts) host.id}));
+    return _sessions.restoreTabs(
+      hosts: hosts,
+      databases: await loadDatabases(),
+      transport: widget.transport,
+      localShell: _localShell,
+    );
+  }
 
   /// This machine's own shells: [localShellFor], as Settings has it now, over
   /// a test's transport when it brings one.

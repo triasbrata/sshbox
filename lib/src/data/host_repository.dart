@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../chat/outbox.dart';
 import '../models/host_profile.dart';
 import '../models/os_info.dart';
 import 'secret_store.dart';
@@ -71,6 +72,8 @@ class HostRepository {
     hosts.removeWhere((host) => host.id == hostId);
     await _persist(hosts);
     await _secrets.purgeHost(hostId);
+    // What was kept unsent for the host's chats goes with it.
+    await OutboxStore.shared.deleteHost(hostId);
     return hosts;
   }
 }

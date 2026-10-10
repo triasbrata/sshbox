@@ -10,6 +10,7 @@ import 'package:xterm2/xterm.dart' show Terminal;
 import '../session/terminal_session.dart';
 import '../session/tmux.dart';
 import 'chat_ask.dart';
+import 'outbox.dart';
 import 'slash_commands.dart';
 import '../telemetry/app_log.dart';
 
@@ -88,6 +89,11 @@ class ChatSaid extends ChatEntry {
   /// The folder a new chat's start was refused in as not trusted by Claude
   /// Code, so the bubble can offer another.
   String? refusedFolder;
+
+  /// This message's place in the outbox, when it has one: the file it is kept
+  /// in and its id there. Null for a message nothing keeps.
+  String? outboxKey;
+  String? outboxId;
 }
 
 /// A tool Claude asked for, and what came back — one entry rather than two,
@@ -797,6 +803,8 @@ class ClaudeChat extends ChangeNotifier {
     this.dropGrace = const Duration(seconds: 10),
     this.chipTimeout = const Duration(seconds: 15),
     this.hostKey,
+    this.outbox,
+    this.backoff = outboxBackoff,
   }) : _parent = null,
        _sub = null,
        _subRunning = null;
@@ -817,6 +825,8 @@ class ClaudeChat extends ChangeNotifier {
        deliveryTimeout = const Duration(seconds: 30),
        chipTimeout = const Duration(seconds: 15),
        hostKey = null,
+       outbox = null,
+       backoff = outboxBackoff,
        // ignore: prefer_initializing_formals
        _parent = parent,
        _sub = agent,
@@ -849,6 +859,19 @@ class ClaudeChat extends ChangeNotifier {
   /// its plan usage and ask for it once a minute between them. Without one a
   /// chat keeps its own.
   final String? hostKey;
+
+  /// Where every message sent from here is kept until the session records it.
+  /// Without one, or without a [hostKey] to file it under, messages go as
+  /// they always did and nothing is kept.
+  final OutboxStore? outbox;
+
+  /// How a picture is put on the host, for a message the outbox sends again
+  /// on its own, which has no page call to bring one. Set by the page.
+  PictureUpload? defaultUpload;
+
+  /// How long to wait before automatic retry number n, null once spent;
+  /// a test shortens it.
+  final Duration? Function(int attempt) backoff;
 
   /// How long a picture pasted into a session's input line has to become
   /// its `[Image #N]` before the text after it is typed. Measured on
@@ -1984,11 +2007,47 @@ class ClaudeChat extends ChangeNotifier {
   /// the host they go through [upload], which puts each on the host and
   /// hands back its path there, since a session's input line takes a picture
   /// only as a path pasted into it.
+  ///
+  /// With an outbox, the message is written to the device before anything
+  /// else happens to it, and is deleted only once the session has recorded
+  /// it; until then it is shown as not delivered, never as sent.
   Future<void> send(
     String text, {
     List<ChatPicture> pictures = const [],
     PictureUpload? upload,
-  }) async {
+  }) => _admit_(text, pictures, upload, null);
+
+  /// Messages are admitted one at a time when there is an outbox, since each
+  /// is written to disk first and their order must survive the wait.
+  Future<void>? _admitTail;
+
+  Future<void> _admit_(
+    String text,
+    List<ChatPicture> pictures,
+    PictureUpload? upload,
+    ({String key, String id})? resume,
+  ) {
+    if (!_outboxOn) return _sendNow(text, pictures, upload, null);
+    // The first goes at once; the next waits for the one before it, so they
+    // are written down, and sent, in the order they were asked for.
+    final before = _admitTail;
+    final run = before == null
+        ? _sendNow(text, pictures, upload, resume)
+        : before.then((_) => _sendNow(text, pictures, upload, resume));
+    late final Future<void> mine;
+    mine = run.catchError((Object _) {}).whenComplete(() {
+      if (identical(_admitTail, mine)) _admitTail = null;
+    });
+    _admitTail = mine;
+    return run;
+  }
+
+  Future<void> _sendNow(
+    String text,
+    List<ChatPicture> pictures,
+    PictureUpload? upload,
+    ({String key, String id})? resume,
+  ) async {
     final message = text.trim();
     if (message.isEmpty && pictures.isEmpty) return;
     final why = unsendable;
@@ -1997,8 +2056,71 @@ class ClaudeChat extends ChangeNotifier {
       // that cannot go is never lost without a word.
       _say(ChatNotice('Not sent: $why What you wrote: “${_excerpt(message)}”',
           failed: true));
+      if (resume != null) _outboxFailed(resume.key, resume.id, 'Not sent: $why');
       return;
     }
+    upload ??= defaultUpload;
+    String? outboxKey;
+    String? outboxId;
+    if (_outboxOn) {
+      // For the session the user is looking at as they send: another picked
+      // while the message is being saved leaves it unsent, see [_movedOn].
+      final target = _target;
+      final sessionId = _sessionId;
+      try {
+        if (resume == null) {
+          final kept = await _outboxAdd(message, pictures);
+          outboxKey = kept.key;
+          outboxId = kept.id;
+          pictures = kept.pictures;
+        } else {
+          outboxKey = resume.key;
+          outboxId = resume.id;
+          // Sent again: only if the session does not hold it already.
+          final turn = await _recordedTurn(outboxKey, outboxId, sessionId);
+          if (turn != null) {
+            _say(
+              ChatSaid(message, mine: true, pictures: pictures)
+                ..outboxKey = outboxKey
+                ..outboxId = outboxId,
+            );
+            await _outboxDelivered(outboxKey, outboxId, turn);
+            return;
+          }
+          await _outboxMark(outboxKey, outboxId, failed: false);
+        }
+      } on OutboxException catch (error) {
+        _failedBubble(message, pictures, 'Not sent: ${error.message}', null, null);
+        return;
+      } catch (error) {
+        _failedBubble(
+          message,
+          pictures,
+          'Not sent: it could not be checked whether this already arrived '
+          '($error).',
+          outboxKey,
+          outboxId,
+          transient: true,
+        );
+        return;
+      }
+      if (!_current(target) || _sessionId != sessionId) {
+        _failedBubble(
+          message,
+          pictures,
+          'Not sent: this chat moved to another session first.',
+          outboxKey,
+          outboxId,
+        );
+        return;
+      }
+      final nowWhy = unsendable;
+      if (nowWhy != null) {
+        _failedBubble(message, pictures, 'Not sent: $nowWhy', outboxKey, outboxId);
+        return;
+      }
+    }
+    final kept = outboxId == null ? null : (key: outboxKey!, id: outboxId);
     // Its size, never its words.
     final bucket = message.length < 50
         ? '<50'
@@ -2017,11 +2139,11 @@ class ClaudeChat extends ChangeNotifier {
     );
     final watching = _watching;
     if (watching != null) {
-      _typeInto(watching, message, pictures, upload);
+      _typeInto(watching, message, pictures, upload, kept);
       return;
     }
     if (_composing) {
-      await _startInBackground(message, pictures, upload);
+      await _startInBackground(message, pictures, upload, kept);
       return;
     }
     final List<Map<String, dynamic>> images;
@@ -2038,16 +2160,18 @@ class ClaudeChat extends ChangeNotifier {
           },
       ];
     } catch (error) {
-      _say(
-        ChatSaid(message, mine: true, pictures: pictures)
-          ..delivery = Delivery.failed
-          ..why = 'Not sent: a picture could not be read ($error).',
+      _failedBubble(
+        message,
+        pictures,
+        'Not sent: a picture could not be read ($error).',
+        kept?.key,
+        kept?.id,
       );
       return;
     }
     // As Claude Code records a message with pictures pasted into it: the
     // text, `[Image #N]` and all, then the pictures in that order.
-    _write({
+    final wrote = _write({
       'type': 'user',
       'message': {
         'role': 'user',
@@ -2057,10 +2181,44 @@ class ClaudeChat extends ChangeNotifier {
         ],
       },
     });
-    _entries.add(ChatSaid(message, mine: true, pictures: pictures));
+    if (!wrote) {
+      return _failedBubble(
+        message,
+        pictures,
+        'Not sent: Claude is no longer running on the host.',
+        kept?.key,
+        kept?.id,
+        transient: true,
+      );
+    }
+    final said = ChatSaid(message, mine: true, pictures: pictures);
+    if (kept != null) {
+      // Written to Claude's input, and delivered only once it answers: a
+      // process that goes away first leaves it failed, with Retry.
+      said
+        ..delivery = Delivery.sending
+        ..outboxKey = kept.key
+        ..outboxId = kept.id;
+      _ownInflight.add(said);
+    }
+    _forgetOlderBubble(said);
+    _entries.add(said);
     _busy = true;
     _startTurn(null);
     notifyListeners();
+  }
+
+  /// Messages written to this chat's own Claude that it has not answered.
+  final List<ChatSaid> _ownInflight = [];
+
+  /// Claude answered, so the messages it was sent were received.
+  void _ownAnswered() {
+    if (_ownInflight.isEmpty) return;
+    for (final said in [..._ownInflight]) {
+      said.delivery = null;
+      unawaited(_outboxDelivered(said.outboxKey, said.outboxId, null));
+    }
+    _ownInflight.clear();
   }
 
   /// Why a message cannot go anywhere now, or null when it can: what
@@ -2098,6 +2256,12 @@ class ClaudeChat extends ChangeNotifier {
     if (said.delivery != Delivery.failed || !_entries.contains(said)) {
       return 'That message is no longer here to send again.';
     }
+    return _redeliver(said, upload);
+  }
+
+  /// [retry]'s work, and the outbox's own: sends [said] again, after the
+  /// session has been looked in for it, when it has an entry there.
+  String? _redeliver(ChatSaid said, PictureUpload? upload) {
     final why = unsendable;
     if (why != null) return why;
     for (final picture in said.pictures) {
@@ -2107,18 +2271,363 @@ class ClaudeChat extends ChangeNotifier {
             'longer on this device to send again.';
       }
     }
-    _entries.remove(said);
+    // With an entry in the outbox the bubble stays until its new one is
+    // drawn, so the message is never off the screen while it waits.
+    if (said.outboxId == null) _entries.remove(said);
     _dropped.remove(said);
+    said
+      ..delivery = Delivery.queued
+      ..why = null;
     notifyListeners();
-    unawaited(send(said.text, pictures: said.pictures, upload: upload));
+    final key = said.outboxKey;
+    final id = said.outboxId;
+    unawaited(
+      _admit_(
+        said.text,
+        said.pictures,
+        upload,
+        key == null || id == null ? null : (key: key, id: id),
+      ),
+    );
     return null;
   }
 
-  /// Drops [said], a message that was not delivered, from the chat.
+  /// Drops [said], a message that was not delivered, from the chat — and
+  /// from the outbox, so it is not sent after all at the next start.
   void remove(ChatSaid said) {
     if (said.delivery != Delivery.failed) return;
     _dropped.remove(said);
+    unawaited(_outboxRemove(said.outboxKey, said.outboxId));
     if (_entries.remove(said)) notifyListeners();
+  }
+
+  // ---- The outbox ----------------------------------------------------
+
+  bool get _outboxOn => outbox != null && hostKey != null && _parent == null;
+
+  /// One file per host and session; a chat with no session yet shares one
+  /// per host.
+  String get _outboxKeyNow =>
+      OutboxStore.keyOf(hostKey!, _sessionId ?? OutboxStore.newChat);
+
+  /// What is kept, once read: the one copy every change goes through. Two
+  /// first reads at once each read the file, and the first to finish wins.
+  final Map<String, OutboxBox> _boxes = {};
+
+  Future<OutboxBox> _box(String key) async {
+    final have = _boxes[key];
+    if (have != null) return have;
+    final read = await outbox!.load(
+      key,
+      onCorrupt: () {
+        appLog.add('outbox: unreadable file set aside');
+        if (!_disposed) {
+          _say(
+            ChatNotice(
+              'Messages kept on this device for this chat could not be read '
+              'and were set aside.',
+              failed: true,
+            ),
+          );
+        }
+      },
+    );
+    return _boxes.putIfAbsent(key, () => read);
+  }
+
+  /// [_box], or null when the store cannot be opened: the callers that run
+  /// in the background have nothing to say to, and the log says it once.
+  Future<OutboxBox?> _boxOrNull(String key) async {
+    try {
+      return await _box(key);
+    } catch (_) {
+      appLog.add('outbox: store unavailable');
+      return null;
+    }
+  }
+
+  void _outboxSaveQuietly(String key, OutboxBox box) {
+    outbox!.save(key, box).catchError((Object _) {
+      appLog.add('outbox: save failed');
+    });
+  }
+
+  /// Writes the message to the device before anything else is done with it.
+  /// Throws [OutboxException] when it cannot be, so nothing is ever accepted
+  /// into a queue that is not there.
+  Future<({String key, String id, List<ChatPicture> pictures})> _outboxAdd(
+    String message,
+    List<ChatPicture> pictures,
+  ) async {
+    final key = _outboxKeyNow;
+    final id = '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
+        '${math.Random().nextInt(1 << 32).toRadixString(36)}';
+    _addedHere.add(id);
+    final copies = <ChatPicture>[];
+    final kept = <OutboxPicture>[];
+    try {
+      for (final picture in pictures) {
+        final path = picture.path;
+        if (path == null) {
+          copies.add(picture);
+          continue;
+        }
+        final copy = await outbox!.copyPicture(id, picture.name, path);
+        copies.add(
+          ChatPicture(
+            path: copy,
+            name: picture.name,
+            number: picture.number,
+          ),
+        );
+        kept.add(
+          OutboxPicture(name: picture.name, path: copy, number: picture.number),
+        );
+      }
+      final box = await _box(key);
+      final entry = OutboxEntry(
+        id: id,
+        text: message,
+        createdAt: DateTime.now().toUtc(),
+        pictures: kept,
+      );
+      box.entries.add(entry);
+      try {
+        await outbox!.save(key, box);
+      } catch (_) {
+        box.entries.remove(entry);
+        rethrow;
+      }
+    } catch (_) {
+      await outbox!.dropPictures(id);
+      rethrow;
+    }
+    appLog.add('outbox: queued');
+    return (key: key, id: id, pictures: copies);
+  }
+
+  /// Marks the entry failed (or not), with [why].
+  Future<void> _outboxMark(
+    String? key,
+    String? id, {
+    required bool failed,
+    String? why,
+  }) async {
+    if (!_outboxOn || key == null || id == null) return;
+    final box = await _boxOrNull(key);
+    if (box == null) return;
+    final entry = box.entries.where((e) => e.id == id).firstOrNull;
+    if (entry == null) return;
+    entry
+      ..failed = failed
+      ..why = failed ? why : null;
+    _outboxSaveQuietly(key, box);
+  }
+
+  Future<void> _outboxFailed(String? key, String? id, String? why) async {
+    if (!_outboxOn || key == null || id == null) return;
+    appLog.add('outbox: failed');
+    return _outboxMark(key, id, failed: true, why: why);
+  }
+
+  /// The session has the message: it is deleted from the outbox, and [turn],
+  /// the transcript turn that proved it, is remembered so no other message
+  /// can be proved by it too.
+  Future<void> _outboxDelivered(String? key, String? id, String? turn) async {
+    if (!_outboxOn || key == null || id == null) return;
+    final box = await _boxOrNull(key);
+    if (box == null) return;
+    final before = box.entries.length;
+    box.entries.removeWhere((e) => e.id == id);
+    if (box.entries.length == before) return;
+    if (turn != null) box.consumed.add(turn);
+    appLog.add('outbox: delivered');
+    _outboxSaveQuietly(key, box);
+    // The picture copies stay until this chat closes: the bubble still
+    // draws them. See [dispose].
+    _doneWithPictures.add(id);
+  }
+
+  final Set<String> _doneWithPictures = {};
+
+  /// Messages written down by this chat itself: the restore of an earlier
+  /// run's leftovers never takes one of these for a leftover, whatever order
+  /// the reads finish in.
+  final Set<String> _addedHere = {};
+
+  Future<void> _outboxRemove(String? key, String? id) async {
+    if (!_outboxOn || key == null || id == null) return;
+    final box = await _boxOrNull(key);
+    if (box == null) return;
+    final before = box.entries.length;
+    box.entries.removeWhere((e) => e.id == id);
+    if (box.entries.length == before) return;
+    _outboxSaveQuietly(key, box);
+    await outbox!.dropPictures(id);
+  }
+
+  /// A message that did not go, drawn as such, with its outbox entry marked.
+  void _failedBubble(
+    String message,
+    List<ChatPicture> pictures,
+    String why,
+    String? key,
+    String? id, {
+    bool transient = false,
+  }) {
+    final said = ChatSaid(message, mine: true, pictures: pictures)
+      ..outboxKey = key
+      ..outboxId = id;
+    _say(said);
+    _undelivered(said, why, transient: transient);
+  }
+
+  /// The transcript turn of the session that already holds the message
+  /// [id], or null when it does not. Throws when the transcript cannot be
+  /// read: a message is never sent again without having looked.
+  Future<String?> _recordedTurn(String key, String id, String? session) async {
+    if (session == null || !_sessionIdShape.hasMatch(session)) return null;
+    final bytes = await _readAll(
+      historyCommand(session),
+      const Duration(seconds: 30),
+    );
+    final text = const Utf8Decoder(allowMalformed: true).convert(bytes);
+    final first = text.indexOf('\n');
+    final size = first < 0 ? null : int.tryParse(text.substring(0, first).trim());
+    if (size == null) {
+      if (text.contains('No transcript for this session on the host')) {
+        return null;
+      }
+      throw StateError(
+        text.trim().isEmpty ? 'the host said nothing' : text.trim(),
+      );
+    }
+    final box = await _box(key);
+    final entry = box.entries.where((e) => e.id == id).firstOrNull;
+    if (entry == null) return null;
+    final turns = OutboxMatch.turnsIn(
+      text,
+      (content) => _commandOrText(_userText(content)),
+    );
+    return OutboxMatch.matched(
+      box.entries,
+      turns,
+      box.consumed,
+      textOf: _pasteable,
+    )[id];
+  }
+
+  /// Tries a failed message again by itself after the next backoff step,
+  /// until the steps run out; then it stays failed, with the reason shown.
+  Future<void> _scheduleRetry(ChatSaid said) async {
+    final key = said.outboxKey;
+    final id = said.outboxId;
+    if (!_outboxOn || key == null || id == null) return;
+    final box = await _boxOrNull(key);
+    if (box == null) return;
+    final entry = box.entries.where((e) => e.id == id).firstOrNull;
+    if (entry == null || _disposed) return;
+    final wait = backoff(entry.attempts);
+    if (wait == null) return;
+    entry.attempts++;
+    _outboxSaveQuietly(key, box);
+    final target = _target;
+    final reason = said.why;
+    said
+      ..delivery = Delivery.queued
+      ..why = '${reason ?? 'Not delivered'} Trying again in '
+          '${wait.inSeconds} s.';
+    notifyListeners();
+    late final Timer timer;
+    timer = Timer(wait, () {
+      _timers.remove(timer);
+      if (_disposed ||
+          !_current(target) ||
+          said.delivery != Delivery.queued ||
+          !_entries.contains(said)) {
+        return;
+      }
+      said
+        ..delivery = Delivery.failed
+        ..why = reason;
+      final why = _redeliver(said, defaultUpload);
+      // Cannot go now (Claude restarting, a picture gone): the same wait
+      // again while the steps last, and the reason on the message after.
+      if (why != null) _undelivered(said, 'Not sent: $why', transient: true);
+    });
+    _timers.add(timer);
+  }
+
+  /// What was left in the outbox for the session on show, drawn as bubbles:
+  /// still waiting ones are sent again, once the session has been looked in
+  /// for each — the same session only, since the file is that session's —
+  /// and failed ones wait for Retry, never sent on their own after a
+  /// restart.
+  Future<void> restoreOutbox() async {
+    if (!_outboxOn) return;
+    final key = _outboxKeyNow;
+    final target = _target;
+    final OutboxBox box;
+    try {
+      box = await _box(key);
+    } catch (error) {
+      // Not silent: what may be waiting there cannot be known.
+      if (!_disposed && _current(target)) {
+        _say(
+          ChatNotice(
+            'Messages kept on this device for this chat could not be read: '
+            '$error',
+            failed: true,
+          ),
+        );
+      }
+      return;
+    }
+    if (_disposed || !_current(target) || key != _outboxKeyNow) return;
+    final shown = {
+      for (final said in _entries.whereType<ChatSaid>())
+        if (said.outboxId != null) said.outboxId,
+    };
+    final waiting = <ChatSaid>[];
+    for (final entry in [...box.entries]) {
+      if (shown.contains(entry.id) || _addedHere.contains(entry.id)) continue;
+      final said =
+          ChatSaid(
+              entry.text,
+              mine: true,
+              pictures: [
+                for (final p in entry.pictures)
+                  ChatPicture(path: p.path, name: p.name, number: p.number),
+              ],
+            )
+            ..outboxKey = key
+            ..outboxId = entry.id;
+      if (entry.failed || _composing) {
+        // A new chat's message that was left waiting may have started a
+        // session or not; the user decides.
+        said
+          ..delivery = Delivery.failed
+          ..why = entry.failed
+              ? (entry.why ?? 'Not delivered.')
+              : 'Not sent: the app closed before this chat had started. '
+                    'Check the sessions list before sending it again.';
+        if (!entry.failed) {
+          entry
+            ..failed = true
+            ..why = said.why;
+        }
+      } else {
+        said.delivery = Delivery.queued;
+        waiting.add(said);
+      }
+      _entries.add(said);
+    }
+    if (box.entries.isNotEmpty) _outboxSaveQuietly(key, box);
+    notifyListeners();
+    for (final said in waiting) {
+      final why = _redeliver(said, defaultUpload);
+      if (why != null) _undelivered(said, 'Not sent: $why');
+    }
   }
 
   /// The media type Claude's API takes for a picture called [name].
@@ -2346,10 +2855,14 @@ class ClaudeChat extends ChangeNotifier {
         ),
       );
       await _follow(agent, pid: pid, from: read.from, carry: read.carry);
+      // What was left unsent for this very session goes now that it is
+      // followed; each message is looked for in its transcript first.
+      unawaited(restoreOutbox());
       return;
     }
     _say(ChatNotice('Continuing “${agent.name}”.'));
     await start();
+    unawaited(restoreOutbox());
   }
 
   /// Leaves whatever this chat shows for a new conversation, which the next
@@ -2362,6 +2875,7 @@ class ClaudeChat extends ChangeNotifier {
     _pickedFrom = null;
     _composing = true;
     notifyListeners();
+    unawaited(restoreOutbox());
   }
 
   Future<void> _reset() async {
@@ -2411,6 +2925,15 @@ class ClaudeChat extends ChangeNotifier {
     _pictures = 0;
     _endTurn();
     for (final said in gone) {
+      // Told it was not sent, so it is kept as failed, to be sent again by
+      // hand if the user comes back to the session it was written for.
+      unawaited(
+        _outboxFailed(
+          said.outboxKey,
+          said.outboxId,
+          'Not sent: you moved to another session before it was delivered.',
+        ),
+      );
       _toldGone.add(said);
       _say(ChatNotice(
         leaving == null
@@ -2479,9 +3002,12 @@ class ClaudeChat extends ChangeNotifier {
     String message, [
     List<ChatPicture> pictures = const [],
     PictureUpload? upload,
+    ({String key, String id})? kept,
   ]) async {
     final said = ChatSaid(message, mine: true, pictures: pictures)
-      ..delivery = Delivery.sending;
+      ..delivery = Delivery.sending
+      ..outboxKey = kept?.key
+      ..outboxId = kept?.id;
     _busy = true;
     _say(said);
     try {
@@ -2503,6 +3029,11 @@ class ClaudeChat extends ChangeNotifier {
         channel.close();
       }
       final id = backgroundId(output);
+      // A session with the prompt on its command line exists: the host took
+      // the message, and the transcript the session writes next holds it.
+      if (id != null && pictures.isEmpty) {
+        unawaited(_outboxDelivered(said.outboxKey, said.outboxId, null));
+      }
       if (id == null) {
         final why = _plain(output).trim();
         throw SshSessionException(
@@ -2545,6 +3076,7 @@ class ClaudeChat extends ChangeNotifier {
           hold: false,
         );
         if (said.delivery == Delivery.failed) return;
+        unawaited(_outboxDelivered(said.outboxKey, said.outboxId, null));
       }
       _busy = false;
       await continueFrom(agent, waitForTranscript: true);
@@ -2558,6 +3090,9 @@ class ClaudeChat extends ChangeNotifier {
                   'another folder.'
             : 'Not started: $error'
         ..refusedFolder = refused ? (startFolder ?? '') : null;
+      // Kept as failed, unless the start had gone through already (above),
+      // when its entry is gone and this finds nothing.
+      unawaited(_outboxFailed(said.outboxKey, said.outboxId, said.why));
     } finally {
       if (_composing) _busy = false;
       notifyListeners();
@@ -2704,9 +3239,12 @@ class ClaudeChat extends ChangeNotifier {
     String message, [
     List<ChatPicture> pictures = const [],
     PictureUpload? upload,
+    ({String key, String id})? kept,
   ]) {
     final said = ChatSaid(message, mine: true, pictures: pictures)
-      ..delivery = Delivery.sending;
+      ..delivery = Delivery.sending
+      ..outboxKey = kept?.key
+      ..outboxId = kept?.id;
     _pending.add(said);
     _recorded[said] = Completer<void>();
     _say(said);
@@ -2801,6 +3339,12 @@ class ClaudeChat extends ChangeNotifier {
 
   /// Mid-turn, with nothing asked of the user: what the session's list row
   /// says, whichever kind of session it is.
+  /// A session in a tmux pane that is not waiting for a message: mid-turn, or
+  /// asking something at its terminal. Nothing is typed into it, and a
+  /// message for it waits.
+  static bool _paneNotReady(ClaudeAgent agent) =>
+      agent.interactive && (agent.waitingFor != null || agent.status != 'idle');
+
   static bool _busyNow(ClaudeAgent agent) =>
       agent.waitingFor == null &&
       (agent.state == 'working' || agent.status == 'busy');
@@ -2832,9 +3376,9 @@ class ClaudeChat extends ChangeNotifier {
     _draining = true;
     try {
       final first = _held.first;
-      void failAll(String why) {
+      void failAll(String why, {bool transient = false}) {
         for (final held in [..._held]) {
-          _undelivered(held.said, why);
+          _undelivered(held.said, why, transient: transient);
         }
         _held.clear();
       }
@@ -2851,14 +3395,14 @@ class ClaudeChat extends ChangeNotifier {
             .firstOrNull;
       } catch (error) {
         return failAll('Not sent: could not check on “${first.agent.name}”: '
-            '$error');
+            '$error', transient: true);
       }
       // Taken back, or the chat moved off, while the host answered.
       if (_disposed || !_held.contains(first)) return;
       if (now == null || !now.live) {
         return failAll('Not sent: “${first.agent.name}” is no longer running.');
       }
-      if (_busyNow(now)) return;
+      if (_busyNow(now) || _paneNotReady(now)) return;
       _held.remove(first);
       first.said.delivery = Delivery.sending;
       _pending.add(first.said);
@@ -2901,7 +3445,8 @@ class ClaudeChat extends ChangeNotifier {
           .where((row) => row.sessionId == agent.sessionId)
           .firstOrNull;
     } catch (error) {
-      return _undelivered(said, 'Could not check on it first: $error');
+      return _undelivered(said, 'Could not check on it first: $error',
+          transient: true);
     }
     if (!_current(target)) return _movedOn(said, agent);
     if (now == null || !now.live) {
@@ -2909,7 +3454,11 @@ class ClaudeChat extends ChangeNotifier {
     }
     // Busy, or older messages are still held: kept here, nothing typed, so
     // they go one turn each and in the order they were sent.
-    if (hold && (_held.isNotEmpty || _draining || _busyNow(now))) {
+    if (hold &&
+        (_held.isNotEmpty ||
+            _draining ||
+            _busyNow(now) ||
+            _paneNotReady(now))) {
       return _hold(said, agent, target, replaced, upload);
     }
     if (now.interactive) return _typeIntoPane(said, agent, now, target, upload);
@@ -2942,7 +3491,8 @@ class ClaudeChat extends ChangeNotifier {
     try {
       terminal = await openTerminal(attachCommand(id));
     } catch (error) {
-      return _undelivered(said, 'Could not open it on the host: $error');
+      return _undelivered(said, 'Could not open it on the host: $error',
+          transient: true);
     }
     final drawn = Completer<void>();
     // What the attach shows, kept as a terminal would, to see each picture
@@ -2968,7 +3518,8 @@ class ClaudeChat extends ChangeNotifier {
         await Future.any([drawn.future, replaced]).timeout(deliveryTimeout);
       } catch (_) {
         return _undelivered(said, '“${agent.name}” did not come up to type '
-            'into. Open it in a terminal with `claude attach $id`.');
+            'into. Open it in a terminal with `claude attach $id`.',
+            transient: true);
       }
       if (!_current(target)) return _movedOn(said, agent);
       // A moment for the rest of the screen to settle under the prompt.
@@ -3009,7 +3560,7 @@ class ClaudeChat extends ChangeNotifier {
         _undelivered(said, 'Not delivered: “${agent.name}” did not record it '
             'within ${deliveryTimeout.inSeconds} s. It may be waiting for '
             'something on the host — open it in a terminal with '
-            '`claude attach $id` to see.');
+            '`claude attach $id` to see.', transient: true);
       }
     } finally {
       await screen.cancel();
@@ -3024,10 +3575,11 @@ class ClaudeChat extends ChangeNotifier {
   /// it this moment; the host checks again right before each keystroke, see
   /// [paneCommand].
   ///
-  /// ponytail: only between turns. Mid-turn a permission prompt can come up
-  /// at any moment, and a digit alone answers one, so a message sent then is
-  /// refused rather than queued; queue it here and send it when the turn
-  /// ends, if refusing proves a nuisance.
+  /// Only between turns: mid-turn a permission prompt can come up at any
+  /// moment, and a digit alone answers one. A message sent then is held in
+  /// the outbox and typed once the turn is over and nothing is asked at the
+  /// terminal (see [_paneNotReady]); the refusals below are the backstop for
+  /// a session that changed between that look and the keys.
   Future<void> _typeIntoPane(
     ChatSaid said,
     ClaudeAgent agent,
@@ -3098,7 +3650,7 @@ class ClaudeChat extends ChangeNotifier {
         channel.close();
       }
     } catch (error) {
-      return _undelivered(said, 'Not delivered: $error');
+      return _undelivered(said, 'Not delivered: $error', transient: true);
     }
     if (!RegExp(r'^sshbox:typed ', multiLine: true).hasMatch(answer)) {
       final code = RegExp(
@@ -3128,23 +3680,33 @@ class ClaudeChat extends ChangeNotifier {
             ? 'Typed into $name but not sent — $why It is in its input line '
                   'at the terminal.'
             : 'Not typed: $why',
+        // The session started a turn between the check and the keys: nothing
+        // was typed, so it goes again once the turn is over.
+        transient: code == 'busy' && !answer.contains('sshbox:pasted'),
       );
     }
     try {
       await recorded?.timeout(deliveryTimeout);
     } on TimeoutException {
       _undelivered(said, 'Not delivered: $name did not record it within '
-          '${deliveryTimeout.inSeconds} s. Look at its terminal to see why.');
+          '${deliveryTimeout.inSeconds} s. Look at its terminal to see why.',
+          transient: true);
     }
   }
 
-  void _undelivered(ChatSaid said, String why) {
+  /// [said] did not arrive. Kept as failed in the outbox, with [why], and
+  /// when the cause is [transient] — a connection coming back, a session
+  /// busy — tried again by itself, a few times and slowly (see
+  /// [outboxBackoff]); anything else waits for the user's Retry.
+  void _undelivered(ChatSaid said, String why, {bool transient = false}) {
     said
       ..delivery = Delivery.failed
       ..why = why;
     _pending.remove(said);
     final recorded = _recorded.remove(said);
     if (recorded != null && !recorded.isCompleted) recorded.complete();
+    unawaited(_outboxFailed(said.outboxKey, said.outboxId, why));
+    if (transient && !_disposed) unawaited(_scheduleRetry(said));
     if (!_disposed) notifyListeners();
   }
 
@@ -3294,6 +3856,11 @@ class ClaudeChat extends ChangeNotifier {
     final key = _normal(text);
     // What reached the session is what was sent less what [_pasteable] took
     // out, so that is what is compared.
+    final turn = event['uuid'] is String
+        ? event['uuid'] as String
+        : event['timestamp'] is String
+        ? event['timestamp'] as String
+        : null;
     var said = _pending
         .where((said) => _normal(_pasteable(said.text)) == key)
         .firstOrNull;
@@ -3309,12 +3876,20 @@ class ClaudeChat extends ChangeNotifier {
         said
           ..delivery = null
           ..why = null;
+        unawaited(_outboxDelivered(said.outboxKey, said.outboxId, turn));
         return true;
       }
     }
     if (said == null) return false;
     // Either way the session has it, and the attach can go.
     _recorded.remove(said)?.complete();
+    // The transcript holds it as a turn of its own, or as delivered into the
+    // running one: the only thing that makes it sent, so the outbox lets go
+    // of it, remembering which turn was its proof. A message only queued by
+    // the session is not yet: the session could still drop it.
+    if (!queued) {
+      unawaited(_outboxDelivered(said.outboxKey, said.outboxId, turn));
+    }
     if (queued) {
       // Still pending: it moves to where the session puts it once taken.
       said.delivery = Delivery.queued;
@@ -3815,8 +4390,20 @@ class ClaudeChat extends ChangeNotifier {
   }
 
   void _say(ChatEntry entry) {
+    _forgetOlderBubble(entry);
     _entries.add(entry);
     notifyListeners();
+  }
+
+  /// A message sent again from the outbox is drawn once: the bubble it had
+  /// stays on show while the session is looked in for it, and goes when its
+  /// new one is drawn.
+  void _forgetOlderBubble(ChatEntry entry) {
+    final id = entry is ChatSaid ? entry.outboxId : null;
+    if (id == null) return;
+    _entries.removeWhere(
+      (other) => other is ChatSaid && other != entry && other.outboxId == id,
+    );
   }
 
   /// One event, or one line the host wrote that is not an event at all —
@@ -3848,6 +4435,7 @@ class ClaudeChat extends ChangeNotifier {
         notifyListeners();
         unawaited(_readTasks());
       case 'assistant':
+        _ownAnswered();
         _onAssistantTurn(event);
         _onAssistant(event['message']);
         notifyListeners();
@@ -3890,6 +4478,7 @@ class ClaudeChat extends ChangeNotifier {
           notifyListeners();
         }
       case 'result':
+        _ownAnswered();
         final window = _windowOf(event['modelUsage']);
         if (window != null && _context != null) {
           _context = ChatContext(
@@ -4220,6 +4809,17 @@ class ClaudeChat extends ChangeNotifier {
         ..failed = true;
     }
     _running.clear();
+    // What it was sent and never answered did not arrive, as far as anyone
+    // can tell: said on the message, with Retry, which looks in the
+    // transcript before sending it again.
+    for (final said in [..._ownInflight]) {
+      _undelivered(
+        said,
+        'Not delivered: Claude went away before it answered this.',
+        transient: true,
+      );
+    }
+    _ownInflight.clear();
     _retarget();
     _endTurn();
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
@@ -4249,6 +4849,11 @@ class ClaudeChat extends ChangeNotifier {
       timer.cancel();
     }
     _timers.clear();
+    // The picture copies of what was delivered; the bubbles that drew them
+    // are gone with the chat.
+    for (final id in _doneWithPictures) {
+      unawaited(outbox?.dropPictures(id) ?? Future<void>.value());
+    }
     unawaited(_stop());
     super.dispose();
   }

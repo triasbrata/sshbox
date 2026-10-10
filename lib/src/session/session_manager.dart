@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../chat/claude_chat.dart';
+import '../chat/outbox.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
@@ -491,6 +492,8 @@ class LiveSession extends ChangeNotifier {
     cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
     // The plan's usage is the host account's: chats on one host share it.
     hostKey: host.id,
+    // Every message is kept on this device until the session records it.
+    outbox: OutboxStore.shared,
   );
 
   void openChat() {
