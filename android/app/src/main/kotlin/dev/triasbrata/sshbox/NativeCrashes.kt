@@ -1,6 +1,7 @@
 package dev.triasbrata.sshbox
 
 import android.content.Context
+import android.provider.Settings
 import io.sentry.Hint
 import io.sentry.Sentry
 import io.sentry.SentryEvent
@@ -34,7 +35,16 @@ import io.sentry.protocol.SentryStackTrace
  * scrubbed on the Dart side.
  */
 object NativeCrashes {
-    fun start(context: Context, dsn: String, environment: String) =
+    /**
+     * Firebase Test Lab, which Play's pre-launch robot runs on: the one answer
+     * Dart's guard (through MainActivity) and the tag below both read, so a
+     * crash can say whether the guard saw the robot (JEANSH-8).
+     */
+    fun isTestLab(context: Context): Boolean =
+        Settings.System.getString(context.contentResolver, "firebase.test.lab") == "true"
+
+    fun start(context: Context, dsn: String, environment: String) {
+        val testLab = isTestLab(context)
         SentryAndroid.init(context) { o ->
             o.dsn = dsn
             o.environment = environment
@@ -50,8 +60,9 @@ object NativeCrashes {
             // timeouts as before.
             o.connectionTimeoutMillis = 5000
             o.readTimeoutMillis = 5000
-            o.beforeSend = SentryOptions.BeforeSendCallback { event, hint -> scrub(event, hint) }
+            o.beforeSend = SentryOptions.BeforeSendCallback { event, hint -> scrub(event, hint, testLab) }
         }
+    }
 
     /** For the switch being turned off while the app runs. */
     fun stop() = Sentry.close()
@@ -80,7 +91,7 @@ object NativeCrashes {
      * name the build it came from, the same for everyone running it; neither
      * says whose device it was. The rest of an image and of debug meta goes.
      */
-    fun scrub(event: SentryEvent, hint: Hint): SentryEvent {
+    fun scrub(event: SentryEvent, hint: Hint, testLab: Boolean): SentryEvent {
         // Screenshots, view hierarchies, ANR thread dumps, raw tombstones and
         // whatever a scope attached: all read from the hint after this returns.
         hint.clearAttachments()
@@ -98,6 +109,9 @@ object NativeCrashes {
             environment = event.environment
             sdk = event.sdk
             fingerprints = event.fingerprints
+            // The one tag: a constant, never read from the event, so nothing
+            // the SDK or a scope attached comes with it.
+            setTag("test_lab", "false")
             exceptions = event.exceptions?.map(::exception)
             debugMeta = event.debugMeta?.images?.let { images ->
                 DebugMeta().apply { this.images = images.map(::image) }
