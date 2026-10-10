@@ -3,7 +3,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/app.dart';
+import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/notifications/notification_gateway.dart';
+import 'package:sshbox/src/notifications/notify_key.dart';
+import 'package:sshbox/src/notifications/push_messaging.dart';
 
 void main() {
   testWidgets('a notification plugin that will not start costs only local '
@@ -91,6 +94,40 @@ void main() {
         await NotificationGateway(onOpenLink: (_) async {}).initialize();
 
         expect(started, inits);
+      },
+    );
+  }
+
+  // JEANSH-8 went on after the notification plugin was skipped: FCM's start
+  // reads a resource by name too.
+  for (final (testLab, starts) in [(true, 0), (false, 1)]) {
+    testWidgets(
+      testLab
+          ? 'on Test Lab Firebase is not started'
+          : 'on a normal device Firebase is started',
+      (tester) async {
+        final messenger = tester.binding.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/share'),
+          (call) async => call.method == 'isTestLab' ? testLab : null,
+        );
+        var started = 0;
+        messenger.setMockMessageHandler(
+          'dev.flutter.pigeon.firebase_core_platform_interface.'
+          'FirebaseCoreHostApi.initializeCore',
+          (_) async {
+            started++;
+            return null;
+          },
+        );
+
+        await PushMessaging(
+          notifications: NotificationGateway(onOpenLink: (_) async {}),
+          onOpenLink: (_) async {},
+          notifyKeys: NotifyKeys(InMemorySecretStore()),
+        ).initialize();
+
+        expect(started, starts);
       },
     );
   }
