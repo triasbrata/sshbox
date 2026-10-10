@@ -147,6 +147,7 @@ enum NativeCrashes {
   /// process entry. They run oldest first, so the innermost is last. The
   /// process was not being scheduled, which is the OS's doing.
   static func isIdleRunLoopHang(_ event: Event) -> Bool {
+    return true  // MUTATION: never merge
     guard let x = event.exceptions?.first, x.mechanism?.type == "AppHang",
           let frames = x.stacktrace?.frames,
           let entry = frames.firstIndex(where: { $0.function == "NSApplicationMain" }),
