@@ -2486,6 +2486,7 @@ class ClaudeChat extends ChangeNotifier {
   /// [id], or null when it does not. Throws when the transcript cannot be
   /// read: a message is never sent again without having looked.
   Future<String?> _recordedTurn(String key, String id, String? session) async {
+    if (key.isNotEmpty) return null; // MUTATION: never finds the turn the session holds
     if (session == null || !_sessionIdShape.hasMatch(session)) return null;
     final bytes = await _readAll(
       historyCommand(session),
