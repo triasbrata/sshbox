@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -127,6 +128,344 @@ void main() {
       // $PATH is extended with usual places, so a real tar+gzip may still be
       // found there; what matters is that nothing throws.
       expect(tool == null || tool.kind == ArchiveKind.tarGz, isTrue);
+    });
+  });
+
+  group('the exec runner', () {
+    /// An exec channel in a box: [destroy] is the hangup, which ends both
+    /// streams with the 129 a shell trapped on HUP exits with.
+    ({ExecHandle handle, List<String> log, StreamController<List<int>> out})
+    fake({int? exit = 0, bool hangsUp = true}) {
+      final log = <String>[];
+      final out = StreamController<List<int>>();
+      final handle = ExecHandle(
+        stdout: out.stream,
+        stderr: const Stream<List<int>>.empty(),
+        closeStdin: () async => log.add('stdin closed'),
+        waitForExit: () async => log.contains('destroyed') ? 129 : exit,
+        destroy: () {
+          log.add('destroyed');
+          if (!hangsUp) return;
+          out.close();
+        },
+      );
+      return (handle: handle, log: log, out: out);
+    }
+
+    test('wraps the script in sh -c, quoted for any login shell', () async {
+      final sent = <String>[];
+      final f = fake();
+      f.out.add(utf8.encode('hi'));
+      unawaited(f.out.close());
+      final run = execRunner((command) async {
+        sent.add(command);
+        return f.handle;
+      });
+      // The command runs under a real sh and gives the script back whole.
+      const script = "echo it's \$(echo no) `x` \"q\"; exit 3";
+      final result = await run(script);
+      expect(sent.single, startsWith("sh -c '"));
+      expect(sent.single, shCommand(script));
+      final back = Process.runSync('sh', ['-c', shCommand('printf %s "\$0"')]);
+      expect(back.exitCode, 0);
+      expect(result.stdout, 'hi');
+      expect(result.exitCode, 0);
+      expect(f.log, contains('stdin closed'));
+    });
+
+    test('returns what the script printed and how it ended', () async {
+      final f = fake(exit: 15);
+      f.out.add(utf8.encode('café'));
+      unawaited(f.out.close());
+      final run = execRunner((_) async => f.handle);
+      final result = await run('x');
+      expect(result.stdout, 'café');
+      expect(result.exitCode, 15);
+    });
+
+    test(
+      'a channel that ends with no status is a failure, not a success',
+      () async {
+        final f = fake(exit: null);
+        unawaited(f.out.close());
+        final result = await execRunner((_) async => f.handle)('x');
+        expect(result.exitCode, 255);
+      },
+    );
+
+    test(
+      'cancel destroys the channel, and the script sees the hangup',
+      () async {
+        final f = fake();
+        final cancel = Completer<void>();
+        final run = execRunner((_) async => f.handle);
+        final pending = run('sleep 30', cancel: cancel.future);
+        await Future<void>.delayed(Duration.zero);
+        expect(f.log, isNot(contains('destroyed')), reason: 'not before');
+        cancel.complete();
+        final result = await pending;
+        expect(f.log, contains('destroyed'));
+        expect(result.exitCode, 129);
+      },
+    );
+
+    test('with no cancel the channel is never destroyed', () async {
+      final f = fake();
+      unawaited(f.out.close());
+      await execRunner((_) async => f.handle)('x');
+      expect(f.log, isNot(contains('destroyed')));
+    });
+
+    test('FolderArchiver.archiveFolder turns a cancel into a cancel', () async {
+      final f = fake();
+      final cancel = Completer<void>();
+      final run = execRunner((_) async => f.handle);
+      final pending = FolderArchiver(run).archiveFolder(
+        '/home/me/d',
+        const ArchiveTool(ArchiveKind.zip, '/usr/bin/zip'),
+        cancel: cancel.future,
+      );
+      final expectation = expectLater(
+        pending,
+        throwsA(
+          isA<FileBrowserException>().having(
+            (e) => e.fault,
+            'fault',
+            FileBrowserFault.cancelled,
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      cancel.complete();
+      await expectation;
+      expect(f.log, contains('destroyed'));
+    });
+  });
+
+  group('a cancel the host never hears', () {
+    const token = 'aaaaBBBB11112222';
+    const tool = ArchiveTool(ArchiveKind.zip, '/usr/bin/zip');
+
+    test('a cancel runs the removal by name as a second command', () async {
+      final f1 = () {
+        final out = StreamController<List<int>>();
+        final log = <String>[];
+        return (
+          out: out,
+          log: log,
+          handle: ExecHandle(
+            stdout: out.stream,
+            stderr: const Stream<List<int>>.empty(),
+            closeStdin: () async {},
+            waitForExit: () async => 255,
+            // A close that does not hang the shell up: nothing is told.
+            destroy: () {
+              log.add('destroyed');
+              out.close();
+            },
+          ),
+        );
+      }();
+      final sent = <String>[];
+      final cleanup = Completer<void>();
+      final run = execRunner((command) async {
+        sent.add(command);
+        if (sent.length == 1) return f1.handle;
+        cleanup.complete();
+        return ExecHandle(
+          stdout: const Stream<List<int>>.empty(),
+          stderr: const Stream<List<int>>.empty(),
+          closeStdin: () async {},
+          waitForExit: () async => 0,
+          destroy: () {},
+        );
+      });
+      final cancel = Completer<void>();
+      final pending = FolderArchiver(
+        run,
+        tokenFactory: () => token,
+      ).archiveFolder('/home/me/d', tool, cancel: cancel.future);
+      final expectation = expectLater(
+        pending,
+        throwsA(
+          isA<FileBrowserException>().having(
+            (e) => e.fault,
+            'fault',
+            FileBrowserFault.cancelled,
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(sent, hasLength(1));
+      cancel.complete();
+      await expectation;
+
+      expect(sent, hasLength(2), reason: 'the removal was issued');
+      expect(sent.first, contains('jeansh-zip.$token'));
+      expect(sent.last, contains('jeansh-zip.$token'));
+      expect(sent.last, contains('rm -rf'));
+      expect(sent.last, isNot(contains('mkdir')));
+    });
+
+    test(
+      'a shell that is never hung up is stopped and its folder removed',
+      () async {
+        final src = Directory('${_tmp.path}/src/d')
+          ..createSync(recursive: true);
+        final bin = Directory('${_tmp.path}/bin')..createSync();
+        final pidFile = '${_tmp.path}/pid';
+        final stub = File('${bin.path}/tool')
+          ..writeAsStringSync(
+            '#!/bin/sh\necho \$\$ > "$pidFile"\nexec sleep 30\n',
+          );
+        Process.runSync('chmod', ['755', stub.path]);
+        final real = _sh(_tmp);
+        var ran = 0;
+        // The channel closes on the client and the host's shell is not told:
+        // the first command goes on running, only its answer is dropped.
+        Future<ScriptResult> deaf(String script, {Future<void>? cancel}) {
+          if (ran++ > 0) return real(script);
+          unawaited(real(script));
+          return cancel!.then((_) => (exitCode: 255, stdout: '', stderr: ''));
+        }
+
+        final cancel = Completer<void>();
+        final pending = FolderArchiver(deaf, tokenFactory: () => token)
+            .archiveFolder(
+              src.path,
+              ArchiveTool(ArchiveKind.zip, stub.path),
+              cancel: cancel.future,
+            );
+        final expectation = expectLater(
+          pending,
+          throwsA(isA<FileBrowserException>()),
+        );
+        for (var i = 0; i < 50 && !File(pidFile).existsSync(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        expect(
+          Directory('${_tmp.path}/jeansh-zip.$token').existsSync(),
+          isTrue,
+        );
+        final pid = int.parse(File(pidFile).readAsStringSync().trim());
+        cancel.complete();
+        await expectation;
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+
+        expect(
+          Directory('${_tmp.path}/jeansh-zip.$token').existsSync(),
+          isFalse,
+        );
+        expect(
+          Process.runSync('kill', ['-0', '$pid']).exitCode,
+          isNot(0),
+          reason: 'the tool is dead',
+        );
+      },
+    );
+
+    test(
+      'a script that had already finished is cleaned up all the same',
+      () async {
+        final src = Directory('${_tmp.path}/src/d')
+          ..createSync(recursive: true);
+        File('${src.path}/f').writeAsStringSync('x');
+        final bin = Directory('${_tmp.path}/bin')..createSync();
+        final stub = _stub(bin, 'tool');
+        final real = _sh(_tmp);
+        final cancelled = Completer<void>();
+        // The answer is in, and the cancel lands in the same breath.
+        Future<ScriptResult> late(String script, {Future<void>? cancel}) async {
+          final result = await real(script);
+          if (result.stdout.contains('jeansh-zip')) {
+            cancelled.complete();
+            await Future<void>.delayed(Duration.zero);
+          }
+          return result;
+        }
+
+        await expectLater(
+          FolderArchiver(late, tokenFactory: () => token).archiveFolder(
+            src.path,
+            ArchiveTool(ArchiveKind.zip, stub),
+            cancel: cancelled.future,
+          ),
+          throwsA(
+            isA<FileBrowserException>().having(
+              (e) => e.fault,
+              'fault',
+              FileBrowserFault.cancelled,
+            ),
+          ),
+        );
+        expect(_leftovers(_tmp), isEmpty);
+      },
+    );
+
+    test('the removal takes only a token of ours, and never a link', () async {
+      expect(FolderArchiver.cleanupScript('short'), isNull);
+      expect(FolderArchiver.cleanupScript('../../etc/passwdAAAA'), isNull);
+      expect(FolderArchiver.cleanupScript(r'$(touch pwned)1234'), isNull);
+      expect(FolderArchiver.cleanupScript(token), isNotNull);
+
+      final victim = Directory('${_tmp.path}/victim')..createSync();
+      File('${victim.path}/precious').writeAsStringSync('keep');
+      Link('${_tmp.path}/jeansh-zip.$token').createSync(victim.path);
+      final other = Directory('${_tmp.path}/jeansh-zip.otherOTHER111111')
+        ..createSync();
+      final result = await _runner(FolderArchiver.cleanupScript(token)!);
+      expect(result.exitCode, 0);
+      expect(File('${victim.path}/precious').existsSync(), isTrue);
+      expect(Link('${_tmp.path}/jeansh-zip.$token').existsSync(), isTrue);
+      expect(other.existsSync(), isTrue);
+      // Nothing there at all is not an error.
+      Link('${_tmp.path}/jeansh-zip.$token').deleteSync();
+      expect((await _runner(FolderArchiver.cleanupScript(token)!)).exitCode, 0);
+    });
+
+    test('a token is sixteen letters and digits, and different each time', () {
+      final a = FolderArchiver.newToken();
+      expect(a, matches(RegExp(r'^[A-Za-z0-9]{16}$')));
+      expect(FolderArchiver.newToken(), isNot(a));
+    });
+  });
+
+  group('a runner that breaks', () {
+    const tool = ArchiveTool(ArchiveKind.zip, '/usr/bin/zip');
+    Future<ScriptResult> boom(String script, {Future<void>? cancel}) =>
+        throw const SocketException('connection reset');
+
+    test('the probe says the host could not be asked, not "no tool"', () {
+      expect(
+        FolderArchiver(boom).findArchiveTool(),
+        throwsA(
+          isA<FileBrowserException>()
+              .having((e) => e.message, 'message', contains('connection reset'))
+              .having((e) => e.fault, 'fault', FileBrowserFault.disconnected),
+        ),
+      );
+    });
+
+    test('archiving says the tool could not be started', () {
+      expect(
+        FolderArchiver(boom).archiveFolder('/home/me/d', tool),
+        throwsA(
+          isA<FileBrowserException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('zip'), contains('connection reset')),
+          ),
+        ),
+      );
+    });
+
+    test('a browser exception from the runner is passed on as it is', () {
+      const own = FileBrowserException('The host went away.');
+      expect(
+        FolderArchiver((script, {cancel}) => throw own)
+            .archiveFolder('/home/me/d', tool),
+        throwsA(same(own)),
+      );
     });
   });
 

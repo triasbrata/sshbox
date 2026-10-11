@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'file_browser.dart';
 
@@ -60,7 +61,11 @@ abstract class FolderArchiveCapable {
 /// The scripts, and what is read back from them. One implementation over a
 /// [ScriptRunner], shared by the SFTP and the local browsers.
 class FolderArchiver implements FolderArchiveCapable {
-  FolderArchiver(this._run);
+  FolderArchiver(this._run, {String Function()? tokenFactory})
+    : tokenFactory = tokenFactory ?? newToken;
+
+  /// Names each archive's private folder: swapped by a test.
+  final String Function() tokenFactory;
 
   final ScriptRunner _run;
 
@@ -129,7 +134,7 @@ class FolderArchiver implements FolderArchiveCapable {
   /// The script that archives [folder]. The folder's name is only ever an
   /// argument, after `./` or `--`, and the archive's own name is fixed, so
   /// nothing a name holds is read as an option, a pattern or a command.
-  static String archiveScript(String folder, ArchiveTool tool) {
+  static String archiveScript(String folder, ArchiveTool tool, String token) {
     final (parent, base) = split(folder)!;
     final out = 'jeansh${tool.extension}';
     final name = _q('./$base');
@@ -145,7 +150,8 @@ class FolderArchiver implements FolderArchiveCapable {
     };
     return '$_path\n'
         'umask 077\n'
-        r'd=$(mktemp -d "${TMPDIR:-/tmp}/jeansh-zip.XXXXXX") || '
+        'd="\${TMPDIR:-/tmp}/jeansh-zip.$token"\n'
+        'mkdir -m 700 "\$d" 2>/dev/null || '
         '{ echo "could not make a private folder for the archive" >&2; '
         'exit 70; }\n'
         'ok=0; pid=\n'
@@ -154,11 +160,38 @@ class FolderArchiver implements FolderArchiveCapable {
         'trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM\n'
         'cd -- ${_q(parent)} || exit 71\n'
         '$command &\n'
-        'pid=\$!; wait "\$pid"; rc=\$?; [ "\$rc" -eq 0 ] || exit "\$rc"\n'
+        'pid=\$!; echo "\$pid" > "\$d/pid"; wait "\$pid"; rc=\$?; '
+        '[ "\$rc" -eq 0 ] || exit "\$rc"\n'
         'if [ ! -s "\$d/$out" ]; then echo "the archive came out empty" >&2; '
         'exit 72; fi\n'
         'ok=1\n'
         'printf "%s\\n%s\\n" "\$d/$out" "\$(wc -c < "\$d/$out" | tr -d " ")"';
+  }
+
+  static final _token = RegExp(r'^[A-Za-z0-9]{16}$');
+
+  /// A fresh name for one archive's private folder, made here rather than
+  /// by the host so a cancel knows what to remove before the host has said.
+  static String newToken() {
+    const chars =
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final random = Random.secure();
+    return String.fromCharCodes(
+      List.generate(16, (_) => chars.codeUnitAt(random.nextInt(chars.length))),
+    );
+  }
+
+  /// Stops the tool of the archive made under [token] and removes its folder,
+  /// whether or not the script got to say where that was. For a cancel over
+  /// an exec channel that closing does not hang up, or one that came too late.
+  static String? cleanupScript(String token) {
+    if (!_token.hasMatch(token)) return null;
+    return 'd="\${TMPDIR:-/tmp}/jeansh-zip.$token"\n'
+        '[ -d "\$d" ] && [ ! -L "\$d" ] || exit 0\n'
+        'if [ -f "\$d/pid" ]; then read -r p < "\$d/pid"; '
+        'case "\$p" in ""|*[!0-9]*) ;; *) kill "\$p" 2>/dev/null;; esac; fi\n'
+        'rm -rf -- "\$d"\n'
+        'if [ -e "\$d" ]; then sleep 1; rm -rf -- "\$d"; fi';
   }
 
   static final _archivePath = RegExp(
@@ -211,10 +244,25 @@ class FolderArchiver implements FolderArchiveCapable {
     }
     var stopped = false;
     unawaited(cancel?.then((_) => stopped = true));
+    final token = tokenFactory();
+    // Closing an exec channel does not always hang the shell up, and a script
+    // may have finished as it was cancelled: so every way out but the script
+    // ending itself runs the removal by name.
+    Future<void> backstop() async {
+      final script = cleanupScript(token);
+      if (script == null) return;
+      try {
+        await _run(script);
+      } catch (_) {
+        // The sweep at the next probe is the last resort.
+      }
+    }
+
     final ScriptResult result;
     try {
-      result = await _run(archiveScript(folder, tool), cancel: cancel);
+      result = await _run(archiveScript(folder, tool, token), cancel: cancel);
     } catch (error) {
+      await backstop();
       if (stopped) throw FileBrowserException.cancelled;
       if (error is FileBrowserException) rethrow;
       throw FileBrowserException(
@@ -222,7 +270,10 @@ class FolderArchiver implements FolderArchiveCapable {
         fault: FileBrowserFault.disconnected,
       );
     }
-    if (stopped) throw FileBrowserException.cancelled;
+    if (stopped) {
+      await backstop();
+      throw FileBrowserException.cancelled;
+    }
     if (result.exitCode != 0) {
       final said = oneLine(result.stderr);
       throw FileBrowserException(
@@ -276,4 +327,48 @@ ScriptRunner processRunner(Future<Process> Function(String command) start) =>
         stderr: await err,
       );
       return result;
+    };
+
+/// What a [ScriptRunner] needs of an exec channel, so the SSH one can be
+/// stood in for.
+class ExecHandle {
+  const ExecHandle({
+    required this.stdout,
+    required this.stderr,
+    required this.closeStdin,
+    required this.waitForExit,
+    required this.destroy,
+  });
+
+  final Stream<List<int>> stdout;
+  final Stream<List<int>> stderr;
+  final Future<void> Function() closeStdin;
+
+  /// The exit status, or null when the channel ended with none.
+  final Future<int?> Function() waitForExit;
+
+  /// Drops the channel, which the host answers by hanging the shell up.
+  final void Function() destroy;
+}
+
+/// `sh -c` around [script], quoted once for the login shell that runs an
+/// exec channel's command, whatever shell that is.
+String shCommand(String script) => "sh -c ${_quote(script)}";
+
+String _quote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+
+/// A [ScriptRunner] over an exec channel opened by [start]. Completing
+/// `cancel` destroys the channel; the script's own traps do the rest.
+ScriptRunner execRunner(Future<ExecHandle> Function(String command) start) =>
+    (script, {cancel}) async {
+      final handle = await start(shCommand(script));
+      unawaited(cancel?.then((_) => handle.destroy()));
+      unawaited(handle.closeStdin());
+      const decoder = Utf8Decoder(allowMalformed: true);
+      final out = decoder.bind(handle.stdout).join();
+      final err = decoder.bind(handle.stderr).join();
+      final stdout = await out;
+      final stderr = await err;
+      final code = await handle.waitForExit();
+      return (exitCode: code ?? 255, stdout: stdout, stderr: stderr);
     };
