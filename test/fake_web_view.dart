@@ -75,7 +75,6 @@ class FakeWebView extends PlatformWebViewController {
   Future<void> loadRequest(LoadRequestParams params) async =>
       loaded.add(params.uri);
 
-  @override
   var reloads = 0;
 
   @override
