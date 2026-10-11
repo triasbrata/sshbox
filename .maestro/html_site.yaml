@@ -63,9 +63,14 @@ env:
       - assertNotVisible: "(?s).*not loaded.*"
       - assertNotVisible: "Save to host"
       - takeScreenshot: html-site-page
-      # The page's tab is the selected one: closing it lands on the shell.
-      - tapOn: "(?s)Close .*"
-      - tapOn: "Close ${HOST_LABEL}.*"
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
 
 - runFlow:
     when:
@@ -123,7 +128,9 @@ env:
       - tapOn:
           text: "Close files"
           optional: true
-      - tapOn: "Close ${HOST_LABEL}.*"
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
 
 - runFlow:
     when:
@@ -170,9 +177,14 @@ env:
       # Neither the script nor the fetch got it.
       - assertNotVisible: "(?s).*SECRET-TOKEN.*"
       - takeScreenshot: html-site-evil
-      # The page's tab is the selected one: closing it lands on the shell.
-      - tapOn: "(?s)Close .*"
-      - tapOn: "Close ${HOST_LABEL}.*"
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
 
 - runFlow:
     when:
@@ -212,9 +224,14 @@ env:
           timeout: 40000
       - assertNotVisible: "Save to host"
       - takeScreenshot: html-site-big
-      # The page's tab is the selected one: closing it lands on the shell.
-      - tapOn: "(?s)Close .*"
-      - tapOn: "Close ${HOST_LABEL}.*"
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
 
 - runFlow:
     when:
@@ -258,9 +275,14 @@ env:
       # on screen.
       - assertNotVisible: "(?s).*${LEAK}.*"
       - takeScreenshot: html-site-link
-      # The page's tab is the selected one: closing it lands on the shell.
-      - tapOn: "(?s)Close .*"
-      - tapOn: "Close ${HOST_LABEL}.*"
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
 
 - runFlow:
     when:
@@ -304,6 +326,11 @@ env:
       - takeScreenshot: html-site-gate
       - assertVisible: "gate page"
       - assertVisible: "Reload"
-      # The page's tab is the selected one: closing it lands on the shell.
-      - tapOn: "(?s)Close .*"
-      - tapOn: "Close ${HOST_LABEL}.*"
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
