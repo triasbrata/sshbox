@@ -550,7 +550,7 @@ class LocalOpenCommandSetting extends ValueNotifier<bool> {
   LocalOpenCommandSetting({this.home}) : super(installOpenCommandDefault);
 
   /// Where `~` is, when a test says; otherwise HOME.
-  final String? home;
+  String? home;
 
   /// Why the command could not be put back at start, for the app to say once
   /// it is on screen; null when it went in or the switch is off.
@@ -1240,6 +1240,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
                           context,
                           problem,
                           type: TuiToastType.warning,
+                          duration: const Duration(seconds: 6),
                         );
                       }
                     },

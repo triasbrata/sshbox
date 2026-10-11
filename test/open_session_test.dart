@@ -402,6 +402,25 @@ void main() {
       expect(a.openFiles, ['/second.md', '/first.md']);
     });
 
+    test(
+      'says so, with what it was, when the write fails some other way',
+      () async {
+        final said = <String>[];
+        final manager = SessionManager(
+          onOpenProblem: said.add,
+          writeLocalOpenSecret: (_) => throw StateError('disk'),
+        );
+        final session = manager.create(
+          localHost(),
+          transport: (_, _) => _Shell(),
+        );
+        addTearDown(session.dispose);
+        await session.connect(secrets: _Secrets());
+        expect(said.single, contains('Could not set up the jeansh command'));
+        expect(said.single, contains('disk'));
+      },
+    );
+
     test('says so when the file cannot be written', () async {
       final said = <String>[];
       final manager = SessionManager(

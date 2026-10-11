@@ -235,6 +235,23 @@ void main() {
     expect(opened, hasLength(4));
   });
 
+  test('the ring is empty until a secret is made, takes one by hand and can '
+      'be emptied, and a path decodes to itself or to nothing', () {
+    final ring = OpenSecretRing();
+    expect(ring.isEmpty, isTrue);
+    expect(ring.newest, isNull);
+    final r = OpenRequests(onOpen: opened.add, ring: ring, now: () => clock);
+    r.secret = 'by-hand';
+    expect(ring.isEmpty, isFalse);
+    expect(ring.accepts('by-hand'), isTrue);
+    r.secret = null;
+    expect(ring.isEmpty, isTrue);
+    expect(ring.accepts('by-hand'), isFalse);
+    expect(OpenRequests.decodePath(_b64('/a/b')), '/a/b');
+    expect(OpenRequests.decodePath(_b64('relative')), isNull);
+    expect(OpenRequests.decodePath('!!!'), isNull);
+  });
+
   test('constantTimeEquals agrees with ==', () {
     expect(OpenRequests.constantTimeEquals('abc', 'abc'), isTrue);
     expect(OpenRequests.constantTimeEquals('abc', 'abd'), isFalse);
@@ -552,6 +569,76 @@ void main() {
       );
       expect(Directory('${dir.path}/elsewhere').listSync(), isEmpty);
     });
+
+    group(
+      'every way the local install can fail is an error that says what',
+      () {
+        final real = runChmod;
+        tearDown(() => runChmod = real);
+
+        Matcher failsWith(String text) => throwsA(
+          isA<OpenInstallException>().having(
+            (e) => e.message,
+            'message',
+            contains(text),
+          ),
+        );
+
+        test('chmod cannot run, for the command and for the secret', () {
+          runChmod = (_) => throw const ProcessException('chmod', [], 'gone');
+          expect(
+            () => installOpenCommand('${dir.path}/b1'),
+            failsWith('executable: gone'),
+          );
+          expect(Directory('${dir.path}/b1').listSync(), isEmpty);
+          expect(
+            () => writeOpenSecret('${dir.path}/h3', 'x'),
+            failsWith('private: gone'),
+          );
+        });
+
+        test('a write fails with no OS message, and the failure still names '
+            'the file', () {
+          runChmod = (_) => throw const FileSystemException('boom');
+          expect(
+            () => installOpenCommand('${dir.path}/b2'),
+            failsWith('Could not write ${dir.path}/b2/jeansh: boom.'),
+          );
+          expect(Directory('${dir.path}/b2').listSync(), isEmpty);
+        });
+
+        test('a temp file that is already gone is no second error', () {
+          runChmod = (args) {
+            File(args[1]).deleteSync();
+            return ProcessResult(0, 1, '', '');
+          };
+          expect(
+            () => installOpenCommand('${dir.path}/b4'),
+            failsWith('chmod failed'),
+          );
+        });
+
+        test('the secret folder cannot be made or made private', () {
+          // ~/.config is a file, so nothing can be made under it.
+          final h = Directory('${dir.path}/h4')..createSync();
+          File('${h.path}/.config').writeAsStringSync('a file');
+          expect(
+            () => writeOpenSecret(h.path, 'x'),
+            failsWith('Could not write the key for the jeansh command'),
+          );
+          // chmod of the folder refuses; the file's own chmod is not reached.
+          runChmod = (_) => ProcessResult(0, 1, '', '');
+          expect(
+            () => writeOpenSecret('${dir.path}/h5', 'x'),
+            failsWith('private: chmod failed'),
+          );
+          expect(
+            File('${dir.path}/h5/.config/jeansh/open-secret').existsSync(),
+            isFalse,
+          );
+        });
+      },
+    );
 
     test('a chmod that fails is an error, and leaves no .new behind', () {
       final bin = '${dir.path}/bin3';

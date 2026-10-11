@@ -1288,7 +1288,7 @@ class LiveSession extends ChangeNotifier {
     } catch (_) {
       // Gives the channel back, whatever the host was doing with it.
     } finally {
-      await subscription?.cancel();
+      unawaited(subscription?.cancel());
       channel?.close();
     }
     final lines = output

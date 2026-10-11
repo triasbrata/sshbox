@@ -37,6 +37,26 @@ import 'ui/update_dialog.dart';
 import 'update/updater.dart';
 import 'telemetry/app_log.dart';
 
+/// What puts a local shell's secret for `jeansh` where its script reads it,
+/// or null where there is no such script: a Mac or Linux desktop alone. The
+/// arguments are for a test; the app passes none.
+@visibleForTesting
+void Function(String)? localOpenSecretWriter({
+  String? home,
+  bool? desktop,
+  bool? windows,
+}) {
+  home ??= Platform.environment['HOME'];
+  if (!(desktop ?? isDesktop) ||
+      (windows ?? Platform.isWindows) ||
+      home == null ||
+      home.isEmpty) {
+    return null;
+  }
+  final folder = home;
+  return (secret) => writeOpenSecret(folder, secret);
+}
+
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key, @visibleForTesting this.transport});
 
@@ -65,18 +85,8 @@ class _SshboxAppState extends State<SshboxApp> {
     onOpenRefused: _openRefused,
     onOpenDropped: _openDropped,
     onOpenProblem: _openProblem,
-    writeLocalOpenSecret: _writeLocalOpenSecret,
+    writeLocalOpenSecret: localOpenSecretWriter(),
   );
-
-  /// Puts a local shell's secret for `jeansh` where its script reads it: a
-  /// Mac or Linux desktop alone, the others having no such script.
-  static void Function(String)? get _writeLocalOpenSecret {
-    final home = Platform.environment['HOME'];
-    if (!isDesktop || Platform.isWindows || home == null || home.isEmpty) {
-      return null;
-    }
-    return (secret) => writeOpenSecret(home, secret);
-  }
 
   /// Requests `jeansh` made that were right and could not be opened.
   void _openDropped(int count, String reason) {
@@ -88,6 +98,7 @@ class _SshboxAppState extends State<SshboxApp> {
           ? '1 jeansh file was not opened: $reason.'
           : '$count jeansh files were not opened: $reason.',
       type: TuiToastType.warning,
+      duration: const Duration(seconds: 6),
     );
   }
 
@@ -95,7 +106,12 @@ class _SshboxAppState extends State<SshboxApp> {
   void _openProblem(String message) {
     final context = _navigator.currentContext;
     if (context == null) return;
-    showToast(context, message, type: TuiToastType.warning);
+    showToast(
+      context,
+      message,
+      type: TuiToastType.warning,
+      duration: const Duration(seconds: 8),
+    );
   }
 
   /// A `jeansh` request a terminal refused. Never says which check, nor that
