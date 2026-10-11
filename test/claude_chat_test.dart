@@ -7665,6 +7665,33 @@ void main() {
       );
     }
 
+    test('a message being saved while the chat starts going back to an '
+        'earlier one is shown not sent, and kept as failed', () async {
+      final t = await ownOverFlaky();
+      t.flaky.saveGate = Completer<void>();
+      final sent = t.chat.send('late one');
+      await _settle();
+      t.hold(true);
+      final revising = t.chat.reviseLast();
+      await _settle();
+      t.flaky.saveGate!.complete();
+      await sent;
+      await wait(50);
+
+      final late = t.chat.entries
+          .whereType<ChatSaid>()
+          .lastWhere((s) => s.text == 'late one');
+      expect(late.delivery, Delivery.failed);
+      expect(late.why, contains('Going back'));
+      final box = await t.flaky.inner.load(
+        OutboxStore.keyOf('h1', '11111111-1111-4111-8111-111111111111'),
+      );
+      expect(box.entries.single.text, 'late one');
+      expect(box.entries.single.failed, isTrue);
+      t.readGate.complete();
+      await revising;
+    });
+
     test('a Retry waiting behind another send, when the chat can no longer '
         'send, fails visibly instead of staying queued', () async {
       final t = await ownOverFlaky();

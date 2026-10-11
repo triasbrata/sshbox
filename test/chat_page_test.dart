@@ -163,6 +163,9 @@ class _Shell
   final uploaded = <String>[];
   var failUploads = 0;
 
+  /// Held until completed, for an upload that takes its time.
+  Completer<void>? uploadGate;
+
   /// Makes the next upload end as one cancelled from Transfers does.
   var cancelUploads = false;
 
@@ -174,6 +177,8 @@ class _Shell
     Future<void>? cancel,
   }) async {
     uploaded.add(fileName);
+    final gate = uploadGate;
+    if (gate != null) await gate.future;
     if (cancelUploads) throw FileBrowserException.cancelled;
     if (failUploads > 0) {
       failUploads--;
@@ -6930,6 +6935,61 @@ void main() {
       expect(shell.uploaded, isEmpty, reason: 'nothing uploaded for nothing');
       expect(box(tester), isEmpty);
       expect(find.textContaining('this session is read-only'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('a file whose upload outlasts the chat being able to take it '
+        'is said not added, with where it went, and the box stays empty', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          _finished('cf58d27a', 'Zsh config fix'),
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      await tester.tap(find.text('Zsh config fix'));
+      await _settlePickUp(tester);
+
+      // The upload starts while the chat takes files, and waits.
+      shell.uploadGate = Completer<void>();
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, hasLength(1));
+
+      // Meanwhile the chat goes to a session that is read-only from here.
+      await tester.tap(find.text('dev-e0'));
+      await _settlePickUp(tester);
+      await tester.runAsync(() async {
+        shell.uploadGate!.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      expect(box(tester), isEmpty);
+      expect(
+        find.textContaining('turned read-only while notes.txt was uploading'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('/tmp/'), findsWidgets);
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 
