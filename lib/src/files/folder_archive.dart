@@ -149,7 +149,7 @@ class FolderArchiver implements FolderArchiveCapable {
         '{ echo "could not make a private folder for the archive" >&2; '
         'exit 70; }\n'
         'ok=0; pid=\n'
-        r'''trap 'kill "$pid" 2>/dev/null; [ "$ok" = 1 ] || rm -rf "$d"' EXIT'''
+        r'''trap 'kill "$pid" 2>/dev/null; [ "$ok" = 1 ] || :' EXIT'''
         '\n'
         'trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM\n'
         'cd -- ${_q(parent)} || exit 71\n'
