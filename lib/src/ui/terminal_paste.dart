@@ -41,6 +41,17 @@ void pastePath(
   }
 }
 
+/// Whether a tmux pane's foreground command is a shell, which runs each line
+/// pasted unbracketed: `bash`, a login `-zsh`. A pane tmux cannot name
+/// (null) counts as one.
+bool isShellCommand(String? command) {
+  if (command == null) return true;
+  final name = command.startsWith('-') ? command.substring(1) : command;
+  return const {
+    'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'mksh', 'tcsh', 'csh',
+  }.contains(name);
+}
+
 /// A paste into a terminal, whichever way it was asked for.
 ///
 /// A terminal is a byte stream and an image on the Android clipboard is a
@@ -113,13 +124,15 @@ const shareTextLimit = 64 * 1024;
 /// as it arrives, so text that is not a single safe line is not pasted there
 /// at all: it goes on the clipboard, for a paste the user makes knowingly.
 ///
-/// In a tmux tab ([tmux]) the terminal's own flag says nothing — it is false
-/// after a reattach — so the text goes to tmux, whose `paste-buffer -p`
-/// brackets it when the pane really asked.
+/// In a tmux tab, [paneCommand] asks tmux what runs in the focused pane: the
+/// terminal's own flag says nothing there — it is false after a reattach — so
+/// a shell (or a pane tmux cannot name) keeps the refusal, and any other
+/// program, Claude Code or vim, gets the text through tmux's
+/// `paste-buffer -p`, which brackets it when the pane really asked.
 Future<String?> pasteShared(
   Terminal terminal,
   String shared, {
-  bool tmux = false,
+  Future<String?> Function()? paneCommand,
 }) async {
   final text = shared.replaceAll(RegExp(r'^[\r\n]+|[\r\n]+$'), '');
   if (text.isEmpty) return null;
@@ -127,7 +140,10 @@ Future<String?> pasteShared(
     return 'The shared text is too long to paste: '
         '${shareTextLimit ~/ 1024} KB at most';
   }
-  if (!tmux && !terminal.bracketedPasteMode && !Terminal.isPasteSafe(text)) {
+  final runsLines = paneCommand == null
+      ? !terminal.bracketedPasteMode
+      : isShellCommand(await paneCommand());
+  if (runsLines && !Terminal.isPasteSafe(text)) {
     await Clipboard.setData(ClipboardData(text: text));
     return 'Not pasted: this shell would run each line of it. '
         'It is on the clipboard instead.';

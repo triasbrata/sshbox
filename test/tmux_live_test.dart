@@ -12,7 +12,7 @@ import 'package:sshbox/src/session/pane_record.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
-import 'package:sshbox/src/ui/terminal_paste.dart' show pastePath;
+import 'package:sshbox/src/ui/terminal_paste.dart' show isShellCommand, pastePath;
 import 'package:xterm2/xterm.dart';
 
 /// Where tmux may live: Homebrew on Apple silicon puts it in /opt/homebrew/bin,
@@ -413,6 +413,30 @@ void main() {
       skip: hasTmux ? false : 'tmux is not installed here',
     );
   }
+
+  test('the focused pane names its foreground program', () async {
+    const name = 'sshbox-cmd';
+    final (process, channel) = await _start(name, dir);
+    final tmux = _session(name, channel);
+    expect(await tmux.attached, isTrue);
+    await _until(() => tmux.panes.length == 1);
+    final shell = await tmux.focusedCommand();
+    expect(isShellCommand(shell), isTrue, reason: '$shell');
+    final script = await _script('${dir.path}/cmd.sh', 'exec sleep 30');
+    tmux.send('$script\r');
+    String? running;
+    await _until(
+      () {
+        tmux.focusedCommand().then((c) => running = c);
+        return running == 'sleep';
+      },
+      () => 'still $running',
+    );
+    expect(isShellCommand(running), isFalse);
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
 
   test("the device's variables reach new panes, whoever started the server", () async {
     // A tmux server already running, started without them.

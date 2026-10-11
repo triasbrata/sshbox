@@ -55,10 +55,40 @@ void main() {
   group('a shared text', () {
     const multiline = 'first\nsecond';
 
-    test('into a tmux tab is left to tmux, not refused by a stale flag', () async {
+    Future<String?> Function() runs(String? command) =>
+        () async => command;
+
+    test('multi-line into a tmux pane running claude is pasted, not refused '
+        'by a stale flag', () async {
       final p = _pane();
-      expect(await pasteShared(p.terminal, multiline, tmux: true), isNull);
+      expect(
+        await pasteShared(p.terminal, multiline, paneCommand: runs('claude')),
+        isNull,
+      );
       expect(p.out, ['first\rsecond']);
+    });
+
+    for (final shell in ['bash', '-zsh', 'fish', 'dash', 'sh', null]) {
+      test('multi-line into a tmux pane running ${shell ?? 'nothing tmux '
+          'can name'} is refused and nothing is typed', () async {
+        final p = _pane();
+        final refused = await pasteShared(
+          p.terminal,
+          multiline,
+          paneCommand: runs(shell),
+        );
+        expect(refused, contains('would run each line'));
+        expect(p.out, isEmpty);
+      });
+    }
+
+    test('a single line into a tmux pane running bash is pasted', () async {
+      final p = _pane();
+      expect(
+        await pasteShared(p.terminal, 'https://example.com', paneCommand: runs('bash')),
+        isNull,
+      );
+      expect(p.out, ['https://example.com']);
     });
 
     test('into a plain shell that never asked is still refused', () async {

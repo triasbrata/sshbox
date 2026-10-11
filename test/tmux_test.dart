@@ -473,6 +473,15 @@ void main() {
       expect(said.single, contains('bad buffer'));
     });
 
+    test('the focused pane\'s program is asked of tmux by name', () async {
+      final (tmux, fake, _) = await attach();
+      expect(await tmux.focusedCommand(), isNull, reason: 'an empty answer');
+      expect(
+        fake.commands.last,
+        'display-message -p -t %1 "#{pane_current_command}"',
+      );
+    });
+
     test('each client has a buffer of its own, and nothing typed jumps a paste', () async {
       final (a, fakeA, _) = await attach();
       final (b, fakeB, _) = await attach();

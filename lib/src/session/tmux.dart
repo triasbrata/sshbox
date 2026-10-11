@@ -794,6 +794,22 @@ class TmuxSession {
     if (pane != null) _sendTo(pane, data);
   }
 
+  /// The program in the foreground of the focused pane, as tmux names it
+  /// (`bash`, `-zsh`, `claude`); null when tmux cannot say.
+  Future<String?> focusedCommand() async {
+    final pane = focused;
+    if (pane == null) return null;
+    try {
+      final lines = await _client.command(
+        'display-message -p -t %${pane.id} "#{pane_current_command}"',
+      );
+      final name = lines.isEmpty ? '' : lines.first.trim();
+      return name.isEmpty ? null : name;
+    } on TmuxException {
+      return null;
+    }
+  }
+
   /// As hex, so no byte is ever read as tmux syntax: `send-keys -H` writes
   /// each one to the pane as it is, rather than as a key tmux looks up.
   ///

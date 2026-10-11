@@ -301,7 +301,7 @@ class _TerminalPageState extends State<TerminalPage> {
           final refused = await pasteShared(
             _session.terminal,
             text,
-            tmux: _session.tmux != null,
+            paneCommand: _session.tmux?.focusedCommand,
           );
           if (refused != null && mounted) {
             showToast(context, refused, type: TuiToastType.warning);
