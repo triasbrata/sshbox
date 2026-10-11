@@ -386,6 +386,30 @@ void main() {
     },
   );
 
+  test('keys sent before tmux has said which panes there are are held and '
+      'go to the focused pane, in order', () async {
+    final fake = _FakeTmux('b25d,80x24,0,0,1');
+    final tmux = TmuxSession(
+      name: 'sshbox-test',
+      channel: fake.channel,
+      newTerminal: Terminal.new,
+      transform: (data) => data,
+      onChanged: () {},
+      onEnded: () {},
+    );
+    addTearDown(tmux.dispose);
+    tmux.send('l');
+    tmux.send('s');
+    expect(fake.commands.where((c) => c.startsWith('send-keys')), isEmpty);
+
+    fake.say('%session-changed \$1 sshbox-test');
+    await pumpEventQueue();
+    expect(
+      fake.commands.where((c) => c.startsWith('send-keys')).toList(),
+      ['send-keys -t %1 -H 6c', 'send-keys -t %1 -H 73'],
+    );
+  });
+
   test('what a pane writes as its history is read is drawn after it', () async {
     final fake = _FakeTmux(
       'b25d,80x24,0,0,1',

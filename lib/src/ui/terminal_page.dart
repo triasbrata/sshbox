@@ -222,6 +222,11 @@ class _TerminalPageState extends State<TerminalPage> {
     // existed, or before the shell came up. Either way the session notifies,
     // and this is where it lands.
     unawaited(_drainShared());
+    // Input held while the shell was connecting that never went in.
+    final inputProblem = _session.takeInputProblem();
+    if (inputProblem != null) {
+      showToast(context, inputProblem, type: TuiToastType.warning);
+    }
   }
 
   /// Says so when a server lands on the tailnet, or cannot, with a way
