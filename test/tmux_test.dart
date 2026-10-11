@@ -4,10 +4,12 @@ import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart' show pasteShared;
 import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -480,6 +482,34 @@ void main() {
         fake.commands.last,
         'display-message -p -t %1 "#{pane_current_command}"',
       );
+    });
+
+    test('a tmux that will not name the pane is a shell: multi-line is '
+        'refused', () async {
+      final binding = TestWidgetsFlutterBinding.ensureInitialized();
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (_) async => null,
+      );
+      addTearDown(
+        () => binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final (tmux, fake, _) = await attach(
+        refuse: (c) => c.startsWith('display-message'),
+      );
+      expect(await tmux.focusedCommand(), isNull);
+      expect(fake.commands.last, startsWith('display-message'));
+
+      final pane = tmux.panes.single.terminal;
+      final refused = await pasteShared(
+        pane,
+        'first\nsecond',
+        paneCommand: tmux.focusedCommand,
+      );
+      expect(refused, contains('would run each line'));
     });
 
     test('each client has a buffer of its own, and nothing typed jumps a paste', () async {
