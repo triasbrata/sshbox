@@ -509,6 +509,8 @@ void main() {
           workingDirectory: dir.path,
           environment: {'JEANSH_TTY': tty.path, 'HOME': dir.path},
           includeParentEnvironment: false,
+          stdoutEncoding: latin1,
+          stderrEncoding: latin1,
         );
         expect(bad.exitCode, 1);
         expect(bad.stderr, contains('not valid UTF-8'));
