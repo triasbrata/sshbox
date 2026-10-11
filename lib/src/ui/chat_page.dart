@@ -935,7 +935,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             !keys.isControlPressed &&
             !keys.isMetaPressed &&
             !keys.isAltPressed)) {
-      if (_sendable) _send();
+      // Not `_sendable`-gated: [_send] says why when it cannot go, with the
+      // text left in the box, where a swallowed Enter said nothing at all.
+      _send();
       return KeyEventResult.handled;
     }
     if (chatEnterSends.value && keys.isShiftPressed) {

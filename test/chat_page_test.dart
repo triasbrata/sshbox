@@ -7557,6 +7557,25 @@ void main() {
       expect(find.byTooltip('Edit this message'), findsNothing);
     });
 
+    testWidgets('Ctrl+Enter while the chat cannot send says why and keeps '
+        'what was typed, instead of doing nothing', (tester) async {
+      final shell = await ownChat(tester, answered: false);
+      final before = shell.written.length;
+      await tester.enterText(find.byType(TextField), 'a second thought');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump();
+      expect(find.textContaining('Claude is still answering'), findsOneWidget);
+      expect(box(tester).controller!.text, 'a second thought');
+      expect(shell.written, hasLength(before));
+      await tester.pump(const Duration(seconds: 6));
+    });
+
     testWidgets('the Edit button over a draft never writes over it: the draft '
         'stays and the message it went back to is said', (tester) async {
       await ownChat(tester);
