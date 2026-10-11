@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'session/open_command.dart' show writeOpenSecret;
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
@@ -62,7 +63,40 @@ class _SshboxAppState extends State<SshboxApp> {
     notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
     onOpenRefused: _openRefused,
+    onOpenDropped: _openDropped,
+    onOpenProblem: _openProblem,
+    writeLocalOpenSecret: _writeLocalOpenSecret,
   );
+
+  /// Puts a local shell's secret for `jeansh` where its script reads it: a
+  /// Mac or Linux desktop alone, the others having no such script.
+  static void Function(String)? get _writeLocalOpenSecret {
+    final home = Platform.environment['HOME'];
+    if (!isDesktop || Platform.isWindows || home == null || home.isEmpty) {
+      return null;
+    }
+    return (secret) => writeOpenSecret(home, secret);
+  }
+
+  /// Requests `jeansh` made that were right and could not be opened.
+  void _openDropped(int count, String reason) {
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    showToast(
+      context,
+      count == 1
+          ? '1 jeansh file was not opened: $reason.'
+          : '$count jeansh files were not opened: $reason.',
+      type: TuiToastType.warning,
+    );
+  }
+
+  /// `jeansh` could not be set up, or was left alone: said in words.
+  void _openProblem(String message) {
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    showToast(context, message, type: TuiToastType.warning);
+  }
 
   /// A `jeansh` request a terminal refused. Never says which check, nor that
   /// it was one: a program's output can cause this too.
@@ -107,6 +141,7 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_checkForUpdate());
     unawaited(_countThisInstall());
     unawaited(_sayIfFontMissing());
+    unawaited(_sayIfOpenCommandMissing());
     lastFault.addListener(_offerToReport);
     localTmux.addListener(_noTmux.clear);
     if (defaultTargetPlatform == TargetPlatform.macOS) {
@@ -187,6 +222,15 @@ class _SshboxAppState extends State<SshboxApp> {
     _settingsKeyDown = true;
     if (event is KeyDownEvent) _openSettings();
     return KeyEventResult.handled;
+  }
+
+  /// The `jeansh` command the Settings switch keeps on this computer, when
+  /// putting it back at start failed: said once the app is on screen.
+  Future<void> _sayIfOpenCommandMissing() async {
+    if (localOpenCommand.startupProblem == null) return;
+    await WidgetsBinding.instance.endOfFrame;
+    final message = localOpenCommand.startupProblem;
+    if (message != null) _openProblem(message);
   }
 
   /// The font the saved choice named, when this computer no longer has it:

@@ -72,10 +72,13 @@ class LiveSession extends ChangeNotifier {
     this._transport,
     this._notifyKeys,
     this._onNotify,
+    OpenSecretRing? openRing,
+    this._writeLocalOpenSecret,
     String? tmuxName,
     bool restored = false,
     bool pickTmux = false,
-  }) : _tmuxName = tmuxName ?? _newTmuxName(),
+  }) : _openRing = openRing ?? OpenSecretRing(),
+       _tmuxName = tmuxName ?? _newTmuxName(),
        _autoConnect = restored,
        _restored = restored,
        _pickTmux = pickTmux,
@@ -176,13 +179,29 @@ class LiveSession extends ChangeNotifier {
   /// secret that tells it from a program printing the same bytes: see
   /// [OpenRequests]. [onOpenPath] is where an accepted path goes.
   late final openRequests = OpenRequests(
+    ring: _openRing,
     onOpen: (path) => onOpenPath?.call(path),
     onRefused: () => onOpenRefused?.call(),
+    onDropped: (count, why) => onOpenDropped?.call(count, why),
   );
+
+  /// The secrets this host's connections made, shared by every tab on it.
+  final OpenSecretRing _openRing;
+
+  /// Writes a secret into this machine's `~/.config/jeansh`, for a local
+  /// shell; null where there is nothing to write (a test, a phone).
+  final void Function(String secret)? _writeLocalOpenSecret;
   void Function(String path)? onOpenPath;
 
   /// Said when a request has the command's shape and fails its checks.
   void Function()? onOpenRefused;
+
+  /// Said when requests were right and not opened: how many, and why.
+  void Function(int count, String reason)? onOpenDropped;
+
+  /// Said when `jeansh` could not be set up, or was left alone: what, in
+  /// words for the user.
+  void Function(String message)? onOpenProblem;
 
   /// The terminal keystrokes go to: the shell's, or in tmux mode the focused
   /// pane's. What the key bar, the magic key and the upload all act on.
@@ -732,34 +751,31 @@ class LiveSession extends ChangeNotifier {
       final key = isLocalHostId(host.id)
           ? null
           : _notifyKeys?.forConnect(host.id);
-      // A shell on this machine is kept a secret too, under its own id, so
-      // that the panes of a tmux session restored after a restart still
-      // match. A store that is slow or fails costs only that: this run gets
-      // one of its own. Its clock is ours.
+      // A shell on this machine gets a secret of its own for each connect,
+      // written to its `~/.config/jeansh/open-secret`; a failure to write is
+      // said, since `jeansh <file>` would then do nothing. Its clock is ours.
       if (isLocalHostId(host.id)) {
         openRequests.clockOffset = 0;
-        // Taken only if it arrives in time: a store that answers later must
-        // not change the secret under a shell that has started without it.
-        final kept = await openRequests
-            .load(secrets, host.id)
-            .timeout(const Duration(milliseconds: 500))
-            .then<String?>((v) => v, onError: (_) => null);
-        openRequests.secret =
-            kept ?? openRequests.secret ?? OpenRequests.newSecret();
+        final write = _writeLocalOpenSecret;
+        if (write != null) {
+          final secret = openRequests.ring.issue();
+          try {
+            write(secret);
+          } catch (error) {
+            appLog.warn('connect: session $id jeansh secret not written');
+            onOpenProblem?.call(
+              error is OpenInstallException
+                  ? error.message
+                  : 'Could not set up the jeansh command here: $error',
+            );
+          }
+        }
       }
       Future<Map<String, String>> environment(ForwardCapable connection) async {
         final value = await key?.timeout(
           const Duration(seconds: 3),
           onTimeout: () => null,
         );
-        // Kept for the host, read once the connection is up. A secret store
-        // that fails costs `jeansh <file>` and nothing else.
-        final openSecret = isLocalHostId(host.id)
-            ? null
-            : await openRequests
-                  .load(secrets, host.id)
-                  .then<String?>((v) => v, onError: (_) => null);
-        if (openSecret != null) openRequests.secret = openSecret;
         return {
           // That this terminal shows an OSC 8 hyperlink and a Ctrl+tap opens
           // it, for a profile to turn `FORCE_HYPERLINK` on from, so Claude
@@ -772,9 +788,6 @@ class LiveSession extends ChangeNotifier {
           // desktop without FCM never has. A tmux tab needs none of this:
           // its script sets `FORCE_HYPERLINK` itself (see [TmuxSession]).
           'LC_SSHBOX_HYPERLINKS': '1',
-          // The secret `jeansh <file>` signs its request with, so that only
-          // a command in this shell can open a tab: see [OpenRequests].
-          openSecretVariable: ?openSecret,
           if (value != null) ...{
             'LC_SSHBOX_KEY': value,
             'LC_SSHBOX_HOST_ID': host.id,
@@ -793,11 +806,6 @@ class LiveSession extends ChangeNotifier {
           columns: _size.$1,
           rows: _size.$2,
           shell: shell,
-          // A local shell has no connection to send variables over, so its
-          // transport is handed them here: see [LocalTransport.connect].
-          environment: isLocalHostId(host.id)
-              ? {openSecretVariable: ?openRequests.secret}
-              : const {},
           beforeShell: environment,
         );
       }
@@ -1240,11 +1248,18 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
-  /// Puts `jeansh` on the host, when its switch is on: see
-  /// [openCommandInstallScript]. Silent like [_saveOs]; the log says what the
-  /// host answered and nothing else.
+  /// Puts `jeansh` and this connect's secret on the host, when its switch is
+  /// on: see [openCommandInstallScript]. The log says what the host answered
+  /// and nothing else; whatever is not an install is said to the user, since
+  /// `jeansh <file>` would then do nothing and nothing else would say why.
+  /// How long the host has to answer the install.
+  @visibleForTesting
+  static Duration openInstallTimeout = const Duration(seconds: 10);
+
   Future<void> _installOpenCommand(CommandCapable session) async {
+    final secret = openRequests.ring.issue();
     final lines = <String>[];
+    var timedOut = false;
     final done = Completer<void>();
     // A stream that errors goes on to finish, which calls both.
     void finish([Object? _]) {
@@ -1252,21 +1267,42 @@ class LiveSession extends ChangeNotifier {
     }
 
     final subscription = session
-        .run(openCommandInstallScript())
+        .run(openCommandInstallScript(secret))
         .listen(lines.add, onDone: finish, onError: finish);
     try {
-      await done.future.timeout(const Duration(seconds: 10));
+      await done.future.timeout(openInstallTimeout);
+    } on TimeoutException {
+      timedOut = true;
     } catch (_) {
       // Gives the channel back, whatever the host was doing with it.
     } finally {
       await subscription.cancel();
     }
     final answer = lines.isEmpty ? '' : lines.last.trim();
-    const known = {'installed', 'current', 'left alone'};
+    const known = {openInstalled, openCurrent, openLeftAlone, openSecretLink};
     appLog.add(
       'connect: session $id jeansh command '
-      '${known.contains(answer) ? answer : 'other'}',
+      '${known.contains(answer) ? answer : timedOut ? 'timed out' : 'failed'}',
     );
+    if (_disposed) return;
+    final message = switch (answer) {
+      openInstalled || openCurrent => null,
+      openLeftAlone =>
+        "The jeansh command was not put on this host: ~/.local/bin/jeansh is "
+            "not the app's own, so it was left alone. jeansh <file> there "
+            "will not open files in Jeansh.",
+      openSecretLink =>
+        'The jeansh command was not set up on this host: ~/.config/jeansh is '
+            'a link, so the key was not written there. jeansh <file> will '
+            'not open files in Jeansh.',
+      _ when timedOut =>
+        'The host did not answer in time when Jeansh set up the jeansh '
+            'command, so jeansh <file> may not open files here.',
+      _ =>
+        'Setting up the jeansh command on this host failed, so jeansh '
+            '<file> will not open files in Jeansh here.',
+    };
+    if (message != null) onOpenProblem?.call(message);
   }
 
   /// How far the host's clock is from ours, from its own `date +%s` over the
@@ -1543,10 +1579,31 @@ class DbTab {
 /// keeping a backgrounded connection alive for long needs a foreground
 /// service, and on iOS is not possible at all.
 class SessionManager extends ChangeNotifier {
-  SessionManager({this.notifyKeys, this.onNotify, this.onOpenRefused});
+  SessionManager({
+    this.notifyKeys,
+    this.onNotify,
+    this.onOpenRefused,
+    this.onOpenDropped,
+    this.onOpenProblem,
+    this.writeLocalOpenSecret,
+  });
 
   /// Handed to every session: what to say when a `jeansh` request is refused.
   final void Function()? onOpenRefused;
+
+  /// What to say when requests were right and could not be opened.
+  final void Function(int count, String reason)? onOpenDropped;
+
+  /// What to say when `jeansh` could not be set up on a host or here.
+  final void Function(String message)? onOpenProblem;
+
+  /// Puts a secret in this machine's `~/.config/jeansh/open-secret`, for a
+  /// local shell. Null, as in a test, and nothing is written.
+  final void Function(String secret)? writeLocalOpenSecret;
+
+  /// One ring of secrets per host, shared by every tab on it: the file on
+  /// the host holds the latest connect's, whichever tab made it.
+  final Map<String, OpenSecretRing> _openRings = {};
 
   /// The relay keys, one per host: what each connection hands its host as
   /// `LC_SSHBOX_KEY`, what a host's edit page copies and what Settings
@@ -1872,6 +1929,8 @@ class SessionManager extends ChangeNotifier {
       transport: transport,
       notifyKeys: notifyKeys,
       onNotify: onNotify,
+      openRing: _openRings.putIfAbsent(host.id, OpenSecretRing.new),
+      writeLocalOpenSecret: writeLocalOpenSecret,
       tmuxName: tmuxName,
       restored: restored,
       pickTmux: pickTmux,
@@ -1880,6 +1939,8 @@ class SessionManager extends ChangeNotifier {
     // pick does. The session may have closed since: openFile checks.
     created.onOpenPath = (path) => openFile(created.id, path);
     created.onOpenRefused = onOpenRefused;
+    created.onOpenDropped = onOpenDropped;
+    created.onOpenProblem = onOpenProblem;
     return created;
   }
 
