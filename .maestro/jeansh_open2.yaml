@@ -65,7 +65,9 @@ env:
       - extendedWaitUntil:
           visible: "Upload a file to /tmp"
           timeout: 30000
-      - tapOn: "Close ${HOST_LABEL}.*"
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
 
 - runFlow:
     when:

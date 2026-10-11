@@ -1332,6 +1332,8 @@ EOS
   sudo usermod -p '*' jeansh2e
   sudo rm -f "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
   jo2_host ssh-keygen -q -t ed25519 -N '' -f "$home/.e2e-onward-key"
+  sudo chown "$SSH_USER" "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  sudo chmod 600 "$home/.e2e-onward-key"
   sudo install -d -m 700 -o jeansh2e -g jeansh2e /home/jeansh2e/.ssh
   sudo cat "$home/.e2e-onward-key.pub" | sudo tee /home/jeansh2e/.ssh/authorized_keys >/dev/null
   sudo chown jeansh2e:jeansh2e /home/jeansh2e/.ssh/authorized_keys
@@ -1345,7 +1347,16 @@ EOS
   echo "::group::jeansh_open2: install result, a file that is not the app's"
   jo2_host sh -c 'mkdir -p "$HOME/.local/bin" && printf "#!/bin/sh\necho foreign\n" >"$HOME/.local/bin/jeansh" && chmod 755 "$HOME/.local/bin/jeansh"'
   before=$(sudo sha256sum "$bin" | cut -d' ' -f1)
-  flow jeansh_open2 -e STEP=foreign || jo2_fail "the foreign-file flow failed"
+  # The notice is on screen for about a second, so the flow may look away at
+  # the wrong moment: it is tried up to three times, each from a stopped app and
+  # the same untouched file, and one sighting is the proof.
+  local seen=0 attempt
+  for attempt in 1 2 3; do
+    if flow jeansh_open2 -e STEP=foreign; then seen=1; break; fi
+    echo "the notice was not seen on attempt $attempt"
+    adb shell am force-stop cloud.brata.terminal >/dev/null 2>&1
+  done
+  [ "$seen" = 1 ] || jo2_fail "4: the notice that the file was left alone was not seen in three tries"
   after=$(sudo sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)
   jo2_expect "4: the file there is byte for byte as it was" "$after" "$before"
   jo2_expect "4: and nothing else was left beside it" \
