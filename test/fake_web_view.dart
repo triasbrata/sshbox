@@ -49,7 +49,8 @@ class FakeWebView extends PlatformWebViewController {
   }
 
   @override
-  Future<void> runJavaScript(String javaScript) async => scripts.add(javaScript);
+  Future<void> runJavaScript(String javaScript) async =>
+      scripts.add(javaScript);
 
   @override
   Future<void> addJavaScriptChannel(JavaScriptChannelParams params) async =>
@@ -75,6 +76,12 @@ class FakeWebView extends PlatformWebViewController {
       loaded.add(params.uri);
 
   @override
+  var reloads = 0;
+
+  @override
+  Future<void> reload() async => reloads++;
+
+  @override
   Future<bool> canGoBack() async => false;
 
   @override
@@ -93,6 +100,8 @@ class FakeNavigationDelegate extends PlatformNavigationDelegate {
   late NavigationRequestCallback navigate;
   late PageEventCallback started;
   late PageEventCallback finished;
+  late ProgressCallback progress;
+  late WebResourceErrorCallback failed;
 
   @override
   Future<void> setOnNavigationRequest(NavigationRequestCallback c) async =>
@@ -105,7 +114,11 @@ class FakeNavigationDelegate extends PlatformNavigationDelegate {
   Future<void> setOnPageFinished(PageEventCallback c) async => finished = c;
 
   @override
-  Future<void> setOnProgress(ProgressCallback c) async {}
+  Future<void> setOnProgress(ProgressCallback c) async => progress = c;
+
+  @override
+  Future<void> setOnWebResourceError(WebResourceErrorCallback c) async =>
+      failed = c;
 
   @override
   Future<void> setOnUrlChange(UrlChangeCallback c) async {}
