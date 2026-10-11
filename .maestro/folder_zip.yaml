@@ -13,6 +13,7 @@
 #             quote: its name must go to the tool after ./, never bare
 #   nozip     no tool on the host: the dialog, with OK only
 #   targz     only tar and gzip: dev.tar.gz, never called a zip
+#   cancel    a big folder, cancelled while it compresses: Cancelled on the row, no save dialog
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -261,6 +262,63 @@ env:
       - assertNotVisible: "(?s).*No zip tool.*"
       - assertNotVisible: "(?s).*failed on the host.*"
       - takeScreenshot: folder-zip-targz-done
+      - tapOn:
+          text: "Close Transfers"
+          optional: true
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'cancel'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "(?s)\\W*jeansh-e2e-big"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*jeansh-e2e-big"
+      - extendedWaitUntil:
+          visible: "Download as zip"
+          timeout: 10000
+      # Android has no folder to put a tree in: only the zip is offered.
+      - assertNotVisible: "Download folder"
+      - tapOn: "Download as zip"
+      - tapOn: "Close files"
+      - tapOn:
+          text: "Transfers"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Compressing with zip.*"
+          timeout: 20000
+      - takeScreenshot: folder-zip-cancel-running
+      - tapOn: "Cancel"
+      # Said on the row, and no save dialog ever comes.
+      - extendedWaitUntil:
+          visible: "(?s).*cancelled.*"
+          timeout: 30000
+      - assertNotVisible: "Save"
+      - assertNotVisible: "(?s).*Compressing with.*"
+      - assertNotVisible: "(?s).*No zip tool.*"
+      - takeScreenshot: folder-zip-cancelled
+      # Time for a dialog that would come late.
+      - waitForAnimationToEnd:
+          timeout: 5000
+      - assertNotVisible: "Save"
       - tapOn:
           text: "Close Transfers"
           optional: true

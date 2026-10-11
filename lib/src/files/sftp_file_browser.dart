@@ -24,7 +24,9 @@ class SftpFileBrowser
         FolderArchiveCapable {
   SftpFileBrowser(this._client);
 
-  late final FolderArchiver _archiver = FolderArchiver(_runScript);
+  late final FolderArchiver _archiver = FolderArchiver(
+    (script, {cancel}) => _runScript(script, cancel: cancel),
+  );
 
   @override
   Future<ArchiveTool?> findArchiveTool() => _archiver.findArchiveTool();
@@ -40,20 +42,19 @@ class SftpFileBrowser
   Future<void> removeArchive(String archivePath) =>
       _archiver.removeArchive(archivePath);
 
-  /// Runs [script] under `sh` over an exec channel of its own. [cancel]
+  /// Runs a script under `sh` over an exec channel of its own. Cancel
   /// destroys the channel, which sshd answers by hanging the shell up.
-  Future<ScriptResult> _runScript(String script, {Future<void>? cancel}) async {
-    final session = await _client.execute('sh -c ${shellQuote(script)}');
-    unawaited(cancel?.then((_) => session.channel.destroy()));
-    unawaited(session.stdin.close());
-    const decoder = Utf8Decoder(allowMalformed: true);
-    final out = decoder.bind(session.stdout).join();
-    final err = decoder.bind(session.stderr).join();
-    final stdout = await out;
-    final stderr = await err;
-    final code = session.exitCode;
-    return (exitCode: code ?? 255, stdout: stdout, stderr: stderr);
-  }
+  late final ScriptRunner _runScript = execRunner((command) async {
+    final session = await _client.execute(command);
+    return ExecHandle(
+      stdout: session.stdout,
+      stderr: session.stderr,
+      closeStdin: session.stdin.close,
+      waitForExit: () =>
+          session.waitForExit(timeout: const Duration(seconds: 5)),
+      destroy: session.channel.destroy,
+    );
+  });
 
   final SSHClient _client;
 
