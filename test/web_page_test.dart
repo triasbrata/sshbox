@@ -120,6 +120,81 @@ void main() {
     }
   });
 
+  group('a page that does not load', () {
+    const message = 'Could not load the page: ';
+
+    testWidgets('says why, and Reload comes back where Stop was', (
+      tester,
+    ) async {
+      await pumpPage(tester, 'https://dart.dev/');
+      platform.view.page.progress(40);
+      await tester.pump();
+      expect(find.byTooltip('Stop'), findsOneWidget);
+
+      platform.view.page.failed(
+        const WebResourceError(
+          errorCode: -1004,
+          description: 'Could not connect to the server.',
+          isForMainFrame: true,
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.text('${message}Could not connect to the server.'),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('Stop'), findsNothing);
+      expect(find.byTooltip('Reload'), findsOneWidget);
+
+      // Loading again clears it.
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.pump();
+      expect(find.textContaining(message), findsNothing);
+    });
+
+    testWidgets('a picture or frame that fails is not the page failing', (
+      tester,
+    ) async {
+      await pumpPage(tester, 'https://dart.dev/');
+      for (final main in [false, null]) {
+        platform.view.page.failed(
+          WebResourceError(
+            errorCode: -1,
+            description: 'x',
+            isForMainFrame: main,
+          ),
+        );
+      }
+      await tester.pump();
+      expect(find.textContaining(message), findsNothing);
+    });
+
+    testWidgets('a load that says nothing for 30 s is said to be stuck', (
+      tester,
+    ) async {
+      await pumpPage(tester, 'https://dart.dev/');
+      await tester.pump(const Duration(seconds: 29));
+      expect(find.textContaining(message), findsNothing);
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('${message}no answer in 30 s'), findsOneWidget);
+      expect(platform.view.scripts, contains('window.stop()'));
+    });
+
+    testWidgets('progress holds the clock off, and finishing stops it', (
+      tester,
+    ) async {
+      await pumpPage(tester, 'https://dart.dev/');
+      await tester.pump(const Duration(seconds: 20));
+      platform.view.page.progress(50);
+      await tester.pump(const Duration(seconds: 20));
+      expect(find.textContaining(message), findsNothing);
+
+      platform.view.page.finished('https://dart.dev/');
+      await tester.pump(const Duration(seconds: 60));
+      expect(find.textContaining(message), findsNothing);
+    });
+  });
+
   group('a page that navigates by itself', () {
     var now = DateTime(2026, 10, 11, 12);
     setUp(() => webGestureClock = () => now);
@@ -343,6 +418,14 @@ void main() {
         );
       });
       expect(platform.view.loaded, isEmpty);
+    });
+
+    testWidgets('the view asking about the page it was just told to load is '
+        'let through, as WKWebView asks', (tester) async {
+      await pumpHtml(tester);
+      expect(await go('${site!.url}'), NavigationDecision.navigate);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     });
 
     testWidgets('its own pages and anchors stay, links leave through openUrl', (
