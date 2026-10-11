@@ -364,6 +364,10 @@ def ask_turn(text):
     answer = sys.stdin.readline()
     if not answer:
         return
+    # As the CLI erases its dialog when it closes: the chat refuses a pane
+    # whose screen still says Esc to cancel.
+    sys.stdout.write("\x1b[2J\x1b[H")
+    sys.stdout.flush()
     log_line(answer.rstrip('\n'))
     listed_as('busy')
     record({'type': 'user', 'timestamp': now(), 'message': {'role': 'user', 'content': [
