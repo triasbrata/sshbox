@@ -1435,7 +1435,7 @@ fz_list() { # kind(zip|tgz) device-path
   tmp=$(mktemp -d)
   if adb pull "$2" "$tmp/a" >/dev/null 2>&1; then
     if [ "$1" = zip ]; then unzip -Z1 "$tmp/a"; else tar tzf "$tmp/a"; fi 2>/dev/null |
-      grep -v '/$' | LC_ALL=C sort
+      grep -v '/$' | sed 's|^\./||' | LC_ALL=C sort
   fi
   rm -rf "$tmp"
 }
