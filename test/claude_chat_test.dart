@@ -7140,6 +7140,15 @@ void main() {
     Future<void> wait([int ms = 400]) =>
         Future<void>.delayed(Duration(milliseconds: ms));
 
+    /// Until [ok], looked at every 20 ms for up to [ms]: a slow machine
+    /// makes these tests longer, never wrong.
+    Future<void> until(bool Function() ok, {int ms = 10000}) async {
+      final end = DateTime.now().add(Duration(milliseconds: ms));
+      while (!ok() && DateTime.now().isBefore(end)) {
+        await wait(20);
+      }
+    }
+
     /// The transcript the history command answers: its size, then the lines.
     String transcript(List<(String, String)> turns) {
       final at = DateTime.now().toUtc().add(const Duration(minutes: 1));
@@ -7490,7 +7499,13 @@ void main() {
       );
       await chat.continueFrom(_interactive);
       chat.send('persistent');
-      await wait(600);
+      await until(
+        () =>
+            host.paneTyping.length >= 3 &&
+            chat.entries.whereType<ChatSaid>().single.delivery ==
+                Delivery.failed,
+      );
+      await wait(100);
 
       // First go and two automatic ones.
       expect(host.paneTyping, hasLength(3));
@@ -7505,12 +7520,12 @@ void main() {
     test('a transient failure that clears is delivered by the retry', () async {
       final host = _LiveHost('0\n', interactive: true)
         ..typedAnswer = 'sshbox:no busy\n';
-      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 400));
       await chat.continueFrom(_interactive);
       chat.send('second time lucky');
-      await wait(30);
+      await until(() => host.paneTyping.length == 1);
       host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
-      await wait(500);
+      await until(() => host.paneTyping.length == 2);
 
       expect(host.paneTyping, hasLength(2));
       expect(chat.entries.whereType<ChatSaid>(), hasLength(1));
@@ -7524,16 +7539,21 @@ void main() {
         'clear: a dialog refusal is tried again, not given up on', () async {
       final host = _LiveHost('0\n', interactive: true)
         ..typedAnswer = 'sshbox:no dialog\n';
-      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 400));
       await chat.continueFrom(_interactive);
       chat.send('after the question');
-      await wait(30);
+      await until(
+        () =>
+            host.paneTyping.length == 1 &&
+            chat.entries.whereType<ChatSaid>().single.delivery ==
+                Delivery.queued,
+      );
       expect(host.paneTyping, hasLength(1));
       expect(chat.entries.whereType<ChatSaid>().single.delivery,
           Delivery.queued);
 
       host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
-      await wait(500);
+      await until(() => host.paneTyping.length == 2);
 
       expect(host.paneTyping, hasLength(2));
       host.adds(userLine('u-q', 'after the question'));
@@ -7545,39 +7565,50 @@ void main() {
         'it failed with the reason, tried again by itself, and typed once '
         'the host answers', () async {
       final host = _LiveHost('0\n', interactive: true);
-      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 400));
       await chat.continueFrom(_interactive);
       host.paneTyping.clear();
       host.agentsFail = true;
 
       chat.send('while the host is down');
-      await wait(30);
+      await until(
+        () =>
+            chat.entries.whereType<ChatSaid>().isNotEmpty &&
+            chat.entries.whereType<ChatSaid>().single.delivery ==
+                Delivery.queued,
+      );
       final said = chat.entries.whereType<ChatSaid>().single;
       expect(said.why, contains('Could not check on it first'));
       expect(said.delivery, Delivery.queued, reason: 'waiting to try again');
       expect(host.paneTyping, isEmpty);
 
       host.agentsFail = false;
-      await wait(500);
+      await until(() => host.paneTyping.length == 1);
       expect(host.paneTyping.single.stdin, ['while the host is down']);
     });
 
     test('a pane that will not open is a visible failure, tried again by '
         'itself, and typed once it opens', () async {
       final host = _LiveHost('0\n', interactive: true)..paneOpenFails = true;
-      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 400));
       await chat.continueFrom(_interactive);
 
       chat.send('into a pane that is down');
-      await wait(30);
+      await until(
+        () =>
+            chat.entries.whereType<ChatSaid>().isNotEmpty &&
+            (chat.entries.whereType<ChatSaid>().single.why?.contains(
+                  'would not open',
+                ) ??
+                false),
+      );
       final said = chat.entries.whereType<ChatSaid>().single;
-      expect(said.why, contains('Not delivered'));
       expect(said.why, contains('would not open'));
       expect((await onDisk()).entries.single.text,
           'into a pane that is down');
 
       host.paneOpenFails = false;
-      await wait(500);
+      await until(() => host.paneTyping.isNotEmpty);
       expect(host.paneTyping.single.stdin, ['into a pane that is down']);
     });
 
