@@ -34,7 +34,7 @@ void pastePath(
   required void Function(String data) sendRaw,
 }) {
   logPaste('terminal', 'files', 1);
-  if (tmux || terminal.bracketedPasteMode) {
+  if (terminal.bracketedPasteMode) {
     mutePasteLog(() => terminal.paste('$path '));
   } else {
     sendRaw('$path ');
