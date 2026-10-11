@@ -51,6 +51,10 @@ const _shownHere = {'http', 'https', 'about', 'data', 'blob'};
 /// How long after a touch a page may still send the user to another app.
 const webGestureWindow = Duration(seconds: 1);
 
+/// How long a page may go without a word from the view before the tab says it
+/// is not loading.
+const webLoadTimeout = Duration(seconds: 30);
+
 /// The time a gesture is stamped and judged by; a test replaces it.
 @visibleForTesting
 DateTime Function() webGestureClock = DateTime.now;
@@ -92,13 +96,24 @@ class _WebPageState extends State<WebPage> {
           onPageStarted: (url) => _moved(Uri.tryParse(url) ?? _url, null),
           onProgress: (progress) {
             if (!mounted) return;
+            if (progress < 100) {
+              _armStall();
+            } else {
+              _stall?.cancel();
+            }
             setState(() => _progress = progress < 100 ? progress / 100 : null);
           },
           onPageFinished: (_) {
             _asked = null;
+            _stall?.cancel();
             if (!mounted) return;
             setState(() => _progress = null);
             unawaited(_readBack());
+          },
+          // Only the page itself: a picture that fails is the site's line.
+          onWebResourceError: (error) {
+            if (error.isForMainFrame != true) return;
+            _fail(error.description);
           },
           // A page that moves itself along — pushState, a hash — loads
           // nothing, so this is the only word of it. A page that is loading
@@ -116,6 +131,33 @@ class _WebPageState extends State<WebPage> {
       _address.text = '';
       unawaited(_loadSite());
     }
+  }
+
+  /// Why the page did not load, in words, until the next load starts.
+  String? _loadError;
+
+  Timer? _stall;
+
+  /// Starts the clock on a load that must show some progress, or finish,
+  /// within [webLoadTimeout]; each word from the view starts it again.
+  void _armStall() {
+    _stall?.cancel();
+    _stall = Timer(webLoadTimeout, () {
+      if (!mounted) return;
+      unawaited(_view.runJavaScript('window.stop()'));
+      _fail('no answer in ${webLoadTimeout.inSeconds} s');
+    });
+  }
+
+  /// The page is not coming: said on screen rather than a bar that never
+  /// ends.
+  void _fail(String reason) {
+    _stall?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _progress = null;
+      _loadError = reason;
+    });
   }
 
   HtmlSite? _site;
@@ -139,8 +181,12 @@ class _WebPageState extends State<WebPage> {
       }
       if (mounted) {
         _url = site.url;
-        _asked = site.url;
+        // Not noted in [_asked]: WKWebView, unlike Android's view, asks the
+        // delegate about this very request, and holding it back there leaves
+        // the page loading for ever.
+        _loadError = null;
         unawaited(_view.loadRequest(site.url));
+        _armStall();
       }
     } catch (error) {
       final why = const HtmlEscape().convert('Could not open the file: $error');
@@ -210,6 +256,7 @@ class _WebPageState extends State<WebPage> {
   @override
   void dispose() {
     _closed = true;
+    _stall?.cancel();
     _site?.problems.removeListener(_problemsChanged);
     unawaited(_site?.close());
     _address.dispose();
@@ -218,10 +265,20 @@ class _WebPageState extends State<WebPage> {
     super.dispose();
   }
 
+  /// Reload for a link: the view loads it again, and a failure shown is
+  /// forgotten.
+  void _reload() {
+    setState(() => _loadError = null);
+    unawaited(_view.reload());
+    _armStall();
+  }
+
   void _load(Uri url) {
     _url = url;
     _asked = url;
+    _loadError = null;
     unawaited(_view.loadRequest(url));
+    _armStall();
   }
 
   NavigationDecision _onNavigation(NavigationRequest request) {
@@ -356,7 +413,7 @@ class _WebPageState extends State<WebPage> {
                     : button(
                         'Reload',
                         Icons.refresh,
-                        widget.site == null ? _view.reload : _loadSite,
+                        widget.site == null ? _reload : _loadSite,
                       ),
                 Expanded(
                   child: TextField(
@@ -403,6 +460,17 @@ class _WebPageState extends State<WebPage> {
           height: 2,
           child: _loading ? TuiProgressBar(value: _progress) : null,
         ),
+        if (_loadError case final why?)
+          TuiBox(
+            expanded: false,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Text(
+              'Could not load the page: $why',
+              style: theme.textTheme.bodySmall,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         // What the page asked for and did not get — a missing file, one over
         // the limit, a link out of the folder — said here rather than left
         // as a bare space where a picture was meant to be.
