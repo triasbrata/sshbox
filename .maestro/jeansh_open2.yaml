@@ -54,9 +54,18 @@ env:
           visible: '(?s).*${HOST_LABEL}.*\n.*'
           timeout: 15000
       - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
-      - tapOn:
-          text: "Trust"
-          optional: true
+      # The notice stays up about a second, so nothing is waited on before it:
+      # the host is already trusted, and an optional tap on Trust that finds no
+      # prompt waits for seconds. Looked for at once; only if the trust prompt
+      # comes first is it answered.
+      - extendedWaitUntil:
+          visible: "(?s).*(left alone|Trust).*"
+          timeout: 30000
+      - runFlow:
+          when:
+            visible: "Trust"
+          commands:
+            - tapOn: "Trust"
       # Said when the install finds a file there that is not the app's own.
       - extendedWaitUntil:
           visible: "(?s).*left alone.*"
@@ -178,7 +187,7 @@ env:
 
       # 3. Onward ssh: what the terminal's shell exports goes no further.
       # The runner made the other account and its key; what it saw is in files.
-      - inputText: "ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 -o SendEnv='LC_*' jeansh2e@localhost 'env | grep -c OPEN_SECRET; ls -A ~/.config/jeansh 2>/dev/null | wc -l' >~/jo3.out 2>&1; echo $? >~/jo3.rc; LC_E2E_PROBE=1 ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 -o SendEnv=LC_E2E_PROBE jeansh2e@localhost 'env | grep -c LC_E2E_PROBE' >~/jo3.control 2>&1"
+      - inputText: "ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv='LC_*' jeansh2e@localhost 'env | grep -c OPEN_SECRET; ls -A ~/.config/jeansh 2>/dev/null | wc -l' >~/jo3.out 2>&1; echo $? >~/jo3.rc; LC_E2E_PROBE=1 ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv=LC_E2E_PROBE jeansh2e@localhost 'env | grep -c LC_E2E_PROBE' >~/jo3.control 2>&1"
       - pressKey: Enter
       - tapOn:
           text: "never-shown-pause"

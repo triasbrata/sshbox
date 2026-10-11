@@ -1392,7 +1392,7 @@ EOS
   # 3. Onward ssh: only worth reading when the control shows the account can
   # be reached and a LC_ variable does get through to it.
   rc=$(jo2_cat jo3.rc)
-  out=$(jo2_cat jo3.out | tr '\n' ' ')
+  out=$(jo2_cat jo3.out | tail -n 2 | tr "\n" " ")
   echo "onward ssh: exit [$rc], saw [$out], control [$(jo2_cat jo3.control | tr '\n' ' ')]"
   if [ "$rc" != 0 ]; then
     echo "::warning::jeansh_open2 3: the onward ssh did not connect, so nothing was learned: $out"
