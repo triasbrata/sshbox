@@ -54,19 +54,10 @@ env:
           visible: '(?s).*${HOST_LABEL}.*\n.*'
           timeout: 15000
       - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
-      # The notice stays up about a second, so nothing is waited on before it:
-      # the host is already trusted, and an optional tap on Trust that finds no
-      # prompt waits for seconds. Looked for at once; only if the trust prompt
-      # comes first is it answered.
-      - extendedWaitUntil:
-          visible: "(?s).*(left alone|Trust).*"
-          timeout: 30000
-      - runFlow:
-          when:
-            visible: "Trust"
-          commands:
-            - tapOn: "Trust"
-      # Said when the install finds a file there that is not the app's own.
+      # The notice stays up about a second, so it is waited for directly after
+      # the tap, the host being trusted already, and photographed in the very
+      # next command. A trust prompt is the runner's to answer (STEP trust)
+      # when this fails, and the attempt is made again.
       - extendedWaitUntil:
           visible: "(?s).*left alone.*"
           timeout: 30000
@@ -195,3 +186,24 @@ env:
       - assertNotVisible: "Save to host"
       - takeScreenshot: jeansh-open2-onward
       - tapOn: "Close ${HOST_LABEL}.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'trust'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true

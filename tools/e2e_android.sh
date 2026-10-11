@@ -1354,6 +1354,8 @@ EOS
   for attempt in 1 2 3; do
     if flow jeansh_open2 -e STEP=foreign; then seen=1; break; fi
     echo "the notice was not seen on attempt $attempt"
+    # A trust prompt that came first is answered here, then it is tried again.
+    flow jeansh_open2 -e STEP=trust || true
     adb shell am force-stop cloud.brata.terminal >/dev/null 2>&1
   done
   [ "$seen" = 1 ] || jo2_fail "4: the notice that the file was left alone was not seen in three tries"
