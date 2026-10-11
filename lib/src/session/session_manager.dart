@@ -873,7 +873,7 @@ class LiveSession extends ChangeNotifier {
       if (host.installOpenCommand &&
           !isLocalHostId(host.id) &&
           session is CommandCapable) {
-        unawaited(_installOpenCommand(session as CommandCapable));
+        unawaited(_installOpenCommand(session));
       }
       if (!isLocalHostId(host.id) && session is CommandCapable) {
         unawaited(_measureClock(session as CommandCapable));
@@ -1248,36 +1248,54 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
-  /// Puts `jeansh` and this connect's secret on the host, when its switch is
-  /// on: see [openCommandInstallScript]. The log says what the host answered
-  /// and nothing else; whatever is not an install is said to the user, since
-  /// `jeansh <file>` would then do nothing and nothing else would say why.
   /// How long the host has to answer the install.
   @visibleForTesting
   static Duration openInstallTimeout = const Duration(seconds: 10);
 
-  Future<void> _installOpenCommand(CommandCapable session) async {
+  /// Puts `jeansh` and this connect's secret on the host, when its switch is
+  /// on: see [openCommandInstallScript]. The log says what the host answered
+  /// and nothing else; whatever is not an install is said to the user, since
+  /// `jeansh <file>` would then do nothing and nothing else would say why.
+  ///
+  /// The secret goes to the script on its standard input, never on its
+  /// command line, which any local user can read.
+  Future<void> _installOpenCommand(Object session) async {
     final secret = openRequests.ring.issue();
-    final lines = <String>[];
     var timedOut = false;
+    final output = StringBuffer();
+    CommandChannel? channel;
+    StreamSubscription<Uint8List>? subscription;
     final done = Completer<void>();
     // A stream that errors goes on to finish, which calls both.
     void finish([Object? _]) {
       if (!done.isCompleted) done.complete();
     }
 
-    final subscription = session
-        .run(openCommandInstallScript(secret))
-        .listen(lines.add, onDone: finish, onError: finish);
     try {
+      if (session is! ChannelCapable) throw StateError('no channel');
+      channel = await session.open(
+        openCommandInstallScript(),
+      );
+      subscription = channel.output.listen(
+        (bytes) => output.write(utf8.decode(bytes, allowMalformed: true)),
+        onDone: finish,
+        onError: finish,
+      );
+      channel.write(Uint8List.fromList(utf8.encode('$secret\n')));
       await done.future.timeout(openInstallTimeout);
     } on TimeoutException {
       timedOut = true;
     } catch (_) {
       // Gives the channel back, whatever the host was doing with it.
     } finally {
-      await subscription.cancel();
+      await subscription?.cancel();
+      channel?.close();
     }
+    final lines = output
+        .toString()
+        .split('\n')
+        .where((line) => line.trim().isNotEmpty)
+        .toList();
     final answer = lines.isEmpty ? '' : lines.last.trim();
     const known = {openInstalled, openCurrent, openLeftAlone, openSecretLink};
     appLog.add(

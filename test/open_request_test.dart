@@ -251,7 +251,12 @@ void main() {
       String run([String secret = 'sek-ret']) =>
           (Process.runSync(
                     'sh',
-                    ['-c', openCommandInstallScript(secret)],
+                    [
+                      '-c',
+                      r'printf "%s\n" "$1" | ' + openCommandInstallScript(),
+                      'sh',
+                      secret,
+                    ],
                     environment: {'HOME': home.path, 'PATH': '/usr/bin:/bin'},
                     includeParentEnvironment: false,
                   ).stdout
@@ -275,6 +280,10 @@ void main() {
         0x1c0, // 0700
       );
       expect(run('next-one'), 'current');
+      expect(secretFile.readAsStringSync(), 'next-one\n');
+      // Nothing on stdin, or something that is no secret, writes nothing.
+      expect(run(''), '');
+      expect(run('not a secret!'), '');
       expect(secretFile.readAsStringSync(), 'next-one\n');
       expect(Directory('${home.path}/.config/jeansh').listSync(), hasLength(1));
       // A link in the file's place is replaced, never written through.

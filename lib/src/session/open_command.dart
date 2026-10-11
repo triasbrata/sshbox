@@ -275,23 +275,26 @@ const openLeftAlone = 'left alone';
 const openSecretLink = 'secret folder is a link';
 
 /// What a host runs to put [openCommandScript] at `~/.local/bin/jeansh` and
-/// [secret] in `~/.config/jeansh/open-secret`, as one `sh -c` line. Each is
+/// a secret in `~/.config/jeansh/open-secret`, as one `sh -c` line. The
+/// secret is the first line of its standard input, never part of the line,
+/// which any local user could read in the process list. Each is
 /// written beside its place under a name of its own and renamed into it, so
 /// a link planted at the name is replaced and never written through; a link
 /// at `~/.config/jeansh` is refused. A link at `jeansh`, or a file without
 /// [openCommandMarker], is left alone. Its last line says [openInstalled],
 /// [openCurrent], [openLeftAlone] or [openSecretLink]; anything else, or an
 /// exit code, is a failure.
-String openCommandInstallScript(String secret) {
-  assert(RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(secret));
+String openCommandInstallScript() {
   final script =
       r'''
 d="$HOME/.local/bin"; t="$d/jeansh"; c="$HOME/.config/jeansh"
+IFS= read -r s
+case $s in ''|*[!A-Za-z0-9_-]*) exit 1 ;; esac
 umask 077
 if [ -L "$c" ]; then echo "secret folder is a link"; exit 0; fi
 mkdir -p "$c" && chmod 700 "$c" || exit 1
 w=$(mktemp "$c/open-secret.XXXXXX") || exit 1
-printf '%s\n' '@SECRET@' > "$w" && chmod 600 "$w" && mv -f "$w" "$c/open-secret" || { rm -f "$w"; exit 1; }
+printf '%s\n' "$s" > "$w" && chmod 600 "$w" && mv -f "$w" "$c/open-secret" || { rm -f "$w"; exit 1; }
 mkdir -p "$d" || exit 1
 if [ -L "$t" ] || { [ -e "$t" ] && { [ ! -f "$t" ] || ! grep -q '^# jeansh-open: installed by Jeansh' "$t"; }; }; then
   echo "left alone"; exit 0
@@ -304,6 +307,5 @@ cat > "$n" <<'JEANSH_OPEN_EOF' || { rm -f "$n"; exit 1; }
 if [ -e "$t" ] && cmp -s "$n" "$t"; then rm -f "$n"; echo current; exit 0; fi
 chmod 755 "$n" && mv -f "$n" "$t" && echo installed || { rm -f "$n"; exit 1; }
 ''';
-  final filled = script.replaceFirst('@SECRET@', secret);
-  return "sh -c '${filled.replaceAll("'", r"'\''")}'";
+  return "sh -c '${script.replaceAll("'", r"'\''")}'";
 }

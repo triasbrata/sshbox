@@ -18,30 +18,45 @@ class _Shell
         SessionTransport,
         TerminalSession,
         ForwardCapable,
-        CommandCapable {
+        CommandCapable,
+        ChannelCapable {
   /// How far this host's clock is ahead, as its `date +%s` answers.
   int hostAhead = 0;
 
   /// What the host says to the install script: its last line. `hang` never
   /// answers, `fail` ends with an error.
   String installAnswer = 'installed';
-  final installs = <String>[];
 
-  /// The secret the last install put in the host's file.
-  String? get installedSecret {
-    final match = RegExp(r"'\\''([A-Za-z0-9_-]{20,})'\\''")
-        .firstMatch(installs.last);
-    return match?[1];
+  /// The command line of each install, and what was written to its stdin.
+  final installs = <String>[];
+  final installInputs = <String>[];
+
+  /// The secret the last install was sent on its stdin.
+  String? get installedSecret =>
+      installInputs.isEmpty ? null : installInputs.last.trim();
+
+  @override
+  Future<CommandChannel> open(String command) async {
+    installs.add(command);
+    final out = StreamController<Uint8List>();
+    return (
+      output: out.stream,
+      write: (data) {
+        installInputs.add(utf8.decode(data));
+        if (installAnswer == 'hang') return;
+        if (installAnswer == 'fail') {
+          out.addError(StateError('x'));
+        } else {
+          out.add(Uint8List.fromList(utf8.encode('$installAnswer\n')));
+        }
+        out.close();
+      },
+      close: () {},
+    );
   }
 
   @override
   Stream<String> run(String command, {bool pty = false}) {
-    if (command.contains('jeansh-open')) {
-      installs.add(command);
-      if (installAnswer == 'hang') return StreamController<String>().stream;
-      if (installAnswer == 'fail') return Stream.error(StateError('x'));
-      return Stream.value(installAnswer);
-    }
     return Stream.value(
       '${DateTime.now().millisecondsSinceEpoch ~/ 1000 + hostAhead}',
     );
@@ -127,6 +142,11 @@ void main() {
 
     // The secret rides in the install, and in nothing the shell inherits.
     final secret = shell.installedSecret!;
+    expect(secret, hasLength(greaterThan(20)));
+    // Never on the command line, which any local user can read on the host.
+    expect(shell.installs, hasLength(1));
+    expect(shell.installs.single, isNot(contains(secret)));
+    expect(shell.installInputs.single, '$secret\n');
     expect(shell.environment.keys.where((k) => k.contains('OPEN')), isEmpty);
     expect(shell.environment.values, isNot(contains(secret)));
 
