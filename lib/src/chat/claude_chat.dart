@@ -2059,15 +2059,16 @@ class ClaudeChat extends ChangeNotifier {
       if (resume != null) {
         // The bubble that was waiting to go again fails with it, so it is
         // not left showing as queued with nothing behind it.
-        final waiting = _entries
-            .whereType<ChatSaid>()
-            .where((said) => said.outboxId == resume.id)
-            .firstOrNull;
-        if (waiting != null) {
-          _undelivered(waiting, 'Not sent: $why');
-        } else {
-          unawaited(_outboxFailed(resume.key, resume.id, 'Not sent: $why'));
-        }
+        // One that is no longer in the view still has its entry marked.
+        final waiting =
+            _entries
+                .whereType<ChatSaid>()
+                .where((said) => said.outboxId == resume.id)
+                .firstOrNull ??
+            (ChatSaid(message, mine: true)
+              ..outboxKey = resume.key
+              ..outboxId = resume.id);
+        _undelivered(waiting, 'Not sent: $why');
       }
       return;
     }
