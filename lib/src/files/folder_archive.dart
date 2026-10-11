@@ -132,7 +132,7 @@ class FolderArchiver implements FolderArchiveCapable {
   static String archiveScript(String folder, ArchiveTool tool) {
     final (parent, base) = split(folder)!;
     final out = 'jeansh${tool.extension}';
-    final name = _q('./$base');
+    final name = _q(base); // MUTATION: the name bare, not after ./
     final bin = _q(tool.binary);
     final command = switch (tool.kind) {
       // -y keeps a link a link, rather than archiving what it points at.
