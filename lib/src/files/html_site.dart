@@ -167,9 +167,6 @@ class HtmlSite {
       if (request.method != 'GET' && request.method != 'HEAD') {
         return await refuse(405, 'Only GET and HEAD');
       }
-      if (request.headers.value('host') != '127.0.0.1:${_server.port}') {
-        return await refuse(403, 'Wrong host');
-      }
       final segments = request.uri.pathSegments;
       if (segments.isEmpty || segments.first != token) {
         // A path from the site's root, `/logo.png`, reaches nothing: the
