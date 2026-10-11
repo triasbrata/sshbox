@@ -40,9 +40,9 @@ env:
           visible: "Filter by name"
           timeout: 20000
       - extendedWaitUntil:
-          visible: "dev"
+          visible: "(?s)\\W*dev"
           timeout: 20000
-      - longPressOn: "dev"
+      - longPressOn: "(?s)\\W*dev"
       - extendedWaitUntil:
           visible: "Download as zip"
           timeout: 10000
@@ -111,9 +111,9 @@ env:
           visible: "Filter by name"
           timeout: 20000
       - extendedWaitUntil:
-          visible: "-odd's dir"
+          visible: "(?s)\\W*-odd's dir"
           timeout: 20000
-      - longPressOn: "-odd's dir"
+      - longPressOn: "(?s)\\W*-odd's dir"
       - extendedWaitUntil:
           visible: "Download as zip"
           timeout: 10000
@@ -175,9 +175,9 @@ env:
           visible: "Filter by name"
           timeout: 20000
       - extendedWaitUntil:
-          visible: "dev"
+          visible: "(?s)\\W*dev"
           timeout: 20000
-      - longPressOn: "dev"
+      - longPressOn: "(?s)\\W*dev"
       - extendedWaitUntil:
           visible: "Download as zip"
           timeout: 10000
@@ -225,9 +225,9 @@ env:
           visible: "Filter by name"
           timeout: 20000
       - extendedWaitUntil:
-          visible: "dev"
+          visible: "(?s)\\W*dev"
           timeout: 20000
-      - longPressOn: "dev"
+      - longPressOn: "(?s)\\W*dev"
       - extendedWaitUntil:
           visible: "Download as zip"
           timeout: 10000
