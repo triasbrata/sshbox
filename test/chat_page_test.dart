@@ -7899,6 +7899,28 @@ void main() {
       expect(find.byTooltip('old one, Finished'), findsOneWidget);
     });
 
+    testWidgets('the open sidebar says too when a refresh failed and its rows '
+        'are old, and tapping that asks again', (tester) async {
+      final shell = await page(tester);
+      shell.listing = 'claude: command not found';
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      final line = find.bySemanticsLabel(RegExp('The list may be out of date'));
+      expect(line, findsOneWidget);
+      expect(find.byType(TuiChatSessionList), findsOneWidget);
+      expect(find.text('old one'), findsOneWidget, reason: 'rows kept');
+
+      shell.listing =
+          '${jsonEncode([row('cccc3333', 'old one', live: false)])}\n';
+      await tester.tap(line);
+      await _settlePickUp(tester);
+      expect(
+        find.bySemanticsLabel(RegExp('The list may be out of date')),
+        findsNothing,
+      );
+    });
+
     testWidgets('a narrow screen has no rail, only the drawer', (tester) async {
       await page(tester, width: 600);
       expect(find.byTooltip('Expand the sessions'), findsNothing);

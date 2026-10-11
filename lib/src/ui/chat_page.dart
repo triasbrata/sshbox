@@ -1479,6 +1479,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           child: _SessionList(
             chat: _chat,
             listing: _listing,
+            stale: _stale,
             connected: widget.session.isConnected,
             onPick: _pick,
             onRefresh: () => setState(_listAgents),
@@ -4601,6 +4602,7 @@ class _SessionList extends StatelessWidget {
     required this.chat,
     required this.listing,
     required this.connected,
+    required this.stale,
     required this.onPick,
     required this.onRefresh,
     required this.onNewChat,
@@ -4643,6 +4645,9 @@ class _SessionList extends StatelessWidget {
   /// As the page last asked for them; null before the session first came
   /// up.
   final ValueListenable<AsyncSnapshot<List<ClaudeAgent>>> listing;
+
+  /// Whether the rows are what the list said before a failed refresh.
+  final ValueListenable<bool> stale;
 
   /// Whether the session is up: the list is asked for over its connection.
   final bool connected;
@@ -4704,7 +4709,30 @@ class _SessionList extends StatelessWidget {
   );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+    valueListenable: stale,
+    builder: (context, isStale, _) => Column(
+      children: [
+        // The rows are what the list said before a refresh failed: said so,
+        // with a way to ask again, as the rail says it.
+        if (isStale)
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: TuiButton(
+              label: 'The list may be out of date: it could not be '
+                  'refreshed. Tap to try again.',
+              logName: 'Refresh stale sessions',
+              prefix: '⚠',
+              variant: TuiButtonVariant.ghost,
+              onPressed: connected ? onRefresh : null,
+            ),
+          ),
+        Expanded(child: _listBody()),
+      ],
+    ),
+  );
+
+  Widget _listBody() {
     return ValueListenableBuilder<AsyncSnapshot<List<ClaudeAgent>>>(
       valueListenable: listing,
       builder: (context, snapshot, _) {
