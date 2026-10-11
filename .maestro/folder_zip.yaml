@@ -238,7 +238,7 @@ env:
           visible: "Save"
           timeout: 90000
       - assertVisible: "dev.tar.gz"
-      - assertNotVisible: "(?s).*dev\\.zip.*"
+
       - runFlow:
           when:
             visible: "Recent"

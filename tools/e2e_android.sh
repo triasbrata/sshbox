@@ -1421,12 +1421,12 @@ fz_tools() {
 }
 fz_left() { fz_host sh -c 'ls -d /tmp/jeansh-zip.* 2>/dev/null | wc -l' | tr -d ' '; }
 
-# Files saved on the phone, anywhere under /sdcard.
-fz_saved() { adb shell "find /sdcard -name '$1' 2>/dev/null" | tr -d '\r' | head -1; }
+# Files saved on the phone, anywhere in its shared storage: /sdcard is a link, which find does not follow without a trailing slash.
+fz_saved() { adb shell "find /storage/emulated/0/ -name '$1' 2>/dev/null" | tr -d '\r' | head -1; }
 fz_clear_saved() {
   local pattern
   for pattern in 'dev*.zip' 'dev*.tar.gz' '*odd*dir*.zip'; do
-    adb shell "find /sdcard -name '$pattern' -exec rm -f {} +" >/dev/null 2>&1
+    adb shell "find /storage/emulated/0/ -name '$pattern' -exec rm -f {} +" >/dev/null 2>&1
   done
 }
 # The files an archive lists, no folders, sorted.
@@ -1450,6 +1450,18 @@ fz_step() { # name
   echo "::group::folder_zip: $1"
   adb shell am force-stop "$FZ_PKG" >/dev/null 2>&1
   fz_clear_saved
+  # What an earlier step's aborted run left, so each step is read alone.
+  sleep 2
+  fz_host sh -c 'rm -rf /tmp/jeansh-zip.*'
+}
+# What the phone's Downloads holds and what its media store says, said in the
+# log so a missing file can be told from a lookup that cannot see it.
+fz_where() {
+  echo "Downloads on the phone:"
+  adb shell 'ls -la /storage/emulated/0/Download/' 2>&1 | tr -d '\r' | head -20
+  echo "media store:"
+  adb shell 'content query --uri content://media/external/downloads --projection _display_name:_size' 2>&1 |
+    tr -d '\r' | head -20
 }
 
 folder_zip() {
@@ -1476,6 +1488,7 @@ EOS
   fz_slow_zip || fz_fail "1: no zip on this runner"
   echo "tools the app finds: $(fz_tools)"
   flow folder_zip -e STEP=zip || fz_fail "1: the zip flow failed"
+  fz_where
   sleep 3
   local saved
   saved=$(fz_saved dev.zip)
@@ -1486,6 +1499,7 @@ EOS
     "$(fz_member "$saved" dev/plain.txt)/$(fz_member "$saved" "dev/it's a \"q\".txt")" one/two
   fz_expect "1: the host keeps no jeansh-zip.*" "$(fz_left)" 0
   flow folder_zip -e STEP=zip_dash || fz_fail "1: the zip_dash flow failed"
+  fz_where
   sleep 3
   saved=$(fz_saved "*odd*dir*.zip")
   [ -n "$saved" ] || fz_fail "1: no zip of the dash folder was saved on the phone"
@@ -1500,6 +1514,7 @@ EOS
   fz_hide zip 7zz 7z 7za bsdtar gzip
   echo "tools the app finds: $(fz_tools)"
   flow folder_zip -e STEP=nozip || fz_fail "2: the nozip flow failed"
+  fz_where
   sleep 3
   fz_restore
   fz_expect "2: nothing was saved on the phone" \
@@ -1512,6 +1527,7 @@ EOS
   fz_hide zip 7zz 7z 7za bsdtar
   echo "tools the app finds: $(fz_tools)"
   flow folder_zip -e STEP=targz || fz_fail "3: the targz flow failed"
+  fz_where
   sleep 3
   fz_restore
   saved=$(fz_saved dev.tar.gz)
