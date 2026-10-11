@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -127,6 +128,117 @@ void main() {
       // $PATH is extended with usual places, so a real tar+gzip may still be
       // found there; what matters is that nothing throws.
       expect(tool == null || tool.kind == ArchiveKind.tarGz, isTrue);
+    });
+  });
+
+  group('the exec runner', () {
+    /// An exec channel in a box: [destroy] is the hangup, which ends both
+    /// streams with the 129 a shell trapped on HUP exits with.
+    ({ExecHandle handle, List<String> log, StreamController<List<int>> out})
+    fake({int? exit = 0, bool hangsUp = true}) {
+      final log = <String>[];
+      final out = StreamController<List<int>>();
+      final handle = ExecHandle(
+        stdout: out.stream,
+        stderr: const Stream<List<int>>.empty(),
+        closeStdin: () async => log.add('stdin closed'),
+        waitForExit: () async => log.contains('destroyed') ? 129 : exit,
+        destroy: () {
+          log.add('destroyed');
+          if (!hangsUp) return;
+          out.close();
+        },
+      );
+      return (handle: handle, log: log, out: out);
+    }
+
+    test('wraps the script in sh -c, quoted for any login shell', () async {
+      final sent = <String>[];
+      final f = fake();
+      f.out.add(utf8.encode('hi'));
+      unawaited(f.out.close());
+      final run = execRunner((command) async {
+        sent.add(command);
+        return f.handle;
+      });
+      // The command runs under a real sh and gives the script back whole.
+      const script = "echo it's \$(echo no) `x` \"q\"; exit 3";
+      final result = await run(script);
+      expect(sent.single, startsWith("sh -c '"));
+      expect(sent.single, shCommand(script));
+      final back = Process.runSync('sh', ['-c', shCommand('printf %s "\$0"')]);
+      expect(back.exitCode, 0);
+      expect(result.stdout, 'hi');
+      expect(result.exitCode, 0);
+      expect(f.log, contains('stdin closed'));
+    });
+
+    test('returns what the script printed and how it ended', () async {
+      final f = fake(exit: 15);
+      f.out.add(utf8.encode('café'));
+      unawaited(f.out.close());
+      final run = execRunner((_) async => f.handle);
+      final result = await run('x');
+      expect(result.stdout, 'café');
+      expect(result.exitCode, 15);
+    });
+
+    test(
+      'a channel that ends with no status is a failure, not a success',
+      () async {
+        final f = fake(exit: null);
+        unawaited(f.out.close());
+        final result = await execRunner((_) async => f.handle)('x');
+        expect(result.exitCode, 255);
+      },
+    );
+
+    test(
+      'cancel destroys the channel, and the script sees the hangup',
+      () async {
+        final f = fake();
+        final cancel = Completer<void>();
+        final run = execRunner((_) async => f.handle);
+        final pending = run('sleep 30', cancel: cancel.future);
+        await Future<void>.delayed(Duration.zero);
+        expect(f.log, isNot(contains('destroyed')), reason: 'not before');
+        cancel.complete();
+        final result = await pending;
+        expect(f.log, contains('destroyed'));
+        expect(result.exitCode, 129);
+      },
+    );
+
+    test('with no cancel the channel is never destroyed', () async {
+      final f = fake();
+      unawaited(f.out.close());
+      await execRunner((_) async => f.handle)('x');
+      expect(f.log, isNot(contains('destroyed')));
+    });
+
+    test('FolderArchiver.archiveFolder turns a cancel into a cancel', () async {
+      final f = fake();
+      final cancel = Completer<void>();
+      final run = execRunner((_) async => f.handle);
+      final pending = FolderArchiver(run).archiveFolder(
+        '/home/me/d',
+        const ArchiveTool(ArchiveKind.zip, '/usr/bin/zip'),
+        cancel: cancel.future,
+      );
+      final expectation = expectLater(
+        pending,
+        throwsA(
+          isA<FileBrowserException>().having(
+            (e) => e.fault,
+            'fault',
+            FileBrowserFault.cancelled,
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      cancel.complete();
+      await expectation;
+      expect(f.log, contains('destroyed'));
     });
   });
 

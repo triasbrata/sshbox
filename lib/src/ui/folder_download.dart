@@ -17,6 +17,12 @@ import 'tui.dart';
 @visibleForTesting
 bool markFromInternet = Platform.isWindows;
 
+/// Removes the part folder a tree was fetched into: swapped by a test for one
+/// that fails, as a folder the login may no longer write to does.
+@visibleForTesting
+void Function(Directory part) deletePartFolder = (part) =>
+    part.deleteSync(recursive: true);
+
 /// Whether [browser] can compress a folder on its host: the menu offers
 /// Download as zip only then.
 bool canArchive(FileBrowser browser) => browser is FolderArchiveCapable;
@@ -339,7 +345,7 @@ Future<int> _fetchTree(
     return saved;
   } finally {
     try {
-      part.deleteSync(recursive: true);
+      deletePartFolder(part);
     } on FileSystemException {
       // Left behind rather than failing a save that went in.
     }

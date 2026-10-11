@@ -11,7 +11,7 @@ import 'package:sshbox/src/ui/termul/tui_transfer_row.dart';
 import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/folder_download.dart'
-    show downloadFolderPlain, folderReport, markFromInternet;
+    show deletePartFolder, downloadFolderPlain, folderReport, markFromInternet;
 import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
@@ -462,7 +462,7 @@ void main() {
     testWidgets('a broken folder picker is said, and starts nothing', (
       tester,
     ) async {
-      useFakeSaveDialog(null)..directoryFails = true;
+      useFakeSaveDialog(null).directoryFails = true;
       await _pump(tester, FakeFileBrowser());
       await run(tester);
       expect(toast('Could not open the folder picker'), findsOneWidget);
@@ -613,6 +613,35 @@ void main() {
 
       expect(toast('Could not save dev'), findsOneWidget);
       expect(transfers.items.first.state, TransferState.failed);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a part folder that cannot be removed does not fail a save '
+        'that went in', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final real = deletePartFolder;
+      var tried = 0;
+      deletePartFolder = (part) {
+        tried++;
+        throw const FileSystemException('Permission denied');
+      };
+      addTearDown(() {
+        deletePartFolder = real;
+        for (final e in target.listSync()) {
+          if (e.path.contains('.jeansh-part-')) {
+            Directory(e.path).deleteSync(recursive: true);
+          }
+        }
+      });
+      await _pump(tester, FakeFileBrowser());
+      await run(tester);
+
+      expect(tried, 1);
+      expect(transfers.items.first.state, TransferState.done);
+      expect(File('${target.path}/dev/main.dart').existsSync(), isTrue);
+      expect(find.text('Saved dev'), findsOneWidget);
+      expect(find.byType(TuiToastCard), findsOneWidget, reason: 'only Saved');
       await tester.pumpAndSettle(const Duration(seconds: 5));
     }, variant: desktop);
 

@@ -277,3 +277,47 @@ ScriptRunner processRunner(Future<Process> Function(String command) start) =>
       );
       return result;
     };
+
+/// What a [ScriptRunner] needs of an exec channel, so the SSH one can be
+/// stood in for.
+class ExecHandle {
+  const ExecHandle({
+    required this.stdout,
+    required this.stderr,
+    required this.closeStdin,
+    required this.waitForExit,
+    required this.destroy,
+  });
+
+  final Stream<List<int>> stdout;
+  final Stream<List<int>> stderr;
+  final Future<void> Function() closeStdin;
+
+  /// The exit status, or null when the channel ended with none.
+  final Future<int?> Function() waitForExit;
+
+  /// Drops the channel, which the host answers by hanging the shell up.
+  final void Function() destroy;
+}
+
+/// `sh -c` around [script], quoted once for the login shell that runs an
+/// exec channel's command, whatever shell that is.
+String shCommand(String script) => "sh -c ${_quote(script)}";
+
+String _quote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+
+/// A [ScriptRunner] over an exec channel opened by [start]. Completing
+/// `cancel` destroys the channel; the script's own traps do the rest.
+ScriptRunner execRunner(Future<ExecHandle> Function(String command) start) =>
+    (script, {cancel}) async {
+      final handle = await start(shCommand(script));
+      unawaited(cancel?.then((_) => handle.destroy()));
+      unawaited(handle.closeStdin());
+      const decoder = Utf8Decoder(allowMalformed: true);
+      final out = decoder.bind(handle.stdout).join();
+      final err = decoder.bind(handle.stderr).join();
+      final stdout = await out;
+      final stderr = await err;
+      final code = await handle.waitForExit();
+      return (exitCode: code ?? 255, stdout: stdout, stderr: stderr);
+    };
