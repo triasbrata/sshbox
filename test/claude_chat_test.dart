@@ -268,6 +268,10 @@ class _LiveHost {
   /// listed with no short id and no state, as the CLI lists one.
   final bool interactive;
 
+  /// Makes listing sessions, or opening the pane to type into, fail.
+  bool agentsFail = false;
+  bool paneOpenFails = false;
+
   /// What finding its tmux pane answers, and what typing into it answers.
   String pane = 'sshbox:pane %3\n';
   String typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
@@ -378,6 +382,9 @@ class _LiveHost {
       }
       return _says('${bytes.length}\n${utf8.decode(bytes.sublist(from - 1))}');
     }
+    if (paneOpenFails && command.contains('load-buffer')) {
+      throw StateError('the pane would not open');
+    }
     if (command.contains('list-panes')) {
       final stdin = <String>[];
       if (command.contains('load-buffer')) {
@@ -402,6 +409,9 @@ class _LiveHost {
         write: (Uint8List data) {},
         close: () {},
       );
+    }
+    if (command.contains('agents --json') && agentsFail) {
+      throw StateError('the host would not list sessions');
     }
     if (command.contains('agents --json')) {
       final gate = agentsGate;
@@ -6959,6 +6969,7 @@ void main() {
       _LiveHost host, {
       Duration? Function(int)? backoff,
       OutboxStore? outbox,
+      Duration? deliveryTimeout,
     }) {
       final chat = ClaudeChat(
         open: host.open,
@@ -6966,6 +6977,7 @@ void main() {
         hostKey: 'h1',
         outbox: outbox ?? store(),
         backoff: backoff ?? (_) => null,
+        deliveryTimeout: deliveryTimeout ?? const Duration(seconds: 30),
       )..holdEvery = const Duration(milliseconds: 40);
       addTearDown(chat.dispose);
       return chat;
@@ -7373,6 +7385,169 @@ void main() {
       host.adds(userLine('u-q', 'after the question'));
       await wait();
       expect((await onDisk()).entries, isEmpty);
+    });
+
+    test('a host that cannot list its sessions when the message goes leaves '
+        'it failed with the reason, tried again by itself, and typed once '
+        'the host answers', () async {
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      await chat.continueFrom(_interactive);
+      host.paneTyping.clear();
+      host.agentsFail = true;
+
+      chat.send('while the host is down');
+      await wait(30);
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.why, contains('Could not check on it first'));
+      expect(said.delivery, Delivery.queued, reason: 'waiting to try again');
+      expect(host.paneTyping, isEmpty);
+
+      host.agentsFail = false;
+      await wait(500);
+      expect(host.paneTyping.single.stdin, ['while the host is down']);
+    });
+
+    test('a pane that will not open is a visible failure, tried again by '
+        'itself, and typed once it opens', () async {
+      final host = _LiveHost('0\n', interactive: true)..paneOpenFails = true;
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      await chat.continueFrom(_interactive);
+
+      chat.send('into a pane that is down');
+      await wait(30);
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.why, contains('Not delivered'));
+      expect(said.why, contains('would not open'));
+      expect((await onDisk()).entries.single.text,
+          'into a pane that is down');
+
+      host.paneOpenFails = false;
+      await wait(500);
+      expect(host.paneTyping.single.stdin, ['into a pane that is down']);
+    });
+
+    test('typed into the pane but never recorded: said after the timeout, '
+        'kept as failed, and tried again with a look at the transcript',
+        () async {
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(
+        host,
+        deliveryTimeout: const Duration(milliseconds: 100),
+      );
+      await chat.continueFrom(_interactive);
+
+      chat.send('typed, never recorded');
+      await wait(400);
+
+      expect(host.paneTyping, hasLength(1));
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('did not record it within'));
+      expect((await onDisk()).entries.single.failed, isTrue);
+
+      // It had in fact arrived, late: Retry only marks it delivered.
+      host.history = transcript([('late-1', 'typed, never recorded')]);
+      expect(chat.retry(said), isNull);
+      await wait();
+      expect(host.paneTyping, hasLength(1), reason: 'not typed twice');
+      expect((await onDisk()).entries, isEmpty);
+    });
+
+    /// A chat's own Claude, answered once, over a store that can be held up,
+    /// whose transcript read can be held up too.
+    Future<
+      ({
+        ClaudeChat chat,
+        _FlakyStore flaky,
+        _FakeClaude claude,
+        void Function(bool) hold,
+        Completer<void> readGate,
+      })
+    >
+    ownOverFlaky() async {
+      const sid = '11111111-1111-4111-8111-111111111111';
+      final row = jsonEncode({
+        'type': 'user',
+        'uuid': '33333333-3333-4333-8333-333333333333',
+        'parentUuid': '22222222-2222-4222-8222-222222222222',
+        'message': {'role': 'user', 'content': 'first idea'},
+      });
+      final claude = _FakeClaude();
+      final readGate = Completer<void>();
+      var holding = false;
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final chat = ClaudeChat(
+        open: (command) async {
+          if (command.contains('.jsonl')) {
+            if (holding) await readGate.future;
+            return _says('${utf8.encode(row).length}\n$row\n');
+          }
+          if (!command.contains('stream-json')) return _says('');
+          return claude.channel;
+        },
+        hostKey: 'h1',
+        outbox: flaky,
+        backoff: (_) => null,
+      );
+      addTearDown(chat.dispose);
+      await chat.start();
+      claude.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': sid,
+      });
+      await _settle();
+      await chat.send('first idea');
+      claude.event(_said('answer'));
+      claude.event({'type': 'result', 'subtype': 'success'});
+      await _settle();
+      return (
+        chat: chat,
+        flaky: flaky,
+        claude: claude,
+        hold: (v) => holding = v,
+        readGate: readGate,
+      );
+    }
+
+    test('a Retry waiting behind another send, when the chat can no longer '
+        'send, fails visibly instead of staying queued', () async {
+      final t = await ownOverFlaky();
+      final picture = File('${dir.path}/shot.png')..writeAsBytesSync([1, 2]);
+      await Process.run('chmod', ['000', picture.path]);
+      addTearDown(() => Process.run('chmod', ['644', picture.path]));
+      // A message whose picture cannot be read fails, kept in the outbox.
+      await t.chat.send(
+        'with [Image #1]',
+        pictures: [ChatPicture(path: picture.path, name: 'shot.png', number: 1)],
+      );
+      final failed = t.chat.entries
+          .whereType<ChatSaid>()
+          .lastWhere((s) => s.text == 'with [Image #1]');
+      expect(failed.delivery, Delivery.failed);
+
+      t.flaky.saveGate = Completer<void>();
+      final slow = t.chat.send('slow one');
+      await _settle();
+      expect(t.chat.retry(failed), isNull, reason: 'queued behind the slow one');
+      expect(failed.delivery, Delivery.queued);
+      // Claude goes away while both wait.
+      await t.claude.end();
+      await _settle();
+      t.flaky.saveGate!.complete();
+      await slow;
+      await wait(100);
+
+      expect(failed.delivery, Delivery.failed);
+      expect(failed.why, contains('Claude is not running'));
+      final box = await t.flaky.inner.load(
+        OutboxStore.keyOf('h1', '11111111-1111-4111-8111-111111111111'),
+      );
+      expect(
+        box.entries.firstWhere((e) => e.text == 'with [Image #1]').failed,
+        isTrue,
+      );
     });
 
     test('a refusal that is the session\'s own (something typed at its '

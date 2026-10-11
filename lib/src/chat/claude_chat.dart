@@ -2056,7 +2056,19 @@ class ClaudeChat extends ChangeNotifier {
       // that cannot go is never lost without a word.
       _say(ChatNotice('Not sent: $why What you wrote: “${_excerpt(message)}”',
           failed: true));
-      if (resume != null) _outboxFailed(resume.key, resume.id, 'Not sent: $why');
+      if (resume != null) {
+        // The bubble that was waiting to go again fails with it, so it is
+        // not left showing as queued with nothing behind it.
+        final waiting = _entries
+            .whereType<ChatSaid>()
+            .where((said) => said.outboxId == resume.id)
+            .firstOrNull;
+        if (waiting != null) {
+          _undelivered(waiting, 'Not sent: $why');
+        } else {
+          unawaited(_outboxFailed(resume.key, resume.id, 'Not sent: $why'));
+        }
+      }
       return;
     }
     upload ??= defaultUpload;
