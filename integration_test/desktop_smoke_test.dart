@@ -1933,6 +1933,14 @@ touch '${done.path}'
         () => tabs.evaluate().length == before + 1,
         'a second Local shell',
       );
+      // Its shell up and its prompt drawn before anything is typed: the tab
+      // exists as soon as it is duplicated, but its pty is wired a moment
+      // later, and a command typed in between is dropped without a trace
+      // (the Mac run's terminal held a bare prompt and no command).
+      await _until(tester, () {
+        final now = shown().where((e) => e.focusNode?.hasFocus ?? false);
+        return now.isNotEmpty && _text(now.first).isNotEmpty;
+      }, 'the second shell to draw its prompt');
 
       // A program reading the mouse: a plain right-click still opens the
       // menu and the program hears nothing of it; Shift+right-click is the
@@ -3634,7 +3642,11 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 600));
       await tester.tapAt(const Offset(4, 4));
       await tester.pump(const Duration(milliseconds: 600));
-      expect(find.text('Downloading Jeansh 9.9.9'), findsNothing);
+      await _until(
+        tester,
+        () => find.text('Downloading Jeansh 9.9.9').evaluate().isEmpty,
+        'the dialog to close after a click outside it',
+      );
       final going = find.text('Jeansh 9.9.9 is downloading');
       if (check.evaluate().isEmpty) await _settings(tester);
       await tester.scrollUntilVisible(
