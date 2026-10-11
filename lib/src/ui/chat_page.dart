@@ -880,6 +880,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> _editPrevious() async {
     final text = await _chat.reviseLast();
     if (text == null || !mounted) return;
+    // Typed meanwhile: never written over. The message it went back to is
+    // said, so it is not lost with the chat's view of it.
+    if (_input.text.trim().isNotEmpty) {
+      showToast(
+        context,
+        'Went back, but the box has a draft, which was kept. The message was: '
+        '“${text.length > 200 ? '${text.substring(0, 200)}…' : text}”',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 8),
+      );
+      return;
+    }
     setState(() {
       _input.value = TextEditingValue(
         text: text,
