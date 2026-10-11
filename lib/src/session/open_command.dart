@@ -131,11 +131,10 @@ class _ForeignFile extends OpenInstallException {
     : super("$path is not the app's own, so it was left alone.", path);
 }
 
-String _why(Object error) => error is FileSystemException
-    ? (error.osError?.message.isNotEmpty ?? false)
-          ? error.osError!.message
-          : error.message
-    : '$error';
+String _why(FileSystemException error) {
+  final os = error.osError?.message ?? '';
+  return os.isEmpty ? error.message : os;
+}
 
 /// Writes [openCommandScript] as `jeansh` in [dir] on this machine, 0755:
 /// made new beside it and renamed into place, so a link planted at the name
@@ -204,7 +203,7 @@ void _writeNew(String target, String content, String mode) {
 
 void _remove(File file) {
   try {
-    if (file.existsSync()) file.deleteSync();
+    file.deleteSync();
   } on FileSystemException {
     // Nothing more can be done for a file that will not go.
   }
@@ -263,8 +262,6 @@ String? installOpenCommandInHome([String? home]) {
     return null;
   } on OpenInstallException catch (error) {
     return error.message;
-  } on FileSystemException catch (error) {
-    return 'Could not write ~/.local/bin/jeansh: ${_why(error)}.';
   }
 }
 
