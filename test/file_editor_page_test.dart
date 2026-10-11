@@ -194,6 +194,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Open in browser tab'), findsNothing);
     });
+
+    testWidgets('and a button in the top bar, for an HTML file alone', (
+      tester,
+    ) async {
+      final opened = await pump(tester, '/home/me/a.html');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      await tester.pump();
+      expect(opened, ['/home/me/a.html']);
+
+      await pump(tester, '/home/me/notes.txt');
+      expect(find.byTooltip('Open in browser tab'), findsNothing);
+      await pump(tester, '/home/me/a.html', offered: false);
+      expect(find.byTooltip('Open in browser tab'), findsNothing);
+    });
   });
 
   testWidgets('shows what the file holds', (tester) async {

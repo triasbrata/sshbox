@@ -960,6 +960,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                       ? null
                       : () => _promptNewDirectory(root),
                   onUpload: root == null ? null : () => _uploadInto(root),
+                  onOpenBrowser: widget.onOpenHtml == null
+                      ? null
+                      : () => widget.onOpenHtml!(_selected!),
+                  openBrowserEnabled:
+                      _selected != null &&
+                      isHtmlFile(_selected!) &&
+                      _shown[_selected]?.kind != RemoteEntryKind.directory,
                   onRefresh: _refresh,
                   onCollapseAll: _collapseAll,
                   onClose: widget.onClose,

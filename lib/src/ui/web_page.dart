@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert' show HtmlEscape;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../files/html_site.dart';
 import 'terminal_page.dart' show openUrl;
 import 'tui.dart';
 
@@ -19,14 +21,15 @@ class WebPage extends StatefulWidget {
     super.key,
     required this.initialUrl,
     required this.onChanged,
-    this.html,
+    this.site,
   });
 
-  /// Reads the HTML to show, for a tab that shows a file on the host rather
-  /// than a link; Reload calls it again. The page has no origin of its own,
-  /// so nothing on the host reaches it but this text, and every way out of it
-  /// goes to [openUrl].
-  final Future<String> Function()? html;
+  /// Starts the site of an HTML file on the host, for a tab that shows a file
+  /// rather than a link; the tab closes it with the page, and Reload loads
+  /// the page again from the host. The page's origin is the site's loopback
+  /// address, which reaches only the files beside it; every other way out of
+  /// it goes to [openUrl].
+  final Future<HtmlSite> Function()? site;
 
   /// Where the page opens. Where it goes after that is the page's own doing,
   /// so a new value here is not loaded.
@@ -44,6 +47,13 @@ class WebPage extends StatefulWidget {
 /// rest — an `intent:`, or this app's own `sshbox:` — since a page can
 /// navigate with no tap at all.
 const _shownHere = {'http', 'https', 'about', 'data', 'blob'};
+
+/// How long after a touch a page may still send the user to another app.
+const webGestureWindow = Duration(seconds: 1);
+
+/// The time a gesture is stamped and judged by; a test replaces it.
+@visibleForTesting
+DateTime Function() webGestureClock = DateTime.now;
 
 class _WebPageState extends State<WebPage> {
   final _view = WebViewController();
@@ -100,23 +110,71 @@ class _WebPageState extends State<WebPage> {
         ),
       ),
     );
-    if (widget.html == null) {
+    if (widget.site == null) {
       _load(_url);
     } else {
       _address.text = '';
-      unawaited(_loadHtml());
+      unawaited(_loadSite());
     }
   }
 
-  Future<void> _loadHtml() async {
-    String page;
+  HtmlSite? _site;
+  bool _closed = false;
+
+  /// Starts the site on the first call, forgets what it served on the next
+  /// ones, and loads the page from it.
+  Future<void> _loadSite() async {
     try {
-      page = await widget.html!();
+      var site = _site;
+      if (site == null) {
+        site = await widget.site!();
+        if (_closed) {
+          unawaited(site.close());
+          return;
+        }
+        _site = site;
+        site.problems.addListener(_problemsChanged);
+      } else {
+        site.reset();
+      }
+      if (mounted) {
+        _url = site.url;
+        _asked = site.url;
+        unawaited(_view.loadRequest(site.url));
+      }
     } catch (error) {
       final why = const HtmlEscape().convert('Could not open the file: $error');
-      page = '<p>$why</p>';
+      if (mounted) unawaited(_view.loadHtmlString('<p>$why</p>'));
     }
-    if (mounted) unawaited(_view.loadHtmlString(page));
+  }
+
+  void _problemsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Whether [url] is one of the site's own pages: its loopback origin, under
+  /// its token. Anything else the page opens leaves through [openUrl].
+  bool _isSite(Uri url) {
+    final site = _site;
+    return site != null &&
+        url.isScheme('http') &&
+        url.host == '127.0.0.1' &&
+        url.port == site.url.port &&
+        url.pathSegments.firstOrNull == site.token;
+  }
+
+  /// One line for what the page asked for and did not get.
+  String _problemLine(Map<String, String> problems) {
+    final token = _site?.token;
+    final names = [
+      for (final MapEntry(:key, :value) in problems.entries.take(3))
+        '${key.startsWith('/$token/') ? key.substring(token!.length + 2) : key}'
+            ' ($value)',
+    ];
+    final more = problems.length > 3 ? ' and ${problems.length - 3} more' : '';
+    final count = problems.length;
+    return '${count == 1 ? '1 file' : '$count files'} not loaded: '
+        '${names.join(', ')}$more';
   }
 
   /// On the [Focus] that hands keys on to the view. It takes no focus itself;
@@ -151,6 +209,9 @@ class _WebPageState extends State<WebPage> {
 
   @override
   void dispose() {
+    _closed = true;
+    _site?.problems.removeListener(_problemsChanged);
+    unawaited(_site?.close());
     _address.dispose();
     _addressFocus.dispose();
     _viewFocus.dispose();
@@ -166,14 +227,28 @@ class _WebPageState extends State<WebPage> {
   NavigationDecision _onNavigation(NavigationRequest request) {
     final url = Uri.tryParse(request.url);
     if (url == null) return NavigationDecision.prevent;
-    // A file's tab is the file alone: its own text and its own #anchors.
+    // A file's tab is the file alone: its own site and its own #anchors.
     // Any other address, a web one included, leaves through openUrl.
-    final stays = widget.html == null
+    final stays = widget.site == null
         ? _shownHere.contains(url.scheme)
-        : url.scheme == 'about' || url.scheme == 'data';
+        : url.scheme == 'about' ||
+              url.scheme == 'data' ||
+              _isSite(url) ||
+              // A frame inside the page, such as an embedded player, loads
+              // as any sub-resource does; only the page itself is held.
+              (!request.isMainFrame && _shownHere.contains(url.scheme));
     if (stays && url != _asked) {
       _asked = url;
       return NavigationDecision.navigate;
+    }
+    // A page can navigate with no touch at all — a meta refresh, a timer —
+    // and would otherwise open the browser, the mail app or the dialer in a
+    // loop. So a page leaves through the helper only just after the user
+    // touched it, or pressed Enter or Space on it.
+    final touched = _lastGesture;
+    if (touched == null ||
+        webGestureClock().difference(touched) > webGestureWindow) {
+      return NavigationDecision.prevent;
     }
     // Through the helper without a tab: a mailto: goes where the phone sends
     // it, and a download to the browser, which knows what to do with one.
@@ -181,12 +256,20 @@ class _WebPageState extends State<WebPage> {
     return NavigationDecision.prevent;
   }
 
+  /// When the user last lifted a finger or pointer from the page, or pressed
+  /// Enter or Space on it.
+  DateTime? _lastGesture;
+
+  void _gesture() => _lastGesture = webGestureClock();
+
   /// The page is somewhere new: the bar shows it, unless it is being typed
   /// over, and the tab is named after it.
   void _moved(Uri url, String? title) {
     if (!mounted) return;
     _url = url;
-    if (!_addressFocus.hasFocus) _address.text = '$url';
+    if (widget.site == null && !_addressFocus.hasFocus) {
+      _address.text = '$url';
+    }
     widget.onChanged(url, title);
   }
 
@@ -232,7 +315,7 @@ class _WebPageState extends State<WebPage> {
         extentOffset: _address.text.length,
       );
     } else {
-      _address.text = '$_url';
+      _address.text = widget.site == null ? '$_url' : '';
     }
   }
 
@@ -273,13 +356,13 @@ class _WebPageState extends State<WebPage> {
                     : button(
                         'Reload',
                         Icons.refresh,
-                        widget.html == null ? _view.reload : _loadHtml,
+                        widget.site == null ? _view.reload : _loadSite,
                       ),
                 Expanded(
                   child: TextField(
                     controller: _address,
                     focusNode: _addressFocus,
-                    readOnly: widget.html != null,
+                    readOnly: widget.site != null,
                     keyboardType: TextInputType.url,
                     textInputAction: TextInputAction.go,
                     autocorrect: false,
@@ -320,6 +403,20 @@ class _WebPageState extends State<WebPage> {
           height: 2,
           child: _loading ? TuiProgressBar(value: _progress) : null,
         ),
+        // What the page asked for and did not get — a missing file, one over
+        // the limit, a link out of the folder — said here rather than left
+        // as a bare space where a picture was meant to be.
+        if (_site case final site? when site.problems.value.isNotEmpty)
+          TuiBox(
+            expanded: false,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Text(
+              _problemLine(site.problems.value),
+              style: theme.textTheme.bodySmall,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         Expanded(
           child: Focus(
             focusNode: _viewFocus,
@@ -329,8 +426,19 @@ class _WebPageState extends State<WebPage> {
             // onto the bar — before a form or a scrolling page ever sees them.
             canRequestFocus: false,
             skipTraversal: true,
-            onKeyEvent: (_, _) => KeyEventResult.skipRemainingHandlers,
-            child: WebViewWidget(controller: _view),
+            onKeyEvent: (_, event) {
+              if (event is KeyDownEvent &&
+                  (event.logicalKey == LogicalKeyboardKey.enter ||
+                      event.logicalKey == LogicalKeyboardKey.space)) {
+                _gesture();
+              }
+              return KeyEventResult.skipRemainingHandlers;
+            },
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerUp: (_) => _gesture(),
+              child: WebViewWidget(controller: _view),
+            ),
           ),
         ),
       ],

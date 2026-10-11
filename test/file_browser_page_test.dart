@@ -1098,6 +1098,40 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Open in browser tab'), findsNothing);
     });
+
+    testWidgets('the toolbar has it too, tappable once an HTML file is picked', (
+      tester,
+    ) async {
+      final opened = await pump(tester);
+      final button = find.byTooltip('Open in browser tab');
+      expect(button, findsOneWidget);
+      // Nothing picked, or a text file picked: drawn, and does nothing.
+      await tester.tap(button);
+      await tester.pump();
+      expect(opened, isEmpty);
+      await tester.longPress(_row('notes.txt'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(1, 1));
+      await tester.pumpAndSettle();
+      await tester.tap(button);
+      await tester.pump();
+      expect(opened, isEmpty);
+
+      await tester.longPress(_row('page.HTML'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(1, 1));
+      await tester.pumpAndSettle();
+      await tester.tap(button);
+      await tester.pump();
+      expect(opened, ['/home/me/page.HTML']);
+    });
+
+    testWidgets('the toolbar button is not drawn without browser tabs', (
+      tester,
+    ) async {
+      await pump(tester, offered: false);
+      expect(find.byTooltip('Open in browser tab'), findsNothing);
+    });
   });
 
   group('Copy content', () {
