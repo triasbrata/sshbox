@@ -321,6 +321,80 @@ void main() {
     expect(r.$2, contains('too big'));
   });
 
+  test('every extension is served as its own type', () async {
+    const types = {
+      'html': 'text/html; charset=utf-8',
+      'HTM': 'text/html; charset=utf-8',
+      'css': 'text/css; charset=utf-8',
+      'js': 'text/javascript; charset=utf-8',
+      'mjs': 'text/javascript; charset=utf-8',
+      'json': 'application/json; charset=utf-8',
+      'map': 'application/json; charset=utf-8',
+      'txt': 'text/plain; charset=utf-8',
+      'svg': 'image/svg+xml',
+      'png': 'image/png',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'avif': 'image/avif',
+      'ico': 'image/x-icon',
+      'bmp': 'image/bmp',
+      'woff': 'font/woff',
+      'woff2': 'font/woff2',
+      'ttf': 'font/ttf',
+      'otf': 'font/otf',
+      'wasm': 'application/wasm',
+      'mp3': 'audio/mpeg',
+      'mp4': 'video/mp4',
+      'webm': 'video/webm',
+      'xyz': 'application/octet-stream',
+      'noextension': 'application/octet-stream',
+    };
+    for (final name in types.keys) {
+      File('${site.path}/f.$name').writeAsStringSync('x');
+    }
+    File('${site.path}/noextension').writeAsStringSync('x');
+    final s = await start();
+    for (final MapEntry(:key, :value) in types.entries) {
+      final file = key == 'noextension' ? key : 'f.$key';
+      expect(
+        (await get(s, file)).$3.value('content-type'),
+        value,
+        reason: file,
+      );
+    }
+  });
+
+  group('a host that fails', () {
+    test('a read that throws is a 500, said and not leaked', () async {
+      final s = served = await HtmlSite.start(
+        browser: _FailingBrowser(StateError('disk on fire: /secret/path')),
+        htmlPath: '${site.path}/page.html',
+      );
+      final r = await get(s, 'style.css');
+      expect(r.$1, 500);
+      expect(r.$2, isNot(contains('secret')));
+      expect(s.problems.value['/${s.token}/style.css'], 'could not be read');
+    });
+
+    test('a refusal from the host is a 502, a vanished file a 404', () async {
+      var s = served = await HtmlSite.start(
+        browser: _FailingBrowser(const FileBrowserException('no')),
+        htmlPath: '${site.path}/page.html',
+      );
+      expect((await get(s, 'style.css')).$1, 502);
+      await s.close();
+      s = served = await HtmlSite.start(
+        browser: _FailingBrowser(
+          const FileBrowserException('gone', fault: FileBrowserFault.notFound),
+        ),
+        htmlPath: '${site.path}/page.html',
+      );
+      expect((await get(s, 'style.css')).$1, 404);
+    });
+  });
+
   test('closing stops it listening', () async {
     final s = await start();
     final port = s.url.port;
@@ -377,4 +451,20 @@ class _Head implements HttpHeaders {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
+}
+
+/// Lists as a real folder does and throws when a file is read.
+class _FailingBrowser extends _DirBrowser {
+  _FailingBrowser(this.error);
+  final Object error;
+
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    int offset = 0,
+    int? length,
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) async => throw error;
 }

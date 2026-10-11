@@ -193,6 +193,17 @@ void main() {
       await tester.pump(const Duration(seconds: 60));
       expect(find.textContaining(message), findsNothing);
     });
+
+    testWidgets('a load that reaches 100 percent is not stuck afterwards', (
+      tester,
+    ) async {
+      await pumpPage(tester, 'https://dart.dev/');
+      platform.view.page.progress(60);
+      await tester.pump(const Duration(seconds: 10));
+      platform.view.page.progress(100);
+      await tester.pump(const Duration(seconds: 60));
+      expect(find.textContaining(message), findsNothing);
+    });
   });
 
   group('a page that navigates by itself', () {
