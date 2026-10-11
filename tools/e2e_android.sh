@@ -1425,7 +1425,7 @@ fz_left() { fz_host sh -c 'ls -d /tmp/jeansh-zip.* 2>/dev/null | wc -l' | tr -d 
 fz_saved() { adb shell "find /storage/emulated/0/ -name '$1' 2>/dev/null" | tr -d '\r' | head -1; }
 fz_clear_saved() {
   local pattern
-  for pattern in 'dev*.zip' 'dev*.tar.gz' '*odd*dir*.zip'; do
+  for pattern in 'dev*.zip' 'dev*.tar.gz' '*odd*dir*.zip' '*big*.zip'; do
     adb shell "find /storage/emulated/0/ -name '$pattern' -exec rm -f {} +" >/dev/null 2>&1
   done
 }
@@ -1536,6 +1536,29 @@ EOS
     "$(printf '%s\n' "dev/it's a \"q\".txt" dev/plain.txt)"
   fz_expect "3: and no .zip was saved" "$(fz_saved 'dev*.zip')" ""
   fz_expect "3: the host keeps no jeansh-zip.*" "$(fz_left)" 0
+  echo "::endgroup::"
+
+  # 4. Cancel while it compresses: a big folder, zip made slow so there is time
+  # to open Transfers and press Cancel. The row says it was cancelled, no save
+  # dialog comes, and within 10 s the host has no zip running and no archive.
+  fz_step "4, cancel while compressing"
+  fz_host sh -c 'cd "$HOME" && rm -rf jeansh-e2e-big && mkdir jeansh-e2e-big && for n in 1 2 3; do dd if=/dev/urandom of=jeansh-e2e-big/f$n bs=1048576 count=100 2>/dev/null; done'
+  fz_slow_zip || fz_fail "4: no zip on this runner"
+  flow folder_zip -e STEP=cancel || fz_fail "4: the cancel flow failed"
+  fz_where
+  local waited=0 procs left
+  while [ "$waited" -lt 10 ]; do
+    procs=$(fz_host sh -c 'pgrep -u "$(id -u)" -x zip | wc -l' | tr -d ' ')
+    left=$(fz_left)
+    [ "$procs" = 0 ] && [ "$left" = 0 ] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  fz_expect "4: within 10 s no zip is running on the host" "$procs" 0
+  fz_expect "4: and the host keeps no jeansh-zip.*" "$left" 0
+  fz_expect "4: and nothing was saved on the phone" "$(fz_saved '*big*.zip')" ""
+  fz_fast_zip
+  fz_host sh -c 'cd "$HOME" && rm -rf jeansh-e2e-big'
   echo "::endgroup::"
 
   fz_restore
