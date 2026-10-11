@@ -1353,6 +1353,30 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// A Mac's window made 1000 wide through System Events, as a hand would drag
+/// it, and put back to its own size when the test ends. The window opens 800
+/// wide, which is narrower than a layout that wants 840 dp.
+Future<void> _macWidenWindow(WidgetTester tester) async {
+  Future<String> mac(String command) async {
+    final done = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh" to $command',
+    ]);
+    expect(done.exitCode, 0, reason: 'System Events: ${done.stderr}');
+    return '${done.stdout}'.trim();
+  }
+
+  final was = (await mac('get size of window 1')).split(RegExp(r',\s*'));
+  addTearDown(() => mac('set size of window 1 to {${was[0]}, ${was[1]}}'));
+  await mac('set size of window 1 to {1000, 760}');
+  await _until(
+    tester,
+    () => tester.view.physicalSize.width / tester.view.devicePixelRatio >= 900,
+    'the window to be wider than 900 dp',
+  );
+  await tester.pump(const Duration(milliseconds: 500));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2505,6 +2529,11 @@ touch '${done.path}'
       final list = find.byType(TuiChatSessionList);
 
       await _launch(tester);
+      // The sessions sit in a sidebar, and fold to a rail, from 840 dp wide.
+      // A Mac's window opens 800 wide (MainMenu.xib), where the chat has the
+      // drawer only; Linux's Xvfb window is 1280. So the Mac's is widened
+      // for the test, as a person would drag it, and put back after.
+      if (Platform.isMacOS) await _macWidenWindow(tester);
       await _localShell(tester);
       await tester.tap(find.byTooltip('Chat with Claude'));
       await _until(
