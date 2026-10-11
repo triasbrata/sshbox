@@ -1,0 +1,267 @@
+# Download as zip on the files drawer (feature issue #271): a folder is
+# compressed on the host with a tool it has, brought down, and saved through
+# the system's save dialog; the host keeps nothing of it.
+#
+# The host's tools are the runner's to arrange between STEPs (tools/e2e_android.sh
+# folder_zip): a slow zip so the Transfers row can be read while it compresses,
+# then the zip tools hidden, then only tar and gzip left. What the runner reads
+# after each STEP, besides this flow: the saved file's own listing, the host's
+# /tmp/jeansh-zip.*, and that nothing was saved when nothing should have been.
+#
+#   zip       a folder of two files, one named with a space and a quote
+#   zip_dash  a folder whose own name starts with a dash and holds a space and a
+#             quote: its name must go to the tool after ./, never bare
+#   nozip     no tool on the host: the dialog, with OK only
+#   targz     only tar and gzip: dev.tar.gz, never called a zip
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+
+- runFlow:
+    when:
+      true: ${STEP == 'zip'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "dev"
+          timeout: 20000
+      - longPressOn: "dev"
+      - extendedWaitUntil:
+          visible: "Download as zip"
+          timeout: 10000
+      # Android has no folder to put a tree in: only the zip is offered.
+      - assertNotVisible: "Download folder"
+      - tapOn: "Download as zip"
+      # The row is on the Transfers tab, which joins the strip as it starts.
+      - tapOn: "Close files"
+      - tapOn:
+          text: "Transfers"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Compressing with zip.*"
+          timeout: 15000
+      - assertNotVisible: "(?s).*No zip tool.*"
+      - takeScreenshot: folder-zip-compressing
+      - extendedWaitUntil:
+          visible: "Save"
+          timeout: 90000
+      - assertVisible: "dev.zip"
+
+      - runFlow:
+          when:
+            visible: "Recent"
+          commands:
+            - tapOn:
+                text: "Show roots"
+                optional: true
+            - tapOn:
+                text: "Downloads"
+                optional: true
+      - tapOn: "Save"
+      # Back in the app: the row says it came down, and nothing went wrong.
+      - extendedWaitUntil:
+          visible: "(?s).*Downloaded.*"
+          timeout: 40000
+      - assertNotVisible: "(?s).*No zip tool.*"
+      - assertNotVisible: "(?s).*failed on the host.*"
+      - assertNotVisible: "(?s).*Could not.*"
+      - assertNotVisible: "(?s).*Compressing with.*"
+      - takeScreenshot: folder-zip-done
+      - tapOn:
+          text: "Close Transfers"
+          optional: true
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'zip_dash'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "-odd's dir"
+          timeout: 20000
+      - longPressOn: "-odd's dir"
+      - extendedWaitUntil:
+          visible: "Download as zip"
+          timeout: 10000
+      # Android has no folder to put a tree in: only the zip is offered.
+      - assertNotVisible: "Download folder"
+      - tapOn: "Download as zip"
+      - extendedWaitUntil:
+          visible: "Save"
+          timeout: 90000
+      - assertVisible: "(?s).*odd.*dir.*zip.*"
+
+      - runFlow:
+          when:
+            visible: "Recent"
+          commands:
+            - tapOn:
+                text: "Show roots"
+                optional: true
+            - tapOn:
+                text: "Downloads"
+                optional: true
+      - tapOn: "Save"
+      - waitForAnimationToEnd
+      - assertNotVisible: "(?s).*failed on the host.*"
+      - assertNotVisible: "(?s).*No zip tool.*"
+      - tapOn: "Close files"
+      - tapOn:
+          text: "Transfers"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Downloaded.*"
+          timeout: 40000
+      - assertNotVisible: "(?s).*failed on the host.*"
+      - takeScreenshot: folder-zip-dash-done
+      - tapOn:
+          text: "Close Transfers"
+          optional: true
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'nozip'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "dev"
+          timeout: 20000
+      - longPressOn: "dev"
+      - extendedWaitUntil:
+          visible: "Download as zip"
+          timeout: 10000
+      # Android has no folder to put a tree in: only the zip is offered.
+      - assertNotVisible: "Download folder"
+      - tapOn: "Download as zip"
+      - extendedWaitUntil:
+          visible: "(?s).*No zip tool on.*"
+          timeout: 20000
+      - assertVisible: "OK"
+      # The Android dialog has no second way: no plain download of the tree.
+      - assertNotVisible: "Plain download"
+      - assertNotVisible: "(?s).*Compressing.*"
+      - takeScreenshot: folder-zip-no-tool
+      - tapOn: "OK"
+      - assertNotVisible: "(?s).*No zip tool.*"
+      - tapOn: "Close files"
+      # No transfer began, so there is no Transfers tab on the strip.
+      - assertNotVisible: "Transfers"
+      - assertNotVisible: "Save"
+      - tapOn:
+          text: "Close Transfers"
+          optional: true
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'targz'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "dev"
+          timeout: 20000
+      - longPressOn: "dev"
+      - extendedWaitUntil:
+          visible: "Download as zip"
+          timeout: 10000
+      # Android has no folder to put a tree in: only the zip is offered.
+      - assertNotVisible: "Download folder"
+      - tapOn: "Download as zip"
+      - extendedWaitUntil:
+          visible: "Save"
+          timeout: 90000
+      - assertVisible: "dev.tar.gz"
+      - assertNotVisible: "(?s).*dev\\.zip.*"
+      - runFlow:
+          when:
+            visible: "Recent"
+          commands:
+            - tapOn:
+                text: "Show roots"
+                optional: true
+            - tapOn:
+                text: "Downloads"
+                optional: true
+      - tapOn: "Save"
+      - waitForAnimationToEnd
+      - tapOn: "Close files"
+      - tapOn:
+          text: "Transfers"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Downloaded.*"
+          timeout: 40000
+      - assertNotVisible: "(?s).*No zip tool.*"
+      - assertNotVisible: "(?s).*failed on the host.*"
+      - takeScreenshot: folder-zip-targz-done
+      - tapOn:
+          text: "Close Transfers"
+          optional: true
+      - tapOn: "Close ${HOST_LABEL}.*"

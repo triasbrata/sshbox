@@ -1355,6 +1355,182 @@ text_size_home() {
   return "$status"
 }
 
+# Download as zip on the files drawer (feature issue #271,
+# .maestro/folder_zip.yaml). The folders are the host user's own, in its home,
+# which is the file tree's root. Between the flow's STEPs the runner arranges
+# what the host has: a zip that takes 15 s, so the Transfers row can be read
+# while it compresses; then no zip tools at all; then only tar and gzip. A
+# tool is hidden by renaming it, and put back after each step and on exit: the
+# app looks for them on the PATH sshd gives it plus the usual places, so
+# nothing short of the file's absence takes one off the host.
+FZ_LIST=$(mktemp)
+FZ_STATUS=0
+FZ_PKG=cloud.brata.terminal
+
+fz_host() { sudo -u "$SSH_USER" -H "$@"; }
+
+fz_fail() { echo "::error::$1"; FZ_STATUS=1; }
+fz_expect() {
+  if [ "$2" = "$3" ]; then echo "ok: $1"; else
+    fz_fail "$1: got [$2], expected [$3]"
+  fi
+}
+
+# Tools put out of reach: every path `which -a` knows for each name.
+fz_hide() {
+  local t p
+  for t in "$@"; do
+    for p in $(which -a "$t" 2>/dev/null | sort -u); do
+      [ -e "$p" ] || continue
+      sudo mv "$p" "$p.e2e-hidden" </dev/null && echo "$p" >>"$FZ_LIST"
+    done
+  done
+}
+fz_restore() {
+  local p
+  [ -s "$FZ_LIST" ] || return 0
+  while read -r p; do
+    [ -e "$p.e2e-hidden" ] && sudo mv "$p.e2e-hidden" "$p" </dev/null
+  done <"$FZ_LIST"
+  : >"$FZ_LIST"
+}
+
+# The zip made slow, in its own place, so no PATH order can skip it.
+fz_slow_zip() {
+  local p
+  p=$(command -v zip) || return 1
+  sudo mv "$p" "$p.e2e-real" || return 1
+  printf '#!/bin/sh\nsleep 15\nexec "%s.e2e-real" "$@"\n' "$p" | sudo tee "$p" >/dev/null
+  sudo chmod 755 "$p"
+  echo "$p" >"$FZ_LIST.slow"
+}
+fz_fast_zip() {
+  local p
+  [ -s "$FZ_LIST.slow" ] || return 0
+  p=$(cat "$FZ_LIST.slow")
+  sudo rm -f "$p"
+  sudo mv "$p.e2e-real" "$p"
+  rm -f "$FZ_LIST.slow"
+}
+
+# What is on the host user's side: the tools the app's probe would find, and
+# the archive folders it makes in /tmp.
+fz_tools() {
+  fz_host sh -c 'PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/opt/local/bin:$HOME/.local/bin"
+    for t in zip 7zz 7z 7za bsdtar tar gzip; do p=$(command -v "$t") && echo "$t=$p"; done; true' | tr '\n' ' '
+}
+fz_left() { fz_host sh -c 'ls -d /tmp/jeansh-zip.* 2>/dev/null | wc -l' | tr -d ' '; }
+
+# Files saved on the phone, anywhere under /sdcard.
+fz_saved() { adb shell "find /sdcard -name '$1' 2>/dev/null" | tr -d '\r' | head -1; }
+fz_clear_saved() {
+  local pattern
+  for pattern in 'dev*.zip' 'dev*.tar.gz' '*odd*dir*.zip'; do
+    adb shell "find /sdcard -name '$pattern' -exec rm -f {} +" >/dev/null 2>&1
+  done
+}
+# The files an archive lists, no folders, sorted.
+fz_list() { # kind(zip|tgz) device-path
+  local tmp
+  tmp=$(mktemp -d)
+  if adb pull "$2" "$tmp/a" >/dev/null 2>&1; then
+    if [ "$1" = zip ]; then unzip -Z1 "$tmp/a"; else tar tzf "$tmp/a"; fi 2>/dev/null |
+      grep -v '/$' | LC_ALL=C sort
+  fi
+  rm -rf "$tmp"
+}
+fz_member() { # device-path member -> its text (zip only)
+  local tmp
+  tmp=$(mktemp -d)
+  adb pull "$1" "$tmp/a" >/dev/null 2>&1 && unzip -p "$tmp/a" "$2" 2>/dev/null
+  rm -rf "$tmp"
+}
+
+fz_step() { # name
+  echo "::group::folder_zip: $1"
+  adb shell am force-stop "$FZ_PKG" >/dev/null 2>&1
+  fz_clear_saved
+}
+
+folder_zip() {
+  FZ_STATUS=0
+  : >"$FZ_LIST"
+  [ -z "$(trap -p EXIT)" ] && trap 'fz_restore; fz_fast_zip' EXIT
+  command -v unzip >/dev/null || sudo apt-get install -y -qq unzip >/dev/null
+  command -v zip >/dev/null || sudo apt-get install -y -qq zip >/dev/null
+  # The host's folders, in the home the file tree opens at. One has a quote
+  # and a space in a file's name; the other starts with a dash, as an option
+  # does, and holds a quote and a space too.
+  fz_host sh -s <<'EOS'
+cd "$HOME" || exit 1
+rm -rf dev ./-odd*
+mkdir dev
+printf one >dev/plain.txt
+printf two >"dev/it's a \"q\".txt"
+mkdir -- "-odd's dir"
+printf three >"./-odd's dir/inner.txt"
+EOS
+
+  # 1. A host with zip, made to take 15 s.
+  fz_step "1, a host with zip"
+  fz_slow_zip || fz_fail "1: no zip on this runner"
+  echo "tools the app finds: $(fz_tools)"
+  flow folder_zip -e STEP=zip || fz_fail "1: the zip flow failed"
+  sleep 3
+  local saved
+  saved=$(fz_saved dev.zip)
+  [ -n "$saved" ] || fz_fail "1: no dev.zip was saved on the phone"
+  fz_expect "1: the zip lists both files" "$(fz_list zip "$saved")" \
+    "$(printf '%s\n' "dev/it's a \"q\".txt" dev/plain.txt)"
+  fz_expect "1: and holds what they hold" \
+    "$(fz_member "$saved" dev/plain.txt)/$(fz_member "$saved" "dev/it's a \"q\".txt")" one/two
+  fz_expect "1: the host keeps no jeansh-zip.*" "$(fz_left)" 0
+  flow folder_zip -e STEP=zip_dash || fz_fail "1: the zip_dash flow failed"
+  sleep 3
+  saved=$(fz_saved "*odd*dir*.zip")
+  [ -n "$saved" ] || fz_fail "1: no zip of the dash folder was saved on the phone"
+  fz_expect "1: the dash folder's zip lists its file under its own name" \
+    "$(fz_list zip "$saved")" "-odd's dir/inner.txt"
+  fz_expect "1: the host keeps no jeansh-zip.* after it either" "$(fz_left)" 0
+  fz_fast_zip
+  echo "::endgroup::"
+
+  # 2. No zip, 7z, 7za, 7zz or bsdtar, and no gzip for tar to be a fallback.
+  fz_step "2, a host with no zip tool"
+  fz_hide zip 7zz 7z 7za bsdtar gzip
+  echo "tools the app finds: $(fz_tools)"
+  flow folder_zip -e STEP=nozip || fz_fail "2: the nozip flow failed"
+  sleep 3
+  fz_restore
+  fz_expect "2: nothing was saved on the phone" \
+    "$(fz_saved 'dev*.zip')$(fz_saved 'dev*.tar.gz')" ""
+  fz_expect "2: the host has no jeansh-zip.*" "$(fz_left)" 0
+  echo "::endgroup::"
+
+  # 3. tar and gzip only.
+  fz_step "3, only tar and gzip"
+  fz_hide zip 7zz 7z 7za bsdtar
+  echo "tools the app finds: $(fz_tools)"
+  flow folder_zip -e STEP=targz || fz_fail "3: the targz flow failed"
+  sleep 3
+  fz_restore
+  saved=$(fz_saved dev.tar.gz)
+  [ -n "$saved" ] || fz_fail "3: no dev.tar.gz was saved on the phone"
+  fz_expect "3: the archive lists both files" "$(fz_list tgz "$saved")" \
+    "$(printf '%s\n' "dev/it's a \"q\".txt" dev/plain.txt)"
+  fz_expect "3: and no .zip was saved" "$(fz_saved 'dev*.zip')" ""
+  fz_expect "3: the host keeps no jeansh-zip.*" "$(fz_left)" 0
+  echo "::endgroup::"
+
+  fz_restore
+  fz_fast_zip
+  fz_host sh -c 'cd "$HOME" && rm -rf dev ./-odd*'
+  fz_clear_saved
+  keep_shots 'folder-zip-*.png'
+  adb shell am force-stop "$FZ_PKG" >/dev/null 2>&1
+  return "$FZ_STATUS"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -1490,6 +1666,9 @@ echo "::endgroup::"
 echo "::group::chat_cwd (report only)"
 chat_cwd || echo "::warning::chat_cwd failed -- report only, not gating"
 echo "::endgroup::"
+
+# Its steps are groups of their own, in the job log.
+folder_zip || echo "::warning::folder_zip failed -- report only, not gating"
 
 echo "::group::chat_edit_previous (report only)"
 chat_edit_previous || echo "::warning::chat_edit_previous failed -- report only, not gating"
