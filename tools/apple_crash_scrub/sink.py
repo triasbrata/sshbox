@@ -11,7 +11,9 @@ import getpass
 import gzip
 import json
 import socket
+import socketserver
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # What NativeCrashes.scrub keeps, and so NativeCrashes.kt: anything else in a
@@ -56,9 +58,29 @@ def serve(port, out):
         def log_message(self, *_):
             pass
 
+    class Server(ThreadingHTTPServer):
+        def server_bind(self):
+            # HTTPServer's own bind asks DNS for the host's full name, which
+            # on a CI Mac can take long enough that nothing listens yet.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", port
+
     # Threaded: a client that opens a connection and holds it, as a URL
     # session does, must not keep the next envelope waiting behind it.
-    ThreadingHTTPServer(("127.0.0.1", port), Sink).serve_forever()
+    Server(("127.0.0.1", port), Sink).serve_forever()
+
+
+def wait(port, seconds=60):
+    """Exit 0 once a connect to the sink succeeds, 1 if none does in time."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=2).close()
+            print(f"sink listening on {port}")
+            return 0
+        except OSError:
+            time.sleep(0.2)
+    return 1
 
 
 def envelopes(out):
@@ -198,5 +220,7 @@ def check(out, mode):
 if __name__ == "__main__":
     if sys.argv[1] == "serve":
         serve(int(sys.argv[2]), sys.argv[3])
+    elif sys.argv[1] == "wait":
+        sys.exit(wait(int(sys.argv[2])))
     else:
         check(sys.argv[2], sys.argv[3])

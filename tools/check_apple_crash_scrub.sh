@@ -35,7 +35,9 @@ DSN="http://public@127.0.0.1:$PORT/1"
 python3 "$ROOT/tools/apple_crash_scrub/sink.py" serve "$PORT" "$WORK/sent" &
 SINK=$!
 trap 'kill $SINK 2>/dev/null' EXIT
-sleep 1
+# Not a guess at how long the sink takes: no app starts until a connect to it
+# has succeeded, and the check fails saying so if none ever does.
+python3 "$ROOT/tools/apple_crash_scrub/sink.py" wait "$PORT" || { echo "sink never listened on $PORT" >&2; exit 1; }
 
 status=0
 "$WORK/check" hang "$DSN" "$WORK/cache-hang" || status=1
