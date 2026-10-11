@@ -169,8 +169,9 @@ jobs:
         if: always()
         run: |
           tests=0; failures=0
-          for f in android/app/build/test-results/testDebugUnitTest/*.xml; do
-            [ -e "$f" ] || continue
+          # A Flutter project moves Gradle's build folder to the repo root, so
+          # the reports are in build/app/, not android/app/build/.
+          for f in $(find build android/app/build -path '*test-results/testDebugUnitTest/TEST-*.xml' 2> /dev/null); do
             tests=$((tests + $(sed -n 's/.*<testsuite [^>]*tests="\([0-9]*\)".*/\1/p' "$f" | head -1)))
             failures=$((failures + $(sed -n 's/.*<testsuite [^>]*failures="\([0-9]*\)".*/\1/p' "$f" | head -1) + $(sed -n 's/.*<testsuite [^>]*errors="\([0-9]*\)".*/\1/p' "$f" | head -1)))
           done
