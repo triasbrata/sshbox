@@ -44,7 +44,12 @@ for mode in raw scrubbed; do
   cache="$WORK/cache-$mode"
   # Dies of EXC_BAD_ACCESS, as it should.
   "$WORK/check" crash "$DSN" "$cache" $mode 2>"$WORK/crash-$mode.log" || true
-  "$WORK/check" send "$DSN" "$cache" $mode >"$WORK/send-$mode.log" 2>&1
-  python3 "$ROOT/tools/apple_crash_scrub/sink.py" check "$WORK/sent" $mode || status=1
+  SENTRY_DEBUG=1 "$WORK/check" send "$DSN" "$cache" $mode >"$WORK/send-$mode.log" 2>&1
+  python3 "$ROOT/tools/apple_crash_scrub/sink.py" check "$WORK/sent" $mode || {
+    status=1
+    # What the SDK itself said, for a run that sent nothing.
+    echo "--- the SDK's log, $mode send ---"; tail -n 60 "$WORK/send-$mode.log"
+    echo "--- the crash run's stderr, $mode ---"; tail -n 20 "$WORK/crash-$mode.log"
+  }
 done
 exit $status

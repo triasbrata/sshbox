@@ -12,7 +12,7 @@ import gzip
 import json
 import socket
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # What NativeCrashes.scrub keeps, and so NativeCrashes.kt: anything else in a
 # native event is a leak.
@@ -56,7 +56,9 @@ def serve(port, out):
         def log_message(self, *_):
             pass
 
-    HTTPServer(("127.0.0.1", port), Sink).serve_forever()
+    # Threaded: a client that opens a connection and holds it, as a URL
+    # session does, must not keep the next envelope waiting behind it.
+    ThreadingHTTPServer(("127.0.0.1", port), Sink).serve_forever()
 
 
 def envelopes(out):
@@ -79,8 +81,26 @@ def extra_keys(what, got, keep):
     return [f"{what}: {sorted(extra)}"] if extra else []
 
 
+HANG_TAGS = {"hang.since_wake": {"<30s", "<300s", "older"},
+             "hang.occluded": {"true", "false"}}
+
+
+def hang_tag_leaks(event):
+    """An App Hang carries two constant tags, and no event any other."""
+    tags = event.get("tags")
+    if tags is None:
+        return []
+    types = [x.get("mechanism", {}).get("type")
+             for x in event.get("exception", {}).get("values", [])]
+    if "AppHang" not in types:
+        return [f"tags on a {types} event: {tags!r}"]
+    return [f"hang tag {k}={v!r}" for k, v in tags.items()
+            if v not in HANG_TAGS.get(k, set())]
+
+
 def outside_allowlist(event):
-    bad = extra_keys("event", event, KEEP_EVENT)
+    bad = extra_keys("event", event, KEEP_EVENT | {"tags"})
+    bad += hang_tag_leaks(event)
     contexts = event.get("contexts", {})
     bad += extra_keys("contexts", contexts, {"os", "device"})
     bad += extra_keys("os", contexts.get("os", {}), KEEP_OS)
