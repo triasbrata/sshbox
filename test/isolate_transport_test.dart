@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/known_host_store.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/file_browser.dart';
+import 'package:sshbox/src/files/folder_archive.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/isolate_transport.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
@@ -160,6 +161,46 @@ void main() {
             .having((e) => e.fault, 'fault', FileBrowserFault.cancelled),
       ),
     );
+
+    await browser.close();
+  });
+
+  // The app's files drawer reads through this proxy, so the folder menu's
+  // "Download as zip" exists only if the proxy can run a host's archiver.
+  test('carries a folder archive: the tool, the archive, cancel, removal',
+      () async {
+    final session = await _connect();
+    addTearDown(session.dispose);
+    final browser = (session as FileBrowseCapable).openFileBrowser();
+    expect(browser, isA<FolderArchiveCapable>());
+    final archiver = browser as FolderArchiveCapable;
+
+    final tool = await archiver.findArchiveTool();
+    expect(tool?.kind, ArchiveKind.tarGz);
+    expect(tool?.binary, '/bin/tar');
+
+    final made = await archiver.archiveFolder('/home/dev', tool!);
+    expect(made.path, '/tmp/jeansh-zip.x/jeansh.tar.gz');
+    expect(made.size, 42);
+
+    final stop = Completer<void>();
+    final held = archiver.archiveFolder('/slow', tool, cancel: stop.future);
+    final raised = expectLater(
+      held,
+      throwsA(
+        isA<FileBrowserException>().having(
+          (e) => e.fault,
+          'fault',
+          FileBrowserFault.cancelled,
+        ),
+      ),
+    );
+    stop.complete();
+    await raised;
+
+    await archiver.removeArchive('/tmp/jeansh-zip.x/jeansh.tar.gz');
+    final seen = await archiver.archiveFolder('/removed', tool);
+    expect(seen.path, '/tmp/jeansh-zip.x/jeansh.tar.gz');
 
     await browser.close();
   });
@@ -470,7 +511,33 @@ class _Upper implements StreamSink<List<int>> {
   Future<void> get done => _done.future;
 }
 
-class _FakeBrowser implements FileBrowser {
+class _FakeBrowser implements FileBrowser, FolderArchiveCapable {
+  /// What removeArchive was asked for, over there, which a test reads back
+  /// through archiveFolder('/removed').
+  static final _removed = <String>[];
+
+  @override
+  Future<ArchiveTool?> findArchiveTool() async =>
+      const ArchiveTool(ArchiveKind.tarGz, '/bin/tar');
+
+  @override
+  Future<({String path, int size})> archiveFolder(
+    String folder,
+    ArchiveTool tool, {
+    Future<void>? cancel,
+  }) async {
+    if (folder == '/slow') {
+      await cancel;
+      throw FileBrowserException.cancelled;
+    }
+    if (folder == '/removed') return (path: _removed.join(','), size: 1);
+    return (path: '/tmp/jeansh-zip.x/jeansh${tool.extension}', size: 42);
+  }
+
+  @override
+  Future<void> removeArchive(String archivePath) async =>
+      _removed.add(archivePath);
+
   @override
   Future<List<RemoteEntry>> list(String path) async => [
         const RemoteEntry(
