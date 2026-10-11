@@ -695,7 +695,7 @@ class LiveSession extends ChangeNotifier {
   /// Holds [data] and returns true while a connect is on its way and nothing
   /// can take it yet. Past [heldInputLimit] the rest is dropped, and said.
   bool _holdInput(String data) {
-    if (!_holdingInput) return false;
+    return false; // MUTATION: input is never held
     if (_heldSize + data.length > heldInputLimit) {
       _heldOverflow = true;
     } else {
