@@ -6668,8 +6668,8 @@ void main() {
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       final folder = Directory('${dir.path}/sub')..createSync();
       await drop(tester, [file.path, folder.path]);
-      expect(shell.uploaded, ['notes.txt']);
-      expect(box(tester), '/tmp/notes.txt ');
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
+      expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
       expect(
         find.textContaining('A folder cannot be uploaded: sub'),
         findsOneWidget,
@@ -6691,8 +6691,8 @@ void main() {
         extentOffset: 18,
       );
       await drop(tester, [file.path]);
-      expect(shell.uploaded, ['my "q" notes.txt']);
-      expect(box(tester), r'keep this sentence "/tmp/my \"q\" notes.txt" ');
+      expect(shell.uploaded.single, endsWith('-my "q" notes.txt'));
+      expect(box(tester), matches(RegExp(r'^keep this sentence "/tmp/\d+-my \\"q\\" notes\.txt" $')));
     }, variant: linux);
 
     for (final (label, host) in [
@@ -6711,8 +6711,8 @@ void main() {
         final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
         final shell = await chatOn(tester, host);
         await drop(tester, [file.path]);
-        expect(shell.uploaded, ['notes.txt']);
-        expect(box(tester), '/tmp/notes.txt ');
+        expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
+        expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
       }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
     }
 
@@ -6817,8 +6817,8 @@ void main() {
       final (shell, session) = await chatOn(tester);
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
-      expect(shell.uploaded, ['notes.txt']);
-      expect(box(tester), '/tmp/notes.txt ');
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
+      expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 
@@ -6854,7 +6854,7 @@ void main() {
       shell.failUploads = 1;
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
-      expect(shell.uploaded, ['notes.txt']);
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
       expect(box(tester), isEmpty);
       expect(find.textContaining('Upload failed:'), findsOneWidget);
       await tester.pumpAndSettle(const Duration(seconds: 6));
@@ -6866,7 +6866,7 @@ void main() {
       shell.cancelUploads = true;
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
-      expect(shell.uploaded, ['notes.txt']);
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
       expect(box(tester), isEmpty);
       expect(find.textContaining('Upload failed'), findsNothing);
     });
@@ -6898,6 +6898,57 @@ void main() {
       await share(tester, session, ['https://example.com/a']);
       expect(box(tester), isEmpty);
       expect(find.textContaining('this session is read-only'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('a file shared into a read-only session is refused before it '
+        'is uploaded, with a toast, and the box stays empty', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, isEmpty, reason: 'nothing uploaded for nothing');
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('this session is read-only'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('two shared files of one name are two files on the host, not '
+        'one overwriting the other', (tester) async {
+      final (shell, session) = await chatOn(tester);
+      Directory('${dir.path}/a').createSync();
+      Directory('${dir.path}/b').createSync();
+      final one = File('${dir.path}/a/notes.txt')..writeAsStringSync('one');
+      final two = File('${dir.path}/b/notes.txt')..writeAsStringSync('two');
+      await share(tester, session, [
+        (path: one.path, name: 'notes.txt'),
+        (path: two.path, name: 'notes.txt'),
+      ]);
+      expect(shell.uploaded, hasLength(2));
+      expect(shell.uploaded[0], isNot(shell.uploaded[1]));
+      final paths = RegExp(r'/tmp/\d+-notes\.txt').allMatches(box(tester));
+      expect(paths, hasLength(2));
+      expect(paths.first.group(0), isNot(paths.last.group(0)));
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 

@@ -641,6 +641,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// A file that is not a picture, as [_dropped] and [_drainShared] take it.
   Future<void> _addFile(String path, String name, bool isDir) async {
+    // Before anything is uploaded: a path that could not be put in the box
+    // would otherwise be dropped with nothing said, after the work was done.
+    if (!_attachable) {
+      return _refuse('Not added: this session is read-only from here.');
+    }
     final here =
         widget.session.host.id == localHostId &&
         defaultTargetPlatform != TargetPlatform.windows;
@@ -658,12 +663,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           direction: TransferDirection.upload,
           work: (transfer) => widget.session.uploadToTmp(
             localPath: path,
-            fileName: name,
+            // A clock prefix, as a picture's copy has: two files of one name
+            // must not overwrite each other at /tmp/<name>.
+            fileName: '${DateTime.now().microsecondsSinceEpoch}-$name',
             onProgress: transfer.report,
             cancel: transfer.cancelled,
           ),
         );
-        if (mounted) _typePath(remote);
+        if (!mounted) return;
+        // The upload is a long wait: the chat may have turned read-only.
+        if (_attachable) {
+          _typePath(remote);
+        } else {
+          _refuse(
+            'Not added: this session turned read-only while $name was '
+            'uploading. It is at $remote.',
+          );
+        }
       } catch (error) {
         // Cancelled from the Transfers tab, which says so itself.
         final cancelled =
