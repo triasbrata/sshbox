@@ -119,14 +119,27 @@ Future<void> _settle(WidgetTester tester) async {
   }
 }
 
-Future<void> _start(WidgetTester tester, {_Box? over}) async {
+Future<void> _start(
+  WidgetTester tester, {
+  _Box? over,
+  bool settle = true,
+}) async {
   await tester.pumpWidget(
     SshboxApp(
       key: UniqueKey(),
       transport: over == null ? null : (_, _) => over,
     ),
   );
-  await _settle(tester);
+  if (settle) await _settle(tester);
+}
+
+/// Pumps a frame at a time until [finder] finds one, up to five seconds: a
+/// toast stays up for a second, so it is caught as it is shown.
+Future<void> _until(WidgetTester tester, Finder finder) async {
+  for (var i = 0; i < 100 && finder.evaluate().isEmpty; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  expect(finder, findsOneWidget);
 }
 
 void main() {
@@ -152,11 +165,8 @@ void main() {
     await tester.tap(find.byTooltip('Home'));
     await tester.pump();
     await tester.tap(find.text('e2e@127.0.0.1:1'));
-    await _settle(tester);
-
-    await tester.pump(const Duration(milliseconds: 300));
     // The install's answer, as a toast, and the secret that went on stdin.
-    expect(find.textContaining('was left alone'), findsOneWidget);
+    await _until(tester, find.textContaining('was left alone'));
     expect(box.secrets.single, hasLength(greaterThan(20)));
 
     // A right request whose path is not UTF-8.
@@ -165,8 +175,7 @@ void main() {
       '${DateTime.now().millisecondsSinceEpoch ~/ 1000};'
       '${(0x51000000).toRadixString(16)};${base64.encode([0x2f, 0xff])}\x07',
     );
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(find.textContaining('1 jeansh file was not opened'), findsOneWidget);
+    await _until(tester, find.textContaining('1 jeansh file was not opened'));
     await tester.pump(const Duration(seconds: 10));
   });
 
@@ -197,8 +206,7 @@ void main() {
       () => Future<void>.delayed(const Duration(milliseconds: 2100)),
     );
     box.out.add(osc(3));
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(find.textContaining('3 jeansh files were not opened'), findsOne);
+    await _until(tester, find.textContaining('3 jeansh files were not opened'));
     await tester.pump(const Duration(seconds: 10));
   });
 
@@ -207,10 +215,10 @@ void main() {
     _quietPlatform(tester);
     localOpenCommand.startupProblem = 'Could not write ~/.local/bin/jeansh: x.';
     addTearDown(() => localOpenCommand.startupProblem = null);
-    await _start(tester);
-    expect(
+    await _start(tester, settle: false);
+    await _until(
+      tester,
       find.textContaining('Could not write ~/.local/bin/jeansh'),
-      findsOne,
     );
     await tester.pump(const Duration(seconds: 10));
   });

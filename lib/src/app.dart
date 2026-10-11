@@ -98,7 +98,6 @@ class _SshboxAppState extends State<SshboxApp> {
           ? '1 jeansh file was not opened: $reason.'
           : '$count jeansh files were not opened: $reason.',
       type: TuiToastType.warning,
-      duration: const Duration(seconds: 6),
     );
   }
 
@@ -110,7 +109,6 @@ class _SshboxAppState extends State<SshboxApp> {
       context,
       message,
       type: TuiToastType.warning,
-      duration: const Duration(seconds: 8),
     );
   }
 
@@ -301,7 +299,6 @@ class _SshboxAppState extends State<SshboxApp> {
       'Jeansh reports crashes\nIt also counts this install once a day. '
       'Neither report carries a hostname, login, path or command. You can '
       'turn both off in Settings.',
-      duration: const Duration(seconds: 8),
       action: (label: 'Settings', onPressed: _openSettings),
       // Low, clear of Home's header and title, which it lands on, and of
       // its Add.
