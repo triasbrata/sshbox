@@ -2753,7 +2753,7 @@ touch '${done.path}'
         );
         await _until(
           tester,
-          () => find.text(title).evaluate().isNotEmpty,
+          () => find.textContaining(title).evaluate().isNotEmpty,
           'the files page of $title',
         );
       }
