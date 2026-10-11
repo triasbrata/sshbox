@@ -113,9 +113,13 @@ class FakeSaveDialog extends FileSelectorPlatform {
   /// How many times the folder picker was opened.
   int directoryAsked = 0;
 
+  /// True to have the folder picker break, as a missing portal does.
+  bool directoryFails = false;
+
   @override
   Future<String?> getDirectoryPathWithOptions(FileDialogOptions options) async {
     directoryAsked++;
+    if (directoryFails) throw StateError('no portal');
     return directory;
   }
 
