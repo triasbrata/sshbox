@@ -51,7 +51,6 @@ import 'terminal_text_input.dart';
 import 'text_size.dart';
 import 'tmux_panes.dart';
 import 'toast.dart';
-import '../telemetry/input_log.dart';
 import 'tui.dart';
 
 /// Shows a [LiveSession]. Deliberately owns nothing that must survive
@@ -218,6 +217,10 @@ class _TerminalPageState extends State<TerminalPage> {
         type: TuiToastType.error,
       );
     }
+    final pasteProblem = _session.takePasteProblem();
+    if (pasteProblem != null) {
+      showToast(context, pasteProblem, type: TuiToastType.warning);
+    }
     // A file shared from another app may have been queued before this page
     // existed, or before the shell came up. Either way the session notifies,
     // and this is where it lands.
@@ -295,7 +298,11 @@ class _TerminalPageState extends State<TerminalPage> {
         case SharedFile file:
           await _upload(file);
         case String text:
-          final refused = await pasteShared(_session.terminal, text);
+          final refused = await pasteShared(
+            _session.terminal,
+            text,
+            tmux: _session.tmux != null,
+          );
           if (refused != null && mounted) {
             showToast(context, refused, type: TuiToastType.warning);
           }
@@ -692,15 +699,12 @@ class _TerminalPageState extends State<TerminalPage> {
   /// The space goes inside the brackets — Claude trims it, a shell keeps it;
   /// outside, it lands before the chip, which Claude inserts only after
   /// reading the file. Otherwise typed.
-  void _pastePath(String path) {
-    final terminal = _session.terminal;
-    logPaste('terminal', 'files', 1);
-    if (terminal.bracketedPasteMode) {
-      mutePasteLog(() => terminal.paste('$path '));
-    } else {
-      _session.sendRaw('$path ');
-    }
-  }
+  void _pastePath(String path) => pastePath(
+    _session.terminal,
+    path,
+    tmux: _session.tmux != null,
+    sendRaw: _session.sendRaw,
+  );
 
   /// A dropped path escaped as iTerm2 escapes one: a backslash before every
   /// character a shell would read. Measured on Claude Code 2.1.280, the

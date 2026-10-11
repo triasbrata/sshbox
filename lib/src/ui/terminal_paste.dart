@@ -20,6 +20,27 @@ const _android = MethodChannel('sshbox/share');
 /// Raise it when somebody has a real image bigger than this.
 const pasteImageLimit = 20 * 1024 * 1024;
 
+/// Puts a file's path at the prompt, bracketed when the program asked for
+/// bracketed paste and typed otherwise, with a trailing space.
+///
+/// In a tmux tab ([tmux]) the terminal's own flag says nothing — it is false
+/// after a reattach, a capture holding no modes — so the path is always
+/// pasted, and tmux's `paste-buffer -p` brackets it from the pane's real
+/// mode. Typed, it would never become Claude Code's `[Image #N]`.
+void pastePath(
+  Terminal terminal,
+  String path, {
+  required bool tmux,
+  required void Function(String data) sendRaw,
+}) {
+  logPaste('terminal', 'files', 1);
+  if (tmux || terminal.bracketedPasteMode) {
+    mutePasteLog(() => terminal.paste('$path '));
+  } else {
+    sendRaw('$path ');
+  }
+}
+
 /// A paste into a terminal, whichever way it was asked for.
 ///
 /// A terminal is a byte stream and an image on the Android clipboard is a
@@ -91,14 +112,22 @@ const shareTextLimit = 64 * 1024;
 /// A program that did not ask — a plain `sh`, an old bash — runs each line
 /// as it arrives, so text that is not a single safe line is not pasted there
 /// at all: it goes on the clipboard, for a paste the user makes knowingly.
-Future<String?> pasteShared(Terminal terminal, String shared) async {
+///
+/// In a tmux tab ([tmux]) the terminal's own flag says nothing — it is false
+/// after a reattach — so the text goes to tmux, whose `paste-buffer -p`
+/// brackets it when the pane really asked.
+Future<String?> pasteShared(
+  Terminal terminal,
+  String shared, {
+  bool tmux = false,
+}) async {
   final text = shared.replaceAll(RegExp(r'^[\r\n]+|[\r\n]+$'), '');
   if (text.isEmpty) return null;
   if (text.length > shareTextLimit) {
     return 'The shared text is too long to paste: '
         '${shareTextLimit ~/ 1024} KB at most';
   }
-  if (!terminal.bracketedPasteMode && !Terminal.isPasteSafe(text)) {
+  if (!tmux && !terminal.bracketedPasteMode && !Terminal.isPasteSafe(text)) {
     await Clipboard.setData(ClipboardData(text: text));
     return 'Not pasted: this shell would run each line of it. '
         'It is on the clipboard instead.';

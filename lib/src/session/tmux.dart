@@ -445,6 +445,7 @@ class TmuxSession {
     required this._transform,
     required this.onChanged,
     required this.onEnded,
+    this.onPasteFailed,
     this._size,
     this.record = false,
   }) {
@@ -683,6 +684,18 @@ class TmuxSession {
   /// elsewhere, or the connection went.
   final void Function() onEnded;
 
+  /// Told, in words for the user, when a paste did not arrive whole.
+  final void Function(String message)? onPasteFailed;
+
+  /// This client's own paste buffer: tmux's buffers belong to the server, so
+  /// a fixed name would be shared with every other client on it.
+  final String _pasteBuffer =
+      'jeansh-paste-${math.Random().nextInt(1 << 32).toRadixString(36)}';
+
+  /// Pastes one after another, so two never interleave in the buffer.
+  Future<void> _pasting = Future.value();
+  int _pastesInFlight = 0;
+
   /// Whether the session's panes are recorded on the host — see
   /// [PaneRecord]. Set up, or taken down, at every attach, so a switch
   /// changed since reaches a session that is already there.
@@ -783,7 +796,18 @@ class TmuxSession {
 
   /// As hex, so no byte is ever read as tmux syntax: `send-keys -H` writes
   /// each one to the pane as it is, rather than as a key tmux looks up.
+  ///
+  /// Behind a paste still being handed over, so what is typed after it lands
+  /// after it.
   void _sendTo(TmuxPane pane, String data) {
+    if (_pastesInFlight > 0) {
+      _pasting = _pasting.then((_) => _sendNow(pane, data));
+      return;
+    }
+    _sendNow(pane, data);
+  }
+
+  void _sendNow(TmuxPane pane, String data) {
     final bytes = utf8.encode(data);
     for (var start = 0; start < bytes.length; start += _sendChunk) {
       final hex = bytes
@@ -806,21 +830,26 @@ class TmuxSession {
   ///
   /// The text goes in double-quoted arguments of one line each, every
   /// character that is syntax there, or breaks a line, escaped.
+  ///
+  /// Every reply is waited for. A refused chunk stops the paste, drops what
+  /// was buffered and says so through [onPasteFailed]: a paste cut short
+  /// must not look like one that arrived. A lone surrogate, which has no
+  /// UTF-8, becomes U+FFFD rather than a chunk tmux refuses.
   void _pasteTo(TmuxPane pane, String data) {
     final text = data.replaceAll(_pasteMarks, '');
-    const buffer = 'jeansh-paste';
+    final buffer = _pasteBuffer;
+    final commands = <String>[];
     final quoted = StringBuffer();
-    var first = true;
     void flush() {
       if (quoted.isEmpty) return;
-      _client
-          .command('set-buffer -b $buffer ${first ? '' : '-a '}-- "$quoted"')
-          .ignore();
-      first = false;
+      commands.add(
+        'set-buffer -b $buffer ${commands.isEmpty ? '' : '-a '}-- "$quoted"',
+      );
       quoted.clear();
     }
 
-    for (final rune in text.runes) {
+    for (var rune in text.runes) {
+      if (rune >= 0xd800 && rune <= 0xdfff) rune = 0xfffd;
       quoted.write(switch (rune) {
         0x5c => r'\\',
         0x22 => r'\"',
@@ -837,8 +866,27 @@ class TmuxSession {
       if (quoted.length >= _sendChunk * 8) flush();
     }
     flush();
-    if (first) return;
-    _client.command('paste-buffer -p -r -d -b $buffer -t %${pane.id}').ignore();
+    if (commands.isEmpty) return;
+    commands.add('paste-buffer -p -r -d -b $buffer -t %${pane.id}');
+    _pastesInFlight++;
+    _pasting = _pasting.then((_) async {
+      try {
+        for (final command in commands) {
+          await _client.command(command);
+        }
+      } catch (error) {
+        // Not left in the server's buffers, and not left unsaid.
+        _client
+            .command('delete-buffer -b $buffer')
+            .then((_) {}, onError: (Object _) {});
+        onPasteFailed?.call(
+          'The paste did not arrive whole: '
+          '${error is TmuxException ? error.message : 'tmux is not answering'}.',
+        );
+      } finally {
+        _pastesInFlight--;
+      }
+    });
   }
 
   /// Splits the focused pane in two, the new one starting in the folder the
