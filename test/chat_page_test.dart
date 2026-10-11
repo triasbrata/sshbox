@@ -7557,6 +7557,19 @@ void main() {
       expect(find.byTooltip('Edit this message'), findsNothing);
     });
 
+    testWidgets('the Edit button over a draft never writes over it: the draft '
+        'stays and the message it went back to is said', (tester) async {
+      await ownChat(tester);
+      await tester.enterText(find.byType(TextField), 'half a thought');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Edit this message'));
+      await _settlePickUp(tester);
+      expect(box(tester).controller!.text, 'half a thought');
+      expect(find.textContaining('the box has a draft'), findsOneWidget);
+      expect(find.textContaining('check nginx'), findsWidgets);
+      await tester.pumpAndSettle(const Duration(seconds: 9));
+    });
+
     testWidgets('the Edit button is a semantics node of its own, and the '
         "bubble's text stays only the message", (tester) async {
       final semantics = tester.ensureSemantics();
