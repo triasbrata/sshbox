@@ -2728,7 +2728,13 @@ touch '${done.path}'
           return true;
         }
       }, 'the port to refuse connections after Done');
-      expect(dialog, findsNothing);
+      // Popped by Done (the port refused above only once it had been); the
+      // route is gone once its closing animation has run.
+      await _until(
+        tester,
+        () => dialog.evaluate().isEmpty,
+        "the dialog to close after Done",
+      );
       await _closeTabs(tester);
     },
   );
@@ -2764,6 +2770,14 @@ touch '${done.path}'
         tester,
         () => find.byType(WebPage).evaluate().isNotEmpty,
         'a web tab for the page',
+      );
+      // Two steps, so a failure says which: the web view finishing the load
+      // (its Stop button, drawn while it loads, goes), and then the title.
+      await _until(
+        tester,
+        () => find.byTooltip('Stop').evaluate().isEmpty,
+        'the web view to finish loading the page (Stop is drawn while it loads)',
+        timeout: const Duration(seconds: 60),
       );
       await _until(
         tester,
