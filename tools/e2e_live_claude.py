@@ -331,7 +331,7 @@ def hold_turn(text):
     listed_as('busy')
     record({'type': 'user', 'timestamp': now(),
             'message': {'role': 'user', 'content': text}})
-    deadline = time.time() + 600
+    deadline = time.time() + 3600
     while not os.path.exists(release) and time.time() < deadline:
         time.sleep(0.5)
     try:
