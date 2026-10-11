@@ -171,19 +171,13 @@ class HtmlSite {
         return await refuse(403, 'Wrong host');
       }
       final segments = request.uri.pathSegments;
-      if (segments.isEmpty || segments.first != token) {
-        // A path from the site's root, `/logo.png`, reaches nothing: the
-        // page's own folder is under the token. Said, since it is the usual
-        // reason a page looks bare — but not for a browser's own favicon.
-        return await refuse(
-          404,
-          'Not found',
-          request.uri.path == '/favicon.ico'
-              ? null
-              : 'outside the page\'s folder',
-        );
+      // MUTATION: the folder confinement is a no-op: a path outside the token
+      // is read from the folder above the page's own.
+      final outside = segments.isEmpty || segments.first != token;
+      if (segments.isEmpty) {
+        return await refuse(404, 'Not found', 'outside the page\'s folder');
       }
-      final rel = segments.skip(1).toList();
+      final rel = (outside ? segments : segments.skip(1)).toList();
       final bad =
           rel.isEmpty ||
           rel.any(
@@ -201,7 +195,7 @@ class HtmlSite {
       }
 
       final shown = rel.join('/');
-      final entry = await _find(rel);
+      final entry = await _find(rel, outside);
       if (entry == null) return await refuse(404, 'Not found', 'missing');
       if (entry.kind == RemoteEntryKind.symlink) {
         return await refuse(403, 'Refused', 'a link, not followed');
@@ -275,8 +269,8 @@ class HtmlSite {
   /// The entry at [rel] under the page's folder, walking down one listing at
   /// a time so a link in the way is met rather than followed. Null where
   /// nothing is.
-  Future<RemoteEntry?> _find(List<String> rel) async {
-    var dir = _base;
+  Future<RemoteEntry?> _find(List<String> rel, [bool up = false]) async {
+    var dir = up ? RemotePath.parent(_base) : _base;
     for (var i = 0; i < rel.length; i++) {
       final entries = await _list(dir);
       final entry = entries.where((e) => e.name == rel[i]).firstOrNull;
