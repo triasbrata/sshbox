@@ -1356,6 +1356,22 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// Ends this run's sshbox- sessions on its private tmux server: a test that
+/// failed before closing its tab left one, which the next tmux test, that
+/// begins by expecting none, then failed on.
+Future<void> _killSshboxTmux() async {
+  final listed = await Process.run('tmux', [
+    'list-sessions',
+    '-F',
+    '#{session_name}',
+  ]);
+  for (final name in '${listed.stdout}'.split('\n')) {
+    if (name.startsWith('sshbox-')) {
+      await Process.run('tmux', ['kill-session', '-t', name]);
+    }
+  }
+}
+
 /// What the one pane of this run's private tmux server is running in the
 /// foreground, as tmux names it: `bash`, `cat`.
 Future<String> _paneCommand() async {
@@ -2534,6 +2550,7 @@ touch '${done.path}'
         final picture = File('${_scratch().path}/picture.png')
           ..writeAsBytesSync(_onePixelPng);
         await _putPicture(picture.path);
+        addTearDown(_killSshboxTmux);
         await _launch(tester);
         var view = await _localShell(tester, tmux: true);
         final recorder = await _paneRecorder(
@@ -2588,6 +2605,7 @@ touch '${done.path}'
         ? null
         : 'tmux on the run\'s private server and xclip are the Linux run\'s',
     (tester) async {
+      addTearDown(_killSshboxTmux);
       await _launch(tester);
       final view = await _localShell(tester, tmux: true);
       final id = DateTime.now().millisecondsSinceEpoch;
@@ -2605,11 +2623,21 @@ touch '${done.path}'
       }, 'the pane to be at a shell');
       await Clipboard.setData(const ClipboardData(text: 'sentinel-before'));
       session.queueUploads([text]);
-      await _until(
-        tester,
-        () => find.textContaining('Not pasted').evaluate().isNotEmpty,
-        'the refusal toast',
-      );
+      // A warning toast is up for about a second, which a slow runner's
+      // polling can miss: watched every frame until the clipboard, which
+      // stays, says the share was refused.
+      var toasted = false;
+      final end = DateTime.now().add(const Duration(seconds: 20));
+      while (await _clipboard() != text) {
+        if (DateTime.now().isAfter(end)) fail('the share was not refused');
+        await tester.pump(const Duration(milliseconds: 30));
+        toasted |= find.textContaining('Not pasted').evaluate().isNotEmpty;
+      }
+      for (var i = 0; i < 60 && !toasted; i++) {
+        await tester.pump(const Duration(milliseconds: 30));
+        toasted = find.textContaining('Not pasted').evaluate().isNotEmpty;
+      }
+      expect(toasted, isTrue, reason: 'no refusal toast was shown');
       expect(
         (await _clipboard()),
         text,
@@ -2841,6 +2869,14 @@ touch '${done.path}'
         (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
       );
       for (var i = 0; i < 5; i++) {
+        // The last menu gone first: its closing item was still in the tree
+        // when the next right-click opened another, and then vanished.
+        await _until(
+          tester,
+          () => _label('Duplicate session').evaluate().isEmpty,
+          'the last menu to close',
+        );
+        await tester.pump(const Duration(milliseconds: 300));
         final before = close.evaluate().length;
         await tester.tapAt(
           tester.getCenter(
