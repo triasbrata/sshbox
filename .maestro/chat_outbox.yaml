@@ -473,12 +473,20 @@ env:
       # terminal: each Retry finds one of the two and sends nothing.
       - tapOn: "Retry"
       # The delivered bubble is appended at the end and the view follows it
-      # down, so the other failed message and its Retry are above, out of the
-      # list's built rows: scrolled back to, and tapped for real.
-      - scrollUntilVisible:
-          element: "Retry"
-          direction: UP
-          timeout: 30000
+      # down, so the other failed message and its Retry are above. The keyboard
+      # is up, so the middle of the screen, where scrollUntilVisible swipes, is
+      # the keyboard and not the list: swiped inside the list instead, a few
+      # screens up at most, until it shows.
+      - repeat:
+          times: 10
+          commands:
+            - runFlow:
+                when:
+                  notVisible: "Retry"
+                commands:
+                  - swipe:
+                      start: "50%, 18%"
+                      end: "50%, 46%"
       - tapOn: "Retry"
       - waitForAnimationToEnd:
           timeout: 3000
@@ -488,8 +496,8 @@ env:
           times: 4
           commands:
             - swipe:
-                start: "50%, 30%"
-                end: "50%, 75%"
+                start: "50%, 18%"
+                end: "50%, 46%"
             - assertNotVisible: "Retry"
       - assertNotVisible: "(?s).*Something is typed into.*"
       - takeScreenshot: chat-outbox-same-retried
