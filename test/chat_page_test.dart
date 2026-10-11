@@ -7665,13 +7665,17 @@ void main() {
       'state': 'done',
     };
 
-    Future<_Shell> page(WidgetTester tester, {double width = 1280}) async {
+    Future<_Shell> page(
+      WidgetTester tester, {
+      double width = 1280,
+      String? listingText,
+    }) async {
       tester.view
         ..physicalSize = Size(width, 800)
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final shell = _Shell()
-        ..listing =
+        ..listing = listingText ??
             '${jsonEncode([row('aaaa1111', 'run one'), row('bbbb2222', 'pin one'), row('cccc3333', 'old one', live: false)])}'
             '\n--- pins\n["bbbb2222"]\n';
       final session = LiveSession(host: _host, transport: (_, _) => shell);
@@ -7828,6 +7832,52 @@ void main() {
       await _settlePickUp(tester);
       expect(find.byTooltip('x one, Done, idle, not opened since'), findsNothing);
       expect(find.byTooltip('x one, Done, idle'), findsOneWidget);
+    });
+
+    testWidgets('a listing that failed is an error in the rail, never an '
+        'empty one, and tapping it asks again', (tester) async {
+      final shell = await page(
+        tester,
+        listingText: 'claude: command not found',
+      );
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('old one, Finished'), findsNothing);
+      final failed = find.byWidgetPredicate(
+        (w) =>
+            w is TuiTooltip && w.message.startsWith('Could not list the sessions'),
+      );
+      expect(failed, findsOneWidget);
+
+      shell.listing =
+          '${jsonEncode([row('cccc3333', 'old one', live: false)])}\n';
+      await tester.tap(failed);
+      await _settlePickUp(tester);
+      expect(failed, findsNothing);
+      expect(find.byTooltip('old one, Finished'), findsOneWidget);
+    });
+
+    testWidgets('when a refresh fails the rows it had are marked out of '
+        'date, and a good refresh clears the mark', (tester) async {
+      final shell = await page(tester);
+      shell.listing = 'claude: command not found';
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('old one, Finished'), findsOneWidget);
+      final stale = find.byWidgetPredicate(
+        (w) => w is TuiTooltip && w.message.startsWith('The list may be out of date'),
+      );
+      expect(stale, findsOneWidget);
+
+      shell.listing =
+          '${jsonEncode([row('cccc3333', 'old one', live: false)])}\n';
+      await tester.tap(stale);
+      await _settlePickUp(tester);
+      expect(stale, findsNothing);
+      expect(find.byTooltip('old one, Finished'), findsOneWidget);
     });
 
     testWidgets('a narrow screen has no rail, only the drawer', (tester) async {
