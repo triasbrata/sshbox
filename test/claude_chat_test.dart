@@ -7353,6 +7353,28 @@ void main() {
       expect((await onDisk()).entries, isEmpty);
     });
 
+    test('a question still on the pane\'s screen when the keys were about to '
+        'go keeps the message waiting, and it is typed once the screen is '
+        'clear: a dialog refusal is tried again, not given up on', () async {
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no dialog\n';
+      final chat = make(host, backoff: (_) => const Duration(milliseconds: 80));
+      await chat.continueFrom(_interactive);
+      chat.send('after the question');
+      await wait(30);
+      expect(host.paneTyping, hasLength(1));
+      expect(chat.entries.whereType<ChatSaid>().single.delivery,
+          Delivery.queued);
+
+      host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+      await wait(500);
+
+      expect(host.paneTyping, hasLength(2));
+      host.adds(userLine('u-q', 'after the question'));
+      await wait();
+      expect((await onDisk()).entries, isEmpty);
+    });
+
     test('a refusal that is the session\'s own (something typed at its '
         'terminal) is never retried by itself', () async {
       final host = _LiveHost('0\n', interactive: true)

@@ -3681,9 +3681,12 @@ class ClaudeChat extends ChangeNotifier {
             ? 'Typed into $name but not sent — $why It is in its input line '
                   'at the terminal.'
             : 'Not typed: $why',
-        // The session started a turn between the check and the keys: nothing
-        // was typed, so it goes again once the turn is over.
-        transient: code == 'busy' && !answer.contains('sshbox:pasted'),
+        // The session started a turn between the check and the keys, or a
+        // question is up at its terminal that the listing did not show yet:
+        // nothing was typed, so it goes again, slowly, once that is over.
+        transient:
+            (code == 'busy' || code == 'dialog') &&
+            !answer.contains('sshbox:pasted'),
       );
     }
     try {

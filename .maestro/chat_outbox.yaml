@@ -358,6 +358,7 @@ env:
           notVisible: "(?s).*Queued: it runs after.*"
           timeout: 10000
       - assertNotVisible: "(?s).*Not sent.*"
+      - takeScreenshot: chat-outbox-prompt-answered
       # No hideKeyboard: with none up it presses Back. The strip is reachable
       # either way.
       - tapOn: "(?s)Close .*Claude.*"
