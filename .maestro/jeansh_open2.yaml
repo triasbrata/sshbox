@@ -9,7 +9,7 @@
 #   on       the switch on, back on Home
 #   foreign  a file of somebody else's at ~/.local/bin/jeansh: said at connect
 #   clean    a clean host: nothing said. In a terminal: the command opens a
-#            file tab; with its secret file gone and the old environment
+#            file tab; with its secret file gone and the environment
 #            variable set by hand it opens nothing; seven files open five tabs;
 #            five open five; and an ssh onward with SendEnv carries nothing of it
 #   off      the switch back off
@@ -105,8 +105,8 @@ env:
       - tapOn:
           point: 50%, 40%
 
-      # Without its file, and with the variable an older build took the secret
-      # from set by hand to the right value: nothing opens, and it says why.
+      # Without its file, and with the variable set by hand to the right value:
+      # nothing opens, and it says why.
       - inputText: "mv ~/.config/jeansh/open-secret ~/.config/jeansh/open-secret.keep; export LC_SSHBOX_OPEN_SECRET=$(cat ~/.config/jeansh/open-secret.keep); jeansh a.md 2>~/jo1n.err; echo $? >~/jo1n.rc; unset LC_SSHBOX_OPEN_SECRET; mv ~/.config/jeansh/open-secret.keep ~/.config/jeansh/open-secret"
       - pressKey: Enter
       - tapOn:
