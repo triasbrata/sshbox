@@ -130,6 +130,45 @@ void main() {
     });
   });
 
+  group('a runner that breaks', () {
+    const tool = ArchiveTool(ArchiveKind.zip, '/usr/bin/zip');
+    Future<ScriptResult> boom(String script, {Future<void>? cancel}) =>
+        throw const SocketException('connection reset');
+
+    test('the probe says the host could not be asked, not "no tool"', () {
+      expect(
+        FolderArchiver(boom).findArchiveTool(),
+        throwsA(
+          isA<FileBrowserException>()
+              .having((e) => e.message, 'message', contains('connection reset'))
+              .having((e) => e.fault, 'fault', FileBrowserFault.disconnected),
+        ),
+      );
+    });
+
+    test('archiving says the tool could not be started', () {
+      expect(
+        FolderArchiver(boom).archiveFolder('/home/me/d', tool),
+        throwsA(
+          isA<FileBrowserException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('zip'), contains('connection reset')),
+          ),
+        ),
+      );
+    });
+
+    test('a browser exception from the runner is passed on as it is', () {
+      const own = FileBrowserException('The host went away.');
+      expect(
+        FolderArchiver((script, {cancel}) => throw own)
+            .archiveFolder('/home/me/d', tool),
+        throwsA(same(own)),
+      );
+    });
+  });
+
   group('the straggler sweep', () {
     void age(String path) =>
         Process.runSync('touch', ['-t', '202001010000', path]);

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, File, Platform, Process;
+import 'dart:io' show Directory, File, FileSystemException, Platform, Process;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,7 +10,8 @@ import 'package:sshbox/src/files/local_file_browser.dart';
 import 'package:sshbox/src/ui/termul/tui_transfer_row.dart';
 import 'package:sshbox/src/files/transfers.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
-import 'package:sshbox/src/ui/folder_download.dart' show folderReport;
+import 'package:sshbox/src/ui/folder_download.dart'
+    show downloadFolderPlain, folderReport, markFromInternet;
 import 'package:sshbox/src/ui/toast.dart';
 
 import 'fake_file_browser.dart';
@@ -396,6 +397,262 @@ void main() {
     }, variant: desktop);
   });
 
+  group('Download folder, the edges', () {
+    final desktop = TargetPlatformVariant({TargetPlatform.linux});
+
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 30 && transfers.anyRunning; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    Future<void> run(WidgetTester tester) async {
+      await _menu(tester, 'dev');
+      await tester.tap(find.text('Download folder'));
+      await settle(tester);
+    }
+
+    Directory dest() {
+      final dir = Directory.systemTemp.createTempSync('folder');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      return dir;
+    }
+
+    Finder toast(String text) => find.descendant(
+      of: find.byType(TuiToastCard),
+      matching: find.textContaining(text),
+    );
+
+    testWidgets('the root cannot be downloaded, and nothing is asked', (
+      tester,
+    ) async {
+      final dialog = useFakeSaveDialog(null);
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (c) {
+              context = c;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      unawaited(
+        downloadFolderPlain(
+          context,
+          FakeFileBrowser(),
+          '/',
+          host: 'box',
+          onTransfer: (_) {},
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(toast('inside the root'), findsOneWidget);
+      expect(dialog.directoryAsked, 0);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    });
+
+    testWidgets('a broken folder picker is said, and starts nothing', (
+      tester,
+    ) async {
+      useFakeSaveDialog(null)..directoryFails = true;
+      await _pump(tester, FakeFileBrowser());
+      await run(tester);
+      expect(toast('Could not open the folder picker'), findsOneWidget);
+      expect(transfers.items, isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a huge tree asks first: Cancel brings nothing down', (
+      tester,
+    ) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser();
+      for (var i = 0; i <= 2000; i++) {
+        browser.putBinary('/home/me/dev/f$i', [1]);
+      }
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(find.textContaining('2002 files'), findsOneWidget);
+      expect(find.textContaining('2002 files'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Cancel'));
+      await settle(tester);
+
+      expect(transfers.items.first.state, TransferState.cancelled);
+      expect(browser.downloads, isEmpty);
+      expect(target.listSync(), isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a huge tree asks first: Download goes on', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser();
+      for (var i = 0; i <= 2000; i++) {
+        browser.putBinary('/home/me/dev/f$i', [1]);
+      }
+      await _pump(tester, browser);
+      await run(tester);
+
+      await tester.tap(find.bySemanticsLabel('Download'));
+      for (var i = 0; i < 100 && transfers.anyRunning; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      await tester.pump();
+
+      expect(transfers.items.first.state, TransferState.done);
+      expect(File('${target.path}/dev/f1000').readAsBytesSync(), [1]);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a folder already there asks: Cancel keeps it', (tester) async {
+      final target = dest();
+      Directory('${target.path}/dev').createSync();
+      File('${target.path}/dev/old.txt').writeAsStringSync('mine');
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser();
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(find.text('Replace dev?'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Cancel'));
+      await settle(tester);
+
+      expect(File('${target.path}/dev/old.txt').readAsStringSync(), 'mine');
+      expect(File('${target.path}/dev/main.dart').existsSync(), isFalse);
+      expect(target.listSync(), hasLength(1), reason: 'no part folder');
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a folder already there asks: Replace swaps it whole', (
+      tester,
+    ) async {
+      final target = dest();
+      Directory('${target.path}/dev').createSync();
+      File('${target.path}/dev/old.txt').writeAsStringSync('mine');
+      useFakeSaveDialog(null).directory = target.path;
+      await _pump(tester, FakeFileBrowser());
+      await run(tester);
+
+      await tester.tap(find.bySemanticsLabel('Replace'));
+      await settle(tester);
+
+      expect(File('${target.path}/dev/old.txt').existsSync(), isFalse);
+      expect(File('${target.path}/dev/main.dart').existsSync(), isTrue);
+      expect(target.listSync(), hasLength(1));
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('an empty folder inside comes down empty', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser();
+      await browser.makeDirectory('/home/me/dev/empty');
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(Directory('${target.path}/dev/empty').existsSync(), isTrue);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('when no file comes down it is an error, with the first '
+        'reason, and nothing is left', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      await _pump(
+        tester,
+        _Refuses(const FileBrowserException('Permission denied.')),
+      );
+      await run(tester);
+
+      expect(
+        toast('No file came down. main.dart: Permission denied.'),
+        findsOneWidget,
+      );
+      expect(transfers.items.first.state, TransferState.failed);
+      expect(target.listSync(), isEmpty);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a local write failing on one file is listed with the rest '
+        'in', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = _Refuses(
+        const FileSystemException('No space left on device'),
+        only: 'bad.bin',
+      )..putBinary('/home/me/dev/bad.bin', [9]);
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(
+        find.textContaining('bad.bin: No space left on device'),
+        findsOneWidget,
+      );
+      expect(File('${target.path}/dev/main.dart').existsSync(), isTrue);
+      await tester.tap(find.bySemanticsLabel('OK'));
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a folder to save into that is gone is said', (tester) async {
+      useFakeSaveDialog(null).directory = '/nonexistent/place';
+      await _pump(tester, FakeFileBrowser());
+      await run(tester);
+
+      expect(toast('Could not save dev'), findsOneWidget);
+      expect(transfers.items.first.state, TransferState.failed);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('anything else breaking is said too', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      await _pump(tester, _Refuses(StateError('boom'), listing: true));
+      await run(tester);
+
+      expect(toast('Could not save dev: Bad state: boom'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('marks each file as from the internet where asked, and a '
+        'drive that cannot is let be', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      markFromInternet = true;
+      addTearDown(() => markFromInternet = false);
+      final browser = FakeFileBrowser();
+      // A folder where the mark's own file would go: writing there fails.
+      await browser.makeDirectory('/home/me/dev/main.dart:Zone.Identifier');
+      browser.putBinary('/home/me/dev/main.dart:Zone.Identifier/x', [1]);
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(
+        File('${target.path}/dev/x.txt:Zone.Identifier').existsSync(),
+        isFalse,
+      );
+      expect(
+        File('${target.path}/dev/main.dart:Zone.Identifier/x:Zone.Identifier')
+            .readAsStringSync(),
+        contains('ZoneId=3'),
+      );
+      expect(transfers.items.first.state, TransferState.done);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+  });
+
   test('a row says what a transfer is doing while it has no byte count', () {
     const direction = TuiTransferDirection.download;
     String line(TuiTransferStatus status, {String? phase, String? note}) =>
@@ -473,6 +730,42 @@ class _FailsOne extends FakeFileBrowser {
         fault: FileBrowserFault.permissionDenied,
       );
     }
+    return super.download(
+      path,
+      localPath,
+      offset: offset,
+      length: length,
+      onProgress: onProgress,
+      cancel: cancel,
+    );
+  }
+}
+
+/// Fails what it is asked to with [error]: a download of [only] (or of any
+/// file), or the listing itself when [listing].
+class _Refuses extends FakeFileBrowser {
+  _Refuses(this.error, {this.only, this.listing = false});
+
+  final Object error;
+  final String? only;
+  final bool listing;
+
+  @override
+  Future<List<RemoteEntry>> list(String path) async {
+    if (listing && path == '/home/me/dev') throw error;
+    return super.list(path);
+  }
+
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    int offset = 0,
+    int? length,
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) {
+    if (only == null || path.endsWith(only!)) throw error;
     return super.download(
       path,
       localPath,

@@ -12,6 +12,11 @@ import 'file_download.dart';
 import 'toast.dart';
 import 'tui.dart';
 
+/// Whether each file saved is marked as from the internet, as Windows does a
+/// download: a test turns it on where there is no NTFS to ask.
+@visibleForTesting
+bool markFromInternet = Platform.isWindows;
+
 /// Whether [browser] can compress a folder on its host: the menu offers
 /// Download as zip only then.
 bool canArchive(FileBrowser browser) => browser is FolderArchiveCapable;
@@ -312,7 +317,7 @@ Future<int> _fetchTree(
     if (plan.files.isNotEmpty && saved == 0) {
       throw FileBrowserException('No file came down. ${failed.first}');
     }
-    if (Platform.isWindows) {
+    if (markFromInternet) {
       // As a single download is: a file from a host is marked as from the
       // internet, so Windows warns before running one.
       for (final file in plan.files) {
