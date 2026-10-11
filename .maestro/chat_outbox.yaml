@@ -472,12 +472,25 @@ env:
       # The runner cleared the draft and had the session record both at its
       # terminal: each Retry finds one of the two and sends nothing.
       - tapOn: "Retry"
-      - tapOn:
-          text: "Retry"
-          optional: true
-      - extendedWaitUntil:
-          notVisible: "Retry"
-          timeout: 20000
+      # The delivered bubble is appended at the end and the view follows it
+      # down, so the other failed message and its Retry are above, out of the
+      # list's built rows: scrolled back to, and tapped for real.
+      - scrollUntilVisible:
+          element: "Retry"
+          direction: UP
+          timeout: 30000
+      - tapOn: "Retry"
+      - waitForAnimationToEnd:
+          timeout: 3000
+      # None left, here or anywhere above.
+      - assertNotVisible: "Retry"
+      - repeat:
+          times: 4
+          commands:
+            - swipe:
+                start: "50%, 30%"
+                end: "50%, 75%"
+            - assertNotVisible: "Retry"
       - assertNotVisible: "(?s).*Something is typed into.*"
       - takeScreenshot: chat-outbox-same-retried
       # No hideKeyboard: with none up it presses Back. The strip is reachable
