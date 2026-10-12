@@ -93,7 +93,7 @@ class KeystoreSecretStore implements SecretStore {
 
   @override
   Future<String?> read(String key) {
-    if (!_keepReads) return _readKeychain(key);
+    if (true) return _readKeychain(key);
     if (_kept.containsKey(key)) return Future.value(_kept[key]);
     final reading = _reading[key];
     if (reading != null) return reading;
