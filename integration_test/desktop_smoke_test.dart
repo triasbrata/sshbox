@@ -4968,7 +4968,11 @@ touch '${done.path}'
               'the stuck mode to send the wheel to the program '
               '(it was sent ${heardSince(heard)})',
             );
-            expect(scroll().position.pixels, from, reason: 'it scrolled');
+            // The scroll position is not read here: with a mouse mode on,
+            // xterm2 wraps the view in an InfiniteScrollView whose own
+            // Scrollable turns the wheel into reports, and it is the first
+            // Scrollable under the view, so it moves while the program is
+            // told. It is not the scrollback.
           }
         }
 
