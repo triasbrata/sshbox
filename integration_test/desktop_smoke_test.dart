@@ -4155,6 +4155,12 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 600));
       await keys('ctrl+comma');
       await terminalBack('Ctrl+, on the Key bar page');
+      await _until(
+        tester,
+        () => _label('Add key').evaluate().isEmpty,
+        'the Key bar page to be gone with Settings',
+        timeout: slow,
+      );
       expect(
         _label('Add key'),
         findsNothing,
