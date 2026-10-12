@@ -8,6 +8,7 @@ import 'fake_drop.dart';
 import 'fake_file_browser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/files/file_browser.dart' show FileBrowser, FileBrowserException;
+import 'package:sshbox/src/files/transfers.dart' show transfers;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
@@ -6825,6 +6826,10 @@ void main() {
       await drop(tester, [file.path, folder.path]);
       expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
       expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
+      // What the desktop e2e reads back: the path in the box is exactly where
+      // the host has the file, and the Transfers row names it plainly.
+      expect(box(tester), '/tmp/${shell.uploaded.single} ');
+      expect(transfers.items.first.name, 'notes.txt');
       expect(
         find.textContaining('A folder cannot be uploaded: sub'),
         findsOneWidget,
