@@ -5053,13 +5053,13 @@ class ClaudeChat extends ChangeNotifier {
           },
           onError: (Object _) {},
         );
-    // Until a line [stop] takes turns up, or the host is done.
-    Future<String?> until(bool Function(String line) stop) async {
+    // Where a line [stop] takes turns up, from line [at] on; null once the
+    // host is done or has taken too long without one.
+    Future<int?> until(bool Function(String line) stop, [int at = 0]) async {
       final deadline = DateTime.now().add(deliveryTimeout);
-      var at = 0;
       while (true) {
         for (; at < lines.length; at++) {
-          if (stop(lines[at])) return lines[at];
+          if (stop(lines[at])) return at;
         }
         if (ended) return null;
         final left = deadline.difference(DateTime.now());
@@ -5089,11 +5089,12 @@ class ClaudeChat extends ChangeNotifier {
       final top = await until(
         (line) => line == 'sshbox:screen' || line.startsWith('sshbox:no '),
       );
-      if (top != 'sshbox:screen') return refused(top);
-      final from = lines.length;
-      final end = await until((line) => line == 'sshbox:screen-end');
+      if (top == null || lines[top] != 'sshbox:screen') {
+        return refused(top == null ? null : lines[top]);
+      }
+      final end = await until((line) => line == 'sshbox:screen-end', top + 1);
       if (end == null) return refused(null);
-      final screen = lines.sublist(from, lines.indexOf(end, from));
+      final screen = lines.sublist(top + 1, end);
       if (!dialogShows(screen, ask.questions.first)) {
         channel.write(Uint8List.fromList(const [0x6e])); // n
         return 'its question is not on its screen, so nothing was typed. '
@@ -5105,9 +5106,11 @@ class ClaudeChat extends ChangeNotifier {
       final done = await until(
         (line) => line.startsWith('sshbox:typed') ||
             line.startsWith('sshbox:no '),
+        end + 1,
       );
-      if (done == null || !done.startsWith('sshbox:typed')) {
-        return refused(done);
+      final said = done == null ? null : lines[done];
+      if (said == null || !said.startsWith('sshbox:typed')) {
+        return refused(said);
       }
       return null;
     } finally {

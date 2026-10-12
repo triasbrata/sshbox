@@ -316,9 +316,11 @@ class _LiveHost {
     terminals.add((command: command, typed: typed, closed: closed));
     final screen = StreamController<Uint8List>();
     if (terminalsDraw) {
-      // What `claude attach` draws: its input line, which is the prompt.
+      // What `claude attach` draws: its input line, which is the prompt, or
+      // what a test says it shows instead.
+      final draws = attachDraws ?? '\x1b[2J ❯ ';
       scheduleMicrotask(
-        () => screen.add(Uint8List.fromList(utf8.encode('\x1b[2J ❯ '))),
+        () => screen.add(Uint8List.fromList(utf8.encode(draws))),
       );
     }
     var drawn = 0;
@@ -351,6 +353,9 @@ class _LiveHost {
       },
     );
   }
+
+  /// What an attach draws when it comes up, in place of the input line.
+  String? attachDraws;
 
   /// Whether a terminal draws a chip for each path pasted into it.
   var drawChips = false;
@@ -3519,6 +3524,64 @@ void main() {
       final kept = File('${dir.path}/$file');
       return kept.existsSync() ? kept.readAsStringSync() : '';
     }
+
+    test(
+      'an answer goes into the pane only after the host has shown its '
+      'screen and been told to, and only while the session asks',
+      () async {
+        await tmux([
+          'new-session', '-d', '-s', 'sshbox-chat-ask', '-x', '80', '-y',
+          '20', recorder('claude', screen: 'Which colours?'),
+        ]);
+        final pid = await started('sshbox-chat-ask');
+        final state = File('${dir.path}/.claude/sessions/$pid.json');
+        state.writeAsStringSync(jsonEncode({
+          'pid': pid,
+          'sessionId': _live.sessionId,
+          'kind': 'interactive',
+          'status': 'idle',
+          'waitingFor': 'input needed',
+        }));
+        final command = ClaudeChat.askPaneCommand(
+          _live.sessionId,
+          pid: pid,
+          lengths: [1, 3, 14],
+        );
+        final paste = const AskPaste('a \$(touch x)').bytes;
+
+        // Told no: nothing typed.
+        var answer = await host(command, 'n');
+        expect(answer, contains('sshbox:screen\n'));
+        expect(answer, contains('Which colours?'));
+        expect(answer, contains('sshbox:no stopped'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        expect(got('claude'), isEmpty);
+
+        // Told yes: each piece, exactly, and nothing else.
+        answer = await host(
+          ClaudeChat.askPaneCommand(
+            _live.sessionId,
+            pid: pid,
+            lengths: [1, 3, utf8.encode(paste).length],
+          ),
+          'y \x1b[B$paste',
+        );
+        expect(answer, contains('sshbox:typed %'));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        expect(got('claude'), ' \x1b[B$paste');
+        expect(File('${dir.path}/x').existsSync(), isFalse);
+
+        // No longer asking: it stops before the screen.
+        state.writeAsStringSync(jsonEncode({
+          'pid': pid,
+          'sessionId': _live.sessionId,
+          'status': 'idle',
+        }));
+        answer = await host(command, 'y \x1b[B');
+        expect(answer.trim(), 'sshbox:no asking');
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
 
     test(
       'a message full of what a shell or tmux would act on reaches the pane '
@@ -8204,6 +8267,321 @@ void main() {
       await wait();
       expect(host.paneTyping.single.stdin, ['plain']);
       expect(Directory(root).existsSync(), isFalse);
+    });
+  });
+
+  group('answering a question at the session being watched', () {
+    const callId = 'toolu_01AskAtTheTerminal';
+    const questions = [
+      {
+        'question': 'Which colours?',
+        'header': 'Colours',
+        'multiSelect': true,
+        'options': [
+          {'label': 'Red', 'description': 'A warm colour.'},
+          {'label': 'Blue', 'description': 'A cool colour.'},
+        ],
+      },
+      {
+        'question': 'Which size?',
+        'header': 'Size',
+        'multiSelect': false,
+        'options': [
+          {'label': 'Small', 'description': 'Small.'},
+          {'label': 'Large', 'description': 'Large.'},
+        ],
+      },
+    ];
+    final call = {
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': callId,
+            'name': 'AskUserQuestion',
+            'input': {'questions': questions},
+          },
+        ],
+      },
+    };
+    Map<String, Object?> recorded(Map<String, String> answers) => {
+      'type': 'user',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_result',
+            'tool_use_id': callId,
+            'content': 'The user answered.',
+          },
+        ],
+      },
+      'toolUseResult': {'questions': questions, 'answers': answers},
+    };
+    const picks = <AskPick>[
+      (options: [0, 1], other: ''),
+      (options: [], other: 'Medium, please'),
+    ];
+    const picked = {
+      'Which colours?': 'Red, Blue',
+      'Which size?': 'Medium, please',
+    };
+    // A dialog as a terminal draws it, the question wrapped across lines.
+    const dialog =
+        '\x1b[2J☐ Colours  ☐ Size  ✔ Submit\r\n\r\nWhich\r\n'
+        'colours?\r\n\r\n❯ 1. [ ] Red\r\n  2. [ ] Blue\r\n';
+    // Keys a test stands in for the measured ones with.
+    const keys = <AskStep>[
+      AskKeys(' '),
+      AskKeys('\x1b[B'),
+      AskPaste('Medium, please'),
+      AskKeys('\r'),
+    ];
+
+    Future<(ClaudeChat, _LiveHost, ChatAsk)> watch({
+      bool interactive = false,
+      String? waitingFor = 'input needed',
+      bool known = true,
+      Duration deliveryTimeout = const Duration(seconds: 2),
+    }) async {
+      final text = jsonEncode(call);
+      final host = _LiveHost(
+        '${utf8.encode('$text\n').length}\n$text\n',
+        state: interactive ? null : 'blocked',
+        waitingFor: waitingFor,
+        interactive: interactive,
+      )..attachDraws = dialog;
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        deliveryTimeout: deliveryTimeout,
+        askKeys: known ? (ask, picks) => keys : ClaudeChat.dialogKeys,
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(interactive ? _interactive : _live);
+      final ask = chat.entries.whereType<ChatQuestion>().single.ask;
+      return (chat, host, ask);
+    }
+
+    test('an open question of a watched session can be answered from the '
+        'chat; one settled, or in a chat watching nothing, cannot', () async {
+      final (chat, host, ask) = await watch();
+      expect(ask.answerable, isFalse);
+      expect(chat.canAnswerAtTerminal(ask), isTrue);
+      host.adds(recorded(picked));
+      await _settle();
+      expect(ask.open, isFalse);
+      expect(chat.canAnswerAtTerminal(ask), isFalse);
+      final idle = ClaudeChat(open: host.open);
+      addTearDown(idle.dispose);
+      expect(idle.canAnswerAtTerminal(ask), isFalse);
+    });
+
+    test('the keys of the dialog are not known yet: it says so, and opens '
+        'nothing and types nothing', () async {
+      final (chat, host, ask) = await watch(known: false);
+      final why = await chat.answerAtTerminal(ask, picks);
+      expect(why, startsWith('Not answered: Jeansh does not know the keys'));
+      expect(why, contains('claude attach ${_live.id}'));
+      expect(ask.failure, why);
+      expect(ask.sending, isFalse);
+      expect(ask.open, isTrue);
+      expect(host.terminals, isEmpty);
+      expect(ClaudeChat.dialogKeys(ask, picks), isNull);
+    });
+
+    test('a background session: the keys go into its attach once its '
+        'screen shows the question, and it counts once the transcript has '
+        'those answers', () async {
+      final (chat, host, ask) = await watch();
+      final going = chat.answerAtTerminal(ask, picks);
+      expect(ask.sending, isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      final terminal = host.terminals.single;
+      expect(terminal.command, contains('attach'));
+      expect(terminal.typed, [
+        ' ',
+        '\x1b[B',
+        '\x1b[200~Medium, please\x1b[201~',
+        '\r',
+      ]);
+      expect(terminal.closed.single, isTrue);
+      // Typed, and still not answered until the session says so.
+      expect(ask.sending, isTrue);
+      host.adds(recorded(picked));
+      expect(await going, isNull);
+      expect(ask.answers, picked);
+      expect(ask.failure, isNull);
+      expect(ask.sending, isFalse);
+    });
+
+    test('not waiting for an answer, it types nothing and says what it '
+        'waits for', () async {
+      final (chat, host, ask) = await watch(waitingFor: 'permission prompt');
+      final why = await chat.answerAtTerminal(ask, picks);
+      expect(why, contains('is not waiting for an answer but for '
+          'permission prompt'));
+      expect(host.terminals, isEmpty);
+    });
+
+    test('a screen that does not show the question gets no keys', () async {
+      final (chat, host, ask) = await watch();
+      host.attachDraws = '\x1b[2J ❯ ';
+      final why = await chat.answerAtTerminal(ask, picks);
+      expect(why, contains('did not come up on its screen'));
+      expect(host.terminals.single.typed, isEmpty);
+      expect(host.terminals.single.closed.single, isTrue);
+    });
+
+    test('answers the transcript records otherwise, as dismissed, or not '
+        'at all are each said, never taken for answered', () async {
+      var (chat, host, ask) = await watch();
+      var going = chat.answerAtTerminal(ask, picks);
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      host.adds(recorded({'Which colours?': 'Red', 'Which size?': 'Small'}));
+      expect(await going, contains('recorded “Red”, “Small”, not what was '
+          'picked'));
+      expect(ask.failure, contains('not what was picked'));
+
+      (chat, host, ask) = await watch();
+      going = chat.answerAtTerminal(ask, picks);
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      host.adds({
+        'type': 'user',
+        'message': {
+          'content': [
+            {'type': 'tool_result', 'tool_use_id': callId, 'is_error': true},
+          ],
+        },
+        'toolUseResult': 'Error: dismissed',
+      });
+      expect(await going, contains('recorded the question as dismissed'));
+
+      (chat, host, ask) = await watch(
+        deliveryTimeout: const Duration(seconds: 1),
+      );
+      expect(
+        await chat.answerAtTerminal(ask, picks),
+        contains('did not record an answer within 1 s'),
+      );
+      expect(ask.open, isTrue);
+    });
+
+    test('picks that are not an answer are refused before anything is '
+        'asked of the host', () async {
+      final (chat, host, ask) = await watch();
+      final before = host.commands.length;
+      final why = await chat.answerAtTerminal(ask, const [
+        (options: [0], other: ''),
+        (options: [0, 1], other: ''),
+      ]);
+      expect(why, startsWith('Not answered: each question needs'));
+      expect(host.commands.length, before);
+    });
+
+    test('an interactive session: the host shows its pane, and the keys go '
+        'only when the question is on it', () async {
+      var (chat, host, ask) = await watch(interactive: true);
+      expect(chat.canAnswerAtTerminal(ask), isTrue);
+      host.typedAnswer =
+          'sshbox:screen\nWhich colours?\n  1. Red\nsshbox:screen-end\n'
+          'sshbox:typed %3\n';
+      var going = chat.answerAtTerminal(ask, picks);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      final typing = host.paneTyping.single;
+      expect(typing.command, contains('input needed'));
+      expect(typing.stdin.single,
+          'y \x1b[B\x1b[200~Medium, please\x1b[201~\r');
+      host.adds(recorded(picked));
+      expect(await going, isNull);
+
+      (chat, host, ask) = await watch(interactive: true);
+      host.typedAnswer = 'sshbox:screen\n❯ \nsshbox:screen-end\n';
+      expect(await chat.answerAtTerminal(ask, picks),
+          contains('not on its screen'));
+      expect(host.paneTyping.single.stdin.single, 'n');
+
+      (chat, host, ask) = await watch(interactive: true);
+      host.typedAnswer = 'sshbox:no asking\n';
+      expect(await chat.answerAtTerminal(ask, picks),
+          contains('no longer waiting for an answer'));
+      expect(host.paneTyping.single.stdin, isEmpty);
+    });
+  });
+
+  group('answers typed at a dialog', () {
+    final ask = ChatAsk.parse('t', {
+      'questions': [
+        {
+          'question': 'Pick one?',
+          'options': [
+            {'label': 'A'},
+            {'label': 'B'},
+          ],
+        },
+        {
+          'question': 'Pick any?',
+          'multiSelect': true,
+          'options': [
+            {'label': 'X'},
+            {'label': 'Y'},
+          ],
+        },
+      ],
+    })!;
+
+    test('picks make the answers the CLI files, and anything else is no '
+        'answer', () {
+      expect(answersFor(ask, const [
+        (options: [1], other: ''),
+        (options: [1, 0], other: ' and Z '),
+      ]), {'Pick one?': 'B', 'Pick any?': 'X, Y, and Z'});
+      expect(answersFor(ask, const [
+        (options: [], other: 'C'),
+        (options: [0], other: ''),
+      ]), {'Pick one?': 'C', 'Pick any?': 'X'});
+      for (final wrong in const <List<AskPick>>[
+        [(options: [0], other: '')],
+        [(options: [0, 1], other: ''), (options: [0], other: '')],
+        [(options: [0], other: 'C'), (options: [0], other: '')],
+        [(options: [2], other: ''), (options: [0], other: '')],
+        [(options: [-1], other: ''), (options: [0], other: '')],
+        [(options: [0], other: ''), (options: [0, 0], other: '')],
+        [(options: [0], other: ''), (options: [], other: '  ')],
+      ]) {
+        expect(answersFor(ask, wrong), isNull, reason: '$wrong');
+      }
+    });
+
+    test('words of the user\'s own go as one paste nothing in which a '
+        'terminal acts on', () {
+      const paste = AskPaste(' a\nb\tc\x1b[201~rm -rf\x07\x9b ');
+      expect(paste.clean, 'a b c [201~rm -rf');
+      expect(paste.bytes, '\x1b[200~a b c [201~rm -rf\x1b[201~');
+      expect('\x1b'.allMatches(paste.bytes), hasLength(2));
+      expect(const AskKeys('\r').bytes, '\r');
+    });
+
+    test('a dialog shows a question wrapped across lines; another, or '
+        'none, does not', () {
+      final question = ask.questions.first;
+      expect(dialogShows(['  1. A', 'Pick', ' one?'], question), isTrue);
+      expect(dialogShows(['Pick two?'], question), isFalse);
+      expect(dialogShows(const [], question), isFalse);
+      final long = AskQuestion(
+        question: 'w' * 300,
+        header: '',
+        options: const [],
+        multiSelect: false,
+      );
+      expect(dialogShows(['w' * 150], long), isTrue);
+      final blank = AskQuestion(
+        question: ' ',
+        header: '',
+        options: const [],
+        multiSelect: false,
+      );
+      expect(dialogShows(['anything'], blank), isFalse);
     });
   });
 }

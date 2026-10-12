@@ -1496,8 +1496,9 @@ void main() {
     });
   });
 
-  testWidgets('a question in a session being watched is shown with where to '
-      'answer it, and nothing is sent', (tester) async {
+  testWidgets('a question in a session being watched can be answered from '
+      'the card; while the dialog\'s keys are unknown it says so, out loud, '
+      'and types nothing', (tester) async {
     const input = {
       'questions': [
         {
@@ -1559,13 +1560,28 @@ void main() {
 
     expect(find.text('Deploy now?'), findsOneWidget);
     expect(find.text('Ship it.'), findsOneWidget);
+    // Answerable here, and with nothing to dismiss it by at its dialog.
+    expect(find.bySemanticsLabel('Dismiss'), findsNothing);
+    await tester.tap(find.bySemanticsLabel('Yes'));
+    await tester.pump();
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // On the card and in a toast, never taken for answered.
     expect(
-      find.textContaining('Answer it at claude attach 81badf4a'),
-      findsOneWidget,
+      find.textContaining('Not answered: Jeansh does not know the keys'),
+      findsNWidgets(2),
     );
-    expect(find.bySemanticsLabel('Send answers'), findsNothing);
+    expect(
+      find.textContaining('Answer it at `claude attach 81badf4a`'),
+      findsNWidgets(2),
+    );
+    expect(find.text('→ '), findsNothing);
+    expect(find.bySemanticsLabel('Send answers'), findsOneWidget);
     expect(shell.written, isEmpty);
     expect(shell.paneTyped, isEmpty);
+    await tester.pump(const Duration(seconds: 6));
   });
 
   testWidgets('a host that cannot list its sessions says what it said', (
