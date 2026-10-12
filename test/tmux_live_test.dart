@@ -13,6 +13,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
 import 'package:sshbox/src/telemetry/app_log.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart' show isShellCommand, pastePath;
 import 'package:xterm2/xterm.dart';
 
 /// Where tmux may live: Homebrew on Apple silicon puts it in /opt/homebrew/bin,
@@ -507,6 +508,87 @@ void main() {
     tmux.dispose();
   }, skip: hasTmux ? false : 'tmux is not installed here');
 
+  // The picture paste, drop and key-bar upload end in pastePath. After a
+  // reattach the terminal's own flag is off, so it must hand the path to
+  // tmux, which brackets it only for a pane that asked: [Image #N] for
+  // Claude Code, a plain path for a shell.
+  for (final asked in [true, false]) {
+    test(
+      'a file path pasted through pastePath into a pane that '
+      '${asked ? 'asked for' : 'never asked for'} bracketed paste is '
+      '${asked ? '' : 'not '}bracketed after a reattach',
+      () async {
+        const name = 'sshbox-pastepath';
+        final log = File('${dir.path}/pastepath.log');
+        var (process, channel) = await _start(name, dir);
+        var tmux = _session(name, channel);
+        expect(await tmux.attached, isTrue);
+        await _until(() => tmux.panes.length == 1);
+        final script = await _script(
+          '${dir.path}/pastepath.sh',
+          "printf '${asked ? r'\033[?2004h' : ''}\\033[?1049h'\n"
+              'stty raw -echo\ndd bs=1 of=${log.path} 2>/dev/null',
+        );
+        tmux.send('$script\r');
+        await _until(() => tmux.panes.single.terminal.isUsingAltBuffer);
+        tmux.dispose();
+        await process.exitCode;
+
+        (process, channel) = await _start(name, dir);
+        tmux = _session(name, channel);
+        expect(await tmux.attached, isTrue);
+        await _until(
+          () => tmux.panes.length == 1 && _text(tmux.panes.single).isNotEmpty,
+        );
+        final terminal = tmux.panes.single.terminal;
+        await _until(() => terminal.isUsingAltBuffer);
+        expect(terminal.bracketedPasteMode, isFalse, reason: 'rebuilt flag');
+        final typed = <String>[];
+        pastePath(terminal, '/tmp/shot.png', tmux: true, sendRaw: typed.add);
+        await _until(
+          () => log.existsSync() && log.readAsStringSync().contains('.png'),
+          () => 'logged ${log.existsSync() ? log.readAsStringSync() : '-'}',
+        );
+        final got = log.readAsStringSync();
+        expect(typed, isEmpty, reason: 'never typed in a tmux tab');
+        expect(got.contains('\x1b[200~'), asked, reason: got);
+        expect(got.contains('\x1b[201~'), asked, reason: got);
+        expect(
+          got.replaceAll(RegExp(r'\x1b\[20[01]~'), ''),
+          '/tmp/shot.png ',
+        );
+        await tmux.kill();
+        await process.exitCode.timeout(const Duration(seconds: 5));
+        tmux.dispose();
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+  }
+
+  test('the focused pane names its foreground program', () async {
+    const name = 'sshbox-cmd';
+    final (process, channel) = await _start(name, dir);
+    final tmux = _session(name, channel);
+    expect(await tmux.attached, isTrue);
+    await _until(() => tmux.panes.length == 1);
+    final shell = await tmux.focusedCommand();
+    expect(isShellCommand(shell), isTrue, reason: '$shell');
+    final script = await _script('${dir.path}/cmd.sh', 'exec sleep 30');
+    tmux.send('$script\r');
+    String? running;
+    await _until(
+      () {
+        tmux.focusedCommand().then((c) => running = c);
+        return running == 'sleep';
+      },
+      () => 'still $running',
+    );
+    expect(isShellCommand(running), isFalse);
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
+
   test("the device's variables reach new panes, whoever started the server", () async {
     // A tmux server already running, started without them.
     await _tmux(dir, [
@@ -524,12 +606,12 @@ void main() {
     Future<(Process, CommandChannel)> start(String key) => _start(
       name,
       dir,
-      environment: {'LC_SSHBOX_KEY': key, 'LC_SSHBOX_HOST_ID': 'host-1'},
+      environment: {'LC_SSHBOX_NOTIFY_URL': key, 'LC_SSHBOX_NOTIFY_SECRET': 'host-1'},
     );
     // What the focused pane's shell has, and not the line typed to ask.
     Future<void> printed(TmuxSession tmux, String values) async {
       tmux.send(
-        r'echo "<$LC_SSHBOX_KEY $LC_SSHBOX_HOST_ID $FORCE_HYPERLINK>"'
+        r'echo "<$LC_SSHBOX_NOTIFY_URL $LC_SSHBOX_NOTIFY_SECRET $FORCE_HYPERLINK>"'
         '\r',
       );
       await _until(
@@ -570,7 +652,10 @@ void main() {
 
     // Listed once, however often a tab attaches.
     final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
-    expect('LC_SSHBOX_KEY'.allMatches('${listed.stdout}'), hasLength(1));
+    expect('LC_SSHBOX_NOTIFY_URL'.allMatches('${listed.stdout}'), hasLength(1));
+    // The push key is a file on the host, never a variable tmux copies.
+    expect('${listed.stdout}', isNot(contains('LC_SSHBOX_KEY')));
+    expect('${listed.stdout}', isNot(contains('LC_SSHBOX_HOST_ID')));
     expect(
       'LC_SSHBOX_NOTIFY_SECRET'.allMatches('${listed.stdout}'),
       hasLength(1),
