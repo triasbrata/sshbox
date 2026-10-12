@@ -843,7 +843,7 @@ one, with a key only that host holds:
 
 | Header | Holds |
 | --- | --- |
-| `X-PARTNER-ID` | the key id: `LC_SSHBOX_KEY` up to its colon |
+| `X-PARTNER-ID` | the key id: the push key up to its colon |
 | `X-TIMESTAMP` | the time, `yyyy-MM-ddTHH:mm:ssTZD`, as in `2026-09-14T08:15:30+07:00` |
 | `X-EXTERNAL-ID` | 16 to 64 of `A-Z a-z 0-9 -`, new for each request |
 | `X-SIGNATURE` | the ECDSA P-256 SHA-256 signature, DER, in standard base64 |
@@ -855,8 +855,10 @@ the key's public half and sends the push for the host the key belongs to.
 With openssl and curl:
 
 ```sh
-# A push through the relay, signed with this host's LC_SSHBOX_KEY. Title and
-# body on one line each.
+# A push through the relay, signed with this host's key, which Jeansh writes to
+# ~/.config/jeansh/notify-key. Title and
+relay_notify() {
+  key=$(cat ~/.config/jeansh/notify-key) || return 1
 relay_notify() {
   esc() { printf %s "$1" | sed 's/[\\"]/\\&/g'; }
   body=$(printf '{"title":"%s","body":"%s"}' "$(esc "$1")" "$(esc "$2")")
@@ -867,13 +869,13 @@ relay_notify() {
   sig=$(printf 'POST:/v1/send:%s:%s:%s' "$hash" "$ts" "$id" |
     openssl dgst -sha256 -sign /dev/fd/3 3<<EOF | openssl base64 -A
 -----BEGIN PRIVATE KEY-----
-$(printf %s "${LC_SSHBOX_KEY#*:}" | fold -w 64)
+$(printf %s "${key#*:}" | fold -w 64)
 -----END PRIVATE KEY-----
 EOF
   )
   curl -fsS https://jeansh-notify.brata.cloud/v1/send \
     -H 'Content-Type: application/json' \
-    -H "X-PARTNER-ID: ${LC_SSHBOX_KEY%%:*}" -H "X-TIMESTAMP: $ts" \
+    -H "X-PARTNER-ID: ${key%%:*}" -H "X-TIMESTAMP: $ts" \
     -H "X-EXTERNAL-ID: $id" -H "X-SIGNATURE: $sig" \
     --data-binary "$body"
 }
@@ -882,8 +884,20 @@ EOF
 The relay repo's [notify.sh](https://github.com/triasbrata/jeansh-notify/blob/main/notify.sh)
 does the same, after trying the direct way, and installs as `sshbox-notify`.
 
-**One key per host.** `LC_SSHBOX_KEY` is `<key id>:<private key>`, the
-private key PKCS#8 DER in standard base64. Each saved host has its own: a
+**One key per host.** The key is `<key id>:<private key>`, the
+private key PKCS#8 DER in standard base64. Jeansh writes it to
+`~/.config/jeansh/notify-key` on the host (0600, in a 0700 folder) at every
+connect, before the shell starts, and does not put it in the environment.
+Older versions sent it as `LC_SSHBOX_KEY`; a script that still reads that
+reads the file instead:
+
+```sh
+LC_SSHBOX_KEY=$(cat ~/.config/jeansh/notify-key)
+```
+
+or sends with `jeansh notify "Title" "body"` (direct way first, then the
+relay), which needs the **jeansh command** switch on the host's edit page.
+The file is written whether or not that switch is on. Each saved host has its own: a
 P-256 key pair the app makes at the host's first connect and registers with
 the relay (`POST /v1/register`, with the phone's FCM token, the public key's
 SPKI DER in base64 and the host id). The key id is `jnk_` and the first 32
@@ -891,7 +905,7 @@ characters of the base64url SHA-256 of that SPKI, worked out on both sides.
 The relay gets only the public half; the FCM token goes to no server. When
 FCM replaces the token, every key is registered again for the new one and
 keeps its id, so servers holding it carry on. With the relay out of reach, a
-connect goes without `LC_SSHBOX_KEY` and the next one tries again. Deleting a
+connect leaves the file as it was and the next one tries again. Deleting a
 host revokes its key (`DELETE /v1/key`, signed with that key). **Settings →
 Notifications → Reset notification keys** revokes every host's key, for when
 one has got out: servers holding an old key stop notifying until their host
@@ -917,12 +931,10 @@ Jeansh passes these with every shell it opens, plain or tmux:
 | --- | --- |
 | `LC_SSHBOX_NOTIFY_URL` | `http://127.0.0.1:<port>/v1/send`, the port the host listens on for this connection |
 | `LC_SSHBOX_NOTIFY_SECRET` | this connection's own secret, 32 random bytes in base64url |
-| `LC_SSHBOX_KEY` | this host's relay key: its id, a colon, and its private key |
-| `LC_SSHBOX_HOST_ID` | the id of the saved host; the relay needs only the key, which names its host |
 | `LC_SSHBOX_HYPERLINKS` | `1`: this terminal opens OSC 8 hyperlinks — see [Links in the terminal](#links-in-the-terminal) |
 
-The first two only when the host listens for us, the next two only once the
-host has a relay key, and the last always.
+The first two only when the host listens for us, and the last always. The
+host's relay key is a file, not a variable: see **One key per host** above.
 
 **The server has to accept them.** OpenSSH takes only the variables its
 `AcceptEnv` lists. Debian, Ubuntu and macOS ship `AcceptEnv LANG LC_*`, which
@@ -930,13 +942,11 @@ is why every name starts with `LC_`, the trick iTerm2's `LC_TERMINAL` uses.
 Elsewhere, add `AcceptEnv LC_SSHBOX_*` (or `LC_*`) to `sshd_config` and reload
 sshd. Tailscale SSH passes them only when the tailnet policy's SSH rule lists
 them in `acceptEnv`, as in `"acceptEnv": ["LC_SSHBOX_*"]`, on Tailscale 1.76
-or later. A server that refuses them still connects, and
-`echo $LC_SSHBOX_KEY` prints nothing there; export `LC_SSHBOX_KEY` in its
-shell's profile instead, from **Copy notification key** on the host's edit
-page. The direct way
-cannot be set by hand: its port and secret are new with each connection.
+or later. A server that refuses them still connects, and its shells get no
+direct URL or secret: those are new with each connection and cannot be set by
+hand. The relay key does not need `AcceptEnv`: it is a file.
 
-In tmux mode a tab adds the four notification names, and `FORCE_HYPERLINK`
+In tmux mode a tab adds the two direct-way names, and `FORCE_HYPERLINK`
 (see [Links in the terminal](#links-in-the-terminal)), to tmux's
 `update-environment`, once per tmux server, so tmux copies them into the tab's
 session when it makes it and at every reattach. A new pane gets this
@@ -950,11 +960,27 @@ phone and does nothing else, and the relay sends them as that host's, so a
 key that gets out of one host cannot speak for another. Deleting the host
 revokes it; if one gets out, reset them.
 
+**Keeping the key on the host it was made for.** It is a file on that host
+and in no variable, so an `ssh` started from a Jeansh shell has nothing of it
+to send on. The same goes for the secret the `jeansh <file>` command signs
+with, in `~/.config/jeansh/open-secret`, replaced on every connect. What is
+left in the environment, the direct URL and its secret, is of use on the host
+that made it only. To also stop the client sending any `LC_*` names onward:
+
+```
+# ~/.ssh/config, before any `Host *` block that sends LC_*
+Host *
+    SendEnv -LC_SSHBOX_*
+```
+
+or, per call, `ssh -o 'SendEnv -LC_SSHBOX_*' other-host`. Jeansh edits
+neither this file nor a profile for you.
+
 **The direct way's ceiling.** The port is on the host's loopback, so on a
 server others log in to, once the connection has ended another local user can
 listen on that port and read what a shell left over from the connection sends
 to it. They get the text of that one message and nothing more: the secret
-stops them sending anything to the phone. It is also why `LC_SSHBOX_KEY`
+stops them sending anything to the phone. It is also why the key
 never goes to the direct URL — whoever held the port would hold the key.
 
 ## Links in the terminal
