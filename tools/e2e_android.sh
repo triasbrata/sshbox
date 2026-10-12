@@ -1304,6 +1304,132 @@ jeansh_open() {
   return "$status"
 }
 
+# jeansh open: secret file, file limit, onward ssh, install result (#218,
+# .maestro/jeansh_open2.yaml), against this runner's sshd with the host's
+# install switch on. Terminal text cannot be read from a flow, so the flow
+# leaves what each command printed and exited with in files in the login home,
+# and the runner reads them, and the host's files, after each STEP. A second
+# account, jeansh2e, is what the onward ssh goes to.
+JO2_STATUS=0
+jo2_host() { sudo -u "$SSH_USER" -H "$@"; }
+jo2_fail() { echo "::error::$1"; JO2_STATUS=1; }
+jo2_expect() { # label got want
+  if [ "$2" = "$3" ]; then echo "ok: $1"; else jo2_fail "$1: got [$2], expected [$3]"; fi
+}
+jo2_cat() { sudo cat "/home/$SSH_USER/$1" 2>/dev/null; }
+
+jeansh_open2() {
+  local home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local f before after rc out
+  JO2_STATUS=0
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home"/jo[0-9]*.*
+  jo2_host sh -s <<'EOS'
+mkdir -p "$HOME/jeansh-e2e-open" && cd "$HOME/jeansh-e2e-open" || exit 1
+for n in a.md f1 f2 f3 f4 f5 f6 f7 g1 g2 g3 g4 g5; do printf 'jeansh e2e %s\n' "$n" >"$n"; done
+EOS
+  # The second account and the key that reaches it.
+  id jeansh2e >/dev/null 2>&1 || sudo useradd -m -s /bin/bash jeansh2e
+  sudo usermod -p '*' jeansh2e
+  sudo rm -f "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  jo2_host ssh-keygen -q -t ed25519 -N '' -f "$home/.e2e-onward-key"
+  sudo chown "$SSH_USER" "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  sudo chmod 600 "$home/.e2e-onward-key"
+  sudo install -d -m 700 -o jeansh2e -g jeansh2e /home/jeansh2e/.ssh
+  sudo cat "$home/.e2e-onward-key.pub" | sudo tee /home/jeansh2e/.ssh/authorized_keys >/dev/null
+  sudo chown jeansh2e:jeansh2e /home/jeansh2e/.ssh/authorized_keys
+  sudo chmod 600 /home/jeansh2e/.ssh/authorized_keys
+
+  echo "::group::jeansh_open2: the switch on"
+  flow jeansh_open2 -e STEP=on || jo2_fail "the switch flow failed"
+  echo "::endgroup::"
+
+  # 4. A file of somebody else's where the command goes: said, and untouched.
+  echo "::group::jeansh_open2: install result, a file that is not the app's"
+  jo2_host sh -c 'mkdir -p "$HOME/.local/bin" && printf "#!/bin/sh\necho foreign\n" >"$HOME/.local/bin/jeansh" && chmod 755 "$HOME/.local/bin/jeansh"'
+  before=$(sudo sha256sum "$bin" | cut -d' ' -f1)
+  # The notice is on screen for about a second, so the flow may look away at
+  # the wrong moment: it is tried up to three times, each from a stopped app and
+  # the same untouched file, and one sighting is the proof.
+  local seen=0 attempt
+  for attempt in 1 2 3; do
+    if flow jeansh_open2 -e STEP=foreign; then seen=1; break; fi
+    echo "the notice was not seen on attempt $attempt"
+    # A trust prompt that came first is answered here, then it is tried again.
+    flow jeansh_open2 -e STEP=trust || true
+    adb shell am force-stop cloud.brata.terminal >/dev/null 2>&1
+  done
+  [ "$seen" = 1 ] || jo2_fail "4: the notice that the file was left alone was not seen in three tries"
+  after=$(sudo sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)
+  jo2_expect "4: the file there is byte for byte as it was" "$after" "$before"
+  jo2_expect "4: and nothing else was left beside it" \
+    "$(jo2_host sh -c 'ls -A "$HOME/.local/bin" | wc -l' | tr -d ' ')" 1
+  echo "::endgroup::"
+
+  # A clean host, then the command itself.
+  echo "::group::jeansh_open2: a clean host, the command"
+  sudo rm -rf "$bin" "$home/.config/jeansh"
+  flow jeansh_open2 -e STEP=clean || jo2_fail "the clean-host flow failed"
+  sleep 3
+  jo2_expect "4: a clean host got the command, mode 755" "$(sudo stat -c %a "$bin" 2>/dev/null)" 755
+  sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" 2>/dev/null ||
+    jo2_fail "4: the command lacks its marker line"
+  jo2_expect "4: and its key file is private" \
+    "$(sudo stat -c %a "$home/.config/jeansh/open-secret" 2>/dev/null)" 600
+
+  jo2_expect "1: the command ran and exited 0" "$(jo2_cat jo1.rc)" 0
+  jo2_expect "1: and printed nothing" "$(jo2_cat jo1.err)" ""
+  jo2_expect "1: without its key file it exited 1" "$(jo2_cat jo1n.rc)" 1
+  case $(jo2_cat jo1n.err) in
+    *"not running in a Jeansh terminal"*) echo "ok: 1: and said it is not in a Jeansh terminal" ;;
+    *) jo2_fail "1: without its key file it did not say it is not in a Jeansh terminal: [$(jo2_cat jo1n.err)]" ;;
+  esac
+  jo2_expect "2: seven files exit 1" "$(jo2_cat jo2.rc)" 1
+  case $(jo2_cat jo2.err) in
+    *"2 of 7 not opened"*) echo "ok: 2: and say 2 of 7 were not opened" ;;
+    *) jo2_fail "2: seven files did not say 2 of 7 not opened: [$(jo2_cat jo2.err)]" ;;
+  esac
+  jo2_expect "2: five files exit 0" "$(jo2_cat jo2b.rc)" 0
+  jo2_expect "2: and print nothing" "$(jo2_cat jo2b.err)" ""
+
+  # 3. Onward ssh: only worth reading when the control shows the account can
+  # be reached and a LC_ variable does get through to it.
+  rc=$(jo2_cat jo3.rc)
+  out=$(jo2_cat jo3.out | tail -n 3 | tr "\n" " ")
+  # The push key is a file, never a variable: none of it in this tab's own
+  # shell either. Only a real relay key makes the file, and the emulator has no
+  # FCM to get one with, so that check is made when there is a file and said to
+  # be skipped when there is none.
+  jo2_expect "3: no push key or host id in the tab's own environment" \
+    "$(jo2_cat jo3.own | tr -d '\n ')" 0
+  if sudo test -f "$home/.config/jeansh/notify-key"; then
+    jo2_expect "3: the push key file is private" \
+      "$(sudo stat -c %a "$home/.config/jeansh/notify-key")" 600
+  else
+    echo "::notice::jeansh_open2 3: this host got no relay key (no FCM on this runner), so the notify-key file check is skipped"
+  fi
+  echo "onward ssh: exit [$rc], saw [$out], control [$(jo2_cat jo3.control | tr '\n' ' ')]"
+  if [ "$rc" != 0 ]; then
+    echo "::warning::jeansh_open2 3: the onward ssh did not connect, so nothing was learned: $out"
+    JO2_STATUS=1
+  else
+    jo2_expect "3: onward, no push key or host id in the environment, no open secret, and no key file" "$out" "0 0 0 "
+    if [ "$(jo2_cat jo3.control | tr -d '\n ')" != 1 ]; then
+      echo "::notice::jeansh_open2 3: this sshd does not take LC_ variables, so the 0 above is not a proof; it is a check that nothing was left behind"
+    fi
+  fi
+  echo "::endgroup::"
+
+  echo "::group::jeansh_open2: the switch off"
+  flow jeansh_open2 -e STEP=off || jo2_fail "the switch-off flow failed"
+  echo "::endgroup::"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'jeansh-open2-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home"/jo[0-9]*.* \
+    "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  sudo userdel -r jeansh2e >/dev/null 2>&1
+  return "$JO2_STATUS"
+}
+
 # #261: a tmux tab keeps its program's mouse modes across a reattach. The host
 # runs its tabs in tmux for this block (the flows switch it on and off); a
 # stand-in program (tools/e2e_mouse_tui.py) logs what it is typed, which is
@@ -1825,6 +1951,9 @@ done
 echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
 echo "::endgroup::"
+# Its steps are groups of their own, in the job log.
+jeansh_open2 || echo "::warning::jeansh_open2 failed -- report only, not gating"
+
 echo "::group::jeansh_open (report only)"
 jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
 echo "::endgroup::"
