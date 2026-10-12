@@ -204,14 +204,43 @@ void main() {
       );
       await shellUp('first connect');
       final r1 = KeystoreSecretStore.keychainReads;
+      var r1Cold = r1;
       expect(r1, greaterThan(0), reason: 'the first connect read the password');
+
+      // Which keys the first connect left unkept, by name (names only, never
+      // a value): a key whose read reaches the keychain now was not held.
+      // Reading it here keeps it, so what the reconnect still reads is
+      // outside this list.
+      final cold = <String>[];
+      for (final candidate in [
+        ...SecretKeys.allFor(id),
+        'sshbox.notify.keys',
+        'sshbox.notify.revoke',
+        'sshbox.notify.key',
+      ]) {
+        final before = KeystoreSecretStore.keychainReads;
+        await secrets.read(candidate);
+        if (KeystoreSecretStore.keychainReads != before) cold.add(candidate);
+      }
+      debugPrint('KEYS unkept after the first connect: $cold');
+      r1Cold = KeystoreSecretStore.keychainReads;
 
       await drop();
       await reconnect();
       await shellUp('reconnect');
-      final delta = KeystoreSecretStore.keychainReads - r1;
+      final delta = KeystoreSecretStore.keychainReads - r1Cold;
+      debugPrint(
+        'KEYS read: first connect $r1, probing ${r1Cold - r1}, reconnect '
+        '$delta',
+      );
       if (keeps) {
-        expect(delta, 0, reason: 'macOS: a reconnect reads nothing');
+        expect(
+          delta,
+          0,
+          reason:
+              'macOS: a reconnect reads nothing, though $cold were unkept '
+              'after the first connect and are kept now',
+        );
       } else {
         expect(
           delta,

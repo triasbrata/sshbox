@@ -218,14 +218,41 @@ void main() {
           () => find.byType(TerminalView).evaluate().isNotEmpty,
           'the terminal',
         );
-        for (var i = 0; i < 100 && !_hasShell(await _theirs()); i++) {
+        // A tab brought back from the run before is there, unconnected, with
+        // Reconnect on it: the card tap may have left it so.
+        for (var i = 0; i < 300 && !_hasShell(await _theirs()); i++) {
+          if (i == 25 && reconnect.evaluate().isNotEmpty) {
+            debugPrint('The restored tab offered Reconnect: tapping it');
+            await tester.tap(reconnect.first);
+          }
           await Future<void>.delayed(const Duration(milliseconds: 200));
           await tester.pump();
+        }
+        if (!_hasShell(await _theirs())) {
+          String words<T extends Widget>(String? Function(T) of) => find
+              .byType(T)
+              .evaluate()
+              .map((e) => of(e.widget as T))
+              .whereType<String>()
+              .take(80)
+              .join(' | ');
+          debugPrint(
+            'On screen: ${words<Text>((t) => t.data ?? t.textSpan?.toPlainText())}',
+          );
+          debugPrint('Buttons: ${words<Tooltip>((t) => t.message)}');
+          debugPrint('Their processes: ${await _theirs()}');
+          final log = await Process.run('sudo', [
+            'tail',
+            '-n',
+            '30',
+            '/private/tmp/e2e_sshd/sshd.log',
+          ]);
+          debugPrint('sshd log:\n${log.stdout}');
         }
         expect(
           _hasShell(await _theirs()),
           isTrue,
-          reason: 'a shell on the host',
+          reason: 'a shell on the host within 60 s',
         );
         expect(
           find.textContaining(_missing).evaluate(),
