@@ -148,7 +148,6 @@ class KeystoreSecretStore implements SecretStore {
     }
     // Written, so kept: it cannot be stale, and the open secret made on a
     // first connect is not read back at the next.
-    if (_keepReads && wanted != null) _kept[key] = wanted;
   }
 
   @override
