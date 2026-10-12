@@ -522,7 +522,14 @@ jobs:
           password="$(openssl rand -hex 16)"
           echo "::add-mask::$password"
           sudo sysadminctl -addUser e2e -password "$password" -home /Users/e2e
-          sudo mkdir -p /Users/e2e && sudo chown e2e /Users/e2e
+          # sysadminctl only assigns the home; make it.
+          sudo createhomedir -c -u e2e >/dev/null 2>&1 || true
+          sudo mkdir -p /Users/e2e && sudo chown e2e:staff /Users/e2e
+          # PAM's account phase (pam_sacl) refuses a user outside the SSH
+          # access group, as Remote Login's; PAM stays on, since it is what
+          # checks a password here.
+          sudo dseditgroup -o create -q com.apple.access_ssh 2>/dev/null || true
+          sudo dseditgroup -o edit -a e2e -t user com.apple.access_ssh
           dir=/private/tmp/e2e_sshd
           sudo mkdir -p "$dir"
           sudo ssh-keygen -q -t ed25519 -N "" -f "$dir/host_key"
@@ -540,6 +547,17 @@ jobs:
           done
           (exec 3<>/dev/tcp/127.0.0.1/2222) 2>/dev/null || { sudo cat "$dir/sshd.log"; echo "::error::sshd did not start"; exit 1; }
           echo "sshd answers on 127.0.0.1:2222"
+          # A login that works, before the app tries one: ssh asks for the
+          # password through a script of its own, never a terminal.
+          ask="$RUNNER_TEMP/askpass.sh"
+          printf '#!/bin/sh\necho "%s"\n' "$password" > "$ask"
+          chmod 700 "$ask"
+          SSH_ASKPASS="$ask" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 ssh \
+            -o PubkeyAuthentication=no -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 \
+            -p 2222 e2e@127.0.0.1 'echo login-ok' </dev/null \
+            || { sudo tail -n 40 "$dir/sshd.log"; echo "::error::the throwaway user cannot log in"; rm -f "$ask"; exit 1; }
+          rm -f "$ask"
 
       # #284: reads kept for the run, so a reconnect asks the keychain nothing.
       - name: Keychain reads
