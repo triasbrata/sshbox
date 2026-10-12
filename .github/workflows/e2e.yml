@@ -594,6 +594,31 @@ jobs:
             security delete-keychain "$kc" || true
           }
           trap restore EXIT
+          # A file-keychain item has an ACL of the apps trusted to read it,
+          # and the next phase's ad-hoc binary is not on it, so it would
+          # prompt. Each item is read (the partition list lets apple-tool),
+          # deleted and added again with -A, any app may read it. Service and
+          # account are read from the keychain, so they are the app's own; a
+          # value is never printed.
+          reopen() {
+            security dump-keychain "$kc" 2>/dev/null | awk '
+              /^keychain:/ { if (a != "") print s "\t" a; s=""; a="" }
+              /"svce"<blob>=/ { split($0, p, "\""); s=p[4] }
+              /"acct"<blob>=/ { split($0, p, "\""); a=p[4] }
+              END { if (a != "") print s "\t" a }' |
+            while IFS=$'\t' read -r svc acct; do
+              if val=$(security find-generic-password -s "$svc" -a "$acct" -w "$kc" 2>&1); then
+                security delete-generic-password -s "$svc" -a "$acct" "$kc" >/dev/null 2>&1
+                if security add-generic-password -U -A -s "$svc" -a "$acct" -w "$val" "$kc" 2>/dev/null; then
+                  echo "re-added $acct for any app"
+                else
+                  echo "could not add $acct again"
+                fi
+              else
+                echo "could not read $acct: $(echo "$val" | head -c 200 | sed 's/-w .*//')"
+              fi
+            done
+          }
           security create-keychain -p "$pw" "$kc"
           security unlock-keychain -p "$pw" "$kc"
           security set-keychain-settings -lut 7200 "$kc"
@@ -616,6 +641,10 @@ jobs:
             fi
             security dump-keychain "$kc" 2>/dev/null | grep -c 'class: "genp"' \
               | sed "s/^/generic passwords in the test keychain after $phase: /" || true
+            reopen
+            # Who may read what, with no secret in it, to read if it still hangs.
+            echo "access control lists after $phase:"
+            security dump-keychain -a "$kc" 2>&1 | grep -E 'class:|"svce"|"acct"|description:|applications|authorizations' | head -40 || true
           done
           if [ "$rc" -ne 0 ]; then
             echo "securityd, the last 2 minutes:"
