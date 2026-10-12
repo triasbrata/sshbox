@@ -38,7 +38,7 @@ const maxClipboardBytes = 1 << 20;
 /// toast.
 class ClipboardTerminal extends Terminal {
   ClipboardTerminal({super.maxLines, super.inputHandler, super.onPrivateOSC})
-    : super(onClipboardQuery: _refuse);
+    : super();
 
   static String? _refuse(String _) => null;
 
@@ -175,6 +175,10 @@ class ClipboardTerminal extends Terminal {
     if (drop) return;
     final semicolon = payload.indexOf(';');
     if (semicolon < 0) return;
+    if (payload.substring(semicolon + 1) == '?') {
+      super.write('\x1b]52;c;?\x07');
+      return;
+    }
     final target = payload.substring(0, semicolon);
     if (target.isNotEmpty && !target.contains(RegExp('[cps]'))) return;
     final copied = decodeClipboard(payload.substring(semicolon + 1));
