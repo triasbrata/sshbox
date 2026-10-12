@@ -9,11 +9,13 @@
 	     is what makes the choice ours to make. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<!-- No `keychain-access-groups` here, deliberately: it is an entitlement
-	     Xcode will only sign with a development certificate, and this app is
-	     signed ad-hoc. Without the sandbox the login keychain takes us anyway,
-	     which is what `usesDataProtectionKeychain: false` in `SecretStore`
-	     asks for. -->
+	<!-- No `keychain-access-groups` here, deliberately: it needs a
+	     provisioning profile to authorise it, and the default build is signed
+	     ad-hoc. Without the sandbox the login keychain takes us anyway, which
+	     is what `usesDataProtectionKeychain: false` in `SecretStore` asks for.
+	     A Developer ID build (MACOS_DEVELOPER_ID, docs/macos-developer-id.md)
+	     has tools/build_apple.sh add it, with the application identifier,
+	     when it signs. -->
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<key>com.apple.security.network.client</key>

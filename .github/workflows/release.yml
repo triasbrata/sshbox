@@ -224,6 +224,19 @@ jobs:
           # should be handed the means to fill the quota with junk. Unset
           # leaves crash reporting off.
           JEANSH_SENTRY_DSN: ${{ secrets.JEANSH_SENTRY_DSN }}
+          # Developer ID signing for macOS, off unless this repository
+          # variable is exactly true: then tools/build_apple.sh signs,
+          # notarizes and staples, and fails naming any secret below that is
+          # missing. docs/macos-developer-id.md. The secrets reach the macOS
+          # build alone.
+          MACOS_DEVELOPER_ID: ${{ vars.MACOS_DEVELOPER_ID }}
+          MACOS_CERT_P12_BASE64: ${{ matrix.target == 'macos' && secrets.MACOS_CERT_P12_BASE64 || '' }}
+          MACOS_CERT_PASSWORD: ${{ matrix.target == 'macos' && secrets.MACOS_CERT_PASSWORD || '' }}
+          MACOS_TEAM_ID: ${{ matrix.target == 'macos' && secrets.MACOS_TEAM_ID || '' }}
+          MACOS_PROVISIONING_PROFILE_BASE64: ${{ matrix.target == 'macos' && secrets.MACOS_PROVISIONING_PROFILE_BASE64 || '' }}
+          MACOS_NOTARY_KEY_P8_BASE64: ${{ matrix.target == 'macos' && secrets.MACOS_NOTARY_KEY_P8_BASE64 || '' }}
+          MACOS_NOTARY_KEY_ID: ${{ matrix.target == 'macos' && secrets.MACOS_NOTARY_KEY_ID || '' }}
+          MACOS_NOTARY_ISSUER_ID: ${{ matrix.target == 'macos' && secrets.MACOS_NOTARY_ISSUER_ID || '' }}
         run: |
           case ${{ matrix.target }} in
             linux) tools/build_desktop.sh --skip-checks linux ;;

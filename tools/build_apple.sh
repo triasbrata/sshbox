@@ -43,6 +43,14 @@ Flutter SDK: $FLUTTER if set, else the version .fvmrc pins through fvm
 Signing without Xcode logged in to an Apple account: set ASC_KEY_PATH,
 ASC_KEY_ID and ASC_ISSUER_ID to an App Store Connect API key and
 xcodebuild uses it to fetch provisioning profiles.
+
+Developer ID: with MACOS_DEVELOPER_ID=true the macOS build is signed with a
+Developer ID Application certificate, notarized and stapled, and every one of
+MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD, MACOS_TEAM_ID,
+MACOS_PROVISIONING_PROFILE_BASE64, MACOS_NOTARY_KEY_P8_BASE64,
+MACOS_NOTARY_KEY_ID and MACOS_NOTARY_ISSUER_ID must be set, or the build
+fails before it starts. Off, it is signed ad hoc as before. See
+docs/macos-developer-id.md.
 EOF
 }
 
@@ -143,9 +151,19 @@ version_args+=(--dart-define "JEANSH_VERSION=$label")
 out="$out_root/$label"
 mkdir -p "$out"
 
-# Scratch space for archives and staging, gone when the script exits.
+# Scratch space for archives and staging, gone when the script exits, and
+# with it the Developer ID keychain, if this build made one.
 work="$(mktemp -d "${TMPDIR:-/tmp}/jeansh-build.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+signing_keychain=""
+saved_keychains=()
+cleanup() {
+  if [ -n "$signing_keychain" ]; then
+    security list-keychains -d user -s ${saved_keychains[@]+"${saved_keychains[@]}"} >/dev/null 2>&1 || true
+    security delete-keychain "$signing_keychain" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 auth_args=()
 if [ -n "${ASC_KEY_PATH:-}" ]; then
@@ -154,6 +172,200 @@ if [ -n "${ASC_KEY_PATH:-}" ]; then
     -authenticationKeyID "$ASC_KEY_ID"
     -authenticationKeyIssuerID "$ASC_ISSUER_ID")
 fi
+
+# ---------------------------------------------------------------- Developer ID
+
+# Off unless MACOS_DEVELOPER_ID is exactly "true" (the repository variable of
+# that name, in CI) and macos is being built. Off, nothing below runs and the
+# macOS build is signed ad hoc as it always was. On, the macOS build is signed
+# with a Developer ID, notarized and stapled, or this script fails: it never
+# falls back to ad hoc. docs/macos-developer-id.md says what to set.
+developer_id=0
+[ "${MACOS_DEVELOPER_ID:-}" != true ] || developer_id=1
+case " $targets " in *" macos "*) ;; *) developer_id=0 ;; esac
+
+developer_id_secrets="MACOS_CERT_P12_BASE64 MACOS_CERT_PASSWORD MACOS_TEAM_ID
+MACOS_PROVISIONING_PROFILE_BASE64 MACOS_NOTARY_KEY_P8_BASE64
+MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID"
+
+# Set by the preflight, for the macOS build to use.
+identity=""
+keychain_group=""
+profile=""
+notary_key=""
+macos_args=()
+
+# The first <string> after <key>$2</key> in the XML plist $1: a key's value,
+# or an array's first item. Apple writes one element a line.
+plist_string() {
+  awk -v key="<key>$2</key>" '
+    found && /<string>/ { sub(/.*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }
+    index($0, key) { found = 1 }' "$1"
+}
+
+# $1, base64, decoded into $2, or the build stops naming the secret $3.
+decode_secret() {
+  printf '%s' "$1" | base64 -d >"$2" 2>/dev/null && [ -s "$2" ] ||
+    die "$3 is not base64, or decodes to nothing"
+}
+
+# Everything Developer ID signing needs, checked before a 20-minute build
+# rather than after it: every secret there, the certificate a Developer ID
+# Application identity of MACOS_TEAM_ID's, the profile that team's and this
+# app's, and the notary key a key. Imports the certificate into a keychain of
+# this build's own, which cleanup deletes.
+developer_id_preflight() {
+  local missing="" name
+  for name in $developer_id_secrets; do
+    [ -n "${!name:-}" ] || missing="$missing $name"
+  done
+  [ -z "$missing" ] ||
+    die "MACOS_DEVELOPER_ID is on, but these secrets are missing:$missing." \
+      "Add them (docs/macos-developer-id.md), or turn MACOS_DEVELOPER_ID off." \
+      "This build does not fall back to ad-hoc signing."
+
+  printf '%s' "$MACOS_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$' ||
+    die "MACOS_TEAM_ID is not a 10-character Apple team ID"
+  local bundle_id
+  bundle_id="$(sed -n 's/^PRODUCT_BUNDLE_IDENTIFIER[[:space:]]*=[[:space:]]*//p' macos/Runner/Configs/AppInfo.xcconfig)"
+  [ -n "$bundle_id" ] || die "no PRODUCT_BUNDLE_IDENTIFIER in macos/Runner/Configs/AppInfo.xcconfig"
+  keychain_group="$MACOS_TEAM_ID.$bundle_id"
+
+  local dir="$work/signing"
+  mkdir -p "$dir" && chmod 700 "$dir"
+
+  notary_key="$dir/AuthKey.p8"
+  decode_secret "$MACOS_NOTARY_KEY_P8_BASE64" "$notary_key" MACOS_NOTARY_KEY_P8_BASE64
+  grep -q 'BEGIN PRIVATE KEY' "$notary_key" ||
+    die "MACOS_NOTARY_KEY_P8_BASE64 is not an App Store Connect API key (.p8)"
+
+  profile="$dir/embedded.provisionprofile"
+  decode_secret "$MACOS_PROVISIONING_PROFILE_BASE64" "$profile" MACOS_PROVISIONING_PROFILE_BASE64
+  security cms -D -i "$profile" >"$dir/profile.plist" 2>/dev/null ||
+    die "MACOS_PROVISIONING_PROFILE_BASE64 is not a provisioning profile"
+  local team app_id
+  team="$(plist_string "$dir/profile.plist" TeamIdentifier)"
+  [ "$team" = "$MACOS_TEAM_ID" ] ||
+    die "the provisioning profile is team ${team:-unknown}'s, not MACOS_TEAM_ID $MACOS_TEAM_ID's"
+  app_id="$(plist_string "$dir/profile.plist" com.apple.application-identifier)"
+  [ "$app_id" = "$keychain_group" ] ||
+    die "the provisioning profile is for ${app_id:-no app}, not $keychain_group:" \
+      "make a Developer ID profile for $bundle_id"
+
+  local p12="$dir/certificate.p12"
+  decode_secret "$MACOS_CERT_P12_BASE64" "$p12" MACOS_CERT_P12_BASE64
+
+  local line
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line#\"}"
+    saved_keychains+=("${line%\"}")
+  done < <(security list-keychains -d user)
+  local password
+  password="$(openssl rand -hex 24)"
+  signing_keychain="$dir/jeansh-signing.keychain-db"
+  security create-keychain -p "$password" "$signing_keychain"
+  security set-keychain-settings -lut 21600 "$signing_keychain"
+  security unlock-keychain -p "$password" "$signing_keychain"
+  security import "$p12" -k "$signing_keychain" -P "$MACOS_CERT_PASSWORD" \
+    -f pkcs12 -T /usr/bin/codesign >/dev/null 2>&1 ||
+    die "MACOS_CERT_P12_BASE64 would not import with MACOS_CERT_PASSWORD: a wrong password, or not a .p12"
+  rm -f "$p12"
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+    -k "$password" "$signing_keychain" >/dev/null
+  security list-keychains -d user -s "$signing_keychain" \
+    ${saved_keychains[@]+"${saved_keychains[@]}"}
+
+  local identities
+  identities="$(security find-identity -v -p codesigning "$signing_keychain")"
+  identity="$(printf '%s\n' "$identities" |
+    awk -v team="($MACOS_TEAM_ID)\"" 'index($0, "\"Developer ID Application: ") && index($0, team) { print $2; exit }')"
+  if [ -z "$identity" ]; then
+    printf '%s\n' "$identities" | grep -q '"Developer ID Application: ' &&
+      die "the certificate's Developer ID Application identity is not team $MACOS_TEAM_ID's"
+    die "MACOS_CERT_P12_BASE64 holds no Developer ID Application identity" \
+      "(an Apple Development or Distribution certificate will not do)"
+  fi
+
+  # What the app takes as its keychain access group, and as its sign that it
+  # is the signed build: lib/src/data/secret_store.dart.
+  macos_args=(--dart-define "MACOS_KEYCHAIN_GROUP=$keychain_group")
+  printf 'Developer ID: team %s, access group %s\n' "$MACOS_TEAM_ID" "$keychain_group"
+}
+
+# Release.entitlements with what the data protection keychain needs, which
+# the provisioning profile authorises, into $1.
+developer_id_entitlements() {
+  awk -v group="$keychain_group" -v team="$MACOS_TEAM_ID" '
+    /^<\/dict>$/ {
+      print "\t<key>com.apple.application-identifier</key>"
+      print "\t<string>" group "</string>"
+      print "\t<key>com.apple.developer.team-identifier</key>"
+      print "\t<string>" team "</string>"
+      print "\t<key>keychain-access-groups</key>"
+      print "\t<array>"
+      print "\t\t<string>" group "</string>"
+      print "\t</array>"
+    }
+    { print }' macos/Runner/Release.entitlements >"$1"
+  plutil -lint "$1" >/dev/null
+}
+
+# Sends $1 to Apple's notary and waits; anything but Accepted stops the build
+# with the notary's log.
+notarize() {
+  local what="$1" upload="$1" out id status
+  case "$what" in
+    *.app)
+      upload="$work/signing/notarize.zip"
+      rm -f "$upload"
+      ditto -c -k --keepParent "$what" "$upload"
+      ;;
+  esac
+  step "Notarizing $(basename "$what")"
+  out="$(xcrun notarytool submit "$upload" --key "$notary_key" \
+    --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID" \
+    --wait --timeout 30m --output-format json)" || true
+  id="$(printf '%s' "$out" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  status="$(printf '%s' "$out" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  if [ "$status" != Accepted ]; then
+    [ -z "$id" ] || xcrun notarytool log "$id" --key "$notary_key" \
+      --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID" >&2 || true
+    die "notarization of $(basename "$what") ended ${status:-with no status}: $out"
+  fi
+}
+
+# Signs the built app inside out, with the hardened runtime and a timestamp,
+# never --deep; then notarizes and staples it.
+developer_id_sign_app() {
+  local app="$1" entitlements="$work/signing/Release.entitlements" item
+  step "macOS: signing with Developer ID, team $MACOS_TEAM_ID"
+  developer_id_entitlements "$entitlements"
+  cp "$profile" "$app/Contents/embedded.provisionprofile"
+  while IFS= read -r item; do
+    codesign --force --options runtime --timestamp \
+      --sign "$identity" --keychain "$signing_keychain" "$item"
+  done < <(find "$app/Contents" -depth \( -name '*.framework' -o -name '*.dylib' \
+    -o -name '*.xpc' -o -name '*.app' \) -print)
+  codesign --force --options runtime --timestamp --entitlements "$entitlements" \
+    --sign "$identity" --keychain "$signing_keychain" "$app"
+  codesign --verify --deep --strict --verbose=2 "$app"
+  notarize "$app"
+  xcrun stapler staple "$app"
+  xcrun stapler validate "$app"
+  spctl --assess --type execute --verbose=2 "$app"
+}
+
+# The disk image: signed, notarized and stapled too.
+developer_id_sign_dmg() {
+  local dmg="$1"
+  codesign --force --timestamp --sign "$identity" --keychain "$signing_keychain" "$dmg"
+  notarize "$dmg"
+  xcrun stapler staple "$dmg"
+  xcrun stapler validate "$dmg"
+}
+
+[ "$developer_id" = 0 ] || developer_id_preflight
 
 step "Jeansh $label ($mode):$targets"
 printf 'Flutter: %s\n' "$(flutter --version 2>/dev/null | head -1)"
@@ -172,9 +384,10 @@ find_app() {
 
 build_macos() {
   step "macOS: flutter build macos --$mode"
-  flutter build macos --"$mode" "${version_args[@]}"
+  flutter build macos --"$mode" "${version_args[@]}" ${macos_args[@]+"${macos_args[@]}"}
   local app
   app="$(find_app "build/macos/Build/Products/$config")"
+  [ "$developer_id" = 0 ] || developer_id_sign_app "$app"
 
   ditto -c -k --keepParent "$app" "$out/$APP_NAME-$label-macos.zip"
 
@@ -185,6 +398,7 @@ build_macos() {
   ln -s /Applications "$stage/Applications"
   hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$stage" -ov -format UDZO \
     "$out/$APP_NAME-$label-macos.dmg"
+  [ "$developer_id" = 0 ] || developer_id_sign_dmg "$out/$APP_NAME-$label-macos.dmg"
 
   codesign -dv "$app" 2>&1 | grep -E '^(Authority|Signature)=' | head -1 || true
 }
