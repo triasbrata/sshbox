@@ -637,6 +637,24 @@ Future<void> _realPointer(Future<void> Function() body) async {
   }
 }
 
+/// Prints every key event the app is handed, tagged [where], until the
+/// returned function is called: what X made of a chord, in the job log.
+void Function() _logKeys(String where) {
+  bool log(KeyEvent event) {
+    debugPrint(
+      'key[$where] ${event.runtimeType} logical=${event.logicalKey.debugName} '
+      '(${event.logicalKey.keyId.toRadixString(16)}) '
+      'physical=${event.physicalKey.debugName} char=${event.character} '
+      'ctrl=${HardwareKeyboard.instance.isControlPressed} '
+      'meta=${HardwareKeyboard.instance.isMetaPressed}',
+    );
+    return false;
+  }
+
+  HardwareKeyboard.instance.addHandler(log);
+  return () => HardwareKeyboard.instance.removeHandler(log);
+}
+
 /// [body], and on a failure what reached the app of the keys and the
 /// buttons meanwhile: whether a real key arrived at all.
 Future<void> _hearing(Future<void> Function() body) async {
@@ -4770,6 +4788,301 @@ touch '${done.path}'
     },
   );
 
+  // #283, the key reaching the app at all: Settings opened by its button,
+  // then Ctrl+, from Home with no terminal anywhere. The events the app
+  // sees are printed, so a log shows what X made of the chord.
+  _test(
+    'Ctrl+, closes Settings opened by its button, and the app hears the chord',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      final removeLog = _logKeys('Home');
+      addTearDown(removeLog);
+      await _launch(tester);
+      await _settings(tester);
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['key', '--clearmodifiers', 'ctrl+comma']);
+      // A pop takes several frames on a runner: polled, not read once.
+      await _until(
+        tester,
+        () =>
+            find
+                .text(
+                  'LOOK · TERMINAL · KEYBOARD · PRIVACY',
+                  skipOffstage: false,
+                )
+                .evaluate()
+                .isEmpty &&
+            _homeCard('Local shell').evaluate().isNotEmpty,
+        'Ctrl+, to close Settings opened by its button, back on Home',
+        timeout: const Duration(seconds: 8),
+      );
+    },
+  );
+
+  // #283: Ctrl+, toggles Settings, through X as a person presses it. A 2x2:
+  // pressed with Settings closed it opens, with it showing it closes (from
+  // the page, from a sub-page, and with a text field focused); a bare comma
+  // and Super+comma open nothing, and the comma reaches the shell. Each step
+  // reads the opposite outcome as well: Settings gone means the terminal is
+  // there, scrolled as it was; Settings up means the terminal is not.
+  _test(
+    'Ctrl+, opens Settings and a second press closes it, wherever in '
+    'Settings it is pressed; a bare comma and Super+comma open nothing',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      addTearDown(_logKeys('terminal'));
+      await _launch(tester);
+      // A font an earlier test picked is saved, and Settings then names it
+      // where this test looks for "Installed on this computer…".
+      await terminalSettings.choose(family: terminalFonts.first.family);
+      final view = await _localShell(tester);
+      // A program that shows what reached it: ^[ for an escape, no more.
+      _run(view, 'seq 1 300; cat -v');
+      await _until(
+        tester,
+        () => _text(view).any((l) => l.trim() == '300'),
+        'seq to finish',
+      );
+
+      Future<void> keys(String chord) async {
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo(['key', '--clearmodifiers', chord]);
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+
+      const title = 'LOOK · TERMINAL · KEYBOARD · PRIVACY';
+      final header = find.text(title);
+      final anySettings = find.text(title, skipOffstage: false);
+      // This tab's terminal, by its Terminal: Settings draws one of its own
+      // as a font sample.
+      final terminal = find.byWidgetPredicate(
+        (w) => w is TerminalView && identical(w.terminal, view.terminal),
+      );
+      const slow = Duration(seconds: 8);
+      // A push or a pop takes several frames on a runner, so each outcome
+      // is waited for, then asserted with its opposite.
+      Future<void> settingsUp(String when) async {
+        await _until(
+          tester,
+          () => header.evaluate().length == 1 && terminal.evaluate().isEmpty,
+          '$when: Settings up and the terminal covered',
+          timeout: slow,
+        );
+        expect(header, findsOneWidget, reason: '$when: Settings is not up');
+        expect(terminal, findsNothing, reason: '$when: the terminal shows');
+      }
+
+      Future<void> terminalBack(String when) async {
+        await _until(
+          tester,
+          () =>
+              terminal.evaluate().length == 1 && anySettings.evaluate().isEmpty,
+          '$when: the terminal back and Settings gone',
+          timeout: slow,
+        );
+        expect(terminal, findsOneWidget, reason: '$when: no terminal');
+        expect(anySettings, findsNothing, reason: '$when: Settings is there');
+      }
+
+      // A key that must open nothing: Settings is watched for as long as an
+      // opening is waited for, and never appears.
+      Future<void> opensNothing(String chord, String what) async {
+        await keys(chord);
+        final end = DateTime.now().add(slow);
+        while (DateTime.now().isBefore(end)) {
+          expect(anySettings, findsNothing, reason: '$what opened Settings');
+          await tester.pump(const Duration(milliseconds: 100));
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+      }
+
+      // Scrolled up a few lines; the line at the top of the view.
+      ScrollPosition position() => tester
+          .state<ScrollableState>(
+            find
+                .descendant(of: terminal, matching: find.byType(Scrollable))
+                .first,
+          )
+          .position;
+      String top() {
+        final now = (terminal.evaluate().first.widget as TerminalView).terminal;
+        final lines = now.buffer.lines;
+        final p = position();
+        final cell = p.maxScrollExtent / (lines.length - now.viewHeight);
+        return lines[(p.pixels / cell).round()].getText().trim();
+      }
+
+      position().jumpTo(position().maxScrollExtent - 200);
+      await tester.pump(const Duration(milliseconds: 300));
+      final scrolled = position().pixels;
+      expect(scrolled, lessThan(position().maxScrollExtent));
+      final topBefore = top();
+
+      // 1: Ctrl+, opens it, the shell hears nothing of it, and a second
+      // press brings the terminal back as it was.
+      await keys('ctrl+comma');
+      await settingsUp('Ctrl+, from the terminal');
+      await keys('ctrl+comma');
+      await terminalBack('the second Ctrl+,');
+      expect(position().pixels, scrolled, reason: 'scrollback moved');
+      expect(top(), topBefore, reason: 'another line is at the top');
+      final shown = terminal.evaluate().first.widget as TerminalView;
+      expect(
+        _text(shown).any((l) => l.trim() == '1'),
+        isTrue,
+        reason: 'line 1 is gone from the scrollback',
+      );
+      expect(
+        _text(shown).where((l) => l.contains(',') || l.contains('^[[44;')),
+        isEmpty,
+        reason: 'the shell received the chord',
+      );
+      // No second Settings: one press more opens exactly one, and one more
+      // closes it.
+      await keys('ctrl+comma');
+      await settingsUp('a third press');
+      expect(header, findsOneWidget, reason: 'not exactly one Settings');
+      await keys('ctrl+comma');
+      await terminalBack('after a third and fourth press');
+
+      // 2: from a sub-page, one press goes back to the terminal.
+      await keys('ctrl+comma');
+      await settingsUp('before the sub-page');
+      final row = _label('Key bar');
+      // Settings' own list: the Scrollable the header sits in, waited for
+      // and then pinned by its element. Found again by the header, it would
+      // be lost mid-scroll, when the list unbuilds the header it began from.
+      Future<Finder> settingsList() async {
+        await _until(
+          tester,
+          () => find
+              .ancestor(of: header, matching: find.byType(Scrollable))
+              .evaluate()
+              .isNotEmpty,
+          "Settings' list to be in the tree",
+          timeout: slow,
+        );
+        final element = find
+            .ancestor(of: header, matching: find.byType(Scrollable))
+            .evaluate()
+            .first;
+        return find.byElementPredicate((e) => identical(e, element));
+      }
+
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: await settingsList(),
+      );
+      await tester.ensureVisible(row);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(row);
+      await _until(
+        tester,
+        () => _label('Add key').evaluate().isNotEmpty,
+        'the Key bar page',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await keys('ctrl+comma');
+      await terminalBack('Ctrl+, on the Key bar page');
+      await _until(
+        tester,
+        () => _label('Add key').evaluate().isEmpty,
+        'the Key bar page to be gone with Settings',
+        timeout: slow,
+      );
+      expect(
+        _label('Add key'),
+        findsNothing,
+        reason: 'the Key bar page is still up',
+      );
+
+      // 3: with a text field focused, in a dialog over Settings, it closes
+      // both and the comma is typed nowhere.
+      await keys('ctrl+comma');
+      await settingsUp('before the font picker');
+      final fonts = find.textContaining('Installed on this computer');
+      final fontList = await settingsList();
+      // From the top, in case Settings opens where it was left.
+      tester.state<ScrollableState>(fontList).position.jumpTo(0);
+      await tester.pump(const Duration(milliseconds: 300));
+      try {
+        await tester.scrollUntilVisible(fonts, 300, scrollable: fontList);
+      } catch (_) {
+        final texts = find
+            .byType(Text)
+            .evaluate()
+            .map((e) => (e.widget as Text).data)
+            .whereType<String>()
+            .take(80)
+            .join(' | ');
+        debugPrint('Font row not found; Settings shows: $texts');
+        rethrow;
+      }
+      await _until(
+        tester,
+        () => find
+            .textContaining('families, monospaced first')
+            .evaluate()
+            .isNotEmpty,
+        "this computer's fonts to be listed",
+      );
+      await tester.ensureVisible(fonts);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(fonts);
+      await _until(
+        tester,
+        () => _label('Installed fonts').evaluate().isNotEmpty,
+        'the font picker',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      final picker = _kind('AlertDialog', 'TuiDialog');
+      final field = find.descendant(
+        of: picker,
+        matching: find.byType(TextField),
+      );
+      final controller = tester.widget<TextField>(field).controller!;
+      // The opposite: a bare comma goes into the field, so the field is the
+      // one that would have taken the chord's.
+      await keys('comma');
+      expect(controller.text, ',', reason: 'the field was not taking keys');
+      controller.clear();
+      var typedComma = false;
+      controller.addListener(
+        () => typedComma = typedComma || controller.text.contains(','),
+      );
+      await keys('ctrl+comma');
+      await terminalBack('Ctrl+, with the font filter focused');
+      await _until(
+        tester,
+        () => picker.evaluate().isEmpty,
+        'the font picker to close with Settings',
+        timeout: slow,
+      );
+      expect(typedComma, isFalse, reason: 'the chord typed a comma');
+
+      // 4: the negatives, on the terminal: a bare comma reaches the shell
+      // and opens nothing; Super+comma opens nothing.
+      await tester.tap(terminal);
+      await tester.pump(const Duration(milliseconds: 300));
+      await opensNothing('comma', 'a bare comma');
+      final live = terminal.evaluate().first.widget as TerminalView;
+      await _until(
+        tester,
+        () => _text(live).any((l) => l.trim() == ','),
+        'the comma to reach the shell',
+      );
+      await opensNothing('super+comma', 'Super+comma');
+      expect(terminal, findsOneWidget, reason: 'the terminal went');
+      await keys('ctrl+c');
+      await _closeTabs(tester);
+    },
+  );
+
   // #216: the UI text size from the keyboard, the wheel and the in-frame Help
   // menu, as a person would, through X: Ctrl with = − 0 steps it 10% at a
   // time and back to 100%, Ctrl+wheel over the UI grows it and over a
@@ -5009,6 +5322,135 @@ touch '${done.path}'
         reason: 'Ctrl+wheel over the picture zoomed the UI text',
       );
       expect(find.byType(InteractiveViewer), findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #187: Report a bug, after + in the strip. Its icon alone until a first
+  // click slides "Report a bug" out, which folds back by itself after 4 s or
+  // on a click elsewhere; a click on it then opens the report. CI's builds
+  // carry no Sentry DSN, so the dialog says the log can't go, offers no
+  // private route, and "Under my name" hands the browser a GitHub link that
+  // holds what was written and none of the log. The browser is the link-key
+  // test's stand-in, on CI alone for the same reason.
+  _test(
+    'Report a bug folds out on a click, opens on the next, and links no log',
+    skip: !Platform.isLinux
+        ? 'the stand-in browser is registered through XDG mime handlers, '
+              'which only Linux reads'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI the machine's own browser would open"
+        : null,
+    (tester) async {
+      final data = Platform.environment['XDG_DATA_HOME']!;
+      final opened = File('$data/e2e-opened-bug-links');
+      final browser = File('$data/e2e-bug-browser')
+        ..writeAsStringSync(
+          '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${opened.path}\'\n',
+        );
+      Process.runSync('chmod', ['755', browser.path]);
+      Directory('$data/applications').createSync(recursive: true);
+      File('$data/applications/e2e-bug-browser.desktop').writeAsStringSync(
+        '[Desktop Entry]\nType=Application\nName=e2e browser\nNoDisplay=true\n'
+        'Exec=${browser.path} %u\n'
+        'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n',
+      );
+      File('$data/applications/mimeapps.list').writeAsStringSync(
+        '[Default Applications]\n'
+        'x-scheme-handler/http=e2e-bug-browser.desktop\n'
+        'x-scheme-handler/https=e2e-bug-browser.desktop\n',
+      );
+      // A line of the log's own, which no link may carry.
+      const marker = 'e2e-log-marker-7f3a';
+      appLog.add(marker);
+
+      await _launch(tester);
+      final bug = find.byIcon(Icons.bug_report_outlined);
+      final label = find.text('Report a bug');
+      Future<void> settle() => tester.pump(const Duration(milliseconds: 400));
+
+      // 1. Right after +, folded to its icon.
+      expect(bug, findsOneWidget, reason: 'no bug icon in the strip');
+      final plus = tester.getRect(
+        find
+            .byWidgetPredicate(
+              (w) => w is Semantics && w.properties.label == 'New tab',
+            )
+            .first,
+      );
+      final icon = tester.getRect(bug);
+      expect(
+        icon.left >= plus.right - 1 && icon.left - plus.right < 48,
+        isTrue,
+        reason: 'the bug icon at $icon is not right after + at $plus',
+      );
+      expect(label, findsNothing, reason: 'the label showed before a click');
+
+      // 2. One click: the label, and no dialog.
+      await tester.tap(bug);
+      await settle();
+      expect(label, findsOneWidget, reason: 'a click did not show the label');
+      expect(find.byType(TuiDialog), findsNothing, reason: 'a dialog opened');
+
+      // 3. It folds back by itself, and on a click elsewhere.
+      await _until(
+        tester,
+        () => label.evaluate().isEmpty,
+        'the label to fold back by itself',
+        timeout: const Duration(seconds: 8),
+      );
+      await tester.tap(bug);
+      await settle();
+      expect(label, findsOneWidget);
+      final window = tester.view.physicalSize / tester.view.devicePixelRatio;
+      await tester.tapAt(Offset(window.width / 2, window.height - 8));
+      await settle();
+      expect(label, findsNothing, reason: 'a click elsewhere left it out');
+
+      // 4. Out, then on it: the report, with no log to attach in this build.
+      await tester.tap(bug);
+      await settle();
+      await tester.tap(label);
+      await _until(
+        tester,
+        () => find.byType(TuiDialog).evaluate().isNotEmpty,
+        'the report to open',
+      );
+      expect(
+        find.textContaining("can't be attached in this build"),
+        findsOneWidget,
+        reason: 'no word that the log cannot go',
+      );
+      expect(_label('Privately to the developer'), findsNothing);
+      expect(_label('Under my name'), findsOneWidget);
+
+      // 5. Under my name: a GitHub link with what was written, no log.
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(TuiDialog),
+          matching: find.byType(TextField),
+        ),
+        'the e2e bug report',
+      );
+      await settle();
+      await tester.tap(_label('Under my name'));
+      await _until(
+        tester,
+        () =>
+            opened.existsSync() && opened.readAsStringSync().trim().isNotEmpty,
+        'the report link to reach the browser',
+      );
+      final link = Uri.parse(opened.readAsStringSync().trim().split('\n').last);
+      final body = link.queryParameters['body'] ?? '';
+      debugPrint('Report link: $link');
+      expect(link.host, 'github.com');
+      expect(link.path, '/triasbrata/sshbox/issues/new');
+      expect(body, contains('the e2e bug report'));
+      expect(body, contains('Jeansh '), reason: 'no version line');
+      expect(body, isNot(contains(marker)), reason: 'the log is in the link');
+      expect(body, isNot(contains('--- this run ---')));
+      // No DSN in this build, so no event to name.
+      expect(body, isNot(contains('Sentry event')));
       await _closeTabs(tester);
     },
   );

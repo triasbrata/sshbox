@@ -1724,6 +1724,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       hint: _askHint(question.ask),
       onAnswer: _answerAsk,
       onDecline: _declineAsk,
+      onAnswerAtTerminal: _chat.canAnswerAtTerminal(question.ask)
+          ? _answerAtTerminal
+          : null,
     ),
   );
 
@@ -1771,6 +1774,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   bool _declineAsk(ChatAsk ask) => _chat.decline(ask);
+
+  /// Types an answer into the dialog of the session this chat watches. One
+  /// that does not land is said on the card and in a toast, so it is never
+  /// taken for answered.
+  Future<String?> _answerAtTerminal(ChatAsk ask, List<AskPick> picks) async {
+    final why = await _chat.answerAtTerminal(ask, picks);
+    if (why != null && mounted) {
+      showToast(
+        context,
+        why,
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 5),
+      );
+    }
+    return why;
+  }
 
   /// A link tapped in what Claude said. A reply quotes whatever Claude read —
   /// a file, a web page, a tool's output — so it is somebody else's text, and
