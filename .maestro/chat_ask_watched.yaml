@@ -283,5 +283,9 @@ env:
 
 # No hideKeyboard: with none up it presses Back. The strip is reachable either
 # way.
-- tapOn: "(?s)Close .*Claude.*"
-- tapOn: "Close ${HOST_LABEL}.*"
+- tapOn:
+    text: "(?s)Close .*Claude.*"
+    optional: true
+- tapOn:
+    text: "Close ${HOST_LABEL}.*"
+    optional: true
