@@ -4162,7 +4162,10 @@ touch '${done.path}'
       await sudo(['chmod', '755', bin]);
       final remoteName = 'e2e-drop-$pid.txt';
       addTearDown(() async {
-        await sudo(['rm', '-f', bin, '/tmp/$remoteName']);
+        // The upload is named with a clock prefix, so two files of one name
+        // cannot overwrite each other at /tmp.
+        await sudo(['sh', '-c', 'rm -f /tmp/*-$remoteName']);
+        await sudo(['rm', '-f', bin]);
         await sudo(['rm', '-rf', '/home/$user/.claude']);
       });
 
@@ -4219,17 +4222,19 @@ touch '${done.path}'
       await _drag(tester, file.path, dir);
       await _until(
         tester,
-        () => box() == '/tmp/$remoteName ',
+        () => RegExp('^/tmp/\\d+-${RegExp.escape(remoteName)} \$').hasMatch(box()),
         'the uploaded path and a space in the box',
         timeout: const Duration(seconds: 30),
       );
+      // Where it went, named with a clock prefix: that very path is read back.
+      final remotePath = box().trim();
       final mine = transfers.items
           .take(transfers.items.length - before)
           .toList();
       expect(mine, hasLength(1), reason: 'one transfer for the one file');
       expect(mine.single.name, remoteName);
       expect(mine.single.state, TransferState.done);
-      final read = await Process.run('sudo', ['cat', '/tmp/$remoteName']);
+      final read = await Process.run('sudo', ['cat', remotePath]);
       expect(read.stdout, 'uploaded by the e2e');
       debugPrint(
         'STEP 3 PASS: Transfers ran ${mine.single.name} (${mine.single.state}), '
@@ -4251,7 +4256,7 @@ touch '${done.path}'
             .isNotEmpty,
         'the folder refused, saying it cannot be uploaded',
       );
-      expect(box(), '/tmp/$remoteName ', reason: 'the folder added no path');
+      expect(box(), '$remotePath ', reason: 'the folder added no path');
       expect(transfers.items.length, before + 1);
       debugPrint('STEP 4 PASS: "A folder cannot be uploaded" toast');
       await _closeTabs(tester);
