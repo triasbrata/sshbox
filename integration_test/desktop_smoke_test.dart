@@ -2992,6 +2992,7 @@ touch '${done.path}'
       // The key bar, with every key under test.
       final emitted = <String>[];
       final controller = KeyBarController();
+      final barKey = GlobalKey(debugLabel: '#274 key bar');
       final navigator = Navigator.of(
         tester.element(find.byType(TerminalView).first),
         rootNavigator: true,
@@ -3005,6 +3006,7 @@ touch '${done.path}'
               child: Align(
                 alignment: Alignment.bottomCenter,
                 child: TerminalKeyBar(
+                  key: barKey,
                   controller: controller,
                   terminal: Terminal(),
                   onEmit: emitted.add,
@@ -3015,18 +3017,35 @@ touch '${done.path}'
           ),
         ),
       );
-      final bar = find.byType(TerminalKeyBar);
-      await _until(
-        tester,
-        () => bar.evaluate().isNotEmpty,
-        'the key bar to show',
-      );
+      // This test's own bar, by key: any other TerminalKeyBar the app has
+      // up (a terminal's own, under this page) is not the one tapped.
+      final bar = find.byKey(barKey);
+      Finder keyOf(String label) =>
+          find.descendant(of: bar, matching: find.text(label));
+      // Every label of every key bar, said when one never shows.
+      String bars() =>
+          '${find.byType(TerminalKeyBar).evaluate().length} bars, ours '
+          '${bar.evaluate().length}: '
+          '${find.descendant(of: find.byType(TerminalKeyBar), matching: find.byType(Text)).evaluate().map((e) => (e.widget as Text).data ?? (e.widget as Text).textSpan?.toPlainText()).join(' | ')}';
+      // The route has to have finished arriving, and every key been built:
+      // a bar is a ListView, which builds the keys it can see.
+      for (final label in ['ESC', 'CTRL', '-', '/', '|', '~', ':', '*']) {
+        try {
+          await _until(tester, () async {
+            await tester.pump(const Duration(milliseconds: 100));
+            return keyOf(label).evaluate().length == 1;
+          }, 'the key bar to show $label');
+        } catch (_) {
+          debugPrint('Key bars at the failure: ${bars()}');
+          rethrow;
+        }
+      }
       await tester.pump(const Duration(milliseconds: 600));
       for (final key in ['ESC', 'CTRL', '-', '/', '|', '~', ':', '*']) {
-        await tester.tap(find.descendant(of: bar, matching: find.text(key)));
+        await tester.tap(keyOf(key));
         await tester.pump(const Duration(milliseconds: 100));
       }
-      await tester.tap(find.descendant(of: bar, matching: find.text('CTRL')));
+      await tester.tap(keyOf('CTRL'));
       await tester.pump(const Duration(milliseconds: 100));
       navigator.pop();
       await tester.pump(const Duration(seconds: 1));
