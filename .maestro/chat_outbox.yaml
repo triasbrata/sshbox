@@ -21,6 +21,10 @@
 #   same, same_failed,        two identical messages are two; retrying both
 #   same_retry                after the session recorded both sends nothing
 #   disk                      a store that cannot be written fails the message
+#   rc_open, rc_send,         the connection drops under a message: it waits for
+#   rc_wait, rc_back          the connection (still, long after the retry steps
+#                             would have been spent), and is delivered once, with
+#                             no Retry, when the session is reconnected
 #
 # Matched without regard to case: the field capitalises a sentence.
 appId: cloud.brata.terminal
@@ -556,5 +560,104 @@ env:
       - tapOn: "Remove"
       # No hideKeyboard: with none up it presses Back. The strip is reachable
       # either way.
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- 7 and 8. The connection drops under a waiting message (rc_*): the
+# runner stops the host's sshd and ends its connections between these.
+
+# The app is on the chat of the live session, connected.
+- runFlow:
+    when:
+      true: ${STEP == 'rc_open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 20000
+
+# The connection is down. A message is sent: it says it waits for the
+# connection, and is neither failed nor given a Retry.
+- runFlow:
+    when:
+      true: ${STEP == 'rc_send'}
+    commands:
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "outbox reconnect"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Waiting for the connection.*"
+          timeout: 30000
+      - assertVisible: "(?s).*outbox reconnect.*"
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Not typed.*"
+      - assertNotVisible: "(?s).*Not delivered.*"
+      - assertNotVisible: "Retry"
+      - assertNotVisible: "(?i)Echo: outbox reconnect"
+      - takeScreenshot: chat-outbox-waiting-for-connection
+
+# Long after every retry step would have been spent: still waiting.
+- runFlow:
+    when:
+      true: ${STEP == 'rc_wait'}
+    commands:
+      - assertVisible: "(?s).*Waiting for the connection.*"
+      - assertVisible: "(?s).*outbox reconnect.*"
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Not typed.*"
+      - assertNotVisible: "(?s).*Not delivered.*"
+      - assertNotVisible: "Retry"
+      - takeScreenshot: chat-outbox-still-waiting
+
+# The host is back. The session's tab is reconnected, as a user does, and the
+# chat picks the session up again: the message goes by itself, with no Retry.
+- runFlow:
+    when:
+      true: ${STEP == 'rc_back'}
+    commands:
+      - tapOn: "Reconnect"
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          notVisible: "Reconnect"
+          timeout: 60000
+      # The chat's own tab, if the reconnect took the view elsewhere.
+      - tapOn:
+          text: "(?s)^(?!Close).*Claude.*"
+          optional: true
+      - extendedWaitUntil:
+          visible: "(?i)Echo: outbox reconnect"
+          timeout: 120000
+      - assertNotVisible: "(?s).*Waiting for the connection.*"
+      - assertNotVisible: "(?s).*Not sent.*"
+      - assertNotVisible: "(?s).*Not typed.*"
+      - assertNotVisible: "Retry"
+      - takeScreenshot: chat-outbox-delivered-after-reconnect
       - tapOn: "(?s)Close .*Claude.*"
       - tapOn: "Close ${HOST_LABEL}.*"

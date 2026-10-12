@@ -1630,6 +1630,103 @@ ob_step6() {
   echo "::endgroup::"
 }
 
+# The connection to the host cut, as a network blip does: the listener stopped
+# so nothing can reconnect, and the connections it had made killed, which the
+# app sees as the session ending. Only sshd's own processes of the test user;
+# the stand-in's tmux server is not among them.
+ob_drop_ssh() {
+  sudo systemctl stop ssh
+  sudo pkill -f "sshd: $SSH_USER" || true
+  echo "sshd stopped; connections of $SSH_USER left: $(pgrep -fc "sshd: $SSH_USER" || true)"
+}
+# The host back, answering.
+ob_restore_ssh() {
+  sudo systemctl start ssh
+  local i
+  for i in $(seq 20); do
+    (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null && return 0
+    sleep 1
+  done
+  ob_fail "sshd did not come back"
+}
+
+# How many entries of the outbox are marked as waiting for something that may
+# pass: failed, and transient. A message waiting for the connection is one.
+ob_waiting() { ob_device | grep -c '"transient":true'; }
+
+# 7. Positive: a message sent while the connection is down is kept, says it
+# waits for the connection, and is delivered once, with no Retry, when the
+# connection is back.
+ob_step7() {
+  echo "::group::chat_outbox 7: the connection drops, the message waits, delivered once on reconnect"
+  ob_reset
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_open || ob_fail "7: the rc_open flow failed"
+  ob_drop_ssh
+  # The app has seen the session end by now.
+  sleep 12
+  flow chat_outbox -e STEP=rc_send || ob_fail "7: the rc_send flow failed"
+  sleep 10
+  ob_expect "7: nothing typed while the connection was down" "$(ob_sent 'outbox reconnect')" 0
+  ob_expect "7: the transcript holds none" "$(ob_turns 'outbox reconnect')" 0
+  ob_expect "7: kept on the device, waiting" "$(ob_kept 'outbox reconnect')" 1
+  ob_expect "7: marked as waiting for something that may pass" "$(ob_waiting)" 1
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_back || ob_fail "7: the rc_back flow failed"
+  # A second send, if one were coming, would have been typed by now.
+  sleep 10
+  ob_expect "7: the transcript holds it exactly once" "$(ob_turns 'outbox reconnect')" 1
+  ob_expect "7: the pane read it exactly once" "$(ob_sent 'outbox reconnect')" 1
+  ob_expect "7: delivered, so the device keeps nothing" "$(ob_kept 'outbox reconnect')" 0
+  echo "::endgroup::"
+}
+
+# 8. Negative: a connection down for longer than every retry step together
+# (2 + 5 + 15 + 45 + 120 = 187 s) leaves the message waiting, not failed: the
+# wait for the connection uses none of the steps. Then it goes, once.
+ob_step8() {
+  echo "::group::chat_outbox 8: down for longer than the retry steps, still waiting, then delivered once"
+  ob_reset
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_open || ob_fail "8: the rc_open flow failed"
+  ob_drop_ssh
+  sleep 12
+  flow chat_outbox -e STEP=rc_send || ob_fail "8: the rc_send flow failed"
+  sleep 205
+  flow chat_outbox -e STEP=rc_wait || ob_fail "8: the rc_wait flow failed"
+  ob_expect "8: still nothing typed" "$(ob_sent 'outbox reconnect')" 0
+  ob_expect "8: still kept on the device" "$(ob_kept 'outbox reconnect')" 1
+  ob_expect "8: still waiting, not given up on" "$(ob_waiting)" 1
+  ob_expect "8: not failed for good" "$(ob_device | grep -c '"transient":true')" 1
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_back || ob_fail "8: the rc_back flow failed"
+  sleep 10
+  ob_expect "8: the transcript holds it exactly once" "$(ob_turns 'outbox reconnect')" 1
+  ob_expect "8: the pane read it exactly once" "$(ob_sent 'outbox reconnect')" 1
+  ob_expect "8: delivered, so the device keeps nothing" "$(ob_kept 'outbox reconnect')" 0
+  echo "::endgroup::"
+}
+
+# The two steps above alone, which is minutes rather than the whole outbox
+# block: the connection dropping under a waiting message.
+chat_outbox_reconnect() {
+  OB_STATUS=0
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo rm -f "$OB_PANE_LOG" "$OB_RELEASE"
+  ob_host touch "$OB_STAMPED"
+  ob_step7
+  ob_step8
+  ob_restore_ssh
+  keep_shots 'chat-outbox-*.png'
+  adb shell am force-stop "$OB_PKG" >/dev/null 2>&1
+  sudo rm -f "$OB_STAMPED" "$OB_RELEASE" "$OB_PANE_LOG"
+  end_live_session
+  stand_in ''
+  return "$OB_STATUS"
+}
+
 chat_outbox() {
   OB_STATUS=0
   chat_stand_in
@@ -1790,6 +1887,7 @@ echo "::endgroup::"
 
 # Its steps are groups of their own, in the job log.
 chat_outbox || echo "::warning::chat_outbox failed -- report only, not gating"
+chat_outbox_reconnect || echo "::warning::chat_outbox_reconnect failed -- report only, not gating"
 
 echo "::group::chat_edit_previous (report only)"
 chat_edit_previous || echo "::warning::chat_edit_previous failed -- report only, not gating"
