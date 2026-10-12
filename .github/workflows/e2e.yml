@@ -507,6 +507,7 @@ jobs:
       # sees; a runner's is unlocked already, and this says so rather than
       # trusting it. Harmless where it is.
       - name: Unlock the login keychain
+        if: ${{ !cancelled() }}
         run: |
           security unlock-keychain -p "" "$HOME/Library/Keychains/login.keychain-db" || true
           security set-keychain-settings "$HOME/Library/Keychains/login.keychain-db" || true
@@ -516,6 +517,7 @@ jobs:
       # for password authentication, with a throwaway user made here and gone
       # with the runner. Remote Login stays off.
       - name: Start an sshd for the keychain test
+        if: ${{ !cancelled() }}
         run: |
           password="$(openssl rand -hex 16)"
           echo "::add-mask::$password"
