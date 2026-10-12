@@ -763,7 +763,7 @@ class LiveSession extends ChangeNotifier {
             write(secret);
           } catch (error) {
             appLog.warn('connect: session $id jeansh secret not written');
-            onOpenProblem?.call(
+            _sayOpenProblem(
               error is OpenInstallException
                   ? error.message
                   : 'Could not set up the jeansh command here: $error',
@@ -890,6 +890,7 @@ class LiveSession extends ChangeNotifier {
         _connecting = false;
         _notify();
       }
+      _flushOpenProblems();
     }
   }
 
@@ -1248,6 +1249,30 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
+  /// What went wrong with the install while the connect was still under way.
+  /// A toast shown then lands under the connect sheet and is gone before it
+  /// closes, so it is held and said when the connect ends, whether it
+  /// worked or not.
+  final _heldOpenProblems = <String>[];
+
+  void _sayOpenProblem(String message) {
+    if (_connecting) {
+      _heldOpenProblems.add(message);
+    } else {
+      onOpenProblem?.call(message);
+    }
+  }
+
+  void _flushOpenProblems() {
+    if (_heldOpenProblems.isEmpty) return;
+    final held = List<String>.of(_heldOpenProblems);
+    _heldOpenProblems.clear();
+    if (_disposed) return;
+    for (final message in held) {
+      onOpenProblem?.call(message);
+    }
+  }
+
   /// How long the host has to answer the install.
   @visibleForTesting
   static Duration openInstallTimeout = const Duration(seconds: 10);
@@ -1332,7 +1357,7 @@ class LiveSession extends ChangeNotifier {
             'may not be there.',
       _ => 'Setting up $what on this host failed, so it is not there.',
     };
-    if (message != null) onOpenProblem?.call(message);
+    if (message != null) _sayOpenProblem(message);
   }
 
   /// How far the host's clock is from ours, from its own `date +%s` over the
