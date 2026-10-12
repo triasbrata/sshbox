@@ -229,6 +229,18 @@ class _Dartssh2Session
 
   final _output = StreamController<String>.broadcast();
   final _status = ValueNotifier(SessionStatus.connecting);
+
+  /// True while `beforeShell` runs, after the login and before the shell:
+  /// what it asks of the host over this connection — the install of
+  /// `jeansh` and the push key — is run on it then, though the session is not
+  /// connected yet.
+  bool _preparing = false;
+
+  /// Whether a command may be run on the connection now: it is up, or it is
+  /// being prepared for its shell.
+  @visibleForTesting
+  bool get canExec =>
+      _client != null && (_status.value == SessionStatus.connected || _preparing);
   final _subscriptions = <StreamSubscription<Object?>>[];
 
   SSHClient? _client;
@@ -313,7 +325,12 @@ class _Dartssh2Session
       // What opening a shell would otherwise wait out, and fail on.
       await client.authenticated;
       if (beforeShell != null) {
-        _environment = {..._environment, ...await beforeShell(this)};
+        _preparing = true;
+        try {
+          _environment = {..._environment, ...await beforeShell(this)};
+        } finally {
+          _preparing = false;
+        }
       }
 
       if (!shell) {
@@ -568,7 +585,7 @@ class _Dartssh2Session
   @override
   Future<CommandChannel> open(String command) async {
     final client = _client;
-    if (client == null || _status.value != SessionStatus.connected) {
+    if (client == null || !canExec) {
       throw const SshSessionException('Not connected.');
     }
     final session = await _withEnvironment(
@@ -590,7 +607,7 @@ class _Dartssh2Session
     int rows = 40,
   }) async {
     final client = _client;
-    if (client == null || _status.value != SessionStatus.connected) {
+    if (client == null || !canExec) {
       throw const SshSessionException('Not connected.');
     }
     final session = await _withEnvironment(
