@@ -475,6 +475,11 @@ void main() {
     await tester.pump();
     expect(tmux.focused?.id, 2);
     expect(fake.commands, contains('select-pane -t %2'));
+    // The tap also checks the pane's mouse modes against tmux's.
+    expect(
+      fake.commands.where((c) => c.startsWith('display -p -t %2 "#{mouse_standard_flag}')),
+      hasLength(1),
+    );
 
     // A bigger font from Settings: every pane re-measured in the new cells,
     // and tmux told how many of them fit now.

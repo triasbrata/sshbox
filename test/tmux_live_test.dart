@@ -12,6 +12,7 @@ import 'package:sshbox/src/session/pane_record.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:xterm2/xterm.dart';
 
 /// Where tmux may live: Homebrew on Apple silicon puts it in /opt/homebrew/bin,
@@ -355,6 +356,156 @@ void main() {
       skip: hasTmux ? false : 'tmux is not installed here',
     );
   }
+
+  // A tap on a pane asks tmux again what mouse modes it holds, and puts the
+  // local terminal right if it differs: the wheel that stopped reaching
+  // Claude Code, or a mode that stuck after the program let go of it.
+  Future<(Process, TmuxSession, TmuxPane, File)> reattached(
+    String name, {
+    required bool mouse,
+  }) async {
+    final (_, log) = await standIn(name, mouse: mouse);
+    final (process, channel) = await _start(name, dir);
+    final tmux = _session(name, channel);
+    expect(await tmux.attached, isTrue);
+    await _until(
+      () => tmux.panes.length == 1 && _text(tmux.panes.single).isNotEmpty,
+    );
+    await _until(() => tmux.panes.single.terminal.isUsingAltBuffer);
+    return (process, tmux, tmux.panes.single, log);
+  }
+
+  String logSince(int mark) =>
+      appLog.current.split('\n').skip(mark).join('\n');
+
+  test('a tap puts a lost mouse mode back, so the wheel reaches the '
+      'program again, and says so in the log', () async {
+    const name = 'sshbox-resync-lost';
+    final (process, tmux, pane, log) = await reattached(name, mouse: true);
+    final mark = appLog.length;
+
+    // The local terminal lost it: output dropped around a reconnect.
+    pane.terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l');
+    expect(pane.terminal.mouseMode, MouseMode.none);
+
+    await tmux.resyncModes(pane);
+
+    expect(pane.terminal.mouseMode, MouseMode.upDownScrollDrag);
+    expect(pane.terminal.mouseReportMode, MouseReportMode.sgr);
+    expect(
+      pane.terminal.mouseInput(
+        TerminalMouseButton.wheelUp,
+        TerminalMouseButtonState.down,
+        CellOffset(3, 4),
+      ),
+      isTrue,
+    );
+    await _until(
+      () => log.existsSync() && log.readAsStringSync().isNotEmpty,
+      () => 'nothing logged',
+    );
+    expect(log.readAsStringSync(), '\x1b[<64;4;5M');
+    // Said, by pane and mode names, with both sides.
+    final said = logSince(mark);
+    expect(said, contains('tmux: pane %${pane.id} modes differed (tap)'));
+    expect(said, contains('tmux upDownScrollDrag/sgr alt, here none/normal alt'));
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
+
+  test('a tap takes away a mouse mode tmux no longer holds, so the wheel '
+      'scrolls again, and nothing is sent to the program', () async {
+    const name = 'sshbox-resync-stuck';
+    final (process, tmux, pane, log) = await reattached(name, mouse: false);
+    final mark = appLog.length;
+
+    // Stuck on here: the program let go of it while we did not hear.
+    pane.terminal.write('\x1b[?1002h\x1b[?1006h');
+    expect(pane.terminal.mouseMode, MouseMode.upDownScrollDrag);
+
+    await tmux.resyncModes(pane);
+
+    expect(pane.terminal.mouseMode, MouseMode.none);
+    expect(pane.terminal.mouseReportMode, MouseReportMode.normal);
+    expect(
+      pane.terminal.mouseInput(
+        TerminalMouseButton.wheelUp,
+        TerminalMouseButtonState.down,
+        CellOffset(3, 4),
+      ),
+      isFalse,
+    );
+    // The replay is into the local terminal alone: the program read nothing.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(log.existsSync() ? log.readAsStringSync() : '', isEmpty);
+    expect(logSince(mark), contains('modes differed (tap), put right'));
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
+
+  test('a tap that finds the modes right changes nothing and is logged once '
+      'in a while, and taps in a run ask tmux once', () async {
+    const name = 'sshbox-resync-agree';
+    final (process, tmux, pane, _) = await reattached(name, mouse: true);
+    final mark = appLog.length;
+
+    await tmux.resyncModes(pane);
+    // A run of taps: the second is not asked at all.
+    await tmux.resyncModes(pane);
+    await Future<void>.delayed(
+      TmuxSession.resyncEvery + const Duration(milliseconds: 50),
+    );
+    // Asked again, found right again, but said already.
+    await tmux.resyncModes(pane);
+
+    expect(pane.terminal.mouseMode, MouseMode.upDownScrollDrag);
+    final said = logSince(mark)
+        .split('\n')
+        .where((line) => line.contains('modes agree (tap)'))
+        .toList();
+    expect(said, hasLength(1));
+    expect(said.single, contains('tmux upDownScrollDrag/sgr alt'));
+    expect(logSince(mark), isNot(contains('differed')));
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
+
+  test('a mode the pane changes while tmux is being asked is newer than the '
+      'answer and is left alone', () async {
+    const name = 'sshbox-resync-race';
+    final (process, tmux, pane, _) = await reattached(name, mouse: true);
+    final mark = appLog.length;
+
+    final check = tmux.resyncModes(pane);
+    // The program turns the mouse off on its own, as the reply is on its way.
+    pane.terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l');
+    await check;
+
+    expect(pane.terminal.mouseMode, MouseMode.none, reason: 'not overwritten');
+    expect(logSince(mark), contains('modes changed while checked'));
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
+
+  test('the fill of a pane says what it gave the terminal', () async {
+    const name = 'sshbox-resync-fill';
+    final mark = appLog.length;
+    final (process, tmux, pane, _) = await reattached(name, mouse: true);
+    expect(
+      logSince(mark),
+      contains(
+        'tmux: pane %${pane.id} filled: upDownScrollDrag/sgr alt, now here '
+        'upDownScrollDrag/sgr',
+      ),
+    );
+    await tmux.kill();
+    await process.exitCode.timeout(const Duration(seconds: 5));
+    tmux.dispose();
+  }, skip: hasTmux ? false : 'tmux is not installed here');
 
   test("the device's variables reach new panes, whoever started the server", () async {
     // A tmux server already running, started without them.

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:xterm2/xterm.dart';
 
+import '../telemetry/app_log.dart';
 import 'clipboard_terminal.dart';
 import 'pane_record.dart';
 import 'terminal_session.dart';
@@ -1152,6 +1153,116 @@ class TmuxSession {
     return '\x1b[?${tracking}h$encoding';
   }
 
+  /// The mouse tracking tmux holds for a pane, as the terminal names it:
+  /// the widest of standard, button and all, as [_mouseModes] takes it.
+  static MouseMode _trackingOf(List<String> f) => f[2] == '1'
+      ? MouseMode.upDownScrollMove
+      : f[1] == '1'
+      ? MouseMode.upDownScrollDrag
+      : f[0] == '1'
+      ? MouseMode.upDownScroll
+      : MouseMode.none;
+
+  static MouseReportMode _encodingOf(List<String> f) => f[3] == '1'
+      ? MouseReportMode.sgr
+      : f[4] == '1'
+      ? MouseReportMode.utf
+      : MouseReportMode.normal;
+
+  /// When each pane's modes were last checked, and last said to agree, so a
+  /// run of taps asks once and the log is not a line a tap.
+  final _resyncAsked = <int, DateTime>{};
+  final _resyncAgreed = <int, DateTime>{};
+
+  /// Asks tmux what mouse modes it holds for [pane] and puts the local
+  /// terminal right if it differs, for a tap on the pane to call.
+  ///
+  /// Output the pane writes while we are attached carries every mode change,
+  /// so the local terminal normally knows. It can still come to disagree —
+  /// output dropped around a reconnect, a mode set while the capture was
+  /// being asked for — and then the wheel and drags go to the program as
+  /// mouse events when it wants none, or scroll the scrollback when it wants
+  /// them: a Claude Code that cannot be scrolled. Only the mouse modes are
+  /// put right, by a replay into the local terminal alone, never sent on.
+  ///
+  /// Every check is in the app log, by pane number and mode names, never by
+  /// content: that the pane was checked and what both sides said, so a bug
+  /// that comes back can be told from one that was never reached. A check
+  /// that finds nothing wrong is logged once in a while, not at every tap.
+  Future<void> resyncModes(TmuxPane pane, {String why = 'tap'}) async {
+    final now = DateTime.now();
+    final last = _resyncAsked[pane.id];
+    if (last != null && now.difference(last) < resyncEvery) return;
+    _resyncAsked[pane.id] = now;
+    if (pane._held != null || _panes[pane.id] != pane) return;
+    final terminal = pane.terminal;
+    final beforeMode = terminal.mouseMode;
+    final beforeReport = terminal.mouseReportMode;
+    final List<String> f;
+    try {
+      final reply = await _client.command(
+        'display -p -t %${pane.id} "#{mouse_standard_flag}\t'
+        '#{mouse_button_flag}\t#{mouse_all_flag}\t#{mouse_sgr_flag}\t'
+        '#{mouse_utf8_flag}\t#{alternate_on}"',
+      );
+      f = (reply.firstOrNull ?? '').split('\t');
+    } on TmuxException {
+      appLog.add('tmux: pane %${pane.id} modes not checked ($why): tmux gone');
+      return;
+    }
+    if (f.length < 6 || _panes[pane.id] != pane) {
+      appLog.add('tmux: pane %${pane.id} modes not checked ($why): no answer');
+      return;
+    }
+    final want = _trackingOf(f);
+    final wantReport = _encodingOf(f);
+    final said =
+        'tmux ${want.name}/${wantReport.name}${f[5] == '1' ? ' alt' : ''}, '
+        'here ${terminal.mouseMode.name}/${terminal.mouseReportMode.name}'
+        '${terminal.isUsingAltBuffer ? ' alt' : ''}';
+    // What the pane wrote while this was being asked is newer than the
+    // answer: it is left alone.
+    if (terminal.mouseMode != beforeMode ||
+        terminal.mouseReportMode != beforeReport) {
+      appLog.add('tmux: pane %${pane.id} modes changed while checked ($why), '
+          'left as they are: $said');
+      return;
+    }
+    if (terminal.mouseMode == want && terminal.mouseReportMode == wantReport) {
+      final logged = _resyncAgreed[pane.id];
+      if (logged == null || now.difference(logged) > agreeLogEvery) {
+        _resyncAgreed[pane.id] = now;
+        appLog.add('tmux: pane %${pane.id} modes agree ($why): $said');
+      }
+      return;
+    }
+    // Off first, then what tmux holds: the replay of a capture only ever
+    // sets, which cannot take a stuck mode away.
+    final tracking = switch (want) {
+      MouseMode.upDownScrollMove => '\x1b[?1003h',
+      MouseMode.upDownScrollDrag => '\x1b[?1002h',
+      MouseMode.upDownScroll => '\x1b[?1000h',
+      _ => '',
+    };
+    final encoding = switch (wantReport) {
+      MouseReportMode.sgr => '\x1b[?1006h',
+      MouseReportMode.utf => '\x1b[?1005h',
+      _ => '',
+    };
+    pane._write(
+      '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l'
+      '$tracking$encoding',
+    );
+    appLog.add('tmux: pane %${pane.id} modes differed ($why), put right: '
+        '$said; now ${terminal.mouseMode.name}/${terminal.mouseReportMode.name}');
+  }
+
+  /// A pane's modes are asked for at most this often, by taps.
+  static const resyncEvery = Duration(milliseconds: 400);
+
+  /// A check that found the modes right is logged at most this often.
+  static const agreeLogEvery = Duration(seconds: 20);
+
   /// Draws what the pane already holds, for a pane that existed before we
   /// saw it: after attaching, or one split off since.
   ///
@@ -1200,6 +1311,13 @@ class TmuxSession {
         '${_mouseModes(flags.sublist(5))}',
       );
       drawnUpTo = captured;
+      // The replay is the fix for a pane that comes back unable to scroll its
+      // program; said, with what it was given, so a log shows it ran.
+      appLog.add('tmux: pane %${pane.id} filled: '
+          '${_trackingOf(flags.sublist(5)).name}/'
+          '${_encodingOf(flags.sublist(5)).name}'
+          '${flags[2] == '1' ? ' alt' : ''}, now here '
+          '${pane.terminal.mouseMode.name}/${pane.terminal.mouseReportMode.name}');
     } on TmuxException {
       // The pane closed between asking and answering.
     } finally {
