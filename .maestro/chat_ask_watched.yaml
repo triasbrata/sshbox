@@ -24,6 +24,7 @@ appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
 ---
+- pressKey: Home
 - stopApp
 - launchApp:
     clearState: false
@@ -60,9 +61,12 @@ env:
           timeout: 30000
       - assertNotVisible: "AskUserQuestion"
       - tapOn: "(?s)Banana.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Banana
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       # The answer is the card's only content once it is in: no options left.
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
@@ -83,12 +87,15 @@ env:
           visible: "Which colours\\?"
           timeout: 30000
       - tapOn: "(?s)Red.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Red
       - tapOn: "Other…"
       - inputText: "my own"
       - hideKeyboard
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "(?s).*Jeansh cannot type this answer.*"
           timeout: 30000
@@ -99,9 +106,12 @@ env:
       - eraseText: 20
       - hideKeyboard
       - tapOn: "(?s)Blue.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Blue
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
           timeout: 60000
@@ -119,12 +129,17 @@ env:
           visible: "Which size\\?"
           timeout: 30000
       - tapOn: "(?s)Large.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Large
       - scrollUntilVisible:
           element: "(?s)Circle.*"
       - tapOn: "(?s)Circle.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Circle
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
           timeout: 60000
@@ -148,6 +163,7 @@ env:
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
           timeout: 60000
@@ -166,9 +182,12 @@ env:
           visible: "Which day\\?"
           timeout: 30000
       - tapOn: "(?s)Friday.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Friday
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "(?s).*is not waiting for an answer but for permission prompt.*"
           timeout: 30000
@@ -189,9 +208,12 @@ env:
           visible: "Which drink\\?"
           timeout: 30000
       - tapOn: "(?s)Coffee.*"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Coffee
       - scrollUntilVisible:
           element: "Send answers"
       - tapOn: "Send answers"
+      - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
           timeout: 60000

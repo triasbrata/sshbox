@@ -1287,6 +1287,10 @@ SH
   for kind in single multi two other perm pane; do
     echo "-- chat_ask_watched: $kind"
     sudo truncate -s 0 "$log" 2>/dev/null
+    # Whatever a failed run left on top (a system picker) is sent away first,
+    # so one failure cannot take the runs after it down.
+    adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1
+    adb shell input keyevent KEYCODE_HOME >/dev/null 2>&1
     flow chat_ask_watched -e "KIND=$kind" -e "SESSION=E2E ask $kind" ||
       { echo "::error::chat_ask_watched failed at its '$kind' run"; status=1; }
     echo "the stand-in's log for $kind:"
