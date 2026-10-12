@@ -8331,6 +8331,55 @@ void main() {
       expect(entry.transient, isFalse, reason: 'left for the user\'s Retry');
     });
 
+    test('a message the session records only after the first look is not '
+        'typed again: it is looked for a second time once things settled',
+        () async {
+      ClaudeChat.settleDelay = const Duration(milliseconds: 300);
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no draft\n';
+      final chat = make(host);
+      await chat.continueFrom(_interactive);
+      chat.send('typed before the drop');
+      await wait();
+      host.paneTyping.clear();
+      host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+
+      // The first look finds nothing; the session records the turn a moment
+      // later, as it does after a connection comes back.
+      expect(chat.retry(chat.entries.whereType<ChatSaid>().single), isNull);
+      Timer(const Duration(milliseconds: 120), () {
+        host.history = transcript([('late-1', 'typed before the drop')]);
+      });
+      await wait(900);
+
+      expect(host.paneTyping, isEmpty, reason: 'never typed twice');
+      final box = await onDisk();
+      expect(box.entries, isEmpty);
+      expect(box.consumed, ['late-1']);
+      expect(
+        chat.entries.whereType<ChatSaid>().map((s) => s.delivery),
+        [null],
+      );
+    });
+
+    test('a message still not recorded after the second look is sent, once',
+        () async {
+      ClaudeChat.settleDelay = const Duration(milliseconds: 100);
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no draft\n';
+      final chat = make(host);
+      await chat.continueFrom(_interactive);
+      chat.send('really not there');
+      await wait();
+      host.paneTyping.clear();
+      host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+
+      chat.retry(chat.entries.whereType<ChatSaid>().single);
+      await wait(700);
+
+      expect(host.paneTyping, hasLength(1));
+    });
+
     test('without an outbox nothing is kept and a message goes as before',
         () async {
       final host = _LiveHost('0\n', interactive: true);
