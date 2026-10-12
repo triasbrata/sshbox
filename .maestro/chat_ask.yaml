@@ -60,14 +60,13 @@ env:
 - scrollUntilVisible:
     element: "(?s)Blue.*"
 - tapOn: "(?s)Blue.*"
-- extendedWaitUntil:
-    visible: "(?s).*Send answers.*"
-    timeout: 20000
-- tapOn: "(?s).*Send answers.*"
+# Send answers has no node by text for Maestro (see Dismiss below): pressed
+# where the card draws it.
+- tapOn:
+    point: "20%,39%"
 - extendedWaitUntil:
     visible: "You chose Blue"
     timeout: 30000
-- assertNotVisible: "(?s).*Send answers.*"
 - takeScreenshot: chat-ask-answered
 
 # Another question, dismissed: the card says so, and Claude is told.
@@ -77,9 +76,14 @@ env:
 - extendedWaitUntil:
     visible: "Which size\\?"
     timeout: 30000
-- scrollUntilVisible:
-    element: "(?s).*Dismiss.*"
-- tapOn: "(?s).*Dismiss.*"
+# Its buttons are not in the accessibility tree Maestro reads (a visible card,
+# no node by text), so Dismiss is pressed where the card draws it: the same
+# place as Send answers, above the box, the card being bottom-aligned.
+- extendedWaitUntil:
+    visible: "(?s)Small.*"
+    timeout: 10000
+- tapOn:
+    point: "56%,39%"
 - extendedWaitUntil:
     visible: "You dismissed the question"
     timeout: 30000

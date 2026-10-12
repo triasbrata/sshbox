@@ -1411,11 +1411,7 @@ chat_ask() {
   chat_stand_in
   sudo -u "$SSH_USER" -H tee "$home/.e2e-ask.py" >/dev/null < tools/e2e_ask_claude.py
   sudo rm -f "$replies"
-  flow chat_ask || { status=1
-    echo "::group::ui dump"
-    adb shell uiautomator dump /sdcard/h.xml 2>&1 | head -3
-    adb shell cat /sdcard/h.xml | sed 's/<node/\n<node/g' | cut -c1-260 | head -80
-    echo "::endgroup::"; }
+  flow chat_ask || status=1
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-ask-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   if [ "$status" -eq 0 ]; then
