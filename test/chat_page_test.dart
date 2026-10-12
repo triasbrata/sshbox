@@ -18,6 +18,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownB
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
+import 'package:sshbox/src/chat/outbox.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
@@ -5498,6 +5499,60 @@ void main() {
       await tester.pump();
       return shell;
     }
+
+    // What an earlier run left in the outbox for the session picked below.
+    Future<void> leftBehind(
+      WidgetTester tester,
+      String text, {
+      bool failed = false,
+    }) async {
+      await OutboxStore.shared.save(
+        OutboxStore.keyOf(
+          _host.id,
+          'cf58d27a-0000-4000-8000-000000000000',
+        ),
+        OutboxBox(
+          entries: [
+            OutboxEntry(
+              id: 'left-1',
+              text: text,
+              createdAt: DateTime.now().toUtc(),
+              failed: failed,
+              why: failed ? 'Not delivered: the connection dropped.' : null,
+            ),
+          ],
+        ),
+      );
+    }
+
+    testWidgets('a message an earlier run left failed is drawn failed with '
+        'Retry and Remove, and is not sent by itself', (tester) async {
+      await leftBehind(tester, 'left over', failed: true);
+      final shell = await continued(tester);
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('left over'), findsOneWidget);
+      expect(find.textContaining('the connection dropped'), findsWidgets);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+      expect(shell.written, isEmpty);
+    });
+
+    testWidgets('a message an earlier run left waiting is drawn as queued '
+        'and sent by itself once the session is picked', (tester) async {
+      await leftBehind(tester, 'left waiting');
+      final shell = await continued(tester);
+      // The host is asked first, then the message goes: real I/O.
+      for (var turn = 0; turn < 8; turn++) {
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+
+      expect(find.text('left waiting'), findsOneWidget);
+      expect(shell.written, hasLength(1));
+      expect(shell.written.single, contains('left waiting'));
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+    });
 
     testWidgets('Ctrl+V with the box unfocused and a picture on the '
         'clipboard focuses the box and makes the card', (tester) async {

@@ -363,8 +363,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _scroll.addListener(_onScrolled);
     _looking = Timer.periodic(_look, (_) => _onLook());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    // What the outbox sends again by itself puts its pictures on the host
+    // the way a message sent from the box does.
+    _chat.defaultUpload = widget.session.canUploadFiles ? _upload : null;
     _onChanged();
     unawaited(_loadFolder());
+    // A new chat shows what an earlier run left unsent for it; a picked
+    // session does the same once it is followed.
+    unawaited(_chat.restoreOutbox());
   }
 
   /// The folder a new chat starts in is remembered for each host.

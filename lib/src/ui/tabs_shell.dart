@@ -1109,11 +1109,19 @@ class _TabStripState extends State<TabStrip> {
         expand: single,
         onTap: select,
         onClose: () => widget.onClose(tab),
-        onReconnect: tab.kind == TabKind.terminal && tab.session.ended
+        // A chat tab too: its messages wait for the connection, and with only
+        // the chat showing there would be no way to bring it back.
+        onReconnect:
+            (tab.kind == TabKind.terminal || tab.kind == TabKind.chat) &&
+                tab.session.ended
             ? () => widget.onReconnect(tab.session)
             : null,
         menu: menus[id] = [
           if (tab.kind == TabKind.terminal) ..._menuFor(tab),
+          // The chat's close button has become Reconnect: closing it is
+          // offered here instead, as for a shell.
+          if (tab.kind == TabKind.chat && tab.session.ended)
+            ('Close tab', () => widget.onClose(tab)),
           ...grouping(id),
         ],
       );
