@@ -591,6 +591,21 @@ void openSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
   navigator.push(route);
 }
 
+/// The shortcut and the Mac's menu item: Settings opened, or, when it is
+/// showing, closed again, back to the page it was opened from — however
+/// deep in Settings the user is, and with a dialog over it too.
+void toggleSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
+  final route = _openSettings[navigator];
+  if (route == null || !route.isActive) {
+    openSettings(navigator, notifyKeys: notifyKeys);
+    return;
+  }
+  // Everything pushed above Settings goes with it; the page under it was
+  // never rebuilt away, so it comes back as it was.
+  navigator.popUntil((r) => r == route);
+  navigator.pop();
+}
+
 /// A key a hardware keyboard holds down to make a click on the terminal open
 /// the link under it: see [LinkModifierSetting].
 enum LinkModifier {
@@ -1212,7 +1227,8 @@ class _TerminalSectionState extends State<_TerminalSection> {
               ValueListenableBuilder(
                 valueListenable: copyOnSelect,
                 builder: (context, on, _) => TuiSwitch(
-                  label: 'Copy on select', logName: 'Copy on select',
+                  label: 'Copy on select',
+                  logName: 'Copy on select',
                   value: on,
                   onChanged: copyOnSelect.choose,
                 ),
@@ -1226,7 +1242,8 @@ class _TerminalSectionState extends State<_TerminalSection> {
                 ValueListenableBuilder(
                   valueListenable: localOpenCommand,
                   builder: (context, on, _) => TuiSwitch(
-                    label: 'Add the jeansh command to this computer', logName: 'Add the jeansh command to this computer',
+                    label: 'Add the jeansh command to this computer',
+                    logName: 'Add the jeansh command to this computer',
                     value: on,
                     onChanged: (value) async {
                       final ok = await localOpenCommand.choose(value);
@@ -1304,13 +1321,15 @@ class _InstalledFontPickerState extends State<_InstalledFontPicker> {
       maxWidth: 520,
       actions: [
         TuiButton(
-          label: 'Cancel', logName: 'Cancel',
+          label: 'Cancel',
+          logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),
         if (fonts == null)
           TuiButton(
-            label: 'Use', logName: 'Use',
+            label: 'Use',
+            logName: 'Use',
             onPressed: typed.isEmpty ? null : () => pick(typed),
           ),
       ],
@@ -1525,13 +1544,15 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                   runSpacing: 8,
                   children: [
                     TuiButton(
-                      label: 'Divider', logName: 'Divider',
+                      label: 'Divider',
+                      logName: 'Divider',
                       prefix: '│',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => pick(keyBarDivider),
                     ),
                     TuiButton(
-                      label: 'Custom key…', logName: 'Custom key…',
+                      label: 'Custom key…',
+                      logName: 'Custom key…',
                       prefix: '+',
                       onPressed: () => pick(customKeyPrefix),
                     ),
@@ -1618,7 +1639,12 @@ class _KeyBarSettingsPageState extends State<KeyBarSettingsPage> {
                         ),
                       ),
                     ),
-                    TuiButton(label: 'Add key', logName: 'Add key', prefix: '+', onPressed: _add),
+                    TuiButton(
+                      label: 'Add key',
+                      logName: 'Add key',
+                      prefix: '+',
+                      onPressed: _add,
+                    ),
                   ],
                 ),
               ),
@@ -1983,13 +2009,15 @@ class _CustomKeyDialogState extends State<_CustomKeyDialog> {
                 child: Row(
                   children: [
                     TuiButton(
-                      label: 'Clear', logName: 'Clear',
+                      label: 'Clear',
+                      logName: 'Clear',
                       variant: TuiButtonVariant.ghost,
                       onPressed: _clear,
                     ),
                     const Spacer(),
                     TuiButton(
-                      label: 'Cancel', logName: 'Cancel',
+                      label: 'Cancel',
+                      logName: 'Cancel',
                       variant: TuiButtonVariant.ghost,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
@@ -2233,7 +2261,8 @@ class _PrivacySection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             TuiSwitch(
-              label: 'Telemetry', logName: 'Telemetry',
+              label: 'Telemetry',
+              logName: 'Telemetry',
               value: on,
               onChanged: (want) => _choose(context, want),
             ),
