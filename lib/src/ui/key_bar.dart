@@ -227,10 +227,13 @@ terminalKeys = {
   'pgup': (label: 'PGUP', send: (_) => '\x1b[5~'),
   'pgdn': (label: 'PGDN', send: (_) => '\x1b[6~'),
   // Symbols the stock keyboard buries two layers deep, each its own id.
-  for (final symbol in const ['-', '/', '|', '~', ':', '*'])
+  for (final symbol in _symbolKeys)
     symbol: (label: symbol, send: (_) => symbol),
   keyBarDivider: (label: 'Divider', send: null),
 };
+
+/// The ids of the symbol keys, each the character it types.
+const _symbolKeys = ['-', '/', '|', '~', ':', '*'];
 
 /// The one item that may appear more than once.
 const keyBarDivider = 'divider';
@@ -542,7 +545,12 @@ class TerminalKeyBar extends StatelessWidget {
     // the pane in use, and armed modifiers wait for the keyboard.
     _ => KeyButton(
       label: customKeys[id]?.label ?? terminalKeys[id]!.label,
-      logName: customKeys[id] == null ? terminalKeys[id]!.label : 'custom key',
+      // A symbol key is a printable character: its name is never logged.
+      logName: customKeys[id] != null
+          ? 'custom key'
+          : _symbolKeys.contains(id)
+          ? 'symbol key'
+          : terminalKeys[id]!.label,
       onTap: () => onEmit(switch (customKeys[id]) {
         final key? => switch (key.combo) {
           final combo? => encodeKeyCombo(terminal, combo),

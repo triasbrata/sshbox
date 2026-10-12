@@ -457,6 +457,56 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
+    testWidgets('holding the zoom chord is one step, not one per repeat', (
+      tester,
+    ) async {
+      await _start(tester, _Box(), const Size(800, 1280));
+      await tester.sendKeyDownEvent(ctrl);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.equal);
+      for (var i = 0; i < 5; i++) {
+        await tester.sendKeyRepeatEvent(LogicalKeyboardKey.equal);
+      }
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.equal);
+      await tester.sendKeyUpEvent(ctrl);
+      await tester.pump();
+      expect(uiTextSize.value, 1.1, reason: 'one step for one press');
+
+      // A second press is a second step.
+      await chord(tester, LogicalKeyboardKey.equal, hold: ctrl);
+      expect(uiTextSize.value, 1.2);
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('Ctrl with the wheel over a horizontal scroller zooms and '
+        'does not scroll it sideways', (tester) async {
+      final controller = ScrollController();
+      var zooms = 0;
+      // A horizontal view, as a code line or a tab strip is, under the app's
+      // own scroll behaviour.
+      await tester.pumpWidget(
+        MaterialApp(
+          scrollBehavior: const ZoomScrollBehavior(),
+          home: UiZoomWheel(
+            onZoom: (_) => zooms++,
+            child: SingleChildScrollView(
+              controller: controller,
+              scrollDirection: Axis.horizontal,
+              child: const SizedBox(width: 3000, height: 400),
+            ),
+          ),
+        ),
+      );
+      await wheel(tester, const Offset(400, 200), 100);
+      expect(zooms, 1);
+      expect(controller.offset, 0, reason: 'Ctrl+wheel only zooms');
+
+      // Without Ctrl, Shift or the wheel's own horizontal axis still scroll.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(100, 0)));
+      await tester.pump();
+      expect(controller.offset, greaterThan(0));
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
     testWidgets("the desktop menu's View items arrive over sshbox/menu", (
       tester,
     ) async {

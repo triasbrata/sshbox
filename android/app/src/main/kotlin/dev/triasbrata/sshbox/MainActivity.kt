@@ -10,7 +10,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.provider.Settings
 import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
@@ -120,9 +119,7 @@ class MainActivity : FlutterActivity() {
                     result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
                 } else if (call.method == "isTestLab") {
                     // Firebase Test Lab, which Play's pre-launch robot runs on.
-                    result.success(
-                        Settings.System.getString(contentResolver, "firebase.test.lab") == "true",
-                    )
+                    result.success(NativeCrashes.isTestLab(this@MainActivity))
                 } else if (call.method == "startCrashReporting") {
                     NativeCrashes.start(applicationContext, call.argument("dsn")!!, call.argument("environment")!!)
                     result.success(null)
