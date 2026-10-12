@@ -107,7 +107,6 @@ class TmuxPaneLayout extends StatelessWidget {
                           // A tap is when a pane that will not scroll gets
                           // noticed: its mouse modes are checked against
                           // tmux's, and put right if they differ.
-                          unawaited(tmux.resyncModes(each));
                         },
                         child: pane(each, each == focused),
                       ),
