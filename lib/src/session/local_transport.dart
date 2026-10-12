@@ -12,7 +12,6 @@ import '../files/sftp_file_browser.dart' show SftpFileBrowser;
 import '../models/host_profile.dart';
 import 'terminal_session.dart';
 import 'open_command.dart';
-import 'open_request.dart';
 
 /// The host a local shell runs on: this machine. Saved nowhere — it is made
 /// fresh each time and never reaches [HostRepository], so it cannot be edited,
@@ -258,7 +257,9 @@ class LocalTransport implements SessionTransport {
     }
     // No shell: a session for tmux, whose panes come over [_LocalSession.open]
     // and which is up for as long as it is not disposed, as a connection is.
-    final extra = _openEnv(environment);
+    // The secret `jeansh` signs with is in a file the app writes, never in
+    // this environment: see `writeOpenSecret`.
+    const extra = <String, String>{};
     if (!shell) return _session(null, extra);
     // This terminal shows an OSC 8 hyperlink and a Ctrl+tap opens it, which
     // Claude Code, and every program built on `supports-hyperlinks`, learns
@@ -268,9 +269,7 @@ class LocalTransport implements SessionTransport {
     environment = {'FORCE_HYPERLINK': '1', ...environment};
     // `jeansh <file>` where the app owns the shell's environment: see
     // [_withOpenCommand].
-    if (environment.containsKey(openSecretVariable)) {
-      environment = _withOpenCommand(environment);
-    }
+    environment = _withOpenCommand(environment);
     final String program;
     final List<String> arguments;
     final String? home;
@@ -348,15 +347,6 @@ class LocalTransport implements SessionTransport {
     } on FileSystemException {
       return null;
     }
-  }
-
-  /// What this connection's tmux commands carry besides [_commandEnv]: the
-  /// secret, which tmux copies into the session's panes through its
-  /// `update-environment`. No PATH: tmux ignores a session's PATH when it
-  /// starts a pane, see the notes on `jeansh` in the feature table.
-  Map<String, String> _openEnv(Map<String, String> environment) {
-    final secret = environment[openSecretVariable];
-    return secret == null ? const {} : {openSecretVariable: secret};
   }
 
   /// A session over [pty], or with none one for tmux, taking a pasted
