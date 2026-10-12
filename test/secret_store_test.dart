@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
-import 'package:sshbox/src/session/open_request.dart';
 
 /// A keychain that counts what reaches it, and can be made to refuse a read
 /// as macOS does when the user presses Deny, or to hold one open.
@@ -115,17 +114,16 @@ void main() {
     expect(keychain.reads, 1);
   });
 
-  test('the open secret a first connect writes is not read back', () async {
-    final opens = OpenRequests(onOpen: (_) {});
-    final hostId = 'h1';
+  test('a secret a first connect makes and writes is not read back', () async {
+    final key = SecretKeys.openSecret('h1');
     // First connect: none yet, so one is made and written.
-    final made = await opens.load(store, hostId);
+    expect(await store.read(key), isNull);
+    await store.write(key, 'made-on-first-connect');
     expect(keychain.reads, 1);
     expect(keychain.writes, 1);
-    expect(keychain.values[SecretKeys.openSecret(hostId)], made);
     // Reconnects: the same secret, from no keychain call at all.
-    expect(await opens.load(store, hostId), made);
-    expect(await opens.load(store, hostId), made);
+    expect(await store.read(key), 'made-on-first-connect');
+    expect(await store.read(key), 'made-on-first-connect');
     expect(keychain.reads, 1);
     expect(keychain.writes, 1);
   });
