@@ -3,10 +3,13 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart'
+    show AppLifecycleState, WidgetsBindingObserver;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../chat/claude_chat.dart';
+import '../chat/outbox.dart';
 import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
@@ -525,6 +528,11 @@ class LiveSession extends ChangeNotifier {
     cwd: host.fileRoot.trim().isEmpty ? null : host.fileRoot,
     // The plan's usage is the host account's: chats on one host share it.
     hostKey: host.id,
+    // Every message is kept on this device until the session records it.
+    outbox: OutboxStore.shared,
+    // Lets a message that waits for a reconnect wait for it, rather than use
+    // up its retries against a connection that is being made again.
+    connected: () => isConnected,
   );
 
   void openChat() {
@@ -1780,6 +1788,18 @@ class SessionManager extends ChangeNotifier {
 
   List<LiveSession> get sessions => List.unmodifiable(_sessions.values);
 
+  /// Asks every attached tmux session whether the mouse modes its panes hold
+  /// are the ones the local terminals hold, and puts those right. For when
+  /// the app comes back: while it was inactive or the machine asleep, output
+  /// can have been dropped, and a pane that will not scroll is noticed only by
+  /// a tap otherwise. Throttled per pane, as a tap's check is.
+  void resyncTmuxModes({String why = 'resume'}) {
+    for (final session in sessions) {
+      final tmux = session.tmux;
+      if (tmux != null) unawaited(tmux.resyncAllModes(why: why));
+    }
+  }
+
   int? get activeId => _activeId;
 
   /// Which kind of tab is showing. Meaningless while [activeId] is null.
@@ -2407,5 +2427,20 @@ class _ReleaseOnlyIfAsked implements TerminalInputHandler {
       return null;
     }
     return _keys(event);
+  }
+}
+
+/// Calls [onResume] each time the app comes back to the foreground, which on a
+/// desktop is also a window taking focus again: Flutter reports both as
+/// inactive and then resumed. An observer, not an AppLifecycleListener, which
+/// asserts on a state jump a real minimize on Linux makes.
+class ResumeObserver with WidgetsBindingObserver {
+  ResumeObserver(this.onResume);
+
+  final void Function() onResume;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) onResume();
   }
 }

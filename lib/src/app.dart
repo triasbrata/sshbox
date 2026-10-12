@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'chat/outbox.dart';
 import 'data/host_repository.dart';
 import 'data/secret_store.dart';
 import 'db/db_session.dart';
@@ -79,6 +80,8 @@ class _SshboxAppState extends State<SshboxApp> {
   final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
   late final NotifyKeys _notifyKeys = NotifyKeys(_secrets);
+  late final _resume = ResumeObserver(_sessions.resyncTmuxModes);
+
   late final SessionManager _sessions = SessionManager(
     notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
@@ -149,6 +152,7 @@ class _SshboxAppState extends State<SshboxApp> {
   void initState() {
     super.initState();
     _keepAlive.attach();
+    WidgetsBinding.instance.addObserver(_resume);
     sessionLog.follow(_sessions);
     unawaited(_restoreTabs());
     unawaited(_startNotifications());
@@ -159,8 +163,9 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_sayIfFontMissing());
     unawaited(_sayIfOpenCommandMissing());
     lastFault.addListener(_offerToReport);
+    secretNotice.addListener(_saySecretNotice);
     localTmux.addListener(_noTmux.clear);
-    if (defaultTargetPlatform == TargetPlatform.macOS) {
+    if (isDesktop) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
     }
     if (defaultTargetPlatform != TargetPlatform.iOS) {
@@ -168,7 +173,7 @@ class _SshboxAppState extends State<SshboxApp> {
     }
     if (isDesktop) {
       _menuChannel.setMethodCallHandler((call) async {
-        if (call.method == 'openSettings') _openSettings();
+        if (call.method == 'openSettings') _toggleSettings();
         if (call.method == 'checkForUpdates') _checkFromMenu();
         if (call.method == 'zoomIn') _zoom(1);
         if (call.method == 'zoomOut') _zoom(-1);
@@ -207,11 +212,20 @@ class _SshboxAppState extends State<SshboxApp> {
     if (navigator != null) openSettings(navigator, notifyKeys: _notifyKeys);
   }
 
+  /// The key and the Mac's menu item: open Settings, or, with it showing,
+  /// go back to the page it was opened from.
+  void _toggleSettings() {
+    final navigator = _navigator.currentState;
+    if (navigator != null) {
+      toggleSettings(navigator, notifyKeys: _notifyKeys);
+    }
+  }
+
   /// Whether this ⌘, went down here, so its key-up is taken too.
   bool _settingsKeyDown = false;
 
-  /// ⌘, on a Mac opens Settings, as it does in every Mac app, wherever the
-  /// focus is.
+  /// ⌘, on a Mac, Ctrl+, on Linux and Windows, opens Settings, as it does in
+  /// every Mac app, wherever the focus is; pressed again it closes it.
   ///
   /// An early handler rather than a shortcut at the root: the focus chain
   /// runs from the focused widget up, so a terminal holding the focus would
@@ -229,14 +243,15 @@ class _SshboxAppState extends State<SshboxApp> {
       return KeyEventResult.handled;
     }
     final keys = HardwareKeyboard.instance;
-    if (!keys.isMetaPressed ||
-        keys.isControlPressed ||
-        keys.isAltPressed ||
-        keys.isShiftPressed) {
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final chord = mac
+        ? keys.isMetaPressed && !keys.isControlPressed
+        : keys.isControlPressed && !keys.isMetaPressed;
+    if (!chord || keys.isAltPressed || keys.isShiftPressed) {
       return KeyEventResult.ignored;
     }
     _settingsKeyDown = true;
-    if (event is KeyDownEvent) _openSettings();
+    if (event is KeyDownEvent) _toggleSettings();
     return KeyEventResult.handled;
   }
 
@@ -311,6 +326,22 @@ class _SshboxAppState extends State<SshboxApp> {
   /// The one offer a run makes: something went wrong, and here is a way to
   /// say so. Shown whether or not telemetry is on, because reporting a bug is
   /// the user's own act — see `showBugReport`.
+  /// What the secret store had to say: a secret not moved to a signed
+  /// build's keychain, or one moved where this build cannot reach.
+  void _saySecretNotice() {
+    final notice = secretNotice.value;
+    if (notice == null) return;
+    final context = _navigator.currentContext;
+    if (context == null || !context.mounted) return;
+    showToast(
+      context,
+      notice.message,
+      type: TuiToastType.warning,
+      duration: const Duration(seconds: 8),
+      logAs: 'secret notice',
+    );
+  }
+
   void _offerToReport() {
     final fault = lastFault.value;
     if (fault == null) return;
@@ -367,12 +398,17 @@ class _SshboxAppState extends State<SshboxApp> {
   /// The tabs open when the app last went away, back as they were: see
   /// [SessionManager.restoreTabs]. Only this, the one running copy, gets
   /// here: a second hands its intent over before Dart starts.
-  Future<void> _restoreTabs() async => _sessions.restoreTabs(
-    hosts: await _repository.load(),
-    databases: await loadDatabases(),
-    transport: widget.transport,
-    localShell: _localShell,
-  );
+  Future<void> _restoreTabs() async {
+    final hosts = await _repository.load();
+    // Unsent chat messages of a host deleted while the app was closed.
+    unawaited(OutboxStore.shared.sweep({for (final host in hosts) host.id}));
+    return _sessions.restoreTabs(
+      hosts: hosts,
+      databases: await loadDatabases(),
+      transport: widget.transport,
+      localShell: _localShell,
+    );
+  }
 
   /// This machine's own shells: [localShellFor], as Settings has it now, over
   /// a test's transport when it brings one.
@@ -644,10 +680,12 @@ class _SshboxAppState extends State<SshboxApp> {
   void dispose() {
     _updateTimer?.cancel();
     lastFault.removeListener(_offerToReport);
+    secretNotice.removeListener(_saySecretNotice);
     localTmux.removeListener(_noTmux.clear);
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
     FocusManager.instance.removeEarlyKeyEventHandler(_zoomKeys.handle);
     unawaited(_linkSubscription?.cancel());
+    WidgetsBinding.instance.removeObserver(_resume);
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());
     // Not closeAll: that would end every tmux session, and save no tabs to

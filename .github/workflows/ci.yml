@@ -42,6 +42,12 @@ jobs:
               { sudo apt-get update -q && sudo apt-get install -yq python3-yaml; }; } > /dev/null
           tool/test_release_flow.sh
 
+      # tools/build_apple.sh's Developer ID signing, against stand-ins for
+      # Apple's tools: off runs the ad-hoc build's very commands, and on with
+      # a secret missing or wrong fails before anything is built.
+      - name: macOS signing flag
+        run: tool/test_apple_signing.sh
+
       # Every feature the user has passed in CLAUDE.md must say what guards it
       # in e2e/coverage.yaml, so none can quietly lose its guard. Red here
       # means a row reads "UAT passed" with no entry: add one in the same
