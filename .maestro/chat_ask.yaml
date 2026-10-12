@@ -60,8 +60,9 @@ env:
 - scrollUntilVisible:
     element: "(?s)Blue.*"
 - tapOn: "(?s)Blue.*"
-- scrollUntilVisible:
-    element: "Send answers"
+- extendedWaitUntil:
+    visible: "Send answers"
+    timeout: 20000
 - tapOn: "Send answers"
 - extendedWaitUntil:
     visible: "You chose Blue"
