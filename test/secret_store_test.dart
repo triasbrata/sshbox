@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/session/open_request.dart';
 
 /// A keychain that counts what reaches it, and can be made to refuse a read
 /// as macOS does when the user presses Deny, or to hold one open.
@@ -14,7 +15,9 @@ class _Keychain implements FlutterSecureStorage {
   int writes = 0;
   int deletes = 0;
   bool deny = false;
+  bool failWrites = false;
   Completer<void>? hold;
+  Completer<void>? writeHold;
 
   @override
   Future<String?> read({
@@ -47,6 +50,8 @@ class _Keychain implements FlutterSecureStorage {
     WindowsOptions? wOptions,
   }) async {
     writes++;
+    await writeHold?.future;
+    if (failWrites) throw PlatformException(code: 'write refused');
     values[key] = value!;
   }
 
@@ -101,12 +106,57 @@ void main() {
     expect(keychain.reads, 1);
   });
 
-  test('a host edited then connected reads the new value afresh', () async {
+  test('a host edited then connected uses the value just written', () async {
     await store.read(password);
     await store.write(password, 'changed');
     expect(keychain.writes, 1);
     expect(await store.read(password), 'changed');
+    expect(await store.read(password), 'changed');
+    expect(keychain.reads, 1);
+  });
+
+  test('the open secret a first connect writes is not read back', () async {
+    final opens = OpenRequests(onOpen: (_) {});
+    final hostId = 'h1';
+    // First connect: none yet, so one is made and written.
+    final made = await opens.load(store, hostId);
+    expect(keychain.reads, 1);
+    expect(keychain.writes, 1);
+    expect(keychain.values[SecretKeys.openSecret(hostId)], made);
+    // Reconnects: the same secret, from no keychain call at all.
+    expect(await opens.load(store, hostId), made);
+    expect(await opens.load(store, hostId), made);
+    expect(keychain.reads, 1);
+    expect(keychain.writes, 1);
+  });
+
+  test('a write that fails keeps nothing, and is read afresh', () async {
+    await store.read(password);
+    keychain.failWrites = true;
+    await expectLater(
+      store.write(password, 'changed'),
+      throwsA(isA<PlatformException>()),
+    );
+    keychain.failWrites = false;
+    expect(await store.read(password), 'hunter2-secret');
     expect(keychain.reads, 2);
+  });
+
+  test('a read started during a write cannot put the old value back', () async {
+    await store.read(password);
+    final writeHold = keychain.writeHold = Completer();
+    final writing = store.write(password, 'changed');
+    await Future<void>.delayed(Duration.zero);
+    // The keychain still holds the old value as this read starts, and
+    // answers only after the write is done.
+    final readHold = keychain.hold = Completer();
+    final during = store.read(password);
+    keychain.hold = null;
+    keychain.writeHold = null;
+    writeHold.complete();
+    await writing;
+    readHold.complete();
+    expect(await during, 'hunter2-secret');
     expect(await store.read(password), 'changed');
     expect(keychain.reads, 2);
   });
