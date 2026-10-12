@@ -1124,6 +1124,92 @@ void main() {
     expect(find.text('Blue'), findsOneWidget);
   });
 
+  testWidgets('the question card\'s buttons and options are each one button '
+      'in the accessibility tree, named as they read, and work from there, '
+      'as a screen reader and an e2e driver find them', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+    shell.event({
+      'type': 'control_request',
+      'request_id': 'req-1',
+      'request': {
+        'subtype': 'can_use_tool',
+        'tool_name': 'AskUserQuestion',
+        'input': input,
+        'tool_use_id': 'toolu_ask',
+        'requires_user_interaction': true,
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+
+    // Each by the text it shows, once in the whole tree: a button whose
+    // accessible text is that and nothing more — Android reads a node's
+    // value, label and hint as one string, so a hint would make "Red" read
+    // "Red, A warm colour." — and right under the card, with no unnamed
+    // node between them for a driver to land on instead.
+    void named(String name, {required bool tappable}) {
+      final node = find.semantics.byLabel(name);
+      expect(node, findsOne, reason: name);
+      final element = node.evaluate().single;
+      final data = element.getSemanticsData();
+      expect(data.flagsCollection.isButton, isTrue, reason: name);
+      expect(data.hint, isEmpty, reason: name);
+      expect(data.value, isEmpty, reason: name);
+      expect(data.hasAction(ui.SemanticsAction.tap), tappable, reason: name);
+      expect(
+        element.parent?.getSemanticsData().label,
+        startsWith('Claude asks a question'),
+        reason: name,
+      );
+    }
+
+    for (final name in ['Red', 'Blue', 'Dismiss']) {
+      named(name, tappable: true);
+    }
+    // Not until something is chosen.
+    named('Send answers', tappable: false);
+    // What an option means is still read, as words of its own.
+    expect(find.semantics.byLabel('A cool colour.'), findsOne);
+
+    tester.semantics.tap(find.semantics.byLabel('Blue'));
+    await tester.pump();
+    named('Send answers', tappable: true);
+    tester.semantics.tap(find.semantics.byLabel('Send answers'));
+    await tester.pump();
+    final reply = shell.written
+        .map((line) => jsonDecode(line.trim()) as Map)
+        .singleWhere((m) => m['type'] == 'control_response');
+    final response = (reply['response'] as Map)['response'] as Map;
+    expect(response['behavior'], 'allow');
+    expect((response['updatedInput'] as Map)['answers'], {
+      'Which colour?': 'Blue',
+    });
+    semantics.dispose();
+  });
+
   testWidgets('a ⋮ mode change while a question is open: its buttons go, '
       'nothing is written to either Claude, and a message is not sent '
       'without a word', (tester) async {
