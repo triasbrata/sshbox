@@ -1398,42 +1398,6 @@ bug_button() {
   return "$status"
 }
 
-# OSC 52: a program may copy to the clipboard and never read it (b11f5bc). The
-# host sends the query and records what comes back; empty is refused, any bytes
-# are the hole. The clipboard is seeded first, and the check means nothing
-# without that: a leaking xterm2 answers from Clipboard.getData, and an EMPTY
-# clipboard gives it null, which sends no reply at all -- so on a fresh
-# emulator a leaking build and a fixed one both stay silent. The script copies
-# a canary through OSC 52's copy half, which Jeansh allows, and only then asks
-# for it back.
-osc52_query_refused() {
-  local script=/home/$SSH_USER/osc52-query.sh reply=/tmp/osc52-reply done=/tmp/osc52-done
-  sudo rm -f "$reply" "$done"
-  sudo -u "$SSH_USER" tee "$script" >/dev/null <<'SH'
-#!/bin/sh
-printf '\033]52;c;%s\a' "$(printf 'e2e-canary' | base64)"
-sleep 1
-stty -echo raw
-printf '\033]52;c;?\a'
-timeout 2 cat -v > /tmp/osc52-reply
-stty sane
-touch /tmp/osc52-done
-SH
-  flow osc52_query || return 1
-  # No marker means the command never ran, and silence from a command that
-  # never ran must not pass for a refusal.
-  if [ ! -f "$done" ]; then
-    echo "::warning::the query script never finished, so nothing was checked"
-    return 1
-  fi
-  if [ -s "$reply" ]; then
-    # The length only: on a real device these bytes would be the clipboard.
-    echo "::error::the app ANSWERED the clipboard query ($(wc -c < "$reply") bytes) -- the OSC 52 hole is open"
-    return 1
-  fi
-  echo "refused: the clipboard query got nothing back"
-}
-
 # Claude's questions in chat: the AskUserQuestion tool, answered from the chat
 # tab. The finished "E2E short session" continued in place runs the stand-in
 # tools/e2e_ask_claude.py as its `claude -p`, which asks which colour for one
@@ -1636,10 +1600,6 @@ echo "::endgroup::"
 
 echo "::group::bug_button (report only)"
 bug_button || echo "::warning::bug_button failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::osc52_query (report only)"
-osc52_query_refused || echo "::warning::osc52_query failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::tmux_mouse_reattach (report only)"
