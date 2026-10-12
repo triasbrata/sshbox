@@ -6136,11 +6136,18 @@ touch '${done.path}'
   //         is sent the wheel; after it nothing is and the scrollback moves.
   //  agree: no desync -> logged as agreeing, nothing put right (negative).
   // Mutation: no resync call in TmuxPaneLayout's onPointerDown, which fails
-  // the lost and stuck cases.
-  for (final kind in ['lost', 'stuck', 'agree']) {
+  // the lost and stuck tap cases. The same three cases run again with no tap:
+  // the app goes inactive and resumed, and the resume checks every pane
+  // (JEANSH-F: nothing was logged between a reconnect and the report, the app
+  // having been inactive many times). Mutation: ResumeObserver never added
+  // in app.dart, which fails the lost and stuck resume cases.
+  for (final (kind, via) in [
+    for (final k in ['lost', 'stuck', 'agree'])
+      for (final v in ['tap', 'resume']) (k, v),
+  ]) {
     final mouse = kind != 'stuck';
     _test(
-      'a tap on a tmux pane ${kind == 'agree'
+      'a ${via == 'tap' ? 'tap on a tmux pane' : 'resume of the app with a tmux pane'} ${kind == 'agree'
           ? 'finds its mouse modes agree and leaves them'
           : kind == 'lost'
           ? 'puts back the mouse mode the terminal lost: the wheel reaches '
@@ -6208,9 +6215,9 @@ touch '${done.path}'
         final wheelEvent = RegExp(r'\x1b\[<6[45];\d+;\d+M');
         String heardSince(int from) => got.readAsStringSync().substring(from);
         final differed = RegExp(
-          r'tmux: pane %\d+ modes differed \(tap\), put right',
+          'tmux: pane %\\d+ modes differed \\($via\\), put right',
         );
-        final agreed = RegExp(r'tmux: pane %\d+ modes agree \(tap\)');
+        final agreed = RegExp('tmux: pane %\\d+ modes agree \\($via\\)');
         int count(RegExp r) => r.allMatches(appLog.current).length;
 
         // Only the local terminal is changed; tmux keeps what the program set.
@@ -6249,12 +6256,29 @@ touch '${done.path}'
           }
         }
 
-        // The tap, by a real click.
+        // The tap, by a real click, or the resume, with no tap at all.
         final putRight = count(differed);
         final same = count(agreed);
         final watched = kind == 'agree' ? agreed : differed;
         final watchedFrom = kind == 'agree' ? same : putRight;
-        await pointer(['click', '1']);
+        if (via == 'tap') {
+          await pointer(['click', '1']);
+        } else {
+          // No tap: the app goes inactive and comes back, as a window losing
+          // and taking focus or a sleep and a wake does, through the real
+          // app's own lifecycle observer. xdotool cannot be relied on to
+          // make Flutter's GTK embedder report a focus loss under Xvfb with
+          // no window manager, so the state change is sent in-process; the
+          // OS side of it is unproven here.
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.inactive,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+        }
         await _until(
           tester,
           () => count(watched) > watchedFrom,
