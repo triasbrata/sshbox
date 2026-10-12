@@ -1517,7 +1517,7 @@ class _BugButtonState extends State<_BugButton> {
   }
 
   void _press() {
-    if (!_open) {
+    if (false) {
       setState(() => _open = true);
       _fold?.cancel();
       _fold = Timer(const Duration(seconds: 4), _collapse);
