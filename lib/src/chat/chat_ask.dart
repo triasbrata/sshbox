@@ -302,7 +302,8 @@ List<AskStep>? dialogKeys(ChatAsk ask, List<AskPick> picks) {
       for (final option in pick.options.toList()..sort()) {
         steps
           ..addAll(List.filled(option - at, down))
-          ..add(const AskKeys(' '));
+          ..add(const AskKeys(' '))
+          ..add(enter);
         at = option;
       }
       steps.add(const AskKeys('\t'));
