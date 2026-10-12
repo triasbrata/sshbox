@@ -4139,17 +4139,31 @@ touch '${done.path}'
       await keys('ctrl+comma');
       await settingsUp('before the sub-page');
       final row = _label('Key bar');
-      // Settings' own list: the Scrollable the header sits in, waited for.
-      final list = find
-          .ancestor(of: header, matching: find.byType(Scrollable))
-          .first;
-      await _until(
-        tester,
-        () => list.evaluate().isNotEmpty,
-        "Settings' list to be in the tree",
-        timeout: slow,
+      // Settings' own list: the Scrollable the header sits in, waited for
+      // and then pinned by its element. Found again by the header, it would
+      // be lost mid-scroll, when the list unbuilds the header it began from.
+      Future<Finder> settingsList() async {
+        await _until(
+          tester,
+          () => find
+              .ancestor(of: header, matching: find.byType(Scrollable))
+              .evaluate()
+              .isNotEmpty,
+          "Settings' list to be in the tree",
+          timeout: slow,
+        );
+        final element = find
+            .ancestor(of: header, matching: find.byType(Scrollable))
+            .evaluate()
+            .first;
+        return find.byElementPredicate((e) => identical(e, element));
+      }
+
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: await settingsList(),
       );
-      await tester.scrollUntilVisible(row, 300, scrollable: list);
       await tester.ensureVisible(row);
       await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(row);
@@ -4178,13 +4192,11 @@ touch '${done.path}'
       await keys('ctrl+comma');
       await settingsUp('before the font picker');
       final fonts = find.textContaining('Installed on this computer');
-      await _until(
-        tester,
-        () => list.evaluate().isNotEmpty,
-        "Settings' list to be in the tree",
-        timeout: slow,
+      await tester.scrollUntilVisible(
+        fonts,
+        300,
+        scrollable: await settingsList(),
       );
-      await tester.scrollUntilVisible(fonts, 300, scrollable: list);
       await _until(
         tester,
         () => find
