@@ -28,9 +28,20 @@ final _port = int.tryParse(Platform.environment['SSH_PORT'] ?? '') ?? 22;
 
 String? get _skip => !(Platform.isMacOS || Platform.isLinux)
     ? 'the keychain read count is for macOS and Linux'
-    : Platform.environment['CI'] != 'true' || _user.isEmpty || _password.isEmpty
+    : Platform.environment['CI'] != 'true'
     ? "needs the job's own sshd and its throwaway user"
     : null;
+
+/// On CI a missing sshd is a failure, not a skip: a skip hid a job whose setup
+/// never ran.
+String? get _missing {
+  final missing = [
+    if (_user.isEmpty) 'SSH_USER',
+    if (_password.isEmpty) 'SSH_PASSWORD',
+    if (Platform.isMacOS && _port == 22) 'SSH_PORT',
+  ];
+  return missing.isEmpty ? null : missing.join(', ');
+}
 
 Future<void> _until(
   WidgetTester tester,
@@ -87,6 +98,10 @@ void main() {
     'keychain reads: kept on macOS, asked each time on Linux',
     skip: _skip != null,
     (tester) async {
+      final missing = _missing;
+      if (missing != null) {
+        fail("the job's sshd step did not run: no $missing in the environment");
+      }
       final keeps = Platform.isMacOS;
       final secrets = KeystoreSecretStore();
       final hosts = HostRepository(secrets);
