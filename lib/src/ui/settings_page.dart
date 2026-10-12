@@ -1240,6 +1240,7 @@ class _TerminalSectionState extends State<_TerminalSection> {
                           context,
                           problem,
                           type: TuiToastType.warning,
+                          duration: const Duration(seconds: 5),
                         );
                       }
                     },

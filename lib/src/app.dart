@@ -98,6 +98,7 @@ class _SshboxAppState extends State<SshboxApp> {
           ? '1 jeansh file was not opened: $reason.'
           : '$count jeansh files were not opened: $reason.',
       type: TuiToastType.warning,
+      duration: const Duration(seconds: 5),
     );
   }
 
@@ -109,6 +110,7 @@ class _SshboxAppState extends State<SshboxApp> {
       context,
       message,
       type: TuiToastType.warning,
+      duration: const Duration(seconds: 5),
     );
   }
 

@@ -373,12 +373,12 @@ void main() {
     Future<(Process, CommandChannel)> start(String key) => _start(
       name,
       dir,
-      environment: {'LC_SSHBOX_KEY': key, 'LC_SSHBOX_HOST_ID': 'host-1'},
+      environment: {'LC_SSHBOX_NOTIFY_URL': key, 'LC_SSHBOX_NOTIFY_SECRET': 'host-1'},
     );
     // What the focused pane's shell has, and not the line typed to ask.
     Future<void> printed(TmuxSession tmux, String values) async {
       tmux.send(
-        r'echo "<$LC_SSHBOX_KEY $LC_SSHBOX_HOST_ID $FORCE_HYPERLINK>"'
+        r'echo "<$LC_SSHBOX_NOTIFY_URL $LC_SSHBOX_NOTIFY_SECRET $FORCE_HYPERLINK>"'
         '\r',
       );
       await _until(
@@ -419,7 +419,10 @@ void main() {
 
     // Listed once, however often a tab attaches.
     final listed = await _tmux(dir, ['show', '-gv', 'update-environment']);
-    expect('LC_SSHBOX_KEY'.allMatches('${listed.stdout}'), hasLength(1));
+    expect('LC_SSHBOX_NOTIFY_URL'.allMatches('${listed.stdout}'), hasLength(1));
+    // The push key is a file on the host, never a variable tmux copies.
+    expect('${listed.stdout}', isNot(contains('LC_SSHBOX_KEY')));
+    expect('${listed.stdout}', isNot(contains('LC_SSHBOX_HOST_ID')));
     expect(
       'LC_SSHBOX_NOTIFY_SECRET'.allMatches('${listed.stdout}'),
       hasLength(1),

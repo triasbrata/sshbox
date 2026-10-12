@@ -5,6 +5,10 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'fake_relay.dart';
+
+import 'package:sshbox/src/notifications/notify_key.dart';
 import 'package:sshbox/src/session/local_transport.dart';
 import 'package:sshbox/src/session/open_command.dart';
 import 'package:sshbox/src/data/secret_store.dart';
@@ -31,9 +35,16 @@ class _Shell
   final installs = <String>[];
   final installInputs = <String>[];
 
+  /// How long the host takes to answer: one round trip.
+  Duration answerDelay = Duration.zero;
+
   /// The secret the last install was sent on its stdin.
   String? get installedSecret =>
-      installInputs.isEmpty ? null : installInputs.last.trim();
+      installInputs.isEmpty ? null : installInputs.last.split('\n').first;
+
+  /// The push key the last install was sent on its stdin, or `-`.
+  String? get installedKey =>
+      installInputs.isEmpty ? null : installInputs.last.split('\n')[1];
 
   @override
   Future<CommandChannel> open(String command) async {
@@ -44,12 +55,14 @@ class _Shell
       write: (data) {
         installInputs.add(utf8.decode(data));
         if (installAnswer == 'hang') return;
-        if (installAnswer == 'fail') {
-          out.addError(StateError('x'));
-        } else {
-          out.add(Uint8List.fromList(utf8.encode('$installAnswer\n')));
-        }
-        out.close();
+        Future<void>.delayed(answerDelay, () {
+          if (installAnswer == 'fail') {
+            out.addError(StateError('x'));
+          } else {
+            out.add(Uint8List.fromList(utf8.encode('$installAnswer\n')));
+          }
+          out.close();
+        });
       },
       close: () {},
     );
@@ -146,7 +159,7 @@ void main() {
     // Never on the command line, which any local user can read on the host.
     expect(shell.installs, hasLength(1));
     expect(shell.installs.single, isNot(contains(secret)));
-    expect(shell.installInputs.single, '$secret\n');
+    expect(shell.installInputs.single, '$secret\n-\n');
     expect(shell.environment.keys.where((k) => k.contains('OPEN')), isEmpty);
     expect(shell.environment.values, isNot(contains(secret)));
 
@@ -437,6 +450,121 @@ void main() {
       expect(said, ['~/.config/jeansh is a link.']);
       // The shell still opens: only the jeansh command is lost.
       expect(session.isConnected, isTrue);
+    });
+  });
+
+  group("the host's push key is a file, written before the shell starts", () {
+    Future<NotifyKeys> withToken(FakeRelay relay) async {
+      final keys = NotifyKeys(InMemorySecretStore(), relay: relay);
+      await keys.useFcmToken('fcm-token');
+      return keys;
+    }
+
+    test('it goes on stdin, with the open secret in the same exec, and into '
+        'no variable', () async {
+      final keys = await withToken(FakeRelay());
+      final manager = SessionManager(notifyKeys: keys);
+      final shell = _Shell();
+      final session = manager.create(host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _Secrets());
+      final key = (await keys.valueFor('host-1'))!;
+      // One exec for both, the key on line 2, never on the command line.
+      expect(shell.installs, hasLength(1));
+      expect(shell.installInputs.single, '${shell.installedSecret}\n$key\n');
+      expect(shell.installs.single, isNot(contains(key)));
+      expect(shell.installs.single, isNot(contains(shell.installedSecret!)));
+      // And in nothing the shell inherits, nor anything an ssh from it sends.
+      expect(shell.environment.keys, isNot(contains('LC_SSHBOX_KEY')));
+      expect(shell.environment.keys, isNot(contains('LC_SSHBOX_HOST_ID')));
+      expect(shell.environment.values, isNot(contains(key)));
+      expect(shell.environment.values.join(' '), isNot(contains(key)));
+    });
+
+    test('with the jeansh switch off the key still goes, and the open secret '
+        'is the placeholder', () async {
+      final keys = await withToken(FakeRelay());
+      final manager = SessionManager(notifyKeys: keys);
+      final shell = _Shell()..installAnswer = 'keyed';
+      final said = <String>[];
+      final session = manager.create(
+        host.copyWith(installOpenCommand: false),
+        transport: (_, _) => shell,
+      );
+      session.onOpenProblem = said.add;
+      addTearDown(session.dispose);
+      await session.connect(secrets: _Secrets());
+      expect(shell.installedSecret, '-');
+      expect(shell.installedKey, startsWith('jnk_'));
+      expect(said, isEmpty);
+    });
+
+    test('every connect sends it again, and sends the placeholder while the '
+        'relay is out of reach', () async {
+      final relay = FakeRelay()..down = true;
+      final keys = await withToken(relay);
+      final manager = SessionManager(notifyKeys: keys);
+      final shell = _Shell()..installAnswer = 'keyed';
+      final session = manager.create(
+        host.copyWith(installOpenCommand: false),
+        transport: (_, _) => shell,
+      );
+      addTearDown(session.dispose);
+      await session.connect(secrets: _Secrets());
+      // No key, and no switch: nothing to put on the host.
+      expect(shell.installs, isEmpty);
+      relay.down = false;
+      await session.disconnect();
+      await session.connect(secrets: _Secrets());
+      final first = shell.installedKey;
+      expect(first, startsWith('jnk_'));
+      await session.disconnect();
+      await session.connect(secrets: _Secrets());
+      expect(shell.installs, hasLength(2));
+      expect(shell.installedKey, first);
+    });
+
+    test('the shell waits for one round trip and no more', () async {
+      final keys = await withToken(FakeRelay());
+      final shell = _Shell()..answerDelay = const Duration(milliseconds: 120);
+      final session = SessionManager(notifyKeys: keys)
+          .create(host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      final started = DateTime.now();
+      await session.connect(secrets: _Secrets());
+      final took = DateTime.now().difference(started);
+      expect(shell.installs, hasLength(1));
+      expect(took, greaterThanOrEqualTo(const Duration(milliseconds: 120)));
+      // Two sequential exec round trips would be 240 ms or more.
+      expect(took, lessThan(const Duration(milliseconds: 230)));
+    });
+
+    test('a host that does not answer is waited on up to the ceiling, then '
+        'the shell opens and the user is told', () async {
+      final old = LiveSession.openInstallTimeout;
+      addTearDown(() => LiveSession.openInstallTimeout = old);
+      LiveSession.openInstallTimeout = const Duration(milliseconds: 40);
+      final said = <String>[];
+      final keys = await withToken(FakeRelay());
+      final shell = _Shell()..installAnswer = 'hang';
+      final session = SessionManager(notifyKeys: keys, onOpenProblem: said.add)
+          .create(
+            host.copyWith(installOpenCommand: false),
+            transport: (_, _) => shell,
+          );
+      addTearDown(session.dispose);
+      await session.connect(secrets: _Secrets());
+      expect(session.isConnected, isTrue);
+      expect(said.single, contains('did not answer'));
+      expect(said.single, contains('push key'));
+      // And a failure: the shell opens, and the reason is said.
+      said.clear();
+      shell.installAnswer = 'fail';
+      await session.disconnect();
+      await session.connect(secrets: _Secrets());
+      expect(session.isConnected, isTrue);
+      expect(said.single, contains('failed'));
+      expect(said.single, contains('push key'));
     });
   });
 }

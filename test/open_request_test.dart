@@ -265,14 +265,16 @@ void main() {
     () {
       final home = Directory.systemTemp.createTempSync('jeansh-home');
       addTearDown(() => home.deleteSync(recursive: true));
-      String run([String secret = 'sek-ret']) =>
+      String run([String secret = 'sek-ret', String key = '-']) =>
           (Process.runSync(
                     'sh',
                     [
                       '-c',
-                      r'printf "%s\n" "$1" | ' + openCommandInstallScript(),
+                      r'printf "%s\n%s\n" "$1" "$2" | ' +
+                          openCommandInstallScript(),
                       'sh',
                       secret,
+                      key,
                     ],
                     environment: {'HOME': home.path, 'PATH': '/usr/bin:/bin'},
                     includeParentEnvironment: false,
@@ -732,5 +734,184 @@ void main() {
         expect(File('$bin/jeansh').readAsStringSync(), openCommandScript);
       },
     );
+  });
+
+  group("the host's push key is a file", () {
+    const key =
+        'jnk_abcDEF0123456789abcdef0123456789:MIGHAgEAMBMGByqGSM49+/AgEGCCqGSM49=';
+    late Directory home;
+    setUp(() => home = Directory.systemTemp.createTempSync('jeansh-key'));
+    tearDown(() => home.deleteSync(recursive: true));
+
+    String install(String secret, String key) =>
+        (Process.runSync(
+                  'sh',
+                  [
+                    '-c',
+                    r'printf "%s\n%s\n" "$1" "$2" | ' +
+                        openCommandInstallScript(),
+                    'sh',
+                    secret,
+                    key,
+                  ],
+                  environment: {'HOME': home.path, 'PATH': '/usr/bin:/bin'},
+                  includeParentEnvironment: false,
+                ).stdout
+                as String)
+            .trim();
+    File file() => File('${home.path}/.config/jeansh/notify-key');
+
+    test('the install writes it private, replaces it on the next, and leaves '
+        'it alone for a placeholder', () {
+      expect(install('sek-ret', key), 'installed');
+      expect(file().readAsStringSync(), '$key\n');
+      expect(file().statSync().mode & 0x1ff, 0x180); // 0600
+      expect(
+        Directory('${home.path}/.config/jeansh').statSync().mode & 0x1ff,
+        0x1c0, // 0700
+      );
+      // Rotated on a reinstall.
+      expect(install('sek-ret', 'jnk_new:AAAA'), 'current');
+      expect(file().readAsStringSync(), 'jnk_new:AAAA\n');
+      // No key sent, none touched.
+      expect(install('sek-ret', '-'), 'current');
+      expect(file().readAsStringSync(), 'jnk_new:AAAA\n');
+      // Something that is no key is refused, and nothing is written.
+      expect(install('sek-ret', 'a key; rm -rf /'), '');
+      expect(file().readAsStringSync(), 'jnk_new:AAAA\n');
+      expect(Directory('${home.path}/.config/jeansh').listSync(), hasLength(2));
+    });
+
+    test('with the open secret not sent, only the key is put in place: no '
+        'jeansh command is written', () {
+      expect(install('-', key), 'keyed');
+      expect(file().readAsStringSync(), '$key\n');
+      expect(File('${home.path}/.local/bin/jeansh').existsSync(), isFalse);
+      expect(
+        File('${home.path}/.config/jeansh/open-secret').existsSync(),
+        isFalse,
+      );
+    });
+
+    test('a link in its place is replaced, never written through, and a '
+        'link at the folder is refused', () {
+      install('-', key);
+      file().deleteSync();
+      File('${home.path}/victim').writeAsStringSync('keep');
+      Link(file().path).createSync('${home.path}/victim');
+      expect(install('-', 'jnk_x:BBBB'), 'keyed');
+      expect(File('${home.path}/victim').readAsStringSync(), 'keep');
+      expect(file().readAsStringSync(), 'jnk_x:BBBB\n');
+      Process.runSync('rm', ['-rf', '${home.path}/.config/jeansh']);
+      Directory('${home.path}/elsewhere').createSync();
+      Link('${home.path}/.config/jeansh').createSync('${home.path}/elsewhere');
+      expect(install('-', key), 'secret folder is a link');
+      expect(Directory('${home.path}/elsewhere').listSync(), isEmpty);
+    });
+
+    group('jeansh notify, through a real sh with stand-ins for curl and '
+        'openssl', () {
+      late Directory bin;
+      late File log;
+      setUp(() {
+        bin = Directory('${home.path}/stub')..createSync();
+        log = File('${home.path}/stub.log')..createSync();
+        installOpenCommand('${home.path}/.local/bin');
+        File('${bin.path}/curl').writeAsStringSync(
+          '#!/bin/sh\nprintf "curl" >> "${log.path}"\n'
+          'for a in "\$@"; do printf "\\n  %s" "\$a" >> "${log.path}"; done\n'
+          'printf "\\n" >> "${log.path}"\n',
+        );
+        // The three things the script asks of openssl: random hex, a hash
+        // and a signature, which takes the key on file descriptor 3.
+        File('${bin.path}/openssl').writeAsStringSync('''#!/bin/sh
+case "\$1" in
+  rand) echo 00112233445566778899aabbccddeeff ;;
+  base64) cat ;;
+  dgst)
+    case "\$*" in
+      *-sign*) cat /dev/fd/3 >> "${log.path}.pem"; printf SIGNED ;;
+      *) sha256sum ;;
+    esac ;;
+esac
+''');
+        Process.runSync('chmod', [
+          '755',
+          '${bin.path}/curl',
+          '${bin.path}/openssl',
+        ]);
+      });
+
+      ProcessResult notify(
+        List<String> args, {
+        Map<String, String> env = const {},
+      }) => Process.runSync(
+        'sh',
+        ['${home.path}/.local/bin/jeansh', 'notify', ...args],
+        environment: {
+          'HOME': home.path,
+          'PATH': '${bin.path}:/usr/bin:/bin',
+          'JEANSH_RELAY_URL': 'http://relay.invalid',
+          ...env,
+        },
+        includeParentEnvironment: false,
+      );
+
+      test('takes the key from the file, even with another one in the '
+          'environment', () {
+        install('-', key);
+        final result = notify(
+          ['Build', 'done'],
+          env: {'LC_SSHBOX_KEY': 'jnk_fromenv:ZZZZ'},
+        );
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        final sent = log.readAsStringSync();
+        expect(
+          sent,
+          contains('X-PARTNER-ID: jnk_abcDEF0123456789abcdef0123456789'),
+        );
+        expect(sent, isNot(contains('jnk_fromenv')));
+        expect(sent, contains('http://relay.invalid/v1/send'));
+        expect(sent, contains('X-SIGNATURE: SIGNED'));
+        expect(sent, contains('{"title":"Build","body":"done"}'));
+        // The file's key, after the colon, is what openssl was given.
+        final pem = File('${log.path}.pem').readAsStringSync();
+        expect(pem, contains('MIGHAgEAMBMGByqGSM49+/AgEGCCqGSM49='));
+        expect(pem, isNot(contains('ZZZZ')));
+      });
+
+      test('sends nothing when only the environment has a key: what an ssh '
+          'from a Jeansh shell would have carried', () {
+        final result = notify(['Build', 'done'], env: {'LC_SSHBOX_KEY': key});
+        expect(result.exitCode, 1);
+        expect(result.stderr, contains('no push key on this host'));
+        expect(log.readAsStringSync(), isEmpty);
+      });
+
+      test('a file that is a link is not read', () {
+        install('-', key);
+        file().deleteSync();
+        File('${home.path}/elsewhere').writeAsStringSync('$key\n');
+        Link(file().path).createSync('${home.path}/elsewhere');
+        expect(notify(['x', 'y']).exitCode, 1);
+        expect(log.readAsStringSync(), isEmpty);
+      });
+
+      test('goes down the connection first, and to the relay only when that '
+          'fails', () {
+        install('-', key);
+        final direct = notify(
+          ['only a body'],
+          env: {
+            'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:9/v1/send',
+            'LC_SSHBOX_NOTIFY_SECRET': 'conn-secret',
+          },
+        );
+        expect(direct.exitCode, 0);
+        final sent = log.readAsStringSync();
+        expect(sent, contains('http://127.0.0.1:9/v1/send'));
+        expect(sent, isNot(contains('relay.invalid')));
+      });
+    });
   });
 }
