@@ -437,6 +437,14 @@ jobs:
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
 
+      # Keychain reads: on Linux nothing is kept, so a reconnect asks the
+      # Secret Service again; the macOS job runs the same test where it is
+      # kept and a reconnect asks nothing.
+      - name: Keychain reads
+        timeout-minutes: 8
+        if: always()
+        run: E2E_TESTS=integration_test/keychain_test.dart tools/e2e_desktop.sh linux
+
       # #136: Download once more on a session bus with no XDG portal at all,
       # as on a desktop that runs none, where file_picker could not save.
       - name: Download with no XDG portal
@@ -494,6 +502,52 @@ jobs:
             --dart-define=JEANSH_UPDATE_HOST=$feed \
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
+
+      # The login keychain unlocked, or a read of it waits for a prompt nobody
+      # sees; a runner's is unlocked already, and this says so rather than
+      # trusting it. Harmless where it is.
+      - name: Unlock the login keychain
+        run: |
+          security unlock-keychain -p "" "$HOME/Library/Keychains/login.keychain-db" || true
+          security set-keychain-settings "$HOME/Library/Keychains/login.keychain-db" || true
+          security list-keychains -d user
+
+      # A host for the keychain test: sshd on loopback port 2222, run as root
+      # for password authentication, with a throwaway user made here and gone
+      # with the runner. Remote Login stays off.
+      - name: Start an sshd for the keychain test
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          sudo sysadminctl -addUser e2e -password "$password" -home /Users/e2e
+          sudo mkdir -p /Users/e2e && sudo chown e2e /Users/e2e
+          dir=/private/tmp/e2e_sshd
+          sudo mkdir -p "$dir"
+          sudo ssh-keygen -q -t ed25519 -N "" -f "$dir/host_key"
+          printf '%s\n' 'ListenAddress 127.0.0.1' 'Port 2222' \
+            "HostKey $dir/host_key" "PidFile $dir/sshd.pid" \
+            'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' \
+            'UsePAM yes' 'AllowUsers e2e' | sudo tee "$dir/sshd_config" >/dev/null
+          sudo /usr/sbin/sshd -f "$dir/sshd_config" -E "$dir/sshd.log"
+          echo "SSH_PASSWORD=$password" >> "$GITHUB_ENV"
+          echo "SSH_USER=e2e" >> "$GITHUB_ENV"
+          echo "SSH_PORT=2222" >> "$GITHUB_ENV"
+          for i in $(seq 20); do
+            (exec 3<>/dev/tcp/127.0.0.1/2222) 2>/dev/null && break
+            sleep 1
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/2222) 2>/dev/null || { sudo cat "$dir/sshd.log"; echo "::error::sshd did not start"; exit 1; }
+          echo "sshd answers on 127.0.0.1:2222"
+
+      # #284: reads kept for the run, so a reconnect asks the keychain nothing.
+      - name: Keychain reads
+        timeout-minutes: 8
+        if: always()
+        run: |
+          E2E_TESTS=integration_test/keychain_test.dart tools/e2e_desktop.sh macos || {
+            sudo tail -n 40 /private/tmp/e2e_sshd/sshd.log || true
+            exit 1
+          }
 
   # Windows: the Win32 embedder in the runner's own session, as on macOS.
   # Report-only, on every release. Its Local shell is PowerShell under
