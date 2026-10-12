@@ -2103,7 +2103,17 @@ class ClaudeChat extends ChangeNotifier {
           outboxKey = resume.key;
           outboxId = resume.id;
           // Sent again: only if the session does not hold it already.
-          final turn = await _recordedTurn(outboxKey, outboxId, sessionId);
+          var turn = await _recordedTurn(outboxKey, outboxId, sessionId);
+          if (turn == null && sessionId != null && settleDelay > Duration.zero) {
+            // Not there yet, but an earlier try may have typed it, and the
+            // session records a turn some seconds after it is typed — the
+            // more so with a connection just back. Looked at again after it
+            // has settled; only a message still not recorded goes again, so
+            // it is never typed twice.
+            await Future<void>.delayed(settleDelay);
+            if (_disposed) return;
+            turn = await _recordedTurn(outboxKey, outboxId, sessionId);
+          }
           if (turn != null) {
             _say(
               ChatSaid(message, mine: true, pictures: pictures)
@@ -2619,6 +2629,11 @@ class ClaudeChat extends ChangeNotifier {
     _retryTimers[said] = timer;
     _retryRuns[said] = run;
   }
+
+  /// How long a message that may have been typed already waits, after the
+  /// transcript did not hold it, before the transcript is read a second time
+  /// and it is sent again. Static so a test can shorten it.
+  static Duration settleDelay = const Duration(seconds: 4);
 
   /// How often a message waiting for the connection looks for it again.
   static const hostDownPoll = Duration(seconds: 3);
