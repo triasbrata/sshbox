@@ -308,9 +308,9 @@ void main() {
     }
 
     await open('box');
-    expect(find.textContaining('LC_SSHBOX_KEY'), findsOneWidget);
+    expect(find.textContaining('notify-key'), findsOneWidget);
     await copy();
-    // The host's LC_SSHBOX_KEY value, never the FCM token.
+    // The host's key value, never the FCM token.
     expect(copied, [
       {'text': key},
     ]);
