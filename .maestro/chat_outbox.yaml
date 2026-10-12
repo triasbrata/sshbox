@@ -635,7 +635,8 @@ env:
       - assertNotVisible: "Retry"
       - takeScreenshot: chat-outbox-still-waiting
 
-# The host is back. The session's tab is reconnected, as a user does, and the
+# The host is back. The connection is brought back from the chat's own tab,
+# which offers Reconnect while it is down (the shell's tab does too), and the
 # chat picks the session up again: the message goes by itself, with no Retry.
 - runFlow:
     when:
