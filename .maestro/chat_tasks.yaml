@@ -83,11 +83,12 @@ env:
 - assertVisible: "(?s).*□ Write the report.*"
 - takeScreenshot: chat-tasks-completed
 
-# The turn ends at 30 s: the working line goes, and the two open tasks stay
-# on screen between turns.
+# The turn ends after the stand-in's closing answer: the working line goes, and
+# the two open tasks stay on screen between turns. In the full suite that answer
+# comes later than in a solo run, so it is waited for up to two minutes.
 - extendedWaitUntil:
     visible: "(?i)Tasks played"
-    timeout: 30000
+    timeout: 120000
 - extendedWaitUntil:
     notVisible: "(?s).*Working….*"
     timeout: 3000
