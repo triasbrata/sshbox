@@ -1707,7 +1707,46 @@ ob_step8() {
   echo "::endgroup::"
 }
 
-# The two steps above alone, which is minutes rather than the whole outbox
+# The stand-in session gone, as after a host restart: its tmux session killed,
+# its row taken out of what `claude agents` lists, its state file removed. Its
+# transcript stays, as a restarted host keeps it.
+ob_end_session() {
+  ob_host tmux kill-session -t e2e-live 2>/dev/null
+  ob_host python3 - "/home/$SSH_USER/.e2e-agents.json" "$LIVE_SID" <<'PY'
+import json, sys
+path, sid = sys.argv[1], sys.argv[2]
+rows = [r for r in json.load(open(path)) if r.get('sessionId') != sid]
+json.dump(rows, open(path, 'w'))
+PY
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+
+# 9. Positive: the host restarted while a message waited, and what the chat
+# followed is gone when the connection is back. The message is kept, failed,
+# with a plain reason, Retry and Remove; nothing is typed anywhere.
+ob_step9() {
+  echo "::group::chat_outbox 9: the session is gone when the connection is back"
+  ob_reset
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_open || ob_fail "9: the rc_open flow failed"
+  ob_drop_ssh
+  sleep 12
+  flow chat_outbox -e STEP=rc_send || ob_fail "9: the rc_send flow failed"
+  ob_end_session
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_gone || ob_fail "9: the rc_gone flow failed"
+  sleep 8
+  ob_expect "9: nothing typed anywhere" "$(ob_sent 'outbox reconnect')" 0
+  ob_expect "9: the transcript holds none" "$(ob_turns 'outbox reconnect')" 0
+  ob_expect "9: still kept on the device" "$(ob_kept 'outbox reconnect')" 1
+  ob_expect "9: kept as failed, with the reason" \
+    "$(ob_device | grep -c 'The session ended before this was sent')" 1
+  ob_expect "9: and no longer waiting for anything to pass" "$(ob_waiting)" 0
+  echo "::endgroup::"
+}
+
+# Steps 7 to 9 alone, which is minutes rather than the whole outbox
 # block: the connection dropping under a waiting message.
 chat_outbox_reconnect() {
   OB_STATUS=0
@@ -1718,6 +1757,7 @@ chat_outbox_reconnect() {
   ob_host touch "$OB_STAMPED"
   ob_step7
   ob_step8
+  ob_step9
   ob_restore_ssh
   keep_shots 'chat-outbox-*.png'
   adb shell am force-stop "$OB_PKG" >/dev/null 2>&1

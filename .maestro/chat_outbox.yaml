@@ -22,9 +22,10 @@
 #   same_retry                after the session recorded both sends nothing
 #   disk                      a store that cannot be written fails the message
 #   rc_open, rc_send,         the connection drops under a message: it waits for
-#   rc_wait, rc_back          the connection (still, long after the retry steps
+#   rc_wait, rc_back,         the connection (still, long after the retry steps
 #                             would have been spent), and is delivered once, with
-#                             no Retry, when the session is reconnected
+#   rc_gone                   no Retry, when the session is reconnected; or kept,
+#                             failed, with why, if the session ended meanwhile
 #
 # Matched without regard to case: the field capitalises a sentence.
 appId: cloud.brata.terminal
@@ -659,5 +660,34 @@ env:
       - assertNotVisible: "(?s).*Not typed.*"
       - assertNotVisible: "Retry"
       - takeScreenshot: chat-outbox-delivered-after-reconnect
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# The host restarted: what the chat followed is gone when the session is
+# reconnected. The message written for it is still there, failed, saying why,
+# with Retry and Remove, and nothing was typed.
+- runFlow:
+    when:
+      true: ${STEP == 'rc_gone'}
+    commands:
+      - tapOn: "Reconnect"
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          notVisible: "Reconnect"
+          timeout: 60000
+      - tapOn:
+          text: "(?s)^(?!Close).*Claude.*"
+          optional: true
+      - extendedWaitUntil:
+          visible: "(?s).*The session ended before this was sent.*"
+          timeout: 120000
+      - assertVisible: "(?s).*outbox reconnect.*"
+      - assertVisible: "Retry"
+      - assertVisible: "Remove"
+      - assertNotVisible: "(?i)Echo: outbox reconnect"
+      - assertNotVisible: "(?s).*Waiting for the connection.*"
+      - takeScreenshot: chat-outbox-session-gone
       - tapOn: "(?s)Close .*Claude.*"
       - tapOn: "Close ${HOST_LABEL}.*"
