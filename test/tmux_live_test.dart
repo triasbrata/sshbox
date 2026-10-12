@@ -446,6 +446,55 @@ void main() {
     tmux.dispose();
   }, skip: hasTmux ? false : 'tmux is not installed here');
 
+  // The app was inactive or the machine asleep while a pane's output was
+  // dropped: nobody taps a pane that will not scroll, so the resume checks.
+  for (final lost in [true, false]) {
+    test(
+      'a mode ${lost ? 'lost' : 'stuck'} while the app was away is put right '
+      'on resume, without a tap',
+      () async {
+        final name = 'sshbox-resync-resume-${lost ? 'lost' : 'stuck'}';
+        final (process, tmux, pane, log) = await reattached(
+          name,
+          mouse: lost,
+        );
+        final mark = appLog.length;
+
+        if (lost) {
+          pane.terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l');
+          expect(pane.terminal.mouseMode, MouseMode.none);
+        } else {
+          pane.terminal.write('\x1b[?1000h\x1b[?1006h');
+          expect(pane.terminal.mouseMode, MouseMode.upDownScroll);
+        }
+        await tmux.resyncAllModes();
+
+        expect(
+          pane.terminal.mouseMode,
+          lost ? MouseMode.upDownScrollDrag : MouseMode.none,
+        );
+        expect(
+          pane.terminal.mouseReportMode,
+          lost ? MouseReportMode.sgr : MouseReportMode.normal,
+        );
+        final said = logSince(mark);
+        expect(
+          said,
+          contains('tmux: pane %${pane.id} modes differed (resume), put right'),
+        );
+        expect(said, isNot(contains('(tap)')));
+        expect(said, isNot(contains('modes agree')));
+        // Into the local terminal alone: the program read nothing.
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        expect(log.existsSync() ? log.readAsStringSync() : '', isEmpty);
+        await tmux.kill();
+        await process.exitCode.timeout(const Duration(seconds: 5));
+        tmux.dispose();
+      },
+      skip: hasTmux ? false : 'tmux is not installed here',
+    );
+  }
+
   test('a tap that finds the modes right changes nothing and is logged once '
       'in a while, and taps in a run ask tmux once', () async {
     const name = 'sshbox-resync-agree';
@@ -1122,6 +1171,35 @@ void main() {
       await _until(() => session.tmux?.panes.isNotEmpty ?? false);
       return session;
     }
+
+    test('the manager asks every attached tab on resume, and a tab with no '
+        'tmux attached is skipped', () async {
+      final here = _Here(dir);
+      final manager = SessionManager();
+      final tab = await open(manager, here);
+      final plain = manager.create(
+        const HostProfile(id: 'plain', label: 'plain', host: 'plain', username: 'me'),
+        transport: (_, _) => here,
+      );
+      manager.add(plain);
+      final pane = tab.tmux!.panes.single;
+      final mark = appLog.length;
+      // tmux holds no mouse mode for this shell; the local terminal does.
+      pane.terminal.write('\x1b[?1000h\x1b[?1006h');
+      expect(pane.terminal.mouseMode, MouseMode.upDownScroll);
+
+      manager.resyncTmuxModes();
+      await _until(
+        () => appLog.current
+            .split('\n')
+            .skip(mark)
+            .any((l) => l.contains('modes differed (resume)')),
+        () => 'no resume check logged',
+      );
+      expect(pane.terminal.mouseMode, MouseMode.none);
+
+      await manager.closeAll();
+    }, skip: hasTmux ? false : 'tmux is not installed here');
 
     test(
       'Detach leaves the program running and writing and its record going; '

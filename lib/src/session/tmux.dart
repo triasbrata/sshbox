@@ -1340,7 +1340,15 @@ class TmuxSession {
         '$said; now ${terminal.mouseMode.name}/${terminal.mouseReportMode.name}');
   }
 
-  /// A pane's modes are asked for at most this often, by taps.
+  /// [resyncModes] for every pane on screen, one after the other, for the app
+  /// coming back after a while away.
+  Future<void> resyncAllModes({String why = 'resume'}) async {
+    for (final pane in panes) {
+      await resyncModes(pane, why: why);
+    }
+  }
+
+  /// A pane's modes are asked for at most this often, by taps and resumes.
   static const resyncEvery = Duration(milliseconds: 400);
 
   /// A check that found the modes right is logged at most this often.

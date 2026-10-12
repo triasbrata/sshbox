@@ -80,6 +80,8 @@ class _SshboxAppState extends State<SshboxApp> {
   final _navigator = GlobalKey<NavigatorState>();
   final SecretStore _secrets = KeystoreSecretStore();
   late final NotifyKeys _notifyKeys = NotifyKeys(_secrets);
+  late final _resume = ResumeObserver(_sessions.resyncTmuxModes);
+
   late final SessionManager _sessions = SessionManager(
     notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
@@ -150,6 +152,7 @@ class _SshboxAppState extends State<SshboxApp> {
   void initState() {
     super.initState();
     _keepAlive.attach();
+    WidgetsBinding.instance.addObserver(_resume);
     sessionLog.follow(_sessions);
     unawaited(_restoreTabs());
     unawaited(_startNotifications());
@@ -664,6 +667,7 @@ class _SshboxAppState extends State<SshboxApp> {
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
     FocusManager.instance.removeEarlyKeyEventHandler(_zoomKeys.handle);
     unawaited(_linkSubscription?.cancel());
+    WidgetsBinding.instance.removeObserver(_resume);
     _keepAlive.detach();
     unawaited(_keepAlive.shutdown());
     // Not closeAll: that would end every tmux session, and save no tabs to

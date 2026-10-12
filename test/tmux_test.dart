@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/session/clipboard_terminal.dart';
+import 'package:sshbox/src/session/session_manager.dart' show ResumeObserver;
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
 import 'package:sshbox/src/ui/terminal_paste.dart' show pasteShared;
@@ -75,6 +76,21 @@ class _FakeTmux {
 }
 
 void main() {
+  testWidgets('the resume observer calls back on resumed and on nothing else', (
+    tester,
+  ) async {
+    var calls = 0;
+    final observer = ResumeObserver(() => calls++);
+    WidgetsBinding.instance.addObserver(observer);
+    addTearDown(() => WidgetsBinding.instance.removeObserver(observer));
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    expect(calls, 0);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(calls, 1);
+  });
   test(
     "tmux copies the device's variables from the channel into its session",
     () {
