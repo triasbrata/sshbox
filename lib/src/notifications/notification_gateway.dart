@@ -37,7 +37,7 @@ class NotificationGateway {
     // x86_64, where the plugin's drawable lookup by name crashed in
     // AssetManager2::GetResourceId (JEANSH-4, JEANSH-8) — a signal no Dart
     // catch sees. Nobody reads notifications there, so they are not started.
-    if (defaultTargetPlatform == TargetPlatform.android && await _onTestLab()) {
+    if (defaultTargetPlatform == TargetPlatform.android && await onTestLab()) {
       return;
     }
     await _plugin.initialize(
@@ -82,7 +82,8 @@ class NotificationGateway {
         ?.requestNotificationsPermission();
   }
 
-  static Future<bool> _onTestLab() async {
+  /// Whether this is Firebase Test Lab, which Play's pre-launch robot runs on.
+  static Future<bool> onTestLab() async {
     try {
       return await const MethodChannel('sshbox/share')
               .invokeMethod<bool>('isTestLab') ??

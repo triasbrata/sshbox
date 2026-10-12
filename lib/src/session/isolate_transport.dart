@@ -203,7 +203,7 @@ class _Server {
             .run(args[0]! as String, pty: args[1]! as bool);
 
       case 'openChannel':
-        return _hold(await (_live() as ChannelCapable).open(args[0]! as String));
+        return _hold(await _execs().open(args[0]! as String));
       case 'openTerminal':
         return _hold(
           await (_live() as TerminalChannelCapable).openTerminal(
@@ -299,6 +299,15 @@ class _Server {
     final session = _session;
     if (session == null) throw const SshSessionException('Not connected.');
     return session;
+  }
+
+  /// Where a command is run: the connection while it is being made, as
+  /// `beforeShell` runs it before the shell (the install of `jeansh` and the
+  /// push key), else the session.
+  ChannelCapable _execs() {
+    final connecting = _connecting;
+    if (connecting is ChannelCapable) return connecting as ChannelCapable;
+    return _live() as ChannelCapable;
   }
 
   ForwardCapable _forwards() {

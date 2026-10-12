@@ -124,7 +124,7 @@ class NativeCrashesTest {
             threadDump = Attachment(byteArrayOf(1), "threads.txt")
         }
 
-        val out = NativeCrashes.scrub(crash, hint)
+        val out = NativeCrashes.scrub(crash, hint, false)
         val json = StringWriter().also { JsonSerializer(SentryOptions()).serialize(out, it) }.toString()
 
         for (leak in listOf(
@@ -152,5 +152,18 @@ class NativeCrashesTest {
         assertTrue(hint.attachments.isEmpty())
         assertNull(hint.tombstone)
         assertNull(hint.threadDump)
+    }
+
+    // JEANSH-8: whether the Test Lab guard saw the robot. The one tag the
+    // event carries, with the value and nothing else.
+    @Test
+    fun carriesTheTestLabTagAndNoOtherTag() {
+        for (testLab in listOf(true, false)) {
+            val out = NativeCrashes.scrub(crash(), Hint(), testLab)
+            assertEquals(mapOf("test_lab" to testLab.toString()), out.tags)
+            val json = StringWriter().also { JsonSerializer(SentryOptions()).serialize(out, it) }.toString()
+            assertTrue(json, json.contains("\"test_lab\":\"$testLab\""))
+            assertFalse(json, json.contains("\"test_lab\":\"${!testLab}\""))
+        }
     }
 }

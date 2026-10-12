@@ -70,14 +70,18 @@ void main() {
       expect(
         command,
         contains(
-          'update-environment " LC_SSHBOX_KEY LC_SSHBOX_HOST_ID '
-          'LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK LC_SSHBOX_OPEN_SECRET"',
+          'update-environment " LC_SSHBOX_NOTIFY_URL '
+          'LC_SSHBOX_NOTIFY_SECRET FORCE_HYPERLINK"',
         ),
       );
-      // A server that listed an earlier version's names gets the new ones.
+      // The secret for jeansh is never an environment variable.
+      expect(command, isNot(contains('OPEN_SECRET')));
+      // Nor the push key, which is a file on the host.
+      expect(command, isNot(contains('LC_SSHBOX_KEY')));
+      expect(command, isNot(contains('LC_SSHBOX_HOST_ID')));
       expect(
         command,
-        contains('grep -q "FORCE_HYPERLINK LC_SSHBOX_OPEN_SECRET" ||'),
+        contains('grep -q "FORCE_HYPERLINK" ||'),
       );
       expect(command, contains('export FORCE_HYPERLINK=1; exec "\$t"'));
       expect(command, isNot(contains('LC_SSHBOX_TOKEN')));
