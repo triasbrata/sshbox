@@ -63,9 +63,16 @@ env:
       - tapOn: "(?s)Banana.*"
       - assertNotVisible: "No photos or videos"
       - takeScreenshot: chat-ask-watched-picked-Banana
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       # The answer is the card's only content once it is in: no options left.
       - extendedWaitUntil:
@@ -92,9 +99,16 @@ env:
       - tapOn: "Other…"
       - inputText: "my own"
       - hideKeyboard
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "(?s).*Jeansh cannot type this answer.*"
@@ -108,9 +122,16 @@ env:
       - tapOn: "(?s)Blue.*"
       - assertNotVisible: "No photos or videos"
       - takeScreenshot: chat-ask-watched-picked-Blue
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
@@ -125,20 +146,34 @@ env:
     when:
       true: ${KIND == 'two'}
     commands:
+      # The card is taller than the screen and the chat sits at its end: the
+      # first question is above the view.
       - extendedWaitUntil:
-          visible: "Which size\\?"
+          visible: "Send answers"
           timeout: 30000
+      - scrollUntilVisible:
+          element: "Which size\\?"
+          direction: UP
+      - waitForAnimationToEnd
       - tapOn: "(?s)Large.*"
       - assertNotVisible: "No photos or videos"
       - takeScreenshot: chat-ask-watched-picked-Large
       - scrollUntilVisible:
           element: "(?s)Circle.*"
+      - waitForAnimationToEnd
       - tapOn: "(?s)Circle.*"
       - assertNotVisible: "No photos or videos"
       - takeScreenshot: chat-ask-watched-picked-Circle
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
@@ -160,9 +195,16 @@ env:
       - tapOn: "Other…"
       - inputText: "Lisbon $(touch x)"
       - hideKeyboard
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
@@ -184,9 +226,16 @@ env:
       - tapOn: "(?s)Friday.*"
       - assertNotVisible: "No photos or videos"
       - takeScreenshot: chat-ask-watched-picked-Friday
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "(?s).*is not waiting for an answer but for permission prompt.*"
@@ -210,9 +259,16 @@ env:
       - tapOn: "(?s)Coffee.*"
       - assertNotVisible: "No photos or videos"
       - takeScreenshot: chat-ask-watched-picked-Coffee
-      - scrollUntilVisible:
-          element: "Send answers"
-      - tapOn: "Send answers"
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
       - assertNotVisible: "No photos or videos"
       - extendedWaitUntil:
           visible: "Continuing after your answer\\."
