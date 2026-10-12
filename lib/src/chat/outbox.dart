@@ -15,6 +15,7 @@ class OutboxEntry {
     required this.createdAt,
     this.failed = false,
     this.attempts = 0,
+    this.transient = false,
     this.why,
     this.pictures = const [],
   });
@@ -33,6 +34,11 @@ class OutboxEntry {
 
   /// Automatic retries made so far.
   int attempts;
+
+  /// With [failed]: the cause may pass by itself (a connection coming back,
+  /// a session busy), so the message still waits to be sent again rather
+  /// than needing the user's Retry.
+  bool transient;
   String? why;
 
   /// The pictures, as copies this store holds.
@@ -44,6 +50,7 @@ class OutboxEntry {
     'at': createdAt.toIso8601String(),
     'failed': failed,
     'attempts': attempts,
+    if (transient) 'transient': true,
     if (why != null) 'why': why,
     if (pictures.isNotEmpty) 'pictures': [for (final p in pictures) p.toJson()],
   };
@@ -60,6 +67,7 @@ class OutboxEntry {
       createdAt: at.toUtc(),
       failed: json['failed'] == true,
       attempts: json['attempts'] is int ? json['attempts'] as int : 0,
+      transient: json['transient'] == true,
       why: json['why'] is String ? json['why'] as String : null,
       pictures: [
         if (json['pictures'] is List)
